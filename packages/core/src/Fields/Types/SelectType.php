@@ -12,7 +12,8 @@ namespace Kitsune\Core\Fields\Types;
 
 use Illuminate\Validation\Rule as LaravelRule;
 use Kitsune\Core\Fields\FieldConfig;
-use Kitsune\Core\Schema\SchemaDriver;
+use Kitsune\Core\Fields\LogicalType;
+use Kitsune\Core\Fields\Projection;
 
 final class SelectType extends BaseFieldType
 {
@@ -41,9 +42,9 @@ final class SelectType extends BaseFieldType
         return false;
     }
 
-    public function generatedColumnType(SchemaDriver $driver): string
+    public function projection(): Projection
     {
-        return $driver->sqlType('string', 64);
+        return new Projection(LogicalType::String, 64);
     }
 
     public function toStorage(mixed $input, FieldConfig $config): mixed

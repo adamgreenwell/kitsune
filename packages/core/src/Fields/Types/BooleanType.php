@@ -11,7 +11,8 @@ declare(strict_types=1);
 namespace Kitsune\Core\Fields\Types;
 
 use Kitsune\Core\Fields\FieldConfig;
-use Kitsune\Core\Schema\SchemaDriver;
+use Kitsune\Core\Fields\LogicalType;
+use Kitsune\Core\Fields\Projection;
 
 final class BooleanType extends BaseFieldType
 {
@@ -41,9 +42,9 @@ final class BooleanType extends BaseFieldType
         return false;
     }
 
-    public function generatedColumnType(SchemaDriver $driver): string
+    public function projection(): Projection
     {
-        return $driver->sqlType('boolean');
+        return new Projection(LogicalType::Boolean);
     }
 
     public function toStorage(mixed $input, FieldConfig $config): mixed

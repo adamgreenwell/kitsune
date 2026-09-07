@@ -12,7 +12,8 @@ namespace Kitsune\Core\Fields\Types;
 
 use Illuminate\Support\Carbon;
 use Kitsune\Core\Fields\FieldConfig;
-use Kitsune\Core\Schema\SchemaDriver;
+use Kitsune\Core\Fields\LogicalType;
+use Kitsune\Core\Fields\Projection;
 
 /**
  * Date.
@@ -39,9 +40,9 @@ final class DateType extends BaseFieldType
         return true;
     }
 
-    public function generatedColumnType(SchemaDriver $driver): string
+    public function projection(): Projection
     {
-        return $driver->sqlType('date');
+        return new Projection(LogicalType::Date, 10);
     }
 
     public function toStorage(mixed $input, FieldConfig $config): mixed

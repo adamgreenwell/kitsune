@@ -11,7 +11,8 @@ declare(strict_types=1);
 namespace Kitsune\Core\Fields\Types;
 
 use Kitsune\Core\Fields\FieldConfig;
-use Kitsune\Core\Schema\SchemaDriver;
+use Kitsune\Core\Fields\LogicalType;
+use Kitsune\Core\Fields\Projection;
 
 final class NumberType extends BaseFieldType
 {
@@ -35,9 +36,9 @@ final class NumberType extends BaseFieldType
         return true;
     }
 
-    public function generatedColumnType(SchemaDriver $driver): string
+    public function projection(): Projection
     {
-        return $driver->sqlType('decimal');
+        return new Projection(LogicalType::Decimal);
     }
 
     public function toStorage(mixed $input, FieldConfig $config): mixed

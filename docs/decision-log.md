@@ -1034,6 +1034,30 @@ This follows from that:
 
 **Consequence.** Column names are longer and carry a type suffix. Any query written against a generated column must resolve the name through the field storage row rather than assuming `idx_{handle}`.
 
+### Amendment, same day — naming was only half of it
+
+**Status:** Amended · 2026-09-07 · found in review of the first implementation
+
+Naming the column for its projection stopped orgs from *colliding on the name*. It did nothing about the expression, and the expression is the larger problem: **a generated column reads its JSON key from every row in the shared table**, including rows belonging to orgs that gave that handle a different type. Measured against live engines:
+
+| | unguarded `(values->>'price')::NUMERIC` where another org's `price` is `"contact us"` |
+|---|---|
+| PostgreSQL 17 | `ERROR: invalid input syntax for type numeric` — **the column cannot be created at all** |
+| MySQL 8.4 | `ERROR 1366: Incorrect DECIMAL value` — same |
+| SQLite | **indexes it as `0`**, silently. A price of zero, matching queries for one |
+
+So the expression is now **total**: it tests the JSON type first and yields NULL for anything else. The wrong type is not this projection's data, and NULL is the honest answer for it.
+
+Three further defects surfaced while fixing that, all of the same shape — a claim the tests did not check:
+
+- **`integer` was unindexable on MySQL.** The driver returned one string for both the column type and the cast, and MySQL needs two: `BIGINT` in `ADD COLUMN`, `SIGNED` inside `CAST`, each rejected where the other belongs. The driver interface now exposes `columnType()` and keeps the cast spelling private.
+- **`boolean` was unindexable on MySQL.** `->>` renders a JSON boolean as the text `'true'`, and `CAST('true' AS UNSIGNED)` is an error. Booleans compare the JSON value directly instead.
+- **`date` and `datetime` were unindexable on PostgreSQL.** A stored generated column's expression must be IMMUTABLE, and a text-to-`DATE` cast is only STABLE: `ERROR: generation expression is not immutable`. There is no immutable text-to-date path — `to_date` is STABLE too. **Dates therefore project to fixed-width ISO-8601 strings on every engine**, which `toStorage()` already normalises to, so string ordering is exact chronological ordering. Uniform across engines rather than a real `DATE` on the two that would accept one, because one behaviour is worth more than three bytes.
+
+**Why all four hid:** the parity suite exercised `decimal` and `string` only. It now covers every logical type on every engine, and the registry test renders every indexable type against all three drivers rather than only the connected one. `LogicalType` is an enum so PHPStan fails an unhandled match — a new logical type cannot silently leave one engine behind.
+
+**Consequence for field types.** `generatedColumnType(SchemaDriver)` is replaced by `projection(): ?Projection`. A field type now describes what it projects to and takes no driver at all — handing it one was the wrong seam, since it still had to know that a rendered type serves two grammars, and it left the driver no place to put the guard.
+
 ---
 
 ## Standing principles

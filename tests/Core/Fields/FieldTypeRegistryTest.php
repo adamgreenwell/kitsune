@@ -11,9 +11,13 @@ declare(strict_types=1);
 use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Fields\FieldTypeRegistry;
+use Kitsune\Core\Fields\Projection;
 use Kitsune\Core\Fields\StorageStrategy;
 use Kitsune\Core\Models\FieldStorage;
 use Kitsune\Core\Schema\DriverFactory;
+use Kitsune\Core\Schema\Drivers\MySqlDriver;
+use Kitsune\Core\Schema\Drivers\PostgresDriver;
+use Kitsune\Core\Schema\Drivers\SqliteDriver;
 
 /*
  * field-types.md: "A type that answers three of four is not shippable." These
@@ -68,16 +72,31 @@ it('gives every type a complete contract', function (string $handle): void {
     expect($type->suggestedPiiClass())->toBeIn(['none', 'personal', 'sensitive']);
 })->with(['text', 'textarea', 'rich_text', 'number', 'boolean', 'date', 'datetime', 'select', 'multi_select', 'relation', 'slug', 'json']);
 
-it('gives every indexable type a driver-rendered column type', function (): void {
+it('gives every indexable type a projection every driver can render', function (): void {
     // The pairing that matters: claiming indexability without being able to
     // project to a scalar is the "edits beautifully, cannot be queried"
     // failure the contract exists to prevent.
+    //
+    // Rendered against ALL THREE drivers, not just the connected one. Four
+    // defects hid behind checking only one: `integer` and `boolean` were
+    // unindexable on MySQL, `date` and `datetime` on PostgreSQL.
+    $drivers = [new PostgresDriver, new MySqlDriver, new SqliteDriver];
+
     foreach ($this->registry->all() as $handle => $type) {
-        $rendered = $type->generatedColumnType($this->driver);
+        $projection = $type->projection();
 
         if ($type->isIndexable() && $type->strategy() !== StorageStrategy::Promoted) {
-            expect($rendered)->toBeString("{$handle} claims indexable but renders no column type");
+            expect($projection)->toBeInstanceOf(Projection::class, "{$handle} claims indexable but projects to nothing");
+
+            foreach ($drivers as $driver) {
+                expect($driver->columnType($projection))
+                    ->toBeString("{$handle} has no column type on {$driver->name()}");
+            }
+
+            continue;
         }
+
+        expect($projection)->toBeNull("{$handle} is not indexable but declares a projection");
     }
 });
 

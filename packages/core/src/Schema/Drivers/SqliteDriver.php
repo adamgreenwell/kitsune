@@ -10,6 +10,9 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Schema\Drivers;
 
+use Kitsune\Core\Fields\JsonKind;
+use Kitsune\Core\Fields\LogicalType;
+use Kitsune\Core\Fields\Projection;
 use Kitsune\Core\Schema\SchemaDriver;
 
 /**
@@ -20,6 +23,11 @@ use Kitsune\Core\Schema\SchemaDriver;
  * is indexable, so index-on-demand still works. The cost model inverts:
  * nothing is materialised, so there is no write amplification and no table
  * rewrite, but the expression is evaluated per row scanned.
+ *
+ * It is also the engine that fails SILENTLY without the JSON type guard. A
+ * text value cast to NUMERIC becomes 0 rather than an error, so another org's
+ * `"contact us"` would have indexed as a price of zero and matched queries
+ * for it. The other two engines at least refuse.
  *
  * Serves pillar three. A small site needs no database server (ADR-027).
  */
@@ -35,34 +43,42 @@ final class SqliteDriver implements SchemaDriver
         return false;
     }
 
-    public function sqlType(string $logical, int $precision = 12, int $scale = 2): string
+    public function columnType(Projection $projection): string
     {
         // SQLite's affinity system is loose, but the spellings still have to
         // be ones it parses inside CAST.
-        return match ($logical) {
-            'decimal' => "NUMERIC({$precision},{$scale})",
-            'integer' => 'INTEGER',
-            'string' => "VARCHAR({$precision})",
-            'boolean' => 'INTEGER',
-            'date' => 'TEXT',
-            'datetime' => 'TEXT',
+        return match ($projection->logical) {
+            LogicalType::Decimal => "NUMERIC({$projection->precision},{$projection->scale})",
+            LogicalType::Integer, LogicalType::Boolean => 'INTEGER',
+            LogicalType::String, LogicalType::Date, LogicalType::DateTime => "VARCHAR({$projection->precision})",
         };
     }
 
-    public function jsonExtractExpression(string $jsonColumn, string $path, string $sqlType): string
+    public function jsonExtractExpression(string $jsonColumn, string $path, Projection $projection): string
     {
-        return sprintf('CAST(json_extract(%s, %s) AS %s)', $this->quote($jsonColumn), $this->literal('$.'.$path), $sqlType);
+        $column = $this->quote($jsonColumn);
+        $key = $this->literal('$.'.$path);
+
+        return sprintf(
+            'CASE WHEN json_type(%s, %s) IN (%s) THEN CAST(json_extract(%s, %s) AS %s) END',
+            $column,
+            $key,
+            implode(', ', array_map($this->literal(...), $this->jsonTypes($projection))),
+            $column,
+            $key,
+            $this->columnType($projection),
+        );
     }
 
-    public function addGeneratedColumnSql(string $table, string $column, string $jsonColumn, string $path, string $sqlType): string
+    public function addGeneratedColumnSql(string $table, string $column, string $jsonColumn, string $path, Projection $projection): string
     {
         // VIRTUAL, not STORED. SQLite rejects STORED here.
         return sprintf(
             'ALTER TABLE %s ADD COLUMN %s %s GENERATED ALWAYS AS (%s) VIRTUAL',
             $this->quote($table),
             $this->quote($column),
-            $sqlType,
-            $this->jsonExtractExpression($jsonColumn, $path, $sqlType),
+            $this->columnType($projection),
+            $this->jsonExtractExpression($jsonColumn, $path, $projection),
         );
     }
 
@@ -89,6 +105,17 @@ final class SqliteDriver implements SchemaDriver
     public function quote(string $identifier): string
     {
         return '"'.str_replace('"', '""', $identifier).'"';
+    }
+
+    /** @return list<string> json_type() spellings this projection accepts. */
+    private function jsonTypes(Projection $projection): array
+    {
+        return match ($projection->jsonKind()) {
+            JsonKind::Number => ['integer', 'real'],
+            // SQLite reports JSON booleans as the literals themselves.
+            JsonKind::Boolean => ['true', 'false'],
+            JsonKind::Text => ['text'],
+        };
     }
 
     private function literal(string $value): string

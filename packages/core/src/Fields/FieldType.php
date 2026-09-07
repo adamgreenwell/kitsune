@@ -10,8 +10,6 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Fields;
 
-use Kitsune\Core\Schema\SchemaDriver;
-
 /**
  * The contract every field type answers.
  *
@@ -42,13 +40,17 @@ interface FieldType
     public function supportsCardinality(): bool;
 
     /**
-     * The LOGICAL type to project this field to, or null if not indexable.
+     * What this field projects to when indexed, or null if it cannot be.
      *
-     * The driver renders the engine's spelling — MySQL rejects NUMERIC inside
-     * CAST and demands DECIMAL, and a field type must not have to know that.
-     * It takes a driver precisely so it never writes SQL itself.
+     * A description, not SQL, and no driver is passed: the field type says
+     * `decimal` and the driver decides that MySQL wants DECIMAL as a column,
+     * DECIMAL inside CAST and rejects NUMERIC there, while an integer column
+     * is BIGINT filled by a SIGNED cast. Handing field types a driver was the
+     * wrong seam — they still had to know a rendered type serves two
+     * grammars, and the driver had no way to guard the expression by JSON
+     * type (ADR-028 amendment).
      */
-    public function generatedColumnType(SchemaDriver $driver): ?string;
+    public function projection(): ?Projection;
 
     public function toStorage(mixed $input, FieldConfig $config): mixed;
 

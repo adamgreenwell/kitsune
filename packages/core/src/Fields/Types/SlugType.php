@@ -11,10 +11,10 @@ declare(strict_types=1);
 namespace Kitsune\Core\Fields\Types;
 
 use Kitsune\Core\Fields\FieldConfig;
+use Kitsune\Core\Fields\Projection;
 use Kitsune\Core\Fields\StorageStrategy;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
-use Kitsune\Core\Schema\SchemaDriver;
 use Kitsune\Core\Validation\Rule;
 
 /**
@@ -54,7 +54,7 @@ final class SlugType extends BaseFieldType
     }
 
     /** Already a real column, so there is nothing to project. */
-    public function generatedColumnType(SchemaDriver $driver): ?string
+    public function projection(): ?Projection
     {
         return null;
     }

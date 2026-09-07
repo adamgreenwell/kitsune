@@ -198,7 +198,7 @@ The escape hatch, and escape hatches get abused.
 
 ## 7. Indexing
 
-A field is indexed when `field_storage.is_indexed` is true. `Kitsune\Core\Schema\SchemaManager` then adds a stored generated column plus a composite index leading with the scope key — `site_id`, since `entries` is `#[SiteScoped]`.
+A field is indexed when `field_storage.is_indexed` is true. `Kitsune\Core\Schema\SchemaManager` then adds a stored generated column plus a composite index leading with the scope key — `site_id`, since `entries` is `#[SiteScoped]`. `php artisan kitsune:schema-sync` reconciles the two after a failure, since DDL implicitly commits on MySQL and a row write cannot share a transaction with its schema change.
 
 **The column is named for its projection, not for its owner** — `idx_{handle}__{type}` (ADR-028). `entries` is one table shared by every org, so two orgs each defining `price` would otherwise collide: one silently casting the other's data to the wrong type, and either able to drop the other's column. Because `generatedColumnType()` reads no per-field configuration, two rows with the same handle **and** type generate a byte-identical expression and share the column deliberately; rows that disagree on type get separate columns.
 
@@ -210,7 +210,11 @@ A field is indexed when `field_storage.is_indexed` is true. `Kitsune\Core\Schema
 -- MySQL: $-prefixed path, CAST wrapper, backtick quoting
 ALTER TABLE `entries`
   ADD COLUMN `idx_price__number` DECIMAL(12,2)
-    GENERATED ALWAYS AS (CAST(`values`->>'$.price' AS DECIMAL(12,2))) STORED;
+    GENERATED ALWAYS AS (
+      CASE WHEN JSON_TYPE(JSON_EXTRACT(`values`, '$.price'))
+                IN ('INTEGER', 'UNSIGNED INTEGER', 'DOUBLE', 'DECIMAL')
+           THEN CAST(`values`->>'$.price' AS DECIMAL(12,2)) END
+    ) STORED;
 CREATE INDEX `idx_price__number_site_idx` ON `entries` (`site_id`, `idx_price__number`);
 ```
 
@@ -218,7 +222,10 @@ CREATE INDEX `idx_price__number_site_idx` ON `entries` (`site_id`, `idx_price__n
 -- PostgreSQL: bare key, cast suffix, double-quote quoting
 ALTER TABLE "entries"
   ADD COLUMN "idx_price__number" NUMERIC(12,2)
-    GENERATED ALWAYS AS (("values" ->> 'price')::NUMERIC(12,2)) STORED;
+    GENERATED ALWAYS AS (
+      CASE WHEN jsonb_typeof(("values")::jsonb -> 'price') = 'number'
+           THEN (("values")::jsonb ->> 'price')::NUMERIC(12,2) END
+    ) STORED;
 CREATE INDEX "idx_price__number_site_idx" ON "entries" ("site_id", "idx_price__number");
 ```
 
@@ -226,11 +233,31 @@ CREATE INDEX "idx_price__number_site_idx" ON "entries" ("site_id", "idx_price__n
 -- SQLite: json_extract, and VIRTUAL rather than STORED
 ALTER TABLE "entries"
   ADD COLUMN "idx_price__number" NUMERIC(12,2)
-    GENERATED ALWAYS AS (CAST(json_extract("values", '$.price') AS NUMERIC(12,2))) VIRTUAL;
+    GENERATED ALWAYS AS (
+      CASE WHEN json_type("values", '$.price') IN ('integer', 'real')
+           THEN CAST(json_extract("values", '$.price') AS NUMERIC(12,2)) END
+    ) VIRTUAL;
 CREATE INDEX "idx_price__number_site_idx" ON "entries" ("site_id", "idx_price__number");
 ```
 
-The syntax diverges in four ways — path operator, cast form, identifier quoting, and whether the column can be materialised at all. **That divergence is exactly why the field type asks a driver instead of writing SQL.**
+### The `CASE` is not defensive style — it is the whole isolation guarantee
+
+`entries` is one table shared by every org, so this expression reads the JSON key from **every row in it**, including rows whose org gave `price` a different type. Without the guard, measured against live engines:
+
+| | another org's `"price": "contact us"` |
+|---|---|
+| PostgreSQL 17 | `ERROR: invalid input syntax for type numeric` — the column cannot be created |
+| MySQL 8.4 | `ERROR 1366: Incorrect DECIMAL value` — the same |
+| SQLite | **indexes it as `0`.** A price of zero, answering queries for one |
+
+A value of the wrong JSON type is not this projection's data, so it projects to `NULL` (ADR-028 amendment).
+
+The syntax diverges in five ways — path operator, JSON-type spelling, cast form, identifier quoting, and whether the column can be materialised at all. **That divergence is exactly why a field type describes a `Projection` and never touches SQL.**
+
+Two more divergences the driver owns, each of which made a shipped field type unindexable until the parity suite covered every logical type:
+
+- **MySQL needs two spellings.** `BIGINT` in `ADD COLUMN` and `SIGNED` inside `CAST`, each rejected where the other belongs — so `SchemaDriver` exposes `columnType()` and keeps the cast spelling private. One string for both left every `integer` field unindexable there.
+- **PostgreSQL demands an IMMUTABLE expression.** A text-to-`DATE` cast is only STABLE, and there is no immutable alternative (`to_date` is STABLE too). So **`date` and `datetime` project to fixed-width ISO-8601 strings on every engine** — `YYYY-MM-DD` and UTC `…+00:00`, which `toStorage()` already normalises to, making string order exact chronological order.
 
 ### Rules
 

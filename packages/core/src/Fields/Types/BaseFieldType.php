@@ -12,8 +12,8 @@ namespace Kitsune\Core\Fields\Types;
 
 use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Fields\FieldType;
+use Kitsune\Core\Fields\Projection;
 use Kitsune\Core\Fields\StorageStrategy;
-use Kitsune\Core\Schema\SchemaDriver;
 
 /**
  * Sensible defaults so each type carries only its differences.
@@ -44,7 +44,7 @@ abstract class BaseFieldType implements FieldType
         return true;
     }
 
-    public function generatedColumnType(SchemaDriver $driver): ?string
+    public function projection(): ?Projection
     {
         return null;
     }

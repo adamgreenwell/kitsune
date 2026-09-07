@@ -11,6 +11,8 @@ declare(strict_types=1);
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use Kitsune\Core\Fields\LogicalType;
+use Kitsune\Core\Fields\Projection;
 use Kitsune\Core\Schema\DriverFactory;
 
 /*
@@ -52,12 +54,7 @@ it('resolves a driver for the connection', function (): void {
 });
 
 it('adds a generated column over a JSON path and queries through it', function (): void {
-    // Ask the driver, rather than hardcoding per engine at the call site —
-    // doing that here is what hid the NUMERIC/DECIMAL divergence until the
-    // storage benchmark passed one type to all three engines.
-    $type = $this->driver->sqlType('decimal');
-
-    DB::statement($this->driver->addGeneratedColumnSql('parity_probe', 'idx_price', 'values', 'price', $type));
+    DB::statement($this->driver->addGeneratedColumnSql('parity_probe', 'idx_price', 'values', 'price', new Projection(LogicalType::Decimal)));
 
     DB::table('parity_probe')->insert([
         ['site_id' => 1, 'values' => json_encode(['price' => 24.99])],
@@ -74,12 +71,7 @@ it('adds a generated column over a JSON path and queries through it', function (
 });
 
 it('indexes the generated column, leading with the scope key', function (): void {
-    // Ask the driver, rather than hardcoding per engine at the call site —
-    // doing that here is what hid the NUMERIC/DECIMAL divergence until the
-    // storage benchmark passed one type to all three engines.
-    $type = $this->driver->sqlType('decimal');
-
-    DB::statement($this->driver->addGeneratedColumnSql('parity_probe', 'idx_price', 'values', 'price', $type));
+    DB::statement($this->driver->addGeneratedColumnSql('parity_probe', 'idx_price', 'values', 'price', new Projection(LogicalType::Decimal)));
 
     // ADR-021: composite indexes lead with the model's scope key.
     DB::statement($this->driver->createIndexSql('parity_probe', 'parity_probe_site_price', 'site_id', 'idx_price'));
@@ -90,12 +82,7 @@ it('indexes the generated column, leading with the scope key', function (): void
 });
 
 it('drops a generated column again', function (): void {
-    // Ask the driver, rather than hardcoding per engine at the call site —
-    // doing that here is what hid the NUMERIC/DECIMAL divergence until the
-    // storage benchmark passed one type to all three engines.
-    $type = $this->driver->sqlType('decimal');
-
-    DB::statement($this->driver->addGeneratedColumnSql('parity_probe', 'idx_price', 'values', 'price', $type));
+    DB::statement($this->driver->addGeneratedColumnSql('parity_probe', 'idx_price', 'values', 'price', new Projection(LogicalType::Decimal)));
     expect(Schema::hasColumn('parity_probe', 'idx_price'))->toBeTrue();
 
     DB::statement($this->driver->dropGeneratedColumnSql('parity_probe', 'idx_price'));
@@ -103,9 +90,7 @@ it('drops a generated column again', function (): void {
 });
 
 it('projects a text field, not only numerics', function (): void {
-    $type = $this->driver->sqlType('string', 64);
-
-    DB::statement($this->driver->addGeneratedColumnSql('parity_probe', 'idx_sku', 'values', 'sku', $type));
+    DB::statement($this->driver->addGeneratedColumnSql('parity_probe', 'idx_sku', 'values', 'sku', new Projection(LogicalType::String, 64)));
 
     DB::table('parity_probe')->insert(['site_id' => 1, 'values' => json_encode(['sku' => 'ABC-123'])]);
 
@@ -120,37 +105,131 @@ it('reports the STORED/VIRTUAL difference honestly', function (): void {
 });
 
 it('quotes a reserved identifier so `values` is usable as a column name', function (): void {
-    $sql = $this->driver->addGeneratedColumnSql('parity_probe', 'idx_price', 'values', 'price', 'NUMERIC(12,2)');
+    $sql = $this->driver->addGeneratedColumnSql('parity_probe', 'idx_price', 'values', 'price', new Projection(LogicalType::Decimal));
 
     // `values` is reserved on MySQL and Postgres. Unquoted, this is a syntax error.
     expect($sql)->toContain($this->driver->quote('values'));
 });
 
-it('renders a decimal type this engine accepts inside CAST', function (): void {
+it('renders a decimal column type this engine accepts', function (): void {
     // MySQL accepts NUMERIC as a column type but rejects it inside CAST,
-    // where it demands DECIMAL. The parity test used to hardcode the right
-    // spelling per engine, which hid the divergence until the storage
-    // benchmark passed one type to all three.
+    // where it demands DECIMAL. One string cannot serve both grammars, which
+    // is why columnType() and the driver's private cast spelling are separate
+    // — and why `integer` was unindexable on MySQL until they were.
     $expected = $this->driver->name() === 'mysql' ? 'DECIMAL(12,2)' : 'NUMERIC(12,2)';
 
-    expect($this->driver->sqlType('decimal'))->toBe($expected);
+    expect($this->driver->columnType(new Projection(LogicalType::Decimal)))->toBe($expected);
 });
 
-it('throws on an unknown logical type rather than guessing', function (): void {
-    // A generated column silently created with the wrong type would index
-    // the wrong thing, which is worse than failing loudly.
-    expect(fn () => $this->driver->sqlType('nonsense'))->toThrow(UnhandledMatchError::class);
+it('renders an integer column type that ALTER TABLE accepts, not a cast keyword', function (): void {
+    // MySQL's cast spelling is SIGNED, which is not a column type at all.
+    // Returning it from one method left every integer field unindexable there.
+    expect($this->driver->columnType(new Projection(LogicalType::Integer)))
+        ->not->toBe('SIGNED');
 });
 
 it('drops an indexed generated column, index first', function (): void {
     // A generated column cannot be dropped while an index references it —
     // SQLite refuses outright. The driver owns the ordering and the syntax,
     // which diverges again: MySQL scopes DROP INDEX to a table.
-    DB::statement($this->driver->addGeneratedColumnSql('parity_probe', 'idx_price', 'values', 'price', $this->driver->sqlType('decimal')));
+    DB::statement($this->driver->addGeneratedColumnSql('parity_probe', 'idx_price', 'values', 'price', new Projection(LogicalType::Decimal)));
     DB::statement($this->driver->createIndexSql('parity_probe', 'parity_probe_drop_me', 'site_id', 'idx_price'));
 
     DB::statement($this->driver->dropIndexSql('parity_probe', 'parity_probe_drop_me'));
     DB::statement($this->driver->dropGeneratedColumnSql('parity_probe', 'idx_price'));
 
     expect(Schema::hasColumn('parity_probe', 'idx_price'))->toBeFalse();
+});
+
+/*
+ * ⚠️ The suite this file should have had from the start.
+ *
+ * It previously exercised `decimal` and `string` only, and four defects hid
+ * behind that: `integer` and `boolean` were unindexable on MySQL (`SIGNED` is
+ * not a column type, and `->>` renders a JSON boolean as the text 'true'),
+ * `date` and `datetime` were unindexable on PostgreSQL (a text-to-DATE cast is
+ * STABLE, and a stored generated column demands IMMUTABLE), and every type was
+ * vulnerable to another org's value in the same JSON key.
+ *
+ * Every indexable logical type, on whichever engine DB_CONNECTION selects.
+ */
+describe('every logical type projects, on every engine', function (): void {
+    it('round-trips a value through a generated column and an index', function (
+        LogicalType $logical,
+        int $precision,
+        mixed $stored,
+        mixed $expected,
+    ): void {
+        $projection = new Projection($logical, $precision);
+
+        DB::statement($this->driver->addGeneratedColumnSql(
+            'parity_probe', 'idx_v', 'values', 'v', $projection,
+        ));
+        DB::statement($this->driver->createIndexSql('parity_probe', 'parity_probe_v', 'site_id', 'idx_v'));
+
+        DB::table('parity_probe')->insert(['site_id' => 1, 'values' => json_encode(['v' => $stored])]);
+
+        $value = DB::table('parity_probe')->where('site_id', 1)->value('idx_v');
+
+        expect(is_float($expected) ? (float) $value : (is_int($expected) ? (int) $value : trim((string) $value)))
+            ->toBe($expected);
+    })->with([
+        'decimal' => [LogicalType::Decimal, 12, 24.99, 24.99],
+        'integer' => [LogicalType::Integer, 12, 4200, 4200],
+        'string' => [LogicalType::String, 64, 'ABC-123', 'ABC-123'],
+        // JSON true, not 1: the two are different JSON types and MySQL says so.
+        'boolean true' => [LogicalType::Boolean, 1, true, 1],
+        'boolean false' => [LogicalType::Boolean, 1, false, 0],
+        'date' => [LogicalType::Date, 10, '2026-01-05', '2026-01-05'],
+        'datetime' => [LogicalType::DateTime, 32, '2026-01-05T03:04:05+00:00', '2026-01-05T03:04:05+00:00'],
+    ]);
+});
+
+/*
+ * ADR-028 amendment. `entries` is one table shared by every org, so a
+ * generated column reads its JSON key from rows belonging to orgs that gave
+ * the same handle a different type. Naming the column for its projection
+ * stopped the query collision; it did not stop this one.
+ */
+describe("another org's value cannot break a projection", function (): void {
+    it('creates the column even though a foreign row holds the wrong type', function (): void {
+        // Org B's text price is already in the table when org A indexes.
+        DB::table('parity_probe')->insert([
+            ['site_id' => 1, 'values' => json_encode(['price' => 10])],
+            ['site_id' => 2, 'values' => json_encode(['price' => 'contact us'])],
+        ]);
+
+        DB::statement($this->driver->addGeneratedColumnSql(
+            'parity_probe', 'idx_price', 'values', 'price', new Projection(LogicalType::Decimal),
+        ));
+
+        expect(Schema::hasColumn('parity_probe', 'idx_price'))->toBeTrue();
+    });
+
+    it('projects the wrong type to NULL rather than to a wrong value', function (): void {
+        DB::statement($this->driver->addGeneratedColumnSql(
+            'parity_probe', 'idx_price', 'values', 'price', new Projection(LogicalType::Decimal),
+        ));
+
+        DB::table('parity_probe')->insert([
+            ['site_id' => 1, 'values' => json_encode(['price' => 10])],
+            ['site_id' => 2, 'values' => json_encode(['price' => 'contact us'])],
+        ]);
+
+        // ⚠️ SQLite is why NULL matters rather than merely being tidy: it
+        // casts text to 0 without complaint, so org B's "contact us" would
+        // have indexed as a price of zero and answered queries for it.
+        expect(DB::table('parity_probe')->where('site_id', 2)->value('idx_price'))->toBeNull()
+            ->and((float) DB::table('parity_probe')->where('site_id', 1)->value('idx_price'))->toBe(10.0);
+    });
+
+    it('still accepts writes from the org whose type does not match', function (): void {
+        DB::statement($this->driver->addGeneratedColumnSql(
+            'parity_probe', 'idx_price', 'values', 'price', new Projection(LogicalType::Decimal),
+        ));
+
+        DB::table('parity_probe')->insert(['site_id' => 2, 'values' => json_encode(['price' => 'still text'])]);
+
+        expect(DB::table('parity_probe')->where('site_id', 2)->count())->toBe(1);
+    });
 });

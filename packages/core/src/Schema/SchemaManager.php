@@ -84,10 +84,12 @@ final class SchemaManager
         $added = [];
 
         foreach ($wanted as $column => $storage) {
-            if (! $this->hasColumn($column)) {
-                $this->index($storage);
-                $added[] = $column;
+            if ($this->hasColumn($column) && $this->hasIndex($storage->generatedIndexName())) {
+                continue;
             }
+
+            $this->index($storage);
+            $added[] = $column;
         }
 
         $dropped = [];
@@ -106,38 +108,52 @@ final class SchemaManager
     {
         $this->guard($storage);
 
-        if ($this->hasColumn($storage->generatedColumnName())) {
+        $driver = $this->driver();
+        $column = $storage->generatedColumnName();
+
+        // The column and the index are checked separately on purpose. They
+        // are two statements and DDL implicitly commits on MySQL, so the pair
+        // can half-succeed: returning early because the column exists would
+        // leave a missing index that nothing ever retries, while the dry run
+        // reported the schema as in sync and every query scanned.
+        $hasColumn = $this->hasColumn($column);
+        $hasIndex = $this->hasIndex($storage->generatedIndexName());
+
+        if ($hasColumn && $hasIndex) {
             // Another row already projects this way. ADR-028: that is
             // deduplication, not a conflict — the expression is identical.
             return;
         }
 
-        $driver = $this->driver();
-        $sqlType = $this->registry->get($storage->type)->generatedColumnType($driver);
+        $projection = $this->registry->get($storage->type)->projection();
 
-        if ($sqlType === null) {
+        if ($projection === null) {
             throw new RuntimeException(
                 "Field type [{$storage->type}] cannot be indexed: it projects to no scalar column."
             );
         }
 
-        DB::statement($driver->addGeneratedColumnSql(
-            'entries',
-            $storage->generatedColumnName(),
-            'values',
-            $storage->handle,
-            $sqlType,
-        ));
+        if (! $hasColumn) {
+            DB::statement($driver->addGeneratedColumnSql(
+                'entries',
+                $column,
+                'values',
+                $storage->handle,
+                $projection,
+            ));
+        }
 
-        // ADR-021: every composite index leads with the scope key. entries is
-        // site-scoped, so site_id leads — which also gives org isolation
-        // transitively, since a site belongs to exactly one org.
-        DB::statement($driver->createIndexSql(
-            'entries',
-            $storage->generatedIndexName(),
-            'site_id',
-            $storage->generatedColumnName(),
-        ));
+        if (! $hasIndex) {
+            // ADR-021: every composite index leads with the scope key. entries
+            // is site-scoped, so site_id leads — which also gives org isolation
+            // transitively, since a site belongs to exactly one org.
+            DB::statement($driver->createIndexSql(
+                'entries',
+                $storage->generatedIndexName(),
+                'site_id',
+                $column,
+            ));
+        }
     }
 
     /**
@@ -270,6 +286,18 @@ final class SchemaManager
     private function hasColumn(string $column): bool
     {
         return in_array($column, DB::getSchemaBuilder()->getColumnListing('entries'), true);
+    }
+
+    private function hasIndex(string $index): bool
+    {
+        foreach (DB::getSchemaBuilder()->getIndexes('entries') as $existing) {
+            // Engines lowercase index names to differing degrees.
+            if (strcasecmp((string) $existing['name'], $index) === 0) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function driver(): SchemaDriver
