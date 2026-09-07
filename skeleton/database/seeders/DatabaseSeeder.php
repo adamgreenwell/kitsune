@@ -15,6 +15,7 @@ use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\Hash;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
+use Kitsune\Core\Models\EntryTypeAvailability;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Models\SiteGroup;
@@ -60,6 +61,18 @@ class DatabaseSeeder extends Seeder
 
         // Belongs to the other org — must be unreachable from Golfdom's admin.
         EntryType::create(['org_id' => $orgB->id, 'handle' => 'confidential', 'name' => 'Confidential', 'plural_name' => 'Confidential']);
+
+        // Owned by this org but DISABLED for this site (ADR-022): a section
+        // the French edition drops. It must 404 at the route, and it must not
+        // appear in navigation — the availability half of the middleware had
+        // no route-level test until this fixture existed.
+        $podcast = EntryType::create(['org_id' => $orgA->id, 'handle' => 'podcast', 'name' => 'Podcast', 'plural_name' => 'Podcasts']);
+        EntryTypeAvailability::create([
+            'entry_type_id' => $podcast->id,
+            'scope_type' => 'site',
+            'scope_id' => $en->id,
+            'is_enabled' => false,
+        ]);
 
         $context->setSite($en);
         foreach (range(1, 6) as $i) {
