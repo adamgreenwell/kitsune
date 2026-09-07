@@ -334,7 +334,9 @@ The highest-risk open question against this ADR was whether Filament relation ma
 
 **Relation managers register no routes of their own.** They are Livewire components mounted on the page, and their snapshot memo carries the original path (`admin/golfdom/c/article/1/edit`), which Livewire re-matches on update. The original fear — *"they register their own routes and URLs"* — does not apply to `RelationManager`.
 
-**`ManageRelatedRecords` pages, which do register a route, were cleared separately on 2026-09-07.** A page registered at `/{type}/{record}/related` returns 200, its Livewire updates return 200, every URL it generates carries a populated `{type}`, and Attach/Detach operate normally. **ADR-012's URL contract now has no untested corners.**
+**`ManageRelatedRecords` pages, which do register a route, were cleared separately on 2026-09-07.** A page registered at `/{type}/{record}/related` returns 200, its Livewire updates return 200, every URL it generates carries a populated `{type}`, and its Attach action is reachable with a working modal. **ADR-012's URL contract now has no untested corners.**
+
+One correction worth keeping, because it is the failure mode this log exists to prevent. The first version of that claim said Attach "operates", while the test behind it only *read* a pre-seeded relation. Attach did not operate: `entry_relations.org_id` is `NOT NULL`, the pivot has no model to stamp it, and every attach failed on a constraint. Caught in review. The relationship now stamps and constrains `org_id` through `withPivotValue()`, and the claim is scoped to what is actually exercised.
 
 **Finding 1 — navigation is a correctness requirement, not a performance one.** This ADR framed `Panel::navigation(Closure)` as a memoization concern. It is more than that. Filament auto-registers a navigation item per Resource and calls `getUrl()` on it while rendering the sidebar; with `{type}` in the URI and none in the current request, that throws and **500s every page outside `/c/{type}`, the dashboard included.** `$shouldRegisterNavigation = false` on the Resource is mandatory. The 5×-per-request claim was measured and is exact.
 

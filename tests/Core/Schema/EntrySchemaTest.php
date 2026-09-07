@@ -8,6 +8,7 @@
 
 declare(strict_types=1);
 
+use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryRevision;
 use Kitsune\Core\Models\EntryType;
@@ -88,6 +89,33 @@ describe('relations are a real table (ADR-015)', function (): void {
         // Deleting an image should be able to name the articles using it.
         expect($asset->referencedBy()->pluck('title')->sort()->values()->all())
             ->toBe(['Article A', 'Article B']);
+    });
+});
+
+describe('attaching a relation', function (): void {
+    it('stamps org_id without the caller supplying it', function (): void {
+        // entry_relations.org_id is NOT NULL and the pivot has no model, so
+        // nothing else can stamp it. Before withPivotValue() every attach
+        // failed on a constraint — including the admin's Attach action.
+        $a = Entry::create(['entry_type_id' => $this->article->id, 'title' => 'A']);
+        $b = Entry::create(['entry_type_id' => $this->article->id, 'title' => 'B']);
+
+        $a->related()->attach($b->id);
+
+        expect($a->related()->count())->toBe(1);
+        expect($a->related()->first()->pivot->org_id)->toBe($this->orgA->id);
+    });
+
+    it('constrains reads to the same org as well', function (): void {
+        // withPivotValue does both jobs: stamps on write, constrains on read,
+        // so a relation row belonging to another customer cannot surface.
+        $a = Entry::create(['entry_type_id' => $this->article->id, 'title' => 'A']);
+        $b = Entry::create(['entry_type_id' => $this->article->id, 'title' => 'B']);
+        $a->related()->attach($b->id);
+
+        DB::table('entry_relations')->update(['org_id' => $this->orgB->id]);
+
+        expect($a->related()->count())->toBe(0);
     });
 });
 
