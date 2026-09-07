@@ -370,3 +370,55 @@ describe('erasure resolves the field through this entry\'s type', function (): v
             ->and($this->record->related()->count())->toBe(0);
     });
 });
+
+/*
+ * ⚠️ There are THREE storage strategies, and the first implementation
+ * dispatched on two. `SlugType` is Promoted and stores its value in
+ * `entries.slug`, so nominating it as a subject returned null and erasing it
+ * rewrote JSON that never held it — reporting success either way. Reported in
+ * review of this PR.
+ */
+describe('a promoted subject lives in its own column', function (): void {
+    beforeEach(function (): void {
+        $this->slugStorage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'slug', 'type' => 'slug',
+            'pii_class' => 'personal', 'cardinality' => 1,
+        ]);
+        $this->slugField = Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $this->slugStorage->id, 'label' => 'Slug',
+        ]);
+        $this->type->update(['subject_field_id' => $this->slugField->id]);
+        $this->type->refresh();
+
+        $this->entry = Entry::create([
+            'entry_type_id' => $this->type->id, 'title' => 'A. Patient', 'slug' => 'a-patient',
+        ]);
+    });
+
+    it('reads the subject from the real column', function (): void {
+        expect($this->entry->fresh()->subjectValue())->toBe('a-patient');
+    });
+
+    it('finds entries by a promoted subject', function (): void {
+        Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Other', 'slug' => 'other']);
+
+        expect(Entry::whereSubjectIs($this->type, 'a-patient')->pluck('title')->all())->toBe(['A. Patient']);
+    });
+
+    it('erases the column rather than a JSON key that never held it', function (): void {
+        expect($this->entry->redactField('slug'))->toBe(1)
+            ->and($this->entry->fresh()->slug)->toBeNull();
+    });
+
+    it('reports reaching nothing when it is already erased', function (): void {
+        $this->entry->redactField('slug');
+
+        expect($this->entry->fresh()->redactField('slug'))->toBe(0);
+    });
+
+    it('accepts a replacement, as the inline path does', function (): void {
+        $this->entry->redactField('slug', 'erased');
+
+        expect($this->entry->fresh()->slug)->toBe('erased');
+    });
+});

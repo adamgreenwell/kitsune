@@ -17,6 +17,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Support\Collection;
+use Kitsune\Core\Fields\StorageStrategy;
 use Kitsune\Core\Tenancy\Attributes\SiteScoped;
 use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
 
@@ -119,15 +120,18 @@ class Entry extends Model
             return null;
         }
 
-        // ⚠️ A relational subject lives in `entry_relations`, never in
-        // `values` — and ADR-020 names that case explicitly, "its email or
-        // its `person` relation". Reading only the JSON returned null for
-        // half the supported shapes, which looks identical to "no subject".
-        if ($storage->isRelational()) {
-            return $this->relatedIdsFor($storage)->all();
-        }
-
-        return $this->values[$storage->handle] ?? null;
+        // ⚠️ All THREE storage strategies, not two.
+        //
+        // A relational subject lives in `entry_relations` and a promoted one
+        // in its own column on `entries` — ADR-020 names the relation case
+        // explicitly ("its email or its `person` relation"), and `slug` is
+        // promoted. Reading only the JSON returned null for both, which is
+        // indistinguishable from "no subject nominated".
+        return match ($storage->strategy()) {
+            StorageStrategy::Relational => $this->relatedIdsFor($storage)->all(),
+            StorageStrategy::Promoted => $this->getAttribute($storage->handle),
+            StorageStrategy::Inline => $this->values[$storage->handle] ?? null,
+        };
     }
 
     /**
@@ -153,19 +157,19 @@ class Entry extends Model
 
         $query->where('entry_type_id', $type->getKey());
 
-        // A relational subject is a row in entry_relations, so the predicate
-        // has to reach the pivot rather than the JSON.
-        if ($storage->isRelational()) {
-            return $query->whereExists(function ($pivot) use ($storage, $identifier): void {
+        // Where the value lives decides where the predicate goes: a pivot
+        // row, a real column, or a JSON path.
+        return match ($storage->strategy()) {
+            StorageStrategy::Relational => $query->whereExists(function ($pivot) use ($storage, $identifier): void {
                 $pivot->selectRaw('1')
                     ->from('entry_relations')
                     ->whereColumn('entry_relations.source_entry_id', 'entries.id')
                     ->where('entry_relations.field_storage_id', $storage->getKey())
                     ->where('entry_relations.target_entry_id', $identifier);
-            });
-        }
-
-        return $query->where('values->'.$storage->handle, $identifier);
+            }),
+            StorageStrategy::Promoted => $query->where($storage->handle, $identifier),
+            StorageStrategy::Inline => $query->where('values->'.$storage->handle, $identifier),
+        };
     }
 
     /**
@@ -194,13 +198,27 @@ class Entry extends Model
             ->whereHas('fields', fn (Builder $query): Builder => $query->where('entry_type_id', $this->entry_type_id))
             ->first();
 
-        // A relational field's data is rows in entry_relations, not a value
-        // in `values`. There is nothing to replace in place, so erasure means
-        // removing the links — and reporting how many, since the array-key
-        // path would have found nothing and returned 0 while every row
-        // survived.
-        if ($storage !== null && $storage->isRelational()) {
+        // Erasure has to reach wherever the value actually lives.
+        //
+        // A relational field's data is rows in `entry_relations`, with
+        // nothing to replace in place — so erasure IS the detach. A promoted
+        // field is a real column on `entries`. Both fell through to the JSON
+        // path, found no key, and reported 0 while the data survived.
+        if ($storage?->strategy() === StorageStrategy::Relational) {
             return $this->related()->wherePivot('field_storage_id', $storage->getKey())->detach();
+        }
+
+        if ($storage?->strategy() === StorageStrategy::Promoted) {
+            if ($this->getAttribute($storage->handle) === $replacement) {
+                return 0;
+            }
+
+            $this->setAttribute($storage->handle, $replacement);
+            $this->save();
+
+            // Revisions snapshot `values` only, so a promoted column has no
+            // revision history to sweep — the column IS the whole record.
+            return 1;
         }
 
         $rewritten = 0;

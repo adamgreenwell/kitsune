@@ -128,10 +128,17 @@ class FieldStorage extends Model
         return $this->cardinality !== 1;
     }
 
-    /** Relational fields live in `entry_relations`, never in `values`. */
-    public function isRelational(): bool
+    /**
+     * Where this field's values actually live.
+     *
+     * Callers dispatch on all THREE cases — relational rows in
+     * `entry_relations`, a promoted column on `entries`, or a key in
+     * `values`. Handling two of the three is how `slug` came to answer a
+     * subject-access request with null.
+     */
+    public function strategy(): StorageStrategy
     {
-        return app(FieldTypeRegistry::class)->get($this->type)->strategy() === StorageStrategy::Relational;
+        return app(FieldTypeRegistry::class)->get($this->type)->strategy();
     }
 
     /** Cardinality > 1 cannot project to a scalar column (field-types.md §7). */
