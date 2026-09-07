@@ -200,7 +200,11 @@ Data model is specified in [`architecture.md`](architecture.md) §3.
 - [x] `EntryResource` with the `{type}` route parameter, per ADR-012 and [`architecture.md`](architecture.md) §2. 7–10 routes flat in the number of entity types, verified in a browser including the 201-type case
 - [ ] Memoized `Panel::navigation()` closure, cached per site *(it fires 5× per request)*
 - [ ] `EntryPolicy` resolving per-type authorization against `type_handle`
-- [ ] Entity type builder UI
+- [x] **Entity type builder UI** — `EntryTypeResource` plus a fields relation manager that writes both halves of ADR-006's storage/config split from one form, and a `SettingsSchemaRenderer` that turns a field type's `settingsSchema()` **data** into Filament components. That last piece is why the method returns an array rather than components: core stays headless-capable (ADR-002), so adding a field type needs no admin code at all.
+
+  ⚠️ **Three defects the PHP suite structurally could not see, all found by opening a browser** — the same shape as the ADR-012 spike, and why ADR-024 makes the browser layer mandatory. The list page 500d on Filament's tenant scoping (the tenant is a Site; schema is org-owned). The create-field modal 500d because the registry fails closed and the form's empty initial state called `get('')`. And a `number` field silently defaulted to **integer** — suppressing the select's placeholder made the browser submit the first option, so a field declared `decimal` would have truncated every value.
+
+  A fourth was found writing the browser tests: the field list is a **lazy** Livewire component, so at 1280×720 it sits below the fold and never mounts. The spec scrolls, as a user does
 - [ ] Revisions and drafts
 
 **Done when:** a non-developer builds a working "Products" entity with ten field types, relations and permissions entirely through the admin, on 100k rows, with no query over 200ms.
