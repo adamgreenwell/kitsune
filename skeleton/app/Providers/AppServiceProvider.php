@@ -32,18 +32,34 @@ class AppServiceProvider extends ServiceProvider
         // DEFAULT provider — leaving authentication fail-closed after boot.
         config(['auth.providers.users.driver' => 'kitsune-eloquent']);
 
-        // resolving(), not a direct Auth::provider() call: this registers the
-        // factory the moment the auth manager is built, whenever that is,
-        // without forcing it to be built now.
-        $this->app->resolving('auth', function (AuthManager $auth): void {
-            $auth->provider(
-                'kitsune-eloquent',
-                fn ($app, array $config): OrgAwareUserProvider => new OrgAwareUserProvider(
-                    $app['hash'],
-                    $config['model'],
-                ),
-            );
-        });
+        $register = static fn (AuthManager $auth): AuthManager => $auth->provider(
+            'kitsune-eloquent',
+            fn ($app, array $config): OrgAwareUserProvider => new OrgAwareUserProvider(
+                $app['hash'],
+                $config['model'],
+            ),
+        );
+
+        // resolving(), so the factory is there the moment the manager is
+        // built, without forcing it to be built now.
+        $this->app->resolving('auth', $register);
+
+        // ⚠️ And the already-resolved case, which resolving() does NOT
+        // replay. An auto-discovered package that touches auth before this
+        // provider registers leaves two distinct problems behind, and each
+        // needs its own line:
+        //
+        //  - the manager exists without the factory, so naming the driver
+        //    above gives "user provider [kitsune-eloquent] is not defined";
+        //  - any guard it already built cached the DEFAULT provider, which is
+        //    the unscoped one — so authentication would keep working while
+        //    silently bypassing the org scope, which is worse than failing.
+        if ($this->app->resolved('auth')) {
+            $auth = $this->app->make('auth');
+
+            $register($auth);
+            $auth->forgetGuards();
+        }
     }
 
     public function boot(): void
