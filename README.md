@@ -1,8 +1,9 @@
 # Kitsune
 
 > A multi-purpose content and application platform for Laravel.
-> **Status: pre-alpha.** The tenancy kernel, schema engine and entity type
-> builder exist and are tested; nothing is released, and nothing is stable.
+> **Status: pre-alpha, under active development.**
+> The [roadmap](docs/roadmap.md) tracks what exists today, item by item.
+> Nothing is released and nothing is stable.
 >
 > **[kitsunecms.org](https://kitsunecms.org)**
 
