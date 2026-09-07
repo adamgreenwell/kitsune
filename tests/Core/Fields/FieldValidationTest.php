@@ -173,3 +173,88 @@ describe('json', function (): void {
             ->and($v->errors()->first('f'))->toContain('not valid JSON');
     });
 });
+
+/*
+ * ⚠️ The cardinality fix stopped at conversion. Validation still applied
+ * `string` / `numeric` / `date` to the OUTER array, so a multi-value field
+ * rejected the array it was supposed to store and accepted a bare scalar
+ * which `toStorage()` then wrapped into a singleton. Reported in review.
+ */
+describe('cardinality decides where the scalar rules land', function (): void {
+    it('accepts the array and rejects a bad element', function (string $handle, array $ok, array $bad): void {
+        expect(validate($handle, ['f' => $ok])->fails())->toBeFalse('valid array rejected')
+            ->and(validate($handle, ['f' => $bad])->fails())->toBeTrue('invalid element accepted');
+    })->with([
+        'number' => ['number', [1, 2], [1, 'not a number']],
+        'date' => ['date', ['2026-01-05'], ['2026-01-05', 'not a date']],
+    ]);
+
+    it('names the offending element rather than the whole field', function (): void {
+        expect(validate('number', ['f' => [1, 'nope']])->errors()->keys())->toContain('f.1');
+    });
+
+    it('requires an array, not a scalar, once cardinality is many', function (): void {
+        // It accepted a scalar and silently wrapped it, so the stored shape
+        // did not match what the author submitted.
+        $type = app(FieldTypeRegistry::class)->get('text');
+
+        expect(Validator::make(['f' => 'just a string'], ['f' => $type->validationRules(configFor('text', [], -1))])->fails())
+            ->toBeTrue();
+    });
+
+    it('publishes an ARRAY api schema for a multi-value field', function (): void {
+        // Storage and API conversion both return an array, so advertising the
+        // scalar shape would generate clients that submit the wrong thing.
+        $type = app(FieldTypeRegistry::class)->get('text');
+
+        expect($type->apiSchema(configFor('text', [], -1)))
+            ->toBe(['type' => 'array', 'items' => ['type' => 'string']])
+            ->and($type->apiSchema(configFor('text')))->toBe(['type' => 'string']);
+    });
+});
+
+/*
+ * The projection is a promise about the values a field admits, and nothing
+ * was keeping it: DECIMAL(12,2) with no bounds accepted values the engine
+ * then refused, and values it silently rounded.
+ */
+describe('a number stays inside the column it projects to', function (): void {
+    it('rejects a value that would overflow the projection', function (): void {
+        // PostgreSQL: `numeric field overflow`, and the column cannot be
+        // created at all while such a row exists.
+        expect(validate('number', ['f' => '10000000000'])->fails())->toBeTrue();
+    });
+
+    it('rejects more decimal places than the projection keeps', function (): void {
+        // 1.234 through DECIMAL(12,2) rounds to 1.23, so two distinct stored
+        // values compare equal through the index.
+        expect(validate('number', ['f' => '1.234'])->fails())->toBeTrue();
+    });
+
+    it('accepts a value that fits', function (): void {
+        expect(validate('number', ['f' => '99999999.99'])->fails())->toBeFalse();
+    });
+
+    it('widens with the configured precision', function (): void {
+        expect(validate('number', ['f' => '10000000000'], ['precision' => 20, 'scale' => 2])->fails())->toBeFalse();
+    });
+
+    it('projects at the configured precision and scale', function (): void {
+        $type = app(FieldTypeRegistry::class)->get('number');
+
+        expect($type->projection(configFor('number', ['precision' => 20, 'scale' => 4]))->signature())
+            ->toBe('decimal20_4');
+    });
+});
+
+it('sizes a select projection from its widest option key', function (): void {
+    // An 80-character key is accepted by Rule::in() and preserved by
+    // toStorage(), then truncated through VARCHAR(64) — so two options
+    // sharing a prefix compare equal, and SQLite disagrees about which rows
+    // match because it does not enforce declared widths.
+    $long = str_repeat('k', 80);
+    $type = app(FieldTypeRegistry::class)->get('select');
+
+    expect($type->projection(configFor('select', ['options' => [$long => 'Long']]))->precision)->toBe(80)
+        ->and($type->projection(configFor('select', ['options' => ['a' => 'A']]))->precision)->toBe(64);
+});

@@ -430,3 +430,119 @@ it('drops an orphan column whose index is already gone', function (): void {
     expect($this->manager->reconcile()['dropped'])->toBe(['idx_price__decimal12_2'])
         ->and(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeFalse();
 });
+
+/*
+ * ⚠️ The column is named for its projection SIGNATURE, and a signature is not
+ * a function of the field type. Reference counting on `type` got both
+ * directions wrong. Reported in review.
+ */
+describe('reference counting follows the column, not the field type', function (): void {
+    it('will not drop a column a DIFFERENT field type shares', function (): void {
+        // text(maxLength: 64) and select both project to string64 and
+        // deliberately share one column. Counting by type saw two unrelated
+        // rows and dropped the column the other org was still querying.
+        $text = storageFor('code', 'text', [
+            'org_id' => $this->orgA->id, 'is_indexed' => true, 'settings' => ['maxLength' => 64],
+        ]);
+        $select = storageFor('code', 'select', [
+            'org_id' => $this->orgB->id, 'is_indexed' => true, 'settings' => ['options' => ['a' => 'A']],
+        ]);
+
+        expect($text->generatedColumnName())->toBe($select->generatedColumnName());
+
+        $this->manager->index($text);
+        $this->manager->index($select);
+
+        $text->update(['is_indexed' => false]);
+        $this->manager->sync($text);
+
+        expect(Schema::hasColumn('entries', 'idx_code__string64'))->toBeTrue();
+    });
+
+    it('DOES drop a column when the other row of the same type projects elsewhere', function (): void {
+        // Two `number` rows, one integer and one decimal: same type, different
+        // columns. Counting by type left an orphan behind.
+        $integer = storageFor('count', 'number', [
+            'org_id' => $this->orgA->id, 'is_indexed' => true, 'settings' => ['format' => 'integer'],
+        ]);
+        $decimal = storageFor('count', 'number', ['org_id' => $this->orgB->id, 'is_indexed' => true]);
+
+        $this->manager->index($integer);
+        $this->manager->index($decimal);
+
+        $integer->update(['is_indexed' => false]);
+        $this->manager->sync($integer);
+
+        expect(Schema::hasColumn('entries', 'idx_count__integer'))->toBeFalse()
+            ->and(Schema::hasColumn('entries', 'idx_count__decimal12_2'))->toBeTrue();
+    });
+});
+
+it('drops an orphan before adding, so a swap fits under the cap', function (): void {
+    // With the table at the cap, adding first hits guardCap() and throws —
+    // so a capacity-NEUTRAL replacement could never be repaired and --force
+    // reported a failure the operator could not act on.
+    for ($i = 0; $i < SchemaManager::MAX_GENERATED_COLUMNS; $i++) {
+        $this->manager->index(storageFor("filler_{$i}", 'number', ['org_id' => $this->orgA->id, 'is_indexed' => true]));
+    }
+
+    // One row goes away, another arrives. Net zero columns.
+    FieldStorage::query()->where('handle', 'filler_0')->delete();
+    storageFor('replacement', 'number', ['org_id' => $this->orgA->id, 'is_indexed' => true]);
+
+    $result = $this->manager->reconcile();
+
+    expect($result['dropped'])->toBe(['idx_filler_0__decimal12_2'])
+        ->and($result['added'])->toBe(['idx_replacement__decimal12_2'])
+        ->and(Schema::hasColumn('entries', 'idx_replacement__decimal12_2'))->toBeTrue();
+});
+
+/*
+ * ADR-006: storage locks the moment data exists. The lock checked `type` and
+ * `cardinality` only, so a setting that changes the PROJECTION slipped past
+ * it — and those change the conversion too.
+ */
+describe('settings that change the projection are shape, and lock with it', function (): void {
+    it('refuses to switch a locked number from decimal to integer', function (): void {
+        // 1.5 would become 1, and the column would move from DECIMAL to
+        // BIGINT under rows that already hold fractions.
+        $storage = storageFor('price', 'number', [
+            'org_id' => $this->orgA->id, 'is_locked' => true, 'settings' => ['format' => 'decimal'],
+        ]);
+
+        $storage->settings = ['format' => 'integer'];
+
+        expect(fn () => $storage->save())
+            ->toThrow(RuntimeException::class, 'the projection would move from');
+    });
+
+    it('refuses to narrow a locked text field', function (): void {
+        $storage = storageFor('summary', 'text', [
+            'org_id' => $this->orgA->id, 'is_locked' => true, 'settings' => ['maxLength' => 400],
+        ]);
+
+        $storage->settings = ['maxLength' => 100];
+
+        expect(fn () => $storage->save())->toThrow(RuntimeException::class, 'is locked');
+    });
+
+    it('still allows a setting that leaves the projection alone', function (): void {
+        // Presentation is safe to edit on a field holding data; only shape is
+        // not. Naming the settings would have banned both.
+        $storage = storageFor('price', 'number', [
+            'org_id' => $this->orgA->id, 'is_locked' => true, 'settings' => ['format' => 'decimal'],
+        ]);
+
+        $storage->settings = ['format' => 'decimal', 'min' => 0];
+
+        expect(fn () => $storage->save())->not->toThrow(RuntimeException::class);
+    });
+
+    it('leaves an unlocked field free to change', function (): void {
+        $storage = storageFor('price', 'number', ['org_id' => $this->orgA->id, 'settings' => ['format' => 'decimal']]);
+
+        $storage->settings = ['format' => 'integer'];
+
+        expect(fn () => $storage->save())->not->toThrow(RuntimeException::class);
+    });
+});

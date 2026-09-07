@@ -57,7 +57,7 @@ final class MultiSelectType extends BaseFieldType
         return (array) ($stored ?? []);
     }
 
-    /** @return array<string, mixed> */
+    /** Already an array, so it is not wrapped again. */
     public function apiSchema(FieldConfig $config): array
     {
         return ['type' => 'array', 'items' => ['type' => 'string']];
@@ -66,7 +66,9 @@ final class MultiSelectType extends BaseFieldType
     /** @return array<int, mixed> */
     public function validationRules(FieldConfig $config): array
     {
-        return [...parent::validationRules($config), 'array'];
+        // Intrinsically multi-valued: supportsCardinality() is false, so the
+        // outer rules are an array whatever the storage row says.
+        return [...($config->isRequired() ? ['required'] : ['nullable']), 'array'];
     }
 
     /**

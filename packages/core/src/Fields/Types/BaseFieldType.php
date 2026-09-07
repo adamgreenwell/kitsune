@@ -50,21 +50,6 @@ abstract class BaseFieldType implements FieldType
     }
 
     /**
-     * Rules for EACH element of a multi-value field, applied at `handle.*`.
-     *
-     * A separate method because Laravel needs a separate attribute for them:
-     * a rule placed in the field's own list receives the whole array, so a
-     * per-element check silently never runs. RelationType's cross-org check
-     * was doing exactly that.
-     *
-     * @return array<int, mixed>
-     */
-    public function elementValidationRules(FieldConfig $config): array
-    {
-        return [];
-    }
-
-    /**
      * Cardinality is handled HERE, once, rather than in every scalar type.
      *
      * ⚠️ It was not handled anywhere, and `supportsCardinality()` defaults to
@@ -126,16 +111,64 @@ abstract class BaseFieldType implements FieldType
         return $this->toStorage($input, $config);
     }
 
-    /** @return array<string, mixed> */
+    /**
+     * Multi-value fields publish an ARRAY schema, not their element's.
+     *
+     * Storage and API conversion both return an array once cardinality is not
+     * one, so advertising the scalar shape would generate clients that submit
+     * and expect the wrong thing — the documented contract disagreeing with
+     * the implemented one.
+     *
+     * @return array<string, mixed>
+     */
     public function apiSchema(FieldConfig $config): array
     {
-        return ['type' => 'string'];
+        $item = $this->scalarApiSchema($config);
+
+        return $config->isMultiValue() ? ['type' => 'array', 'items' => $item] : $item;
+    }
+
+    /**
+     * Cardinality decides WHERE the scalar rules apply, in one place.
+     *
+     * ⚠️ Handling cardinality in `toStorage()` and not here left every
+     * multi-value scalar field unusable in the opposite direction: `string`
+     * and `numeric` were applied to the outer array, so the correct array was
+     * rejected while a bare scalar was accepted and silently wrapped. Types
+     * describe their scalar constraints once, in `scalarValidationRules()`,
+     * and this decides whether they land on the field or on `handle.*`.
+     *
+     * @return array<int, mixed>
+     */
+    public function validationRules(FieldConfig $config): array
+    {
+        $presence = $config->isRequired() ? ['required'] : ['nullable'];
+
+        return $config->isMultiValue()
+            ? [...$presence, 'array']
+            : [...$presence, ...$this->scalarValidationRules($config)];
     }
 
     /** @return array<int, mixed> */
-    public function validationRules(FieldConfig $config): array
+    public function elementValidationRules(FieldConfig $config): array
     {
-        return $config->isRequired() ? ['required'] : ['nullable'];
+        return $config->isMultiValue() ? $this->scalarValidationRules($config) : [];
+    }
+
+    /**
+     * Constraints on ONE value, wherever it ends up being applied.
+     *
+     * @return array<int, mixed>
+     */
+    protected function scalarValidationRules(FieldConfig $config): array
+    {
+        return [];
+    }
+
+    /** @return array<string, mixed> */
+    protected function scalarApiSchema(FieldConfig $config): array
+    {
+        return ['type' => 'string'];
     }
 
     /** @return array<string, mixed> */

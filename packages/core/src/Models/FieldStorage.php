@@ -38,7 +38,16 @@ class FieldStorage extends Model
     /** GDPR Article 9 special-category data is `sensitive` (ADR-020). */
     public const PII_CLASSES = ['none', 'personal', 'sensitive'];
 
-    /** Locked fields may not change shape; these attributes are shape. */
+    /**
+     * Locked fields may not change shape; these attributes are shape.
+     *
+     * `settings` is NOT in this list and is guarded separately, because only
+     * SOME settings are shape: a label or a help string is safe to edit on a
+     * field holding data, while `format` or `maxLength` changes both the
+     * conversion and the projection. The guard compares projections rather
+     * than attribute names, so a new setting is covered without anyone
+     * remembering to add it here.
+     */
     public const SHAPE_ATTRIBUTES = ['type', 'cardinality'];
 
     /**
@@ -107,6 +116,8 @@ class FieldStorage extends Model
                         );
                     }
                 }
+
+                $storage->guardProjectionSettings();
             }
         });
     }
@@ -159,6 +170,57 @@ class FieldStorage extends Model
     public function generatedIndexName(): string
     {
         return $this->generatedColumnName().'_site_idx';
+    }
+
+    /**
+     * Settings that change the PROJECTION are shape too.
+     *
+     * ⚠️ The lock checked `type` and `cardinality` only, so switching a
+     * number field from decimal to integer on a table full of data was
+     * permitted — and it changes both the conversion (`1.5` becomes `1`) and
+     * the generated column (DECIMAL to BIGINT). Existing fractional values
+     * would then violate the field's own contract, and the same is true of
+     * narrowing a text field's `maxLength`.
+     *
+     * Compared by projection rather than by naming the settings, so a field
+     * type adding a projection-affecting setting is covered without anyone
+     * remembering this method exists.
+     */
+    private function guardProjectionSettings(): void
+    {
+        if (! $this->isDirty('settings')) {
+            return;
+        }
+
+        // A clone with the ORIGINAL attributes, rather than a fresh model:
+        // `new self(...)` is unsaved, and naming a helper `exists()` on an
+        // Eloquent model shadows the builder method Laravel forwards to —
+        // which sent the suite into a loop rather than failing outright.
+        $original = clone $this;
+        // getRawOriginal, not getOriginal: the latter applies casts, so
+        // `settings` comes back already decoded and setRawAttributes then
+        // hands an array to the array cast's json_decode().
+        $original->setRawAttributes($this->getRawOriginal(), true);
+
+        $before = $original->projectionSignature();
+        $after = $this->projectionSignature();
+
+        if ($before !== $after) {
+            throw new RuntimeException(
+                "Field [{$this->handle}] is locked because entries hold data for it, and this "
+                ."setting changes how it is stored — the projection would move from [{$before}] to "
+                ."[{$after}]. Existing values would be coerced silently. Create a new field, "
+                .'convert, verify, then drop the old one (ADR-006).'
+            );
+        }
+    }
+
+    /** The projection's signature, or a marker when the type has none. */
+    protected function projectionSignature(): string
+    {
+        $type = app(FieldTypeRegistry::class)->get($this->type);
+
+        return $type->projection(new FieldConfig($this))?->signature() ?? 'none';
     }
 
     private function guardHandle(): void

@@ -68,14 +68,14 @@ final class DateType extends BaseFieldType
     }
 
     /** @return array<string, mixed> */
-    public function apiSchema(FieldConfig $config): array
+    protected function scalarApiSchema(FieldConfig $config): array
     {
         return ['type' => 'string', 'format' => 'date'];
     }
 
     /** @return array<int, mixed> */
-    public function validationRules(FieldConfig $config): array
+    protected function scalarValidationRules(FieldConfig $config): array
     {
-        return [...parent::validationRules($config), 'date'];
+        return ['date'];
     }
 }

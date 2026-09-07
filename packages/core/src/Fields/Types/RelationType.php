@@ -67,7 +67,7 @@ final class RelationType extends BaseFieldType
         return (array) ($stored ?? []);
     }
 
-    /** @return array<string, mixed> */
+    /** Already an array at every cardinality, so it is not wrapped again. */
     public function apiSchema(FieldConfig $config): array
     {
         return ['type' => 'array', 'items' => ['type' => 'integer']];
@@ -76,7 +76,8 @@ final class RelationType extends BaseFieldType
     /** @return array<int, mixed> */
     public function validationRules(FieldConfig $config): array
     {
-        return [...parent::validationRules($config), 'array'];
+        // Always an array, so the outer rules never depend on cardinality.
+        return [...($config->isRequired() ? ['required'] : ['nullable']), 'array'];
     }
 
     /**

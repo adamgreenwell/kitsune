@@ -44,7 +44,28 @@ final class SelectType extends BaseFieldType
 
     public function projection(FieldConfig $config): Projection
     {
-        return new Projection(LogicalType::String, 64);
+        // ⚠️ Not a constant 64. An option key longer than that is accepted
+        // by `Rule::in()` and preserved by `toStorage()`, and then TRUNCATED
+        // in the projection — so two distinct options sharing a prefix
+        // compare equal through the index, and SQLite disagrees with the
+        // other two engines about which rows match, because it does not
+        // enforce declared widths.
+        return new Projection(LogicalType::String, $this->width($config));
+    }
+
+    /** Wide enough for the widest configured option, never narrower than 64. */
+    private function width(FieldConfig $config): int
+    {
+        /** @var array<string, string> $options */
+        $options = (array) ($config->setting('options', []) ?: []);
+
+        $longest = 0;
+
+        foreach (array_keys($options) as $key) {
+            $longest = max($longest, mb_strlen((string) $key));
+        }
+
+        return max(64, $longest);
     }
 
     protected function castToStorage(mixed $input, FieldConfig $config): mixed
@@ -53,20 +74,20 @@ final class SelectType extends BaseFieldType
     }
 
     /** @return array<string, mixed> */
-    public function apiSchema(FieldConfig $config): array
+    protected function scalarApiSchema(FieldConfig $config): array
     {
         return ['type' => 'string', 'enum' => array_keys($this->options($config))];
     }
 
     /** @return array<int, mixed> */
-    public function validationRules(FieldConfig $config): array
+    protected function scalarValidationRules(FieldConfig $config): array
     {
         $options = array_keys($this->options($config));
 
         // Laravel's `in` rule, not `exists` — these options come from the
         // field's own settings, not from another table, so there is no scope
         // to respect and nothing to leak.
-        return [...parent::validationRules($config), LaravelRule::in($options)];
+        return [LaravelRule::in($options)];
     }
 
     /** @return array<string, mixed> */

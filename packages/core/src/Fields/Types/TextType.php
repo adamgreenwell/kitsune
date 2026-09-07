@@ -53,9 +53,9 @@ final class TextType extends BaseFieldType
     }
 
     /** @return array<int, mixed> */
-    public function validationRules(FieldConfig $config): array
+    protected function scalarValidationRules(FieldConfig $config): array
     {
-        $rules = parent::validationRules($config);
+        $rules = [];
         $rules[] = 'string';
         $rules[] = 'max:'.$this->length($config);
 

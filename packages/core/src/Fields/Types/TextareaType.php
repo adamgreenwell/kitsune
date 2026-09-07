@@ -39,8 +39,8 @@ final class TextareaType extends BaseFieldType
     }
 
     /** @return array<int, mixed> */
-    public function validationRules(FieldConfig $config): array
+    protected function scalarValidationRules(FieldConfig $config): array
     {
-        return [...parent::validationRules($config), 'string', 'max:'.$config->setting('maxLength', 65535)];
+        return ['string', 'max:'.$config->setting('maxLength', 65535)];
     }
 }

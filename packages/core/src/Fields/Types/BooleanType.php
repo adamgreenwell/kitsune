@@ -53,14 +53,14 @@ final class BooleanType extends BaseFieldType
     }
 
     /** @return array<string, mixed> */
-    public function apiSchema(FieldConfig $config): array
+    protected function scalarApiSchema(FieldConfig $config): array
     {
         return ['type' => 'boolean'];
     }
 
     /** @return array<int, mixed> */
-    public function validationRules(FieldConfig $config): array
+    protected function scalarValidationRules(FieldConfig $config): array
     {
-        return [...parent::validationRules($config), 'boolean'];
+        return ['boolean'];
     }
 }

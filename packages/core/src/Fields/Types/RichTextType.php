@@ -205,9 +205,9 @@ final class RichTextType extends BaseFieldType
     }
 
     /** @return array<int, mixed> */
-    public function validationRules(FieldConfig $config): array
+    protected function scalarValidationRules(FieldConfig $config): array
     {
-        return [...parent::validationRules($config), 'string'];
+        return ['string'];
     }
 
     public function suggestedPiiClass(): string

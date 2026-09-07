@@ -65,10 +65,9 @@ final class SlugType extends BaseFieldType
     }
 
     /** @return array<int, mixed> */
-    public function validationRules(FieldConfig $config): array
+    protected function scalarValidationRules(FieldConfig $config): array
     {
         return [
-            ...parent::validationRules($config),
             'string',
             'max:255',
             // scopedUnique, never Laravel's unique — that rule bypasses

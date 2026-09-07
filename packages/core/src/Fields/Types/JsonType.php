@@ -72,7 +72,7 @@ final class JsonType extends BaseFieldType
     }
 
     /** @return array<string, mixed> */
-    public function apiSchema(FieldConfig $config): array
+    protected function scalarApiSchema(FieldConfig $config): array
     {
         return ['type' => 'object'];
     }
@@ -87,10 +87,9 @@ final class JsonType extends BaseFieldType
      *
      * @return array<int, mixed>
      */
-    public function validationRules(FieldConfig $config): array
+    protected function scalarValidationRules(FieldConfig $config): array
     {
         return [
-            ...parent::validationRules($config),
             function (string $attribute, mixed $value, Closure $fail): void {
                 if (is_array($value)) {
                     return;

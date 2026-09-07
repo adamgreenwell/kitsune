@@ -1075,6 +1075,11 @@ So two orgs configuring the same handle differently would have collided on `idx_
 
 `field_storage.handle` drops from 40 characters to **32**, because the signature suffix is longer than a type handle was and the assembled index name has to stay inside PostgreSQL's 63 bytes.
 
+Two consequences followed and are worth recording, because both were wrong in the first pass:
+
+- **Reference counting compares the COLUMN, not the field type.** `text` with `maxLength: 64` and `select` both project to `string64` and share a column deliberately, while two `number` rows configured `integer` and `decimal` do not. A `type` predicate got both directions wrong — dropping a column another org still queried, and leaving an orphan behind.
+- **Settings that change the projection are shape, and lock with it.** ADR-006 locks storage once data exists, and the lock checked `type` and `cardinality` only — so switching `format` from decimal to integer on a table full of fractions was permitted, changing both the conversion and the column. The guard compares projections rather than naming settings, so a field type adding a projection-affecting setting is covered without anyone remembering it exists.
+
 ---
 
 ## Standing principles

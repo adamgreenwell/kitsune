@@ -84,6 +84,20 @@ final class SchemaManager
             $wanted[$storage->generatedColumnName()] = $storage;
         }
 
+        // ⚠️ Orphans go FIRST. With the table at the cap and drift consisting
+        // of one orphan plus one wanted column, adding first hits guardCap()
+        // and throws — so a capacity-NEUTRAL replacement could never be
+        // repaired, and --force reported a failure the operator could not act
+        // on. Dropping first makes the swap fit.
+        $dropped = [];
+
+        foreach ($this->generatedColumns() as $column) {
+            if (! isset($wanted[$column])) {
+                $this->dropColumn($column, $column.'_site_idx');
+                $dropped[] = $column;
+            }
+        }
+
         $added = [];
 
         foreach ($wanted as $column => $storage) {
@@ -93,15 +107,6 @@ final class SchemaManager
 
             $this->index($storage);
             $added[] = $column;
-        }
-
-        $dropped = [];
-
-        foreach ($this->generatedColumns() as $column) {
-            if (! isset($wanted[$column])) {
-                $this->dropColumn($column, $column.'_site_idx');
-                $dropped[] = $column;
-            }
         }
 
         return ['added' => $added, 'dropped' => $dropped];
@@ -194,14 +199,29 @@ final class SchemaManager
         DB::statement($driver->dropGeneratedColumnSql('entries', $column));
     }
 
+    /**
+     * ⚠️ Compared by COLUMN NAME, not by field type handle.
+     *
+     * The column is named for its projection signature, and a signature is
+     * not a function of the type: `text` with `maxLength: 64` and `select`
+     * both project to `string64` and deliberately SHARE one column, while two
+     * `number` rows configured `integer` and `decimal` do not. A `type`
+     * predicate got both cases backwards — dropping a column another org was
+     * still querying, and leaving an orphan behind.
+     *
+     * Filtered by handle in SQL, since the signature cannot be expressed
+     * there, then compared exactly in PHP.
+     */
     private function otherRowsWant(FieldStorage $storage): bool
     {
+        $column = $storage->generatedColumnName();
+
         return FieldStorage::query()
             ->where('is_indexed', true)
             ->where('handle', $storage->handle)
-            ->where('type', $storage->type)
             ->when($storage->exists, fn ($query) => $query->whereKeyNot($storage->getKey()))
-            ->exists();
+            ->get()
+            ->contains(fn (FieldStorage $other): bool => $other->generatedColumnName() === $column);
     }
 
     private function projectionFor(FieldStorage $storage): Projection
