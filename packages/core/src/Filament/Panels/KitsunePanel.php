@@ -16,6 +16,7 @@ use Filament\Navigation\NavigationItem;
 use Filament\Pages\Dashboard;
 use Filament\Panel;
 use Kitsune\Core\Filament\Resources\Entries\EntryResource;
+use Kitsune\Core\Filament\Resources\EntryTypes\EntryTypeResource;
 use Kitsune\Core\Http\Middleware\IdentifyEntryType;
 use Kitsune\Core\Http\Middleware\SetKitsuneContext;
 use Kitsune\Core\Models\EntryType;
@@ -44,7 +45,7 @@ final class KitsunePanel
             // SetKitsuneContext runs first: the scopes need something to
             // enforce before IdentifyEntryType queries entry types.
             ->tenantMiddleware([SetKitsuneContext::class, IdentifyEntryType::class], isPersistent: true)
-            ->resources([EntryResource::class])
+            ->resources([EntryResource::class, EntryTypeResource::class])
             ->pages([Dashboard::class])
             ->navigation(self::navigation(...));
     }
@@ -74,6 +75,14 @@ final class KitsunePanel
                 ->icon($type->icon ?? 'heroicon-o-rectangle-stack')
                 ->url(fn (): string => EntryResource::getUrl('index', ['type' => $type->handle]))
                 ->isActiveWhen(fn (): bool => request()->route()?->parameter('type') === $type->handle))->all(),
+
+            // The builder, grouped away from content on purpose: it is where
+            // the schema is changed, not where the day's work happens.
+            NavigationItem::make('Entry types')
+                ->group('Structure')
+                ->icon('heroicon-o-squares-2x2')
+                ->url(fn (): string => EntryTypeResource::getUrl('index'))
+                ->isActiveWhen(fn (): bool => request()->routeIs('filament.*.resources.entry-types.*')),
         ]);
     }
 }

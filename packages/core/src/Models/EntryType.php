@@ -303,6 +303,20 @@ class EntryType extends Model implements RefusesCascadingDeletes, RequiresModelS
      */
     public function scopeAvailableToCurrentOrg(Builder $query): Builder
     {
+        return self::constrainToCurrentOrg($query);
+    }
+
+    /**
+     * The same constraint, callable on a builder whose model is not statically
+     * known — which is what Filament's `getEloquentQuery()` hands back.
+     *
+     * @template TModel of Model
+     *
+     * @param  Builder<TModel>  $query
+     * @return Builder<TModel>
+     */
+    public static function constrainToCurrentOrg(Builder $query): Builder
+    {
         $orgId = app(Context::class)->orgId();
 
         return $query->where(function (Builder $inner) use ($orgId): void {
