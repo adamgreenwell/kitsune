@@ -82,22 +82,40 @@ it('leaves no model in the package without a declaration', function (): void {
 
     foreach ($trees as $dir => $namespace) {
         foreach (glob($dir.'/*.php') ?: [] as $file) {
-            $class = $namespace.basename($file, '.php');
-
-            // The skeleton is a separate Composer project and is not
-            // autoloaded here, so only assert on what is actually loadable.
-            if (class_exists($class)) {
-                $models[] = $class;
-            }
+            $models[] = $namespace.basename($file, '.php');
         }
     }
 
+    // Every discovered class must actually load. The previous version
+    // guarded with class_exists() and skipped anything unloadable, which
+    // made the skeleton half a silent no-op — the root composer had no App\\
+    // mapping, so the check it claimed to perform never ran. The root
+    // autoload-dev now maps it, and a missing class is a failure rather
+    // than a skip.
     expect($models)->not->toBeEmpty();
 
     foreach ($models as $model) {
-        expect(fn () => ScopeResolver::for($model))
-            ->not->toThrow(UndeclaredScopeException::class, "{$model} declares no scope");
+        expect(class_exists($model))->toBeTrue("{$model} is not autoloadable, so the sweep cannot check it");
     }
+
+    // Explicit try/catch rather than not->toThrow(Class, $message).
+    //
+    // That form reads as "does not throw, and here is why it matters", but
+    // Pest treats the second argument as the EXPECTED EXCEPTION MESSAGE. It
+    // therefore passed whenever the real message differed — which is always,
+    // since the message names the model. The assertion looked correct and
+    // checked nothing, and removing a model's attribute left it green.
+    $undeclared = [];
+
+    foreach ($models as $model) {
+        try {
+            ScopeResolver::for($model);
+        } catch (UndeclaredScopeException) {
+            $undeclared[] = $model;
+        }
+    }
+
+    expect($undeclared)->toBe([], 'models missing a scope declaration: '.implode(', ', $undeclared));
 });
 
 it('memoises resolution, because it runs on every model boot', function (): void {

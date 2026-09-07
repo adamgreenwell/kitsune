@@ -53,26 +53,60 @@ class EntryTypeAvailability extends Model
      */
     public static function isEnabledFor(EntryType $type, ?Site $site): bool
     {
-        if ($site === null) {
-            return true;
+        return static::enabledMapFor([$type->getKey()], $site)[$type->getKey()] ?? true;
+    }
+
+    /**
+     * Resolve availability for many types in ONE query.
+     *
+     * Navigation asks about every type an org owns. Called per type, that is
+     * a query each — roughly 202 on the 201-type case ADR-012 measured, on a
+     * request whose whole point was being flat in N. It also loaded every
+     * availability row for a type, including decisions belonging to other
+     * sites entirely.
+     *
+     * This fetches only the three scope keys that can apply to this site,
+     * for all candidate types at once, and resolves precedence in memory.
+     *
+     * @param  array<int, int|string>  $typeIds
+     * @return array<int|string, bool>
+     */
+    public static function enabledMapFor(array $typeIds, ?Site $site): array
+    {
+        if ($typeIds === [] || $site === null) {
+            return [];
         }
 
         $rows = static::query()
-            ->where('entry_type_id', $type->getKey())
+            ->whereIn('entry_type_id', $typeIds)
+            ->where(function ($query) use ($site): void {
+                $query->where(fn ($q) => $q->where('scope_type', 'site')->where('scope_id', $site->getKey()))
+                    ->orWhere(fn ($q) => $q->where('scope_type', 'site_group')->where('scope_id', $site->site_group_id))
+                    ->orWhere(fn ($q) => $q->where('scope_type', 'org')->where('scope_id', $site->org_id));
+            })
             ->get()
-            ->keyBy(fn (self $row): string => $row->scope_type.':'.$row->scope_id);
+            ->groupBy('entry_type_id');
 
-        foreach ([
-            'site:'.$site->getKey(),
-            'site_group:'.$site->site_group_id,
-            'org:'.$site->org_id,
-        ] as $key) {
-            if ($rows->has($key)) {
-                return $rows->get($key)->is_enabled;
+        $resolved = [];
+
+        foreach ($typeIds as $id) {
+            $forType = $rows->get($id, collect())
+                ->keyBy(fn (self $row): string => $row->scope_type.':'.$row->scope_id);
+
+            $resolved[$id] = true; // absent at every level = enabled (ADR-022)
+
+            foreach ([
+                'site:'.$site->getKey(),
+                'site_group:'.$site->site_group_id,
+                'org:'.$site->org_id,
+            ] as $key) {
+                if ($forType->has($key)) {
+                    $resolved[$id] = $forType->get($key)->is_enabled;
+                    break;
+                }
             }
         }
 
-        // Absent at every level = enabled (ADR-022).
-        return true;
+        return $resolved;
     }
 }

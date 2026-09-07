@@ -74,13 +74,24 @@ final class KitsunePanel
             ->orderBy('ordering')
             ->orderBy('handle')
             ->get()
-            // A type disabled for this site 404s in IdentifyEntryType, so
-            // rendering a menu item for it offers the operator a link that
-            // cannot work. Same resolution the middleware uses (ADR-022).
-            ->filter(fn (EntryType $type): bool => EntryTypeAvailability::isEnabledFor(
-                $type,
-                $site instanceof Site ? $site : null,
-            ))
+            // Collapse shadowed handles FIRST, applying the same precedence
+            // IdentifyEntryType uses: an org's own type wins over the global
+            // one it shadows. Filtering before collapsing produced two items
+            // pointing at one URL when both were enabled, and — worse — kept
+            // the global item alive when the org row that actually resolves
+            // was disabled, offering a link guaranteed to 404.
+            ->sortBy(fn (EntryType $type): int => $type->org_id === null ? 1 : 0)
+            ->unique('handle')
+            ->pipe(function ($types) use ($site) {
+                $currentSite = $site instanceof Site ? $site : null;
+                $enabled = EntryTypeAvailability::enabledMapFor($types->pluck('id')->all(), $currentSite);
+
+                // One query for every type, not one per type: navigation asks
+                // about all of them, and ADR-012's 201-type case would
+                // otherwise make a dashboard render ~202 queries.
+                return $types->filter(fn (EntryType $type): bool => $enabled[$type->getKey()] ?? true);
+            })
+            ->sortBy('ordering')
             ->values());
 
         return $builder->items([
