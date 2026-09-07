@@ -140,6 +140,23 @@ test.describe('isolation, from the attacker side', () => {
         expect(response?.status()).toBe(200);
     });
 
+    test('404s a type this org owns but has DISABLED for this site', async ({ page }) => {
+        // ADR-022: a type may exist, belong to this org, and still be
+        // disabled for this site. Until this test the availability half of
+        // IdentifyEntryType had no route-level coverage — the resolver was
+        // tested in isolation, so removing the middleware's call to it would
+        // have left every test green.
+        const response = await page.goto(`/admin/${SITE}/c/podcast`);
+
+        expect(response?.status()).toBe(404);
+    });
+
+    test('does not offer a disabled type in navigation', async ({ page }) => {
+        await page.goto(`/admin/${SITE}`);
+
+        await expect(page.getByRole('link', { name: 'Podcasts' })).toHaveCount(0);
+    });
+
     test('does not show another org\'s content in any list', async ({ page }) => {
         await page.goto(`/admin/${SITE}/c/article`);
 
