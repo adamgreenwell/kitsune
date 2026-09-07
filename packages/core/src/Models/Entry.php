@@ -16,6 +16,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Kitsune\Core\Audit\Auditor;
 use Kitsune\Core\Tenancy\Attributes\SiteScoped;
 use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
 
@@ -58,6 +59,16 @@ class Entry extends Model
     {
         // type_handle is denormalised for routing lookups, so it must never
         // disagree with the type it points at.
+        // ADR-020 primitive 4: actor, action and target. The audit rows are
+        // written from model events rather than from the admin, so the API
+        // and the console are audited by the same code path — an audit trail
+        // that only covers the UI is an audit trail with a documented hole.
+        foreach (['created', 'updated', 'deleted'] as $event) {
+            static::{$event}(function (self $entry) use ($event): void {
+                app(Auditor::class)->record("entry.{$event}", $entry);
+            });
+        }
+
         static::saving(function (self $entry): void {
             if ($entry->isDirty('entry_type_id')) {
                 $entry->type_handle = EntryType::query()
