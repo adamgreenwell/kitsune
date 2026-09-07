@@ -141,6 +141,17 @@ class FieldStorage extends Model
         return app(FieldTypeRegistry::class)->get($this->type)->strategy();
     }
 
+    /**
+     * The real column this field writes to, for a promoted field.
+     *
+     * Never the handle: `field_storage` accepts any valid handle for a `slug`
+     * field, so one called `public_slug` still writes `entries.slug`.
+     */
+    public function promotedColumn(): ?string
+    {
+        return app(FieldTypeRegistry::class)->get($this->type)->promotedColumn();
+    }
+
     /** Cardinality > 1 cannot project to a scalar column (field-types.md §7). */
     public function isIndexable(): bool
     {

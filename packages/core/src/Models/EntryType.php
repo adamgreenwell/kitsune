@@ -16,6 +16,9 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Support\Collection;
 use Kitsune\Core\Exceptions\ReservedHandleException;
+use Kitsune\Core\Fields\FieldConfig;
+use Kitsune\Core\Fields\FieldTypeRegistry;
+use Kitsune\Core\Fields\StorageStrategy;
 use Kitsune\Core\Tenancy\Attributes\Unscoped;
 use Kitsune\Core\Tenancy\Context;
 use RuntimeException;
@@ -114,6 +117,45 @@ class EntryType extends Model
                 ->sortBy('ordering')
                 ->values();
         });
+    }
+
+    /**
+     * An identifier identifies ONE subject, so it cannot hold many values.
+     *
+     * ⚠️ An inline field holding a JSON ARRAY — `multi_select`, or anything
+     * with cardinality other than one — cannot be matched by the equality
+     * predicate `whereSubjectIs()` uses, so it silently matched nothing:
+     * every request about a person came back empty while the holes report
+     * called the type answerable.
+     *
+     * Refused rather than papered over with a JSON-membership predicate.
+     * "Everything you hold about this person" needs a field that names one
+     * person; a list of values is not that, and a relation already covers the
+     * case where the subject IS another record.
+     */
+    private function guardSubjectShape(Field $field): void
+    {
+        $storage = $field->fieldStorage;
+
+        if ($storage === null || $storage->strategy() !== StorageStrategy::Relational) {
+            $config = new FieldConfig($storage ?? new FieldStorage, $field);
+
+            if ($storage !== null && ($config->isMultiValue() || $this->publishesAnArray($storage, $config))) {
+                throw new RuntimeException(
+                    "Field [{$storage->handle}] holds many values and cannot identify a data subject. "
+                    .'A subject identifier names one person; `whereSubjectIs()` would match nothing at '
+                    .'all, which looks exactly like a type with no subject nominated (ADR-020). Nominate '
+                    .'a single-valued field, or a relation if the subject is another entry.'
+                );
+            }
+        }
+    }
+
+    private function publishesAnArray(FieldStorage $storage, FieldConfig $config): bool
+    {
+        // The published API contract is the right source of truth here: if a
+        // consumer is told to expect an array, it is an array.
+        return (app(FieldTypeRegistry::class)->get($storage->type)->apiSchema($config)['type'] ?? null) === 'array';
     }
 
     /**
@@ -241,6 +283,8 @@ class EntryType extends Model
                     .'its fields first, then nominate one.'
                 );
             }
+
+            $type->guardSubjectShape($field);
         });
 
         // Rejected at creation time, not escaped later. The collision is with

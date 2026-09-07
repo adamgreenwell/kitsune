@@ -8,6 +8,7 @@
 
 declare(strict_types=1);
 
+use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryRevision;
 use Kitsune\Core\Models\EntryType;
@@ -420,5 +421,117 @@ describe('a promoted subject lives in its own column', function (): void {
         $this->entry->redactField('slug', 'erased');
 
         expect($this->entry->fresh()->slug)->toBe('erased');
+    });
+});
+
+/*
+ * Three more from review, and each one made a subject-access request return
+ * the wrong thing quietly rather than loudly.
+ */
+describe('a promoted field writes to its own column, not one named after it', function (): void {
+    beforeEach(function (): void {
+        // ⚠️ `public_slug`, not `slug`. field_storage accepts any valid
+        // handle for a slug field, and the value still lands in entries.slug.
+        $this->storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'public_slug', 'type' => 'slug',
+            'pii_class' => 'personal', 'cardinality' => 1,
+        ]);
+        $this->field = Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $this->storage->id, 'label' => 'Public slug',
+        ]);
+        $this->type->update(['subject_field_id' => $this->field->id]);
+        $this->type->refresh();
+
+        $this->entry = Entry::create([
+            'entry_type_id' => $this->type->id, 'title' => 'A. Patient', 'slug' => 'a-patient',
+        ]);
+    });
+
+    it('reads the column the type declares', function (): void {
+        // Handle-as-column read a column that does not exist.
+        expect($this->entry->fresh()->subjectValue())->toBe('a-patient');
+    });
+
+    it('queries that column too', function (): void {
+        expect(Entry::whereSubjectIs($this->type, 'a-patient')->pluck('title')->all())->toBe(['A. Patient']);
+    });
+
+    it('erases that column', function (): void {
+        expect($this->entry->redactField('public_slug'))->toBe(1)
+            ->and($this->entry->fresh()->slug)->toBeNull();
+    });
+});
+
+it('will not count another org\'s relation row as this entry\'s subject', function (): void {
+    /*
+     * ⚠️ The hostile-row scenario EntrySchemaTest already writes to prove
+     * `related()` refuses it. The raw EXISTS filtered source, storage and
+     * target only, so a pivot row carrying another org's org_id counted —
+     * contaminating subject-access results across the boundary ADR-021 says
+     * has no framework safety net.
+     */
+    $personStorage = FieldStorage::create([
+        'org_id' => $this->org->id, 'handle' => 'person', 'type' => 'relation',
+        'pii_class' => 'personal', 'cardinality' => 1,
+    ]);
+    $personField = Field::create([
+        'entry_type_id' => $this->type->id, 'field_storage_id' => $personStorage->id, 'label' => 'Person',
+    ]);
+    $this->type->update(['subject_field_id' => $personField->id]);
+    $this->type->refresh();
+
+    $alice = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Alice']);
+    $record = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Visit']);
+    $record->related()->attach($alice->id, ['field_storage_id' => $personStorage->id]);
+
+    expect(Entry::whereSubjectIs($this->type, $alice->id)->count())->toBe(1);
+
+    // The attacker rewrites the pivot row to another org.
+    $rival = Org::create(['name' => 'Rival', 'slug' => 'rival-pivot']);
+    DB::table('entry_relations')->update(['org_id' => $rival->id]);
+
+    expect(Entry::whereSubjectIs($this->type, $alice->id)->count())->toBe(0);
+});
+
+describe('a subject identifier names ONE subject', function (): void {
+    it('refuses a multi-value field', function (): void {
+        // values->handle holds a JSON array, so the equality predicate
+        // matched nothing at all — which looks exactly like a type with no
+        // subject nominated.
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'aliases', 'type' => 'text',
+            'pii_class' => 'personal', 'cardinality' => -1,
+        ]);
+        $field = Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id, 'label' => 'Aliases',
+        ]);
+
+        expect(fn () => $this->type->update(['subject_field_id' => $field->id]))
+            ->toThrow(RuntimeException::class, 'holds many values');
+    });
+
+    it('refuses a multi_select, which is array-valued whatever its cardinality', function (): void {
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'tags', 'type' => 'multi_select',
+            'pii_class' => 'personal', 'cardinality' => 1,
+        ]);
+        $field = Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id, 'label' => 'Tags',
+        ]);
+
+        expect(fn () => $this->type->update(['subject_field_id' => $field->id]))
+            ->toThrow(RuntimeException::class, 'holds many values');
+    });
+
+    it('still allows a relation, where the subject IS another entry', function (): void {
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'person', 'type' => 'relation',
+            'pii_class' => 'personal', 'cardinality' => 1,
+        ]);
+        $field = Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id, 'label' => 'Person',
+        ]);
+
+        expect(fn () => $this->type->update(['subject_field_id' => $field->id]))->not->toThrow(RuntimeException::class);
     });
 });

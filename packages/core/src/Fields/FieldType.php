@@ -52,6 +52,16 @@ interface FieldType
      */
     public function projection(FieldConfig $config): ?Projection;
 
+    /**
+     * The real column a `Promoted` field writes to, or null for the rest.
+     *
+     * ⚠️ NOT the handle. `field_storage` accepts any valid handle for a
+     * `slug` field, so a field called `public_slug` still stores its value in
+     * `entries.slug` — and code that assumed handle-is-column read a column
+     * that does not exist.
+     */
+    public function promotedColumn(): ?string;
+
     public function toStorage(mixed $input, FieldConfig $config): mixed;
 
     public function fromStorage(mixed $stored, FieldConfig $config): mixed;

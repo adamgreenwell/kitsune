@@ -59,6 +59,17 @@ final class SlugType extends BaseFieldType
         return null;
     }
 
+    /**
+     * `entries.slug`, whatever the field is called.
+     *
+     * The handle names the field to an author; it does not name the column.
+     * A slug field called `public_slug` still writes here.
+     */
+    public function promotedColumn(): string
+    {
+        return 'slug';
+    }
+
     protected function castToStorage(mixed $input, FieldConfig $config): mixed
     {
         return $input === null || $input === '' ? null : str((string) $input)->slug()->value();

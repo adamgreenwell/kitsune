@@ -129,7 +129,7 @@ class Entry extends Model
         // indistinguishable from "no subject nominated".
         return match ($storage->strategy()) {
             StorageStrategy::Relational => $this->relatedIdsFor($storage)->all(),
-            StorageStrategy::Promoted => $this->getAttribute($storage->handle),
+            StorageStrategy::Promoted => $this->getAttribute((string) $storage->promotedColumn()),
             StorageStrategy::Inline => $this->values[$storage->handle] ?? null,
         };
     }
@@ -164,10 +164,16 @@ class Entry extends Model
                 $pivot->selectRaw('1')
                     ->from('entry_relations')
                     ->whereColumn('entry_relations.source_entry_id', 'entries.id')
+                    // ⚠️ org_id, matching what `related()` enforces through
+                    // withPivotValue(). Without it a hostile pivot row
+                    // carrying another org's org_id counts as this entry's
+                    // subject — the exact row EntrySchemaTest already writes
+                    // to prove the relationship refuses it (ADR-021).
+                    ->whereColumn('entry_relations.org_id', 'entries.org_id')
                     ->where('entry_relations.field_storage_id', $storage->getKey())
                     ->where('entry_relations.target_entry_id', $identifier);
             }),
-            StorageStrategy::Promoted => $query->where($storage->handle, $identifier),
+            StorageStrategy::Promoted => $query->where((string) $storage->promotedColumn(), $identifier),
             StorageStrategy::Inline => $query->where('values->'.$storage->handle, $identifier),
         };
     }
@@ -209,11 +215,18 @@ class Entry extends Model
         }
 
         if ($storage?->strategy() === StorageStrategy::Promoted) {
-            if ($this->getAttribute($storage->handle) === $replacement) {
+            // ⚠️ The declared column, NOT the handle. `field_storage` accepts
+            // any valid handle for a `slug` field, so one called
+            // `public_slug` still writes `entries.slug` — and reading the
+            // handle read a column that does not exist, then reported a
+            // successful erasure having erased nothing.
+            $column = (string) $storage->promotedColumn();
+
+            if ($this->getAttribute($column) === $replacement) {
                 return 0;
             }
 
-            $this->setAttribute($storage->handle, $replacement);
+            $this->setAttribute($column, $replacement);
             $this->save();
 
             // Revisions snapshot `values` only, so a promoted column has no
