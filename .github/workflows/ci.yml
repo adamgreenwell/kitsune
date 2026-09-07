@@ -27,6 +27,10 @@ jobs:
       - uses: ramsey/composer-install@4.0.0
 
       - run: vendor/bin/pint --test
+      # The skeleton is a separate published package with Laravel's own
+      # conventions - its entrypoints are copied verbatim from laravel/laravel
+      # and reformatting them would diverge from upstream for no benefit.
+      - run: vendor/bin/pint --test skeleton --config skeleton/pint.json
       - run: vendor/bin/phpstan analyse --memory-limit=512M --no-progress
 
   # ADR-024's pillar-three mitigation, enforced rather than asserted.
@@ -109,3 +113,43 @@ jobs:
           DB_USERNAME: kitsune
           DB_PASSWORD: kitsune
         run: vendor/bin/pest --colors=always
+
+  # The only job with Node anywhere near it. ADR-024 keeps the browser layer
+  # narrow on purpose: it exists for the class of defect the PHP suite
+  # structurally cannot see - URL generation across page boundaries, and
+  # anything that only appears once a page actually renders.
+  browser:
+    name: Playwright (skeleton smoke)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          extensions: pdo_sqlite, sqlite3, mbstring
+          coverage: none
+
+      # kitsune/core is not on Packagist yet (#8), so the skeleton resolves it
+      # from a path repository injected into this ephemeral checkout. The
+      # committed skeleton/composer.json stays clean - a path repository whose
+      # url does not exist is a hard error, not a warning, so it must never
+      # ship in the published package.
+      - name: Install the skeleton
+        run: composer skeleton:install --no-interaction
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npx playwright test
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7

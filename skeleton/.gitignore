@@ -1,0 +1,9 @@
+/vendor
+/.env
+/.env.backup
+/storage/*.key
+/public/storage
+/database/*.sqlite
+.phpunit.result.cache
+.DS_Store
+/composer.lock

@@ -40,7 +40,17 @@
             "@lint",
             "@stan",
             "@test"
-        ]
+        ],
+        "skeleton:install": [
+            "@php -r \"copy('skeleton/composer.json','skeleton/composer.json.orig');\"",
+            "composer config repositories.kitsune-core path ../packages/core -d skeleton",
+            "composer install -d skeleton --no-interaction",
+            "@php -r \"rename('skeleton/composer.json.orig','skeleton/composer.json');\"",
+            "@php -r \"file_exists('skeleton/.env') || copy('skeleton/.env.example','skeleton/.env');\"",
+            "@php skeleton/artisan key:generate --ansi",
+            "@php -r \"file_exists('skeleton/database/database.sqlite') || touch('skeleton/database/database.sqlite');\""
+        ],
+        "test:e2e": "playwright test"
     },
     "autoload-dev": {
         "psr-4": {
