@@ -9,10 +9,13 @@
 declare(strict_types=1);
 
 use Illuminate\Support\Facades\Validator;
+use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Fields\FieldTypeRegistry;
 use Kitsune\Core\Fields\Types\NumberType;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
+use Kitsune\Core\Models\Field;
+use Kitsune\Core\Models\FieldStorage;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
@@ -356,9 +359,15 @@ describe('json objects, including the empty one', function (): void {
         expect(validate('json', ['f' => '[]'])->fails())->toBeTrue();
     });
 
-    it('accepts an object whose keys happen to be sequential numbers', function (): void {
-        // `{"0":"a","1":"b"}` decodes to a list-shaped PHP array with assoc.
-        expect(validate('json', ['f' => '{"0":"a","1":"b"}'])->fails())->toBeFalse();
+    it('REFUSES an object whose keys are a 0-based sequence', function (): void {
+        // ⚠️ This asserted the opposite one round ago, and the opposite was
+        // wrong. `{"0":"a","1":"b"}` is a valid object that decodes to the PHP
+        // list ['a','b'] and re-encodes as ["a","b"] — accepting it meant the
+        // value silently changed shape on save, and `Entry.values` casts to
+        // array so nothing downstream can recover the distinction.
+        //
+        // Refusing with a reason beats accepting and mangling.
+        expect(validate('json', ['f' => '{"0":"a","1":"b"}'])->fails())->toBeTrue();
     });
 });
 
@@ -394,4 +403,67 @@ describe('relation honours a finite cardinality', function (): void {
         expect(Validator::make(['f' => ['a', 'b', 'c']], ['f' => $type->validationRules(configFor('multi_select', [], 1))])->fails())
             ->toBeFalse();
     });
+});
+
+/*
+ * ⚠️ Presentation used to override storage — "the per-type view wins" — which
+ * let an UNLOCKED `fields.settings` change what a LOCKED
+ * `field_storage.settings` had already committed to. That routes around
+ * ADR-006's lock-on-data invariant, so the precedence gave way, not the ADR.
+ */
+describe('presentation cannot change what is stored', function (): void {
+    it('reads a storage-affecting setting from STORAGE, not the field', function (): void {
+        // A per-type maxLength of 400 against storage that already created
+        // idx_summary__string255 accepted 400 characters and truncated them
+        // in the index.
+        $storage = new FieldStorage([
+            'handle' => 'summary', 'type' => 'text', 'cardinality' => 1,
+            'pii_class' => 'none', 'settings' => ['maxLength' => 255],
+        ]);
+        $field = new Field(['label' => 'Summary', 'settings' => ['maxLength' => 400]]);
+
+        $config = new FieldConfig($storage, $field);
+
+        expect($config->setting('maxLength'))->toBe(255)
+            ->and(app(FieldTypeRegistry::class)->get('text')->projection($config)->precision)->toBe(255);
+    });
+
+    it('will not let a per-type format change the conversion', function (): void {
+        // 1.5 would become 1 under stored decimals.
+        $storage = new FieldStorage([
+            'handle' => 'price', 'type' => 'number', 'cardinality' => 1,
+            'pii_class' => 'none', 'settings' => ['format' => 'decimal'],
+        ]);
+        $field = new Field(['label' => 'Price', 'settings' => ['format' => 'integer']]);
+
+        expect(app(FieldTypeRegistry::class)->get('number')->toStorage('1.5', new FieldConfig($storage, $field)))
+            ->toBe(1.5);
+    });
+
+    it('still lets presentation win where it is asked to explicitly', function (): void {
+        // The escape hatch exists so a display-only setting is a deliberate
+        // decision at the call site rather than a blanket precedence rule.
+        $storage = new FieldStorage([
+            'handle' => 'summary', 'type' => 'text', 'cardinality' => 1,
+            'pii_class' => 'none', 'settings' => ['placeholder' => 'from storage'],
+        ]);
+        $field = new Field(['label' => 'Summary', 'settings' => ['placeholder' => 'from the field']]);
+
+        expect((new FieldConfig($storage, $field))->presentationSetting('placeholder'))->toBe('from the field');
+    });
+});
+
+it('refuses a JSON object whose keys are a 0-based sequence', function (): void {
+    // `{"0":"a","1":"b"}` is a valid object that decodes to the PHP list
+    // ['a','b'] and re-encodes as ["a","b"] — the value changes shape on a
+    // round trip, and Entry.values casts to array so nothing later can
+    // recover the distinction.
+    $v = validate('json', ['f' => '{"0":"a","1":"b"}']);
+
+    expect($v->fails())->toBeTrue()
+        ->and($v->errors()->first('f'))->toContain('0-based sequence');
+});
+
+it('still accepts an object with non-sequential numeric keys', function (): void {
+    expect(validate('json', ['f' => '{"1":"a","5":"b"}'])->fails())->toBeFalse();
 });

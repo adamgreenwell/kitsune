@@ -566,3 +566,14 @@ describe('sync is safe for a field that projects to nothing', function (): void 
         expect(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeTrue();
     });
 });
+
+it('still REFUSES an index requested on a projection-less field', function (): void {
+    // ⚠️ The no-op added for the removal path must not swallow this. Returning
+    // early for every projection-less type left an `is_indexed = true` row
+    // looking synchronised, and reconcile() then choked on it for the whole
+    // table — one bad row poisoning the global repair command.
+    $storage = storageFor('body', 'rich_text', ['org_id' => $this->orgA->id, 'is_indexed' => true]);
+
+    expect(fn () => $this->manager->sync($storage))
+        ->toThrow(RuntimeException::class, 'not indexable');
+});

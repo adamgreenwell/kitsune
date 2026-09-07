@@ -73,11 +73,23 @@ final class SchemaManager
      */
     public function sync(FieldStorage $storage): void
     {
-        if ($this->registry->get($storage->type)->projection(new FieldConfig($storage)) === null) {
+        // ⚠️ The no-op is the REMOVAL path only, and that distinction matters.
+        // Returning early for every projection-less type also swallowed the
+        // "not indexable" error for a row saved with `is_indexed = true` —
+        // leaving an invalid row looking synchronised, which `reconcile()`
+        // then chokes on for the whole table. `index()` refuses it with the
+        // reason instead.
+        if (! $storage->is_indexed) {
+            if ($this->registry->get($storage->type)->projection(new FieldConfig($storage)) === null) {
+                return;
+            }
+
+            $this->dropIndex($storage);
+
             return;
         }
 
-        $storage->is_indexed ? $this->index($storage) : $this->dropIndex($storage);
+        $this->index($storage);
     }
 
     /**
