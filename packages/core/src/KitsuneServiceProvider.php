@@ -13,6 +13,7 @@ namespace Kitsune\Core;
 use Illuminate\Support\ServiceProvider;
 use Kitsune\Core\Console\BenchmarkFloorCommand;
 use Kitsune\Core\Console\BenchmarkStorageCommand;
+use Kitsune\Core\Console\SchemaSyncCommand;
 use Kitsune\Core\Fields\FieldTypeRegistry;
 use Kitsune\Core\Tenancy\Context;
 
@@ -40,6 +41,7 @@ final class KitsuneServiceProvider extends ServiceProvider
             $this->commands([
                 BenchmarkStorageCommand::class,
                 BenchmarkFloorCommand::class,
+                SchemaSyncCommand::class,
             ]);
         }
 
