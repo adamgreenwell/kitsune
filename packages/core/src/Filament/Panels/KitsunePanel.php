@@ -19,6 +19,7 @@ use Kitsune\Core\Filament\Resources\Entries\EntryResource;
 use Kitsune\Core\Http\Middleware\IdentifyEntryType;
 use Kitsune\Core\Http\Middleware\SetKitsuneContext;
 use Kitsune\Core\Models\EntryType;
+use Kitsune\Core\Models\EntryTypeAvailability;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
 
@@ -70,7 +71,15 @@ final class KitsunePanel
             })
             ->orderBy('ordering')
             ->orderBy('handle')
-            ->get());
+            ->get()
+            // A type disabled for this site 404s in IdentifyEntryType, so
+            // rendering a menu item for it offers the operator a link that
+            // cannot work. Same resolution the middleware uses (ADR-022).
+            ->filter(fn (EntryType $type): bool => EntryTypeAvailability::isEnabledFor(
+                $type,
+                $site instanceof Site ? $site : null,
+            ))
+            ->values());
 
         return $builder->items([
             NavigationItem::make('Dashboard')

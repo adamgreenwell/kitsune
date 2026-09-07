@@ -41,7 +41,13 @@ class DatabaseSeeder extends Seeder
         $fr = Site::create(['org_id' => $orgA->id, 'site_group_id' => $group->id, 'handle' => 'golfdom-fr', 'name' => 'Golfdom FR', 'locale' => 'fr']);
 
         $context->setOrg($orgB);
-        $rival = Site::create(['org_id' => $orgB->id, 'handle' => 'rival', 'name' => 'Rival', 'locale' => 'en']);
+        // Deliberately the SAME handle as Golfdom's site. UNIQUE is
+        // (org_id, handle), so this is legal — and it is the case that broke
+        // route binding: an unscoped lookup returned whichever row came
+        // first, so one customer's admin became unreachable depending on row
+        // order. Every admin spec navigates to /admin/golfdom, which means
+        // the whole browser suite is the regression test for it.
+        $rival = Site::create(['org_id' => $orgB->id, 'handle' => 'golfdom', 'name' => 'Rival Golfdom', 'locale' => 'en']);
 
         $user = User::create(['name' => 'Alpha User', 'email' => 'alpha@kitsune.test', 'password' => Hash::make('password')]);
         $user->sites()->attach([$en->id, $fr->id]);

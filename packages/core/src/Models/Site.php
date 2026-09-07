@@ -10,6 +10,8 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Models;
 
+use Filament\Facades\Filament;
+use Filament\Models\Contracts\HasTenants;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Kitsune\Core\Tenancy\Attributes\OrgScoped;
@@ -65,9 +67,33 @@ class Site extends Model
      */
     public function resolveRouteBinding($value, $field = null): ?self
     {
+        $user = auth()->user();
+
         return static::withoutScopeBecause(
             'tenant bootstrap: the org context is derived from this lookup, so it cannot constrain it',
-            fn ($query) => $query->where($field ?? $this->getRouteKeyName(), $value)->first(),
+            function ($query) use ($value, $field, $user) {
+                $query->where($field ?? $this->getRouteKeyName(), $value);
+
+                // Handles are unique per org, not globally — UNIQUE (org_id,
+                // handle) — so two customers may both own a site called
+                // "golfdom". Without narrowing to the signed-in user's sites,
+                // this returns whichever row the engine happens to order
+                // first, canAccessTenant() then rejects that wrong candidate,
+                // and a legitimate user cannot reach their own admin. Which
+                // customer breaks depends on row order.
+                //
+                // The pivot is the authority here, exactly as it is in
+                // canAccessTenant(), so narrowing by it costs no isolation.
+                if ($user instanceof HasTenants) {
+                    $accessible = $user->getTenants(Filament::getCurrentOrDefaultPanel())
+                        ->map(fn ($tenant) => $tenant->getKey())
+                        ->all();
+
+                    $query->whereIn($this->getKeyName(), $accessible);
+                }
+
+                return $query->first();
+            },
         );
     }
 
