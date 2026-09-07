@@ -102,13 +102,18 @@ The routing question is **already settled** — ADR-012 was resolved by a workin
 
   | | value |
   |---|---|
-  | framework bootstrap peak | 38.5 MB |
-  | peak across all operations | 38.5 MB |
-  | workers fitting in half the floor | 13 |
-  | list page (25 rows) | 1.6 ms constrained / 0.7 ms unconstrained |
-  | count entries | 11.4 ms constrained / 6.2 ms unconstrained |
+  Measured with **1,000 entries in scope**, which matters — see the correction below.
 
-  Memory is identical constrained and unconstrained, which is the point: **peak memory per request is the part that transfers between machines**, while wall-clock is a property of the host. Roughly 2× slower on one core, and still far inside target.
+  | | constrained (1 vCPU / 1 GB) | unconstrained |
+  |---|---|---|
+  | peak memory per request | 38.5 MB | 40.5 MB |
+  | workers fitting in half the floor | 13 | 12 |
+  | list page (25 rows) | 1.9 ms | 1.2 ms |
+  | entry with relations | 2.2 ms | 1.9 ms |
+
+  Memory barely moves between the two, which is the point: **peak memory per request is the part that transfers between machines**, while wall-clock is a property of the host.
+
+  ⚠️ **The first version measured nothing.** It established no site context, so `SiteScope` added `WHERE 1 = 0` and every sample timed an empty result set — and the advertised `--entries` option was never read. The same shape of mistake as the storage benchmark's index probe, caught the same way, in review.
 
   `Kitsune::FLOOR_VCPU` and `FLOOR_MEMORY_MB` are asserted by a test, so raising the floor is a visible code change rather than a drift
 

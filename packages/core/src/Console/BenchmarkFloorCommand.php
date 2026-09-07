@@ -15,6 +15,9 @@ use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Kitsune;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
+use Kitsune\Core\Models\Org;
+use Kitsune\Core\Models\Site;
+use Kitsune\Core\Tenancy\Context;
 
 /**
  * Spike #14 — the resource-floor benchmark ADR-027 requires.
@@ -39,6 +42,16 @@ final class BenchmarkFloorCommand extends Command
         $budgetMb = Kitsune::FLOOR_MEMORY_MB;
 
         $this->line("floor: <info>{$budgetMb} MB</info> / <info>".Kitsune::FLOOR_VCPU.' vCPU</info> / <info>'.DB::connection()->getDriverName().'</info>');
+        $this->newLine();
+
+        // Without a site context SiteScope adds WHERE 1 = 0, so every Entry
+        // sample would measure an empty result set and report timings for
+        // nothing at all — confidently. The same shape of mistake as the
+        // storage benchmark's index probe.
+        [$org, $site, $type] = $this->fixture();
+        $seeded = $this->ensureVolume($org, $site, $type, max(0, (int) $this->option('entries')));
+
+        $this->line("  content in scope: <info>{$seeded}</info> entries");
         $this->newLine();
 
         $bootstrap = memory_get_peak_usage(true);
@@ -102,5 +115,65 @@ final class BenchmarkFloorCommand extends Command
         $this->line('      php artisan kitsune:benchmark-floor');
 
         return self::SUCCESS;
+    }
+
+    /** @return array{0: Org, 1: Site, 2: EntryType} */
+    private function fixture(): array
+    {
+        $org = Org::firstOrCreate(['slug' => 'floor-benchmark'], ['name' => 'Floor benchmark']);
+        app(Context::class)->setOrg($org);
+
+        $site = Site::firstOrCreate(
+            ['slug' => 'floor-benchmark'],
+            ['org_id' => $org->id, 'handle' => 'floor-benchmark', 'name' => 'Floor benchmark'],
+        );
+        app(Context::class)->setSite($site);
+
+        $type = EntryType::firstOrCreate(
+            ['org_id' => $org->id, 'handle' => 'article'],
+            ['name' => 'Article', 'plural_name' => 'Articles'],
+        );
+
+        return [$org, $site, $type];
+    }
+
+    /** Top the benchmark site up to the requested volume. Returns the total in scope. */
+    private function ensureVolume(Org $org, Site $site, EntryType $type, int $target): int
+    {
+        $existing = Entry::query()->where('site_id', $site->getKey())->count();
+
+        if ($existing >= $target) {
+            return $existing;
+        }
+
+        $now = now();
+        $rows = [];
+
+        for ($i = $existing; $i < $target; $i++) {
+            $rows[] = [
+                'site_id' => $site->id,
+                'org_id' => $org->id,
+                'entry_type_id' => $type->id,
+                'type_handle' => 'article',
+                'status' => 'published',
+                'slug' => "floor-{$i}",
+                'title' => "Floor benchmark entry {$i}",
+                'values' => json_encode(['summary' => str_repeat('x', 120)]),
+                'published_at' => $now,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ];
+
+            if (count($rows) >= 500) {
+                DB::table('entries')->insert($rows);
+                $rows = [];
+            }
+        }
+
+        if ($rows !== []) {
+            DB::table('entries')->insert($rows);
+        }
+
+        return $target;
     }
 }
