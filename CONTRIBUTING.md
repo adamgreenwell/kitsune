@@ -159,10 +159,22 @@ Leading with `site_id` is sufficient for org isolation too: a site is globally u
 
 ### Tests
 
-New behaviour needs a test. Anything touching a scope boundary needs a test that asserts the boundary holds, written from the attacker's side. There are **two** boundaries and both need covering:
+New behaviour needs a test. Test-driven development is the working discipline here, not an aspiration (ADR-024).
+
+**Anything touching a scope boundary** needs a test that asserts the boundary holds, written from the attacker's side. There are **two** boundaries and both need covering:
 
 - **Cross-site within one org** — site A cannot reach site B's data
 - **Cross-org** — org A cannot reach org B's data. This is the one with no framework safety net, so it is the more important of the two
+
+**Every model** needs a test asserting it declares a scope. An undeclared model fails the build anyway; the test says so in a readable way.
+
+**Every field type** needs the five from [`docs/field-types.md`](docs/field-types.md) §9: storage round-trip, validation, a cross-org boundary test, and index creation on all three engines.
+
+**Every admin route shape** needs at least one **browser** test that loads a page *outside* `/c/{type}`.
+
+That last one looks arbitrary until you know where it came from, so here is the story. The relation-manager spike found a bug that 500d the dashboard, and **the feature suite was 7-of-8 green while it did.** Filament calls `getUrl()` on each Resource's navigation item while rendering the sidebar; under ADR-012's design that throws on any page *outside* `/c/{type}`. The suite only ever requested pages *inside* it, so nothing ever rendered the failing case. It took seconds to find in a browser.
+
+The lesson generalises: the load-bearing risk in this architecture is **URL generation across page boundaries**, and that is precisely the seam a feature test does not cross. When you add a route parameter, assume it leaks somewhere you are not looking, and go look with a browser.
 
 ---
 
@@ -173,7 +185,9 @@ New behaviour needs a test. Anything touching a scope boundary needs a test that
 | PHP | `^8.4` — property hooks and asymmetric visibility are used deliberately, see ADR-013 |
 | Style | Laravel Pint, default preset. `vendor/bin/pint` before pushing |
 | Static analysis | PHPStan / Larastan level 6+. No new baseline entries without justification in the PR |
-| Tests | Pest |
+| Tests | **Pest** for unit and feature, **Playwright** for the browser layer (ADR-024). Note Pint above is a *formatter*, not a test tool |
+| Running the suite | The Pest layer must run green on a bare clone — SQLite, no Docker, no Node. The engine matrix and browser layer are CI's job |
+| AI tooling | `laravel/boost` is a **dev** dependency and must never become a runtime dependency of `kitsune/core` (ADR-025) |
 | Database | Must pass on PostgreSQL, MySQL **and SQLite**. All three differ on generated columns — SQLite needs VIRTUAL rather than STORED — so go through the driver abstraction, never raw SQL in field types |
 
 ---

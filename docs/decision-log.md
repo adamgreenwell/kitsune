@@ -787,6 +787,144 @@ Directus's community objection to its relicensing was not the terms but that the
 
 ---
 
+## ADR-024 — Testing: Pest, a Docker engine matrix, and browser tests that open a real browser
+
+**Status:** Decided · 2026-09-07
+
+Test-driven development is the working discipline, and the test suite is treated as a deliverable rather than as evidence that a deliverable works. Three layers, each earning its place:
+
+1. **Pest** — unit and feature tests, the bulk of the suite, running on SQLite with no Docker required
+2. **A Docker-backed engine matrix** — the same feature suite re-run against PostgreSQL, MySQL and SQLite
+3. **Playwright** — a deliberately narrow set of browser tests covering what only a browser can see
+
+**Pint is not a testing tool.** It is a code formatter and it belongs to style, alongside PHPStan. Naming that here because the two get conflated, and a formatter cannot tell you your dashboard is returning 500.
+
+### Why browser tests are not optional, with evidence from this project
+
+The relation-manager spike of 2026-09-07 produced the argument. **The PHPUnit suite passed 7 of 8 while the dashboard was returning HTTP 500.**
+
+The bug was structurally invisible to it. Filament auto-registers a navigation item per Resource and calls `getUrl()` on it while rendering the sidebar; under ADR-012's design that throws on every page *outside* `/c/{type}`. The feature tests only ever requested pages *inside* `/c/{type}`, so nothing in the suite ever rendered the failing case. It was found within seconds of opening a browser.
+
+The second finding has the same shape: `original_request()` is namespaced, and calling it unqualified fatals — but only on Livewire update requests, because on initial render `??` short-circuits before evaluating it. The page renders perfectly and dies when someone clicks.
+
+Neither is exotic. **Both are the normal failure mode for this architecture**, because the load-bearing risk lives in URL generation *across* page boundaries, and that is exactly the seam unit tests do not traverse.
+
+### Why the engine matrix is not optional
+
+ADR-006 stakes the storage design on generated columns, and ADR-015 on indexing over them. Postgres, MySQL and SQLite differ in generated-column syntax, in JSON path operators, and — SQLite specifically — in whether a STORED column can be added by `ALTER TABLE` at all. A suite that runs only on SQLite proves nothing about the mechanism the schema engine depends on.
+
+### Mandatory categories, enforced in CI
+
+These correspond one-to-one with the invariants in `CONTRIBUTING.md`:
+
+- **Every model** — a test asserting it declares a scope; an undeclared model fails the build
+- **Every scope boundary** — the two hostile tests from ADR-021: cross-site within one org, and cross-org. The second has no framework safety net and is the most valuable test in the codebase
+- **Every field type** — storage round-trip, validation, a cross-org boundary test, and index creation on all three engines (`field-types.md` §9)
+- **Every admin route shape** — at least one browser test that loads a page **outside** `/c/{type}`. This is the standing regression test for the ADR-012 spike finding, and it exists precisely because a feature test cannot express it
+
+| Rejected | Why it lost |
+|---|---|
+| PHPUnit only, no Pest | Pest is the ecosystem default and the better authoring experience; PHPUnit still runs underneath, so this costs nothing and gains contributor familiarity. |
+| Unit and feature tests only, no browser layer | Disproven inside this project, with a number attached: 7 of 8 green while the dashboard 500d. |
+| Laravel Dusk instead of Playwright | Dusk is Laravel-native and would avoid a Node dependency, but it is ChromeDriver-bound, flakier in CI, and has materially weaker tracing and parallelism. The trace-on-failure story matters more here than staying in one language. |
+| Browser tests for everything | Inverts the pyramid. Slow, flaky, and it would make the suite something contributors avoid running. The browser layer stays small on purpose. |
+| Test against SQLite only | ADR-006's entire carried risk is driver divergence. Testing one driver tests the assumption away. |
+| Defer the testing strategy until there is code | The discipline is free while the codebase is empty and unaffordable at month eighteen — the same argument as ADR-018's no-bare-strings rule and ADR-020's `pii_class`. |
+
+**Cost to pillar three, stated.** A contributor now needs Docker to run the *full* matrix, and Node to run the browser layer. That is a real barrier to the weekend contributor Standing Principle #6 exists to protect. **Mitigation is binding: the Pest layer must run green on a bare `git clone` with SQLite and no Docker, no Node, and no services.** The matrix and the browser layer are CI's job. If running the basic suite ever requires Docker, this ADR has been violated.
+
+**Consequence.** CI runs a matrix of PHP 8.4/8.5 × Postgres/MySQL/SQLite, plus one browser job. That is slower and more expensive than a single job, and it is the price of the storage design.
+
+---
+
+## ADR-025 — Laravel Boost: a development dependency, and Kitsune ships guidelines rather than the runtime
+
+**Status:** Decided · 2026-09-07
+**Verified 2026-09-07:** `laravel/boost` v2.7.1, MIT, keywords `dev, laravel, ai`.
+
+Three separable questions, answered differently:
+
+1. **Boost as `require-dev` in the Kitsune repository** — **yes.**
+2. **Boost as a runtime dependency of `kitsune/core`, shipped to every operator** — **no.**
+3. **Kitsune authoring and shipping guidelines in Boost's format, for plugin authors** — **yes, and this is the part that matters.**
+
+### What Boost actually is
+
+`boost:install` writes a project-scoped `.mcp.json`, a 167-line `AGENTS.md`/`CLAUDE.md` guidelines file, and a set of skills. `boost:mcp` starts an MCP server that introspects the application — including database query and Tinker execution.
+
+That is a development tool, and its own package keywords say so.
+
+### Why it does not belong in the runtime
+
+An MCP server exposing database queries and Tinker inside every operator's install is a standing data-access and remote-execution surface, in a product whose operators are **GDPR data controllers by construction** (ADR-020). It also collides with the GOVERNANCE commitment to no telemetry without explicit opt-in, and it is simply the wrong layer: a tool for people who *write* Laravel does not belong in the dependency tree of people who *run* a CMS.
+
+### Why the guidelines are the valuable half
+
+The extension API's central risk (Standing Principles #1 and #2) is third parties writing plugins that violate invariants they never read. The invariants most likely to be violated are exactly the ones an AI coding agent will get wrong by default and get right if told: the fail-closed scope attribute, `scopedUnique()` over Laravel's `unique`, never writing raw SQL in a field type, the reserved type handles, `{type}` as untrusted input.
+
+Shipping a `kitsune/plugin-guidelines` package in Boost's format means an AI-assisted plugin author inherits the tenancy rules for free, before the validation CLI ever runs. **The v1.2 validation CLI fails the build when a plugin gets this wrong; guidelines stop it being written wrong.** Both, not either.
+
+| Rejected | Why it lost |
+|---|---|
+| Boost as a runtime dependency of core | Ships a database-query and Tinker surface into installs holding personal data, against ADR-020 and the no-telemetry commitment. Wrong layer besides. |
+| No Boost at all | Passes up a real contributor productivity gain at zero cost. It is MIT, dev-only, and removable. |
+| Invent a Kitsune-specific guidelines format | Boost's format is already the Laravel ecosystem's de-facto standard; adopting it costs contributors nothing new to learn, and a bespoke format would have to earn that difference. |
+| Guidelines for core contributors only, not plugin authors | Inverts where the risk is. Core has CI, review and hostile tests; the plugin ecosystem has none of that, which is exactly why Filament's own plugin ecosystem is mostly not tenancy-aware (ADR-008). |
+| Wait until v1.2 to think about guidelines | The guidelines encode invariants that are being decided now. Writing them alongside the invariants is cheap; reconstructing them later from the code is not. |
+
+**Cost, stated.** Boost is young and moving fast — v1.0 to v2.7 inside a year. A dev dependency on a fast-moving package means occasional churn. Acceptable because it is dev-only: a Boost break never reaches an operator, and the package can be dropped without touching product code.
+
+**⚠️ Commercial interest, disclosed per ADR-023.** Guidelines that make third-party plugins safer benefit the hosted service disproportionately, because KaaS runs other people's plugins on shared infrastructure and already plans per-org plugin allowlisting. Self-hosters running only their own code get less from this than the hosted platform does. It is still the right call for the open project — a safer plugin ecosystem is a public good — but the asymmetry is real and is named here rather than left to be discovered.
+
+---
+
+## ADR-026 — Self-hosting: one command, no database server, no phone-home
+
+**Status:** Decided · 2026-09-07
+
+A person with a fresh Ubuntu LTS box must be able to paste **one command** and arrive at the onboarding screen. No database server to provision, no credentials to invent, no PHP version to negotiate.
+
+This is pillar three made concrete. The stated early audience is *"people who currently install CMS plugins by uploading a zip"*, and the third pillar's documented failure mode is a fork over **"expensive upkeep."** An install path that demands Composer, a web server, a database and PHP version management is that upkeep tax, charged before the first page load.
+
+**SQLite is what makes it possible.** Because SQLite is already a supported engine, the default install needs no database server, no user, no password and no tuning — which removes the single largest source of failed CMS installs.
+
+### Two supported paths, because the PHP floor forces it
+
+ADR-013 pins `^8.4`. **Ubuntu 24.04 LTS — in support until 2029 — ships PHP 8.3**, and every still-supported LTS predating the floor has the same problem. The installer therefore cannot assume a usable system PHP on a box it is entitled to run on, and there are exactly two honest ways out:
+
+- **Docker path — the recommended default.** Reproducible, immune to the distro's PHP version, and it reuses the image already built for ADR-024's CI matrix
+- **Native path.** Adds the `ondrej/php` PPA and installs to the system. For people who will not or cannot run Docker
+Supporting only one of the two costs a real constituency, so both ship.
+
+### Security posture, decided deliberately rather than by default
+
+`curl | bash` is the format users expect, and refusing it outright costs adoption that this project cannot afford to lose. But Kitsune's own stated highest-severity category is data isolation, and normalising "pipe an unverified URL into a shell" sits badly with that. The resolution:
+
+- The script is served over HTTPS from the project domain, **versioned and checksum-pinned** — never from a redirect, never from a URL shortener
+- **The documented primary instruction is the two-step**: download, inspect, run. The one-liner is offered alongside it, not instead of it
+- Releases are signed, and the installer verifies what it fetches
+- **The installer never creates a default administrator account.** Onboarding creates the first user interactively. Default credentials at install time are the most reliably exploited mistake in CMS history and there is no version of it that is acceptable
+- **It reports nothing, ever** — not usage, not versions, not an "install succeeded" ping. GOVERNANCE commits to no telemetry without opt-in, and an installer is the easiest place to break that promise quietly
+
+### Idempotent by construction
+
+Re-running the installer must upgrade rather than clobber, and must detect an existing install and say so. This is the same property `migration_map` gives imports in ADR-007, for the same reason: the operation people actually perform is *run it again*, usually after something went wrong.
+
+| Rejected | Why it lost |
+|---|---|
+| Docker-only | Excludes anyone without root, without Docker, or on constrained VPS hosting — a meaningful slice of exactly the audience pillar three exists for. |
+| Native-only, no container path | Reproducibility across distros becomes a permanent support burden, and the PHP-floor problem gets worse with every LTS that ships behind `^8.4`. |
+| No installer — "install it with Composer" | This is the upkeep tax that forked Backdrop, charged up front. The early audience uploads zip files. |
+| `curl \| bash` with no version pin or checksum | Normalises the worst supply-chain pattern in the ecosystem, in a product whose severity ceiling is a cross-org data leak. |
+| Installer creates a default admin account to reach onboarding faster | Trades the project's worst-case security incident for a few seconds of convenience. |
+| Point self-hosters at the hosted service instead | Contradicts the premise, and contradicts the GOVERNANCE commitment that the export path and the self-host path are never degraded. |
+
+**Cost, stated.** An installer is a permanent support surface that grows with every distro release, and it will generate support load disproportionate to its size — the ~3x multiplier in ADR-011 applies to it directly. Budget for it as an ongoing obligation, not a Phase 6 task that closes.
+
+**⚠️ Commercial interest, disclosed per ADR-023.** **This decision runs against the hosted service's commercial interest.** A genuinely frictionless self-host path is precisely what makes KaaS optional for the customers most likely to pay for it. It is being made anyway, because pillar three is not conditional on the business model — and naming the tension is the whole point of ADR-023's commitment. If a future decision quietly degrades the installer, this paragraph is the thing to hold it against.
+
+---
+
 ## Standing principles
 
 From prior-art analysis of Drupal, October, Winter, Statamic, Directus, Strapi, Payload, Backdrop and ClassicPress.

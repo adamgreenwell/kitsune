@@ -25,7 +25,8 @@
 | Admin | **`filament/filament:^5.4`** | First release supporting Laravel 13 |
 | Frontend (admin) | Livewire + Alpine | Via Filament |
 | Database | PostgreSQL primary, MySQL 8.0+ / MariaDB 10.6+, **SQLite** for small installs | SQLite needs VIRTUAL generated columns rather than STORED — it cannot add STORED via ALTER TABLE. Driver abstraction handles it |
-| Testing | Pest | |
+| Testing | **Pest**, plus **Playwright** for a narrow browser layer | Three layers per ADR-024. The Pest layer must stay runnable on a bare clone with SQLite — no Docker, no Node |
+| Local + CI environments | **Docker** | Backs the three-engine matrix, and the same image backs the self-host installer (ADR-026) |
 | Static analysis | PHPStan / Larastan, level 6+ from day one | Property hooks make this actually work |
 | License | plain MPL-2.0 — **never** Exhibit B | |
 
@@ -62,7 +63,9 @@ Those consumed 5,000–15,000 hours. 12–18 months part-time is ~1,200. **So: c
 - [x] `CONTRIBUTING.md`
 - [ ] `CODE_OF_CONDUCT.md` and `SECURITY.md` with a real disclosure address — ⚠️ both are already linked from `GOVERNANCE.md` and `CONTRIBUTING.md`, so those links are currently broken
 - [ ] Repo: monorepo, `kitsune/core` + app skeleton, split-published to Packagist
-- [ ] CI: Pest, PHPStan, matrix across PHP 8.4/8.5 and Postgres/MySQL/SQLite
+- [ ] CI: Pest, PHPStan, Pint, matrix across PHP 8.4/8.5 × Postgres/MySQL/SQLite (Docker), **plus one Playwright browser job** (ADR-024)
+- [ ] ⚠️ **Guard the bare-clone rule**: a CI job that runs the Pest layer with no Docker, no Node and no services. If it ever needs them, ADR-024's pillar-three mitigation has been violated
+- [ ] `laravel/boost` as a **dev** dependency, with Kitsune's own guidelines file (ADR-025). Never a runtime dependency of `kitsune/core`
 - [ ] **Name clearance before spending on a logo** — Mozilla's support platform and a Rust ActivityPub project both use "Kitsune"
 
 ## Phase 1 — Remaining spikes
@@ -74,7 +77,7 @@ The routing question is **already settled** — ADR-012 was resolved by a workin
 - [x] **Relation managers under an extra route parameter.** ✅ **Cleared 2026-09-07** on Laravel 13.30.1 / Filament v5.7.8. Both `HasMany` and `BelongsToMany` relation managers work under `/c/{type}`; they register no routes of their own. Two new non-optional requirements fell out — see the ADR-012 amendment
 - [ ] **`ManageRelatedRecords` pages under `{type}`** — the remaining slice of the above. A different construct that *does* register its own route; not yet tested
 - [ ] **Generated-column parity across Postgres, MySQL and SQLite.** Syntax and JSON path operators all differ, and SQLite needs VIRTUAL rather than STORED columns. Prove the driver abstraction holds before building field types on it
-- [ ] **Accessibility and RTL audit of Filament v5.** How much WCAG conformance and RTL layout do you inherit versus build? Automated checkers won't answer this — drive the entry editor with a screen reader. Same afternoon as the RTL render check
+- [ ] **Accessibility and RTL audit of Filament v5.** *(Playwright from Phase 0 drives the automated half; the screen-reader pass is manual and cannot be automated.)* How much WCAG conformance and RTL layout do you inherit versus build? Automated checkers won't answer this — drive the entry editor with a screen reader. Same afternoon as the RTL render check
 - [ ] **Storage benchmark** at 10k / 100k / 1M entries on all three engines — include the row multiplication from translation (ADR-017) and one `entries` row per media asset (ADR-016)
 
 **Done when:** you have numbers, written down.
@@ -155,7 +158,16 @@ Drupal spent ~a decade proving a runtime schema engine *without* opinionated sta
 - [ ] Documentation site
 - [ ] Semantic versioning commitment and published upgrade policy
 - [ ] Staffed security disclosure process
-- [ ] Installer and upgrade tooling
+- [ ] **One-command self-host installer** (ADR-026) — paste one command on a fresh Ubuntu LTS box, end at the onboarding screen:
+  - [ ] **Docker path** (recommended default), reusing the Phase 0 CI image
+  - [ ] **Native path** via the `ondrej/php` PPA, because supported LTS releases ship below the `^8.4` floor
+  - [ ] Defaults to **SQLite** — no database server, user, password or tuning
+  - [ ] Versioned + **checksum-pinned** over HTTPS, signed releases, never served from a redirect
+  - [ ] Docs lead with **download-inspect-run**; the `curl | bash` one-liner is offered alongside, not instead
+  - [ ] **Never creates a default admin account** — onboarding creates the first user interactively
+  - [ ] **Reports nothing**, including install-succeeded pings (GOVERNANCE commitment #7)
+  - [ ] **Idempotent** — re-running upgrades rather than clobbers, and detects an existing install
+- [ ] Upgrade tooling
 
 ### 🎯 v1.0
 
@@ -192,6 +204,7 @@ Run it once Phase 4 lands, and let what you learn inform the real adapter framew
 - [ ] Written deprecation policy: deprecate, never remove within a major
 - [ ] Document the **two-tier reality** — third-party Filament plugins register their own Resources against their own models, so they sit *beside* the schema engine, not inside it
 - [ ] ⚠️ **Tenancy-audit every allowlisted third-party plugin.** Most Filament plugins are not tenancy-aware
+- [ ] **`kitsune/plugin-guidelines`** (ADR-025) — the invariants in Boost's guidelines format, so an AI-assisted plugin author inherits the scope attribute, `scopedUnique()`, the driver abstraction and the reserved handles *before* the validation CLI ever runs. The CLI catches a violation; guidelines prevent it
 
 ## v1.3 — Migration adapter framework
 
