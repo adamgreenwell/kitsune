@@ -678,6 +678,27 @@ The hostile test in core (ADR-009) doubles: it must now assert **cross-site isol
 
 **Index invariant, revised.** ADR-009 required every composite index to lead with `tenant_id`. It now leads with the model's *scope key*: `site_id` for site-scoped models, `org_id` for org-scoped. Since `site_id` is globally unique and belongs to exactly one org, leading with it enforces org isolation transitively — narrower index, same guarantee.
 
+### Amendment — a fourth scope attribute, for users, 2026-09-07
+
+**Status:** Amended · closes [#21](https://github.com/adamgreenwell/kitsune/issues/21)
+
+This ADR settles the kernel on three attributes and puts **users** among the `#[OrgScoped]` models. The second half of that could not be implemented, and the reason is not an oversight in this ADR — it is a fact about users that only became load-bearing once someone tried.
+
+**`OrgScope` compares `org_id = current`, and a user has no `org_id`.** Membership is many-to-many; `architecture.md` §3 has modelled it through `org_user` since before this ADR. Declaring `#[OrgScoped]` on `User` would have been a declaration the kernel could not keep — the attribute would have resolved, the scope would have been applied, and it would have compared a column that does not exist.
+
+So there is a fourth: **`#[OrgScopedThroughPivot(table:, foreignKey:)]`**, enforced by `OrgMembershipScope`.
+
+A separate attribute rather than an option on `#[OrgScoped]`, because the two enforce genuinely different things — one reads a column, the other tests a relationship. Conflating them would mean a reviewer seeing `#[OrgScoped]` could no longer tell which behaviour a model got, and this ADR's whole point is that the declaration is readable at a glance.
+
+Everything else in this ADR is unchanged and still binding. The new attribute inherits all of it: it **fails closed with no org context**, it gets **no framework safety net** (Filament does not model Org at any level), and it needs the same hostile test the other two have.
+
+**Two consequences worth stating, because both cost time:**
+
+- **Failing closed makes the authentication path a carve-out.** A user is resolved before any org exists — the org is derived from the site they are on their way to — so the login query must stand the scope down explicitly. That carve-out belongs in the **user provider**, not on the model: `EloquentUserProvider` builds its own query through `newModelQuery()` and never calls a method on the user, so a carve-out written as `User::resolveForAuthentication()` reads correctly in review and never executes. It is safe because every query there resolves ONE user by an identifier the caller already supplied, and never lists them.
+- **The attribute is a declaration, not an enforcement.** `User` carried `#[Unscoped]` and did not `use EnforcesScope`, so it was labelled correctly and completely unconstrained for two phases. A model can pass the declaration sweep that exists to catch exactly this and still be globally readable. Both are now required together, and AGENTS.md says so.
+
+---
+
 ### Amendment — the route key must be globally unique, 2026-09-07
 
 `UNIQUE (org_id, handle)` makes a site's handle unique **within an org**, which is right: a handle is how an operator names a site inside their own organisation, and two customers may both reasonably call one "golfdom".
