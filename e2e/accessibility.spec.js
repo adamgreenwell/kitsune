@@ -43,17 +43,21 @@ test.describe('accessibility (automated half of #12)', () => {
             // recorded by the audit task rather than failing the build —
             // a gate nobody can keep green gets disabled, and this one has
             // to survive contact with inherited Filament markup.
-            const blocking = results.violations.filter(
-                (v) => v.impact === 'critical' || v.impact === 'serious',
-            );
-
-            if (blocking.length > 0) {
-                console.log(`\n${name} — ${blocking.length} blocking violation(s):`);
-                for (const v of blocking) {
+            // Log EVERY violation before filtering. The previous version
+            // logged only the blocking ones, so a minor or moderate finding
+            // was neither failed nor recorded — it passed silently, which is
+            // the opposite of what the surrounding comment claimed.
+            if (results.violations.length > 0) {
+                console.log(`\n${name} — ${results.violations.length} violation(s) at all levels:`);
+                for (const v of results.violations) {
                     console.log(`  [${v.impact}] ${v.id}: ${v.help}`);
                     console.log(`    ${v.nodes.length} node(s), e.g. ${v.nodes[0]?.target?.join(' ')}`);
                 }
             }
+
+            const blocking = results.violations.filter(
+                (v) => v.impact === 'critical' || v.impact === 'serious',
+            );
 
             expect(blocking).toEqual([]);
         });
@@ -69,34 +73,29 @@ test.describe('accessibility (automated half of #12)', () => {
     });
 });
 
-test.describe('RTL layout (ADR-018)', () => {
-    test('the admin sets dir=rtl for a right-to-left locale', async ({ page }) => {
-        // Filament ships 64 locales including ar, he, fa and ur, so Arabic
-        // speakers will arrive. Shipping RTL *translations* is not the same
-        // as RTL *layout*: a translated string in a left-aligned sidebar is
-        // still broken, and v5's layout completeness was never verified.
+test.describe('RTL readiness (ADR-018)', () => {
+    /*
+     * ⚠️ THIS IS NOT AN RTL RENDER CHECK, and the earlier version of this
+     * block implied it was. It visited the English site and asserted
+     * dir="ltr", which would stay green even if every RTL layout in the
+     * admin were broken. Caught in review.
+     *
+     * An actual RTL render check needs the admin served under an RTL locale,
+     * which needs the locale switcher that does not exist yet. That half of
+     * #12 stays open, alongside the screen-reader pass.
+     *
+     * What follows measures READINESS, which is a different and weaker claim:
+     * whether the CSS that ships would mirror if direction flipped.
+     */
+
+    test('the shipped CSS is overwhelmingly direction-agnostic', async ({ page }) => {
         await page.goto(`/admin/${SITE}`);
 
-        const dir = await page.locator('html').getAttribute('dir');
-
-        // Documents the CURRENT state rather than asserting a wish. The
-        // panel is LTR today; when a locale switcher lands this becomes the
-        // test that RTL actually flips the layout.
-        expect(dir).toBe('ltr');
-    });
-
-    test('layout uses logical properties, so RTL is mostly free', async ({ page }) => {
-        // Tailwind 4 logical properties make RTL nearly free now and painful
-        // later (ADR-018). This checks the inherited chrome actually uses
-        // them rather than hardcoded left/right.
-        await page.goto(`/admin/${SITE}`);
-
-        const usesLogical = await page.evaluate(() => {
-            const sheets = [...document.styleSheets];
+        const counts = await page.evaluate(() => {
             let logical = 0;
             let physical = 0;
 
-            for (const sheet of sheets) {
+            for (const sheet of [...document.styleSheets]) {
                 let rules;
                 try {
                     rules = [...(sheet.cssRules ?? [])];
@@ -106,15 +105,31 @@ test.describe('RTL layout (ADR-018)', () => {
 
                 for (const rule of rules) {
                     const text = rule.cssText ?? '';
-                    logical += (text.match(/margin-inline|padding-inline|inset-inline|border-inline/g) ?? []).length;
-                    physical += (text.match(/margin-left:|margin-right:|padding-left:|padding-right:/g) ?? []).length;
+                    logical += (text.match(/margin-inline|padding-inline|inset-inline|border-inline|text-align:\s*(start|end)/g) ?? []).length;
+                    // Direction-sensitive properties the first version missed:
+                    // bare left/right and border-left/right break RTL just as
+                    // surely as margin-left does.
+                    physical += (text.match(/(?:^|[;{\s])(?:margin|padding|border)-(?:left|right)\s*:|(?:^|[;{\s])(?:left|right)\s*:|text-align:\s*(?:left|right)/g) ?? []).length;
                 }
             }
 
             return { logical, physical };
         });
 
-        console.log(`  logical properties: ${usesLogical.logical}, physical: ${usesLogical.physical}`);
-        expect(usesLogical.logical).toBeGreaterThan(0);
+        console.log(`  logical: ${counts.logical}  physical: ${counts.physical}`);
+
+        expect(counts.logical).toBeGreaterThan(0);
+
+        // Enforce the RATIO, not merely presence. Only asserting that one
+        // logical property exists would stay green if hundreds of physical
+        // ones were added and RTL broke entirely — the measured value was
+        // computed and then thrown away.
+        //
+        // Measured 2026-09-07: 535 logical, 139 physical — about 79%
+        // direction-agnostic. The first version of this count reported 18
+        // physical because it missed bare left/right, border-left/right and
+        // text-align, which made the CSS look far more RTL-ready than it is.
+        // 0.4 is a regression guard with headroom, not a target.
+        expect(counts.physical).toBeLessThan(counts.logical * 0.4);
     });
 });
