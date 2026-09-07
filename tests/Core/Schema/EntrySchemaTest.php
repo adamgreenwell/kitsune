@@ -21,10 +21,10 @@ beforeEach(function (): void {
     $this->orgB = Org::create(['name' => 'Rival', 'slug' => 'rival']);
 
     app(Context::class)->setOrg($this->orgA);
-    $this->siteA = Site::create(['org_id' => $this->orgA->id, 'handle' => 'a', 'name' => 'A']);
+    $this->siteA = Site::create(['org_id' => $this->orgA->id, 'handle' => 'a', 'slug' => 'a', 'name' => 'A']);
 
     app(Context::class)->setOrg($this->orgB);
-    $this->siteB = Site::create(['org_id' => $this->orgB->id, 'handle' => 'b', 'name' => 'B']);
+    $this->siteB = Site::create(['org_id' => $this->orgB->id, 'handle' => 'b', 'slug' => 'b', 'name' => 'B']);
 
     $this->article = EntryType::create([
         'org_id' => $this->orgA->id, 'handle' => 'article',

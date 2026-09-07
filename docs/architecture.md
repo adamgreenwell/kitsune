@@ -150,6 +150,8 @@ site_groups                    -- the brand; settings inheritance
 
 sites                          -- anything with its own base URL
   id, org_id, site_group_id, handle, name
+  slug            string       -- GLOBALLY unique; the admin route key,
+                               -- because /admin/{site} has no org segment
   locale          string       -- this site's language; entries have no locale column
   url_strategy    enum         -- path | subdomain | domain
   base_url        string       -- 'https://golfdom.com', 'https://example.com/fr'
