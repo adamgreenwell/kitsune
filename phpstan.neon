@@ -1,0 +1,20 @@
+includes:
+    - vendor/larastan/larastan/extension.neon
+
+parameters:
+    level: 6
+
+    # Shipped code only.
+    #
+    # Pest's fluent expectation API (`expect(...)->not->toBeEmpty()`) resolves
+    # `->not` dynamically, which PHPStan cannot see even with Pest's own
+    # extension loaded. Analysing tests at level 6 therefore reports the most
+    # common idiom in the suite as an error, and the only ways to silence it are
+    # a growing baseline or writing tests to please the analyser rather than to
+    # read well. Neither is worth it: tests are verified by running them.
+    #
+    # Revisit if a Pest-aware PHPStan extension covers expectation chaining.
+    paths:
+        - packages/core/src
+
+    tmpDir: build/phpstan

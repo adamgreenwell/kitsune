@@ -1,0 +1,50 @@
+{
+    "name": "kitsune/monorepo",
+    "description": "Kitsune development workspace. Not published; see packages/core.",
+    "license": "MPL-2.0",
+    "type": "project",
+    "require": {
+        "php": "^8.4"
+    },
+    "require-dev": {
+        "kitsune/core": "@dev",
+        "laravel/boost": "^2.7",
+        "laravel/pint": "^1.31",
+        "larastan/larastan": "^3.11",
+        "orchestra/testbench": "^11.2",
+        "pestphp/pest": "^5.1"
+    },
+    "repositories": [
+        {
+            "type": "path",
+            "url": "packages/*",
+            "options": {
+                "symlink": true
+            }
+        }
+    ],
+    "minimum-stability": "stable",
+    "prefer-stable": true,
+    "config": {
+        "allow-plugins": {
+            "pestphp/pest-plugin": true
+        }
+    },
+    "scripts": {
+        "test": "pest --colors=always",
+        "test:lean": "pest --colors=always --exclude-group=requires-services,requires-browser",
+        "lint": "pint --test",
+        "fix": "pint",
+        "stan": "phpstan analyse --memory-limit=512M",
+        "ci": [
+            "@lint",
+            "@stan",
+            "@test"
+        ]
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Kitsune\\Core\\Tests\\": "tests/Core/"
+        }
+    }
+}

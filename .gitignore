@@ -46,3 +46,11 @@ desktop.ini
 /scratch
 /spike
 *.local
+
+# Static analysis
+/build
+
+# Playwright
+/test-results
+/playwright-report
+/.playwright

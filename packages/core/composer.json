@@ -1,0 +1,33 @@
+{
+    "name": "kitsune/core",
+    "description": "Kitsune core: the module kernel, tenancy primitives and runtime schema engine.",
+    "license": "MPL-2.0",
+    "type": "library",
+    "require": {
+        "php": "^8.4",
+        "illuminate/support": "^13.0"
+    },
+    "require-dev": {
+        "orchestra/testbench": "^11.2",
+        "pestphp/pest": "^5.1"
+    },
+    "autoload": {
+        "psr-4": {
+            "Kitsune\\Core\\": "src/"
+        }
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "Kitsune\\Core\\KitsuneServiceProvider"
+            ]
+        }
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true,
+    "config": {
+        "allow-plugins": {
+            "pestphp/pest-plugin": true
+        }
+    }
+}

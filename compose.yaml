@@ -1,0 +1,32 @@
+# Local counterpart to the CI engine matrix (ADR-024).
+#
+# Nothing here is required to run the default suite: `composer test:lean`
+# stays green with these containers stopped, which is the bare-clone rule.
+# Bring them up only to reproduce a matrix failure locally.
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: kitsune
+      POSTGRES_USER: kitsune
+      POSTGRES_PASSWORD: kitsune
+    ports: ["55432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kitsune"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE: kitsune
+      MYSQL_USER: kitsune
+      MYSQL_PASSWORD: kitsune
+      MYSQL_ROOT_PASSWORD: root
+    ports: ["53306:3306"]
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-ukitsune", "-pkitsune"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
