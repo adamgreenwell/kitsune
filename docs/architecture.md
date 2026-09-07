@@ -263,10 +263,12 @@ entry_relations
 When a `field_storage` row is marked `is_indexed`, the schema engine adds a **stored generated column** over the JSON plus a composite index that always leads with the scope key — `site_id`, since `entries` is `#[SiteScoped]`:
 
 ```sql
-ALTER TABLE entries
-  ADD COLUMN idx_price DECIMAL(12,2)
-    GENERATED ALWAYS AS (CAST(values->>'$.price' AS DECIMAL(12,2))) STORED,
-  ADD INDEX entries_site_price (site_id, idx_price);
+-- MySQL. `values` is reserved and must be quoted; see field-types.md §7
+-- for the PostgreSQL and SQLite forms, all three verified against live engines.
+ALTER TABLE `entries`
+  ADD COLUMN `idx_price` DECIMAL(12,2)
+    GENERATED ALWAYS AS (CAST(`values`->>'$.price' AS DECIMAL(12,2))) STORED;
+CREATE INDEX `entries_site_price` ON `entries` (`site_id`, `idx_price`);
 ```
 
 One table, one row per entry, real indexes on the fields that need them. This is the direct answer to Drupal core issue #3022864 — the 27-join, 697-second production query caused by table-per-field.
@@ -387,7 +389,6 @@ Honest list. None of these blocks starting; all of them should be settled before
 
 | Item | Risk | Why |
 |---|---|---|
-| Generated-column parity across Postgres, MySQL and SQLite | High | Syntax and JSON path operators differ, and SQLite needs VIRTUAL rather than STORED columns; the driver abstraction has to hold across all three |
 | Storage benchmark at 10k / 100k / 1M entries | High | Find the ceiling now, not in year two |
 | Blueprint rollback semantics | Medium | What happens when a blueprint is removed after content exists? |
 | Revision storage growth | Medium | Full-JSON snapshots per revision get expensive; consider diffs |
