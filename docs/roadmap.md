@@ -57,16 +57,20 @@ Those consumed 5,000–15,000 hours. 12–18 months part-time is ~1,200. **So: c
 
 - [x] **`LICENSE`** — plain MPL-2.0 (no Exhibit B; make sure no contributor ever adds it)
 - [x] Public repository from the first commit, planning docs included (ADR-014)
-- [ ] **Trademark**: file "Kitsune" in software/SaaS classes; design and register the logo. Publish `TRADEMARK.md` modeled on the WordPress Foundation's
-- [ ] **`CLA.md` + CLA bot wired in before the first external PR.** The only irreversible item in the project
+- [ ] **Trademark** ([#2](https://github.com/adamgreenwell/kitsune/issues/2)): file "Kitsune" in software/SaaS classes; design and register the logo. Publish `TRADEMARK.md` modeled on the WordPress Foundation's
+- [ ] **`CLA.md` + CLA bot wired in before the first external PR** ([#3](https://github.com/adamgreenwell/kitsune/issues/3)). The only irreversible item in the project
 - [x] **`GOVERNANCE.md`** — stated BDFL with a disclosed bus factor, binding licence and open/paid commitments, staged succession, and a disclosed commercial conflict of interest (ADR-023)
 - [x] `CONTRIBUTING.md`
-- [ ] `CODE_OF_CONDUCT.md` and `SECURITY.md` with a real disclosure address — ⚠️ both are already linked from `GOVERNANCE.md` and `CONTRIBUTING.md`, so those links are currently broken
-- [ ] Repo: monorepo, `kitsune/core` + app skeleton, split-published to Packagist
-- [ ] CI: Pest, PHPStan, Pint, matrix across PHP 8.4/8.5 × Postgres/MySQL/SQLite (Docker), **plus one Playwright browser job** (ADR-024)
-- [ ] ⚠️ **Guard the bare-clone rule**: a CI job that runs the Pest layer with no Docker, no Node and no services. If it ever needs them, ADR-024's pillar-three mitigation has been violated
-- [ ] `laravel/boost` as a **dev** dependency, with Kitsune's own guidelines file (ADR-025). Never a runtime dependency of `kitsune/core`
-- [ ] **Name clearance before spending on a logo** — Mozilla's support platform and a Rust ActivityPub project both use "Kitsune"
+- [ ] `CODE_OF_CONDUCT.md` ([#4](https://github.com/adamgreenwell/kitsune/issues/4)) and `SECURITY.md` with a real disclosure address ([#5](https://github.com/adamgreenwell/kitsune/issues/5)) — ⚠️ both are already linked from `GOVERNANCE.md` and `CONTRIBUTING.md`, so those links are live-broken on a public repo
+- [x] Repo: monorepo with `packages/core`. Layout follows `laravel/framework` — tests at the root, because Pest resolves its test directory from the project root with no configuration hook
+- [ ] Installable app skeleton ([#6](https://github.com/adamgreenwell/kitsune/issues/6))
+- [ ] Split-publish `kitsune/core` to Packagist ([#8](https://github.com/adamgreenwell/kitsune/issues/8))
+- [x] CI: Pint, PHPStan level 6, and Pest across PHP 8.4/8.5 × Postgres/MySQL/SQLite. **All nine jobs green 2026-09-07.** The engine matrix is not decorative — `TestCase` selects its connection from the environment and `EngineMatrixTest` round-trips against whichever driver is configured
+- [ ] Playwright browser job ([#7](https://github.com/adamgreenwell/kitsune/issues/7)) — deliberately not stubbed; there is no rendered page to assert against until the skeleton exists
+- [x] ⚠️ **Bare-clone guard** — a CI job declaring no service containers at all, running the default suite on PHP 8.4 and 8.5. **Passed on first run**, so ADR-024's pillar-three mitigation is verified rather than promised. If it ever goes red the fix is never to add services to it, but to fix the test that reached for one
+- [x] `laravel/boost` as a **dev** dependency. Never a runtime dependency of `kitsune/core` (ADR-025)
+- [ ] Kitsune's own guidelines file, encoding the invariants an agent violates by default ([#9](https://github.com/adamgreenwell/kitsune/issues/9))
+- [ ] **Name clearance before spending on a logo** ([#1](https://github.com/adamgreenwell/kitsune/issues/1)) — Mozilla's support platform and a Rust ActivityPub project both use "Kitsune"
 
 ## Phase 1 — Remaining spikes
 
