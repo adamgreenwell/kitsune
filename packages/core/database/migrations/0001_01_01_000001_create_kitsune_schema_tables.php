@@ -72,6 +72,21 @@ return new class extends Migration
             $table->unique(['entry_type_id', 'field_storage_id']);
         });
 
+        // ADR-020 primitive #2: an entry type names the field that identifies
+        // the data subject. Added after `fields` exists because the reference
+        // runs the other way from `fields.entry_type_id` — the two tables
+        // point at each other, and only one order works.
+        //
+        // Nullable, and deliberately NOT fail-closed the way `pii_class` is:
+        // the subject IS one of the type's fields, so demanding the
+        // nomination before the first field can be added is circular. The
+        // enforcement that works is a report of types holding personal data
+        // with nothing nominated — see EntryType::withoutSubjectIdentifier().
+        Schema::table('entry_types', function (Blueprint $table): void {
+            $table->foreignId('subject_field_id')->nullable()->after('is_system')
+                ->constrained('fields')->nullOnDelete();
+        });
+
         Schema::create('entries', function (Blueprint $table): void {
             $table->id();
             // NULL = shared across the org (ADR-021). Shared rows are not
@@ -141,6 +156,13 @@ return new class extends Migration
     public function down(): void
     {
         Schema::dropIfExists('entry_type_availability');
+        // The self-reference has to go before `fields` does.
+        if (Schema::hasColumn('entry_types', 'subject_field_id')) {
+            Schema::table('entry_types', function (Blueprint $table): void {
+                $table->dropConstrainedForeignId('subject_field_id');
+            });
+        }
+
         Schema::dropIfExists('entry_revisions');
         Schema::dropIfExists('entry_relations');
         Schema::dropIfExists('entries');

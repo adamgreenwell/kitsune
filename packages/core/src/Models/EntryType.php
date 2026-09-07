@@ -18,6 +18,7 @@ use Illuminate\Support\Collection;
 use Kitsune\Core\Exceptions\ReservedHandleException;
 use Kitsune\Core\Tenancy\Attributes\Unscoped;
 use Kitsune\Core\Tenancy\Context;
+use RuntimeException;
 
 /**
  * @property int $id
@@ -26,6 +27,7 @@ use Kitsune\Core\Tenancy\Context;
  * @property string $name
  * @property string $plural_name
  * @property bool $is_system
+ * @property int|null $subject_field_id
  * @property array<string, mixed>|null $settings
  */
 #[Unscoped]
@@ -114,6 +116,51 @@ class EntryType extends Model
         });
     }
 
+    /**
+     * The field that identifies the data subject (ADR-020 primitive #2).
+     *
+     * "Give me everything you hold about this person" is unanswerable without
+     * knowing which field identifies the person. A `customer` type nominates
+     * its email; a `ticket` type nominates its `person` relation.
+     *
+     * @return BelongsTo<Field, $this>
+     */
+    public function subjectField(): BelongsTo
+    {
+        return $this->belongsTo(Field::class, 'subject_field_id');
+    }
+
+    /**
+     * The `values` key holding the subject identifier, or null if none is set.
+     *
+     * The handle comes from the field STORAGE, not from the per-type field
+     * row: storage owns the handle, and the handle is the JSON key.
+     */
+    public function subjectHandle(): ?string
+    {
+        return $this->subjectField?->fieldStorage?->handle;
+    }
+
+    /**
+     * Types holding personal data that nobody can answer a request about.
+     *
+     * The enforcement that actually works. A fail-closed guard at save time
+     * cannot: the subject IS one of the type's fields, so refusing to save
+     * until one is nominated makes adding the first field impossible. What
+     * can be enforced is visibility — this is the list of holes, and it is
+     * the honest answer to "is a subject-access request answerable here?"
+     *
+     * @return Builder<static>
+     */
+    public static function withoutSubjectIdentifier(): Builder
+    {
+        return static::query()
+            ->whereNull('subject_field_id')
+            ->whereHas('fields.fieldStorage', function (Builder $query): void {
+                $query->whereIn('pii_class', ['personal', 'sensitive']);
+            });
+    }
+
     protected $guarded = [];
 
     protected $casts = [
@@ -152,6 +199,25 @@ class EntryType extends Model
 
     protected static function booted(): void
     {
+        // A nomination pointing at another type's field would answer a
+        // subject-access request with somebody else's data, which is worse
+        // than answering it with nothing.
+        static::saving(function (self $type): void {
+            if ($type->subject_field_id === null) {
+                return;
+            }
+
+            $field = Field::query()->find($type->subject_field_id);
+
+            if ($field === null || ($type->exists && $field->entry_type_id !== $type->getKey())) {
+                throw new RuntimeException(
+                    "Field [{$type->subject_field_id}] cannot identify the subject of [{$type->handle}]: "
+                    .'it does not belong to this entry type. A nomination pointing elsewhere would answer '
+                    .'a subject-access request with another person\'s data (ADR-020).'
+                );
+            }
+        });
+
         // Rejected at creation time, not escaped later. The collision is with
         // the URL contract, not with SQL: a type named "create" would make
         // /c/create/create ambiguous, and no amount of escaping fixes that

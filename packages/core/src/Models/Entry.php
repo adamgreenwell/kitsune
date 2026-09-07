@@ -103,6 +103,77 @@ class Entry extends Model
         return $this->belongsTo(Site::class);
     }
 
+    /**
+     * The value identifying this entry's data subject, if its type names one.
+     *
+     * Null means unanswerable rather than "no subject": the type nominated
+     * nothing, and `EntryType::withoutSubjectIdentifier()` is the list of
+     * types in that state (ADR-020).
+     */
+    public function subjectValue(): mixed
+    {
+        $handle = $this->entryType?->subjectHandle();
+
+        return $handle === null ? null : ($this->values[$handle] ?? null);
+    }
+
+    /**
+     * Entries of one type whose subject identifier matches.
+     *
+     * Scoped to a single type on purpose. `values` is JSON and the key
+     * differs per type, so a cross-type query would be a union whose shape
+     * depends on the data — subject-access EXPORT is v1.1 tooling, and this
+     * is the v1.0 primitive it will be built from.
+     *
+     * @param  Builder<static>  $query
+     * @return Builder<static>
+     */
+    public function scopeWhereSubjectIs(Builder $query, EntryType $type, mixed $identifier): Builder
+    {
+        $handle = $type->subjectHandle();
+
+        if ($handle === null) {
+            // Fail closed. Returning everything of this type would answer a
+            // subject request with every person in it.
+            return $query->whereRaw('1 = 0');
+        }
+
+        return $query->where('entry_type_id', $type->getKey())
+            ->where('values->'.$handle, $identifier);
+    }
+
+    /**
+     * Erase one field everywhere it survives, revision history included.
+     *
+     * ADR-020: erasure has to reach revisions, because article revision 4
+     * still holds the name just erased. Immutable revisions were rejected for
+     * exactly this reason — they make the right to erasure unimplementable.
+     *
+     * Replaces in place rather than deleting the revision, so the history of
+     * WHAT CHANGED WHEN survives an erasure of WHAT IT SAID. Returns how many
+     * rows were rewritten, because an erasure that silently reached nothing
+     * is indistinguishable from one that worked.
+     */
+    public function redactField(string $handle, mixed $replacement = null): int
+    {
+        $rewritten = 0;
+
+        $values = $this->values ?? [];
+
+        if (array_key_exists($handle, $values)) {
+            $values[$handle] = $replacement;
+            $this->values = $values;
+            $this->save();
+            $rewritten++;
+        }
+
+        foreach ($this->revisions()->get() as $revision) {
+            $rewritten += $revision->redact($handle, $replacement) ? 1 : 0;
+        }
+
+        return $rewritten;
+    }
+
     /** @return HasMany<EntryRevision, $this> */
     public function revisions(): HasMany
     {
