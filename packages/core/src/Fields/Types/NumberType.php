@@ -48,10 +48,24 @@ final class NumberType extends BaseFieldType
             : new Projection(LogicalType::Decimal, $this->precision($config), $this->scale($config));
     }
 
-    /** Total digits, bounded so the column and the validator agree. */
+    /**
+     * Total digits, capped at what the STORAGE can actually distinguish.
+     *
+     * ⚠️ 15, not 38. A decimal is stored as a JSON number, JSON numbers are
+     * IEEE doubles, and a double carries about 15-17 significant digits — so
+     * at precision 20, `123456789012345678.12` and `...78.13` both become
+     * `1.2345678901234568e+17` before they reach JSON at all. Validating and
+     * projecting at a precision the conversion cannot hold would advertise
+     * an exactness that does not exist.
+     *
+     * A field genuinely needing more digits wants a `text` field and its own
+     * arithmetic, which is an honest answer rather than a silent one.
+     */
+    public const MAX_PRECISION = 15;
+
     private function precision(FieldConfig $config): int
     {
-        return max(1, min(38, (int) $config->setting('precision', 12)));
+        return max(1, min(self::MAX_PRECISION, (int) $config->setting('precision', 12)));
     }
 
     private function scale(FieldConfig $config): int
@@ -122,7 +136,8 @@ final class NumberType extends BaseFieldType
             // Both feed the projection AND the validation bounds, so what the
             // field accepts and what the indexed column can hold cannot drift.
             'precision' => ['type' => 'integer', 'default' => 12, 'label' => 'Total digits',
-                'help' => 'Including decimal places. Bounds what this field will accept.'],
+                'help' => 'Including decimal places. Bounds what this field will accept. '
+                    .'Capped at '.self::MAX_PRECISION.' — beyond that a JSON number cannot tell two values apart.'],
             'scale' => ['type' => 'integer', 'default' => 2, 'label' => 'Decimal places'],
             'min' => ['type' => 'number', 'nullable' => true],
             'max' => ['type' => 'number', 'nullable' => true],

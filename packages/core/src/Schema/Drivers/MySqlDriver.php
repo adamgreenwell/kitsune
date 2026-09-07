@@ -67,12 +67,24 @@ final class MySqlDriver implements SchemaDriver
             ? sprintf('(%s = CAST(%s AS JSON))', $extract, $this->literal('true'))
             : sprintf('CAST(%s->>%s AS %s)', $column, $this->literal('$.'.$path), $this->castType($projection));
 
-        return sprintf(
-            'CASE WHEN JSON_TYPE(%s) IN (%s) THEN %s END',
+        $guard = sprintf(
+            'JSON_TYPE(%s) IN (%s)',
             $extract,
             implode(', ', array_map($this->literal(...), $this->jsonTypes($projection))),
-            $value,
         );
+
+        if (($bound = $projection->magnitudeBound()) !== null) {
+            // DECIMAL(65,10) is MySQL's widest, so the comparison cannot
+            // overflow the type it is protecting.
+            $guard .= sprintf(
+                ' AND ABS(CAST(%s->>%s AS DECIMAL(65,10))) < %s',
+                $column,
+                $this->literal('$.'.$path),
+                $bound,
+            );
+        }
+
+        return sprintf('CASE WHEN %s THEN %s END', $guard, $value);
     }
 
     public function addGeneratedColumnSql(string $table, string $column, string $jsonColumn, string $path, Projection $projection): string

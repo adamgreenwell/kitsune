@@ -59,11 +59,17 @@ final class PostgresDriver implements SchemaDriver
         $column = '('.$this->quote($jsonColumn).')::jsonb';
         $key = $this->literal($path);
 
+        $guard = sprintf('jsonb_typeof(%s -> %s) = %s', $column, $key, $this->literal($this->jsonType($projection)));
+
+        if (($bound = $projection->magnitudeBound()) !== null) {
+            // Cast to UNBOUNDED numeric for the comparison, so the check
+            // itself cannot overflow the very type it is protecting.
+            $guard .= sprintf(' AND abs((%s ->> %s)::NUMERIC) < %s', $column, $key, $bound);
+        }
+
         return sprintf(
-            'CASE WHEN jsonb_typeof(%s -> %s) = %s THEN (%s ->> %s)::%s END',
-            $column,
-            $key,
-            $this->literal($this->jsonType($projection)),
+            'CASE WHEN %s THEN (%s ->> %s)::%s END',
+            $guard,
             $column,
             $key,
             $this->columnType($projection),

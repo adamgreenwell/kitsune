@@ -91,20 +91,28 @@ final class JsonType extends BaseFieldType
     {
         return [
             function (string $attribute, mixed $value, Closure $fail): void {
-                if (is_array($value)) {
-                    return;
-                }
+                if (is_string($value)) {
+                    $decoded = json_decode($value, true);
 
-                if (! is_string($value)) {
+                    if (json_last_error() !== JSON_ERROR_NONE) {
+                        $fail("The {$attribute} field is not valid JSON: ".json_last_error_msg().'.');
+
+                        return;
+                    }
+                } elseif (is_array($value)) {
+                    $decoded = $value;
+                } else {
                     $fail("The {$attribute} field must be a JSON object or a JSON string.");
 
                     return;
                 }
 
-                json_decode($value, true);
-
-                if (json_last_error() !== JSON_ERROR_NONE) {
-                    $fail("The {$attribute} field is not valid JSON: ".json_last_error_msg().'.');
+                // ⚠️ Parseable is not the same as valid here. apiSchema()
+                // advertises an OBJECT, so `42` and `[1, 2]` are both valid
+                // JSON and both wrong — and a consumer reading the published
+                // schema would assume key/value data and get a list.
+                if (! is_array($decoded) || array_is_list($decoded)) {
+                    $fail("The {$attribute} field must be a JSON object, not a list or a scalar.");
                 }
             },
         ];

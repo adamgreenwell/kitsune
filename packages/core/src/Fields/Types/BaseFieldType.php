@@ -144,9 +144,19 @@ abstract class BaseFieldType implements FieldType
     {
         $presence = $config->isRequired() ? ['required'] : ['nullable'];
 
-        return $config->isMultiValue()
-            ? [...$presence, 'array']
-            : [...$presence, ...$this->scalarValidationRules($config)];
+        if (! $config->isMultiValue()) {
+            return [...$presence, ...$this->scalarValidationRules($config)];
+        }
+
+        $rules = [...$presence, 'array'];
+
+        // -1 is the explicit "unlimited". A cardinality of 2 means TWO, and
+        // accepting three silently stored a shape the configuration forbids.
+        if ($config->cardinality() > 1) {
+            $rules[] = 'max:'.$config->cardinality();
+        }
+
+        return $rules;
     }
 
     /** @return array<int, mixed> */

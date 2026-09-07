@@ -50,6 +50,29 @@ final readonly class Projection
     }
 
     /**
+     * The largest magnitude this projection can hold, or null if unbounded.
+     *
+     * ⚠️ The JSON-kind guard is not enough on its own. A shared column reads
+     * its key from EVERY row, including rows belonging to an org that never
+     * indexed the field at all — so org B's perfectly valid
+     * `"price": 10000000000` overflows org A's `NUMERIC(12,2)` and stops the
+     * column being created. Type-correct and still out of range.
+     */
+    public function magnitudeBound(): ?string
+    {
+        return match ($this->logical) {
+            // Built as a string, not with bcmath or pow(): bcmath is not a
+            // guaranteed extension (ADR-027 keeps the floor lean) and a float
+            // pow() loses exactness at the magnitudes this exists to bound.
+            LogicalType::Decimal => '1'.str_repeat('0', $this->precision - $this->scale),
+            // BIGINT. Bounded rather than unbounded, because a JSON number
+            // larger than this is not representable in the column either.
+            LogicalType::Integer => '9223372036854775808',
+            LogicalType::String, LogicalType::Boolean, LogicalType::Date, LogicalType::DateTime => null,
+        };
+    }
+
+    /**
      * The projection's identity, as it appears in the column name.
      *
      * ADR-028 names a column for its projection, and the projection depends

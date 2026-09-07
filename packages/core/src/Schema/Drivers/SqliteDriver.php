@@ -59,11 +59,20 @@ final class SqliteDriver implements SchemaDriver
         $column = $this->quote($jsonColumn);
         $key = $this->literal('$.'.$path);
 
-        return sprintf(
-            'CASE WHEN json_type(%s, %s) IN (%s) THEN CAST(json_extract(%s, %s) AS %s) END',
+        $guard = sprintf(
+            'json_type(%s, %s) IN (%s)',
             $column,
             $key,
             implode(', ', array_map($this->literal(...), $this->jsonTypes($projection))),
+        );
+
+        if (($bound = $projection->magnitudeBound()) !== null) {
+            $guard .= sprintf(' AND abs(json_extract(%s, %s)) < %s', $column, $key, $bound);
+        }
+
+        return sprintf(
+            'CASE WHEN %s THEN CAST(json_extract(%s, %s) AS %s) END',
+            $guard,
             $column,
             $key,
             $this->columnType($projection),

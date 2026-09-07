@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 use Illuminate\Support\Facades\Validator;
 use Kitsune\Core\Fields\FieldTypeRegistry;
+use Kitsune\Core\Fields\Types\NumberType;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Org;
@@ -242,8 +243,32 @@ describe('a number stays inside the column it projects to', function (): void {
     it('projects at the configured precision and scale', function (): void {
         $type = app(FieldTypeRegistry::class)->get('number');
 
-        expect($type->projection(configFor('number', ['precision' => 20, 'scale' => 4]))->signature())
-            ->toBe('decimal20_4');
+        expect($type->projection(configFor('number', ['precision' => 14, 'scale' => 4]))->signature())
+            ->toBe('decimal14_4');
+    });
+
+    it('caps precision at what a JSON number can actually distinguish', function (): void {
+        // ⚠️ A decimal is stored as a JSON number, and JSON numbers are IEEE
+        // doubles — about 15-17 significant digits. At precision 20,
+        // 123456789012345678.12 and ...78.13 both become the same float
+        // BEFORE reaching JSON, so validating and projecting at 20 would
+        // advertise an exactness the storage cannot hold.
+        $type = app(FieldTypeRegistry::class)->get('number');
+
+        expect($type->projection(configFor('number', ['precision' => 20, 'scale' => 2]))->precision)
+            ->toBe(NumberType::MAX_PRECISION);
+    });
+
+    it('will not let another org\'s in-range value overflow this column', function (): void {
+        // The JSON-kind guard is not enough: a shared column reads its key
+        // from every row, including rows whose org never indexed the field.
+        // `10000000000` is a perfectly valid number and still out of range
+        // for NUMERIC(12,2).
+        $type = app(FieldTypeRegistry::class)->get('number');
+
+        expect($type->projection(configFor('number'))->magnitudeBound())->toBe('10000000000')
+            ->and($type->projection(configFor('number', ['precision' => 15, 'scale' => 0]))->magnitudeBound())
+            ->toBe('1000000000000000');
     });
 });
 
@@ -257,4 +282,49 @@ it('sizes a select projection from its widest option key', function (): void {
 
     expect($type->projection(configFor('select', ['options' => [$long => 'Long']]))->precision)->toBe(80)
         ->and($type->projection(configFor('select', ['options' => ['a' => 'A']]))->precision)->toBe(64);
+});
+
+describe('a finite cardinality bounds the array', function (): void {
+    it('rejects more values than the field holds', function (): void {
+        // -1 is the explicit "unlimited"; a cardinality of 2 means two, and
+        // accepting three stored a shape the configuration forbids.
+        $type = app(FieldTypeRegistry::class)->get('text');
+
+        expect(Validator::make(['f' => ['a', 'b', 'c']], ['f' => $type->validationRules(configFor('text', [], 2))])->fails())
+            ->toBeTrue();
+    });
+
+    it('accepts exactly as many as it holds', function (): void {
+        $type = app(FieldTypeRegistry::class)->get('text');
+
+        expect(Validator::make(['f' => ['a', 'b']], ['f' => $type->validationRules(configFor('text', [], 2))])->fails())
+            ->toBeFalse();
+    });
+
+    it('leaves -1 unlimited', function (): void {
+        $type = app(FieldTypeRegistry::class)->get('text');
+
+        expect(Validator::make(['f' => range(1, 50)], ['f' => $type->validationRules(configFor('text', [], -1))])->fails())
+            ->toBeFalse();
+    });
+});
+
+describe('a json field holds an OBJECT, which is what it advertises', function (): void {
+    it('rejects a list, which is valid JSON and the wrong shape', function (string $value): void {
+        // A consumer reading `{"type": "object"}` assumes key/value data.
+        expect(validate('json', ['f' => $value])->fails())->toBeTrue();
+    })->with([
+        'json list' => ['[1,2]'],
+        'json scalar' => ['42'],
+        'json string' => ['"hello"'],
+    ]);
+
+    it('rejects a PHP list too, not only the encoded form', function (): void {
+        expect(validate('json', ['f' => [1, 2]])->fails())->toBeTrue();
+    });
+
+    it('still accepts an object in either form', function (): void {
+        expect(validate('json', ['f' => ['a' => 1]])->fails())->toBeFalse()
+            ->and(validate('json', ['f' => '{"a":1}'])->fails())->toBeFalse();
+    });
 });

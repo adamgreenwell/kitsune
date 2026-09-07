@@ -233,3 +233,35 @@ describe("another org's value cannot break a projection", function (): void {
         expect(DB::table('parity_probe')->where('site_id', 2)->count())->toBe(1);
     });
 });
+
+it('will not let another org\'s in-range number overflow this column', function (): void {
+    /*
+     * ⚠️ The JSON-kind guard alone was not enough. A shared generated column
+     * reads its key from EVERY row in `entries`, including rows belonging to
+     * an org that never indexed the field at all — so a perfectly valid
+     * `10000000000` overflows a NUMERIC(12,2) column and stops it being
+     * created. Type-correct and still out of range.
+     */
+    DB::table('parity_probe')->insert([
+        ['site_id' => 1, 'values' => json_encode(['price' => 10])],
+        ['site_id' => 2, 'values' => json_encode(['price' => 10000000000])],
+    ]);
+
+    DB::statement($this->driver->addGeneratedColumnSql(
+        'parity_probe', 'idx_price', 'values', 'price', new Projection(LogicalType::Decimal),
+    ));
+
+    expect(Schema::hasColumn('parity_probe', 'idx_price'))->toBeTrue()
+        ->and(DB::table('parity_probe')->where('site_id', 2)->value('idx_price'))->toBeNull()
+        ->and((float) DB::table('parity_probe')->where('site_id', 1)->value('idx_price'))->toBe(10.0);
+});
+
+it('still accepts a write of that out-of-range value', function (): void {
+    DB::statement($this->driver->addGeneratedColumnSql(
+        'parity_probe', 'idx_price', 'values', 'price', new Projection(LogicalType::Decimal),
+    ));
+
+    DB::table('parity_probe')->insert(['site_id' => 2, 'values' => json_encode(['price' => 99999999999999])]);
+
+    expect(DB::table('parity_probe')->where('site_id', 2)->count())->toBe(1);
+});

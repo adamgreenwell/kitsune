@@ -49,6 +49,12 @@ final class FieldConfig
         return $this->storage->cardinality !== 1;
     }
 
+    /** How many values this field holds; -1 means unlimited. */
+    public function cardinality(): int
+    {
+        return (int) $this->storage->cardinality;
+    }
+
     public function isIndexed(): bool
     {
         return (bool) $this->storage->is_indexed;
