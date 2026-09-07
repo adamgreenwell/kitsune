@@ -8,7 +8,6 @@
 
 declare(strict_types=1);
 
-use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
@@ -28,23 +27,6 @@ use Kitsune\Core\Tests\Fixtures\SiteThing;
  */
 
 beforeEach(function (): void {
-    Schema::dropIfExists('site_things');
-    Schema::create('site_things', function (Blueprint $table): void {
-        $table->id();
-        $table->foreignId('org_id');
-        $table->unsignedBigInteger('site_id')->nullable();
-        $table->string('label');
-        $table->index(['site_id', 'org_id']);
-    });
-
-    Schema::dropIfExists('shared_things');
-    Schema::create('shared_things', function (Blueprint $table): void {
-        $table->id();
-        $table->foreignId('org_id');
-        $table->string('label');
-        $table->index(['org_id']);
-    });
-
     // Two orgs. Org A has two sites in one group; Org B has one.
     $this->orgA = Org::create(['name' => 'Golfdom Media', 'slug' => 'golfdom-media']);
     $this->orgB = Org::create(['name' => 'Rival Publishing', 'slug' => 'rival']);
@@ -62,11 +44,7 @@ beforeEach(function (): void {
     $context->forget();
 });
 
-afterEach(function (): void {
-    app(Context::class)->forget();
-    Schema::dropIfExists('site_things');
-    Schema::dropIfExists('shared_things');
-});
+afterEach(fn () => app(Context::class)->forget());
 
 /* ─────────────── boundary 1: cross-site within one org ─────────────── */
 

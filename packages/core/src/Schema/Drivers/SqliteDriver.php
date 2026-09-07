@@ -80,6 +80,11 @@ final class SqliteDriver implements SchemaDriver
         );
     }
 
+    public function dropIndexSql(string $table, string $index): string
+    {
+        return sprintf('DROP INDEX IF EXISTS %s', $this->quote($index));
+    }
+
     public function quote(string $identifier): string
     {
         return '"'.str_replace('"', '""', $identifier).'"';

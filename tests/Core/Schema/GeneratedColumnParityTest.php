@@ -27,6 +27,11 @@ use Kitsune\Core\Schema\DriverFactory;
  * more than one engine.
  */
 
+// DDL inside a test implicitly commits on MySQL, which broke
+// RefreshDatabase's rollback for the scope fixtures. It is acceptable here:
+// this file creates and drops its own isolated probe table and asserts
+// nothing that depends on rollback, and testing ALTER TABLE is the whole
+// point — it cannot be moved into a migration.
 beforeEach(function (): void {
     $this->driver = DriverFactory::for(DB::connection());
 
@@ -135,4 +140,17 @@ it('throws on an unknown logical type rather than guessing', function (): void {
     // A generated column silently created with the wrong type would index
     // the wrong thing, which is worse than failing loudly.
     expect(fn () => $this->driver->sqlType('nonsense'))->toThrow(UnhandledMatchError::class);
+});
+
+it('drops an indexed generated column, index first', function (): void {
+    // A generated column cannot be dropped while an index references it —
+    // SQLite refuses outright. The driver owns the ordering and the syntax,
+    // which diverges again: MySQL scopes DROP INDEX to a table.
+    DB::statement($this->driver->addGeneratedColumnSql('parity_probe', 'idx_price', 'values', 'price', $this->driver->sqlType('decimal')));
+    DB::statement($this->driver->createIndexSql('parity_probe', 'parity_probe_drop_me', 'site_id', 'idx_price'));
+
+    DB::statement($this->driver->dropIndexSql('parity_probe', 'parity_probe_drop_me'));
+    DB::statement($this->driver->dropGeneratedColumnSql('parity_probe', 'idx_price'));
+
+    expect(Schema::hasColumn('parity_probe', 'idx_price'))->toBeFalse();
 });

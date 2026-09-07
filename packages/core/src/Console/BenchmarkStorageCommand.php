@@ -17,6 +17,7 @@ use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Schema\DriverFactory;
+use Kitsune\Core\Schema\SchemaDriver;
 use Kitsune\Core\Tenancy\Context;
 
 /**
@@ -55,49 +56,90 @@ final class BenchmarkStorageCommand extends Command
 
         [$org, $site, $type] = $this->fixture();
 
+        try {
+
+            for ($i = 0; $i < $indexed; $i++) {
+                $column = "bench_idx_{$i}";
+
+                if (! in_array($column, DB::getSchemaBuilder()->getColumnListing('entries'), true)) {
+                    // Ask the driver for the spelling — MySQL rejects NUMERIC
+                    // inside CAST and needs DECIMAL, which is exactly the kind of
+                    // divergence the caller must not have to know.
+                    DB::statement($driver->addGeneratedColumnSql('entries', $column, 'values', "f{$i}", $driver->sqlType('decimal')));
+                    DB::statement($driver->createIndexSql('entries', "entries_bench_{$i}", 'site_id', $column));
+                }
+            }
+
+            $insert = $this->measure(fn () => $this->seed($org, $site, $type, $rows, $locales));
+
+            $results = [
+                ['count(*)', $this->measure(fn () => Entry::count())],
+                ['list page, type + status', $this->measure(fn () => Entry::ofType('article')->published()->orderByDesc('published_at')->limit(25)->get())],
+                // The unique index is (site_id, entry_type_id, slug), so a query
+                // omitting entry_type_id only uses a prefix. And with locales > 1
+                // the slugs carry a locale suffix, so the old probe looked for a
+                // row that never existed and timed an index MISS.
+                ['slug lookup (unique index)', $this->measure(fn () => Entry::where('entry_type_id', $type->getKey())
+                    ->where('slug', $locales === 1 ? 'bench-'.intdiv($rows, 2) : 'bench-'.intdiv($rows, 2).'-0')
+                    ->first())],
+                ['title LIKE (no index)', $this->measure(fn () => Entry::where('title', 'like', '%500%')->limit(25)->get())],
+            ];
+
+            if ($indexed > 0) {
+                $results[] = ['generated column range', $this->measure(fn () => Entry::whereBetween('bench_idx_0', [10, 200])->limit(25)->get())];
+            }
+
+            $this->newLine();
+            $this->line(sprintf('  %-32s %10s', 'operation', 'ms'));
+            $this->line('  '.str_repeat('─', 43));
+            $this->line(sprintf('  %-32s %10.1f', "insert {$total} rows", $insert));
+
+            foreach ($results as [$label, $ms]) {
+                $flag = $ms > 200 ? ' ⚠️ over the 200ms Phase 4 target' : '';
+                $this->line(sprintf('  %-32s %10.1f%s', $label, $ms, $flag));
+            }
+
+            $this->newLine();
+            $this->line('  table bytes: <info>'.number_format($this->tableBytes($driver->name())).'</info>');
+
+            return self::SUCCESS;
+        } finally {
+            if (! $this->option('keep')) {
+                $this->cleanUp($org, $site, $indexed, $driver);
+            }
+        }
+    }
+
+    /**
+     * Remove only what this command created.
+     *
+     * The first version bypassed the scopes and force-deleted every row whose
+     * slug matched `bench-%`, across every customer on the installation. On a
+     * box with real content that is data loss, not cleanup — the escape hatch
+     * exists for provisioning, not for a DELETE with a LIKE in it.
+     *
+     * Cleanup also has to drop the generated columns. Leaving them attached
+     * means a later --indexed=0 run still computes and maintains them, so
+     * results depend on the order the benchmarks were run in.
+     */
+    private function cleanUp(Org $org, Site $site, int $indexed, SchemaDriver $driver): void
+    {
+        Entry::query()
+            ->where('org_id', $org->getKey())
+            ->where('site_id', $site->getKey())
+            ->where('slug', 'like', 'bench-%')
+            ->forceDelete();
+
         for ($i = 0; $i < $indexed; $i++) {
             $column = "bench_idx_{$i}";
 
-            if (! in_array($column, DB::getSchemaBuilder()->getColumnListing('entries'), true)) {
-                // Ask the driver for the spelling — MySQL rejects NUMERIC
-                // inside CAST and needs DECIMAL, which is exactly the kind of
-                // divergence the caller must not have to know.
-                DB::statement($driver->addGeneratedColumnSql('entries', $column, 'values', "f{$i}", $driver->sqlType('decimal')));
-                DB::statement($driver->createIndexSql('entries', "entries_bench_{$i}", 'site_id', $column));
+            if (in_array($column, DB::getSchemaBuilder()->getColumnListing('entries'), true)) {
+                // Index first: a generated column cannot be dropped while an
+                // index references it, and SQLite refuses outright.
+                DB::statement($driver->dropIndexSql('entries', "entries_bench_{$i}"));
+                DB::statement($driver->dropGeneratedColumnSql('entries', $column));
             }
         }
-
-        $insert = $this->measure(fn () => $this->seed($org, $site, $type, $rows, $locales));
-
-        $results = [
-            ['count(*)', $this->measure(fn () => Entry::count())],
-            ['list page, type + status', $this->measure(fn () => Entry::ofType('article')->published()->orderByDesc('published_at')->limit(25)->get())],
-            ['slug lookup (unique index)', $this->measure(fn () => Entry::where('slug', 'bench-'.intdiv($rows, 2))->first())],
-            ['title LIKE (no index)', $this->measure(fn () => Entry::where('title', 'like', '%500%')->limit(25)->get())],
-        ];
-
-        if ($indexed > 0) {
-            $results[] = ['generated column range', $this->measure(fn () => Entry::whereBetween('bench_idx_0', [10, 200])->limit(25)->get())];
-        }
-
-        $this->newLine();
-        $this->line(sprintf('  %-32s %10s', 'operation', 'ms'));
-        $this->line('  '.str_repeat('─', 43));
-        $this->line(sprintf('  %-32s %10.1f', "insert {$total} rows", $insert));
-
-        foreach ($results as [$label, $ms]) {
-            $flag = $ms > 200 ? ' ⚠️ over the 200ms Phase 4 target' : '';
-            $this->line(sprintf('  %-32s %10.1f%s', $label, $ms, $flag));
-        }
-
-        $this->newLine();
-        $this->line('  table bytes: <info>'.number_format($this->tableBytes($driver->name())).'</info>');
-
-        if (! $this->option('keep')) {
-            Entry::withoutScopeBecause('benchmark cleanup', fn ($q) => $q->where('slug', 'like', 'bench-%')->forceDelete());
-        }
-
-        return self::SUCCESS;
     }
 
     /** @return array{0: Org, 1: Site, 2: EntryType} */
@@ -165,9 +207,26 @@ final class BenchmarkStorageCommand extends Command
     {
         try {
             return match ($engine) {
-                'sqlite' => (int) DB::selectOne("SELECT SUM(pgsize) AS b FROM dbstat WHERE name='entries'")?->b,
+                // dbstat names each B-tree separately, so filtering on the
+                // table name alone counts the table and excludes every index
+                // — including the generated-column one. Postgres and MySQL
+                // both include indexes, so that undercounted SQLite and made
+                // the cross-engine comparison wrong.
+                'sqlite' => (int) DB::selectOne(
+                    "SELECT SUM(pgsize) AS b FROM dbstat WHERE name = 'entries' OR name IN (SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='entries')"
+                )?->b,
                 'pgsql' => (int) DB::selectOne("SELECT pg_total_relation_size('entries') AS b")?->b,
-                'mysql' => (int) DB::selectOne('SELECT data_length + index_length AS b FROM information_schema.tables WHERE table_name = ?', ['entries'])?->b,
+                // information_schema statistics are cached and approximate,
+                // and without a schema filter this can read another database
+                // entirely. It reported 131 KB for 100k rows before ANALYZE.
+                'mysql' => (function (): int {
+                    DB::statement('ANALYZE TABLE entries');
+
+                    return (int) DB::selectOne(
+                        'SELECT data_length + index_length AS b FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?',
+                        ['entries'],
+                    )?->b;
+                })(),
                 default => 0,
             };
         } catch (\Throwable) {

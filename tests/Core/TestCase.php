@@ -46,6 +46,9 @@ abstract class TestCase extends Orchestra
     protected function defineDatabaseMigrations(): void
     {
         $this->loadMigrationsFrom(__DIR__.'/../../packages/core/database/migrations');
+        // Fixture tables live here rather than in beforeEach(), because DDL
+        // implicitly commits on MySQL and breaks RefreshDatabase's rollback.
+        $this->loadMigrationsFrom(__DIR__.'/migrations');
     }
 
     /**

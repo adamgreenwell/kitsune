@@ -69,6 +69,12 @@ final class MySqlDriver implements SchemaDriver
         );
     }
 
+    public function dropIndexSql(string $table, string $index): string
+    {
+        // MySQL scopes DROP INDEX to a table; the other two do not.
+        return sprintf('DROP INDEX %s ON %s', $this->quote($index), $this->quote($table));
+    }
+
     public function quote(string $identifier): string
     {
         return '`'.str_replace('`', '``', $identifier).'`';

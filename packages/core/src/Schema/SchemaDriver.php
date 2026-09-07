@@ -65,6 +65,16 @@ interface SchemaDriver
     /** SQL creating a composite index. Callers lead with the scope key (ADR-021). */
     public function createIndexSql(string $table, string $index, string ...$columns): string;
 
+    /**
+     * SQL dropping an index.
+     *
+     * Needed as its own operation because a generated column cannot be
+     * dropped while an index still references it — SQLite refuses outright.
+     * The syntax also diverges: MySQL scopes DROP INDEX to a table, the
+     * others do not.
+     */
+    public function dropIndexSql(string $table, string $index): string;
+
     /** Identifier quoting. `values` is reserved on more than one engine. */
     public function quote(string $identifier): string;
 }
