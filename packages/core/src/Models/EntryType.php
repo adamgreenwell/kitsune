@@ -14,6 +14,7 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Kitsune\Core\Exceptions\ReservedHandleException;
 use Kitsune\Core\Tenancy\Attributes\Unscoped;
 use Kitsune\Core\Tenancy\Context;
 
@@ -38,6 +39,15 @@ class EntryType extends Model
      */
     public const RESERVED_HANDLES = [
         'create', 'edit', 'delete', 'update', 'view', 'index',
+        // Registered by EntryResource::getPages(). Adding a page without
+        // adding its segment here reopens the collision — this entry exists
+        // because exactly that happened with /{type}/{record}/related.
+        //
+        // Both the URL segment and the page key are reserved. They differ
+        // here ('related' vs 'relations'), and reserving one word nobody
+        // needs as an entry type costs nothing next to a route collision
+        // that cannot be escaped away.
+        'related', 'relations',
     ];
 
     protected $guarded = [];
@@ -74,6 +84,20 @@ class EntryType extends Model
     public function isReservedHandle(): bool
     {
         return in_array(strtolower($this->handle), self::RESERVED_HANDLES, true);
+    }
+
+    protected static function booted(): void
+    {
+        // Rejected at creation time, not escaped later. The collision is with
+        // the URL contract, not with SQL: a type named "create" would make
+        // /c/create/create ambiguous, and no amount of escaping fixes that
+        // (ADR-012). Knowing the handle is reserved was never the hard part —
+        // enforcing it was, and until now nothing did.
+        static::saving(function (self $type): void {
+            if ($type->isDirty('handle') && $type->isReservedHandle()) {
+                throw new ReservedHandleException($type->handle);
+            }
+        });
     }
 
     /** @return BelongsTo<Org, $this> */

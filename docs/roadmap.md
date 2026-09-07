@@ -136,17 +136,17 @@ The routing question is **already settled** — ADR-012 was resolved by a workin
 ADR-012 removed the boot-order collision structurally — the route table no longer depends on org or site state. What remains is enforcement.
 
 - [x] `Org`, `SiteGroup` and `Site` models; `Context` carrying the current org and site (ADR-021). Deliberately Filament-independent — core is headless-capable, so the API and console get the same enforcement
-- [ ] Site resolution middleware (populating `Context` from a request)
+- [x] Site resolution middleware — `SetKitsuneContext` mirrors Filament's resolved tenant into Kitsune's own `Context`, which is what the global scopes read
 - [x] **`#[SiteScoped]` / `#[OrgScoped]` / `#[Unscoped]` mandatory on every model.** Undeclared throws at boot. **Fail closed**
 - [x] `EnforcesScope` applying the right global scope from the attribute, and stamping the scope key on create
 - [x] ⚠️ **`OrgScope`, Kitsune-authored, for `#[OrgScoped]` models.** Filament gives them no scope at all
 - [x] Settings resolution: org → site group → site — sparse overrides, shallow merge, provenance on every value (ADR-022). Admin rendering of it comes with the panel
-- [ ] `entry_type_availability` — per-site entry types on the same inheritance
+- [x] `entry_type_availability` — per-site entry types on the same sparse inheritance as settings; resolution batched so navigation costs one query rather than one per type
 - [x] Resolved-config memoisation, invalidated on write
-- [ ] `scopedUnique()` / `scopedExists()` as form-layer **defaults**
+- [x] `scopedUnique()` / `scopedExists()` — go through Eloquent so global scopes apply, and are wired into the entry form. Laravel's `unique` would tell one org that another holds a slug; its `exists` would accept another org's id and let the app write a reference to it
 - [ ] **`IdentifyEntryType` middleware, `isPersistent: true`** — validates `{type}` exists, belongs to the current org, *and* is enabled for the current site (ADR-022), **404s otherwise**, and sets `URL::defaults(['type' => ...])`. `{type}` is user-controlled URL input; this is a security boundary, not a convenience
-- [ ] Reserved type-handle list (`create`, `edit`, `delete`, + Filament page segments), enforced at type creation
-- [ ] Every composite index leads with its scope key — `site_id` for `#[SiteScoped]` models, `org_id` for `#[OrgScoped]` (ADR-021)
+- [x] Reserved type-handle list, **enforced** at save time rather than merely known — the exception says why, since the collision is with the URL contract and escaping cannot fix it
+- [x] Every composite index leads with its scope key — `site_id` for `#[SiteScoped]` models, `org_id` for `#[OrgScoped]` (ADR-021), as written in the tenancy and schema migrations
 - [x] **Two deliberately hostile test groups** — cross-site within one org, and cross-org, both written from the attacker's side. Includes the org-shared case, where a bare `site_id IS NULL` check would expose every org's shared media
 
 ## Phase 3 — Kernel
