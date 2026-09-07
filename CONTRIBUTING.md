@@ -40,6 +40,16 @@ Concretely, in rough order of value:
 3. **The open questions.** Listed at the bottom of the decision log. The highest-risk unknown right now is whether Filament relation managers survive an extra route parameter.
 4. **Documentation fixes.** Typos, broken links, unclear passages.
 
+### A note on the wiki
+
+The [GitHub wiki](https://github.com/adamgreenwell/kitsune/wiki) holds two kinds of page and they never overlap.
+
+**Generated pages** — the ADR index and roadmap status — are built from `docs/` by `php bin/wiki-sync.php` and carry a do-not-edit banner. Edit the source document and regenerate; a fix applied to the wiki is overwritten on the next sync.
+
+**Hand-written pages** cover ground `docs/` does not: orientation, FAQs, how-tos. Those are edited in the wiki directly.
+
+`docs/` is the source of truth either way. It is versioned with the code and gated by the amendment rule above; nothing gates a wiki page. **If a wiki page contradicts `docs/`, the document wins.**
+
 **Issues and discussions are open. Feature PRs are not.**
 
 ---
