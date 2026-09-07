@@ -205,7 +205,13 @@ Data model is specified in [`architecture.md`](architecture.md) §3.
   ⚠️ **Three defects the PHP suite structurally could not see, all found by opening a browser** — the same shape as the ADR-012 spike, and why ADR-024 makes the browser layer mandatory. The list page 500d on Filament's tenant scoping (the tenant is a Site; schema is org-owned). The create-field modal 500d because the registry fails closed and the form's empty initial state called `get('')`. And a `number` field silently defaulted to **integer** — suppressing the select's placeholder made the browser submit the first option, so a field declared `decimal` would have truncated every value.
 
   A fourth was found writing the browser tests: the field list is a **lazy** Livewire component, so at 1280×720 it sits below the fold and never mounts. The spec scrolls, as a user does
-- [ ] Revisions and drafts
+- [x] **Revisions and drafts** — a revision per saved version, recorded after the write and only when something versioned changed. Revisions snapshot the promoted columns alongside `values`, because a revision holding only `values` restores an entry with no title, which is worse than having no revisions at all.
+
+  **Restoring adds a version rather than rewriting history**: restoring version 1 leaves versions 2 and 3 in place and appends version 4. Rewriting would make *what did this say last Tuesday* unanswerable, which is the question revisions exist to answer. There is deliberately **no delete** — erasure goes through `redactField()`, which replaces in place so the history of *what changed when* survives an erasure of *what it said* (ADR-020).
+
+  Retention is capped at `Entry::KEEP_REVISIONS` (50). The decision log's *revision storage growth — full-JSON snapshots get expensive; consider diffs* is still open; a bound applied on write is the honest interim answer, and diffs would raise that number rather than remove it.
+
+  ⚠️ **Two defects found by clicking it.** `wasRecentlyCreated` stays true for the lifetime of an instance, so every later save on a freshly created entry recorded another revision — fixed by hooking `created` and `updated` separately. And a restore left the **pre-restore values sitting in the form**, so the next save wrote them back and silently undid the restore the user had just watched succeed
 
 **Done when:** a non-developer builds a working "Products" entity with ten field types, relations and permissions entirely through the admin, on 100k rows, with no query over 200ms.
 

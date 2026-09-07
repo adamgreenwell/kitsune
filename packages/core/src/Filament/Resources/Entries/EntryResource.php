@@ -141,6 +141,14 @@ class EntryResource extends Resource
             : $query;
     }
 
+    public static function getRelations(): array
+    {
+        // A relation manager COMPONENT registers no routes of its own (spike
+        // #10), so this adds no URL that would need {type} threading through
+        // it and no new reserved type handle.
+        return [RelationManagers\RevisionsRelationManager::class];
+    }
+
     public static function getPages(): array
     {
         // Hard-coded segments BEFORE wildcards, or /{type}/create is

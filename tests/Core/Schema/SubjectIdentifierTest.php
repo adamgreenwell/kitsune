@@ -160,9 +160,12 @@ describe('erasure reaches revision history (ADR-020)', function (): void {
     it('erases the field from the entry AND every revision', function (): void {
         // Article revision 4 still holds the name just erased — the exact
         // reason immutable revisions were rejected.
+        //
+        // Four revisions, not three: creating the entry records one
+        // automatically, and that one holds the email too.
         $rewritten = $this->entry->redactField('email');
 
-        expect($rewritten)->toBe(4)
+        expect($rewritten)->toBe(5)
             ->and($this->entry->fresh()->values['email'])->toBeNull()
             ->and(EntryRevision::where('entry_id', $this->entry->id)->get()
                 ->every(fn (EntryRevision $r): bool => $r->values['email'] === null))->toBeTrue();
@@ -171,14 +174,18 @@ describe('erasure reaches revision history (ADR-020)', function (): void {
     it('keeps the revision rows, so the history of WHAT CHANGED survives', function (): void {
         $this->entry->redactField('email');
 
-        expect(EntryRevision::where('entry_id', $this->entry->id)->count())->toBe(3);
+        // Three authored plus the one the create recorded. Erasure replaces
+        // in place and adds none of its own — filing the redacted state as a
+        // new version would add a row to the history it is clearing.
+        expect(EntryRevision::where('entry_id', $this->entry->id)->count())->toBe(4);
     });
 
     it('leaves other fields alone', function (): void {
         $this->entry->redactField('email');
 
         expect($this->entry->fresh()->values['notes'])->toBe('keep me')
-            ->and(EntryRevision::where('entry_id', $this->entry->id)->first()->values['notes'])->toBe('draft 0');
+            ->and(EntryRevision::where('entry_id', $this->entry->id)->where('note', null)
+                ->orderBy('id')->skip(1)->first()->values['notes'])->toBe('draft 0');
     });
 
     it('accepts a replacement rather than only a null', function (): void {
@@ -409,8 +416,12 @@ describe('a promoted subject lives in its own column', function (): void {
     });
 
     it('erases the column rather than a JSON key that never held it', function (): void {
-        expect($this->entry->redactField('slug'))->toBe(1)
-            ->and($this->entry->fresh()->slug)->toBeNull();
+        // Two: the entry's own column, and the revision the create recorded —
+        // revisions snapshot the promoted columns too, so erasure has to
+        // reach them there as well.
+        expect($this->entry->redactField('slug'))->toBe(2)
+            ->and($this->entry->fresh()->slug)->toBeNull()
+            ->and(EntryRevision::where('entry_id', $this->entry->id)->value('slug'))->toBeNull();
     });
 
     it('reports reaching nothing when it is already erased', function (): void {

@@ -41,6 +41,7 @@ use RuntimeException;
  * @property int $org_id
  * @property int $entry_type_id
  * @property string $type_handle
+ * @property int|null $author_id
  * @property string|null $slug
  * @property string|null $title
  * @property string $status
@@ -51,6 +52,15 @@ class Entry extends Model implements RequiresModelSave
 {
     use EnforcesScope;
     use SoftDeletes;
+
+    /**
+     * Mirrors the column default, so the in-memory model is not lying.
+     *
+     * Without it a freshly created entry has no `status` until it is read
+     * back, which made the revision snapshot record NULL for a column the
+     * database declares NOT NULL.
+     */
+    protected $attributes = ['status' => 'draft'];
 
     protected $guarded = [];
 
@@ -151,6 +161,31 @@ class Entry extends Model implements RequiresModelSave
         // was reachable only by a caller who had remembered to set the flag
         // by hand. A lock nobody arms is a comment.
         static::saved(fn (self $entry) => $entry->lockStorageHoldingData());
+
+        // A revision per saved version, recorded AFTER the write.
+        //
+        // After, not before: a revision describing a save that then failed is
+        // a history of things that never happened. And the entry row is the
+        // current version rather than a pointer into history, so revision N
+        // is a snapshot of what the entry became — the shape that answers
+        // "what did this say last Tuesday" directly.
+        // ⚠️ created and updated separately, NOT saved + wasRecentlyCreated.
+        // That flag stays true for the lifetime of the instance, so every
+        // later save on a freshly created entry recorded another revision —
+        // including saves that changed nothing versioned at all.
+        static::created(function (self $entry): void {
+            if ($entry->recordsRevisions) {
+                $entry->recordRevision();
+            }
+        });
+
+        static::updated(function (self $entry): void {
+            // Only the versioned surface. Touching `updated_at` or restamping
+            // `type_handle` is not a new version of the content.
+            if ($entry->recordsRevisions && $entry->hasVersionedChanges()) {
+                $entry->recordRevision();
+            }
+        });
     }
 
     /**
@@ -235,6 +270,56 @@ class Entry extends Model implements RequiresModelSave
     public function newEloquentBuilder($query): AuditedBuilder
     {
         return new AuditedBuilder($query, $this);
+    }
+
+    /** Whether this save changed anything a reader would call a new version. */
+    private function hasVersionedChanges(): bool
+    {
+        foreach ([...EntryRevision::SNAPSHOT_ATTRIBUTES, 'values'] as $attribute) {
+            if ($this->wasChanged($attribute)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function recordRevision(): void
+    {
+        // getAttribute, not only(): `only()` returns nothing for an attribute
+        // the instance never set, so an entry created without an explicit
+        // status snapshotted NULL and hit the revision's NOT NULL constraint.
+        $snapshot = [];
+
+        foreach (EntryRevision::SNAPSHOT_ATTRIBUTES as $attribute) {
+            $snapshot[$attribute] = $this->getAttribute($attribute);
+        }
+
+        $this->revisions()->create([
+            ...$snapshot,
+            'values' => $this->values,
+            'author_id' => $this->author_id,
+        ]);
+
+        $this->pruneRevisions();
+    }
+
+    /**
+     * Keep the most recent KEEP_REVISIONS, drop the rest.
+     *
+     * Deleted rather than archived: an entry edited a thousand times would
+     * otherwise carry a thousand full JSON snapshots, and ADR-027's floor is
+     * one vCPU and a SQLite file. The bound is applied on write so the cost
+     * cannot accumulate quietly between maintenance windows.
+     */
+    private function pruneRevisions(): void
+    {
+        $keep = $this->revisions()
+            ->orderByDesc('id')
+            ->limit(self::KEEP_REVISIONS)
+            ->pluck('id');
+
+        $this->revisions()->whereKeyNot($keep)->delete();
     }
 
     /**
@@ -460,23 +545,35 @@ class Entry extends Model implements RequiresModelSave
         }
 
         if ($storage?->strategy() === StorageStrategy::Promoted) {
-            // ⚠️ The declared column, NOT the handle. `field_storage` accepts
-            // any valid handle for a `slug` field, so one called
+            // ⚠️ The declared column, NOT the handle. `field_storage`
+            // accepts any valid handle for a `slug` field, so one called
             // `public_slug` still writes `entries.slug` — and reading the
             // handle read a column that does not exist, then reported a
             // successful erasure having erased nothing.
             $column = (string) $storage->promotedColumn();
 
-            if ($this->getAttribute($column) === $replacement) {
-                return 0;
+            $rewritten = 0;
+
+            if ($this->getAttribute($column) !== $replacement) {
+                // withoutRevisions, because an erasure is not an authored
+                // version — filing the redacted state as a new revision would
+                // add a row to the very history it is clearing.
+                $this->withoutRevisions(function (self $entry) use ($column, $replacement): void {
+                    $entry->setAttribute($column, $replacement);
+                    $entry->save();
+                });
+
+                $rewritten++;
             }
 
-            $this->setAttribute($column, $replacement);
-            $this->save();
+            // Revisions snapshot the promoted columns too, so the sweep has to
+            // reach them there as well — by the same column name, for the same
+            // reason.
+            foreach ($this->revisions()->get() as $revision) {
+                $rewritten += $revision->redact($column, $replacement) ? 1 : 0;
+            }
 
-            // Revisions snapshot `values` only, so a promoted column has no
-            // revision history to sweep — the column IS the whole record.
-            return 1;
+            return $rewritten;
         }
 
         $rewritten = 0;
@@ -484,9 +581,11 @@ class Entry extends Model implements RequiresModelSave
         $values = $this->values ?? [];
 
         if (array_key_exists($handle, $values)) {
-            $values[$handle] = $replacement;
-            $this->values = $values;
-            $this->save();
+            $this->withoutRevisions(function (self $entry) use ($values, $handle, $replacement): void {
+                $entry->values = [...$values, $handle => $replacement];
+                $entry->save();
+            });
+
             $rewritten++;
         }
 
@@ -503,6 +602,70 @@ class Entry extends Model implements RequiresModelSave
         return $this->related()
             ->wherePivot('field_storage_id', $storage->getKey())
             ->pluck('entries.id');
+    }
+
+    /**
+     * How many revisions an entry keeps.
+     *
+     * The decision log lists "revision storage growth — full-JSON snapshots
+     * get expensive; consider diffs" as an open question, and it is still
+     * open. Retention is the honest interim answer: a bound that is applied
+     * rather than a cost that accumulates silently while the question waits.
+     * Diffs remain the better fix and would raise this number, not remove it.
+     */
+    public const KEEP_REVISIONS = 50;
+
+    /**
+     * Whether saving records a revision, per entry rather than globally.
+     *
+     * `withoutRevisions()` is the seam for work that MUST NOT appear as an
+     * authored change — a restore writing the state it just read back, and
+     * the second half of an erasure, which would otherwise file the redacted
+     * values as a new revision every time it ran.
+     */
+    protected bool $recordsRevisions = true;
+
+    /**
+     * Every saved version, newest first.
+     *
+     * @return HasMany<EntryRevision, $this>
+     */
+    public function revisionHistory(): HasMany
+    {
+        return $this->revisions()->orderByDesc('id');
+    }
+
+    /**
+     * Put a revision's state back, as a NEW revision.
+     *
+     * History is append-only in the sense that matters: restoring version 3
+     * does not delete versions 4 and 5, it adds version 6 that happens to
+     * match 3. Rewriting history would make "what did this say last Tuesday"
+     * unanswerable, which is the question revisions exist to answer.
+     */
+    public function restoreRevision(EntryRevision $revision): self
+    {
+        if ($revision->entry_id !== $this->getKey()) {
+            throw new RuntimeException(
+                "Revision [{$revision->getKey()}] belongs to another entry and cannot be restored onto this one."
+            );
+        }
+
+        $this->fill($revision->snapshot())->save();
+
+        return $this;
+    }
+
+    /** Run a save that leaves no revision behind. */
+    public function withoutRevisions(callable $work): mixed
+    {
+        $this->recordsRevisions = false;
+
+        try {
+            return $work($this);
+        } finally {
+            $this->recordsRevisions = true;
+        }
     }
 
     /** @return HasMany<EntryRevision, $this> */

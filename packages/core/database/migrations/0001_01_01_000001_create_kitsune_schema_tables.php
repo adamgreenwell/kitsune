@@ -129,16 +129,28 @@ return new class extends Migration
             $table->index('target_entry_id');
         });
 
+        // ADR-020: field-level redactable, never an immutable blob. Erasure
+        // has to reach revision history, because revision 4 still holds the
+        // name just erased.
+        //
+        // The promoted columns are snapshotted alongside `values` so a
+        // restore is faithful — a revision holding only `values` restores an
+        // entry with no title, which is a worse outcome than no revisions at
+        // all. It also means erasure has to sweep them, and it does.
         Schema::create('entry_revisions', function (Blueprint $table): void {
             $table->id();
             $table->foreignId('entry_id')->constrained()->cascadeOnDelete();
             $table->json('values')->nullable();
             $table->string('status')->default('draft');
+            $table->string('title')->nullable();
+            $table->string('slug')->nullable();
+            $table->timestamp('published_at')->nullable();
             $table->foreignId('author_id')->nullable();
             $table->string('note')->nullable();
             $table->timestamps();
 
             $table->index(['entry_id', 'created_at']);
+            $table->index(['entry_id', 'id']);
         });
 
         // ADR-022: per-site entry types on the same sparse inheritance.
