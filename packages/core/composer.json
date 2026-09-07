@@ -5,7 +5,8 @@
     "type": "library",
     "require": {
         "php": "^8.4",
-        "illuminate/support": "^13.0"
+        "illuminate/support": "^13.0",
+        "filament/filament": "^5.4"
     },
     "require-dev": {
         "orchestra/testbench": "^11.2",

@@ -1,7 +1,11 @@
 {
     "name": "kitsune/kitsune",
     "description": "A Kitsune site. Install with: composer create-project kitsune/kitsune",
-    "keywords": ["kitsune", "cms", "laravel"],
+    "keywords": [
+        "kitsune",
+        "cms",
+        "laravel"
+    ],
     "license": "MPL-2.0",
     "type": "project",
     "require": {
@@ -25,7 +29,15 @@
             "@php -r \"file_exists('.env') || copy('.env.example', '.env');\"",
             "@php artisan key:generate --ansi",
             "@php -r \"file_exists('database/database.sqlite') || touch('database/database.sqlite');\"",
-            "@php artisan migrate --graceful --ansi"
+            "@php artisan migrate --graceful --ansi",
+            "@php artisan filament:assets --ansi"
+        ],
+        "post-autoload-dump": [
+            "Illuminate\\Foundation\\ComposerScripts::postAutoloadDump",
+            "@php artisan package:discover --ansi"
+        ],
+        "post-update-cmd": [
+            "@php artisan vendor:publish --tag=laravel-assets --ansi --force"
         ]
     },
     "extra": {
