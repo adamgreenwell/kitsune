@@ -880,7 +880,7 @@ Shipping a `kitsune/plugin-guidelines` package in Boost's format means an AI-ass
 
 ## ADR-026 — Self-hosting: one command, no database server, no phone-home
 
-**Status:** Decided · 2026-09-07
+**Status:** Decided · 2026-09-07 · ⚠️ **Amended by ADR-027** — the recommended default flips from Docker to the native path. Both remain supported; the original reasoning below is left as written
 
 A person with a fresh Ubuntu LTS box must be able to paste **one command** and arrive at the onboarding screen. No database server to provision, no credentials to invent, no PHP version to negotiate.
 
@@ -892,8 +892,8 @@ This is pillar three made concrete. The stated early audience is *"people who cu
 
 ADR-013 pins `^8.4`. **Ubuntu 24.04 LTS — in support until 2029 — ships PHP 8.3**, and every still-supported LTS predating the floor has the same problem. The installer therefore cannot assume a usable system PHP on a box it is entitled to run on, and there are exactly two honest ways out:
 
-- **Docker path — the recommended default.** Reproducible, immune to the distro's PHP version, and it reuses the image already built for ADR-024's CI matrix
-- **Native path.** Adds the `ondrej/php` PPA and installs to the system. For people who will not or cannot run Docker
+- **Native path — the recommended default** *(revised by ADR-027; this ADR originally recommended Docker)*. PHP-FPM and SQLite at the resource floor, with the `ondrej/php` PPA supplying the `^8.4` requirement. Leanest possible first contact
+- **Docker path — fully supported, equal in quality.** Reproducible, immune to the distro's PHP version, and it reuses the image already built for ADR-024's CI matrix. Recommended for scale, for reproducibility, or for anyone who prefers a container to a PPA
 Supporting only one of the two costs a real constituency, so both ship.
 
 ### Security posture, decided deliberately rather than by default
@@ -925,6 +925,58 @@ Re-running the installer must upgrade rather than clobber, and must detect an ex
 
 ---
 
+## ADR-027 — The resource floor is a designed constraint, with a number
+
+**Status:** Decided · 2026-09-07
+**Amends** ADR-026 — the recommended self-host default flips from Docker to the native path.
+
+**Kitsune must run well on hardware people already have.** The infrastructure bar is a product decision, not an emergent property of whatever the code ends up needing, and it is set deliberately:
+
+> **Reference floor: 1 vCPU, 1 GB RAM, SQLite, no container runtime, no external services.**
+
+That is a ~$5/month VPS, or entry-level shared hosting. It is the configuration a one-person site actually runs on, and it is the configuration the project is measured against.
+
+**This is measured, not asserted.** Standing Principle #9 applies to the project's own claims as much as to framework internals: the floor goes into the Phase 1 benchmark alongside the storage numbers, and every phase's *done when* includes still meeting it. A floor nobody measures is a floor that quietly rises.
+
+### Why this needs stating rather than being left implicit
+
+It is already the reason behind several decisions — SQLite support, the PHP 8.4 floor chosen partly because *"shared hosting lags"*, Blade + Livewire over a bundler, an installer that needs no database server. But **an unstated principle cannot be violated, only forgotten.** Each individual decision to require a little more is defensible on its own; the sum of them is Drupal 8, which raised the contributor floor and the hosting floor together and got forked over *"expensive upkeep."*
+
+Requirements creep the way the third pillar erodes: by a thousand small choices that each make sense for the larger customer.
+
+### What it forbids
+
+Core may not require, for a default single-site install: a container runtime, a separate database server, Redis or Memcached, Elasticsearch or any search daemon, Node at runtime, or a always-on worker process. Anything in that list may be **supported and recommended at scale** — none of it may be **required to get to the onboarding screen or to run a small site**.
+
+Full-text search must therefore work on native Postgres/MySQL/SQLite facilities at the floor. Background work must degrade to synchronous or cron-driven execution when no worker is running.
+
+### What it costs, stated honestly
+
+This is not free, and pretending otherwise would make it a slogan:
+
+- **It constrains the schema engine.** No assuming a cache server for resolved settings (ADR-022), no assuming a search daemon for global search, no assuming a queue for blueprint application
+- **It taxes the write-amplifying decisions.** ADR-017 fans shared fields out to every locale row on write, ADR-016 writes an `entries` row per media asset, and ADR-006 pays write throughput per generated column. Each is correct for read performance and each costs more on one vCPU. **The floor must be benchmarked with those behaviours switched on, not on an idealised empty table**
+- **It sharpens the unresolved pillar-three tension.** The decision log already records "accessible to small vs. accessible to large" as *partially unresolved*. This ADR resolves the *floor* half and deliberately leaves the ceiling to configuration
+- **It will occasionally lose an argument it should win.** Some future feature will be genuinely better with Redis. The answer is that it may use Redis when present and must work without it
+
+| Rejected | Why it lost |
+|---|---|
+| Leave the floor implicit, as a value rather than a rule | Values do not fail builds. Every requirement added is locally defensible; only a stated floor makes the *sum* reviewable. |
+| Set the floor by what the code happens to need | That is not a floor, it is a readout. It rises monotonically and nobody is ever responsible for it rising. |
+| A lower floor — 512 MB, no swap | Attractive, but Livewire renders are PHP-heavy and Filament's admin is not a static page. Setting a floor the project cannot actually hold would be worse than setting an honest one. Revisit with Phase 1 numbers rather than guessing now. |
+| A higher floor — assume Docker and 2 GB | Excludes shared hosting and the cheapest VPS tier, which is precisely the constituency pillar three exists for, and precisely the constituency Backdrop forked to serve. |
+| Docker as the recommended self-host default (ADR-026 as originally written) | Reproducible, but a container runtime is the single largest fixed cost available to add, and recommending it by default contradicts this floor on the very page where most operators meet the project. See below. |
+
+### Consequence — ADR-026's recommended default flips
+
+ADR-026 offered two install paths and named **Docker** the recommended default, on reproducibility grounds. Under this ADR that is the wrong default: it recommends the heaviest option at the moment of first contact.
+
+**The native path becomes the documented default** — PHP-FPM, SQLite, no container runtime, at the floor. **Docker remains fully supported and equal in quality**, recommended for people who want reproducibility, who are running at scale, or whose distro PHP sits below the `^8.4` floor and who prefer a container to a PPA. Both paths stay first-class; only the recommendation changes.
+
+**Commercial interest, per ADR-023.** Interests mostly align here — a leaner core means more tenants per box on KaaS. The exception is the same one ADR-026 already discloses: the lower the self-host floor, the more optional the hosted service becomes. Disclosed once there; not re-litigated here.
+
+---
+
 ## Standing principles
 
 From prior-art analysis of Drupal, October, Winter, Statamic, Directus, Strapi, Payload, Backdrop and ClassicPress.
@@ -938,6 +990,7 @@ From prior-art analysis of Drupal, October, Winter, Statamic, Directus, Strapi, 
 7. **A fork preserves code and loses the ecosystem.** Backdrop: 4,305 installs after 13 years vs Drupal's 474,292. ClassicPress: <0.1% share, 9 committers, under $2,000/year. This cuts both ways — it's also why *being forked* is survivable, and why trademark matters more than license terms.
 8. **Always ship a data export path.** Never trap users. Ethical requirement, not a feature.
 9. **Measure, don't reason, about framework internals.** ADR-012 was settled by an instrumented spike that disproved the design reasoning had produced. Two hours of measurement beat six months of assumption.
+10. **Keep the resource floor low, deliberately.** WordPress's reach is inseparable from running on the cheapest hosting available; Drupal 8 raised the contributor floor and the hosting floor together and was forked over *"expensive upkeep."* Requirements creep the way the third pillar erodes — one locally defensible addition at a time. The floor is a number, it is measured every phase, and it is in ADR-027.
 
 ---
 

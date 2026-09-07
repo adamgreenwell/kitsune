@@ -79,6 +79,7 @@ The routing question is **already settled** — ADR-012 was resolved by a workin
 - [ ] **Generated-column parity across Postgres, MySQL and SQLite.** Syntax and JSON path operators all differ, and SQLite needs VIRTUAL rather than STORED columns. Prove the driver abstraction holds before building field types on it
 - [ ] **Accessibility and RTL audit of Filament v5.** *(Playwright from Phase 0 drives the automated half; the screen-reader pass is manual and cannot be automated.)* How much WCAG conformance and RTL layout do you inherit versus build? Automated checkers won't answer this — drive the entry editor with a screen reader. Same afternoon as the RTL render check
 - [ ] **Storage benchmark** at 10k / 100k / 1M entries on all three engines — include the row multiplication from translation (ADR-017) and one `entries` row per media asset (ADR-016)
+- [ ] ⚠️ **Resource-floor benchmark (ADR-027)** — the admin, on **1 vCPU / 1 GB RAM / SQLite / no container runtime**, with translation fan-out and generated-column writes switched **on**. This is the number the floor is held to, and every later phase re-checks it
 
 **Done when:** you have numbers, written down.
 
@@ -159,8 +160,8 @@ Drupal spent ~a decade proving a runtime schema engine *without* opinionated sta
 - [ ] Semantic versioning commitment and published upgrade policy
 - [ ] Staffed security disclosure process
 - [ ] **One-command self-host installer** (ADR-026) — paste one command on a fresh Ubuntu LTS box, end at the onboarding screen:
-  - [ ] **Docker path** (recommended default), reusing the Phase 0 CI image
-  - [ ] **Native path** via the `ondrej/php` PPA, because supported LTS releases ship below the `^8.4` floor
+  - [ ] **Native path** (recommended default, ADR-027) — PHP-FPM + SQLite at the resource floor, `ondrej/php` PPA supplying `^8.4`
+  - [ ] **Docker path**, fully supported and equal in quality, reusing the Phase 0 CI image — for scale, reproducibility, or anyone preferring a container to a PPA
   - [ ] Defaults to **SQLite** — no database server, user, password or tuning
   - [ ] Versioned + **checksum-pinned** over HTTPS, signed releases, never served from a redirect
   - [ ] Docs lead with **download-inspect-run**; the `curl | bash` one-liner is offered alongside, not instead
@@ -242,6 +243,8 @@ The control plane — not the license — is the moat.
 **v1.0: roughly 13–19 months part-time**, front-loaded with a 1–2 week spike that could still invalidate parts of the design cheaply. Full original scope lands in **year 3**.
 
 Not discouraging — it's what the comparables actually cost, and Filament is a head start none of them had.
+
+**There is no external deadline, and scope is not cut to hit a date.** These numbers are a cost estimate, not a schedule: they exist because the first roadmap was wrong by 3–4x (ADR-011) and an honest number is the only defence against that recurring. Where a phase grows because a decision made it grow — Phase 6 absorbing the installer of ADR-026, Phase 0 absorbing the test matrix of ADR-024 — **the phase absorbs it and the estimate moves.** Do it right, once. What must never happen is the estimate staying still while the work grows underneath it.
 
 ---
 
