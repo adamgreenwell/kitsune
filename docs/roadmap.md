@@ -81,7 +81,13 @@ The routing question is **already settled** — ADR-012 was resolved by a workin
 - [x] **Relation managers under an extra route parameter.** ✅ **Cleared 2026-09-07** on Laravel 13.30.1 / Filament v5.7.8. Both `HasMany` and `BelongsToMany` relation managers work under `/c/{type}`; they register no routes of their own. Two new non-optional requirements fell out — see the ADR-012 amendment
 - [x] **`ManageRelatedRecords` pages under `{type}`.** ✅ **Cleared 2026-09-07.** They register their own route and work — `/c/{type}/{record}/related` returns 200, Livewire updates return 200, every generated URL carries a populated `{type}`, and Attach/Detach operate. ADR-012's URL contract has no untested corners left
 - [x] **Generated-column parity across Postgres, MySQL and SQLite.** ✅ **Cleared 2026-09-07.** `SchemaDriver` plus three implementations; the same parity suite passes on all three engines. SQLite takes VIRTUAL rather than STORED, which inverts the cost model in its favour. `values` is reserved on two of the three and must be quoted
-- [ ] **Accessibility and RTL audit of Filament v5.** *(Playwright from Phase 0 drives the automated half; the screen-reader pass is manual and cannot be automated.)* How much WCAG conformance and RTL layout do you inherit versus build? Automated checkers won't answer this — drive the entry editor with a screen reader. Same afternoon as the RTL render check
+- [x] **Accessibility and RTL audit of Filament v5** — ✅ **Automated half done 2026-09-07.** ⚠️ **The screen-reader pass remains open and cannot be automated** ([#12](https://github.com/adamgreenwell/kitsune/issues/12)).
+
+  Automated axe scanning at WCAG 2.1 A + AA across five admin page shapes — dashboard, entry list, create, edit, related records — reports **zero violations at any impact level**, including minor and moderate. That is a strong inherited baseline from Filament, and it now runs on every CI build so it cannot silently regress.
+
+  **RTL is largely inherited too.** Filament v5's chrome uses **493 logical CSS properties against 18 physical** ones, which is what makes ADR-018's "nearly free now, painful later" claim true in practice. The panel is `dir="ltr"` today; the test documents that current state rather than asserting a wish, and becomes the assertion that RTL flips the layout once a locale switcher exists.
+
+  **What is inherited versus built — the question ADR-018 asked:** essentially all of the machine-checkable baseline is inherited. What is not inherited, and is not machine-checkable, is whether the entry editor is *usable* with a screen reader. That needs a person and stays open
 - [x] **Storage benchmark** — ✅ **2026-09-07** via `php artisan kitsune:benchmark-storage`, run with the write-amplifying decisions switched on. At **100k rows with one generated column**, every read is far inside the 200 ms Phase 4 target:
 
   | | SQLite | PostgreSQL | MySQL |
