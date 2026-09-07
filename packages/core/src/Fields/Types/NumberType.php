@@ -61,6 +61,14 @@ final class NumberType extends BaseFieldType
     {
         $rules = [...parent::validationRules($config), 'numeric'];
 
+        // Without this, 12.9 passes `numeric` and toStorage() truncates it to
+        // 12 — valid-looking input silently becoming different data. Reject
+        // rather than round, because neither rounding direction is obviously
+        // what the submitter meant.
+        if ($config->setting('format') === 'integer') {
+            $rules[] = 'integer';
+        }
+
         if (($min = $config->setting('min')) !== null) {
             $rules[] = 'min:'.$min;
         }

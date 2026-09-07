@@ -80,6 +80,18 @@ interface FieldType
     public function validationRules(FieldConfig $config): array;
 
     /**
+     * Rules for EACH element of a multi-value field, applied at `handle.*`.
+     *
+     * Laravel needs a separate attribute for element rules. A rule placed in
+     * the field's own list is handed the whole array, so a per-element check
+     * never runs — which is how RelationType's cross-org `scopedExists` came
+     * to validate nothing at all while looking correct.
+     *
+     * @return array<int, mixed>
+     */
+    public function elementValidationRules(FieldConfig $config): array;
+
+    /**
      * The "configure this field" form, as a schema description.
      *
      * Deliberately data rather than Filament components: core stays

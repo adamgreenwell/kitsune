@@ -49,6 +49,21 @@ abstract class BaseFieldType implements FieldType
         return null;
     }
 
+    /**
+     * Rules for EACH element of a multi-value field, applied at `handle.*`.
+     *
+     * A separate method because Laravel needs a separate attribute for them:
+     * a rule placed in the field's own list receives the whole array, so a
+     * per-element check silently never runs. RelationType's cross-org check
+     * was doing exactly that.
+     *
+     * @return array<int, mixed>
+     */
+    public function elementValidationRules(FieldConfig $config): array
+    {
+        return [];
+    }
+
     public function toStorage(mixed $input, FieldConfig $config): mixed
     {
         return $input;

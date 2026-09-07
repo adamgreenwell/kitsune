@@ -72,17 +72,32 @@ final class RelationType extends BaseFieldType
     /** @return array<int, mixed> */
     public function validationRules(FieldConfig $config): array
     {
+        return [...parent::validationRules($config), 'array'];
+    }
+
+    /**
+     * The cross-org check, applied per id at `handle.*`.
+     *
+     * ⚠️ This lived in `validationRules()` under an `'array_keys'` key, which
+     * is not a Laravel concept. The validator handed the rule the WHOLE array,
+     * so `ScopedExists` compared the id column against an array — the check
+     * never ran, and every valid submission failed. Verified against a real
+     * validator, not read: the rule received `["rel", [5, 6]]`.
+     *
+     * @return array<int, mixed>
+     */
+    public function elementValidationRules(FieldConfig $config): array
+    {
         /** @var array<int, string> $targets */
         $targets = (array) ($config->setting('targetTypes', []) ?: []);
 
         return [
-            ...parent::validationRules($config),
-            'array',
+            'integer',
             // scopedExists, never Laravel's exists: that rule bypasses
             // Eloquent, so it would accept an entry belonging to another org
             // and the application would then write a reference to it. A
             // cross-org WRITE, not merely a leak.
-            'array_keys' => Rule::scopedExists(Entry::class, null, function ($query) use ($targets): void {
+            Rule::scopedExists(Entry::class, null, function ($query) use ($targets): void {
                 if ($targets !== []) {
                     $query->whereIn('type_handle', $targets);
                 }

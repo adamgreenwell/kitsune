@@ -91,3 +91,62 @@ describe('json escape hatch', function (): void {
         expect($this->json->isIndexable())->toBeFalse();
     });
 });
+
+/*
+ * ⚠️ Matching the literal string `javascript:` is not enough, and every case
+ * below walked past the previous rule while still executing in a browser.
+ * Reported by review; each one verified against the sanitiser before the fix.
+ */
+describe('URL schemes are allowlisted, not denylisted', function (): void {
+    it('neutralises an obfuscated script URL', function (string $html): void {
+        $out = (new RichTextType)->sanitize($html);
+
+        // Compare the way a browser would read it: entities decoded, and the
+        // characters a URL parser discards removed.
+        $asBrowserSeesIt = (string) preg_replace(
+            '#[\x00-\x20]#',
+            '',
+            html_entity_decode(html_entity_decode($out, ENT_QUOTES | ENT_HTML5), ENT_QUOTES | ENT_HTML5),
+        );
+
+        expect($asBrowserSeesIt)->not->toContain('javascript:')
+            ->and($asBrowserSeesIt)->not->toContain('vbscript:')
+            ->and($asBrowserSeesIt)->not->toContain('data:');
+    })->with([
+        'plain' => ['<a href="javascript:alert(1)">x</a>'],
+        'hex entity' => ['<a href="java&#x73;cript:alert(1)">x</a>'],
+        'decimal entity' => ['<a href="&#106;avascript:alert(1)">x</a>'],
+        'double encoded' => ['<a href="java&amp;#x73;cript:alert(1)">x</a>'],
+        'tab in scheme' => ["<a href=\"java\tscript:alert(1)\">x</a>"],
+        'newline in scheme' => ["<a href=\"java\nscript:alert(1)\">x</a>"],
+        'null byte' => ["<a href=\"java\0script:alert(1)\">x</a>"],
+        'leading whitespace' => ['<a href="  javascript:alert(1)">x</a>'],
+        'mixed case' => ['<a href="JaVaScRiPt:alert(1)">x</a>'],
+        'vbscript' => ['<a href="vbscript:msgbox(1)">x</a>'],
+        'data document' => ['<a href="data:text/html;base64,PHNjcmlwdD4=">x</a>'],
+        'img src' => ['<img src="javascript:alert(1)">'],
+        'unquoted' => ['<a href=javascript:alert(1)>x</a>'],
+        'single quoted' => ["<a href='javascript:alert(1)'>x</a>"],
+    ]);
+
+    it('leaves a legitimate URL alone', function (string $html): void {
+        // A sanitiser that breaks ordinary links gets switched off, which is
+        // the real failure mode.
+        expect((new RichTextType)->sanitize($html))->toBe($html);
+    })->with([
+        'https' => ['<a href="https://example.com/x?a=1">x</a>'],
+        'mailto' => ['<a href="mailto:a@b.test">x</a>'],
+        'tel' => ['<a href="tel:+15551234">x</a>'],
+        'root relative' => ['<a href="/about">x</a>'],
+        'anchor' => ['<a href="#top">x</a>'],
+        'protocol relative' => ['<a href="//cdn.example.com/a.png">x</a>'],
+        'image' => ['<img src="https://example.com/a.png" alt="a">'],
+    ]);
+});
+
+it('suggests `personal` for rich text, matching what its own comment says', function (): void {
+    // It explained that `none` was the wrong default and then returned it —
+    // which would have nudged every rich text field out of subject-access and
+    // erasure handling (ADR-020).
+    expect((new RichTextType)->suggestedPiiClass())->toBe('personal');
+});
