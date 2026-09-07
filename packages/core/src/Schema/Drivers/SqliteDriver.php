@@ -44,6 +44,7 @@ final class SqliteDriver implements SchemaDriver
             'integer' => 'INTEGER',
             'string' => "VARCHAR({$precision})",
             'boolean' => 'INTEGER',
+            'date' => 'TEXT',
             'datetime' => 'TEXT',
         };
     }

@@ -1,0 +1,85 @@
+<?php
+
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
+ */
+
+declare(strict_types=1);
+
+namespace Kitsune\Core\Fields\Types;
+
+use Kitsune\Core\Fields\FieldConfig;
+use Kitsune\Core\Fields\StorageStrategy;
+use Kitsune\Core\Models\Entry;
+use Kitsune\Core\Models\EntryType;
+use Kitsune\Core\Schema\SchemaDriver;
+use Kitsune\Core\Validation\Rule;
+
+/**
+ * Promoted to a real column: URL resolution touches it on every public
+ * request, and it carries a uniqueness constraint a JSON path cannot.
+ */
+final class SlugType extends BaseFieldType
+{
+    public static function handle(): string
+    {
+        return 'slug';
+    }
+
+    public static function label(): string
+    {
+        return 'Slug';
+    }
+
+    public static function icon(): string
+    {
+        return 'heroicon-o-link';
+    }
+
+    public function strategy(): StorageStrategy
+    {
+        return StorageStrategy::Promoted;
+    }
+
+    public function isIndexable(): bool
+    {
+        return true;
+    }
+
+    public function supportsCardinality(): bool
+    {
+        return false;
+    }
+
+    /** Already a real column, so there is nothing to project. */
+    public function generatedColumnType(SchemaDriver $driver): ?string
+    {
+        return null;
+    }
+
+    public function toStorage(mixed $input, FieldConfig $config): mixed
+    {
+        return $input === null || $input === '' ? null : str((string) $input)->slug()->value();
+    }
+
+    /** @return array<int, mixed> */
+    public function validationRules(FieldConfig $config): array
+    {
+        return [
+            ...parent::validationRules($config),
+            'string',
+            'max:255',
+            // scopedUnique, never Laravel's unique — that rule bypasses
+            // Eloquent and would tell one org a slug is taken because
+            // another org holds it. Scoped to the entry type as well,
+            // matching UNIQUE (site_id, entry_type_id, slug).
+            Rule::scopedUnique(Entry::class, 'slug', null, function ($query): void {
+                if (app()->bound(EntryType::class)) {
+                    $query->where('entry_type_id', app(EntryType::class)->getKey());
+                }
+            }),
+        ];
+    }
+}

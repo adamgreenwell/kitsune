@@ -13,6 +13,7 @@ namespace Kitsune\Core;
 use Illuminate\Support\ServiceProvider;
 use Kitsune\Core\Console\BenchmarkFloorCommand;
 use Kitsune\Core\Console\BenchmarkStorageCommand;
+use Kitsune\Core\Fields\FieldTypeRegistry;
 use Kitsune\Core\Tenancy\Context;
 
 final class KitsuneServiceProvider extends ServiceProvider
@@ -24,6 +25,11 @@ final class KitsuneServiceProvider extends ServiceProvider
         // One context per request. Scoped rather than singleton so a queued
         // job or a console command cannot inherit a web request's org.
         $this->app->scoped(Context::class, static fn (): Context => new Context);
+
+        // One registry per application. Modules register their own types
+        // against it during boot, which is the extension point ADR-001
+        // promises developers.
+        $this->app->singleton(FieldTypeRegistry::class, static fn (): FieldTypeRegistry => new FieldTypeRegistry);
     }
 
     public function boot(): void

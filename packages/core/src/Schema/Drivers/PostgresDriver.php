@@ -31,6 +31,7 @@ final class PostgresDriver implements SchemaDriver
             'integer' => 'BIGINT',
             'string' => "VARCHAR({$precision})",
             'boolean' => 'BOOLEAN',
+            'date' => 'DATE',
             'datetime' => 'TIMESTAMP',
         };
     }

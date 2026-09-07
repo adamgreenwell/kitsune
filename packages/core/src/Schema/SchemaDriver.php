@@ -49,7 +49,7 @@ interface SchemaDriver
      * A generated column silently created with the wrong type would index
      * the wrong thing, which is worse than failing loudly.
      *
-     * @param  'decimal'|'integer'|'string'|'boolean'|'datetime'  $logical
+     * @param  'decimal'|'integer'|'string'|'boolean'|'date'|'datetime'  $logical
      */
     public function sqlType(string $logical, int $precision = 12, int $scale = 2): string;
 

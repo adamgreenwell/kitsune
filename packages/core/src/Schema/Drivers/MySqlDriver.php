@@ -33,6 +33,7 @@ final class MySqlDriver implements SchemaDriver
             'integer' => 'SIGNED',
             'string' => "CHAR({$precision})",
             'boolean' => 'UNSIGNED',
+            'date' => 'DATE',
             'datetime' => 'DATETIME',
         };
     }
