@@ -38,7 +38,7 @@ beforeEach(function (): void {
     $this->site = Site::create([
         'org_id' => $this->org->id,
         'site_group_id' => $this->group->id,
-        'handle' => 'golfdom-fr',
+        'handle' => 'golfdom-fr', 'slug' => 'golfdom-fr',
         'name' => 'Golfdom FR',
         'locale' => 'fr',
         'settings' => ['analytics_id' => 'UA-FR-1'],

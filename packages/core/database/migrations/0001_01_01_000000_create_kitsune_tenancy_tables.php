@@ -42,7 +42,14 @@ return new class extends Migration
             $table->id();
             $table->foreignId('org_id')->constrained()->cascadeOnDelete();
             $table->foreignId('site_group_id')->nullable()->constrained()->nullOnDelete();
+            // handle stays org-unique (ADR-021): it is how an operator names
+            // a site within their own organisation.
             $table->string('handle');
+            // slug is the ROUTE key and is globally unique, because the admin
+            // URL /admin/{site} has no org segment to disambiguate it. Two
+            // orgs may legitimately both call a site "golfdom"; only one can
+            // own that URL.
+            $table->string('slug')->unique();
             $table->string('name');
             $table->string('locale')->default('en');
             $table->string('url_strategy')->default('path');

@@ -70,11 +70,26 @@ it('leaves no model in the package without a declaration', function (): void {
     // A sweep rather than a list, because the failure this guards against is
     // someone adding a model and forgetting — and a hand-maintained list has
     // exactly the same failure mode. Review caught one omission here already.
-    $dir = __DIR__.'/../../../packages/core/src/Models';
+    // Both trees. The first version of this sweep covered only the package
+    // and therefore had exactly the gap it was written to prevent — the
+    // skeleton's own User model went unchecked. Review caught that too.
+    $trees = [
+        __DIR__.'/../../../packages/core/src/Models' => 'Kitsune\\Core\\Models\\',
+        __DIR__.'/../../../skeleton/app/Models' => 'App\\Models\\',
+    ];
+
     $models = [];
 
-    foreach (glob($dir.'/*.php') ?: [] as $file) {
-        $models[] = 'Kitsune\\Core\\Models\\'.basename($file, '.php');
+    foreach ($trees as $dir => $namespace) {
+        foreach (glob($dir.'/*.php') ?: [] as $file) {
+            $class = $namespace.basename($file, '.php');
+
+            // The skeleton is a separate Composer project and is not
+            // autoloaded here, so only assert on what is actually loadable.
+            if (class_exists($class)) {
+                $models[] = $class;
+            }
+        }
     }
 
     expect($models)->not->toBeEmpty();

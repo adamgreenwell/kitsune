@@ -32,6 +32,7 @@ use Kitsune\Core\Filament\Resources\Entries\Pages\EditEntry;
 use Kitsune\Core\Filament\Resources\Entries\Pages\ListEntries;
 use Kitsune\Core\Filament\Resources\Entries\Pages\ViewEntry;
 use Kitsune\Core\Models\Entry;
+use Kitsune\Core\Models\EntryType;
 
 /**
  * One Resource for every entity type, with the type as a path segment.
@@ -95,6 +96,16 @@ class EntryResource extends Resource
     public static function getEloquentQuery(): Builder
     {
         $query = parent::getEloquentQuery();
+
+        // Filter by the RESOLVED type's id, not by the handle string.
+        //
+        // A global type and an org type may share a handle, so filtering on
+        // type_handle would mix records from two different schemas under one
+        // URL. IdentifyEntryType has already resolved exactly which type this
+        // URL means, including precedence, so use its answer.
+        if (app()->bound(EntryType::class)) {
+            return $query->where('entry_type_id', app(EntryType::class)->getKey());
+        }
 
         $type = request()->route()?->parameter('type')
             ?? original_request()->route()?->parameter('type');

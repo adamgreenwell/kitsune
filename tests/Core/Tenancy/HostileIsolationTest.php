@@ -8,6 +8,7 @@
 
 declare(strict_types=1);
 
+use Illuminate\Database\QueryException;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 use Kitsune\Core\Models\Org;
@@ -53,11 +54,11 @@ beforeEach(function (): void {
 
     $context->setOrg($this->orgA);
     $groupA = SiteGroup::create(['org_id' => $this->orgA->id, 'handle' => 'golfdom', 'name' => 'Golfdom']);
-    $this->siteA1 = Site::create(['org_id' => $this->orgA->id, 'site_group_id' => $groupA->id, 'handle' => 'golfdom-en', 'name' => 'Golfdom', 'locale' => 'en']);
-    $this->siteA2 = Site::create(['org_id' => $this->orgA->id, 'site_group_id' => $groupA->id, 'handle' => 'golfdom-fr', 'name' => 'Golfdom FR', 'locale' => 'fr']);
+    $this->siteA1 = Site::create(['org_id' => $this->orgA->id, 'site_group_id' => $groupA->id, 'handle' => 'golfdom-en', 'slug' => 'golfdom-en', 'name' => 'Golfdom', 'locale' => 'en']);
+    $this->siteA2 = Site::create(['org_id' => $this->orgA->id, 'site_group_id' => $groupA->id, 'handle' => 'golfdom-fr', 'slug' => 'golfdom-fr', 'name' => 'Golfdom FR', 'locale' => 'fr']);
 
     $context->setOrg($this->orgB);
-    $this->siteB1 = Site::create(['org_id' => $this->orgB->id, 'handle' => 'rival', 'name' => 'Rival', 'locale' => 'en']);
+    $this->siteB1 = Site::create(['org_id' => $this->orgB->id, 'handle' => 'rival', 'slug' => 'rival', 'name' => 'Rival', 'locale' => 'en']);
 
     $context->forget();
 });
@@ -172,5 +173,42 @@ describe('failing closed', function (): void {
 
         // A site belonging to org A cannot survive a switch to org B.
         expect($context->site())->toBeNull();
+    });
+});
+
+/* ───────── route key must be globally unique (ADR-021 amendment) ───────── */
+
+describe('site route keys', function (): void {
+    it('allows two orgs to use the same handle', function (): void {
+        // UNIQUE (org_id, handle): handles are an operator's own naming,
+        // scoped to their organisation.
+        app(Context::class)->setOrg($this->orgB);
+
+        $duplicate = Site::create([
+            'org_id' => $this->orgB->id,
+            'handle' => 'golfdom-en',
+            'slug' => 'rival-golfdom-en',
+            'name' => 'Rival',
+        ]);
+
+        expect($duplicate->handle)->toBe($this->siteA1->handle);
+    });
+
+    it('refuses two sites sharing a slug, because that is the route key', function (): void {
+        app(Context::class)->setOrg($this->orgB);
+
+        // /admin/{site} carries no org segment, so the segment identifying a
+        // site must be unique across the installation. For a user belonging
+        // to both orgs the URL would otherwise be genuinely ambiguous.
+        expect(fn () => Site::create([
+            'org_id' => $this->orgB->id,
+            'handle' => 'something-else',
+            'slug' => $this->siteA1->slug,
+            'name' => 'Collides',
+        ]))->toThrow(QueryException::class);
+    });
+
+    it('routes on the slug, not the handle', function (): void {
+        expect((new Site)->getRouteKeyName())->toBe('slug');
     });
 });

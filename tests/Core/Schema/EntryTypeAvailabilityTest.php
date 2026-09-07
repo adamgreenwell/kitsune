@@ -29,7 +29,7 @@ beforeEach(function (): void {
     app(Context::class)->setOrg($this->org);
 
     $this->group = SiteGroup::create(['org_id' => $this->org->id, 'handle' => 'g', 'name' => 'Group']);
-    $this->site = Site::create(['org_id' => $this->org->id, 'site_group_id' => $this->group->id, 'handle' => 'fr', 'name' => 'FR']);
+    $this->site = Site::create(['org_id' => $this->org->id, 'site_group_id' => $this->group->id, 'handle' => 'fr', 'slug' => 'fr', 'name' => 'FR']);
 
     $this->type = EntryType::create(['org_id' => $this->org->id, 'handle' => 'article', 'name' => 'Article', 'plural_name' => 'Articles']);
 });

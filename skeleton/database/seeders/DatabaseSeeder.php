@@ -37,8 +37,8 @@ class DatabaseSeeder extends Seeder
 
         $context->setOrg($orgA);
         $group = SiteGroup::create(['org_id' => $orgA->id, 'handle' => 'golfdom', 'name' => 'Golfdom', 'settings' => ['logo' => 'golfdom.svg']]);
-        $en = Site::create(['org_id' => $orgA->id, 'site_group_id' => $group->id, 'handle' => 'golfdom', 'name' => 'Golfdom', 'locale' => 'en', 'is_primary' => true]);
-        $fr = Site::create(['org_id' => $orgA->id, 'site_group_id' => $group->id, 'handle' => 'golfdom-fr', 'name' => 'Golfdom FR', 'locale' => 'fr']);
+        $en = Site::create(['org_id' => $orgA->id, 'site_group_id' => $group->id, 'handle' => 'golfdom', 'slug' => 'golfdom', 'name' => 'Golfdom', 'locale' => 'en', 'is_primary' => true]);
+        $fr = Site::create(['org_id' => $orgA->id, 'site_group_id' => $group->id, 'handle' => 'golfdom-fr', 'slug' => 'golfdom-fr', 'name' => 'Golfdom FR', 'locale' => 'fr']);
 
         $context->setOrg($orgB);
         // Deliberately the SAME handle as Golfdom's site. UNIQUE is
@@ -47,7 +47,7 @@ class DatabaseSeeder extends Seeder
         // first, so one customer's admin became unreachable depending on row
         // order. Every admin spec navigates to /admin/golfdom, which means
         // the whole browser suite is the regression test for it.
-        $rival = Site::create(['org_id' => $orgB->id, 'handle' => 'golfdom', 'name' => 'Rival Golfdom', 'locale' => 'en']);
+        $rival = Site::create(['org_id' => $orgB->id, 'handle' => 'golfdom', 'slug' => 'rival-golfdom', 'name' => 'Rival Golfdom', 'locale' => 'en']);
 
         $user = User::create(['name' => 'Alpha User', 'email' => 'alpha@kitsune.test', 'password' => Hash::make('password')]);
         $user->sites()->attach([$en->id, $fr->id]);

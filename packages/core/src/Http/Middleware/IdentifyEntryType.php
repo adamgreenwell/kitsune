@@ -59,6 +59,12 @@ final class IdentifyEntryType
                     $query->orWhere('org_id', $orgId);
                 }
             })
+            // UNIQUE (org_id, handle) permits a global type and an org type
+            // to share a handle, so this can match two rows. Precedence is
+            // explicit rather than left to row order: an org's own type wins
+            // over the global one it shadows. Without this, first() picks
+            // arbitrarily and CreateEntry stamps whichever it got.
+            ->orderByRaw('CASE WHEN org_id IS NULL THEN 1 ELSE 0 END')
             ->first();
 
         abort_if($entryType === null, 404, "Unknown entry type [{$type}].");

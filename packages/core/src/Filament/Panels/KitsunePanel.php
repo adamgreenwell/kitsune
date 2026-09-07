@@ -36,7 +36,9 @@ final class KitsunePanel
             // ADR-021: Filament's tenant IS the Site. Its automatic scope
             // therefore enforces site isolation and NOT org isolation, which
             // is why OrgScope exists.
-            ->tenant(Site::class, slugAttribute: 'handle')
+            // slug, not handle: the route key must be globally unique
+            // because /admin/{site} has no org segment (ADR-021 amendment).
+            ->tenant(Site::class, slugAttribute: 'slug')
             // isPersistent: true is non-negotiable. Without it every Livewire
             // update 500s with "Missing required parameter: type" the moment
             // a table renders a record link.

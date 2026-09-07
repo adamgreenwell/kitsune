@@ -30,6 +30,7 @@ use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
  * @property int $org_id
  * @property int|null $site_group_id
  * @property string $handle
+ * @property string $slug
  * @property string $name
  * @property string $locale
  * @property string $url_strategy
@@ -48,6 +49,20 @@ class Site extends Model
         'settings' => 'array',
         'is_primary' => 'boolean',
     ];
+
+    /**
+     * The route key is the globally unique slug, never the org-unique handle.
+     *
+     * /admin/{site} carries no org segment, so the segment identifying a site
+     * must be unique across the installation. handle is unique only within an
+     * org, which means two customers may both use "golfdom" — and for a user
+     * who belongs to both orgs, that URL would be genuinely ambiguous rather
+     * than merely awkward, silently opening the wrong customer's site.
+     */
+    public function getRouteKeyName(): string
+    {
+        return 'slug';
+    }
 
     /**
      * Resolve a site from the URL without its own org scope.

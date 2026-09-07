@@ -674,6 +674,18 @@ The hostile test in core (ADR-009) doubles: it must now assert **cross-site isol
 
 **Index invariant, revised.** ADR-009 required every composite index to lead with `tenant_id`. It now leads with the model's *scope key*: `site_id` for site-scoped models, `org_id` for org-scoped. Since `site_id` is globally unique and belongs to exactly one org, leading with it enforces org isolation transitively — narrower index, same guarantee.
 
+### Amendment — the route key must be globally unique, 2026-09-07
+
+`UNIQUE (org_id, handle)` makes a site's handle unique **within an org**, which is right: a handle is how an operator names a site inside their own organisation, and two customers may both reasonably call one "golfdom".
+
+But the admin URL is `/admin/{site}`, and **it carries no org segment**. A segment that identifies a site therefore has to be unique across the whole installation, which `handle` is not.
+
+For most users this is merely awkward — route binding narrowed to their own sites resolves it. **For a user who belongs to both orgs it is genuinely ambiguous**: both candidates are authorised, `first()` picks one arbitrarily, and `/admin/golfdom` silently opens the wrong customer's site while making the other unreachable. Edits would land against the wrong org.
+
+**`sites` therefore carries a `slug` column, globally unique, and it is the route key.** `handle` is unchanged and stays org-unique. The two are separate because they answer different questions: what the operator calls this site, and which URL owns it.
+
+Found by review, not by design — the original ADR reasoned about the route contract having three parameters and never asked whether the tenant segment was unambiguous.
+
 ### Naming rule
 
 **"Tenant" is now ambiguous and is banned from Kitsune's own code.** Filament calls its segment a tenant; Kitsune means a Site. Use **Org** and **Site** explicitly everywhere, and the word "tenant" only at the Filament API boundary. This is a small rule that prevents a large category of confusion, in code and in support threads.
