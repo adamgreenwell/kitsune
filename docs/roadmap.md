@@ -63,7 +63,7 @@ Those consumed 5,000–15,000 hours. 12–18 months part-time is ~1,200. **So: c
 - [x] `CONTRIBUTING.md`
 - [ ] `CODE_OF_CONDUCT.md` ([#4](https://github.com/adamgreenwell/kitsune/issues/4)) and `SECURITY.md` with a real disclosure address ([#5](https://github.com/adamgreenwell/kitsune/issues/5)) — ⚠️ both are already linked from `GOVERNANCE.md` and `CONTRIBUTING.md`, so those links are live-broken on a public repo
 - [x] Repo: monorepo with `packages/core`. Layout follows `laravel/framework` — tests at the root, because Pest resolves its test directory from the project root with no configuration hook
-- [ ] Installable app skeleton ([#6](https://github.com/adamgreenwell/kitsune/issues/6))
+- [x] Installable app skeleton — `skeleton/`, published as `kitsune/kitsune`. SQLite by default, no Node, no Vite, no `config/` directory (Laravel's defaults plus `.env` suffice). Verified booting and rendering ([#6](https://github.com/adamgreenwell/kitsune/issues/6))
 - [ ] Split-publish `kitsune/core` to Packagist ([#8](https://github.com/adamgreenwell/kitsune/issues/8))
 - [x] CI: Pint, PHPStan level 6, and Pest across PHP 8.4/8.5 × Postgres/MySQL/SQLite. **All nine jobs green 2026-09-07.** The engine matrix is not decorative — `TestCase` selects its connection from the environment and `EngineMatrixTest` round-trips against whichever driver is configured
 - [ ] Playwright browser job ([#7](https://github.com/adamgreenwell/kitsune/issues/7)) — deliberately not stubbed; there is no rendered page to assert against until the skeleton exists

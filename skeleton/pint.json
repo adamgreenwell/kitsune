@@ -1,0 +1,5 @@
+{
+    "preset": "laravel",
+    "exclude": ["bootstrap/cache", "storage", "vendor"],
+    "notName": ["artisan"]
+}

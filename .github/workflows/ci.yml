@@ -27,6 +27,10 @@ jobs:
       - uses: ramsey/composer-install@4.0.0
 
       - run: vendor/bin/pint --test
+      # The skeleton is a separate published package with Laravel's own
+      # conventions - its entrypoints are copied verbatim from laravel/laravel
+      # and reformatting them would diverge from upstream for no benefit.
+      - run: vendor/bin/pint --test skeleton --config skeleton/pint.json
       - run: vendor/bin/phpstan analyse --memory-limit=512M --no-progress
 
   # ADR-024's pillar-three mitigation, enforced rather than asserted.
