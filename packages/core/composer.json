@@ -2,6 +2,12 @@
     "name": "kitsune/core",
     "description": "Kitsune core: the module kernel, tenancy primitives and runtime schema engine.",
     "license": "MPL-2.0",
+    "homepage": "https://kitsunecms.org",
+    "support": {
+        "issues": "https://github.com/adamgreenwell/kitsune/issues",
+        "source": "https://github.com/adamgreenwell/kitsune",
+        "security": "https://github.com/adamgreenwell/kitsune/security/advisories/new"
+    },
     "type": "library",
     "require": {
         "php": "^8.4",

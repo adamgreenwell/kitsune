@@ -1,7 +1,10 @@
 # Kitsune
 
 > A multi-purpose content and application platform for Laravel.
-> **Status: pre-alpha. Planning only — there is no code yet.**
+> **Status: pre-alpha.** The tenancy kernel, schema engine and entity type
+> builder exist and are tested; nothing is released, and nothing is stable.
+>
+> **[kitsunecms.org](https://kitsunecms.org)**
 
 A [kitsune](https://en.wikipedia.org/wiki/Kitsune) is a supernatural fox spirit in Japanese folklore, possessing high intelligence, long life, and magical powers. In Japanese myth the word literally means "fox," but it describes a complex entity belonging to the class of supernatural beings known as *yōkai*.
 
@@ -65,6 +68,10 @@ In plain terms:
 - **No SaaS clause.** MPL has no network provision. Host it for customers without obligation.
 
 > **Contributors:** do **not** add the Exhibit B "Incompatible With Secondary Licenses" notice to any source file. Kitsune uses plain MPL-2.0 deliberately, so that it stays compatible with GPL/LGPL/AGPL code. Exhibit B's presence in `LICENSE` is just part of the standard license text — it is not activated unless a file opts in.
+
+### The name and the domain
+
+The project lives at **[kitsunecms.org](https://kitsunecms.org)**. `kitsune.org` is held by someone else and is being pursued; if it lands, this becomes a redirect rather than a rename, and nothing that references the project has to move.
 
 The **Kitsune name and logo are separate from the code license.** The code is yours to use; the name is not. A trademark policy will land alongside the first release. Short version, and it will not surprise anyone who knows the WordPress Foundation's: you may say your work is *built for Kitsune*; you may not name your fork, product, or domain Kitsune.
 
