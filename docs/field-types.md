@@ -237,6 +237,7 @@ The syntax diverges in four ways — path operator, cast form, identifier quotin
 - **Adding an index rewrites the table.** On a large `entries` table this locks. Queue it, do it online where the engine supports it, and warn in the UI
 - **Marking a field indexed is not reversible for free** — dropping the column is another rewrite
 - **Cardinality > 1 is not indexable this way.** A JSON array can't project to a scalar column. Multi-value fields that need querying should be `relation`
+- **⚠️ MySQL does not preserve JSON object key order.** PostgreSQL and SQLite return the keys as written; MySQL normalises them. Found by the engine matrix on 2026-09-07, not by reasoning. **Nothing may depend on the key order of `values`** — field order comes from `fields.ordering`, and any test comparing a decoded `values` array must sort first or compare order-insensitively
 - **SQLite is a third driver, not a variant of the other two.** It cannot `ALTER TABLE ADD COLUMN` a STORED generated column; it takes a VIRTUAL one, indexed as an expression index. VIRTUAL means the value is computed on read rather than materialized, so the write-throughput and disk costs above do not apply in the same way — and neither does the "adding an index rewrites the table" warning. The SQLite DDL is deliberately not written out here: proving all three drivers behave identically is roadmap Phase 1 work, and this doc should not imply a verification that has not happened
 
 ---

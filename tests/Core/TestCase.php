@@ -25,6 +25,17 @@ abstract class TestCase extends Orchestra
     }
 
     /**
+     * Run kitsune/core's own migrations against the in-memory database.
+     *
+     * The service provider registers them for a host application; Testbench
+     * needs telling explicitly, because it builds the application itself.
+     */
+    protected function defineDatabaseMigrations(): void
+    {
+        $this->loadMigrationsFrom(__DIR__.'/../../packages/core/database/migrations');
+    }
+
+    /**
      * Point the suite at whichever engine the environment selects.
      *
      * Unset, this is SQLite in memory - the bare-clone default (ADR-024).
