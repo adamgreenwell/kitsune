@@ -200,23 +200,35 @@ The escape hatch, and escape hatches get abused.
 
 A field is indexed when `field_storage.is_indexed` is true. The engine then adds a stored generated column plus a composite index leading with the scope key — `site_id`, since `entries` is `#[SiteScoped]`:
 
+**Verified 2026-09-07** against all three engines (issue #11). The SQL below is what `Kitsune\Core\Schema\Drivers\*` actually emits, and `tests/Core/Schema/GeneratedColumnParityTest.php` runs it on each.
+
+⚠️ **`values` is a reserved word on MySQL and PostgreSQL, so the identifier must be quoted.** Earlier drafts of this document showed it unquoted; that SQL fails as written. Quoting is part of the `SchemaDriver` interface for this reason.
+
 ```sql
--- MySQL
-ALTER TABLE entries
-  ADD COLUMN idx_price DECIMAL(12,2)
-    GENERATED ALWAYS AS (CAST(values->>'$.price' AS DECIMAL(12,2))) STORED,
-  ADD INDEX entries_site_price (site_id, idx_price);
+-- MySQL: $-prefixed path, CAST wrapper, backtick quoting
+ALTER TABLE `entries`
+  ADD COLUMN `idx_price` DECIMAL(12,2)
+    GENERATED ALWAYS AS (CAST(`values`->>'$.price' AS DECIMAL(12,2))) STORED;
+CREATE INDEX `entries_site_price` ON `entries` (`site_id`, `idx_price`);
 ```
 
 ```sql
--- PostgreSQL
-ALTER TABLE entries
-  ADD COLUMN idx_price NUMERIC(12,2)
-    GENERATED ALWAYS AS ((values ->> 'price')::NUMERIC(12,2)) STORED;
-CREATE INDEX entries_site_price ON entries (site_id, idx_price);
+-- PostgreSQL: bare key, cast suffix, double-quote quoting
+ALTER TABLE "entries"
+  ADD COLUMN "idx_price" NUMERIC(12,2)
+    GENERATED ALWAYS AS (("values" ->> 'price')::NUMERIC(12,2)) STORED;
+CREATE INDEX "entries_site_price" ON "entries" ("site_id", "idx_price");
 ```
 
-Note the syntax diverges in three ways — path operator, cast form, and whether the index is inline. **That divergence is exactly why `generatedColumnType()` takes a driver.**
+```sql
+-- SQLite: json_extract, and VIRTUAL rather than STORED
+ALTER TABLE "entries"
+  ADD COLUMN "idx_price" NUMERIC(12,2)
+    GENERATED ALWAYS AS (CAST(json_extract("values", '$.price') AS NUMERIC(12,2))) VIRTUAL;
+CREATE INDEX "entries_site_price" ON "entries" ("site_id", "idx_price");
+```
+
+The syntax diverges in four ways — path operator, cast form, identifier quoting, and whether the column can be materialised at all. **That divergence is exactly why the field type asks a driver instead of writing SQL.**
 
 ### Rules
 

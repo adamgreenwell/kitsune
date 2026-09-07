@@ -155,13 +155,21 @@ Dual-licensing requires owning or being licensed all rights. **The first communi
 
 ## ADR-006 — Schema storage: JSON + generated columns
 
-**Status:** Decided · direction **forced** by ADR-010 · ⚠️ **Revised by ADR-021** — composite indexes now lead with the model's scope key (`site_id` for site-scoped, `org_id` for org-scoped), not `tenant_id`. The original text below is left as written
+**Status:** Decided · direction **forced** by ADR-010 · ⚠️ **Revised by ADR-021** · ✅ **Mechanism verified 2026-09-07** — composite indexes now lead with the model's scope key (`site_id` for site-scoped, `org_id` for org-scoped), not `tenant_id`. The original text below is left as written
 
 Steal Drupal's field-storage *shape*, not its storage *strategy*. The `FieldStorage` / `FieldConfig` split: storage defined once and reusable across entity types, per-type presentation separate, **storage locked once data exists**. The lock-on-data-present guard ships in v1.
 
 Do **not** copy table-per-field — the direct cause of the 697-second query in ADR-001. **JSON column + stored generated columns with real indexes, every composite index leading with `tenant_id`.** Postgres and MySQL differ in generated-column syntax and JSON path operators; abstract behind a driver interface from the first commit. Benchmark at 10k / 100k / 1M on both.
 
 **Relations use a real `entry_relations` table, not JSON** — reverse lookups ("what references this?") and referential integrity are impossible to do efficiently in a JSON array.
+
+### Verification — 2026-09-07
+
+The mechanism this ADR rests on is proven rather than assumed. `SchemaDriver` and three implementations exist, and one parity suite passes against SQLite, PostgreSQL and MySQL.
+
+Four divergences, not the two originally noted: the JSON path operator, the cast form, **identifier quoting** — `values` is reserved on MySQL and PostgreSQL, and this document's own SQL examples were unquoted and would have failed as written — and whether the column can be materialised at all. SQLite cannot add a STORED generated column through `ALTER TABLE`; it takes a VIRTUAL one, which is still indexable, and that inverts the cost model in SQLite's favour: no write amplification, no table rewrite, paid for by evaluating per row scanned.
+
+The driver fails closed on an unknown engine, because falling back to a probably-compatible driver is how a generated column silently indexes nothing.
 
 ---
 
@@ -997,7 +1005,6 @@ From prior-art analysis of Drupal, October, Winter, Statamic, Directus, Strapi, 
 ## Open questions
 
 - `ManageRelatedRecords` **pages** under `{type}` — the 2026-09-07 spike cleared `RelationManager` *components*, which register no routes. `ManageRelatedRecords` registers its own route and was not tested
-- Generated-column parity across Postgres, MySQL **and SQLite**; does the driver abstraction hold? SQLite is the awkward one — VIRTUAL rather than STORED columns
 - Storage benchmark at 10k / 100k / 1M entries
 - Blueprint rollback semantics when content already exists
 - Revision storage growth — full-JSON snapshots get expensive; consider diffs
