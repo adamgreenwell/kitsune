@@ -30,6 +30,7 @@ use Illuminate\Database\Eloquent\Model;
 use Kitsune\Core\Filament\Resources\Entries\Pages\CreateEntry;
 use Kitsune\Core\Filament\Resources\Entries\Pages\EditEntry;
 use Kitsune\Core\Filament\Resources\Entries\Pages\ListEntries;
+use Kitsune\Core\Filament\Resources\Entries\Pages\ManageEntryRelations;
 use Kitsune\Core\Filament\Resources\Entries\Pages\ViewEntry;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
@@ -124,6 +125,9 @@ class EntryResource extends Resource
             'create' => CreateEntry::route('/{type}/create'),
             'view' => ViewEntry::route('/{type}/{record}'),
             'edit' => EditEntry::route('/{type}/{record}/edit'),
+            // Spike #10: a page-based relation manager, which unlike a
+            // RelationManager component registers its own route.
+            'relations' => ManageEntryRelations::route('/{type}/{record}/related'),
         ];
     }
 }

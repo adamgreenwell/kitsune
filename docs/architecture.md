@@ -395,7 +395,6 @@ Honest list. None of these blocks starting; all of them should be settled before
 | Blueprint rollback semantics | Medium | What happens when a blueprint is removed after content exists? |
 | Revision storage growth | Medium | Full-JSON snapshots per revision get expensive; consider diffs |
 | Relation targets under translation | Medium | Do relations point at a translation group or one locale row (ADR-017)? It decides what `entry_relations.target_entry_id` holds |
-| `ManageRelatedRecords` **pages** under `{type}` | Medium | The relation-manager spike covered `RelationManager` *components*, which register no routes. `ManageRelatedRecords` is a separate construct that does register its own route, and was **not** tested |
 
 ---
 

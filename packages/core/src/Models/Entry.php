@@ -116,8 +116,7 @@ class Entry extends Model
      */
     public function related(): BelongsToMany
     {
-        return $this->belongsToMany(self::class, 'entry_relations', 'source_entry_id', 'target_entry_id')
-            ->withPivot(['org_id', 'field_storage_id', 'ordering']);
+        return $this->relationsThrough('source_entry_id', 'target_entry_id');
     }
 
     /**
@@ -128,7 +127,33 @@ class Entry extends Model
      */
     public function referencedBy(): BelongsToMany
     {
-        return $this->belongsToMany(self::class, 'entry_relations', 'target_entry_id', 'source_entry_id')
+        return $this->relationsThrough('target_entry_id', 'source_entry_id');
+    }
+
+    /**
+     * Both relation directions, with org_id stamped and constrained.
+     *
+     * withPivotValue() does two jobs and both are wanted. It supplies org_id
+     * on attach, without which every attach fails on a NOT NULL constraint —
+     * the pivot has no model, so nothing else can stamp it, and each call
+     * site would otherwise have to remember. It also constrains reads to the
+     * same org, so a relation row belonging to another customer cannot
+     * surface here even if one existed.
+     *
+     * A relation always belongs to the org of the entry it hangs off, so
+     * there is no case where these could legitimately differ. org_id is
+     * non-nullable and EnforcesScope stamps it on create, so it is always
+     * available here.
+     *
+     * @return BelongsToMany<Entry, $this>
+     */
+    private function relationsThrough(string $foreignPivotKey, string $relatedPivotKey): BelongsToMany
+    {
+        $relation = $this->belongsToMany(self::class, 'entry_relations', $foreignPivotKey, $relatedPivotKey)
             ->withPivot(['org_id', 'field_storage_id', 'ordering']);
+
+        // org_id is declared non-nullable, and EnforcesScope stamps it on
+        // create, so by the time a relation is reached it is always set.
+        return $relation->withPivotValue('org_id', $this->org_id);
     }
 }

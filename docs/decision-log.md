@@ -332,7 +332,11 @@ The highest-risk open question against this ADR was whether Filament relation ma
 
 **Confirmed working.** Both relation-manager shapes render and operate under `/c/{type}/{record}/edit`: a `HasMany` (revisions) and a `BelongsToMany` through the real `entry_relations` table (ADR-015 Relational storage), including deferred `loadTable`, search, pagination, and Attach/Detach/Edit/Delete actions. Every Livewire update returned **200**; no *"Missing required parameter"* occurred anywhere. Every generated URL carried a populated `/c/<type>/` segment.
 
-**Relation managers register no routes of their own.** They are Livewire components mounted on the page, and their snapshot memo carries the original path (`admin/golfdom/c/article/1/edit`), which Livewire re-matches on update. The original fear — *"they register their own routes and URLs"* — does not apply to `RelationManager`. It may still apply to `ManageRelatedRecords` **pages**, a different construct that does register a route and which this spike did **not** cover. That remains open.
+**Relation managers register no routes of their own.** They are Livewire components mounted on the page, and their snapshot memo carries the original path (`admin/golfdom/c/article/1/edit`), which Livewire re-matches on update. The original fear — *"they register their own routes and URLs"* — does not apply to `RelationManager`.
+
+**`ManageRelatedRecords` pages, which do register a route, were cleared separately on 2026-09-07.** A page registered at `/{type}/{record}/related` returns 200, its Livewire updates return 200, every URL it generates carries a populated `{type}`, and its Attach action is reachable with a working modal. **ADR-012's URL contract now has no untested corners.**
+
+One correction worth keeping, because it is the failure mode this log exists to prevent. The first version of that claim said Attach "operates", while the test behind it only *read* a pre-seeded relation. Attach did not operate: `entry_relations.org_id` is `NOT NULL`, the pivot has no model to stamp it, and every attach failed on a constraint. Caught in review. The relationship now stamps and constrains `org_id` through `withPivotValue()`, and the claim is scoped to what is actually exercised.
 
 **Finding 1 — navigation is a correctness requirement, not a performance one.** This ADR framed `Panel::navigation(Closure)` as a memoization concern. It is more than that. Filament auto-registers a navigation item per Resource and calls `getUrl()` on it while rendering the sidebar; with `{type}` in the URI and none in the current request, that throws and **500s every page outside `/c/{type}`, the dashboard included.** `$shouldRegisterNavigation = false` on the Resource is mandatory. The 5×-per-request claim was measured and is exact.
 
@@ -1016,7 +1020,6 @@ From prior-art analysis of Drupal, October, Winter, Statamic, Directus, Strapi, 
 
 ## Open questions
 
-- `ManageRelatedRecords` **pages** under `{type}` — the 2026-09-07 spike cleared `RelationManager` *components*, which register no routes. `ManageRelatedRecords` registers its own route and was not tested
 - Storage benchmark at 10k / 100k / 1M entries
 - Blueprint rollback semantics when content already exists
 - Revision storage growth — full-JSON snapshots get expensive; consider diffs

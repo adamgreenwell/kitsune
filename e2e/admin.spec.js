@@ -74,6 +74,48 @@ test.describe('admin', () => {
         expect(hrefs.length).toBeGreaterThan(0);
         expect(hrefs.filter((h) => /\/c\/(\/|$|\?)/.test(h ?? ''))).toEqual([]);
     });
+    test('drives a ManageRelatedRecords PAGE under {type}', async ({ page }) => {
+        // Spike #10, the last untested corner of ADR-012's URL contract.
+        // RelationManager *components* register no routes; this construct is
+        // a resource page and does, which is why it needed covering
+        // separately.
+        await page.goto(`/admin/${SITE}/c/article/1/related`);
+
+        await expect(page).toHaveTitle(/Related entries/);
+        await expect(page.getByText('Course maintenance in week 2')).toBeVisible();
+
+        const hrefs = await page.locator('a[href*="/c/"]').evaluateAll(
+            (links) => links.map((a) => a.getAttribute('href')),
+        );
+        expect(hrefs.filter((h) => /\/c\/(\/|$|\?)/.test(h ?? ''))).toEqual([]);
+    });
+
+    test('reaches a working Attach action under {type}', async ({ page }) => {
+        // Scope note, because the previous version of this claim was wrong.
+        //
+        // What this proves is BROWSER-specific: the Attach action is reachable
+        // and its modal opens on a page nested under {type}, with a combobox
+        // to choose from and a live submit control. That is the part only a
+        // browser can answer.
+        //
+        // What it deliberately does NOT prove is the attach semantics —
+        // whether org_id is stamped on the pivot. Two tests in
+        // EntrySchemaTest cover that directly, and they exist because this
+        // very action failed on a NOT NULL constraint while a commit message
+        // claimed it "operates". Driving Filament's custom combobox from
+        // Playwright is selector archaeology that would assert less, less
+        // reliably, than those do.
+        await page.goto(`/admin/${SITE}/c/article/1/related`);
+
+        await page.getByRole('button', { name: 'Attach' }).first().click();
+
+        // The outer role=dialog stays hidden under Alpine; the window shows.
+        const modal = page.locator('.fi-modal-window').first();
+        await expect(modal).toBeVisible({ timeout: 15_000 });
+
+        await expect(modal.locator('button[role="combobox"]')).toBeVisible();
+        await expect(modal.locator('button[type="submit"]')).toBeVisible();
+    });
 });
 
 test.describe('isolation, from the attacker side', () => {
