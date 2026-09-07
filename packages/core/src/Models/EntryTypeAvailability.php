@@ -53,7 +53,12 @@ class EntryTypeAvailability extends Model
      */
     public static function isEnabledFor(EntryType $type, ?Site $site): bool
     {
-        return static::enabledMapFor([$type->getKey()], $site)[$type->getKey()] ?? true;
+        return static::enabledMapFor(
+            [$type->getKey()],
+            $site?->getKey(),
+            $site?->site_group_id,
+            $site?->org_id,
+        )[$type->getKey()] ?? true;
     }
 
     /**
@@ -68,21 +73,30 @@ class EntryTypeAvailability extends Model
      * This fetches only the three scope keys that can apply to this site,
      * for all candidate types at once, and resolves precedence in memory.
      *
+     * Takes the three scope keys rather than the Site, because callers
+     * memoise on what they pass in. A `once()` key that contains an object
+     * is keyed by `spl_object_id`, and PHP recycles those handles — see
+     * `EntryType::visibleFor()`, where that produced a real defect.
+     *
      * @param  array<int, int|string>  $typeIds
      * @return array<int|string, bool>
      */
-    public static function enabledMapFor(array $typeIds, ?Site $site): array
-    {
-        if ($typeIds === [] || $site === null) {
+    public static function enabledMapFor(
+        array $typeIds,
+        int|string|null $siteId,
+        int|string|null $siteGroupId,
+        int|string|null $orgId,
+    ): array {
+        if ($typeIds === [] || $siteId === null) {
             return [];
         }
 
         $rows = static::query()
             ->whereIn('entry_type_id', $typeIds)
-            ->where(function ($query) use ($site): void {
-                $query->where(fn ($q) => $q->where('scope_type', 'site')->where('scope_id', $site->getKey()))
-                    ->orWhere(fn ($q) => $q->where('scope_type', 'site_group')->where('scope_id', $site->site_group_id))
-                    ->orWhere(fn ($q) => $q->where('scope_type', 'org')->where('scope_id', $site->org_id));
+            ->where(function ($query) use ($siteId, $siteGroupId, $orgId): void {
+                $query->where(fn ($q) => $q->where('scope_type', 'site')->where('scope_id', $siteId))
+                    ->orWhere(fn ($q) => $q->where('scope_type', 'site_group')->where('scope_id', $siteGroupId))
+                    ->orWhere(fn ($q) => $q->where('scope_type', 'org')->where('scope_id', $orgId));
             })
             ->get()
             ->groupBy('entry_type_id');
@@ -96,9 +110,9 @@ class EntryTypeAvailability extends Model
             $resolved[$id] = true; // absent at every level = enabled (ADR-022)
 
             foreach ([
-                'site:'.$site->getKey(),
-                'site_group:'.$site->site_group_id,
-                'org:'.$site->org_id,
+                'site:'.$siteId,
+                'site_group:'.$siteGroupId,
+                'org:'.$orgId,
             ] as $key) {
                 if ($forType->has($key)) {
                     $resolved[$id] = $forType->get($key)->is_enabled;

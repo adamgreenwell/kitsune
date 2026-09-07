@@ -92,7 +92,13 @@ A pull request that contradicts a decision-log entry without amending its ADR is
 
 This binds the maintainer identically. ADR-026's recommended default was flipped by ADR-027 twenty minutes after it was written, by amendment rather than a quiet edit.
 
-## 12. Measure; do not reason
+## 12. `once()` keys must be values the body actually uses
+
+`once()` hashes the closure's captured variables, and hashes an **object** by `spl_object_id` — a handle PHP recycles the moment the object is collected. A memo keyed on a `Site` cannot reliably tell two sites apart inside one process. Under PHP-FPM the process dies between requests and it never bites; under Octane or a queue worker it does.
+
+Capturing an extra scalar purely to fix the key does not work either: **Pint strips unused `use` variables**, and it did — silently reverting the fix. So pass scope keys rather than models (`EntryTypeAvailability::enabledMapFor()` takes `$siteId, $siteGroupId, $orgId` for this reason), and the key becomes correct because the body genuinely uses it.
+
+## 13. Measure; do not reason
 
 Standing Principle #9, and it has cost real time when ignored:
 
@@ -100,6 +106,7 @@ Standing Principle #9, and it has cost real time when ignored:
 - `original_request()` was assumed global; it is namespaced, and the fatal only fires on Livewire updates
 - `ramsey/composer-install@v3` was assumed to exist; it does not, and every CI job would have failed
 - GitHub's slug algorithm was assumed to collapse repeated hyphens; it does not, and 27 links would have broken
+- The navigation memo was assumed to key on the site; it keyed on a recyclable object handle. A probe showed the id reused on the very next allocation
 
 **If a claim is cheap to verify, verify it.** One command beats a confident guess.
 
