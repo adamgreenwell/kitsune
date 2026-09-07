@@ -1,0 +1,50 @@
+name: Split packages
+
+# Mirrors packages/* out to their own read-only repositories on every tag,
+# the way laravel/framework splits illuminate/*. Contributions go through
+# this monorepo; the split repositories are mirrors and take no pull requests.
+#
+# SETUP REQUIRED before this can run:
+#   1. Create the target repository (adamgreenwell/core) as an empty public repo
+#   2. Add a repository secret ACCESS_TOKEN — a PAT with `repo` scope on it
+#   3. Register kitsune/core on Packagist, pointed at the mirror
+#
+# Until then this workflow is inert: it only fires on tags, and none exist.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  split:
+    name: ${{ matrix.package }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - package: core
+            repository: core
+
+    steps:
+      - uses: actions/checkout@v5
+
+      # Tests deliberately live at the monorepo root, not inside the package
+      # (Pest resolves its test directory from the project root with no config
+      # hook), so the mirror carries source without a suite. That is the same
+      # arrangement illuminate/* have, and why the mirror is read-only.
+      - name: Split packages/${{ matrix.package }}
+        uses: danharrin/monorepo-split-github-action@v2.4.5
+        env:
+          GITHUB_TOKEN: ${{ secrets.ACCESS_TOKEN }}
+        with:
+          tag: ${{ github.ref_name }}
+          package_directory: packages/${{ matrix.package }}
+          repository_organization: adamgreenwell
+          repository_name: ${{ matrix.repository }}
+          user_name: 'github-actions[bot]'
+          user_email: '41898282+github-actions[bot]@users.noreply.github.com'
