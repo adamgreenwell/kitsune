@@ -39,6 +39,15 @@ class EntryType extends Model
      */
     public const RESERVED_HANDLES = [
         'create', 'edit', 'delete', 'update', 'view', 'index',
+        // Registered by EntryResource::getPages(). Adding a page without
+        // adding its segment here reopens the collision — this entry exists
+        // because exactly that happened with /{type}/{record}/related.
+        //
+        // Both the URL segment and the page key are reserved. They differ
+        // here ('related' vs 'relations'), and reserving one word nobody
+        // needs as an entry type costs nothing next to a route collision
+        // that cannot be escaped away.
+        'related', 'relations',
     ];
 
     protected $guarded = [];

@@ -13,6 +13,8 @@ namespace Kitsune\Core\Validation;
 use Closure;
 use Illuminate\Contracts\Validation\ValidationRule;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\SoftDeletes;
+use Illuminate\Database\Eloquent\SoftDeletingScope;
 
 /**
  * Uniqueness checked through Eloquent, so global scopes apply.
@@ -43,7 +45,20 @@ final class ScopedUnique implements ValidationRule
 
         // newQuery(), not the query builder: this is the whole point. Global
         // scopes are applied here and are not by Laravel's `unique`.
-        $query = $instance->newQuery()->where($this->column, $value);
+        $query = $instance->newQuery();
+
+        // Soft-deleted rows still occupy the database's unique index, which
+        // does not include deleted_at. Excluding them here reports the value
+        // as free and then the INSERT fails on a constraint violation — a
+        // 500 where the user should have seen a validation message. The
+        // check has to match what the database will actually enforce.
+        if (in_array(SoftDeletes::class, class_uses_recursive($instance), true)) {
+            // Drop the soft-delete scope directly: withTrashed() is added by
+            // the trait and PHPStan cannot see it on a generic Builder.
+            $query->withoutGlobalScope(SoftDeletingScope::class);
+        }
+
+        $query->where($this->column, $value);
 
         if ($this->ignoreId !== null) {
             $query->whereKeyNot($this->ignoreId);

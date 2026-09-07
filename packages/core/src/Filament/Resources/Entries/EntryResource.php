@@ -76,8 +76,25 @@ class EntryResource extends Resource
                 // scopedUnique, never Laravel's unique: that rule does not go
                 // through Eloquent, so it ignores global scopes and would tell
                 // one org that another org holds the slug.
+                // Constrained to the entry type, matching the database's own
+                // UNIQUE (site_id, entry_type_id, slug). Without it an
+                // `about` page would block an `about` product, which the
+                // database permits and the type-qualified URL expects.
                 ->rules(fn (?Entry $record): array => [
-                    Rule::scopedUnique(Entry::class, 'slug', $record?->getKey()),
+                    Rule::scopedUnique(
+                        Entry::class,
+                        'slug',
+                        $record?->getKey(),
+                        function ($query) use ($record): void {
+                            $typeId = app()->bound(EntryType::class)
+                                ? app(EntryType::class)->getKey()
+                                : $record?->entry_type_id;
+
+                            if ($typeId !== null) {
+                                $query->where('entry_type_id', $typeId);
+                            }
+                        },
+                    ),
                 ]),
             Select::make('status')
                 ->options(['draft' => 'Draft', 'published' => 'Published', 'archived' => 'Archived'])

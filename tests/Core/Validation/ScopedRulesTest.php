@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 use Illuminate\Support\Facades\Validator;
 use Kitsune\Core\Exceptions\ReservedHandleException;
+use Kitsune\Core\Filament\Resources\Entries\EntryResource;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Org;
@@ -30,6 +31,9 @@ beforeEach(function (): void {
 
     app(Context::class)->setOrg($this->orgA);
     $this->siteA = Site::create(['org_id' => $this->orgA->id, 'handle' => 'a', 'slug' => 'a', 'name' => 'A']);
+    // A sibling site in the SAME org. Without it these tests only ever
+    // crossed the org boundary, and CONTRIBUTING requires both.
+    $this->siteA2 = Site::create(['org_id' => $this->orgA->id, 'handle' => 'a2', 'slug' => 'a2', 'name' => 'A2']);
 
     app(Context::class)->setOrg($this->orgB);
     $this->siteB = Site::create(['org_id' => $this->orgB->id, 'handle' => 'b', 'slug' => 'b', 'name' => 'B']);
@@ -60,6 +64,28 @@ describe('scopedUnique', function (): void {
         expect($v->fails())->toBeFalse();
     });
 
+    it('ALLOWS the same value on a sibling site in the same org', function (): void {
+        // The same-org boundary, which these tests previously never crossed.
+        // Uniqueness is per site: two sites in one org may both have /about.
+        app(Context::class)->setSite($this->siteA2);
+
+        $v = Validator::make(['slug' => 'taken'], ['slug' => [Rule::scopedUnique(Entry::class, 'slug')]]);
+
+        expect($v->fails())->toBeFalse();
+    });
+
+    it('counts a soft-deleted row, because the database index still does', function (): void {
+        // The unique index does not include deleted_at, so excluding trashed
+        // rows reports the slug as free and the INSERT then fails on a
+        // constraint violation — a 500 where the user should have seen a
+        // validation message.
+        $this->entry->delete();
+
+        $v = Validator::make(['slug' => 'taken'], ['slug' => [Rule::scopedUnique(Entry::class, 'slug')]]);
+
+        expect($v->fails())->toBeTrue();
+    });
+
     it('ignores the record being edited', function (): void {
         $v = Validator::make(
             ['slug' => 'taken'],
@@ -75,6 +101,16 @@ describe('scopedExists', function (): void {
         $v = Validator::make(['id' => $this->entry->id], ['id' => [Rule::scopedExists(Entry::class)]]);
 
         expect($v->fails())->toBeFalse();
+    });
+
+    it('REJECTS a record on a sibling site in the same org', function (): void {
+        // Cross-SITE within one org — the boundary Filament's tenancy does
+        // cover, tested from the attacker's side anyway.
+        app(Context::class)->setSite($this->siteA2);
+
+        $v = Validator::make(['id' => $this->entry->id], ['id' => [Rule::scopedExists(Entry::class)]]);
+
+        expect($v->fails())->toBeTrue();
     });
 
     it('REJECTS a record belonging to another org', function (): void {
@@ -109,5 +145,30 @@ describe('reserved handles (ADR-012)', function (): void {
         expect(EntryType::create([
             'org_id' => $this->orgA->id, 'handle' => 'podcast', 'name' => 'P', 'plural_name' => 'Ps',
         ])->exists)->toBeTrue();
+    });
+});
+
+describe('reserved handles cover registered routes', function (): void {
+    it('rejects every page segment EntryResource registers', function (): void {
+        // The list and the routes must not drift. `related` was missing when
+        // ManageEntryRelations registered /{type}/{record}/related, which
+        // reopened the collision the list exists to prevent.
+        $registered = collect(EntryResource::getPages())
+            ->keys()
+            ->map(fn (string $key): string => strtolower($key))
+            ->push('related')
+            ->unique();
+
+        // Collect first, assert once. expect(...)->toContain($a, $b) treats
+        // the second argument as ANOTHER expected value, not a message —
+        // the same trap as not->toThrow(Class, $message), which silently
+        // passed a test earlier in this project.
+        $unreserved = $registered
+            ->reject(fn (string $segment): bool => $segment === 'index')
+            ->reject(fn (string $segment): bool => in_array($segment, EntryType::RESERVED_HANDLES, true))
+            ->values()
+            ->all();
+
+        expect($unreserved)->toBe([]);
     });
 });
