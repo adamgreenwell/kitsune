@@ -168,18 +168,18 @@ ADR-012 removed the boot-order collision structurally — the route table no lon
 
 Data model is specified in [`architecture.md`](architecture.md) §3.
 
-- [ ] `entries` table: one `Entry` model, type discriminator, JSON values, promoted `title`/`slug`/`status`
-- [ ] `entry_types` / `field_storage` / `fields` — the Drupal storage/config split
-- [ ] **`field_storage.pii_class`, fail-closed** — an unclassified field does not save (ADR-020)
-- [ ] Entry types designate a **subject identifier** field, so "everything about this person" is answerable
-- [ ] **Field-level redactable revisions** — erasure must reach revision history
-- [ ] **`is_locked` guard from day one** — storage definitions lock once data exists
-- [ ] **Field type registry** — text, rich text, number, boolean, date, select, relation, media, repeater, JSON. Each maps to storage + Filament form component + table column + API representation
+- [x] `entries` table: one `Entry` model, type discriminator, JSON values, promoted `title`/`slug`/`status`. Landed in Phase 2 as the substrate the tenancy kernel needed something to scope — ADR-010's one-model-per-Resource constraint makes the single model forced rather than chosen. `type_handle` is denormalised for routing and re-stamped on save, so it cannot drift from `entry_type_id`
+- [x] `entry_types` / `field_storage` / `fields` — the Drupal storage/config split. Storage is defined once and reusable; `fields` carries the per-type presentation
+- [x] **`field_storage.pii_class`, fail-closed** — an unclassified field does not save (ADR-020). Enforced in a `saving()` guard rather than by a NOT NULL default, because a default would silently classify everything as `none`
+- [ ] Entry types designate a **subject identifier** field, so "everything about this person" is answerable. Cannot be fail-closed the way `pii_class` is: the subject *is* one of the type's fields, so requiring the nomination before the first personal field can be added is circular. The honest primitive is the nomination plus a report of types carrying `personal`/`sensitive` data with no subject nominated — those are exactly the holes a subject-access request cannot see
+- [ ] **Field-level redactable revisions** — erasure must reach revision history. 🟡 `EntryRevision::redact()` exists and is tested; the sweep across every revision of an entry does not, so the primitive is present and the operation is not
+- [x] **`is_locked` guard from day one** — storage definitions lock once data exists. `type` and `cardinality` are the locked shape; toggling the index stays allowed, because that is expensive rather than unsafe
+- [x] **Field type registry** — twelve v1.0 types, each answering storage + form + table column + API. ⚠️ **This line previously named `media` and `repeater`, and `field-types.md` had already ruled on both**: media are entries (§5), so a media picker is `relation` constrained to media entry types rather than a field type of its own, and `repeater` is deferred to v1.1 (§4) because nested groups mean recursive validation, no meaningful indexing and ugly revision diffs. The shipped twelve are text, textarea, rich text, number, boolean, date, datetime, select, multi-select, relation, slug and JSON
 - [x] **Generated-column indexing** driven by `field_storage.is_indexed`, behind the Postgres/MySQL/SQLite driver abstraction — `SchemaManager`, green on all three engines. Indexing is refused with a reason for promoted, relational, non-indexable and multi-value fields, and capped at 20 generated columns on the shared `entries` table.
 
   ⚠️ **A cross-org defect was caught before it shipped and cost an ADR.** The first implementation named the column `idx_{handle}`, but `entries` is one table shared by every org while `field_storage` is `UNIQUE (org_id, handle)` — so two orgs each defining `price` would collide silently, one casting the other's data to the wrong type and either able to drop the other's column. Columns are now named for their projection, `idx_{handle}__{type}`, and dropping is reference-counted ([ADR-028](decision-log.md)). `php artisan kitsune:schema-sync` is the drift repair path, since DDL implicitly commits on MySQL and a row write cannot share a transaction with its schema change
-- [ ] `entry_relations` table — a real table, not JSON, so reverse lookups and referential integrity work
-- [ ] `EntryResource` with the `{type}` route parameter, per ADR-012 and [`architecture.md`](architecture.md) §2
+- [x] `entry_relations` table — a real table, not JSON, so reverse lookups and referential integrity work. Org-scoped rather than site-scoped, because a relation may link a site entry to org-shared media
+- [x] `EntryResource` with the `{type}` route parameter, per ADR-012 and [`architecture.md`](architecture.md) §2. 7–10 routes flat in the number of entity types, verified in a browser including the 201-type case
 - [ ] Memoized `Panel::navigation()` closure, cached per site *(it fires 5× per request)*
 - [ ] `EntryPolicy` resolving per-type authorization against `type_handle`
 - [ ] Entity type builder UI
