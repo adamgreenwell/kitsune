@@ -159,6 +159,10 @@ ADR-012 removed the boot-order collision structurally — the route table no lon
 - [ ] Install/upgrade/uninstall lifecycle with migrations and rollback
 - [ ] Settings store backing the org → site group → site resolution (ADR-022)
 - [ ] RBAC: roles, permissions, per-org assignment. Permissions named `entry.{type}.{action}`
+
+  🟡 The **org-scoping half is done** ([#21](https://github.com/adamgreenwell/kitsune/issues/21)). `User` is `#[OrgScopedThroughPivot]` through `org_user`, because membership is many-to-many and `OrgScope`'s `org_id = current` never applied. Roles and permissions themselves remain open.
+
+  ⚠️ **The attribute had never been enforced.** `User` carried `#[Unscoped]` and did not `use EnforcesScope`, so it was labelled correctly and completely unconstrained — a model can pass the declaration sweep and still be globally readable. AGENTS.md invariant 2 now says so.
 - [ ] Audit log — **actor, action and target only, never payloads** (ADR-020), so erasure can reach everything it must
 - [ ] One hardcoded entity type end to end as a normal module, to prove the stack
 
