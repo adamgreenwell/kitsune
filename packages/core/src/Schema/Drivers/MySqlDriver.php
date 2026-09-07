@@ -24,6 +24,19 @@ final class MySqlDriver implements SchemaDriver
         return true;
     }
 
+    public function sqlType(string $logical, int $precision = 12, int $scale = 2): string
+    {
+        // DECIMAL, not NUMERIC: MySQL accepts NUMERIC as a column type but
+        // rejects it inside CAST, which is where generated columns use it.
+        return match ($logical) {
+            'decimal' => "DECIMAL({$precision},{$scale})",
+            'integer' => 'SIGNED',
+            'string' => "CHAR({$precision})",
+            'boolean' => 'UNSIGNED',
+            'datetime' => 'DATETIME',
+        };
+    }
+
     public function jsonExtractExpression(string $jsonColumn, string $path, string $sqlType): string
     {
         // MySQL uses a $-prefixed path and a CAST wrapper rather than a suffix.

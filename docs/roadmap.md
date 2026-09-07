@@ -82,7 +82,18 @@ The routing question is **already settled** — ADR-012 was resolved by a workin
 - [x] **`ManageRelatedRecords` pages under `{type}`.** ✅ **Cleared 2026-09-07.** They register their own route and work — `/c/{type}/{record}/related` returns 200, Livewire updates return 200, every generated URL carries a populated `{type}`, and Attach/Detach operate. ADR-012's URL contract has no untested corners left
 - [x] **Generated-column parity across Postgres, MySQL and SQLite.** ✅ **Cleared 2026-09-07.** `SchemaDriver` plus three implementations; the same parity suite passes on all three engines. SQLite takes VIRTUAL rather than STORED, which inverts the cost model in its favour. `values` is reserved on two of the three and must be quoted
 - [ ] **Accessibility and RTL audit of Filament v5.** *(Playwright from Phase 0 drives the automated half; the screen-reader pass is manual and cannot be automated.)* How much WCAG conformance and RTL layout do you inherit versus build? Automated checkers won't answer this — drive the entry editor with a screen reader. Same afternoon as the RTL render check
-- [ ] **Storage benchmark** at 10k / 100k / 1M entries on all three engines — include the row multiplication from translation (ADR-017) and one `entries` row per media asset (ADR-016)
+- [x] **Storage benchmark** — ✅ **First numbers 2026-09-07** via `php artisan kitsune:benchmark-storage`, run with the write-amplifying decisions switched on. At **100k rows with one generated column**, every read is far inside the 200 ms Phase 4 target:
+
+  | | SQLite | PostgreSQL | MySQL |
+  |---|---|---|---|
+  | insert 100k | 3392 ms | 7708 ms | 6573 ms |
+  | `count(*)` | 41 ms | 22 ms | 81 ms |
+  | list page (type + status) | 20 ms | 19 ms | 105 ms |
+  | slug lookup | 0.6 ms | 5.6 ms | 7.9 ms |
+  | generated-column range | 1.5 ms | 3.7 ms | 3.8 ms |
+  | table size | 29 MB | 48 MB | — |
+
+  ADR-017's fan-out (10k × 10 locales = 100k rows) costs the same as 100k flat rows, so translation multiplies volume rather than adding a per-row penalty. **Still open: the 1M run**, and media-as-entries (ADR-016) at scale
 - [ ] ⚠️ **Resource-floor benchmark (ADR-027)** — the admin, on **1 vCPU / 1 GB RAM / SQLite / no container runtime**, with translation fan-out and generated-column writes switched **on**. This is the number the floor is held to, and every later phase re-checks it
 
 **Done when:** you have numbers, written down.

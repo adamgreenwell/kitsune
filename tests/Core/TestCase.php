@@ -10,11 +10,24 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Tests;
 
+use Illuminate\Foundation\Testing\RefreshDatabase;
 use Kitsune\Core\KitsuneServiceProvider;
 use Orchestra\Testbench\TestCase as Orchestra;
 
 abstract class TestCase extends Orchestra
 {
+    /**
+     * Every test starts from an empty database.
+     *
+     * On SQLite each test already gets a fresh in-memory database, so this
+     * changes nothing there — which is exactly why its absence went unnoticed.
+     * On PostgreSQL and MySQL the data persists, and the suite was passing
+     * only because nothing had polluted those databases first. A single
+     * benchmark run against them was enough to turn 52 passes into 42
+     * failures on unique-constraint violations.
+     */
+    use RefreshDatabase;
+
     /**
      * Testbench gives the package a Laravel application without vendoring one.
      * That is what keeps the default suite runnable on a bare clone (ADR-024).

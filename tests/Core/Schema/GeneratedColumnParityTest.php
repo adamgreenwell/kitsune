@@ -47,7 +47,10 @@ it('resolves a driver for the connection', function (): void {
 });
 
 it('adds a generated column over a JSON path and queries through it', function (): void {
-    $type = $this->driver->name() === 'mysql' ? 'DECIMAL(12,2)' : 'NUMERIC(12,2)';
+    // Ask the driver, rather than hardcoding per engine at the call site —
+    // doing that here is what hid the NUMERIC/DECIMAL divergence until the
+    // storage benchmark passed one type to all three engines.
+    $type = $this->driver->sqlType('decimal');
 
     DB::statement($this->driver->addGeneratedColumnSql('parity_probe', 'idx_price', 'values', 'price', $type));
 
@@ -66,7 +69,10 @@ it('adds a generated column over a JSON path and queries through it', function (
 });
 
 it('indexes the generated column, leading with the scope key', function (): void {
-    $type = $this->driver->name() === 'mysql' ? 'DECIMAL(12,2)' : 'NUMERIC(12,2)';
+    // Ask the driver, rather than hardcoding per engine at the call site —
+    // doing that here is what hid the NUMERIC/DECIMAL divergence until the
+    // storage benchmark passed one type to all three engines.
+    $type = $this->driver->sqlType('decimal');
 
     DB::statement($this->driver->addGeneratedColumnSql('parity_probe', 'idx_price', 'values', 'price', $type));
 
@@ -79,7 +85,10 @@ it('indexes the generated column, leading with the scope key', function (): void
 });
 
 it('drops a generated column again', function (): void {
-    $type = $this->driver->name() === 'mysql' ? 'DECIMAL(12,2)' : 'NUMERIC(12,2)';
+    // Ask the driver, rather than hardcoding per engine at the call site —
+    // doing that here is what hid the NUMERIC/DECIMAL divergence until the
+    // storage benchmark passed one type to all three engines.
+    $type = $this->driver->sqlType('decimal');
 
     DB::statement($this->driver->addGeneratedColumnSql('parity_probe', 'idx_price', 'values', 'price', $type));
     expect(Schema::hasColumn('parity_probe', 'idx_price'))->toBeTrue();
@@ -89,7 +98,7 @@ it('drops a generated column again', function (): void {
 });
 
 it('projects a text field, not only numerics', function (): void {
-    $type = $this->driver->name() === 'mysql' ? 'CHAR(64)' : 'VARCHAR(64)';
+    $type = $this->driver->sqlType('string', 64);
 
     DB::statement($this->driver->addGeneratedColumnSql('parity_probe', 'idx_sku', 'values', 'sku', $type));
 
@@ -110,4 +119,20 @@ it('quotes a reserved identifier so `values` is usable as a column name', functi
 
     // `values` is reserved on MySQL and Postgres. Unquoted, this is a syntax error.
     expect($sql)->toContain($this->driver->quote('values'));
+});
+
+it('renders a decimal type this engine accepts inside CAST', function (): void {
+    // MySQL accepts NUMERIC as a column type but rejects it inside CAST,
+    // where it demands DECIMAL. The parity test used to hardcode the right
+    // spelling per engine, which hid the divergence until the storage
+    // benchmark passed one type to all three.
+    $expected = $this->driver->name() === 'mysql' ? 'DECIMAL(12,2)' : 'NUMERIC(12,2)';
+
+    expect($this->driver->sqlType('decimal'))->toBe($expected);
+});
+
+it('throws on an unknown logical type rather than guessing', function (): void {
+    // A generated column silently created with the wrong type would index
+    // the wrong thing, which is worse than failing loudly.
+    expect(fn () => $this->driver->sqlType('nonsense'))->toThrow(UnhandledMatchError::class);
 });

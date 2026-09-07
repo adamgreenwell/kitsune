@@ -24,6 +24,17 @@ final class PostgresDriver implements SchemaDriver
         return true;
     }
 
+    public function sqlType(string $logical, int $precision = 12, int $scale = 2): string
+    {
+        return match ($logical) {
+            'decimal' => "NUMERIC({$precision},{$scale})",
+            'integer' => 'BIGINT',
+            'string' => "VARCHAR({$precision})",
+            'boolean' => 'BOOLEAN',
+            'datetime' => 'TIMESTAMP',
+        };
+    }
+
     public function jsonExtractExpression(string $jsonColumn, string $path, string $sqlType): string
     {
         // Postgres uses ->> with a bare key and a cast suffix.

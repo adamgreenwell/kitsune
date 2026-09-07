@@ -8,7 +8,6 @@
 
 declare(strict_types=1);
 
-use Illuminate\Database\QueryException;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 use Kitsune\Core\Models\Org;
@@ -194,18 +193,21 @@ describe('site route keys', function (): void {
         expect($duplicate->handle)->toBe($this->siteA1->handle);
     });
 
-    it('refuses two sites sharing a slug, because that is the route key', function (): void {
-        app(Context::class)->setOrg($this->orgB);
-
+    it('constrains the slug to be globally unique, because it is the route key', function (): void {
+        // Asserted through schema introspection rather than by triggering the
+        // violation. Provoking it is not portable: PostgreSQL aborts the whole
+        // transaction, poisoning the RefreshDatabase wrapper, and MySQL drops
+        // the savepoint meant to contain that. The guarantee under test is
+        // that the constraint EXISTS, and this checks exactly that.
+        //
         // /admin/{site} carries no org segment, so the segment identifying a
         // site must be unique across the installation. For a user belonging
         // to both orgs the URL would otherwise be genuinely ambiguous.
-        expect(fn () => Site::create([
-            'org_id' => $this->orgB->id,
-            'handle' => 'something-else',
-            'slug' => $this->siteA1->slug,
-            'name' => 'Collides',
-        ]))->toThrow(QueryException::class);
+        $unique = collect(Schema::getIndexes('sites'))
+            ->filter(fn (array $index): bool => (bool) ($index['unique'] ?? false))
+            ->pluck('columns');
+
+        expect($unique)->toContain(['slug']);
     });
 
     it('routes on the slug, not the handle', function (): void {
