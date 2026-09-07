@@ -74,6 +74,21 @@ test.describe('admin', () => {
         expect(hrefs.length).toBeGreaterThan(0);
         expect(hrefs.filter((h) => /\/c\/(\/|$|\?)/.test(h ?? ''))).toEqual([]);
     });
+    test('drives a ManageRelatedRecords PAGE under {type}', async ({ page }) => {
+        // Spike #10, the last untested corner of ADR-012's URL contract.
+        // RelationManager *components* register no routes; this construct is
+        // a resource page and does, which is why it needed covering
+        // separately.
+        await page.goto(`/admin/${SITE}/c/article/1/related`);
+
+        await expect(page).toHaveTitle(/Related entries/);
+        await expect(page.getByText('Course maintenance in week 2')).toBeVisible();
+
+        const hrefs = await page.locator('a[href*="/c/"]').evaluateAll(
+            (links) => links.map((a) => a.getAttribute('href')),
+        );
+        expect(hrefs.filter((h) => /\/c\/(\/|$|\?)/.test(h ?? ''))).toEqual([]);
+    });
 });
 
 test.describe('isolation, from the attacker side', () => {

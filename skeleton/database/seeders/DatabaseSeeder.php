@@ -83,6 +83,12 @@ class DatabaseSeeder extends Seeder
             ]);
         }
 
+        // Relations through the real table (ADR-015), so the page-based
+        // relation manager has something to show.
+        $first = Entry::where('slug', 'course-maintenance-week-1')->first();
+        $others = Entry::whereIn('slug', ['course-maintenance-week-2', 'course-maintenance-week-3'])->pluck('id');
+        $first?->related()->attach($others->all(), ['org_id' => $orgA->id]);
+
         $context->setSite($rival);
         Entry::create([
             'entry_type_id' => $article->id,
