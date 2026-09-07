@@ -141,6 +141,22 @@ class EntryType extends Model
             return;
         }
 
+        // ⚠️ Storage ownership, checked HERE because `Field::create()` skips
+        // the Field guard entirely — the listener returns early on a model
+        // that does not yet exist. So the ordinary create-then-nominate
+        // sequence could back a nomination with a RIVAL ORG's storage, which
+        // FieldStorage being #[Unscoped] does nothing to prevent.
+        //
+        // A global storage row (org_id NULL) is legitimate, matching how
+        // global entry types work.
+        if ($storage->org_id !== null && $this->org_id !== null && $storage->org_id !== $this->org_id) {
+            throw new RuntimeException(
+                "Field [{$storage->handle}] is backed by another organisation's storage and cannot "
+                .'identify a data subject here. Subject-access requests would be answered against '
+                .'a definition this organisation does not control (ADR-020, ADR-021).'
+            );
+        }
+
         $config = new FieldConfig($storage, $field);
 
         // ⚠️ A relation is exempt from the array-shape rule ONLY at

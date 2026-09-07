@@ -283,7 +283,7 @@ class Entry extends Model
     /**
      * Outgoing relations through the real table (ADR-015).
      *
-     * @return BelongsToMany<Entry, $this>
+     * @return BelongsToMany<Entry, $this, EntryRelation>
      */
     public function related(): BelongsToMany
     {
@@ -294,7 +294,7 @@ class Entry extends Model
      * The reverse lookup that JSON storage cannot answer without a full scan:
      * "what references this asset?"
      *
-     * @return BelongsToMany<Entry, $this>
+     * @return BelongsToMany<Entry, $this, EntryRelation>
      */
     public function referencedBy(): BelongsToMany
     {
@@ -316,11 +316,16 @@ class Entry extends Model
      * non-nullable and EnforcesScope stamps it on create, so it is always
      * available here.
      *
-     * @return BelongsToMany<Entry, $this>
+     * @return BelongsToMany<Entry, $this, EntryRelation>
      */
     private function relationsThrough(string $foreignPivotKey, string $relatedPivotKey): BelongsToMany
     {
         $relation = $this->belongsToMany(self::class, 'entry_relations', $foreignPivotKey, $relatedPivotKey)
+            // A pivot MODEL, so the field's own cardinality and targetTypes
+            // are enforced when a row is written. `attach()` goes nowhere
+            // near validation, so without this they were metadata nobody
+            // checked — see EntryRelation.
+            ->using(EntryRelation::class)
             ->withPivot(['org_id', 'field_storage_id', 'ordering']);
 
         // org_id is declared non-nullable, and EnforcesScope stamps it on

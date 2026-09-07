@@ -104,6 +104,7 @@ class FieldStorage extends Model
             }
 
             $storage->guardHandle();
+            $storage->guardNomination();
 
             // ADR-006: storage locks the moment data exists. Shipping this
             // guard in v1 rather than later is the whole point of copying it.
@@ -246,6 +247,52 @@ class FieldStorage extends Model
         $type = app(FieldTypeRegistry::class)->get($this->type);
 
         return $type->projection(new FieldConfig($this))?->signature() ?? 'none';
+    }
+
+    /**
+     * A nominated field's storage is frozen in the ways that matter.
+     *
+     * ⚠️ The `Field` guard watches the FIELD row, so mutating the storage in
+     * place walked past it entirely. An unlocked single-value relation could
+     * have its `cardinality` changed to -1 — recreating the multi-subject
+     * disclosure the nomination guard exists to prevent — and even a LOCKED
+     * storage could have its `handle` or `org_id` changed, because neither is
+     * a shape attribute: subject queries would then read the wrong key, or
+     * the wrong org (ADR-020).
+     *
+     * Only while something nominates it, and only the attributes that change
+     * what the field IS. Editing settings on a nominated field stays free
+     * unless the lock or the projection guard says otherwise.
+     */
+    private function guardNomination(): void
+    {
+        if (! $this->exists) {
+            return;
+        }
+
+        $frozen = array_filter(
+            ['handle', 'org_id', 'cardinality', 'type'],
+            fn (string $attribute): bool => $this->isDirty($attribute),
+        );
+
+        if ($frozen === []) {
+            return;
+        }
+
+        $nominated = EntryType::query()
+            ->whereIn('subject_field_id', Field::query()->where('field_storage_id', $this->getKey())->select('id'))
+            ->first();
+
+        if ($nominated !== null) {
+            throw new RuntimeException(sprintf(
+                'Field [%s] backs the data subject identifier of [%s], so [%s] cannot change. '
+                .'Clear the nomination first — changing it here would leave that type answering '
+                .'subject-access requests against a field nobody re-checked (ADR-020).',
+                $this->handle,
+                $nominated->handle,
+                implode(', ', $frozen),
+            ));
+        }
     }
 
     private function guardHandle(): void

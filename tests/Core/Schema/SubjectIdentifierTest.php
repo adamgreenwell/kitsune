@@ -624,3 +624,136 @@ describe('a nomination cannot be repointed out from under itself', function (): 
             ->not->toThrow(RuntimeException::class);
     });
 });
+
+/*
+ * Four more from review. Two share a root cause worth naming: `cardinality`
+ * and `targetTypes` were METADATA that only validation checked, and
+ * `attach()` goes nowhere near validation.
+ */
+describe('a relation obeys its own rules when rows are WRITTEN', function (): void {
+    beforeEach(function (): void {
+        $this->one = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'person', 'type' => 'relation',
+            'pii_class' => 'personal', 'cardinality' => 1,
+        ]);
+        $this->alice = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Alice']);
+        $this->bob = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Bob']);
+        $this->record = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Visit']);
+    });
+
+    it('refuses a second target on a single-valued relation', function (): void {
+        // Two ordinary attach() calls gave a nominated subject field two
+        // targets, so subjectValue() named two people and whereSubjectIs()
+        // returned the shared record for either — the exact disclosure the
+        // nomination guard was written to prevent, through the normal API.
+        $this->record->related()->attach($this->alice->id, ['field_storage_id' => $this->one->id]);
+
+        expect(fn () => $this->record->related()->attach($this->bob->id, ['field_storage_id' => $this->one->id]))
+            ->toThrow(RuntimeException::class, 'already has that many');
+    });
+
+    it('allows as many as the cardinality permits', function (): void {
+        $two = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'people', 'type' => 'relation',
+            'pii_class' => 'personal', 'cardinality' => 2,
+        ]);
+
+        $this->record->related()->attach($this->alice->id, ['field_storage_id' => $two->id]);
+
+        expect(fn () => $this->record->related()->attach($this->bob->id, ['field_storage_id' => $two->id]))
+            ->not->toThrow(RuntimeException::class);
+    });
+
+    it('leaves -1 unlimited', function (): void {
+        $many = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'links', 'type' => 'relation',
+            'pii_class' => 'none', 'cardinality' => -1,
+        ]);
+
+        $this->record->related()->attach($this->alice->id, ['field_storage_id' => $many->id]);
+
+        expect(fn () => $this->record->related()->attach($this->bob->id, ['field_storage_id' => $many->id]))
+            ->not->toThrow(RuntimeException::class);
+    });
+
+    it('refuses a target of a type the field forbids', function (): void {
+        // targetTypes was enforced in validation only, and attach() bypasses
+        // validation — so a pivot could point at a visible entry of a
+        // forbidden type and be treated as the subject.
+        $constrained = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'author', 'type' => 'relation',
+            'pii_class' => 'personal', 'cardinality' => 1,
+            'settings' => ['targetTypes' => ['person']],
+        ]);
+
+        expect(fn () => $this->record->related()->attach($this->alice->id, ['field_storage_id' => $constrained->id]))
+            ->toThrow(RuntimeException::class, 'accepts only');
+    });
+});
+
+describe('a nomination survives its storage being edited', function (): void {
+    beforeEach(function (): void {
+        $this->type->update(['subject_field_id' => $this->emailField->id]);
+    });
+
+    it('refuses to widen the cardinality of nominated storage', function (): void {
+        // An unlocked single-value relation could become -1, recreating the
+        // multi-subject disclosure the nomination guard exists to prevent.
+        expect(fn () => $this->emailStorage->update(['cardinality' => -1]))
+            ->toThrow(RuntimeException::class, 'backs the data subject identifier');
+    });
+
+    it('refuses to rename nominated storage', function (): void {
+        // Not a locked shape attribute, so even a LOCKED storage allowed it —
+        // and subject queries would then read the wrong key.
+        expect(fn () => $this->emailStorage->update(['handle' => 'contact_email']))
+            ->toThrow(RuntimeException::class, 'backs the data subject identifier');
+    });
+
+    it('refuses to move nominated storage to another org', function (): void {
+        $rival = Org::create(['name' => 'R', 'slug' => 'rival-move']);
+
+        expect(fn () => $this->emailStorage->update(['org_id' => $rival->id]))
+            ->toThrow(RuntimeException::class, 'backs the data subject identifier');
+    });
+
+    it('still allows editing settings on nominated storage', function (): void {
+        // Only what changes WHAT THE FIELD IS is frozen.
+        expect(fn () => $this->emailStorage->update(['settings' => ['maxLength' => 200]]))
+            ->not->toThrow(RuntimeException::class);
+    });
+});
+
+it('refuses to nominate a field backed by ANOTHER ORG\'s storage', function (): void {
+    /*
+     * ⚠️ `Field::create()` skips the Field guard entirely — the listener
+     * returns early on a model that does not yet exist — so the ordinary
+     * create-then-nominate sequence could back a nomination with a rival
+     * org's storage, which FieldStorage being #[Unscoped] does nothing to
+     * prevent.
+     */
+    $rival = Org::create(['name' => 'R', 'slug' => 'rival-storage']);
+    $theirs = FieldStorage::create([
+        'org_id' => $rival->id, 'handle' => 'their_email', 'type' => 'text',
+        'pii_class' => 'personal', 'cardinality' => 1,
+    ]);
+    $field = Field::create([
+        'entry_type_id' => $this->type->id, 'field_storage_id' => $theirs->id, 'label' => 'Their email',
+    ]);
+
+    expect(fn () => $this->type->update(['subject_field_id' => $field->id]))
+        ->toThrow(RuntimeException::class, "another organisation's storage");
+});
+
+it('still allows a nomination backed by GLOBAL storage', function (): void {
+    // org_id NULL is legitimate, matching how global entry types work.
+    $global = FieldStorage::create([
+        'org_id' => null, 'handle' => 'system_ref', 'type' => 'text',
+        'pii_class' => 'personal', 'cardinality' => 1,
+    ]);
+    $field = Field::create([
+        'entry_type_id' => $this->type->id, 'field_storage_id' => $global->id, 'label' => 'System ref',
+    ]);
+
+    expect(fn () => $this->type->update(['subject_field_id' => $field->id]))->not->toThrow(RuntimeException::class);
+});
