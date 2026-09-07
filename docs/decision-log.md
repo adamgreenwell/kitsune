@@ -318,6 +318,20 @@ The tenant is a **route parameter**, so one route table is shared by every tenan
 
 **Also required:** reserve type handles that collide with route segments — at minimum `create`, `edit`, `delete` — and reject them at type-creation time.
 
+### Amendment — relation-manager spike, 2026-09-07
+
+The highest-risk open question against this ADR was whether Filament relation managers survive the extra route parameter. **Spike run on Laravel 13.30.1 / Filament v5.7.8 / PHP 8.4.25. The design holds, and the spike found two implementation requirements the original ADR did not state.**
+
+**Confirmed working.** Both relation-manager shapes render and operate under `/c/{type}/{record}/edit`: a `HasMany` (revisions) and a `BelongsToMany` through the real `entry_relations` table (ADR-015 Relational storage), including deferred `loadTable`, search, pagination, and Attach/Detach/Edit/Delete actions. Every Livewire update returned **200**; no *"Missing required parameter"* occurred anywhere. Every generated URL carried a populated `/c/<type>/` segment.
+
+**Relation managers register no routes of their own.** They are Livewire components mounted on the page, and their snapshot memo carries the original path (`admin/golfdom/c/article/1/edit`), which Livewire re-matches on update. The original fear — *"they register their own routes and URLs"* — does not apply to `RelationManager`. It may still apply to `ManageRelatedRecords` **pages**, a different construct that does register a route and which this spike did **not** cover. That remains open.
+
+**Finding 1 — navigation is a correctness requirement, not a performance one.** This ADR framed `Panel::navigation(Closure)` as a memoization concern. It is more than that. Filament auto-registers a navigation item per Resource and calls `getUrl()` on it while rendering the sidebar; with `{type}` in the URI and none in the current request, that throws and **500s every page outside `/c/{type}`, the dashboard included.** `$shouldRegisterNavigation = false` on the Resource is mandatory. The 5×-per-request claim was measured and is exact.
+
+**Finding 2 — `original_request()` is namespaced.** It is `Filament\Support\original_request()`, not a global helper, and needs a `use function` import. The fatal is invisible on initial render — `??` short-circuits while the route parameter is present — and fires only on the first Livewire update. A page that renders perfectly and dies the moment anyone clicks is exactly the failure shape this ADR was written to avoid.
+
+**`route:cache` re-confirmed.** An entry type inserted *after* `route:cache` was reachable at its URL and appeared in the sidebar. Route count stayed at 8 with 5 types in the database.
+
 ---
 
 ## ADR-013 — PHP 8.4 minimum, 8.5 as CI primary
@@ -791,7 +805,7 @@ From prior-art analysis of Drupal, October, Winter, Statamic, Directus, Strapi, 
 
 ## Open questions
 
-- **Relation managers under an extra route parameter** — untested, the highest-risk unknown in ADR-012. They register their own routes and URLs and are the likeliest place `{type}` leaks
+- `ManageRelatedRecords` **pages** under `{type}` — the 2026-09-07 spike cleared `RelationManager` *components*, which register no routes. `ManageRelatedRecords` registers its own route and was not tested
 - Generated-column parity across Postgres, MySQL **and SQLite**; does the driver abstraction hold? SQLite is the awkward one — VIRTUAL rather than STORED columns
 - Storage benchmark at 10k / 100k / 1M entries
 - Blueprint rollback semantics when content already exists

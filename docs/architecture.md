@@ -107,11 +107,23 @@ Three of these are not optional. Skip any one and it breaks.
 
    It works because Livewire stores the original path in its snapshot memo and re-matches the real route on update requests.
 
-4. **Navigation via `Panel::navigation(Closure)`** — it runs at render time, *after* tenant identification. **But it fires 5× per request** (layout, sidebar ×2, topbar ×2) and does not memoize. **Memoize it, or you do 5 identical DB queries per page.** Cache per site.
+4. **⚠️ `protected static bool $shouldRegisterNavigation = false;` on the Resource — and navigation supplied explicitly via `Panel::navigation(Closure)`. This is a correctness requirement, not a performance one.** Filament auto-registers one navigation item per Resource and calls `getUrl()` on it while rendering the sidebar. With `{type}` in the URI and no `{type}` in the *current* request, that throws `UrlGenerationException` and **500s every page that is not already under `/c/{type}` — the dashboard included.** Measured:
 
-5. **Override `getGlobalSearchResultUrl()`** to pass `['type' => $record->type_handle]`.
+   ```
+   GET /admin/golfdom  →  500  UrlGenerationException
+   Missing required parameter for [Route: filament.admin.resources.c.index]
+   [URI: admin/{tenant}/c/{type}] [Missing parameter: type]
+   ```
 
-6. Use `route:cache`. **Skip `filament:cache-components`** — it caches nothing useful here.
+   The replacement closure runs at render time, *after* tenant identification, and emits one item per entry type with `{type}` supplied explicitly. **It fires exactly 5× per request** (layout, sidebar ×2, topbar ×2) and does not memoize — measured, not estimated. **Memoize it, or you do 5 identical DB queries per page.** Cache per site.
+
+5. **⚠️ `original_request()` is namespaced — import it.** It lives in `Filament\Support`, not the global namespace, so a bare call fatals with *"Call to undefined function"*. Add `use function Filament\Support\original_request;` to every file that reads it.
+
+   The failure mode is the dangerous kind: on the initial `GET` the route parameter is present, so `??` short-circuits and the function is never evaluated. The page renders perfectly. The fatal fires **only on the first Livewire update**, which is the first time anyone clicks anything.
+
+6. **Override `getGlobalSearchResultUrl()`** to pass `['type' => $record->type_handle]`.
+
+7. Use `route:cache`. **Skip `filament:cache-components`** — it caches nothing useful here.
 
 ### Rejected along the way
 
@@ -375,12 +387,12 @@ Honest list. None of these blocks starting; all of them should be settled before
 
 | Item | Risk | Why |
 |---|---|---|
-| **Relation managers under an extra route parameter** | **Highest** | Untested. They register their own routes and URLs and are the most likely place `{type}` leaks out |
 | Generated-column parity across Postgres, MySQL and SQLite | High | Syntax and JSON path operators differ, and SQLite needs VIRTUAL rather than STORED columns; the driver abstraction has to hold across all three |
 | Storage benchmark at 10k / 100k / 1M entries | High | Find the ceiling now, not in year two |
 | Blueprint rollback semantics | Medium | What happens when a blueprint is removed after content exists? |
 | Revision storage growth | Medium | Full-JSON snapshots per revision get expensive; consider diffs |
 | Relation targets under translation | Medium | Do relations point at a translation group or one locale row (ADR-017)? It decides what `entry_relations.target_entry_id` holds |
+| `ManageRelatedRecords` **pages** under `{type}` | Medium | The relation-manager spike covered `RelationManager` *components*, which register no routes. `ManageRelatedRecords` is a separate construct that does register its own route, and was **not** tested |
 
 ---
 

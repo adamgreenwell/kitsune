@@ -71,7 +71,8 @@ Those consumed 5,000–15,000 hours. 12–18 months part-time is ~1,200. **So: c
 
 The routing question is **already settled** — ADR-012 was resolved by a working instrumented spike, and `ResourceConfiguration` was disproven. What's left:
 
-- [ ] **Relation managers under an extra route parameter.** ⚠️ **Highest-risk unknown in the whole design.** They register their own routes and URLs and are the likeliest place `{type}` leaks out of the URL contract
+- [x] **Relation managers under an extra route parameter.** ✅ **Cleared 2026-09-07** on Laravel 13.30.1 / Filament v5.7.8. Both `HasMany` and `BelongsToMany` relation managers work under `/c/{type}`; they register no routes of their own. Two new non-optional requirements fell out — see the ADR-012 amendment
+- [ ] **`ManageRelatedRecords` pages under `{type}`** — the remaining slice of the above. A different construct that *does* register its own route; not yet tested
 - [ ] **Generated-column parity across Postgres, MySQL and SQLite.** Syntax and JSON path operators all differ, and SQLite needs VIRTUAL rather than STORED columns. Prove the driver abstraction holds before building field types on it
 - [ ] **Accessibility and RTL audit of Filament v5.** How much WCAG conformance and RTL layout do you inherit versus build? Automated checkers won't answer this — drive the entry editor with a screen reader. Same afternoon as the RTL render check
 - [ ] **Storage benchmark** at 10k / 100k / 1M entries on all three engines — include the row multiplication from translation (ADR-017) and one `entries` row per media asset (ADR-016)
