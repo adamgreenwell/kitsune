@@ -198,7 +198,9 @@ The escape hatch, and escape hatches get abused.
 
 ## 7. Indexing
 
-A field is indexed when `field_storage.is_indexed` is true. The engine then adds a stored generated column plus a composite index leading with the scope key — `site_id`, since `entries` is `#[SiteScoped]`:
+A field is indexed when `field_storage.is_indexed` is true. `Kitsune\Core\Schema\SchemaManager` then adds a stored generated column plus a composite index leading with the scope key — `site_id`, since `entries` is `#[SiteScoped]`.
+
+**The column is named for its projection, not for its owner** — `idx_{handle}__{type}` (ADR-028). `entries` is one table shared by every org, so two orgs each defining `price` would otherwise collide: one silently casting the other's data to the wrong type, and either able to drop the other's column. Because `generatedColumnType()` reads no per-field configuration, two rows with the same handle **and** type generate a byte-identical expression and share the column deliberately; rows that disagree on type get separate columns.
 
 **Verified 2026-09-07** against all three engines (issue #11). The SQL below is what `Kitsune\Core\Schema\Drivers\*` actually emits, and `tests/Core/Schema/GeneratedColumnParityTest.php` runs it on each.
 
@@ -207,25 +209,25 @@ A field is indexed when `field_storage.is_indexed` is true. The engine then adds
 ```sql
 -- MySQL: $-prefixed path, CAST wrapper, backtick quoting
 ALTER TABLE `entries`
-  ADD COLUMN `idx_price` DECIMAL(12,2)
+  ADD COLUMN `idx_price__number` DECIMAL(12,2)
     GENERATED ALWAYS AS (CAST(`values`->>'$.price' AS DECIMAL(12,2))) STORED;
-CREATE INDEX `entries_site_price` ON `entries` (`site_id`, `idx_price`);
+CREATE INDEX `idx_price__number_site_idx` ON `entries` (`site_id`, `idx_price__number`);
 ```
 
 ```sql
 -- PostgreSQL: bare key, cast suffix, double-quote quoting
 ALTER TABLE "entries"
-  ADD COLUMN "idx_price" NUMERIC(12,2)
+  ADD COLUMN "idx_price__number" NUMERIC(12,2)
     GENERATED ALWAYS AS (("values" ->> 'price')::NUMERIC(12,2)) STORED;
-CREATE INDEX "entries_site_price" ON "entries" ("site_id", "idx_price");
+CREATE INDEX "idx_price__number_site_idx" ON "entries" ("site_id", "idx_price__number");
 ```
 
 ```sql
 -- SQLite: json_extract, and VIRTUAL rather than STORED
 ALTER TABLE "entries"
-  ADD COLUMN "idx_price" NUMERIC(12,2)
+  ADD COLUMN "idx_price__number" NUMERIC(12,2)
     GENERATED ALWAYS AS (CAST(json_extract("values", '$.price') AS NUMERIC(12,2))) VIRTUAL;
-CREATE INDEX "entries_site_price" ON "entries" ("site_id", "idx_price");
+CREATE INDEX "idx_price__number_site_idx" ON "entries" ("site_id", "idx_price__number");
 ```
 
 The syntax diverges in four ways — path operator, cast form, identifier quoting, and whether the column can be materialised at all. **That divergence is exactly why the field type asks a driver instead of writing SQL.**
@@ -233,7 +235,9 @@ The syntax diverges in four ways — path operator, cast form, identifier quotin
 ### Rules
 
 - **Indexing is opt-in.** Every generated column costs write throughput and disk. Default off
-- **Cap indexed fields per entity type** — start at 20, revisit with benchmark data. Without a cap, one org can degrade the shared `entries` table for everyone, which on KaaS is a noisy-neighbour incident
+- **Cap generated columns on the shared `entries` table** — `SchemaManager::MAX_GENERATED_COLUMNS`, 20 to start, revisit with benchmark data. The cap counts **columns, not `field_storage` rows**: many rows across many orgs can share one column, and the scarce resource is the table. Without a cap, one org can degrade `entries` for everyone, which on KaaS is a noisy-neighbour incident
+- **Dropping is reference-counted.** Un-indexing removes the column only once no other field storage row still projects to it. An org must never be able to drop a column another org is querying (ADR-021, ADR-028)
+- **Field handles are bounded at 40 characters, lowercase snake_case, no doubled underscore.** They become SQL identifiers, PostgreSQL truncates those at 63 bytes, and a truncated identifier is a silent collision rather than an error. `__` is reserved as the separator
 - **Adding an index rewrites the table.** On a large `entries` table this locks. Queue it, do it online where the engine supports it, and warn in the UI
 - **Marking a field indexed is not reversible for free** — dropping the column is another rewrite
 - **Cardinality > 1 is not indexable this way.** A JSON array can't project to a scalar column. Multi-value fields that need querying should be `relation`

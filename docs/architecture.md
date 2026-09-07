@@ -262,16 +262,18 @@ entry_relations
 
 ### Indexing — the mechanism that avoids Drupal's join explosion
 
-When a `field_storage` row is marked `is_indexed`, the schema engine adds a **stored generated column** over the JSON plus a composite index that always leads with the scope key — `site_id`, since `entries` is `#[SiteScoped]`:
+When a `field_storage` row is marked `is_indexed`, `SchemaManager` adds a **stored generated column** over the JSON plus a composite index that always leads with the scope key — `site_id`, since `entries` is `#[SiteScoped]`:
 
 ```sql
 -- MySQL. `values` is reserved and must be quoted; see field-types.md §7
 -- for the PostgreSQL and SQLite forms, all three verified against live engines.
 ALTER TABLE `entries`
-  ADD COLUMN `idx_price` DECIMAL(12,2)
+  ADD COLUMN `idx_price__number` DECIMAL(12,2)
     GENERATED ALWAYS AS (CAST(`values`->>'$.price' AS DECIMAL(12,2))) STORED;
-CREATE INDEX `entries_site_price` ON `entries` (`site_id`, `idx_price`);
+CREATE INDEX `idx_price__number_site_idx` ON `entries` (`site_id`, `idx_price__number`);
 ```
+
+The column carries the **field type**, not the org (ADR-028). `entries` is shared by every org, and two orgs may each define `price`; naming by handle alone let one org's type silently reinterpret the other's data, and let either drop the other's column. Rows projecting identically share the column; dropping is reference-counted.
 
 One table, one row per entry, real indexes on the fields that need them. This is the direct answer to Drupal core issue #3022864 — the 27-join, 697-second production query caused by table-per-field.
 

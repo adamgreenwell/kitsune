@@ -999,6 +999,41 @@ ADR-026 offered two install paths and named **Docker** the recommended default, 
 
 **Commercial interest, per ADR-023.** Interests mostly align here — a leaner core means more tenants per box on KaaS. The exception is the same one ADR-026 already discloses: the lower the self-host floor, the more optional the hosted service becomes. Disclosed once there; not re-litigated here.
 
+## ADR-028 — A generated column is named for its projection, not for its owner
+
+**Status:** Decided · 2026-09-07
+
+Found while implementing ADR-006's index-on-demand mechanism, before it shipped.
+
+`entries` is **one table shared by every org** (ADR-021), and `field_storage` is `UNIQUE (org_id, handle)` — so two orgs may each define a field called `price`. The first implementation named the generated column after the handle alone, `idx_price`. That is wrong in two ways, and both are silent:
+
+- **Type collision.** Org A's `price` is a `number`, Org B's is `text`. One column gets created, with one type. The other org's queries then filter on a projection that casts their data to the wrong type — wrong results, no error.
+- **Drop collision.** Org A un-indexes `price`, the column is dropped, and Org B's queries start failing on a column that another org removed. Cross-org action at a distance, which is precisely the class of defect ADR-021 says has no framework safety net.
+
+**Decision: the column's identity is `(handle, field type)`, rendered `idx_{handle}__{type}`.**
+
+`FieldType::generatedColumnType()` takes only a driver — it reads no per-field configuration. The projection is therefore a pure function of the type handle. Two field storage rows with the same handle and the same type generate a byte-identical expression, so sharing one column is not coupling, it is deduplication. Two rows that disagree on type generate different expressions and get different columns.
+
+This follows from that:
+
+- **Creation is idempotent and shared.** The second org to index `price` as a `number` finds the column already there and adds nothing.
+- **Dropping is reference-counted.** `idx_price__number` survives until no field storage row still asks for it. An org un-indexing its own field never removes another org's index.
+- **No coordination, and no leak.** Neither org can block the other, and neither learns the other exists — the failure mode a "handles are globally reserved by first use" rule would have introduced.
+
+**Identifier length.** PostgreSQL truncates identifiers at 63 bytes and MySQL rejects them past 64, and a truncated column name is a silent collision — exactly what this ADR exists to prevent. Field handles are therefore bounded at 40 characters and constrained to `[a-z][a-z0-9_]*` with no doubled underscore, which keeps `__` unambiguous as the separator and leaves room for the type. The full identifier is re-checked at index time and refused if it still does not fit.
+
+**The cap counts columns, not rows.** The first implementation capped "indexed fields per entity type" and then counted `field_storage` rows globally — the name and the code disagreed, and neither described the resource being protected. The scarce resource is columns on the shared `entries` table: PostgreSQL stops at 1600, MySQL at a 65,535-byte row. The cap is therefore on generated columns present on `entries`, counted from the table itself.
+
+| Rejected | Why it lost |
+|---|---|
+| `idx_{org_id}_{handle}` — a column per org | Correct isolation, unbounded cost. 500 orgs × 5 indexed fields is 2,500 columns on one table; PostgreSQL's limit is 1,600. It converts a correctness bug into a capacity ceiling. |
+| A handle is globally reserved by whoever indexes it first | Simple, and it leaks. Org B learns that `price` exists elsewhere as a `number`, and cannot proceed without coordinating with a tenant it must not be able to see. |
+| Hash the identity — `idx_a3f9c2d1` | Collision-free and unreadable. The column is a query surface; `where('idx_price__number', ...)` is debuggable and a hash is not. |
+| A table per org | Solves this and reintroduces Drupal's problem one level up: schema operations become O(orgs), and ADR-021's single-database model exists to avoid exactly that. |
+| Leave it — one org per install is the common case | The common case is not the risky case. Shared hosting is the deployment KaaS depends on (ADR-023), and a silent cross-org data defect there is unrecoverable reputationally. |
+
+**Consequence.** Column names are longer and carry a type suffix. Any query written against a generated column must resolve the name through the field storage row rather than assuming `idx_{handle}`.
+
 ---
 
 ## Standing principles
