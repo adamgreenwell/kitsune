@@ -535,3 +535,92 @@ describe('a subject identifier names ONE subject', function (): void {
         expect(fn () => $this->type->update(['subject_field_id' => $field->id]))->not->toThrow(RuntimeException::class);
     });
 });
+
+/*
+ * Three more from review of the fixes above. Each let a subject-access
+ * request return somebody else's data, or return nothing while looking fine.
+ */
+describe('a relational subject has to point somewhere visible', function (): void {
+    it('ignores a pivot row pointing at an entry outside this scope', function (): void {
+        // `related()` hides an out-of-scope target through Entry's SiteScope,
+        // but a raw EXISTS does not — and `attach($id)` never validates the
+        // related model, so the ordinary path can create such a row.
+        $personStorage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'person', 'type' => 'relation',
+            'pii_class' => 'personal', 'cardinality' => 1,
+        ]);
+        $personField = Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $personStorage->id, 'label' => 'Person',
+        ]);
+        $this->type->update(['subject_field_id' => $personField->id]);
+        $this->type->refresh();
+
+        $alice = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Alice']);
+        $record = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Visit']);
+        $record->related()->attach($alice->id, ['field_storage_id' => $personStorage->id]);
+
+        expect(Entry::whereSubjectIs($this->type, $alice->id)->count())->toBe(1);
+
+        // The target is moved out of scope while the pivot stays put.
+        Entry::withoutScopeBecause('fixture: the attacker moves the target', function () use ($alice) {
+            Entry::whereKey($alice->id)->update(['site_id' => null, 'org_id' => Org::create(['name' => 'R', 'slug' => 'r-target'])->id]);
+        });
+
+        expect(Entry::whereSubjectIs($this->type, $alice->id)->count())->toBe(0);
+    });
+});
+
+describe('a relation subject may point to ONE person', function (): void {
+    it('refuses a relation that can hold several targets', function (): void {
+        // subjectValue() would return every id, and whereSubjectIs() would
+        // return the same record for each — so an export about one person
+        // would disclose a record shared with another.
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'people', 'type' => 'relation',
+            'pii_class' => 'personal', 'cardinality' => -1,
+        ]);
+        $field = Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id, 'label' => 'People',
+        ]);
+
+        expect(fn () => $this->type->update(['subject_field_id' => $field->id]))
+            ->toThrow(RuntimeException::class, 'can point to several entries');
+    });
+});
+
+describe('a nomination cannot be repointed out from under itself', function (): void {
+    beforeEach(function (): void {
+        $this->type->update(['subject_field_id' => $this->emailField->id]);
+    });
+
+    it('refuses to swap the nominated field onto different storage', function (): void {
+        // Watching only entry_type_id let a nominated field be repointed at a
+        // multi-select — making the holes report call the type answerable
+        // while every subject query silently missed.
+        $other = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'tags', 'type' => 'multi_select',
+            'pii_class' => 'personal', 'cardinality' => 1,
+        ]);
+
+        expect(fn () => $this->emailField->update(['field_storage_id' => $other->id]))
+            ->toThrow(RuntimeException::class, 'identifies the data subject');
+    });
+
+    it('refuses to swap it onto ANOTHER ORG\'s storage', function (): void {
+        // FieldStorage is #[Unscoped], so nothing else stops this.
+        $rival = Org::create(['name' => 'Rival', 'slug' => 'rival-swap']);
+        $theirs = FieldStorage::create([
+            'org_id' => $rival->id, 'handle' => 'email', 'type' => 'text',
+            'pii_class' => 'personal', 'cardinality' => 1,
+        ]);
+
+        expect(fn () => $this->emailField->update(['field_storage_id' => $theirs->id]))
+            ->toThrow(RuntimeException::class, 'identifies the data subject');
+    });
+
+    it('still allows editing a nominated field\'s presentation', function (): void {
+        // Only the two attributes that change WHAT the field is are guarded.
+        expect(fn () => $this->emailField->update(['label' => 'Email address']))
+            ->not->toThrow(RuntimeException::class);
+    });
+});

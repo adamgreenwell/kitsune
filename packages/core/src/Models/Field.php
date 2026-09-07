@@ -42,7 +42,13 @@ class Field extends Model
         // past it entirely and leave the subject pointer crossing the type
         // boundary (ADR-020).
         static::saving(function (self $field): void {
-            if (! $field->exists || ! $field->isDirty('entry_type_id')) {
+            // ⚠️ field_storage_id as well as entry_type_id. Watching only the
+            // type let a nominated field be swapped onto DIFFERENT storage
+            // without rerunning either check — onto a multi-select, which
+            // makes the holes report call the type answerable while subject
+            // queries silently miss, or onto another org's storage, since
+            // FieldStorage is #[Unscoped].
+            if (! $field->exists || ! $field->isDirty(['entry_type_id', 'field_storage_id'])) {
                 return;
             }
 
@@ -51,9 +57,9 @@ class Field extends Model
             if ($nominatedBy !== null) {
                 throw new RuntimeException(
                     "Field [{$field->getKey()}] identifies the data subject of [{$nominatedBy->handle}] "
-                    .'and cannot be moved to another entry type. Clear the nomination first — moving it '
-                    .'would leave that type answering subject-access requests with another type\'s field '
-                    .'(ADR-020).'
+                    .'and cannot be moved to another entry type, or repointed at different storage. '
+                    .'Clear the nomination first — either change would leave that type answering '
+                    .'subject-access requests against a field nobody checked (ADR-020).'
                 );
             }
         });

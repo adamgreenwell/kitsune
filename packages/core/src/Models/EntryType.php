@@ -137,18 +137,39 @@ class EntryType extends Model
     {
         $storage = $field->fieldStorage;
 
-        if ($storage === null || $storage->strategy() !== StorageStrategy::Relational) {
-            $config = new FieldConfig($storage ?? new FieldStorage, $field);
+        if ($storage === null) {
+            return;
+        }
 
-            if ($storage !== null && ($config->isMultiValue() || $this->publishesAnArray($storage, $config))) {
+        $config = new FieldConfig($storage, $field);
+
+        // ⚠️ A relation is exempt from the array-shape rule ONLY at
+        // cardinality one. A relation that can point to several people
+        // returns all of their ids from `subjectValue()`, and
+        // `whereSubjectIs()` returns the same record for each — so a
+        // subject-access export would disclose a record shared with another
+        // subject to both of them.
+        if ($storage->strategy() === StorageStrategy::Relational) {
+            if ($config->isMultiValue()) {
                 throw new RuntimeException(
-                    "Field [{$storage->handle}] holds many values and cannot identify a data subject. "
-                    .'A subject identifier names one person; `whereSubjectIs()` would match nothing at '
-                    .'all, which looks exactly like a type with no subject nominated (ADR-020). Nominate '
-                    .'a single-valued field, or a relation if the subject is another entry.'
+                    "Field [{$storage->handle}] can point to several entries and cannot identify a data "
+                    .'subject: a request about one person would return records belonging to another '
+                    .'(ADR-020). Nominate a relation limited to one target.'
                 );
             }
+
+            return;
         }
+
+        if ($config->isMultiValue() || $this->publishesAnArray($storage, $config)) {
+            throw new RuntimeException(
+                "Field [{$storage->handle}] holds many values and cannot identify a data subject. "
+                .'A subject identifier names one person; `whereSubjectIs()` would match nothing at '
+                .'all, which looks exactly like a type with no subject nominated (ADR-020). Nominate '
+                .'a single-valued field, or a relation if the subject is another entry.'
+            );
+        }
+
     }
 
     private function publishesAnArray(FieldStorage $storage, FieldConfig $config): bool

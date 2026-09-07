@@ -157,6 +157,20 @@ class Entry extends Model
 
         $query->where('entry_type_id', $type->getKey());
 
+        // ⚠️ For a relational subject, the TARGET entry has to be visible
+        // too, not just the pivot row. `related()` hides an out-of-scope
+        // target through Entry's own SiteScope, but a raw EXISTS does not —
+        // and `attach($id)` never validates the related model, so the
+        // ordinary path can create a pivot row pointing anywhere.
+        //
+        // Checked here rather than inside the EXISTS because the subquery
+        // would alias `entries` against itself; this reads as what it is,
+        // and it fails closed.
+        if ($storage->strategy() === StorageStrategy::Relational
+            && ! static::query()->whereKey($identifier)->exists()) {
+            return $query->whereRaw('1 = 0');
+        }
+
         // Where the value lives decides where the predicate goes: a pivot
         // row, a real column, or a JSON path.
         return match ($storage->strategy()) {
