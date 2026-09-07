@@ -14,6 +14,7 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Support\Collection;
 use Kitsune\Core\Exceptions\ReservedHandleException;
 use Kitsune\Core\Tenancy\Attributes\Unscoped;
 use Kitsune\Core\Tenancy\Context;
@@ -49,6 +50,69 @@ class EntryType extends Model
         // that cannot be escaped away.
         'related', 'relations',
     ];
+
+    /**
+     * The entry types a site may use, in display order.
+     *
+     * Core rather than the admin panel: ADR-002 keeps core headless-capable,
+     * and the API needs the same answer the sidebar does.
+     *
+     * @return Collection<int, static>
+     */
+    public static function visibleFor(?Site $site, ?int $orgId = null): Collection
+    {
+        $orgId ??= $site?->org_id;
+
+        // ⚠️ This closure captures SCALARS ONLY, and that is load-bearing.
+        //
+        // once() hashes the closure's captured variables, and hashes an
+        // object by spl_object_id — which PHP recycles the moment an object
+        // is collected. A memo keyed on the Site object therefore cannot
+        // reliably tell two sites apart inside one process, and under Octane
+        // or a queue worker one site is served the other's list.
+        //
+        // A first attempt captured the object AND an unused $siteKey to fix
+        // the key. Pint stripped the unused variable from the use clause and
+        // the bug came straight back. So the values that make the key correct
+        // have to be values the body genuinely uses — which is why
+        // enabledMapFor() takes scope keys rather than a Site.
+        $siteId = $site?->getKey();
+        $siteGroupId = $site?->site_group_id;
+
+        return once(function () use ($orgId, $siteId, $siteGroupId) {
+            return static::query()
+                ->where(function (Builder $query) use ($orgId): void {
+                    $query->whereNull('org_id');
+
+                    if ($orgId !== null) {
+                        $query->orWhere('org_id', $orgId);
+                    }
+                })
+                ->orderBy('ordering')
+                ->orderBy('handle')
+                ->get()
+                // Collapse shadowed handles FIRST, applying the same
+                // precedence IdentifyEntryType uses: an org's own type wins
+                // over the global one it shadows. Filtering before collapsing
+                // produced two items pointing at one URL when both were
+                // enabled, and — worse — kept the global item alive when the
+                // org row that actually resolves was disabled, offering a
+                // link guaranteed to 404.
+                ->sortBy(fn (self $type): int => $type->org_id === null ? 1 : 0)
+                ->unique('handle')
+                ->pipe(function ($types) use ($siteId, $siteGroupId, $orgId) {
+                    // One query for every type, not one per type: ADR-012's
+                    // 201-type case would otherwise render ~202 queries.
+                    $enabled = EntryTypeAvailability::enabledMapFor(
+                        $types->pluck('id')->all(), $siteId, $siteGroupId, $orgId,
+                    );
+
+                    return $types->filter(fn (self $type): bool => $enabled[$type->getKey()] ?? true);
+                })
+                ->sortBy('ordering')
+                ->values();
+        });
+    }
 
     protected $guarded = [];
 

@@ -19,7 +19,6 @@ use Kitsune\Core\Filament\Resources\Entries\EntryResource;
 use Kitsune\Core\Http\Middleware\IdentifyEntryType;
 use Kitsune\Core\Http\Middleware\SetKitsuneContext;
 use Kitsune\Core\Models\EntryType;
-use Kitsune\Core\Models\EntryTypeAvailability;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
 
@@ -55,44 +54,15 @@ final class KitsunePanel
      *
      * Runs at render time, after tenant identification — and fires exactly
      * five times per request (layout, sidebar ×2, topbar ×2), measured rather
-     * than estimated. Memoised per request, or that is five identical
-     * queries on every page.
+     * than estimated. The query lives on EntryType and is memoised there, or
+     * that is five identical queries on every page.
      */
     private static function navigation(NavigationBuilder $builder): NavigationBuilder
     {
         $site = Filament::getTenant();
         $orgId = $site instanceof Site ? $site->org_id : app(Context::class)->orgId();
 
-        $types = once(fn () => EntryType::query()
-            ->where(function ($query) use ($orgId): void {
-                $query->whereNull('org_id');
-
-                if ($orgId !== null) {
-                    $query->orWhere('org_id', $orgId);
-                }
-            })
-            ->orderBy('ordering')
-            ->orderBy('handle')
-            ->get()
-            // Collapse shadowed handles FIRST, applying the same precedence
-            // IdentifyEntryType uses: an org's own type wins over the global
-            // one it shadows. Filtering before collapsing produced two items
-            // pointing at one URL when both were enabled, and — worse — kept
-            // the global item alive when the org row that actually resolves
-            // was disabled, offering a link guaranteed to 404.
-            ->sortBy(fn (EntryType $type): int => $type->org_id === null ? 1 : 0)
-            ->unique('handle')
-            ->pipe(function ($types) use ($site) {
-                $currentSite = $site instanceof Site ? $site : null;
-                $enabled = EntryTypeAvailability::enabledMapFor($types->pluck('id')->all(), $currentSite);
-
-                // One query for every type, not one per type: navigation asks
-                // about all of them, and ADR-012's 201-type case would
-                // otherwise make a dashboard render ~202 queries.
-                return $types->filter(fn (EntryType $type): bool => $enabled[$type->getKey()] ?? true);
-            })
-            ->sortBy('ordering')
-            ->values());
+        $types = EntryType::visibleFor($site instanceof Site ? $site : null, $orgId);
 
         return $builder->items([
             NavigationItem::make('Dashboard')
