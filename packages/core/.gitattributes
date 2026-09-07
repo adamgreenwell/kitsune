@@ -1,0 +1,4 @@
+# Keep the published package lean: development-only paths are excluded from
+# the dist archive Composer downloads (ADR-027 applies to install size too).
+/.gitattributes export-ignore
+/.github      export-ignore
