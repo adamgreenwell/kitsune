@@ -29,7 +29,7 @@ beforeEach(function (): void {
 function validate(string $handle, array $data, array $settings = []): Illuminate\Validation\Validator
 {
     $type = app(FieldTypeRegistry::class)->get($handle);
-    $config = configFor($handle, $settings, isset($data['f']) && is_array($data['f']) ? -1 : 1);
+    $config = configFor($handle, $settings, is_array($data['f'] ?? null) && $handle !== 'json' ? -1 : 1);
 
     $rules = ['f' => $type->validationRules($config)];
 
@@ -100,5 +100,76 @@ describe('relation, where the rule has to reach each id', function (): void {
         $errors = validate('relation', ['f' => [$this->mine->id, $this->foreign->id]])->errors();
 
         expect($errors->keys())->toContain('f.1');
+    });
+});
+
+/*
+ * ⚠️ `supportsCardinality()` defaults to true, so every scalar type
+ * ADVERTISED multi-value support and none of them implemented it: `text` cast
+ * the array to the literal string "Array", `number` cast it to 1.0, and
+ * `date` threw an unhandled Carbon exception. Handled once in the base class
+ * now, because it is a property of the contract rather than of each type.
+ */
+describe('a multi-value scalar field stores an array of scalars', function (): void {
+    it('converts each element rather than the array', function (string $handle, array $input, array $expected): void {
+        $type = app(FieldTypeRegistry::class)->get($handle);
+
+        expect($type->toStorage($input, configFor($handle, [], -1)))->toBe($expected);
+    })->with([
+        'text' => ['text', [1, 'two'], ['1', 'two']],
+        'number' => ['number', ['1.5', '2'], [1.5, 2.0]],
+        'date' => ['date', ['2026-01-05', '2026-02-06'], ['2026-01-05', '2026-02-06']],
+        'datetime' => ['datetime', ['2026-01-05T03:04:05+00:00'], ['2026-01-05T03:04:05+00:00']],
+        'textarea' => ['textarea', ['a', 'b'], ['a', 'b']],
+    ]);
+
+    it('still converts a single value when cardinality is 1', function (): void {
+        expect(app(FieldTypeRegistry::class)->get('text')->toStorage(42, configFor('text')))->toBe('42');
+    });
+
+    it('round-trips an array back out', function (): void {
+        $type = app(FieldTypeRegistry::class)->get('number');
+        $config = configFor('number', [], -1);
+
+        expect($type->fromStorage($type->toStorage(['1', '2'], $config), $config))->toBe([1.0, 2.0]);
+    });
+
+    it('leaves relation alone, since it manages its own array', function (): void {
+        // Wrapping it would double-wrap: it is an array at every cardinality.
+        expect(app(FieldTypeRegistry::class)->get('relation')->toStorage(['3', '4'], configFor('relation')))
+            ->toBe([3, 4]);
+    });
+});
+
+describe('multi-select', function (): void {
+    it('rejects a value that is not one of the options', function (): void {
+        // It checked only that the outer value was an array, so any string —
+        // including an option since removed — went straight into storage.
+        expect(validate('multi_select', ['f' => ['a', 'NOT_AN_OPTION']], ['options' => ['a' => 'A', 'b' => 'B']])->fails())
+            ->toBeTrue();
+    });
+
+    it('accepts values that are options', function (): void {
+        expect(validate('multi_select', ['f' => ['a', 'b']], ['options' => ['a' => 'A', 'b' => 'B']])->fails())
+            ->toBeFalse();
+    });
+});
+
+describe('json', function (): void {
+    it('accepts a decoded object, which its own apiSchema advertises', function (): void {
+        // Laravel's `json` rule requires a STRING, so an API client following
+        // the published schema was rejected by the field's own validation.
+        expect(validate('json', ['f' => ['a' => 1]])->fails())->toBeFalse();
+    });
+
+    it('still accepts a JSON string', function (): void {
+        expect(validate('json', ['f' => '{"a":1}'])->fails())->toBeFalse();
+    });
+
+    it('rejects a string that is not JSON, and says why', function (): void {
+        $v = validate('json', ['f' => '{not json']);
+
+        expect($v->fails())->toBeTrue()
+            ->and($v->errors()->first('f'))->toContain('not valid JSON');
     });
 });

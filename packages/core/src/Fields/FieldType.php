@@ -50,7 +50,7 @@ interface FieldType
      * grammars, and the driver had no way to guard the expression by JSON
      * type (ADR-028 amendment).
      */
-    public function projection(): ?Projection;
+    public function projection(FieldConfig $config): ?Projection;
 
     public function toStorage(mixed $input, FieldConfig $config): mixed;
 

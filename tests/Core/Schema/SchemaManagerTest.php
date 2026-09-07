@@ -11,6 +11,7 @@ declare(strict_types=1);
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Kitsune\Core\Fields\FieldTypeRegistry;
+use Kitsune\Core\Fields\LogicalType;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\FieldStorage;
@@ -48,11 +49,24 @@ beforeEach(function (): void {
 afterEach(function (): void {
     $driver = DriverFactory::for(DB::connection());
 
+    // Index names checked first: MySQL's DROP INDEX has no IF EXISTS, and a
+    // test that dropped one itself would break the teardown for every test
+    // after it — the same defect this file covers in the code.
+    $indexes = array_map(
+        static fn (array $index): string => strtolower((string) $index['name']),
+        Schema::getIndexes('entries'),
+    );
+
     foreach (Schema::getColumnListing('entries') as $column) {
-        if (str_starts_with($column, 'idx_')) {
-            DB::statement($driver->dropIndexSql('entries', $column.'_site_idx'));
-            DB::statement($driver->dropGeneratedColumnSql('entries', $column));
+        if (! str_starts_with($column, 'idx_')) {
+            continue;
         }
+
+        if (in_array(strtolower($column.'_site_idx'), $indexes, true)) {
+            DB::statement($driver->dropIndexSql('entries', $column.'_site_idx'));
+        }
+
+        DB::statement($driver->dropGeneratedColumnSql('entries', $column));
     }
 
     // Raw deletes, in dependency order: global scopes and soft deletes would
@@ -91,14 +105,14 @@ it('creates a generated column and queries through it', function (): void {
 
     $this->manager->index($storage);
 
-    expect(Schema::hasColumn('entries', 'idx_price__number'))->toBeTrue();
+    expect(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeTrue();
 
     Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Cheap', 'values' => ['price' => 10]]);
     Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Dear', 'values' => ['price' => 900]]);
 
     // Filtering on the projected scalar rather than on JSON is the entire
     // point of the mechanism.
-    expect(Entry::where('idx_price__number', '<', 100)->count())->toBe(1);
+    expect(Entry::where('idx_price__decimal12_2', '<', 100)->count())->toBe(1);
 });
 
 it('drops the index before the column, which SQLite requires', function (): void {
@@ -107,18 +121,18 @@ it('drops the index before the column, which SQLite requires', function (): void
 
     $this->manager->dropIndex($storage);
 
-    expect(Schema::hasColumn('entries', 'idx_price__number'))->toBeFalse();
+    expect(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeFalse();
 });
 
 it('reconciles from the is_indexed flag', function (): void {
     $storage = storageFor('price', 'number', ['org_id' => $this->orgA->id, 'is_indexed' => true]);
 
     $this->manager->sync($storage);
-    expect(Schema::hasColumn('entries', 'idx_price__number'))->toBeTrue();
+    expect(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeTrue();
 
     $storage->update(['is_indexed' => false]);
     $this->manager->sync($storage);
-    expect(Schema::hasColumn('entries', 'idx_price__number'))->toBeFalse();
+    expect(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeFalse();
 });
 
 it('is idempotent, so a repeated sync is harmless', function (): void {
@@ -127,7 +141,7 @@ it('is idempotent, so a repeated sync is harmless', function (): void {
     $this->manager->index($storage);
     $this->manager->index($storage);
 
-    expect(Schema::hasColumn('entries', 'idx_price__number'))->toBeTrue();
+    expect(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeTrue();
 });
 
 it('recreates a missing index even though its column is already there', function (): void {
@@ -144,7 +158,7 @@ it('recreates a missing index even though its column is already there', function
     $this->manager->index($storage);
 
     expect(indexNames())->toContain(strtolower($storage->generatedIndexName()))
-        ->and(Schema::hasColumn('entries', 'idx_price__number'))->toBeTrue();
+        ->and(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeTrue();
 });
 
 it('reports a missing index as drift, not as in sync', function (): void {
@@ -153,7 +167,7 @@ it('reports a missing index as drift, not as in sync', function (): void {
 
     DB::statement(DriverFactory::for(DB::connection())->dropIndexSql('entries', $storage->generatedIndexName()));
 
-    expect($this->manager->reconcile()['added'])->toBe(['idx_price__number'])
+    expect($this->manager->reconcile()['added'])->toBe(['idx_price__decimal12_2'])
         ->and(indexNames())->toContain(strtolower($storage->generatedIndexName()));
 });
 
@@ -173,8 +187,8 @@ describe('a column belongs to its projection, not to an org (ADR-028)', function
 
         // Without this, org B would be filtering on a column that casts its
         // strings to DECIMAL — wrong answers, no error.
-        expect(Schema::hasColumn('entries', 'idx_price__number'))->toBeTrue()
-            ->and(Schema::hasColumn('entries', 'idx_price__text'))->toBeTrue();
+        expect(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeTrue()
+            ->and(Schema::hasColumn('entries', 'idx_price__string255'))->toBeTrue();
     });
 
     it('shares one column between orgs that project identically', function (): void {
@@ -206,12 +220,12 @@ describe('a column belongs to its projection, not to an org (ADR-028)', function
 
         // Cross-org action at a distance is the defect class ADR-021 says has
         // no framework safety net. This is the safety net.
-        expect(Schema::hasColumn('entries', 'idx_price__number'))->toBeTrue();
+        expect(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeTrue();
 
         $b->update(['is_indexed' => false]);
         $this->manager->sync($b);
 
-        expect(Schema::hasColumn('entries', 'idx_price__number'))->toBeFalse();
+        expect(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeFalse();
     });
 });
 
@@ -249,7 +263,7 @@ describe('refusing to index what cannot be indexed', function (): void {
 describe('handles have to survive being SQL identifiers (ADR-028)', function (): void {
     it('refuses a handle longer than an identifier can carry', function (): void {
         expect(fn () => storageFor(str_repeat('a', FieldStorage::MAX_HANDLE_LENGTH + 1), 'number'))
-            ->toThrow(RuntimeException::class, 'exceeds 40 characters');
+            ->toThrow(RuntimeException::class, 'exceeds 32 characters');
     });
 
     it('refuses a doubled underscore, which is the separator', function (): void {
@@ -266,7 +280,7 @@ describe('handles have to survive being SQL identifiers (ADR-028)', function ():
 
     it('accepts an ordinary snake_case handle', function (): void {
         expect(storageFor('unit_price', 'number')->generatedColumnName())
-            ->toBe('idx_unit_price__number');
+            ->toBe('idx_unit_price__decimal12_2');
     });
 });
 
@@ -301,8 +315,8 @@ describe('reconcile repairs drift', function (): void {
 
         $result = $this->manager->reconcile();
 
-        expect($result['added'])->toBe(['idx_price__number'])
-            ->and(Schema::hasColumn('entries', 'idx_price__number'))->toBeTrue();
+        expect($result['added'])->toBe(['idx_price__decimal12_2'])
+            ->and(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeTrue();
     });
 
     it('drops a column no row asks for any more', function (): void {
@@ -315,8 +329,8 @@ describe('reconcile repairs drift', function (): void {
 
         $result = $this->manager->reconcile();
 
-        expect($result['dropped'])->toBe(['idx_price__number'])
-            ->and(Schema::hasColumn('entries', 'idx_price__number'))->toBeFalse();
+        expect($result['dropped'])->toBe(['idx_price__decimal12_2'])
+            ->and(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeFalse();
     });
 
     it('changes nothing when there is nothing to change', function (): void {
@@ -324,4 +338,95 @@ describe('reconcile repairs drift', function (): void {
 
         expect($this->manager->reconcile())->toBe(['added' => [], 'dropped' => []]);
     });
+});
+
+/*
+ * ADR-028 named the column for its projection. The projection turned out to
+ * depend on CONFIGURATION as well as on the field type, so the name had to
+ * follow it there — two orgs configuring `number` differently would otherwise
+ * have shared `idx_count__number` with incompatible column types.
+ */
+describe('a configured projection changes the column, not just the value', function (): void {
+    it('gives an integer-formatted number an integer column', function (): void {
+        // DECIMAL(12,2) is not merely imprecise here: `10000000000` is a
+        // valid value both the validator and toStorage() accept, and
+        // PostgreSQL then refuses the column with `numeric field overflow`.
+        $storage = storageFor('count', 'number', [
+            'org_id' => $this->orgA->id, 'is_indexed' => true, 'settings' => ['format' => 'integer'],
+        ]);
+
+        expect($storage->projection()->logical)->toBe(LogicalType::Integer)
+            ->and($storage->generatedColumnName())->toBe('idx_count__integer');
+
+        $this->manager->index($storage);
+
+        Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Big', 'values' => ['count' => 10000000000]]);
+
+        expect((int) Entry::where('title', 'Big')->value('idx_count__integer'))->toBe(10000000000);
+    });
+
+    it('keeps a decimal-formatted number on a decimal column', function (): void {
+        $storage = storageFor('price', 'number', ['org_id' => $this->orgA->id, 'is_indexed' => true]);
+
+        expect($storage->generatedColumnName())->toBe('idx_price__decimal12_2');
+    });
+
+    it('separates two orgs that configured the same handle differently', function (): void {
+        // The collision the signature exists to prevent.
+        $a = storageFor('count', 'number', [
+            'org_id' => $this->orgA->id, 'is_indexed' => true, 'settings' => ['format' => 'integer'],
+        ]);
+        $b = storageFor('count', 'number', ['org_id' => $this->orgB->id, 'is_indexed' => true]);
+
+        $this->manager->index($a);
+        $this->manager->index($b);
+
+        expect(Schema::hasColumn('entries', 'idx_count__integer'))->toBeTrue()
+            ->and(Schema::hasColumn('entries', 'idx_count__decimal12_2'))->toBeTrue();
+    });
+
+    it('projects a wider text field at its configured width', function (): void {
+        // Projecting a 400-character field through VARCHAR(255) truncates the
+        // index, so two distinct values compare equal and an exact filter
+        // returns the wrong rows.
+        $storage = storageFor('summary', 'text', [
+            'org_id' => $this->orgA->id, 'is_indexed' => true, 'settings' => ['maxLength' => 400],
+        ]);
+
+        expect($storage->generatedColumnName())->toBe('idx_summary__string400');
+
+        $this->manager->index($storage);
+
+        $long = str_repeat('x', 400);
+        Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Long', 'values' => ['summary' => $long]]);
+
+        expect(Entry::where('title', 'Long')->value('idx_summary__string400'))->toBe($long);
+    });
+
+    it('refuses to index a string wider than an engine will key', function (): void {
+        // Measured: MySQL caps an index key at 3,072 bytes, so VARCHAR(1000)
+        // in utf8mb4 fails with ERROR 1071. Better to refuse with the reason
+        // than to fail at ALTER TABLE, and far better than truncating.
+        $storage = storageFor('essay', 'text', [
+            'org_id' => $this->orgA->id, 'is_indexed' => true, 'settings' => ['maxLength' => 5000],
+        ]);
+
+        expect(fn () => $this->manager->index($storage))
+            ->toThrow(RuntimeException::class, 'cannot be indexed');
+    });
+});
+
+it('drops an orphan column whose index is already gone', function (): void {
+    // MySQL's DROP INDEX has no IF EXISTS and errors with 1091 when the index
+    // is absent — which is exactly the half-applied state reconcile() exists
+    // to repair, so dropping unconditionally meant it never reached the
+    // column and the drift was permanent.
+    $storage = storageFor('price', 'number', ['org_id' => $this->orgA->id, 'is_indexed' => true]);
+    $this->manager->index($storage);
+
+    DB::statement(DriverFactory::for(DB::connection())->dropIndexSql('entries', $storage->generatedIndexName()));
+    $storage->delete();
+
+    expect($this->manager->reconcile()['dropped'])->toBe(['idx_price__decimal12_2'])
+        ->and(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeFalse();
 });

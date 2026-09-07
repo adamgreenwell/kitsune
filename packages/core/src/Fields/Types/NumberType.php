@@ -36,12 +36,19 @@ final class NumberType extends BaseFieldType
         return true;
     }
 
-    public function projection(): Projection
+    public function projection(FieldConfig $config): Projection
     {
-        return new Projection(LogicalType::Decimal);
+        // ⚠️ Projecting an integer-formatted field through DECIMAL(12,2) is
+        // not merely imprecise: `10000000000` is a valid PHP integer that
+        // both the validator and toStorage() accept, and PostgreSQL then
+        // refuses the column outright with `numeric field overflow`. BIGINT
+        // covers the range the field actually admits.
+        return $config->setting('format') === 'integer'
+            ? new Projection(LogicalType::Integer)
+            : new Projection(LogicalType::Decimal);
     }
 
-    public function toStorage(mixed $input, FieldConfig $config): mixed
+    protected function castToStorage(mixed $input, FieldConfig $config): mixed
     {
         if ($input === null || $input === '') {
             return null;

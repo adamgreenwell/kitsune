@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Fields\Types;
 
+use Illuminate\Validation\Rule;
 use Kitsune\Core\Fields\FieldConfig;
 
 /**
@@ -66,6 +67,23 @@ final class MultiSelectType extends BaseFieldType
     public function validationRules(FieldConfig $config): array
     {
         return [...parent::validationRules($config), 'array'];
+    }
+
+    /**
+     * Each chosen value must BE one of the options.
+     *
+     * `SelectType` applies `in` to the same keys; the multi-value sibling
+     * checked only that the outer value was an array, so any string at all —
+     * including an option since removed — went straight into storage.
+     *
+     * @return array<int, mixed>
+     */
+    public function elementValidationRules(FieldConfig $config): array
+    {
+        /** @var array<string, string> $options */
+        $options = (array) ($config->setting('options', []) ?: []);
+
+        return $options === [] ? ['string'] : ['string', Rule::in(array_keys($options))];
     }
 
     /** @return array<string, mixed> */

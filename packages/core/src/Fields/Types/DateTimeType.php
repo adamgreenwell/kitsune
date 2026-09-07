@@ -44,12 +44,12 @@ final class DateTimeType extends BaseFieldType
         return true;
     }
 
-    public function projection(): Projection
+    public function projection(FieldConfig $config): Projection
     {
         return new Projection(LogicalType::DateTime, 32);
     }
 
-    public function toStorage(mixed $input, FieldConfig $config): mixed
+    protected function castToStorage(mixed $input, FieldConfig $config): mixed
     {
         if ($input === null || $input === '') {
             return null;
@@ -60,7 +60,7 @@ final class DateTimeType extends BaseFieldType
         return $date->utc()->toIso8601String();
     }
 
-    public function fromStorage(mixed $stored, FieldConfig $config): mixed
+    protected function castFromStorage(mixed $stored, FieldConfig $config): mixed
     {
         return $stored === null ? null : Carbon::parse((string) $stored);
     }

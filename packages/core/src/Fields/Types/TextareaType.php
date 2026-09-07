@@ -33,7 +33,7 @@ final class TextareaType extends BaseFieldType
         return 'heroicon-o-bars-4';
     }
 
-    public function toStorage(mixed $input, FieldConfig $config): mixed
+    protected function castToStorage(mixed $input, FieldConfig $config): mixed
     {
         return $input === null ? null : (string) $input;
     }

@@ -200,7 +200,7 @@ The escape hatch, and escape hatches get abused.
 
 A field is indexed when `field_storage.is_indexed` is true. `Kitsune\Core\Schema\SchemaManager` then adds a stored generated column plus a composite index leading with the scope key — `site_id`, since `entries` is `#[SiteScoped]`. `php artisan kitsune:schema-sync` reconciles the two after a failure, since DDL implicitly commits on MySQL and a row write cannot share a transaction with its schema change.
 
-**The column is named for its projection, not for its owner** — `idx_{handle}__{type}` (ADR-028). `entries` is one table shared by every org, so two orgs each defining `price` would otherwise collide: one silently casting the other's data to the wrong type, and either able to drop the other's column. Because `generatedColumnType()` reads no per-field configuration, two rows with the same handle **and** type generate a byte-identical expression and share the column deliberately; rows that disagree on type get separate columns.
+**The column is named for its projection, not for its owner** — `idx_{handle}__{signature}`, where the signature carries the width wherever the width varies: `idx_price__decimal12_2`, `idx_sku__string64`, `idx_active__boolean` (ADR-028). `entries` is one table shared by every org, so two orgs each defining `price` would otherwise collide: one silently casting the other's data to the wrong type, and either able to drop the other's column. Two rows with the same handle **and** signature generate a byte-identical expression and share the column deliberately; rows that differ in any way that changes the SQL get separate columns. The signature rather than the type handle, because the projection depends on configuration too — a `number` with `format: integer` projects to BIGINT, and through `DECIMAL(12,2)` PostgreSQL refuses the column outright with `numeric field overflow`.
 
 **Verified 2026-09-07** against all three engines (issue #11). The SQL below is what `Kitsune\Core\Schema\Drivers\*` actually emits, and `tests/Core/Schema/GeneratedColumnParityTest.php` runs it on each.
 
@@ -209,35 +209,35 @@ A field is indexed when `field_storage.is_indexed` is true. `Kitsune\Core\Schema
 ```sql
 -- MySQL: $-prefixed path, CAST wrapper, backtick quoting
 ALTER TABLE `entries`
-  ADD COLUMN `idx_price__number` DECIMAL(12,2)
+  ADD COLUMN `idx_price__decimal12_2` DECIMAL(12,2)
     GENERATED ALWAYS AS (
       CASE WHEN JSON_TYPE(JSON_EXTRACT(`values`, '$.price'))
                 IN ('INTEGER', 'UNSIGNED INTEGER', 'DOUBLE', 'DECIMAL')
            THEN CAST(`values`->>'$.price' AS DECIMAL(12,2)) END
     ) STORED;
-CREATE INDEX `idx_price__number_site_idx` ON `entries` (`site_id`, `idx_price__number`);
+CREATE INDEX `idx_price__decimal12_2_site_idx` ON `entries` (`site_id`, `idx_price__decimal12_2`);
 ```
 
 ```sql
 -- PostgreSQL: bare key, cast suffix, double-quote quoting
 ALTER TABLE "entries"
-  ADD COLUMN "idx_price__number" NUMERIC(12,2)
+  ADD COLUMN "idx_price__decimal12_2" NUMERIC(12,2)
     GENERATED ALWAYS AS (
       CASE WHEN jsonb_typeof(("values")::jsonb -> 'price') = 'number'
            THEN (("values")::jsonb ->> 'price')::NUMERIC(12,2) END
     ) STORED;
-CREATE INDEX "idx_price__number_site_idx" ON "entries" ("site_id", "idx_price__number");
+CREATE INDEX "idx_price__decimal12_2_site_idx" ON "entries" ("site_id", "idx_price__decimal12_2");
 ```
 
 ```sql
 -- SQLite: json_extract, and VIRTUAL rather than STORED
 ALTER TABLE "entries"
-  ADD COLUMN "idx_price__number" NUMERIC(12,2)
+  ADD COLUMN "idx_price__decimal12_2" NUMERIC(12,2)
     GENERATED ALWAYS AS (
       CASE WHEN json_type("values", '$.price') IN ('integer', 'real')
            THEN CAST(json_extract("values", '$.price') AS NUMERIC(12,2)) END
     ) VIRTUAL;
-CREATE INDEX "idx_price__number_site_idx" ON "entries" ("site_id", "idx_price__number");
+CREATE INDEX "idx_price__decimal12_2_site_idx" ON "entries" ("site_id", "idx_price__decimal12_2");
 ```
 
 ### The `CASE` is not defensive style — it is the whole isolation guarantee
@@ -264,7 +264,8 @@ Two more divergences the driver owns, each of which made a shipped field type un
 - **Indexing is opt-in.** Every generated column costs write throughput and disk. Default off
 - **Cap generated columns on the shared `entries` table** — `SchemaManager::MAX_GENERATED_COLUMNS`, 20 to start, revisit with benchmark data. The cap counts **columns, not `field_storage` rows**: many rows across many orgs can share one column, and the scarce resource is the table. Without a cap, one org can degrade `entries` for everyone, which on KaaS is a noisy-neighbour incident
 - **Dropping is reference-counted.** Un-indexing removes the column only once no other field storage row still projects to it. An org must never be able to drop a column another org is querying (ADR-021, ADR-028)
-- **Field handles are bounded at 40 characters, lowercase snake_case, no doubled underscore.** They become SQL identifiers, PostgreSQL truncates those at 63 bytes, and a truncated identifier is a silent collision rather than an error. `__` is reserved as the separator
+- **An indexed string is capped at 700 characters.** Measured: MySQL caps an index key at 3,072 bytes and utf8mb4 costs four bytes a character, so `VARCHAR(1000)` fails with `ERROR 1071` while `VARCHAR(700)` succeeds. Wider fields are refused with that reason — long text that needs searching wants full-text search, not a scalar projection
+- **Field handles are bounded at 32 characters, lowercase snake_case, no doubled underscore.** They become SQL identifiers, PostgreSQL truncates those at 63 bytes, and a truncated identifier is a silent collision rather than an error. `__` is reserved as the separator
 - **Adding an index rewrites the table.** On a large `entries` table this locks. Queue it, do it online where the engine supports it, and warn in the UI
 - **Marking a field indexed is not reversible for free** — dropping the column is another rewrite
 - **Cardinality > 1 is not indexable this way.** A JSON array can't project to a scalar column. Multi-value fields that need querying should be `relation`

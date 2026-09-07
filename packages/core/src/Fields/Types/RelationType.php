@@ -49,6 +49,10 @@ final class RelationType extends BaseFieldType
         return false;
     }
 
+    /**
+     * Always an array, whatever the cardinality — so it manages its own,
+     * rather than going through the base class's per-element wrapper.
+     */
     public function toStorage(mixed $input, FieldConfig $config): mixed
     {
         if ($input === null || $input === '') {

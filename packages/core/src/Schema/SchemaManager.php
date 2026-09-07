@@ -11,7 +11,10 @@ declare(strict_types=1);
 namespace Kitsune\Core\Schema;
 
 use Illuminate\Support\Facades\DB;
+use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Fields\FieldTypeRegistry;
+use Kitsune\Core\Fields\LogicalType;
+use Kitsune\Core\Fields\Projection;
 use Kitsune\Core\Fields\StorageStrategy;
 use Kitsune\Core\Models\FieldStorage;
 use RuntimeException;
@@ -125,13 +128,7 @@ final class SchemaManager
             return;
         }
 
-        $projection = $this->registry->get($storage->type)->projection();
-
-        if ($projection === null) {
-            throw new RuntimeException(
-                "Field type [{$storage->type}] cannot be indexed: it projects to no scalar column."
-            );
-        }
+        $projection = $this->projectionFor($storage);
 
         if (! $hasColumn) {
             DB::statement($driver->addGeneratedColumnSql(
@@ -185,7 +182,15 @@ final class SchemaManager
 
         // Index first: a generated column cannot be dropped while an index
         // references it, and SQLite refuses outright.
-        DB::statement($driver->dropIndexSql('entries', $index));
+        //
+        // Guarded, because MySQL's DROP INDEX has no IF EXISTS and errors
+        // with `ERROR 1091` when the index is absent — which is exactly the
+        // half-applied state this path exists to repair, so dropping
+        // unconditionally meant reconcile() could never reach the column.
+        if ($this->hasIndex($index)) {
+            DB::statement($driver->dropIndexSql('entries', $index));
+        }
+
         DB::statement($driver->dropGeneratedColumnSql('entries', $column));
     }
 
@@ -197,6 +202,15 @@ final class SchemaManager
             ->where('type', $storage->type)
             ->when($storage->exists, fn ($query) => $query->whereKeyNot($storage->getKey()))
             ->exists();
+    }
+
+    private function projectionFor(FieldStorage $storage): Projection
+    {
+        $projection = $this->registry->get($storage->type)->projection(new FieldConfig($storage));
+
+        return $projection ?? throw new RuntimeException(
+            "Field type [{$storage->type}] cannot be indexed: it projects to no scalar column."
+        );
     }
 
     /** Refuse before touching the table, with the reason. */
@@ -228,8 +242,40 @@ final class SchemaManager
             );
         }
 
+        $this->guardWidth($storage);
         $this->guardIdentifiers($storage);
         $this->guardCap($storage);
+    }
+
+    /**
+     * Engines cap how wide an indexed string may be, so refuse past it.
+     *
+     * Measured: MySQL's InnoDB key limit is 3,072 bytes and utf8mb4 costs
+     * four bytes a character, so `VARCHAR(1000)` fails with `ERROR 1071:
+     * Specified key was too long` while `VARCHAR(700)` succeeds. Refusing
+     * here beats failing at ALTER TABLE with an engine's own message, and it
+     * beats the alternative that was in place — projecting a 1,000-character
+     * field through VARCHAR(255) and silently truncating the index, so two
+     * distinct values compared equal.
+     */
+    private function guardWidth(FieldStorage $storage): void
+    {
+        $projection = $this->projectionFor($storage);
+
+        if ($projection->logical !== LogicalType::String) {
+            return;
+        }
+
+        if ($projection->precision > Projection::MAX_INDEXED_STRING_WIDTH) {
+            throw new RuntimeException(sprintf(
+                '[%s] is %d characters wide and cannot be indexed: engines cap an index key at '
+                .'%d characters here (MySQL refuses past a 3,072-byte key). Narrow the field, or '
+                .'search it with full-text search rather than a scalar projection.',
+                $storage->handle,
+                $projection->precision,
+                Projection::MAX_INDEXED_STRING_WIDTH,
+            ));
+        }
     }
 
     /**

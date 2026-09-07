@@ -12,6 +12,9 @@ namespace Kitsune\Core\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Kitsune\Core\Fields\FieldConfig;
+use Kitsune\Core\Fields\FieldTypeRegistry;
+use Kitsune\Core\Fields\Projection;
 use Kitsune\Core\Tenancy\Attributes\Unscoped;
 use RuntimeException;
 
@@ -44,8 +47,13 @@ class FieldStorage extends Model
      * PostgreSQL truncates at 63 bytes, MySQL rejects past 64. A truncated
      * identifier is a silent collision between two orgs' generated columns,
      * so the input is bounded rather than the output trimmed.
+     *
+     * 32 rather than 40: the column carries a projection signature and the
+     * index adds `_site_idx`, so `idx_` + 32 + `__decimal12_2` + `_site_idx`
+     * is 58 bytes — inside the limit with room for a module's longer logical
+     * type. The assembled name is re-checked at index time regardless.
      */
-    public const MAX_HANDLE_LENGTH = 40;
+    public const MAX_HANDLE_LENGTH = 32;
 
     /**
      * Lowercase snake_case, no doubled underscore.
@@ -119,15 +127,32 @@ class FieldStorage extends Model
      *
      * ADR-028: named for the projection, not the owner. `entries` is one
      * table shared by every org, and two orgs may each define `price` — so
-     * the type has to be part of the identity, or one org's column silently
-     * casts the other org's data to the wrong type.
+     * the projection has to be part of the identity, or one org's column
+     * silently casts the other org's data to the wrong type.
      *
-     * Two rows with the same handle AND type generate a byte-identical
+     * ⚠️ The signature, not the field type handle. The projection depends on
+     * configuration too: `number` with `format: integer` projects to BIGINT
+     * while its decimal sibling projects to DECIMAL(12,2), and two `text`
+     * fields can want different widths. Naming after the handle alone was not
+     * injective, and two orgs configuring `number` differently would have
+     * collided on `idx_count__number` with incompatible column types.
+     *
+     * Two rows with the same handle AND signature generate a byte-identical
      * expression, so they share this column deliberately.
      */
     public function generatedColumnName(): string
     {
-        return 'idx_'.$this->handle.'__'.$this->type;
+        return 'idx_'.$this->handle.'__'.$this->projection()->signature();
+    }
+
+    /** What this field projects to when indexed. */
+    public function projection(): Projection
+    {
+        $projection = app(FieldTypeRegistry::class)->get($this->type)->projection(new FieldConfig($this));
+
+        return $projection ?? throw new RuntimeException(
+            "Field type [{$this->type}] projects to no scalar column, so [{$this->handle}] has none."
+        );
     }
 
     /** ADR-021: the index leads with the scope key, and says so. */

@@ -150,3 +150,31 @@ it('suggests `personal` for rich text, matching what its own comment says', func
     // erasure handling (ADR-020).
     expect((new RichTextType)->suggestedPiiClass())->toBe('personal');
 });
+
+/*
+ * ⚠️ `strip_tags()` keeps every attribute on an allowed tag, and removing
+ * event handlers alone was a denylist wearing an allowlist's docblock.
+ */
+describe('attributes are allowlisted too, not only tags', function (): void {
+    it('strips an attribute that is not on the list', function (string $html, string $gone): void {
+        expect((new RichTextType)->sanitize($html))->not->toContain($gone);
+    })->with([
+        // The one that matters: position:fixed;inset:0 covers a public page
+        // with an attacker-controlled link.
+        'style overlay' => ['<a href="https://x.test" style="position:fixed;inset:0;z-index:9999">hi</a>', 'style'],
+        'class' => ['<p class="evil">t</p>', 'class'],
+        'id' => ['<p id="x">t</p>', 'id'],
+        'data attribute' => ['<p data-x="1">t</p>', 'data-x'],
+        'event handler' => ['<img src="https://x.test/a.png" onerror="alert(1)">', 'onerror'],
+    ]);
+
+    it('keeps the attributes a document actually needs', function (): void {
+        expect((new RichTextType)->sanitize('<a href="https://example.com/x?a=1&amp;b=2" title="t">x</a>'))
+            ->toBe('<a href="https://example.com/x?a=1&amp;b=2" title="t">x</a>');
+    });
+
+    it('keeps alt text, which is an accessibility requirement not a nicety', function (): void {
+        expect((new RichTextType)->sanitize('<img src="https://x.test/a.png" alt="A cat">'))
+            ->toContain('alt="A cat"');
+    });
+});

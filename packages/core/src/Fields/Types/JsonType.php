@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Fields\Types;
 
+use Closure;
 use Kitsune\Core\Fields\FieldConfig;
 use RuntimeException;
 
@@ -46,7 +47,7 @@ final class JsonType extends BaseFieldType
         return false;
     }
 
-    public function toStorage(mixed $input, FieldConfig $config): mixed
+    protected function castToStorage(mixed $input, FieldConfig $config): mixed
     {
         if ($input === null || $input === '') {
             return null;
@@ -76,9 +77,37 @@ final class JsonType extends BaseFieldType
         return ['type' => 'object'];
     }
 
-    /** @return array<int, mixed> */
+    /**
+     * ⚠️ NOT Laravel's `json` rule, which requires a STRING.
+     *
+     * `apiSchema()` advertises an object and `toStorage()` explicitly accepts
+     * an already-decoded array, so an API client following the published
+     * schema was rejected by the field's own validation. Accepts either form
+     * and reports which one failed.
+     *
+     * @return array<int, mixed>
+     */
     public function validationRules(FieldConfig $config): array
     {
-        return [...parent::validationRules($config), 'json'];
+        return [
+            ...parent::validationRules($config),
+            function (string $attribute, mixed $value, Closure $fail): void {
+                if (is_array($value)) {
+                    return;
+                }
+
+                if (! is_string($value)) {
+                    $fail("The {$attribute} field must be a JSON object or a JSON string.");
+
+                    return;
+                }
+
+                json_decode($value, true);
+
+                if (json_last_error() !== JSON_ERROR_NONE) {
+                    $fail("The {$attribute} field is not valid JSON: ".json_last_error_msg().'.');
+                }
+            },
+        ];
     }
 }

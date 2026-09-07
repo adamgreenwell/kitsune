@@ -42,12 +42,12 @@ final class SelectType extends BaseFieldType
         return false;
     }
 
-    public function projection(): Projection
+    public function projection(FieldConfig $config): Projection
     {
         return new Projection(LogicalType::String, 64);
     }
 
-    public function toStorage(mixed $input, FieldConfig $config): mixed
+    protected function castToStorage(mixed $input, FieldConfig $config): mixed
     {
         return $input === null || $input === '' ? null : (string) $input;
     }

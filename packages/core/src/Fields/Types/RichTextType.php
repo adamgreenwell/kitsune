@@ -41,6 +41,20 @@ final class RichTextType extends BaseFieldType
      */
     public const ALLOWED_URL_SCHEMES = ['http', 'https', 'mailto', 'tel', 'ftp'];
 
+    /**
+     * The only attributes that survive, on any tag.
+     *
+     * ⚠️ Absent by design: `style`, `class` and `id`. `strip_tags()` keeps
+     * every attribute on an allowed tag, and removing event handlers alone
+     * left `style` intact — so an allowed `<a>` carrying
+     * `position:fixed;inset:0;z-index:9999` covers a public page with an
+     * attacker-controlled link. Same reasoning as the tag list: an allowlist,
+     * because a denylist is a promise to have thought of every case.
+     */
+    public const ALLOWED_ATTRIBUTES = [
+        'href', 'src', 'alt', 'title', 'colspan', 'rowspan', 'width', 'height', 'lang', 'dir',
+    ];
+
     public const ALLOWED_TAGS = [
         'p', 'br', 'strong', 'em', 'u', 's', 'a', 'ul', 'ol', 'li',
         'h2', 'h3', 'h4', 'blockquote', 'code', 'pre', 'img', 'figure', 'figcaption',
@@ -72,7 +86,7 @@ final class RichTextType extends BaseFieldType
         return false;
     }
 
-    public function toStorage(mixed $input, FieldConfig $config): mixed
+    protected function castToStorage(mixed $input, FieldConfig $config): mixed
     {
         return $input === null ? null : $this->sanitize((string) $input);
     }
@@ -95,11 +109,44 @@ final class RichTextType extends BaseFieldType
         $allowed = '<'.implode('><', self::ALLOWED_TAGS).'>';
         $html = strip_tags($html, $allowed);
 
-        // Event handlers survive tag allowlisting, because they are
-        // attributes rather than elements.
-        $html = (string) preg_replace('#\son[a-z]+\s*=\s*(?:"[^"]*"|\'[^\']*\'|[^\s>]+)#i', '', $html);
+        // Attributes survive tag allowlisting, because they are attributes
+        // rather than elements. Removing event handlers alone was a denylist.
+        $html = $this->allowlistAttributes($html);
 
         return $this->allowlistUrlSchemes($html);
+    }
+
+    /** Keep only ALLOWED_ATTRIBUTES on every remaining tag. */
+    private function allowlistAttributes(string $html): string
+    {
+        return (string) preg_replace_callback(
+            '#<([a-z][a-z0-9]*)((?:\s[^<>]*)?)(/?)>#i',
+            function (array $tag): string {
+                preg_match_all(
+                    '#([a-z_:][a-z0-9_:.-]*)\s*(?:=\s*(?:"([^"]*)"|\'([^\']*)\'|([^\s>]+)))?#i',
+                    $tag[2],
+                    $found,
+                    PREG_SET_ORDER,
+                );
+
+                $kept = '';
+
+                foreach ($found as $attribute) {
+                    if (! in_array(strtolower($attribute[1]), self::ALLOWED_ATTRIBUTES, true)) {
+                        continue;
+                    }
+
+                    $value = $attribute[2] ?? '';
+                    $value = $value !== '' ? $value : ($attribute[3] ?? '');
+                    $value = $value !== '' ? $value : ($attribute[4] ?? '');
+
+                    $kept .= ' '.strtolower($attribute[1]).'="'.htmlspecialchars($value, ENT_QUOTES | ENT_HTML5, 'UTF-8', false).'"';
+                }
+
+                return '<'.strtolower($tag[1]).$kept.$tag[3].'>';
+            },
+            $html,
+        );
     }
 
     /**

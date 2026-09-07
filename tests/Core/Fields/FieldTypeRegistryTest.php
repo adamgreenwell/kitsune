@@ -83,7 +83,7 @@ it('gives every indexable type a projection every driver can render', function (
     $drivers = [new PostgresDriver, new MySqlDriver, new SqliteDriver];
 
     foreach ($this->registry->all() as $handle => $type) {
-        $projection = $type->projection();
+        $projection = $type->projection(configFor($handle));
 
         if ($type->isIndexable() && $type->strategy() !== StorageStrategy::Promoted) {
             expect($projection)->toBeInstanceOf(Projection::class, "{$handle} claims indexable but projects to nothing");

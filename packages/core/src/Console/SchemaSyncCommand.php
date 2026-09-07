@@ -80,9 +80,11 @@ final class SchemaSyncCommand extends Command
     private function report(): int
     {
         $wanted = [];
+        $indexes = [];
 
         foreach (FieldStorage::query()->where('is_indexed', true)->get() as $storage) {
             $wanted[$storage->generatedColumnName()][] = $storage->handle;
+            $indexes[$storage->generatedColumnName()] = $storage->generatedIndexName();
         }
 
         $present = array_values(array_filter(
@@ -90,12 +92,38 @@ final class SchemaSyncCommand extends Command
             static fn (string $column): bool => str_starts_with($column, 'idx_'),
         ));
 
-        $missing = array_diff(array_keys($wanted), $present);
-        $orphaned = array_diff($present, array_keys($wanted));
+        $existingIndexes = array_map(
+            static fn (array $index): string => strtolower((string) $index['name']),
+            DB::getSchemaBuilder()->getIndexes('entries'),
+        );
+
+        $missing = array_values(array_diff(array_keys($wanted), $present));
+        $orphaned = array_values(array_diff($present, array_keys($wanted)));
+
+        // ⚠️ The column and the index are separate statements, so a column
+        // can be present with no index — the half-applied state MySQL's
+        // implicit DDL commit leaves behind. Reporting on columns alone said
+        // "already in sync" while every query scanned the projection, and
+        // gave the operator no reason to run --force.
+        $unindexed = [];
+
+        foreach ($wanted as $column => $handles) {
+            if (in_array($column, $missing, true)) {
+                continue;
+            }
+
+            if (! in_array(strtolower($indexes[$column]), $existingIndexes, true)) {
+                $unindexed[] = $column;
+            }
+        }
 
         foreach ($missing as $column) {
             $rows = count($wanted[$column]);
             $this->line("  <info>+</info> {$column} — wanted by {$rows} field storage row(s), not present");
+        }
+
+        foreach ($unindexed as $column) {
+            $this->line("  <info>~</info> {$column} — column present, index missing; queries scan it");
         }
 
         foreach ($orphaned as $column) {
@@ -104,7 +132,9 @@ final class SchemaSyncCommand extends Command
 
         $this->newLine();
 
-        if ($missing === [] && $orphaned === []) {
+        $pending = count($missing) + count($unindexed) + count($orphaned);
+
+        if ($pending === 0) {
             $this->line('<info>already in sync</info>');
 
             return self::SUCCESS;
@@ -113,7 +143,7 @@ final class SchemaSyncCommand extends Command
         $this->warn(sprintf(
             '%d change(s) pending. Re-run with --force to apply. On a large entries table this '
             .'rewrites it and may lock; do it in a maintenance window.',
-            count($missing) + count($orphaned),
+            $pending,
         ));
 
         return self::SUCCESS;

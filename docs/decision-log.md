@@ -1056,7 +1056,24 @@ Three further defects surfaced while fixing that, all of the same shape — a cl
 
 **Why all four hid:** the parity suite exercised `decimal` and `string` only. It now covers every logical type on every engine, and the registry test renders every indexable type against all three drivers rather than only the connected one. `LogicalType` is an enum so PHPStan fails an unhandled match — a new logical type cannot silently leave one engine behind.
 
-**Consequence for field types.** `generatedColumnType(SchemaDriver)` is replaced by `projection(): ?Projection`. A field type now describes what it projects to and takes no driver at all — handing it one was the wrong seam, since it still had to know that a rendered type serves two grammars, and it left the driver no place to put the guard.
+**Consequence for field types.** `generatedColumnType(SchemaDriver)` is replaced by `projection(FieldConfig): ?Projection`. A field type now describes what it projects to and takes no driver at all — handing it one was the wrong seam, since it still had to know that a rendered type serves two grammars, and it left the driver no place to put the guard.
+
+### Second amendment — the identity is the projection, and the projection depends on configuration
+
+**Status:** Amended · 2026-09-07 · found in re-review
+
+Naming the column `idx_{handle}__{type}` assumed the projection was a pure function of the field type handle. It is not:
+
+- A `number` with `format: integer` must project to BIGINT. Through `DECIMAL(12,2)` — which is what every `number` used — the value `10000000000` is accepted by the validator and by `toStorage()`, and PostgreSQL then **refuses the column with `numeric field overflow`.**
+- A `text` with `maxLength: 400` must project at that width. Through `VARCHAR(255)` it is **silently truncated in the index**, so two distinct values compare equal and an exact filter returns wrong rows — and SQLite, which does not enforce declared widths, disagrees with the other two engines about which rows those are.
+
+So two orgs configuring the same handle differently would have collided on `idx_count__number` with incompatible column types — the very defect this ADR was written to close, reintroduced one level down.
+
+**The column is therefore named for the projection's signature**, which carries the width where the width varies: `idx_count__integer`, `idx_price__decimal12_2`, `idx_sku__string64`, `idx_active__boolean`, `idx_when__date`. Rows that project identically still share a column; rows that differ in any way that changes the SQL do not.
+
+**Indexing constrains configuration, and says so.** An indexed string wider than 700 characters is refused with the reason: MySQL caps an index key at 3,072 bytes and utf8mb4 costs four bytes a character, so `VARCHAR(1000)` fails with `ERROR 1071` while `VARCHAR(700)` succeeds — measured, not derived. Long text that needs searching wants full-text search, not a scalar projection.
+
+`field_storage.handle` drops from 40 characters to **32**, because the signature suffix is longer than a type handle was and the assembled index name has to stay inside PostgreSQL's 63 bytes.
 
 ---
 

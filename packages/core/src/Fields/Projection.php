@@ -26,6 +26,17 @@ namespace Kitsune\Core\Fields;
  */
 final readonly class Projection
 {
+    /**
+     * The widest string an engine will accept in a composite index.
+     *
+     * Measured, not guessed: MySQL's InnoDB key limit is 3,072 bytes and
+     * utf8mb4 costs four bytes a character, so `VARCHAR(1000)` fails with
+     * `ERROR 1071: Specified key was too long` while `VARCHAR(700)` — 2,800
+     * bytes plus the leading `site_id` — succeeds. Long text that needs
+     * searching wants full-text search, not a scalar projection.
+     */
+    public const MAX_INDEXED_STRING_WIDTH = 700;
+
     public function __construct(
         public LogicalType $logical,
         /** Column width, or numeric precision for `decimal`. */
@@ -36,5 +47,28 @@ final readonly class Projection
     public function jsonKind(): JsonKind
     {
         return $this->logical->jsonKind();
+    }
+
+    /**
+     * The projection's identity, as it appears in the column name.
+     *
+     * ADR-028 names a column for its projection, and the projection depends
+     * on configuration as well as on the field type: a `number` with
+     * `format: integer` projects to BIGINT while its decimal sibling projects
+     * to DECIMAL(12,2), and two `text` fields can want different widths.
+     * Naming after the field type HANDLE was therefore not injective — two
+     * orgs configuring `number` differently would have collided on
+     * `idx_count__number` with incompatible column types.
+     *
+     * Width is included only where it varies, so `idx_active__boolean` stays
+     * readable while `idx_price__decimal12_2` stays unambiguous.
+     */
+    public function signature(): string
+    {
+        return match ($this->logical) {
+            LogicalType::Decimal => "decimal{$this->precision}_{$this->scale}",
+            LogicalType::String => "string{$this->precision}",
+            LogicalType::Integer, LogicalType::Boolean, LogicalType::Date, LogicalType::DateTime => $this->logical->value,
+        };
     }
 }

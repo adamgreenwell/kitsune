@@ -44,7 +44,7 @@ abstract class BaseFieldType implements FieldType
         return true;
     }
 
-    public function projection(): ?Projection
+    public function projection(FieldConfig $config): ?Projection
     {
         return null;
     }
@@ -64,12 +64,54 @@ abstract class BaseFieldType implements FieldType
         return [];
     }
 
+    /**
+     * Cardinality is handled HERE, once, rather than in every scalar type.
+     *
+     * ⚠️ It was not handled anywhere, and `supportsCardinality()` defaults to
+     * true — so a multi-value `text` field cast its array to the literal
+     * string `"Array"`, `number` cast it to `1.0`, and `date` threw an
+     * unhandled Carbon exception. Every scalar type advertised a capability
+     * none of them implemented.
+     *
+     * A type that manages its own array — `relation`, `multi_select` — either
+     * declares `supportsCardinality(): false` or overrides this method.
+     */
     public function toStorage(mixed $input, FieldConfig $config): mixed
+    {
+        if (! $config->isMultiValue()) {
+            return $this->castToStorage($input, $config);
+        }
+
+        if ($input === null || $input === '') {
+            return [];
+        }
+
+        return array_values(array_map(
+            fn (mixed $value): mixed => $this->castToStorage($value, $config),
+            (array) $input,
+        ));
+    }
+
+    public function fromStorage(mixed $stored, FieldConfig $config): mixed
+    {
+        if (! $config->isMultiValue()) {
+            return $this->castFromStorage($stored, $config);
+        }
+
+        return array_values(array_map(
+            fn (mixed $value): mixed => $this->castFromStorage($value, $config),
+            (array) ($stored ?? []),
+        ));
+    }
+
+    /** Convert ONE value on the way in. Scalar types override this. */
+    protected function castToStorage(mixed $input, FieldConfig $config): mixed
     {
         return $input;
     }
 
-    public function fromStorage(mixed $stored, FieldConfig $config): mixed
+    /** Convert ONE value on the way out. */
+    protected function castFromStorage(mixed $stored, FieldConfig $config): mixed
     {
         return $stored;
     }

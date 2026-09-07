@@ -36,12 +36,18 @@ final class TextType extends BaseFieldType
         return true;
     }
 
-    public function projection(): Projection
+    public function projection(FieldConfig $config): Projection
     {
-        return new Projection(LogicalType::String, $this->length());
+        // ⚠️ The configured width, not a constant 255. A field validated to
+        // accept 1,000 characters and projected through VARCHAR(255) is
+        // silently truncated in the index, so two distinct values compare
+        // equal and an exact filter returns the wrong rows — and SQLite,
+        // which does not enforce declared widths, disagrees with the other
+        // two engines about which rows those are.
+        return new Projection(LogicalType::String, $this->length($config));
     }
 
-    public function toStorage(mixed $input, FieldConfig $config): mixed
+    protected function castToStorage(mixed $input, FieldConfig $config): mixed
     {
         return $input === null ? null : (string) $input;
     }
@@ -51,7 +57,7 @@ final class TextType extends BaseFieldType
     {
         $rules = parent::validationRules($config);
         $rules[] = 'string';
-        $rules[] = 'max:'.$config->setting('maxLength', 255);
+        $rules[] = 'max:'.$this->length($config);
 
         if (($pattern = $config->setting('pattern')) !== null) {
             $rules[] = 'regex:'.$pattern;
@@ -69,8 +75,8 @@ final class TextType extends BaseFieldType
         ];
     }
 
-    private function length(): int
+    private function length(FieldConfig $config): int
     {
-        return 255;
+        return max(1, (int) $config->setting('maxLength', 255));
     }
 }

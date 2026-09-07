@@ -32,11 +32,24 @@ beforeEach(function (): void {
 afterEach(function (): void {
     $driver = DriverFactory::for(DB::connection());
 
+    // Index names checked first: MySQL's DROP INDEX has no IF EXISTS, and a
+    // test that dropped one itself would break the teardown for every test
+    // after it — the same defect this file covers in the code.
+    $indexes = array_map(
+        static fn (array $index): string => strtolower((string) $index['name']),
+        Schema::getIndexes('entries'),
+    );
+
     foreach (Schema::getColumnListing('entries') as $column) {
-        if (str_starts_with($column, 'idx_')) {
-            DB::statement($driver->dropIndexSql('entries', $column.'_site_idx'));
-            DB::statement($driver->dropGeneratedColumnSql('entries', $column));
+        if (! str_starts_with($column, 'idx_')) {
+            continue;
         }
+
+        if (in_array(strtolower($column.'_site_idx'), $indexes, true)) {
+            DB::statement($driver->dropIndexSql('entries', $column.'_site_idx'));
+        }
+
+        DB::statement($driver->dropGeneratedColumnSql('entries', $column));
     }
 
     DB::table('field_storage')->delete();
@@ -59,12 +72,12 @@ it('reports without changing anything, because a schema change can lock the tabl
     indexedField($this->org->id, 'price');
 
     $this->artisan('kitsune:schema-sync')
-        ->expectsOutputToContain('idx_price__number')
+        ->expectsOutputToContain('idx_price__decimal12_2')
         ->expectsOutputToContain('Re-run with --force')
         ->assertSuccessful();
 
     // The whole point of the dry run.
-    expect(Schema::hasColumn('entries', 'idx_price__number'))->toBeFalse();
+    expect(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeFalse();
 });
 
 it('says how many rows want a column, since one column serves many', function (): void {
@@ -72,7 +85,7 @@ it('says how many rows want a column, since one column serves many', function ()
     indexedField($this->org->id, 'price');
     indexedField($second->id, 'price');
 
-    // ADR-028: "drop idx_price__number" is only safe to read alongside how
+    // ADR-028: "drop idx_price__decimal12_2" is only safe to read alongside how
     // many orgs still project to it.
     $this->artisan('kitsune:schema-sync')
         ->expectsOutputToContain('wanted by 2 field storage row(s)')
@@ -83,11 +96,11 @@ it('applies the change under --force', function (): void {
     indexedField($this->org->id, 'price');
 
     $this->artisan('kitsune:schema-sync', ['--force' => true])
-        ->expectsOutputToContain('+ idx_price__number')
+        ->expectsOutputToContain('+ idx_price__decimal12_2')
         ->expectsOutputToContain('1 change(s) applied')
         ->assertSuccessful();
 
-    expect(Schema::hasColumn('entries', 'idx_price__number'))->toBeTrue();
+    expect(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeTrue();
 });
 
 it('drops a column no row asks for any more', function (): void {
@@ -96,10 +109,10 @@ it('drops a column no row asks for any more', function (): void {
     $storage->delete();
 
     $this->artisan('kitsune:schema-sync', ['--force' => true])
-        ->expectsOutputToContain('- idx_price__number')
+        ->expectsOutputToContain('- idx_price__decimal12_2')
         ->assertSuccessful();
 
-    expect(Schema::hasColumn('entries', 'idx_price__number'))->toBeFalse();
+    expect(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeFalse();
 });
 
 it('reports clean when nothing has drifted', function (): void {
@@ -124,4 +137,35 @@ it('fails loudly rather than half-applying when a change is refused', function (
     $this->artisan('kitsune:schema-sync', ['--force' => true])
         ->expectsOutputToContain('cannot be projected to a scalar')
         ->assertFailed();
+});
+
+it('reports a column whose index is missing, rather than saying it is in sync', function (): void {
+    // The column and the index are separate statements, so a column can be
+    // present with no index. Reporting on columns alone said "already in
+    // sync" while every query scanned the projection.
+    $storage = indexedField($this->org->id, 'price');
+    app(SchemaManager::class)->index($storage);
+
+    DB::statement(DriverFactory::for(DB::connection())->dropIndexSql('entries', $storage->generatedIndexName()));
+
+    $this->artisan('kitsune:schema-sync')
+        ->expectsOutputToContain('index missing')
+        ->expectsOutputToContain('Re-run with --force')
+        ->assertSuccessful();
+});
+
+it('repairs that under --force', function (): void {
+    $storage = indexedField($this->org->id, 'price');
+    app(SchemaManager::class)->index($storage);
+
+    DB::statement(DriverFactory::for(DB::connection())->dropIndexSql('entries', $storage->generatedIndexName()));
+
+    $this->artisan('kitsune:schema-sync', ['--force' => true])->assertSuccessful();
+
+    $names = array_map(
+        static fn (array $i): string => strtolower((string) $i['name']),
+        Schema::getIndexes('entries'),
+    );
+
+    expect($names)->toContain(strtolower($storage->generatedIndexName()));
 });

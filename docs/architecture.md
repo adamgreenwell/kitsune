@@ -268,13 +268,13 @@ When a `field_storage` row is marked `is_indexed`, `SchemaManager` adds a **stor
 -- MySQL. `values` is reserved and must be quoted; see field-types.md §7
 -- for the PostgreSQL and SQLite forms, all three verified against live engines.
 ALTER TABLE `entries`
-  ADD COLUMN `idx_price__number` DECIMAL(12,2)
+  ADD COLUMN `idx_price__decimal12_2` DECIMAL(12,2)
     GENERATED ALWAYS AS (
       CASE WHEN JSON_TYPE(JSON_EXTRACT(`values`, '$.price'))
                 IN ('INTEGER', 'UNSIGNED INTEGER', 'DOUBLE', 'DECIMAL')
            THEN CAST(`values`->>'$.price' AS DECIMAL(12,2)) END
     ) STORED;
-CREATE INDEX `idx_price__number_site_idx` ON `entries` (`site_id`, `idx_price__number`);
+CREATE INDEX `idx_price__decimal12_2_site_idx` ON `entries` (`site_id`, `idx_price__decimal12_2`);
 ```
 
 Two things in that statement are load-bearing, and both come from `entries` being **one table shared by every org** while `field_storage` is `UNIQUE (org_id, handle)` — so two orgs may each define `price` (ADR-028).
