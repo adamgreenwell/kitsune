@@ -35,6 +35,19 @@ final class SqliteDriver implements SchemaDriver
         return false;
     }
 
+    public function sqlType(string $logical, int $precision = 12, int $scale = 2): string
+    {
+        // SQLite's affinity system is loose, but the spellings still have to
+        // be ones it parses inside CAST.
+        return match ($logical) {
+            'decimal' => "NUMERIC({$precision},{$scale})",
+            'integer' => 'INTEGER',
+            'string' => "VARCHAR({$precision})",
+            'boolean' => 'INTEGER',
+            'datetime' => 'TEXT',
+        };
+    }
+
     public function jsonExtractExpression(string $jsonColumn, string $path, string $sqlType): string
     {
         return sprintf('CAST(json_extract(%s, %s) AS %s)', $this->quote($jsonColumn), $this->literal('$.'.$path), $sqlType);
@@ -65,6 +78,11 @@ final class SqliteDriver implements SchemaDriver
             $this->quote($table),
             implode(', ', array_map($this->quote(...), $columns)),
         );
+    }
+
+    public function dropIndexSql(string $table, string $index): string
+    {
+        return sprintf('DROP INDEX IF EXISTS %s', $this->quote($index));
     }
 
     public function quote(string $identifier): string

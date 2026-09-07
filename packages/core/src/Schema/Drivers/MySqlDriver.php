@@ -24,6 +24,19 @@ final class MySqlDriver implements SchemaDriver
         return true;
     }
 
+    public function sqlType(string $logical, int $precision = 12, int $scale = 2): string
+    {
+        // DECIMAL, not NUMERIC: MySQL accepts NUMERIC as a column type but
+        // rejects it inside CAST, which is where generated columns use it.
+        return match ($logical) {
+            'decimal' => "DECIMAL({$precision},{$scale})",
+            'integer' => 'SIGNED',
+            'string' => "CHAR({$precision})",
+            'boolean' => 'UNSIGNED',
+            'datetime' => 'DATETIME',
+        };
+    }
+
     public function jsonExtractExpression(string $jsonColumn, string $path, string $sqlType): string
     {
         // MySQL uses a $-prefixed path and a CAST wrapper rather than a suffix.
@@ -54,6 +67,12 @@ final class MySqlDriver implements SchemaDriver
             $this->quote($table),
             implode(', ', array_map($this->quote(...), $columns)),
         );
+    }
+
+    public function dropIndexSql(string $table, string $index): string
+    {
+        // MySQL scopes DROP INDEX to a table; the other two do not.
+        return sprintf('DROP INDEX %s ON %s', $this->quote($index), $this->quote($table));
     }
 
     public function quote(string $identifier): string

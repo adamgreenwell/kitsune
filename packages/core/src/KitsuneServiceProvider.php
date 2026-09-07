@@ -11,6 +11,7 @@ declare(strict_types=1);
 namespace Kitsune\Core;
 
 use Illuminate\Support\ServiceProvider;
+use Kitsune\Core\Console\BenchmarkStorageCommand;
 use Kitsune\Core\Tenancy\Context;
 
 final class KitsuneServiceProvider extends ServiceProvider
@@ -27,6 +28,10 @@ final class KitsuneServiceProvider extends ServiceProvider
     public function boot(): void
     {
         $this->loadMigrationsFrom(__DIR__.'/../database/migrations');
+
+        if ($this->app->runningInConsole()) {
+            $this->commands([BenchmarkStorageCommand::class]);
+        }
 
         $this->publishes([
             __DIR__.'/../database/migrations' => database_path('migrations'),

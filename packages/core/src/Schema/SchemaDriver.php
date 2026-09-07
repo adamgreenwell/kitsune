@@ -35,6 +35,24 @@ interface SchemaDriver
      */
     public function supportsStoredGeneratedColumns(): bool;
 
+    /**
+     * Render a LOGICAL type as this engine's SQL spelling.
+     *
+     * Without this the caller has to know engine specifics, which is exactly
+     * what the driver exists to prevent. MySQL is the reason it is not
+     * cosmetic: it accepts NUMERIC as a column type but rejects it inside
+     * CAST, where it demands DECIMAL. Found by the storage benchmark passing
+     * one type to all three engines — the parity test had been hiding it by
+     * hardcoding the correct spelling per engine at the call site.
+     *
+     * An unknown logical type throws rather than falling back to TEXT.
+     * A generated column silently created with the wrong type would index
+     * the wrong thing, which is worse than failing loudly.
+     *
+     * @param  'decimal'|'integer'|'string'|'boolean'|'datetime'  $logical
+     */
+    public function sqlType(string $logical, int $precision = 12, int $scale = 2): string;
+
     /** An expression projecting a JSON path to a scalar of the given SQL type. */
     public function jsonExtractExpression(string $jsonColumn, string $path, string $sqlType): string;
 
@@ -46,6 +64,16 @@ interface SchemaDriver
 
     /** SQL creating a composite index. Callers lead with the scope key (ADR-021). */
     public function createIndexSql(string $table, string $index, string ...$columns): string;
+
+    /**
+     * SQL dropping an index.
+     *
+     * Needed as its own operation because a generated column cannot be
+     * dropped while an index still references it — SQLite refuses outright.
+     * The syntax also diverges: MySQL scopes DROP INDEX to a table, the
+     * others do not.
+     */
+    public function dropIndexSql(string $table, string $index): string;
 
     /** Identifier quoting. `values` is reserved on more than one engine. */
     public function quote(string $identifier): string;
