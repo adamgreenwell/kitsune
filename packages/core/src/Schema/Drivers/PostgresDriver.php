@@ -65,14 +65,13 @@ final class PostgresDriver implements SchemaDriver
             // Cast to UNBOUNDED numeric and compare the ROUNDED value: the
             // final cast rounds to the projection's scale, so a value inside
             // the raw range can still overflow once rounded.
-            $guard .= sprintf(
-                ' AND round((%s ->> %s)::NUMERIC, %d) BETWEEN %s AND %s',
-                $column,
-                $key,
-                $projection->scale,
-                $range['min'],
-                $range['max'],
-            );
+            $value = sprintf('(%s ->> %s)::NUMERIC', $column, $key);
+
+            if (($scale = $projection->comparisonScale()) !== null) {
+                $value = sprintf('round(%s, %d)', $value, $scale);
+            }
+
+            $guard .= sprintf(' AND %s BETWEEN %s AND %s', $value, $range['min'], $range['max']);
         }
 
         return sprintf(

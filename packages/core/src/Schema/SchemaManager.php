@@ -61,9 +61,22 @@ final class SchemaManager
         private readonly FieldTypeRegistry $registry,
     ) {}
 
-    /** Reconcile the database with what this field storage row now says. */
+    /**
+     * Reconcile the database with what this field storage row now says.
+     *
+     * ⚠️ A no-op for a field that projects to nothing. `rich_text`, `json`,
+     * `relation` and `slug` deliberately have no generated column, and
+     * `dropIndex()` starts by asking for the column NAME — which throws for
+     * them. So the documented "call sync() after saving" flow blew up on four
+     * perfectly ordinary field types, and every caller would have had to
+     * special-case them.
+     */
     public function sync(FieldStorage $storage): void
     {
+        if ($this->registry->get($storage->type)->projection(new FieldConfig($storage)) === null) {
+            return;
+        }
+
         $storage->is_indexed ? $this->index($storage) : $this->dropIndex($storage);
     }
 

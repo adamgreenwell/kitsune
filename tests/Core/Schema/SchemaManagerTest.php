@@ -546,3 +546,23 @@ describe('settings that change the projection are shape, and lock with it', func
         expect(fn () => $storage->save())->not->toThrow(RuntimeException::class);
     });
 });
+
+describe('sync is safe for a field that projects to nothing', function (): void {
+    it('does not throw for a type with no generated column', function (string $type): void {
+        // ⚠️ dropIndex() starts by asking for the column NAME, which throws
+        // for these — so the documented "call sync() after saving" flow blew
+        // up on four ordinary field types and every caller would have had to
+        // special-case them.
+        $storage = storageFor("probe_{$type}", $type, ['org_id' => $this->orgA->id, 'is_indexed' => false]);
+
+        expect(fn () => $this->manager->sync($storage))->not->toThrow(RuntimeException::class);
+    })->with(['rich_text', 'json', 'relation', 'slug']);
+
+    it('still indexes a type that does project', function (): void {
+        $storage = storageFor('price', 'number', ['org_id' => $this->orgA->id, 'is_indexed' => true]);
+
+        $this->manager->sync($storage);
+
+        expect(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeTrue();
+    });
+});

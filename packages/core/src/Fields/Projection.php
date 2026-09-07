@@ -88,6 +88,22 @@ final readonly class Projection
         };
     }
 
+    /**
+     * The scale a range check should round to, or null to compare exactly.
+     *
+     * ⚠️ Null for integers, and that is not tidiness. SQLite's `round()`
+     * returns a REAL, so `round(9223372036854775807, 2)` becomes
+     * `9.2233720368547758e+18` — above the very bound it is being compared
+     * against. The guard then rejected `PHP_INT_MAX`, and an indexed integer
+     * field holding it disappeared from every query. Integers compare
+     * exactly; only a decimal needs rounding, because only a decimal is
+     * rounded by its cast.
+     */
+    public function comparisonScale(): ?int
+    {
+        return $this->logical === LogicalType::Decimal ? $this->scale : null;
+    }
+
     private function largestDecimal(): string
     {
         $whole = str_repeat('9', max(1, $this->precision - $this->scale));

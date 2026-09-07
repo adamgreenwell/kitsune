@@ -69,7 +69,16 @@ final class JsonType extends BaseFieldType
             );
         }
 
-        return $decoded;
+        // ⚠️ An empty object survives as an object. `json_decode('{}', true)`
+        // gives `[]`, which re-encodes as a LIST — so `{}` changed shape on a
+        // round trip through a field whose apiSchema() advertises an object.
+        return $decoded === [] ? new stdClass : $decoded;
+    }
+
+    /** Same reason, on the way back out. */
+    protected function castFromStorage(mixed $stored, FieldConfig $config): mixed
+    {
+        return $stored === [] ? new stdClass : $stored;
     }
 
     /** @return array<string, mixed> */
