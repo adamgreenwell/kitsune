@@ -68,6 +68,14 @@ afterEach(function (): void {
     app(Context::class)->forget();
 });
 
+function indexNames(): array
+{
+    return array_map(
+        static fn (array $index): string => strtolower((string) $index['name']),
+        Schema::getIndexes('entries'),
+    );
+}
+
 function storageFor(string $handle, string $type, array $attrs = []): FieldStorage
 {
     return FieldStorage::create(array_merge([
@@ -120,6 +128,33 @@ it('is idempotent, so a repeated sync is harmless', function (): void {
     $this->manager->index($storage);
 
     expect(Schema::hasColumn('entries', 'idx_price__number'))->toBeTrue();
+});
+
+it('recreates a missing index even though its column is already there', function (): void {
+    // The column and the index are two statements, and DDL implicitly commits
+    // on MySQL — so the pair can half-succeed. Returning early on the column
+    // alone left the index permanently missing while the dry run reported the
+    // schema as in sync and every query scanned.
+    $storage = storageFor('price', 'number', ['org_id' => $this->orgA->id, 'is_indexed' => true]);
+    $this->manager->index($storage);
+
+    DB::statement(DriverFactory::for(DB::connection())->dropIndexSql('entries', $storage->generatedIndexName()));
+    expect(indexNames())->not->toContain(strtolower($storage->generatedIndexName()));
+
+    $this->manager->index($storage);
+
+    expect(indexNames())->toContain(strtolower($storage->generatedIndexName()))
+        ->and(Schema::hasColumn('entries', 'idx_price__number'))->toBeTrue();
+});
+
+it('reports a missing index as drift, not as in sync', function (): void {
+    $storage = storageFor('price', 'number', ['org_id' => $this->orgA->id, 'is_indexed' => true]);
+    $this->manager->index($storage);
+
+    DB::statement(DriverFactory::for(DB::connection())->dropIndexSql('entries', $storage->generatedIndexName()));
+
+    expect($this->manager->reconcile()['added'])->toBe(['idx_price__number'])
+        ->and(indexNames())->toContain(strtolower($storage->generatedIndexName()));
 });
 
 /*
