@@ -47,7 +47,7 @@ module.exports = defineConfig({
         },
         {
             name: 'admin',
-            testMatch: /admin\.spec\.js/,
+            testMatch: /(admin|accessibility)\.spec\.js/,
             dependencies: ['setup'],
             use: { ...devices['Desktop Chrome'], storageState: '.playwright/admin-auth.json' },
         },
