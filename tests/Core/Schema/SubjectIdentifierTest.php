@@ -326,3 +326,47 @@ describe('a relational subject lives in entry_relations, not in values', functio
         expect($other->fresh()->subjectValue())->toBe([$this->bob->id]);
     });
 });
+
+/*
+ * ⚠️ `field_storage` is UNIQUE (org_id, handle) and the model is #[Unscoped],
+ * so resolving a field by handle alone can return ANOTHER ORG's row — and a
+ * relational erasure then detaches on the wrong field_storage_id, reports 0,
+ * and leaves every link intact. Reported in review of this PR.
+ */
+describe('erasure resolves the field through this entry\'s type', function (): void {
+    beforeEach(function (): void {
+        // A rival org defines the SAME handle first, so an unscoped lookup
+        // ordered by id would find theirs.
+        $rival = Org::create(['name' => 'Rival', 'slug' => 'rival-erase']);
+        app(Context::class)->setOrg($rival);
+        $rivalType = EntryType::create(['org_id' => $rival->id, 'handle' => 'lead', 'name' => 'L', 'plural_name' => 'Ls']);
+        $rivalStorage = FieldStorage::create([
+            'org_id' => $rival->id, 'handle' => 'contact', 'type' => 'text',
+            'pii_class' => 'personal', 'cardinality' => 1,
+        ]);
+        Field::create(['entry_type_id' => $rivalType->id, 'field_storage_id' => $rivalStorage->id, 'label' => 'Contact']);
+
+        app(Context::class)->setOrg($this->org);
+        app(Context::class)->setSite($this->site);
+
+        $this->mineStorage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'contact', 'type' => 'relation',
+            'pii_class' => 'personal', 'cardinality' => 1,
+        ]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $this->mineStorage->id, 'label' => 'Contact',
+        ]);
+
+        $this->person = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Alice']);
+        $this->record = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Visit']);
+        $this->record->related()->attach($this->person->id, ['field_storage_id' => $this->mineStorage->id]);
+    });
+
+    it('erases through THIS org\'s storage row, not the other org\'s', function (): void {
+        // Resolved by handle alone this found the rival's `text` row, took
+        // the inline branch, found no key in `values`, and returned 0 with
+        // every link still attached.
+        expect($this->record->redactField('contact'))->toBe(1)
+            ->and($this->record->related()->count())->toBe(0);
+    });
+});

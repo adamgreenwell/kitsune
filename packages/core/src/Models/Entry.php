@@ -182,7 +182,17 @@ class Entry extends Model
      */
     public function redactField(string $handle, mixed $replacement = null): int
     {
-        $storage = FieldStorage::query()->where('handle', $handle)->first();
+        // ⚠️ Resolved through THIS ENTRY'S TYPE, not by handle alone.
+        //
+        // `field_storage` is UNIQUE (org_id, handle) and the model is
+        // #[Unscoped], so a bare handle lookup can return ANOTHER ORG's row —
+        // and then a relational erasure detaches on the wrong
+        // field_storage_id, reports 0, and leaves every link intact. Two
+        // orgs defining `email` is the ordinary case, not a contrived one.
+        $storage = FieldStorage::query()
+            ->where('handle', $handle)
+            ->whereHas('fields', fn (Builder $query): Builder => $query->where('entry_type_id', $this->entry_type_id))
+            ->first();
 
         // A relational field's data is rows in entry_relations, not a value
         // in `values`. There is nothing to replace in place, so erasure means
