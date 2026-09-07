@@ -63,11 +63,24 @@ class Entry extends Model
         // written from model events rather than from the admin, so the API
         // and the console are audited by the same code path — an audit trail
         // that only covers the UI is an audit trail with a documented hole.
-        foreach (['created', 'updated', 'deleted'] as $event) {
+        foreach (['created', 'deleted', 'restored'] as $event) {
             static::{$event}(function (self $entry) use ($event): void {
                 app(Auditor::class)->record("entry.{$event}", $entry);
             });
         }
+
+        // ⚠️ `updated` is separate, because a RESTORE is an update too:
+        // `restore()` nulls `deleted_at` and saves, so a delete/restore pair
+        // was recorded as `entry.deleted` then `entry.updated` — the actual
+        // lifecycle action hidden behind an ordinary-looking edit. The
+        // `restored` listener above names it, and this one steps aside.
+        static::updated(function (self $entry): void {
+            if ($entry->wasChanged($entry->getDeletedAtColumn())) {
+                return;
+            }
+
+            app(Auditor::class)->record('entry.updated', $entry);
+        });
 
         static::saving(function (self $entry): void {
             if ($entry->isDirty('entry_type_id')) {

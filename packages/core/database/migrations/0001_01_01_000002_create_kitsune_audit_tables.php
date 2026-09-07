@@ -40,7 +40,10 @@ return new class extends Migration
             // logged in.
             $table->foreignId('actor_id')->nullable();
             $table->string('action');
-            $table->string('target_type');
+            // Both nullable: plenty of auditable actions have no model behind
+            // them — a settings change, a sign-in, an export. The signature
+            // advertises an optional target and the column has to mean it.
+            $table->string('target_type')->nullable();
             $table->unsignedBigInteger('target_id')->nullable();
             $table->timestamp('created_at');
 

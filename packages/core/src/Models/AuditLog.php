@@ -15,6 +15,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Kitsune\Core\Tenancy\Attributes\OrgScoped;
 use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
+use RuntimeException;
 
 /**
  * Actor, action and target. Never payloads (ADR-020).
@@ -50,6 +51,36 @@ class AuditLog extends Model
     protected $guarded = [];
 
     protected $casts = ['created_at' => 'datetime'];
+
+    /**
+     * ⚠️ Append-only, enforced rather than documented.
+     *
+     * An audit log that application code can rewrite is not evidence of
+     * anything. `UPDATED_AT = null` says a row is written once; this makes it
+     * true — otherwise `$guarded = []` plus an ordinary Eloquent model makes
+     * accidental rewriting a one-liner, and deliberate rewriting invisible.
+     *
+     * The org cascade still removes rows when an org is deleted, because a
+     * database-level `ON DELETE CASCADE` does not go through Eloquent. That
+     * is the intended exception: erasing an organisation should not leave its
+     * audit trail behind.
+     */
+    protected static function booted(): void
+    {
+        static::updating(function (): void {
+            throw new RuntimeException(
+                'Audit rows are append-only. Rewriting one destroys the evidence the log exists to '
+                .'preserve — record a new action instead (ADR-020).'
+            );
+        });
+
+        static::deleting(function (): void {
+            throw new RuntimeException(
+                'Audit rows are append-only and cannot be deleted individually. Retention is an '
+                .'operator policy applied to the table, not a per-row decision (ADR-020).'
+            );
+        });
+    }
 
     /** @return BelongsTo<Site, $this> */
     public function site(): BelongsTo

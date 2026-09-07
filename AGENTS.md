@@ -61,7 +61,13 @@ If you add a route parameter, it gets the same treatment.
 
 Adding the "Incompatible With Secondary Licenses" notice would make Kitsune incompatible with GPL, LGPL and AGPL code. A PR containing it is rejected.
 
-## 8. Tests, and the one that looks arbitrary
+## 8. Foreign keys are enforced in tests, and were not
+
+SQLite does not enforce them unless asked and Testbench does not ask, so the default suite exercised **no** `cascadeOnDelete`, `nullOnDelete` or `constrained()` in any migration — while the PostgreSQL and MySQL legs silently did. `TestCase` now sets `foreign_key_constraints` for SQLite.
+
+If a test that passes on SQLite fails on an engine leg with a constraint error, the constraint is the truth and the SQLite pass was the illusion.
+
+## 9. Tests, and the one that looks arbitrary
 
 - **Every model** — a test asserting it declares a scope
 - **Every scope boundary** — written from the attacker's side. **Two** boundaries: cross-site within one org, and cross-org. The second has no framework safety net and is the more important
@@ -72,7 +78,7 @@ That last one has a reason. During the relation-manager spike the PHP suite was 
 
 **The load-bearing risk in this architecture is URL generation across page boundaries, which is exactly the seam a feature test does not cross.**
 
-## 9. Do not raise the resource floor
+## 10. Do not raise the resource floor
 
 The designed floor is **1 vCPU, 1 GB RAM, SQLite, no container runtime, no external services** (ADR-027).
 
@@ -80,25 +86,25 @@ Core may not *require*, for a default single-site install: a container runtime, 
 
 A feature that is better with Redis may use Redis when present and must work without it.
 
-## 10. The default test suite must run on a bare clone
+## 11. The default test suite must run on a bare clone
 
 SQLite, no Docker, no Node, no services. A CI job enforces this. If it goes red, **the fix is never to add services to that job** — it is to fix the test that reached for one.
 
 Node belongs to the Playwright job alone.
 
-## 11. Amend the ADR; do not route around it
+## 12. Amend the ADR; do not route around it
 
 A pull request that contradicts a decision-log entry without amending its ADR is closed **regardless of how good the code is**. Changing a settled decision means amending the ADR with the old reasoning left visible.
 
 This binds the maintainer identically. ADR-026's recommended default was flipped by ADR-027 twenty minutes after it was written, by amendment rather than a quiet edit.
 
-## 12. `once()` keys must be values the body actually uses
+## 13. `once()` keys must be values the body actually uses
 
 `once()` hashes the closure's captured variables, and hashes an **object** by `spl_object_id` — a handle PHP recycles the moment the object is collected. A memo keyed on a `Site` cannot reliably tell two sites apart inside one process. Under PHP-FPM the process dies between requests and it never bites; under Octane or a queue worker it does.
 
 Capturing an extra scalar purely to fix the key does not work either: **Pint strips unused `use` variables**, and it did — silently reverting the fix. So pass scope keys rather than models (`EntryTypeAvailability::enabledMapFor()` takes `$siteId, $siteGroupId, $orgId` for this reason), and the key becomes correct because the body genuinely uses it.
 
-## 13. Measure; do not reason
+## 14. Measure; do not reason
 
 Standing Principle #9, and it has cost real time when ignored:
 

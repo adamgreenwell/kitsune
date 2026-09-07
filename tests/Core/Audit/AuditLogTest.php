@@ -8,6 +8,7 @@
 
 declare(strict_types=1);
 
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Kitsune\Core\Audit\Auditor;
 use Kitsune\Core\Models\AuditLog;
@@ -131,4 +132,75 @@ it('records nothing rather than throwing when there is no org', function (): voi
     app(Context::class)->forget();
 
     expect(app(Auditor::class)->record('something.happened'))->toBeNull();
+});
+
+/*
+ * Three from review, each a way the log failed to be what it claims.
+ */
+it('records an action that has no target at all', function (): void {
+    // The signature advertises an optional target, and `target_type` was
+    // NOT NULL — so the advertised call failed on insert. Plenty of
+    // auditable actions have no model behind them: a settings change, a
+    // sign-in, an export.
+    $row = app(Auditor::class)->record('settings.updated');
+
+    expect($row)->not->toBeNull()
+        ->and($row->action)->toBe('settings.updated')
+        ->and($row->target_type)->toBeNull()
+        ->and($row->target_id)->toBeNull();
+});
+
+describe('the log is append-only, enforced', function (): void {
+    it('refuses to rewrite a row', function (): void {
+        // An audit log application code can rewrite is not evidence of
+        // anything, and `$guarded = []` makes accidental rewriting a
+        // one-liner.
+        $entry = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Hello']);
+        $row = AuditLog::for($entry)->first();
+
+        expect(fn () => $row->update(['action' => 'entry.something.else']))
+            ->toThrow(RuntimeException::class, 'append-only');
+    });
+
+    it('refuses to delete a row', function (): void {
+        $entry = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Hello']);
+
+        expect(fn () => AuditLog::for($entry)->first()->delete())
+            ->toThrow(RuntimeException::class, 'append-only');
+    });
+
+    it('still lets the org cascade take them, which is the intended exception', function (): void {
+        // A database-level ON DELETE CASCADE does not go through Eloquent.
+        // Erasing an organisation should not leave its audit trail behind.
+        Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Hello']);
+        $orgId = $this->org->id;
+
+        app(Context::class)->forget();
+        DB::table('orgs')->where('id', $orgId)->delete();
+
+        expect(DB::table('audit_log')->where('org_id', $orgId)->count())->toBe(0);
+    });
+});
+
+describe('a restore is its own action', function (): void {
+    it('records entry.restored rather than another entry.updated', function (): void {
+        // restore() nulls deleted_at and saves, so a delete/restore pair was
+        // recorded as deleted-then-updated — the actual lifecycle action
+        // hidden behind an ordinary-looking edit.
+        $entry = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Hello']);
+        $entry->delete();
+        $entry->restore();
+
+        expect(AuditLog::for($entry)->orderBy('id')->pluck('action')->all())
+            ->toBe(['entry.created', 'entry.deleted', 'entry.restored']);
+    });
+
+    it('still records an ordinary edit as an update', function (): void {
+        // The restore carve-out must not swallow real edits.
+        $entry = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Hello']);
+        $entry->update(['title' => 'Changed']);
+
+        expect(AuditLog::for($entry)->orderBy('id')->pluck('action')->all())
+            ->toBe(['entry.created', 'entry.updated']);
+    });
 });
