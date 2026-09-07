@@ -24,7 +24,7 @@ jobs:
           php-version: '8.4'
           coverage: none
 
-      - uses: ramsey/composer-install@v3
+      - uses: ramsey/composer-install@4.0.0
 
       - run: vendor/bin/pint --test
       - run: vendor/bin/phpstan analyse --memory-limit=512M --no-progress
@@ -51,7 +51,7 @@ jobs:
           extensions: pdo_sqlite, sqlite3, mbstring
           coverage: none
 
-      - uses: ramsey/composer-install@v3
+      - uses: ramsey/composer-install@4.0.0
 
       - name: Run the default suite with nothing else available
         run: vendor/bin/pest --colors=always
@@ -98,7 +98,7 @@ jobs:
           extensions: pdo_sqlite, sqlite3, pdo_pgsql, pdo_mysql, mbstring
           coverage: none
 
-      - uses: ramsey/composer-install@v3
+      - uses: ramsey/composer-install@4.0.0
 
       - name: Run the suite against ${{ matrix.engine }}
         env:
