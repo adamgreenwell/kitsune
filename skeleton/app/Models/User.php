@@ -19,12 +19,33 @@ use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Illuminate\Support\Collection;
 use Kitsune\Core\Models\Site;
+use Kitsune\Core\Tenancy\Attributes\Unscoped;
 
 /**
  * Users are deliberately NOT entries (ADR-016) — different lifecycle,
  * different privacy obligations, and a different deletion story. Erasing a
  * user must not cascade-delete their articles.
+ *
+ * ⚠️ DECLARED #[Unscoped], AND THAT IS A KNOWN GAP, NOT A CONCLUSION.
+ *
+ * ADR-021 lists users among the #[OrgScoped] models, and it is right to.
+ * Two things stop that being correct today:
+ *
+ *  1. Authentication resolves a user before any org context exists. A scope
+ *     reading Context would match nothing and nobody could log in — the same
+ *     bootstrap cycle that broke getTenants() and Site route binding.
+ *
+ *  2. architecture.md models users-to-orgs as many-to-many through org_user,
+ *     so OrgScope (org_id = current) does not apply. It needs a pivot-aware
+ *     scope that does not exist yet.
+ *
+ * Until then this model is globally readable, which means any admin UI
+ * listing users would leak across orgs. Nothing lists users yet. Tracked as
+ * a Phase 3 RBAC issue rather than left implicit — declaring #[Unscoped]
+ * makes the gap greppable instead of invisible, which is the entire reason
+ * the attribute is mandatory.
  */
+#[Unscoped]
 class User extends Authenticatable implements FilamentUser, HasTenants
 {
     use Notifiable;

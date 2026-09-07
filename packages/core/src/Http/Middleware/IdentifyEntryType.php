@@ -17,6 +17,7 @@ use function Filament\Support\original_request;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\URL;
 use Kitsune\Core\Models\EntryType;
+use Kitsune\Core\Models\EntryTypeAvailability;
 use Kitsune\Core\Tenancy\Context;
 use Symfony\Component\HttpFoundation\Response;
 
@@ -61,6 +62,18 @@ final class IdentifyEntryType
             ->first();
 
         abort_if($entryType === null, 404, "Unknown entry type [{$type}].");
+
+        // ADR-022: a type may exist and belong to this org and still be
+        // disabled for this site — a French edition dropping a section the
+        // English one carries. Same middleware, one more condition, same
+        // security posture, because {type} remains user-controlled input.
+        //
+        // This docblock claimed the check existed before the check did.
+        abort_unless(
+            EntryTypeAvailability::isEnabledFor($entryType, app(Context::class)->site()),
+            404,
+            "Entry type [{$type}] is not enabled for this site."
+        );
 
         URL::defaults(['type' => $type]);
         app()->instance(EntryType::class, $entryType);

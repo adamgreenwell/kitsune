@@ -43,6 +43,27 @@ test.describe('admin', () => {
         await expect(title).not.toBeEmpty();
     });
 
+    test('creates an entry, stamping the type the URL identified', async ({ page }) => {
+        // Regression: entry_type_id is NOT NULL and appears in no form field,
+        // so before CreateEntry stamped it, every create failed on a database
+        // constraint. Caught in review, never by a test — because no test
+        // exercised create at all.
+        await page.goto(`/admin/${SITE}/c/product/create`);
+
+        const title = `Spec-created product ${Date.now()}`;
+        await page.locator('input[wire\\:model="data.title"]').fill(title);
+        await page.locator('form').getByRole('button', { name: /Create/i }).first().click();
+
+        // Filament redirects to the edit form, where the title is an input
+        // value rather than page text.
+        await expect(page).toHaveURL(/\/c\/product\/\d+/, { timeout: 15_000 });
+        await expect(page.locator('input[wire\\:model="data.title"]')).toHaveValue(title);
+
+        // And it must land under the type the URL identified, not another.
+        await page.goto(`/admin/${SITE}/c/product`);
+        await expect(page.getByText(title).first()).toBeVisible();
+    });
+
     test('emits no URL with an empty {type} segment', async ({ page }) => {
         await page.goto(`/admin/${SITE}/c/article`);
 
