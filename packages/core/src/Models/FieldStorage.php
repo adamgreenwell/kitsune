@@ -15,6 +15,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Fields\FieldTypeRegistry;
 use Kitsune\Core\Fields\Projection;
+use Kitsune\Core\Fields\StorageStrategy;
 use Kitsune\Core\Tenancy\Attributes\Unscoped;
 use RuntimeException;
 
@@ -125,6 +126,12 @@ class FieldStorage extends Model
     public function isMultiValue(): bool
     {
         return $this->cardinality !== 1;
+    }
+
+    /** Relational fields live in `entry_relations`, never in `values`. */
+    public function isRelational(): bool
+    {
+        return app(FieldTypeRegistry::class)->get($this->type)->strategy() === StorageStrategy::Relational;
     }
 
     /** Cardinality > 1 cannot project to a scalar column (field-types.md §7). */

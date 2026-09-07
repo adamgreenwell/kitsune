@@ -138,7 +138,19 @@ class EntryType extends Model
      */
     public function subjectHandle(): ?string
     {
-        return $this->subjectField?->fieldStorage?->handle;
+        return $this->subjectStorage()?->handle;
+    }
+
+    /**
+     * The storage row behind the subject field, or null if none is nominated.
+     *
+     * Callers need the storage rather than the handle, because whether the
+     * value lives in `values` or in `entry_relations` is a property of the
+     * storage strategy — and ADR-020 supports both shapes.
+     */
+    public function subjectStorage(): ?FieldStorage
+    {
+        return $this->subjectField?->fieldStorage;
     }
 
     /**
@@ -154,7 +166,12 @@ class EntryType extends Model
      */
     public static function withoutSubjectIdentifier(): Builder
     {
+        // ⚠️ Org-scoped explicitly. EntryType is #[Unscoped] by declaration,
+        // so an unqualified query returns every org's types — and a
+        // compliance report is exactly the surface where leaking another
+        // customer's schema metadata would matter most (ADR-021).
         return static::query()
+            ->availableToCurrentOrg()
             ->whereNull('subject_field_id')
             ->whereHas('fields.fieldStorage', function (Builder $query): void {
                 $query->whereIn('pii_class', ['personal', 'sensitive']);
@@ -207,13 +224,21 @@ class EntryType extends Model
                 return;
             }
 
+            // ⚠️ NOT `$type->exists`. On create the type has no key yet, so
+            // an exists-guarded check skipped the comparison entirely and
+            // accepted any field, from any type, in any org.
+            //
+            // A field cannot belong to a type that does not exist, so on
+            // create the nomination is refused outright unless the caller
+            // supplied the key itself.
             $field = Field::query()->find($type->subject_field_id);
 
-            if ($field === null || ($type->exists && $field->entry_type_id !== $type->getKey())) {
+            if ($field === null || $field->entry_type_id !== $type->getKey()) {
                 throw new RuntimeException(
                     "Field [{$type->subject_field_id}] cannot identify the subject of [{$type->handle}]: "
                     .'it does not belong to this entry type. A nomination pointing elsewhere would answer '
-                    .'a subject-access request with another person\'s data (ADR-020).'
+                    .'a subject-access request with another person\'s data (ADR-020). Create the type and '
+                    .'its fields first, then nominate one.'
                 );
             }
         });

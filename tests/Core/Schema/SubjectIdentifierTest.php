@@ -190,3 +190,139 @@ describe('erasure reaches revision history (ADR-020)', function (): void {
         expect($this->entry->redactField('no_such_field'))->toBe(0);
     });
 });
+
+/*
+ * ⚠️ The nomination guard originally hung off `$type->exists`, which is false
+ * on create — so `EntryType::create(['subject_field_id' => ...])` skipped the
+ * ownership comparison entirely and accepted any field from any type in any
+ * org. Reported in review of this PR.
+ */
+describe('the ownership guard covers every path, not just update', function (): void {
+    it('refuses a nomination supplied at CREATE time', function (): void {
+        // A field cannot belong to a type that does not exist yet, so there
+        // is no valid nomination to make here.
+        expect(fn () => EntryType::create([
+            'org_id' => $this->org->id,
+            'handle' => 'ticket',
+            'name' => 'Ticket',
+            'plural_name' => 'Tickets',
+            'subject_field_id' => $this->emailField->id,
+        ]))->toThrow(RuntimeException::class, 'does not belong to this entry type');
+    });
+
+    it('refuses a nomination of a field belonging to ANOTHER ORG', function (): void {
+        $other = Org::create(['name' => 'Rival', 'slug' => 'rival']);
+        app(Context::class)->setOrg($other);
+        $theirType = EntryType::create(['org_id' => $other->id, 'handle' => 'lead', 'name' => 'L', 'plural_name' => 'Ls']);
+        $theirStorage = FieldStorage::create([
+            'org_id' => $other->id, 'handle' => 'email', 'type' => 'text', 'pii_class' => 'personal', 'cardinality' => 1,
+        ]);
+        $theirField = Field::create([
+            'entry_type_id' => $theirType->id, 'field_storage_id' => $theirStorage->id, 'label' => 'Email',
+        ]);
+        app(Context::class)->setOrg($this->org);
+
+        expect(fn () => $this->type->update(['subject_field_id' => $theirField->id]))
+            ->toThrow(RuntimeException::class, 'does not belong to this entry type');
+    });
+
+    it('refuses to MOVE a nominated field to another entry type', function (): void {
+        // Nominating is guarded on EntryType; moving would have slipped past
+        // it entirely and left the pointer crossing the type boundary.
+        $this->type->update(['subject_field_id' => $this->emailField->id]);
+
+        $other = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'invoice', 'name' => 'Invoice', 'plural_name' => 'Invoices',
+        ]);
+
+        expect(fn () => $this->emailField->update(['entry_type_id' => $other->id]))
+            ->toThrow(RuntimeException::class, 'identifies the data subject');
+    });
+
+    it('allows moving a field nobody nominated', function (): void {
+        $other = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'invoice', 'name' => 'Invoice', 'plural_name' => 'Invoices',
+        ]);
+
+        expect(fn () => $this->emailField->update(['entry_type_id' => $other->id]))
+            ->not->toThrow(RuntimeException::class);
+    });
+});
+
+it('reports holes for the CURRENT ORG only', function (): void {
+    // EntryType is #[Unscoped] by declaration, so an unqualified query
+    // returns every org's types — and a compliance report is the last place
+    // to leak another customer's schema metadata (ADR-021).
+    $rival = Org::create(['name' => 'Rival', 'slug' => 'rival-holes']);
+    app(Context::class)->setOrg($rival);
+    $theirType = EntryType::create(['org_id' => $rival->id, 'handle' => 'lead', 'name' => 'L', 'plural_name' => 'Ls']);
+    $theirStorage = FieldStorage::create([
+        'org_id' => $rival->id, 'handle' => 'phone', 'type' => 'text', 'pii_class' => 'personal', 'cardinality' => 1,
+    ]);
+    Field::create(['entry_type_id' => $theirType->id, 'field_storage_id' => $theirStorage->id, 'label' => 'Phone']);
+
+    app(Context::class)->setOrg($this->org);
+
+    expect(EntryType::withoutSubjectIdentifier()->pluck('handle')->all())
+        ->toBe(['patient'])
+        ->not->toContain('lead');
+});
+
+/*
+ * ADR-020 names this shape explicitly — "its email or its `person` relation"
+ * — and the first implementation read only `values`, so a relational subject
+ * returned null. Indistinguishable from "no subject nominated".
+ */
+describe('a relational subject lives in entry_relations, not in values', function (): void {
+    beforeEach(function (): void {
+        $this->personType = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'person', 'name' => 'Person', 'plural_name' => 'People',
+        ]);
+        $this->personStorage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'person', 'type' => 'relation',
+            'pii_class' => 'personal', 'cardinality' => 1,
+        ]);
+        $this->personField = Field::create([
+            'entry_type_id' => $this->type->id,
+            'field_storage_id' => $this->personStorage->id,
+            'label' => 'Person',
+        ]);
+        $this->type->update(['subject_field_id' => $this->personField->id]);
+        $this->type->refresh();
+
+        $this->alice = Entry::create(['entry_type_id' => $this->personType->id, 'title' => 'Alice']);
+        $this->bob = Entry::create(['entry_type_id' => $this->personType->id, 'title' => 'Bob']);
+
+        $this->record = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Visit']);
+        $this->record->related()->attach($this->alice->id, ['field_storage_id' => $this->personStorage->id]);
+    });
+
+    it('reads the subject through the pivot', function (): void {
+        expect($this->record->fresh()->subjectValue())->toBe([$this->alice->id]);
+    });
+
+    it('finds entries by a relational subject', function (): void {
+        Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Other'])
+            ->related()->attach($this->bob->id, ['field_storage_id' => $this->personStorage->id]);
+
+        expect(Entry::whereSubjectIs($this->type, $this->alice->id)->pluck('title')->all())
+            ->toBe(['Visit']);
+    });
+
+    it('erases a relational field by removing the links', function (): void {
+        // There is nothing to replace in place, so erasure IS the detach —
+        // and the array-key path found nothing and returned 0 while every
+        // pivot row survived.
+        expect($this->record->redactField('person'))->toBe(1)
+            ->and($this->record->fresh()->subjectValue())->toBe([]);
+    });
+
+    it('leaves another entry\'s links alone', function (): void {
+        $other = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Other']);
+        $other->related()->attach($this->bob->id, ['field_storage_id' => $this->personStorage->id]);
+
+        $this->record->redactField('person');
+
+        expect($other->fresh()->subjectValue())->toBe([$this->bob->id]);
+    });
+});

@@ -16,6 +16,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Illuminate\Support\Collection;
 use Kitsune\Core\Tenancy\Attributes\SiteScoped;
 use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
 
@@ -112,9 +113,21 @@ class Entry extends Model
      */
     public function subjectValue(): mixed
     {
-        $handle = $this->entryType?->subjectHandle();
+        $storage = $this->entryType?->subjectStorage();
 
-        return $handle === null ? null : ($this->values[$handle] ?? null);
+        if ($storage === null) {
+            return null;
+        }
+
+        // ⚠️ A relational subject lives in `entry_relations`, never in
+        // `values` — and ADR-020 names that case explicitly, "its email or
+        // its `person` relation". Reading only the JSON returned null for
+        // half the supported shapes, which looks identical to "no subject".
+        if ($storage->isRelational()) {
+            return $this->relatedIdsFor($storage)->all();
+        }
+
+        return $this->values[$storage->handle] ?? null;
     }
 
     /**
@@ -130,16 +143,29 @@ class Entry extends Model
      */
     public function scopeWhereSubjectIs(Builder $query, EntryType $type, mixed $identifier): Builder
     {
-        $handle = $type->subjectHandle();
+        $storage = $type->subjectStorage();
 
-        if ($handle === null) {
+        if ($storage === null) {
             // Fail closed. Returning everything of this type would answer a
             // subject request with every person in it.
             return $query->whereRaw('1 = 0');
         }
 
-        return $query->where('entry_type_id', $type->getKey())
-            ->where('values->'.$handle, $identifier);
+        $query->where('entry_type_id', $type->getKey());
+
+        // A relational subject is a row in entry_relations, so the predicate
+        // has to reach the pivot rather than the JSON.
+        if ($storage->isRelational()) {
+            return $query->whereExists(function ($pivot) use ($storage, $identifier): void {
+                $pivot->selectRaw('1')
+                    ->from('entry_relations')
+                    ->whereColumn('entry_relations.source_entry_id', 'entries.id')
+                    ->where('entry_relations.field_storage_id', $storage->getKey())
+                    ->where('entry_relations.target_entry_id', $identifier);
+            });
+        }
+
+        return $query->where('values->'.$storage->handle, $identifier);
     }
 
     /**
@@ -156,6 +182,17 @@ class Entry extends Model
      */
     public function redactField(string $handle, mixed $replacement = null): int
     {
+        $storage = FieldStorage::query()->where('handle', $handle)->first();
+
+        // A relational field's data is rows in entry_relations, not a value
+        // in `values`. There is nothing to replace in place, so erasure means
+        // removing the links — and reporting how many, since the array-key
+        // path would have found nothing and returned 0 while every row
+        // survived.
+        if ($storage !== null && $storage->isRelational()) {
+            return $this->related()->wherePivot('field_storage_id', $storage->getKey())->detach();
+        }
+
         $rewritten = 0;
 
         $values = $this->values ?? [];
@@ -172,6 +209,14 @@ class Entry extends Model
         }
 
         return $rewritten;
+    }
+
+    /** @return Collection<int, int> */
+    private function relatedIdsFor(FieldStorage $storage): Collection
+    {
+        return $this->related()
+            ->wherePivot('field_storage_id', $storage->getKey())
+            ->pluck('entries.id');
     }
 
     /** @return HasMany<EntryRevision, $this> */
