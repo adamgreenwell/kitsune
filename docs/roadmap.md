@@ -98,7 +98,24 @@ The routing question is **already settled** — ADR-012 was resolved by a workin
   ⚠️ **An earlier version of this table was wrong**, and the corrections are worth keeping: the slug probe omitted `entry_type_id` and so used only a prefix of the `(site_id, entry_type_id, slug)` index — and with multiple locales searched for a row that never existed, timing a miss. SQLite's size excluded index B-trees, and MySQL's came from cached `information_schema` statistics with no schema filter, reporting **131 KB for 100k rows**. Numbers a benchmark reports confidently are still wrong if the probe is wrong.
 
   **Still open:** the 1M run, and media-as-entries (ADR-016) at scale
-- [ ] ⚠️ **Resource-floor benchmark (ADR-027)** — the admin, on **1 vCPU / 1 GB RAM / SQLite / no container runtime**, with translation fan-out and generated-column writes switched **on**. This is the number the floor is held to, and every later phase re-checks it
+- [x] ⚠️ **Resource-floor benchmark (ADR-027)** — ✅ **2026-09-07** via `php artisan kitsune:benchmark-floor`, verified inside a container limited to **1 vCPU and 1 GB**, not merely on the dev machine:
+
+  | | value |
+  |---|---|
+  Measured with **1,000 entries in scope**, which matters — see the correction below.
+
+  | | constrained (1 vCPU / 1 GB) | unconstrained |
+  |---|---|---|
+  | peak memory per request | 38.5 MB | 40.5 MB |
+  | workers fitting in half the floor | 13 | 12 |
+  | list page (25 rows) | 1.9 ms | 1.2 ms |
+  | entry with relations | 2.2 ms | 1.9 ms |
+
+  Memory barely moves between the two, which is the point: **peak memory per request is the part that transfers between machines**, while wall-clock is a property of the host.
+
+  ⚠️ **The first version measured nothing.** It established no site context, so `SiteScope` added `WHERE 1 = 0` and every sample timed an empty result set — and the advertised `--entries` option was never read. The same shape of mistake as the storage benchmark's index probe, caught the same way, in review.
+
+  `Kitsune::FLOOR_VCPU` and `FLOOR_MEMORY_MB` are asserted by a test, so raising the floor is a visible code change rather than a drift
 
 **Done when:** you have numbers, written down.
 
