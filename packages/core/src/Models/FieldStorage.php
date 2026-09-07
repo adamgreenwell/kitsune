@@ -38,6 +38,24 @@ class FieldStorage extends Model
     /** Locked fields may not change shape; these attributes are shape. */
     public const SHAPE_ATTRIBUTES = ['type', 'cardinality'];
 
+    /**
+     * Handles become SQL identifiers, and those have hard limits (ADR-028).
+     *
+     * PostgreSQL truncates at 63 bytes, MySQL rejects past 64. A truncated
+     * identifier is a silent collision between two orgs' generated columns,
+     * so the input is bounded rather than the output trimmed.
+     */
+    public const MAX_HANDLE_LENGTH = 40;
+
+    /**
+     * Lowercase snake_case, no doubled underscore.
+     *
+     * The ban on `__` is load-bearing: it is the separator in the generated
+     * column name, and allowing it in a handle would make `idx_a__b__c`
+     * ambiguous between handle `a` type `b__c` and handle `a__b` type `c`.
+     */
+    public const HANDLE_PATTERN = '/^[a-z][a-z0-9]*(_[a-z0-9]+)*$/';
+
     protected $table = self::TABLE;
 
     protected $guarded = [];
@@ -67,6 +85,8 @@ class FieldStorage extends Model
                 throw new RuntimeException("Unknown pii_class [{$storage->pii_class}].");
             }
 
+            $storage->guardHandle();
+
             // ADR-006: storage locks the moment data exists. Shipping this
             // guard in v1 rather than later is the whole point of copying it.
             if ($storage->is_locked && $storage->exists) {
@@ -94,9 +114,47 @@ class FieldStorage extends Model
         return ! $this->isMultiValue();
     }
 
+    /**
+     * The generated column this field projects to, if it is indexed.
+     *
+     * ADR-028: named for the projection, not the owner. `entries` is one
+     * table shared by every org, and two orgs may each define `price` — so
+     * the type has to be part of the identity, or one org's column silently
+     * casts the other org's data to the wrong type.
+     *
+     * Two rows with the same handle AND type generate a byte-identical
+     * expression, so they share this column deliberately.
+     */
     public function generatedColumnName(): string
     {
-        return 'idx_'.$this->handle;
+        return 'idx_'.$this->handle.'__'.$this->type;
+    }
+
+    /** ADR-021: the index leads with the scope key, and says so. */
+    public function generatedIndexName(): string
+    {
+        return $this->generatedColumnName().'_site_idx';
+    }
+
+    private function guardHandle(): void
+    {
+        if (mb_strlen((string) $this->handle) > self::MAX_HANDLE_LENGTH) {
+            throw new RuntimeException(sprintf(
+                'Field handle [%s] exceeds %d characters. Handles become SQL identifiers and '
+                .'PostgreSQL truncates those at 63 bytes — a truncated name is a silent collision '
+                .'with another field, not an error (ADR-028).',
+                $this->handle,
+                self::MAX_HANDLE_LENGTH,
+            ));
+        }
+
+        if (preg_match(self::HANDLE_PATTERN, (string) $this->handle) !== 1) {
+            throw new RuntimeException(
+                "Field handle [{$this->handle}] must be lowercase snake_case — a letter, then "
+                .'letters, digits and single underscores. Doubled underscores are reserved as the '
+                .'separator in generated column names (ADR-028).'
+            );
+        }
     }
 
     /** @return HasMany<Field, $this> */

@@ -175,7 +175,9 @@ Data model is specified in [`architecture.md`](architecture.md) §3.
 - [ ] **Field-level redactable revisions** — erasure must reach revision history
 - [ ] **`is_locked` guard from day one** — storage definitions lock once data exists
 - [ ] **Field type registry** — text, rich text, number, boolean, date, select, relation, media, repeater, JSON. Each maps to storage + Filament form component + table column + API representation
-- [ ] **Generated-column indexing** driven by `field_storage.is_indexed`, behind the Postgres/MySQL driver abstraction
+- [x] **Generated-column indexing** driven by `field_storage.is_indexed`, behind the Postgres/MySQL/SQLite driver abstraction — `SchemaManager`, green on all three engines. Indexing is refused with a reason for promoted, relational, non-indexable and multi-value fields, and capped at 20 generated columns on the shared `entries` table.
+
+  ⚠️ **A cross-org defect was caught before it shipped and cost an ADR.** The first implementation named the column `idx_{handle}`, but `entries` is one table shared by every org while `field_storage` is `UNIQUE (org_id, handle)` — so two orgs each defining `price` would collide silently, one casting the other's data to the wrong type and either able to drop the other's column. Columns are now named for their projection, `idx_{handle}__{type}`, and dropping is reference-counted ([ADR-028](decision-log.md)). `php artisan kitsune:schema-sync` is the drift repair path, since DDL implicitly commits on MySQL and a row write cannot share a transaction with its schema change
 - [ ] `entry_relations` table — a real table, not JSON, so reverse lookups and referential integrity work
 - [ ] `EntryResource` with the `{type}` route parameter, per ADR-012 and [`architecture.md`](architecture.md) §2
 - [ ] Memoized `Panel::navigation()` closure, cached per site *(it fires 5× per request)*
