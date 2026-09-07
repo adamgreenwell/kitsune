@@ -34,6 +34,7 @@ use Kitsune\Core\Filament\Resources\Entries\Pages\ManageEntryRelations;
 use Kitsune\Core\Filament\Resources\Entries\Pages\ViewEntry;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
+use Kitsune\Core\Validation\Rule;
 
 /**
  * One Resource for every entity type, with the type as a path segment.
@@ -69,8 +70,15 @@ class EntryResource extends Resource
     {
         return $schema->components([
             TextInput::make('title')->required()->maxLength(255),
-            TextInput::make('slug')->maxLength(255)
-                ->helperText('Left empty for org-shared entries, which are not publicly addressable.'),
+            TextInput::make('slug')
+                ->maxLength(255)
+                ->helperText('Left empty for org-shared entries, which are not publicly addressable.')
+                // scopedUnique, never Laravel's unique: that rule does not go
+                // through Eloquent, so it ignores global scopes and would tell
+                // one org that another org holds the slug.
+                ->rules(fn (?Entry $record): array => [
+                    Rule::scopedUnique(Entry::class, 'slug', $record?->getKey()),
+                ]),
             Select::make('status')
                 ->options(['draft' => 'Draft', 'published' => 'Published', 'archived' => 'Archived'])
                 ->default('draft')
