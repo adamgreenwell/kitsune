@@ -13,6 +13,7 @@ namespace Kitsune\Core\Fields\Types;
 use Closure;
 use Kitsune\Core\Fields\FieldConfig;
 use RuntimeException;
+use stdClass;
 
 /**
  * The escape hatch, and escape hatches get abused.
@@ -91,28 +92,40 @@ final class JsonType extends BaseFieldType
     {
         return [
             function (string $attribute, mixed $value, Closure $fail): void {
+                // ⚠️ Parseable is not the same as valid here. apiSchema()
+                // advertises an OBJECT, so `42` and `[1, 2]` are both valid
+                // JSON and both wrong — a consumer reading the published
+                // schema would assume key/value data and get a list.
                 if (is_string($value)) {
-                    $decoded = json_decode($value, true);
+                    // ⚠️ Decoded WITHOUT assoc, because `{}` and `[]` both
+                    // become an empty PHP array with it — and `array_is_list([])`
+                    // is true, so an empty object, which the schema explicitly
+                    // allows, was rejected. As stdClass the two stay distinct.
+                    $decoded = json_decode($value);
 
                     if (json_last_error() !== JSON_ERROR_NONE) {
                         $fail("The {$attribute} field is not valid JSON: ".json_last_error_msg().'.');
 
                         return;
                     }
-                } elseif (is_array($value)) {
-                    $decoded = $value;
-                } else {
+
+                    if (! $decoded instanceof stdClass) {
+                        $fail("The {$attribute} field must be a JSON object, not a list or a scalar.");
+                    }
+
+                    return;
+                }
+
+                if (! is_array($value)) {
                     $fail("The {$attribute} field must be a JSON object or a JSON string.");
 
                     return;
                 }
 
-                // ⚠️ Parseable is not the same as valid here. apiSchema()
-                // advertises an OBJECT, so `42` and `[1, 2]` are both valid
-                // JSON and both wrong — and a consumer reading the published
-                // schema would assume key/value data and get a list.
-                if (! is_array($decoded) || array_is_list($decoded)) {
-                    $fail("The {$attribute} field must be a JSON object, not a list or a scalar.");
+                // An empty array is the one ambiguous case in PHP, and `{}`
+                // is the reading that matches the published schema.
+                if ($value !== [] && array_is_list($value)) {
+                    $fail("The {$attribute} field must be a JSON object, not a list.");
                 }
             },
         ];

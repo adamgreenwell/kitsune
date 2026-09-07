@@ -265,3 +265,36 @@ it('still accepts a write of that out-of-range value', function (): void {
 
     expect(DB::table('parity_probe')->where('site_id', 2)->count())->toBe(1);
 });
+
+it('excludes a value that only overflows AFTER rounding', function (): void {
+    /*
+     * ⚠️ A magnitude bound was not enough. `9999999999.999` satisfies
+     * abs(v) < 10^10, and the scale-2 cast then rounds it to
+     * `10000000000.00` — which overflows NUMERIC(12,2) during column
+     * creation, exactly what the guard exists to prevent.
+     */
+    DB::table('parity_probe')->insert([
+        ['site_id' => 1, 'values' => json_encode(['price' => 1.5])],
+        ['site_id' => 2, 'values' => json_encode(['price' => 9999999999.999])],
+    ]);
+
+    DB::statement($this->driver->addGeneratedColumnSql(
+        'parity_probe', 'idx_price', 'values', 'price', new Projection(LogicalType::Decimal),
+    ));
+
+    expect(Schema::hasColumn('parity_probe', 'idx_price'))->toBeTrue()
+        ->and(DB::table('parity_probe')->where('site_id', 2)->value('idx_price'))->toBeNull()
+        ->and((float) DB::table('parity_probe')->where('site_id', 1)->value('idx_price'))->toBe(1.5);
+});
+
+it('keeps a value that is inside the range once rounded', function (): void {
+    // The guard has to be total in BOTH directions: rejecting a value the
+    // column can hold would silently drop it from the index.
+    DB::statement($this->driver->addGeneratedColumnSql(
+        'parity_probe', 'idx_price', 'values', 'price', new Projection(LogicalType::Decimal),
+    ));
+
+    DB::table('parity_probe')->insert(['site_id' => 1, 'values' => json_encode(['price' => 9999999999.99])]);
+
+    expect(DB::table('parity_probe')->where('site_id', 1)->value('idx_price'))->not->toBeNull();
+});

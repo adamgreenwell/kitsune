@@ -50,26 +50,49 @@ final readonly class Projection
     }
 
     /**
-     * The largest magnitude this projection can hold, or null if unbounded.
+     * The range this projection can actually hold, or null if unbounded.
      *
      * ⚠️ The JSON-kind guard is not enough on its own. A shared column reads
      * its key from EVERY row, including rows belonging to an org that never
      * indexed the field at all — so org B's perfectly valid
      * `"price": 10000000000` overflows org A's `NUMERIC(12,2)` and stops the
      * column being created. Type-correct and still out of range.
+     *
+     * ⚠️ And a magnitude bound alone is not enough either, in BOTH
+     * directions. `abs(v) < 10^10` admits `9999999999.999`, which the scale-2
+     * cast then ROUNDS to `10000000000.00` and overflows anyway; and it
+     * excludes `-9223372036854775808`, a perfectly valid BIGINT whose
+     * absolute value equals the bound. The range is therefore explicit,
+     * inclusive, and asymmetric where the type is — and the driver compares
+     * the ROUNDED value, because rounding is what the cast will do.
+     *
+     * @return array{min: string, max: string}|null
      */
-    public function magnitudeBound(): ?string
+    public function range(): ?array
     {
         return match ($this->logical) {
-            // Built as a string, not with bcmath or pow(): bcmath is not a
+            // Built as strings, not with bcmath or pow(): bcmath is not a
             // guaranteed extension (ADR-027 keeps the floor lean) and a float
             // pow() loses exactness at the magnitudes this exists to bound.
-            LogicalType::Decimal => '1'.str_repeat('0', $this->precision - $this->scale),
-            // BIGINT. Bounded rather than unbounded, because a JSON number
-            // larger than this is not representable in the column either.
-            LogicalType::Integer => '9223372036854775808',
+            // DECIMAL(12,2) holds up to 9999999999.99, not 10^10.
+            LogicalType::Decimal => [
+                'min' => '-'.$this->largestDecimal(),
+                'max' => $this->largestDecimal(),
+            ],
+            // BIGINT, and its range is not symmetric.
+            LogicalType::Integer => [
+                'min' => '-9223372036854775808',
+                'max' => '9223372036854775807',
+            ],
             LogicalType::String, LogicalType::Boolean, LogicalType::Date, LogicalType::DateTime => null,
         };
+    }
+
+    private function largestDecimal(): string
+    {
+        $whole = str_repeat('9', max(1, $this->precision - $this->scale));
+
+        return $this->scale > 0 ? $whole.'.'.str_repeat('9', $this->scale) : $whole;
     }
 
     /**

@@ -66,8 +66,15 @@ final class SqliteDriver implements SchemaDriver
             implode(', ', array_map($this->literal(...), $this->jsonTypes($projection))),
         );
 
-        if (($bound = $projection->magnitudeBound()) !== null) {
-            $guard .= sprintf(' AND abs(json_extract(%s, %s)) < %s', $column, $key, $bound);
+        if (($range = $projection->range()) !== null) {
+            $guard .= sprintf(
+                ' AND round(json_extract(%s, %s), %d) BETWEEN %s AND %s',
+                $column,
+                $key,
+                $projection->scale,
+                $range['min'],
+                $range['max'],
+            );
         }
 
         return sprintf(

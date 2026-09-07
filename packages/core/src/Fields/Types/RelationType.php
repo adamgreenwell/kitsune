@@ -76,8 +76,17 @@ final class RelationType extends BaseFieldType
     /** @return array<int, mixed> */
     public function validationRules(FieldConfig $config): array
     {
-        // Always an array, so the outer rules never depend on cardinality.
-        return [...($config->isRequired() ? ['required'] : ['nullable']), 'array'];
+        // Always an array, so the outer rules never depend on cardinality for
+        // their SHAPE — but they still have to honour its SIZE. Overriding
+        // this method bypassed the bound the base class applies, so a
+        // relation limited to one target accepted five.
+        $rules = [...($config->isRequired() ? ['required'] : ['nullable']), 'array'];
+
+        if ($config->cardinality() > 0) {
+            $rules[] = 'max:'.$config->cardinality();
+        }
+
+        return $rules;
     }
 
     /**

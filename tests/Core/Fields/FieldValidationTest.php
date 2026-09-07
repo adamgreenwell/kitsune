@@ -264,11 +264,25 @@ describe('a number stays inside the column it projects to', function (): void {
         // from every row, including rows whose org never indexed the field.
         // `10000000000` is a perfectly valid number and still out of range
         // for NUMERIC(12,2).
+        //
+        // ⚠️ And the range is what the column HOLDS, not a power of ten
+        // beside it. `abs(v) < 10^10` admits 9999999999.999, which the
+        // scale-2 cast rounds to 10000000000.00 and overflows anyway.
         $type = app(FieldTypeRegistry::class)->get('number');
 
-        expect($type->projection(configFor('number'))->magnitudeBound())->toBe('10000000000')
-            ->and($type->projection(configFor('number', ['precision' => 15, 'scale' => 0]))->magnitudeBound())
-            ->toBe('1000000000000000');
+        expect($type->projection(configFor('number'))->range())
+            ->toBe(['min' => '-9999999999.99', 'max' => '9999999999.99'])
+            ->and($type->projection(configFor('number', ['precision' => 15, 'scale' => 0]))->range())
+            ->toBe(['min' => '-999999999999999', 'max' => '999999999999999']);
+    });
+
+    it('gives an integer projection the ASYMMETRIC range BIGINT actually has', function (): void {
+        // A magnitude bound excluded -9223372036854775808, whose absolute
+        // value equals the bound and which is a perfectly valid BIGINT.
+        $type = app(FieldTypeRegistry::class)->get('number');
+
+        expect($type->projection(configFor('number', ['format' => 'integer']))->range())
+            ->toBe(['min' => '-9223372036854775808', 'max' => '9223372036854775807']);
     });
 });
 
@@ -326,5 +340,58 @@ describe('a json field holds an OBJECT, which is what it advertises', function (
     it('still accepts an object in either form', function (): void {
         expect(validate('json', ['f' => ['a' => 1]])->fails())->toBeFalse()
             ->and(validate('json', ['f' => '{"a":1}'])->fails())->toBeFalse();
+    });
+});
+
+describe('json objects, including the empty one', function (): void {
+    it('accepts an empty object, which the schema explicitly allows', function (): void {
+        // `{}` and `[]` both decode to an empty PHP array with assoc, and
+        // array_is_list([]) is true — so the object the schema allows was
+        // rejected. Decoding without assoc keeps the two distinct.
+        expect(validate('json', ['f' => '{}'])->fails())->toBeFalse()
+            ->and(validate('json', ['f' => []])->fails())->toBeFalse();
+    });
+
+    it('still rejects an empty LIST in its encoded form', function (): void {
+        expect(validate('json', ['f' => '[]'])->fails())->toBeTrue();
+    });
+
+    it('accepts an object whose keys happen to be sequential numbers', function (): void {
+        // `{"0":"a","1":"b"}` decodes to a list-shaped PHP array with assoc.
+        expect(validate('json', ['f' => '{"0":"a","1":"b"}'])->fails())->toBeFalse();
+    });
+});
+
+describe('relation honours a finite cardinality', function (): void {
+    it('rejects more targets than the field holds', function (): void {
+        // Overriding validationRules() bypassed the bound the base class
+        // applies, so a relation limited to one target accepted five.
+        $type = app(FieldTypeRegistry::class)->get('relation');
+
+        expect(Validator::make(['f' => [1, 2]], ['f' => $type->validationRules(configFor('relation', [], 1))])->fails())
+            ->toBeTrue();
+    });
+
+    it('accepts up to the limit', function (): void {
+        $type = app(FieldTypeRegistry::class)->get('relation');
+
+        expect(Validator::make(['f' => [1, 2]], ['f' => $type->validationRules(configFor('relation', [], 2))])->fails())
+            ->toBeFalse();
+    });
+
+    it('leaves -1 unlimited', function (): void {
+        $type = app(FieldTypeRegistry::class)->get('relation');
+
+        expect(Validator::make(['f' => range(1, 30)], ['f' => $type->validationRules(configFor('relation', [], -1))])->fails())
+            ->toBeFalse();
+    });
+
+    it('does not bound multi_select, whose cardinality means nothing', function (): void {
+        // supportsCardinality() is false there, so the storage row's value
+        // says nothing about how many options may be chosen.
+        $type = app(FieldTypeRegistry::class)->get('multi_select');
+
+        expect(Validator::make(['f' => ['a', 'b', 'c']], ['f' => $type->validationRules(configFor('multi_select', [], 1))])->fails())
+            ->toBeFalse();
     });
 });

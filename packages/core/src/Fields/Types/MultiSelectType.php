@@ -67,7 +67,8 @@ final class MultiSelectType extends BaseFieldType
     public function validationRules(FieldConfig $config): array
     {
         // Intrinsically multi-valued: supportsCardinality() is false, so the
-        // outer rules are an array whatever the storage row says.
+        // storage row's cardinality says nothing about how many options may
+        // be chosen and must not bound the array.
         return [...($config->isRequired() ? ['required'] : ['nullable']), 'array'];
     }
 

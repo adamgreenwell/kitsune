@@ -61,10 +61,18 @@ final class PostgresDriver implements SchemaDriver
 
         $guard = sprintf('jsonb_typeof(%s -> %s) = %s', $column, $key, $this->literal($this->jsonType($projection)));
 
-        if (($bound = $projection->magnitudeBound()) !== null) {
-            // Cast to UNBOUNDED numeric for the comparison, so the check
-            // itself cannot overflow the very type it is protecting.
-            $guard .= sprintf(' AND abs((%s ->> %s)::NUMERIC) < %s', $column, $key, $bound);
+        if (($range = $projection->range()) !== null) {
+            // Cast to UNBOUNDED numeric and compare the ROUNDED value: the
+            // final cast rounds to the projection's scale, so a value inside
+            // the raw range can still overflow once rounded.
+            $guard .= sprintf(
+                ' AND round((%s ->> %s)::NUMERIC, %d) BETWEEN %s AND %s',
+                $column,
+                $key,
+                $projection->scale,
+                $range['min'],
+                $range['max'],
+            );
         }
 
         return sprintf(

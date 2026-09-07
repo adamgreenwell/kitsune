@@ -73,14 +73,18 @@ final class MySqlDriver implements SchemaDriver
             implode(', ', array_map($this->literal(...), $this->jsonTypes($projection))),
         );
 
-        if (($bound = $projection->magnitudeBound()) !== null) {
+        if (($range = $projection->range()) !== null) {
             // DECIMAL(65,10) is MySQL's widest, so the comparison cannot
-            // overflow the type it is protecting.
+            // overflow the type it is protecting. Rounded, because the final
+            // cast rounds and a value inside the raw range can overflow once
+            // it has.
             $guard .= sprintf(
-                ' AND ABS(CAST(%s->>%s AS DECIMAL(65,10))) < %s',
+                ' AND ROUND(CAST(%s->>%s AS DECIMAL(65,10)), %d) BETWEEN %s AND %s',
                 $column,
                 $this->literal('$.'.$path),
-                $bound,
+                $projection->scale,
+                $range['min'],
+                $range['max'],
             );
         }
 
