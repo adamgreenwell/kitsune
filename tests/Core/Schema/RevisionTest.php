@@ -9,6 +9,7 @@
 declare(strict_types=1);
 
 use Illuminate\Database\QueryException;
+use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryRelation;
 use Kitsune\Core\Models\EntryRevision;
@@ -765,7 +766,16 @@ describe('every revision names the schema it was written against', function (): 
         // NOT NULL, so the schema states the invariant instead.
         $entry = anEntry();
 
-        expect(fn () => EntryRevision::create([
+        // ⚠️ Inside its own transaction, which is a SAVEPOINT here.
+        //
+        // PostgreSQL aborts the entire transaction when a statement fails —
+        // `SQLSTATE[25P02] current transaction is aborted, commands ignored` —
+        // and `RefreshDatabase` has already opened one, so provoking a
+        // constraint violation poisoned everything after it. The test passed
+        // alone and failed in the full suite, which is the least helpful way for
+        // a failure to present. Rolling back to a savepoint clears the aborted
+        // state and leaves the surrounding transaction usable.
+        expect(fn () => DB::transaction(fn () => EntryRevision::create([
             'entry_id' => $entry->id,
             'values' => ['body' => 'orphaned'],
             // ⚠️ The COLUMN name only. Each engine words a not-null violation
@@ -774,7 +784,7 @@ describe('every revision names the schema it was written against', function (): 
             // `Column 'entry_type_id' cannot be null` — so matching more than
             // this passes on SQLite and fails the other three legs. Found by
             // the matrix, which is what it is for.
-        ]))->toThrow(QueryException::class, 'entry_type_id');
+        ])))->toThrow(QueryException::class, 'entry_type_id');
     });
 });
 
