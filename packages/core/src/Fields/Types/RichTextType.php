@@ -10,6 +10,11 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Fields\Types;
 
+use DOMComment;
+use DOMDocument;
+use DOMElement;
+use DOMNode;
+use DOMProcessingInstruction;
 use Kitsune\Core\Fields\FieldConfig;
 
 /**
@@ -92,68 +97,153 @@ final class RichTextType extends BaseFieldType
     }
 
     /**
-     * Allowlist, never a denylist.
+     * Allowlist, never a denylist — and PARSED, never pattern-matched.
      *
-     * A denylist is a promise to have thought of every tag, and nobody has.
+     * ⚠️ This was a chain of regular expressions and it had a hole exactly
+     * where regular expressions always have one: a `<` inside an UNQUOTED
+     * attribute value. Browsers treat that as a parse error and carry on;
+     * `strip_tags()` leaves it alone; and the attribute-allowlisting pattern
+     * required the attribute section to contain no `<`, so the tag matched
+     * nothing and NO attribute was inspected. `<img src=x alt=< onerror=alert(1)>`
+     * came back byte-for-byte unchanged — stored XSS on any public page — as
+     * did the full-page overlay the ALLOWED_ATTRIBUTES docblock says is closed.
+     *
+     * The suite was green because every attribute in it was quoted.
+     *
+     * A pattern that can desynchronise from the parser IS a denylist: it
+     * promises to have thought of every way markup can be written. So the
+     * document is parsed and REBUILT — nothing survives unless it was
+     * recognised as an allowed element with an allowed attribute.
      */
     public function sanitize(string $html): string
     {
-        // Drop forbidden elements INCLUDING their content — stripping only
-        // the tags would leave script bodies as visible text, and leave
-        // style rules applying.
-        foreach (self::FORBIDDEN_TAGS as $tag) {
-            $html = (string) preg_replace('#<'.$tag.'\b[^>]*>.*?</'.$tag.'>#is', '', $html);
-            $html = (string) preg_replace('#<'.$tag.'\b[^>]*/?>#is', '', $html);
+        if (trim($html) === '') {
+            return $html;
         }
 
-        $allowed = '<'.implode('><', self::ALLOWED_TAGS).'>';
-        $html = strip_tags($html, $allowed);
+        $document = new DOMDocument;
 
-        // Attributes survive tag allowlisting, because they are attributes
-        // rather than elements. Removing event handlers alone was a denylist.
-        $html = $this->allowlistAttributes($html);
+        // libxml complains about HTML5 elements and about the malformed markup
+        // that is the whole point of sanitising, so its errors are collected
+        // rather than emitted. The parse still yields a tree.
+        $previous = libxml_use_internal_errors(true);
 
-        return $this->allowlistUrlSchemes($html);
+        // The meta charset, not a `<?xml` declaration: the latter is echoed
+        // into the output as a processing instruction on some libxml builds.
+        // LIBXML_HTML_NOIMPLIED with an explicit wrapper keeps libxml from
+        // inventing <html><body>, which would then need stripping back off.
+        $document->loadHTML(
+            '<meta http-equiv="Content-Type" content="text/html; charset=utf-8"><div id="kitsune-root">'.$html.'</div>',
+            LIBXML_HTML_NODEFDTD,
+        );
+
+        libxml_clear_errors();
+        libxml_use_internal_errors($previous);
+
+        $root = $document->getElementById('kitsune-root');
+
+        if ($root === null) {
+            // Nothing parseable. Returning the escaped input rather than the
+            // input keeps the fail-closed posture: unparseable markup is not
+            // markup we can vouch for.
+            return htmlspecialchars($html, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        }
+
+        $this->clean($root);
+
+        $out = '';
+
+        foreach (iterator_to_array($root->childNodes) as $child) {
+            $out .= $document->saveHTML($child);
+        }
+
+        return $out;
     }
 
-    /** Keep only ALLOWED_ATTRIBUTES on every remaining tag. */
-    private function allowlistAttributes(string $html): string
+    /**
+     * Walk the tree, removing what is not allowed.
+     *
+     * Three outcomes per element, matching what the regex chain intended:
+     * a FORBIDDEN element goes with its content, because stripping the tag
+     * alone leaves a script body as visible text and leaves style rules
+     * applying; an element that is merely not allowed is UNWRAPPED, so its
+     * text survives; an allowed element keeps only allowed attributes.
+     */
+    private function clean(DOMNode $node): void
     {
-        return (string) preg_replace_callback(
-            '#<([a-z][a-z0-9]*)((?:\s[^<>]*)?)(/?)>#i',
-            function (array $tag): string {
-                preg_match_all(
-                    '#([a-z_:][a-z0-9_:.-]*)\s*(?:=\s*(?:"([^"]*)"|\'([^\']*)\'|([^\s>]+)))?#i',
-                    $tag[2],
-                    $found,
-                    PREG_SET_ORDER,
-                );
+        // A snapshot, because unwrapping and removing mutate the live list.
+        foreach (iterator_to_array($node->childNodes) as $child) {
+            if ($child instanceof DOMElement) {
+                $name = strtolower($child->nodeName);
 
-                $kept = '';
+                if (in_array($name, self::FORBIDDEN_TAGS, true)) {
+                    $child->parentNode?->removeChild($child);
 
-                foreach ($found as $attribute) {
-                    if (! in_array(strtolower($attribute[1]), self::ALLOWED_ATTRIBUTES, true)) {
-                        continue;
-                    }
-
-                    $value = $attribute[2] ?? '';
-                    $value = $value !== '' ? $value : ($attribute[3] ?? '');
-                    $value = $value !== '' ? $value : ($attribute[4] ?? '');
-
-                    $kept .= ' '.strtolower($attribute[1]).'="'.htmlspecialchars($value, ENT_QUOTES | ENT_HTML5, 'UTF-8', false).'"';
+                    continue;
                 }
 
-                return '<'.strtolower($tag[1]).$kept.$tag[3].'>';
-            },
-            $html,
-        );
+                if (! in_array($name, self::ALLOWED_TAGS, true)) {
+                    $this->clean($child);
+                    $this->unwrap($child);
+
+                    continue;
+                }
+
+                $this->cleanAttributes($child);
+                $this->clean($child);
+
+                continue;
+            }
+
+            // Comments can carry markup that a browser revives in some
+            // contexts, and they are never content anyone asked to keep.
+            if ($child instanceof DOMComment || $child instanceof DOMProcessingInstruction) {
+                $child->parentNode?->removeChild($child);
+            }
+        }
+    }
+
+    /** Replace an element with its own children, in place. */
+    private function unwrap(DOMElement $element): void
+    {
+        $parent = $element->parentNode;
+
+        if ($parent === null) {
+            return;
+        }
+
+        foreach (iterator_to_array($element->childNodes) as $child) {
+            $parent->insertBefore($child, $element);
+        }
+
+        $parent->removeChild($element);
+    }
+
+    private function cleanAttributes(DOMElement $element): void
+    {
+        foreach (iterator_to_array($element->attributes ?? []) as $attribute) {
+            $name = strtolower($attribute->nodeName);
+
+            if (! in_array($name, self::ALLOWED_ATTRIBUTES, true)) {
+                $element->removeAttribute($attribute->nodeName);
+
+                continue;
+            }
+
+            // ⚠️ Checked on the PARSED value. The old pattern read the raw
+            // attribute text, so anything that confused it about where the
+            // value ended was never checked at all.
+            if (($name === 'href' || $name === 'src') && ! $this->isSafeUrl($attribute->nodeValue ?? '')) {
+                $element->setAttribute($name, '#');
+            }
+        }
     }
 
     /**
      * ⚠️ Allowlist the SCHEME. Matching `javascript:` is not enough.
      *
-     * The previous rule looked for the literal string, and every one of these
-     * walked past it while still executing in a browser:
+     * Every one of these walked past a literal-string rule while still
+     * executing in a browser:
      *
      * - `java&#x73;cript:` and `&#106;avascript:` — HTML entities are decoded
      *   before the URL is parsed
@@ -163,24 +253,9 @@ final class RichTextType extends BaseFieldType
      * - `data:text/html;base64,…` — a whole document, same origin
      *
      * A denylist here is the same mistake the tag handling deliberately
-     * avoids: a promise to have thought of every case. So the URL is decoded
-     * and normalised first, and then it must BE one of the safe forms.
+     * avoids. So the URL is decoded and normalised first, and then it must BE
+     * one of the safe forms.
      */
-    private function allowlistUrlSchemes(string $html): string
-    {
-        return (string) preg_replace_callback(
-            '#\b(href|src)\s*=\s*(?:"([^"]*)"|\'([^\']*)\'|([^\s>]+))#i',
-            function (array $m): string {
-                $attribute = strtolower($m[1]);
-                $url = $m[2] !== '' ? $m[2] : ($m[3] ?? '');
-                $url = $url !== '' ? $url : ($m[4] ?? '');
-
-                return $this->isSafeUrl($url) ? $m[0] : $attribute.'="#"';
-            },
-            $html,
-        );
-    }
-
     private function isSafeUrl(string $url): bool
     {
         // Decode first — the browser will. Twice, because `&amp;#x73;`
