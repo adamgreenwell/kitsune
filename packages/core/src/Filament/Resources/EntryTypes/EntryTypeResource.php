@@ -140,10 +140,26 @@ class EntryTypeResource extends Resource
                             ->get()
                             ->mapWithKeys(fn (Field $field): array => [$field->getKey() => $field->label])
                             ->all())
+                        // ⚠️ Offered and unsaveable is worse than not offered.
+                        //
+                        // Every field was listed, and `guardSubjectShape()`
+                        // refuses a multi-valued one, a multi-select, or a
+                        // relation that permits several targets — so choosing
+                        // one produced a save that threw. Disabled rather than
+                        // filtered out, so an author looking for a field they
+                        // expected can see it is there and read why below,
+                        // instead of concluding the admin has lost it.
+                        //
+                        // The SAME predicate the model refuses on, deliberately:
+                        // written twice, the selector and the guard drift, which
+                        // is the failure invariant 14 exists for.
+                        ->disableOptionWhen(fn (string $value, ?EntryType $record): bool => $record !== null
+                            && self::subjectRefusalFor($record, $value) !== null)
                         ->searchable()
-                        ->helperText(fn (?EntryType $record): string => $record === null
-                            ? 'Available once the type has fields.'
-                            : 'The field identifying the data subject. Leave empty if this type holds no personal data.')
+                        ->helperText(fn (?EntryType $record): string => match (true) {
+                            $record === null => 'Available once the type has fields.',
+                            default => self::subjectHelperText($record),
+                        })
                         ->disabled(fn (?EntryType $record): bool => $record === null),
                 ]),
         ]);
@@ -224,6 +240,46 @@ class EntryTypeResource extends Resource
     public static function canDelete(Model $record): bool
     {
         return $record instanceof EntryType && self::ownsRecord($record);
+    }
+
+    /**
+     * Why the named field cannot identify this type's data subject, or null.
+     *
+     * Resolved through the type's own fields, so a field id belonging to
+     * another type cannot be probed for its shape through this form.
+     */
+    private static function subjectRefusalFor(EntryType $record, string $fieldId): ?string
+    {
+        $field = Field::query()
+            ->where('entry_type_id', $record->getKey())
+            ->whereKey($fieldId)
+            ->with('fieldStorage')
+            ->first();
+
+        return $field === null ? 'That field does not belong to this entry type.' : $record->subjectShapeRefusal($field);
+    }
+
+    /** Say what is greyed out and why, rather than leaving it unexplained. */
+    private static function subjectHelperText(EntryType $record): string
+    {
+        $unusable = Field::query()
+            ->where('entry_type_id', $record->getKey())
+            ->with('fieldStorage')
+            ->get()
+            ->filter(fn (Field $field): bool => $record->subjectShapeRefusal($field) !== null);
+
+        $base = 'The field identifying the data subject. Leave empty if this type holds no personal data.';
+
+        if ($unusable->isEmpty()) {
+            return $base;
+        }
+
+        return $base.sprintf(
+            ' %d field%s greyed out because a subject identifier has to name one person: %s.',
+            $unusable->count(),
+            $unusable->count() === 1 ? ' is' : 's are',
+            $unusable->pluck('label')->implode(', '),
+        );
     }
 
     /**
