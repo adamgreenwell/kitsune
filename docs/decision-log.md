@@ -609,6 +609,58 @@ A field that has not been classified does not save. Same discipline as the tenan
 
 ---
 
+### Amendment — an unauditable write is refused, 2026-09-07
+
+**Status:** Amended
+
+Primitive 4 settles WHAT an audit row contains. It says nothing about which
+writes produce one, and that turned out to be the harder half: five review
+rounds found five different paths that changed or created entries with no
+audit row, each one ordinary Eloquent that application code reaches for
+without thinking about the trail.
+
+**Model events are not a sufficient hook.** `Entry::query()->update()`,
+`->delete()` and `->forceDelete()` compile straight to SQL and dispatch
+nothing per row. `createQuietly()` and anything inside `withoutEvents()`
+suppress the listener while still inserting. `updateOrInsert()`,
+`insertUsing()`, `increment()` and `decrement()` are forwarded whole to the
+query builder. Every one of those was covered by the claim that the API and
+the console go through the same code path as the admin, and none of them was.
+
+So auditing moved to the **query builder**, which is the one place every write
+passes through, and **no model event audits anything**. Pairing the two is
+worse than either: `$entry->save()` is itself a builder write, so listening in
+both places recorded every ordinary write twice — and no test caught it,
+because they all asserted a row *existed* and two rows satisfy that as readily
+as one.
+
+**Where a write cannot be audited, it is refused.** `insert()`,
+`insertOrIgnore()`, `upsert()`, `insertUsing()`, `updateOrInsert()` and
+`truncate()` return a row count rather than the keys they wrote, so there is
+nothing to name as the target. Refusing them makes the guarantee statable:
+**there is no unaudited way for an entry to appear, change or vanish.** The
+cost is real and belongs on the record — bulk import through Eloquent's own
+methods does not work, and wants its own audited path and its own ADR.
+
+`insertGetId()` is the exception, and the reason is exactly why the others are
+not: it returns the id it wrote. Creation is audited there.
+
+**The audited set and the written set must be the same set.** Reading keys and
+then re-running the predicate are two statements over a set that moves between
+them: on PostgreSQL a row inserted in the interval is written and not audited,
+and one that stops matching is audited and not written. The write therefore
+runs against the captured keys, inside one transaction, with the keys read
+`lockForUpdate`.
+
+The same applies in reverse to the log itself. `AuditLog` is append-only, and
+that is a claim about every path — `update()`, `delete()` and `forceDelete()`
+were each overridden as they were found, which is precisely how `truncate()`
+survived three rounds and erased the whole table with no event and no
+override. The remaining mutators are refused together rather than one review
+at a time.
+
+---
+
 ## ADR-021 — Sites: a third structural level, and Filament's tenant is the Site
 
 **Status:** Decided · 2026-09-07
