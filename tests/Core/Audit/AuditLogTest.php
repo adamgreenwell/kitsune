@@ -9,6 +9,8 @@
 declare(strict_types=1);
 
 use Illuminate\Database\Query\Builder;
+use Illuminate\Foundation\Auth\User as AuthUser;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Kitsune\Core\Audit\AppendOnlyBuilder;
@@ -94,6 +96,44 @@ describe('what gets recorded', function (): void {
         $entry = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'From a command']);
 
         expect(AuditLog::for($entry)->exists())->toBeTrue();
+    });
+
+    /*
+     * ⚠️ The ACTOR third of ADR-020 primitive 4 was untested.
+     *
+     * The only test reading `actor_id` asserted NULL, nothing in the suite
+     * ever authenticated anyone, and the headline test reads the COLUMN
+     * LISTING — so it proved the column exists, never that anything is
+     * written to it. Replacing `auth()->id()` with `null` in Auditor left the
+     * whole suite green, and every audit row in production would have become
+     * unattributed: "somebody updated entry 1203".
+     *
+     * `actor_id` is deliberately a `foreignId()` with no `constrained()`,
+     * because erasing a user must not destroy the trail — so an id is all
+     * this needs.
+     */
+    it('records WHO acted, not only that somebody did', function (): void {
+        $actor = new AuthUser;
+        $actor->forceFill(['id' => 47]);
+        Auth::login($actor);
+
+        $entry = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Attributed']);
+
+        expect(AuditLog::for($entry)->where('action', 'entry.created')->value('actor_id'))->toBe(47);
+    });
+
+    it('records the actor on a BULK write too', function (): void {
+        // Bulk writes go through recordOrFail() rather than a model event, so
+        // the actor has to survive that path as well.
+        $entry = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Bulk']);
+
+        $actor = new AuthUser;
+        $actor->forceFill(['id' => 91]);
+        Auth::login($actor);
+
+        Entry::query()->whereKey($entry->getKey())->update(['status' => 'published']);
+
+        expect(AuditLog::for($entry)->where('action', 'entry.updated')->value('actor_id'))->toBe(91);
     });
 
     it('leaves the actor NULL when the system acts on its own', function (): void {
