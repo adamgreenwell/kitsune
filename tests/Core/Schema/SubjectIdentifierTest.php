@@ -886,6 +886,111 @@ it('counts cardinality against the SOURCE when attaching from the other end', fu
     expect($bob->referencedBy())->toBeInstanceOf(GuardedBelongsToMany::class);
 });
 
+describe('a null identifier is unanswerable, not a wildcard', function (): void {
+    /*
+     * ⚠️ `= null` compiles to `IS NULL`, so both the promoted and the inline
+     * branch matched every entry whose nominated field is empty — a malformed
+     * subject-access request returning a batch of records belonging to no
+     * identified subject, from the one query that must never over-answer.
+     * `subjectValue()` already defined null as unanswerable.
+     */
+    it('matches nothing for an inline subject', function (): void {
+        Entry::create(['entry_type_id' => $this->type->id, 'title' => 'No email']);
+
+        expect(Entry::whereSubjectIs($this->type, null)->count())->toBe(0);
+    });
+
+    it('matches nothing for a promoted subject either', function (): void {
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'public_slug', 'type' => 'slug',
+            'pii_class' => 'personal', 'cardinality' => 1,
+        ]);
+        $field = Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id, 'label' => 'Slug',
+        ]);
+        $this->type->update(['subject_field_id' => $field->id]);
+        Entry::create(['entry_type_id' => $this->type->id, 'title' => 'No slug']);
+
+        expect(Entry::whereSubjectIs($this->type->fresh(), null)->count())->toBe(0);
+    });
+});
+
+describe('storage and its type cannot be walked across the org boundary', function (): void {
+    /*
+     * ⚠️ Both of these recreate the foreign-storage state that
+     * `Field::saving()` refuses, by moving the OTHER side of the
+     * relationship. Neither passes through a field save, so neither was
+     * checked — and the holes report, being org-scoped, then filters the
+     * moved row out and stops naming a type that still holds personal data.
+     */
+    beforeEach(function (): void {
+        $this->rival = Org::create(['name' => 'V', 'slug' => 'org-move-rival']);
+
+        // Its own type, holding exactly one field. The shared fixture type
+        // carries several, so a refusal there would not say which field
+        // caused it.
+        $this->movingType = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'movable_type', 'name' => 'M', 'plural_name' => 'Ms',
+        ]);
+        $this->moving = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'movable', 'type' => 'text',
+            'pii_class' => 'personal', 'cardinality' => 1,
+        ]);
+        Field::create([
+            'entry_type_id' => $this->movingType->id, 'field_storage_id' => $this->moving->id, 'label' => 'Movable',
+        ]);
+    });
+
+    it('refuses to move attached storage to another org, nominated or not', function (): void {
+        expect(fn () => $this->moving->update(['org_id' => $this->rival->id]))
+            ->toThrow(RuntimeException::class, 'cannot move to another organisation');
+    });
+
+    it('allows attached storage to become GLOBAL, which every org may use', function (): void {
+        expect(fn () => $this->moving->update(['org_id' => null]))->not->toThrow(RuntimeException::class);
+    });
+
+    it('refuses to move the type while a field is backed by storage staying behind', function (): void {
+        expect(fn () => $this->movingType->update(['org_id' => $this->rival->id]))
+            ->toThrow(RuntimeException::class, 'cannot move to another organisation');
+    });
+
+    it('allows the type to move once its storage is global', function (): void {
+        $this->moving->update(['org_id' => null]);
+
+        expect(fn () => $this->movingType->fresh()->update(['org_id' => $this->rival->id]))
+            ->not->toThrow(RuntimeException::class);
+    });
+});
+
+it('locks the source named in a PER-ID attach map, not just the parent', function (): void {
+    /*
+     * ⚠️ `attach()` also takes an ID-to-attributes map, and each entry can
+     * carry its own `source_entry_id`. Reading only the common $attributes
+     * meant the pivot was written against the overridden source while just
+     * the parent was locked — so the cardinality count was taken against a
+     * row nothing had serialised on.
+     */
+    $one = FieldStorage::create([
+        'org_id' => $this->org->id, 'handle' => 'person', 'type' => 'relation',
+        'pii_class' => 'personal', 'cardinality' => 1,
+    ]);
+
+    $visitA = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Visit A']);
+    $visitB = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Visit B']);
+    $alice = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Alice']);
+    $bob = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Bob']);
+
+    $visitA->related()->attach($alice->id, ['field_storage_id' => $one->id]);
+
+    // Attached through B's relation, but pointed at A in the per-ID map.
+    expect(fn () => $visitB->related()->attach([
+        $bob->id => ['field_storage_id' => $one->id, 'source_entry_id' => $visitA->id],
+    ]))->toThrow(RuntimeException::class, 'already has that many');
+
+    expect(EntryRelation::query()->where('source_entry_id', $visitA->id)->count())->toBe(1);
+});
+
 it('serialises the count-then-insert behind a lock on the source entry', function (): void {
     // ⚠️ The check is two statements, and two of those interleave: concurrent
     // attaches to the same single-valued relation both count zero and both

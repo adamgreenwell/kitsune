@@ -79,9 +79,33 @@ class GuardedBelongsToMany extends BelongsToMany
      */
     private function sourceKeys(mixed $id, array $attributes): array
     {
-        $keys = $this->getForeignPivotKeyName() === self::SOURCE_COLUMN
-            ? [$this->getParent()->getKey()]
-            : $this->parseIds($id);
+        // ⚠️ `attach()` also takes an ID-to-ATTRIBUTES map, and each entry in
+        // it can carry its own `source_entry_id`. Reading only the common
+        // $attributes meant an outgoing attach could write the pivot against
+        // an overridden source while just the parent was locked — so two
+        // calls through different parents targeted the same cardinality-one
+        // source, both passed the count, and both inserted.
+        $parsed = $this->parseIds($id);
+
+        $keys = [];
+
+        if ($this->getForeignPivotKeyName() === self::SOURCE_COLUMN) {
+            $keys[] = $this->getParent()->getKey();
+        } else {
+            // In the map form the related id is the KEY and the value is its
+            // attributes; in the plain form the value is the id itself.
+            foreach ($parsed as $key => $value) {
+                $keys[] = is_array($value) ? $key : $value;
+            }
+        }
+
+        // A per-ID override names a destination whichever way the relation
+        // runs, so this is read in both directions.
+        foreach ($parsed as $value) {
+            if (is_array($value) && isset($value[self::SOURCE_COLUMN])) {
+                $keys[] = $value[self::SOURCE_COLUMN];
+            }
+        }
 
         if (isset($attributes[self::SOURCE_COLUMN])) {
             $keys[] = $attributes[self::SOURCE_COLUMN];

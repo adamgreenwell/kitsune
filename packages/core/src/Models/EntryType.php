@@ -311,6 +311,47 @@ class EntryType extends Model
         });
     }
 
+    /**
+     * Moving a type across the org boundary drags its fields with it.
+     *
+     * Refused while any attached storage would become foreign, rather than
+     * silently rewritten: the destination org would be able to traverse the
+     * former org's schema metadata, while the scoped holes report excludes
+     * that storage and therefore stops naming a type that still holds
+     * personal data (ADR-021).
+     *
+     * Global storage travels freely, matching how global types work.
+     */
+    private function guardOrgMove(): void
+    {
+        if (! $this->exists || ! $this->isDirty('org_id')) {
+            return;
+        }
+
+        $foreign = Field::query()
+            ->where('entry_type_id', $this->getKey())
+            ->whereHas('fieldStorage', function (Builder $query): void {
+                $query->whereNotNull('org_id');
+
+                if ($this->org_id !== null) {
+                    $query->where('org_id', '!=', $this->org_id);
+                }
+            })
+            ->with('fieldStorage')
+            ->first();
+
+        if ($foreign !== null) {
+            throw new RuntimeException(sprintf(
+                'Entry type [%s] cannot move to another organisation while [%s] is backed by '
+                .'storage that would not move with it. Detach the field or make its storage '
+                .'global first — the destination would otherwise read the former org\'s schema '
+                .'(ADR-021).',
+                $this->handle,
+                $foreign->fieldStorage->handle,
+            ));
+        }
+    }
+
     public function isReservedHandle(): bool
     {
         return in_array(strtolower($this->handle), self::RESERVED_HANDLES, true);
@@ -321,6 +362,14 @@ class EntryType extends Model
         // A nomination pointing at another type's field would answer a
         // subject-access request with somebody else's data, which is worse
         // than answering it with nothing.
+        // ⚠️ An org MOVE is checked before the nomination guard, and it has
+        // to be, because that guard returns early when nothing is nominated —
+        // so a type with no subject field could be moved to another org while
+        // its fields stayed backed by the FORMER org's storage. That is the
+        // exact state `Field::saving()` refuses to create, reached by moving
+        // the other side of the relationship instead.
+        static::saving(fn (self $type) => $type->guardOrgMove());
+
         static::saving(function (self $type): void {
             if ($type->subject_field_id === null) {
                 return;

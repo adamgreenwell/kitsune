@@ -155,21 +155,18 @@ class Entry extends Model
             return $query->whereRaw('1 = 0');
         }
 
-        $query->where('entry_type_id', $type->getKey());
-
-        // ⚠️ For a relational subject, the TARGET entry has to be visible
-        // too, not just the pivot row. `related()` hides an out-of-scope
-        // target through Entry's own SiteScope, but a raw EXISTS does not —
-        // and `attach($id)` never validates the related model, so the
-        // ordinary path can create a pivot row pointing anywhere.
-        //
-        // Checked here rather than inside the EXISTS because the subquery
-        // would alias `entries` against itself; this reads as what it is,
-        // and it fails closed.
-        if ($storage->strategy() === StorageStrategy::Relational
-            && ! static::query()->whereKey($identifier)->exists()) {
+        // ⚠️ A NULL identifier matches nothing, and has to be refused before
+        // a strategy is chosen. Both the promoted and inline branches compile
+        // `= null` to `IS NULL`, so a malformed subject-access request
+        // returned every entry whose nominated field is null or absent — a
+        // batch of records belonging to no identified subject, from the one
+        // query that must never over-answer. `subjectValue()` already defines
+        // null as unanswerable; this makes the query agree.
+        if ($identifier === null) {
             return $query->whereRaw('1 = 0');
         }
+
+        $query->where('entry_type_id', $type->getKey());
 
         // Where the value lives decides where the predicate goes: a pivot
         // row, a real column, or a JSON path.
@@ -177,6 +174,24 @@ class Entry extends Model
             StorageStrategy::Relational => $query->whereExists(function ($pivot) use ($storage, $identifier): void {
                 $pivot->selectRaw('1')
                     ->from('entry_relations')
+                    // ⚠️ The target's VISIBILITY, in this same statement.
+                    //
+                    // `related()` hides an out-of-scope target through
+                    // Entry's own SiteScope, but a raw EXISTS does not — and
+                    // `attach($id)` never validates the related model, so the
+                    // ordinary path can create a pivot row pointing anywhere.
+                    //
+                    // This was a separate `exists()` check before the builder
+                    // ran, which is a gap rather than a guard: move the target
+                    // to another site between the two and the EXISTS still
+                    // matched on the pivot alone, returning a source record
+                    // whose subject `related()` would no longer show. As a
+                    // subquery there is no window, and no self-alias either —
+                    // nothing inside it references the outer `entries`.
+                    ->whereIn(
+                        'entry_relations.target_entry_id',
+                        static::query()->select('id')->whereKey($identifier)->toBase(),
+                    )
                     ->whereColumn('entry_relations.source_entry_id', 'entries.id')
                     // ⚠️ org_id, matching what `related()` enforces through
                     // withPivotValue(). Without it a hostile pivot row

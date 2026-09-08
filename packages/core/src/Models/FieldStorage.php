@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Models;
 
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Kitsune\Core\Fields\FieldConfig;
@@ -114,6 +115,7 @@ class FieldStorage extends Model
             // cardinality its type cannot hold — the more specific refusal is
             // the one the caller reads.
             $storage->guardNomination();
+            $storage->guardOrgMove();
             $storage->guardCardinalitySupport();
 
             // ADR-006: storage locks the moment data exists. Shipping this
@@ -301,6 +303,52 @@ class FieldStorage extends Model
                 $this->handle,
                 $nominated->handle,
                 implode(', ', $frozen),
+            ));
+        }
+    }
+
+    /**
+     * Storage cannot walk across the org boundary out from under a field.
+     *
+     * ⚠️ `guardNomination()` freezes `org_id` only while something NOMINATES
+     * the storage. Attached but un-nominated, the same move recreated the
+     * foreign-storage state that `Field::saving()` refuses — without ever
+     * saving a field. `withoutSubjectIdentifier()` then filters the moved row
+     * out and stops naming a type that still holds personal data, which is
+     * the compliance report going quiet about a real hole (ADR-021).
+     */
+    private function guardOrgMove(): void
+    {
+        if (! $this->exists || ! $this->isDirty('org_id')) {
+            return;
+        }
+
+        $field = Field::query()
+            ->where('field_storage_id', $this->getKey())
+            ->whereHas('entryType', function (Builder $query): void {
+                if ($this->org_id === null) {
+                    // Becoming global is safe: global storage is legitimately
+                    // available to every org, including this field's.
+                    $query->whereRaw('1 = 0');
+
+                    return;
+                }
+
+                $query->where(function (Builder $inner): void {
+                    $inner->whereNull('org_id')->orWhere('org_id', '!=', $this->org_id);
+                });
+            })
+            ->with('entryType')
+            ->first();
+
+        if ($field !== null) {
+            throw new RuntimeException(sprintf(
+                'Field storage [%s] is attached to entry type [%s] and cannot move to another '
+                .'organisation. Detach it first — moving it here would leave that type reading '
+                .'another organisation\'s storage, and drop it from the holes report while it '
+                .'still holds personal data (ADR-021).',
+                $this->handle,
+                $field->entryType->handle,
             ));
         }
     }
