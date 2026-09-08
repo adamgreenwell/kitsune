@@ -140,6 +140,16 @@ return new class extends Migration
         Schema::create('entry_revisions', function (Blueprint $table): void {
             $table->id();
             $table->foreignId('entry_id')->constrained()->cascadeOnDelete();
+            // ⚠️ The type DISCRIMINATOR is part of the version.
+            //
+            // `entries.entry_type_id` is mutable and the model supports changing
+            // it — restamping `type_handle` and rechecking inbound relations. A
+            // revision that does not record it describes `values` without
+            // recording which schema they were authored against, so restoring an
+            // older version onto a retyped entry would write those values back to
+            // be read by the wrong field set. Nullable because a revision may
+            // outlive nothing here, but the FK cascade matches `entry_id`.
+            $table->foreignId('entry_type_id')->nullable()->constrained()->cascadeOnDelete();
             $table->json('values')->nullable();
             $table->string('status')->default('draft');
             $table->string('title')->nullable();

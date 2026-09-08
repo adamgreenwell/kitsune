@@ -28,6 +28,7 @@ use RuntimeException;
  * @property int $entry_id
  * @property array<string, mixed>|null $values
  * @property string $status
+ * @property int|null $entry_type_id
  * @property string|null $title
  * @property string|null $slug
  */
@@ -35,13 +36,38 @@ use RuntimeException;
 class EntryRevision extends Model
 {
     /**
+     * The entry columns erasure may rewrite on a revision.
+     *
+     * ⚠️ A SUBSET of what is snapshotted, and separate on purpose. These are
+     * the columns a promoted field can project to, so they are the only ones a
+     * redaction has any business touching — `entry_type_id` is snapshotted and
+     * must never be erasable, since blanking a discriminator turns a revision
+     * into values with no schema.
+     *
+     * Keeping one list for both jobs is what allowed the last erasure defect:
+     * `SNAPSHOT_ATTRIBUTES` was doubling as an oracle for which storage strategy
+     * a field used, and an inline field handled `status` was erased as a column.
+     *
+     * @var list<string>
+     */
+    public const REDACTABLE_COLUMNS = ['title', 'slug', 'status', 'published_at'];
+
+    /**
      * The entry columns a revision snapshots alongside `values`.
      *
      * A revision holding only `values` restores an entry with no title, which
      * is worse than having no revisions at all. These are also what erasure
      * has to sweep for a promoted field.
+     *
+     * ⚠️ `entry_type_id` is here because `values` MEAN NOTHING without it. The
+     * column on `entries` is mutable and the model supports changing it, so a
+     * revision recording values without the schema they were written against
+     * cannot be restored safely — and a type change filed no version at all
+     * while this list omitted it.
+     *
+     * @var list<string>
      */
-    public const SNAPSHOT_ATTRIBUTES = ['title', 'slug', 'status', 'published_at'];
+    public const SNAPSHOT_ATTRIBUTES = [...self::REDACTABLE_COLUMNS, 'entry_type_id'];
 
     protected $guarded = [];
 
@@ -89,12 +115,12 @@ class EntryRevision extends Model
         // Fail closed on a column a revision does not snapshot: Eloquent would
         // happily set an unknown attribute and then fail at the database, or
         // worse, succeed against a column erasure has no business writing.
-        if (! in_array($column, self::SNAPSHOT_ATTRIBUTES, true)) {
+        if (! in_array($column, self::REDACTABLE_COLUMNS, true)) {
             throw new RuntimeException(sprintf(
-                'A revision does not snapshot [%s], so there is no promoted column here to erase. '
-                .'Snapshotted columns are: %s. If this is an inline field, use redactValue().',
+                'A revision has no erasable column [%s], so there is nothing here to redact. '
+                .'Erasable columns are: %s. If this is an inline field, use redactValue().',
                 $column,
-                implode(', ', self::SNAPSHOT_ATTRIBUTES),
+                implode(', ', self::REDACTABLE_COLUMNS),
             ));
         }
 

@@ -263,7 +263,7 @@ describe('erasure reaches revisions by STRATEGY, not by guessing at the handle',
         }
     });
 
-    it('refuses to erase a column a revision does not snapshot', function (): void {
+    it('refuses to erase a column no promoted field can project to', function (): void {
         $entry = anEntry();
         $revision = $entry->revisions()->first();
 
@@ -271,7 +271,96 @@ describe('erasure reaches revisions by STRATEGY, not by guessing at the handle',
         // fail at the database, or succeed against a column erasure has no
         // business writing.
         expect(fn () => $revision->redactColumn('note', null))
-            ->toThrow(RuntimeException::class, 'does not snapshot');
+            ->toThrow(RuntimeException::class, 'no erasable column');
+    });
+
+    it('refuses to erase the type DISCRIMINATOR, which it snapshots', function (): void {
+        // ⚠️ Snapshotted and NOT erasable, which is why the two lists are
+        // separate. Blanking a discriminator turns a revision into values with
+        // no schema — worse than leaving the data, because the row then looks
+        // restorable and is not.
+        $entry = anEntry();
+        $revision = $entry->revisions()->first();
+
+        expect(fn () => $revision->redactColumn('entry_type_id', null))
+            ->toThrow(RuntimeException::class, 'no erasable column')
+            ->and($revision->fresh()->entry_type_id)->toBe($entry->entry_type_id);
+    });
+});
+
+describe('a version records the schema its values were written against', function (): void {
+    /*
+     * ⚠️ `entry_type_id` is MUTABLE — the model supports changing it, restamping
+     * `type_handle` and rechecking inbound relations — and revisions did not
+     * record it.
+     *
+     * Two consequences. A type change filed no version at all, because the
+     * versioned surface did not include the discriminator. And restoring a
+     * revision authored under the old type wrote its `values` back onto an entry
+     * that now resolves a DIFFERENT field set, so the same JSON was read against
+     * the wrong schema: the quiet content destruction ADR-006 locks storage
+     * shape to prevent, arriving through another door.
+     */
+    it('snapshots the type', function (): void {
+        $entry = anEntry();
+
+        expect($entry->revisions()->first()->entry_type_id)->toBe($this->type->id);
+    });
+
+    it('records a version when the TYPE changes', function (): void {
+        $other = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'note', 'name' => 'Note', 'plural_name' => 'Notes',
+        ]);
+        $entry = anEntry();
+
+        $entry->update(['entry_type_id' => $other->id]);
+
+        expect($entry->revisions()->count())->toBe(2)
+            ->and($entry->revisions()->latest('id')->first()->entry_type_id)->toBe($other->id);
+    });
+
+    it('REFUSES a restore across a type change', function (): void {
+        $other = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'note2', 'name' => 'Note', 'plural_name' => 'Notes',
+        ]);
+        $entry = anEntry(['values' => ['body' => 'authored as an article']]);
+        $original = $entry->revisions()->first();
+
+        $entry->update(['entry_type_id' => $other->id]);
+
+        expect(fn () => $entry->restoreRevision($original))
+            ->toThrow(RuntimeException::class, 'read them against a different schema');
+
+        // And nothing moved: a refused restore must not half-apply.
+        expect($entry->fresh()->entry_type_id)->toBe($other->id);
+    });
+
+    it('still allows a restore within the same type', function (): void {
+        $entry = anEntry(['values' => ['body' => 'one']]);
+        $first = $entry->revisions()->first();
+
+        $entry->update(['values' => ['body' => 'two']]);
+
+        $entry->restoreRevision($first);
+
+        expect($entry->fresh()->values['body'])->toBe('one');
+    });
+
+    it('allows a restore once the type is changed BACK', function (): void {
+        // The refusal is not a dead end — it names the way through.
+        $other = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'note3', 'name' => 'Note', 'plural_name' => 'Notes',
+        ]);
+        $entry = anEntry(['values' => ['body' => 'one']]);
+        $original = $entry->revisions()->first();
+
+        $entry->update(['entry_type_id' => $other->id, 'values' => ['body' => 'two']]);
+        $entry->update(['entry_type_id' => $this->type->id]);
+
+        $entry->restoreRevision($original);
+
+        expect($entry->fresh()->values['body'])->toBe('one')
+            ->and($entry->fresh()->entry_type_id)->toBe($this->type->id);
     });
 });
 

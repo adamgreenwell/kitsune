@@ -699,6 +699,31 @@ class Entry extends Model implements RequiresModelSave
             );
         }
 
+        // ⚠️ Refused ACROSS a type change, rather than silently applied.
+        //
+        // `values` are keyed by field handle and mean whatever the entry's type
+        // says they mean, and `entry_type_id` is mutable. Restoring a revision
+        // authored under the old type wrote its values back onto an entry that
+        // now resolves a different field set — so the same JSON was read
+        // against the wrong schema, which is the quiet-content-destruction
+        // ADR-006 locks storage shape to prevent, arriving by another door.
+        //
+        // Refused rather than restoring the old type as well: moving an entry
+        // between types changes which fields apply, its URL, and the relations
+        // pointing at it. That is a deliberate act, not a side effect of asking
+        // for last Tuesday's text.
+        if ($revision->entry_type_id !== null && $revision->entry_type_id !== $this->entry_type_id) {
+            throw new RuntimeException(sprintf(
+                'Revision [%s] was authored while this entry was type [%s] and it is now type [%s]. '
+                .'Its values are keyed by that type\'s field handles, so restoring them here would '
+                .'read them against a different schema (ADR-006, ADR-010). Change the type back '
+                .'first if that is what you mean.',
+                (string) $revision->getKey(),
+                (string) $revision->entry_type_id,
+                (string) $this->entry_type_id,
+            ));
+        }
+
         $this->fill($revision->snapshot())->save();
 
         return $this;
