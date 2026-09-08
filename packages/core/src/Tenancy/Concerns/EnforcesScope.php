@@ -11,11 +11,14 @@ declare(strict_types=1);
 namespace Kitsune\Core\Tenancy\Concerns;
 
 use Kitsune\Core\Tenancy\Attributes\OrgScoped;
+use Kitsune\Core\Tenancy\Attributes\OrgScopedThroughPivot;
 use Kitsune\Core\Tenancy\Attributes\SiteScoped;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tenancy\ScopeResolver;
+use Kitsune\Core\Tenancy\Scopes\OrgMembershipScope;
 use Kitsune\Core\Tenancy\Scopes\OrgScope;
 use Kitsune\Core\Tenancy\Scopes\SiteScope;
+use ReflectionClass;
 use RuntimeException;
 
 /**
@@ -41,6 +44,18 @@ trait EnforcesScope
 
         if ($declared === OrgScoped::class) {
             static::addGlobalScope(new OrgScope);
+        }
+
+        if ($declared === OrgScopedThroughPivot::class) {
+            // The attribute carries the pivot's shape, so the scope is
+            // configured from the declaration rather than from convention —
+            // a model that gets the table name wrong fails at boot, not on
+            // the first query that should have been constrained.
+            $attribute = (new ReflectionClass(static::class))
+                ->getAttributes(OrgScopedThroughPivot::class)[0]
+                ->newInstance();
+
+            static::addGlobalScope(new OrgMembershipScope($attribute));
         }
 
         static::creating(function (self $model) use ($declared): void {
@@ -160,7 +175,11 @@ trait EnforcesScope
         self::$scopeWritesUnguarded = true;
 
         try {
-            return $callback(static::withoutGlobalScopes([SiteScope::class, OrgScope::class]));
+            return $callback(static::withoutGlobalScopes([
+                SiteScope::class,
+                OrgScope::class,
+                OrgMembershipScope::class,
+            ]));
         } finally {
             self::$scopeWritesUnguarded = $previous;
         }

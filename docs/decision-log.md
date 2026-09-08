@@ -678,6 +678,27 @@ The hostile test in core (ADR-009) doubles: it must now assert **cross-site isol
 
 **Index invariant, revised.** ADR-009 required every composite index to lead with `tenant_id`. It now leads with the model's *scope key*: `site_id` for site-scoped models, `org_id` for org-scoped. Since `site_id` is globally unique and belongs to exactly one org, leading with it enforces org isolation transitively — narrower index, same guarantee.
 
+### Amendment — a fourth scope attribute, for users, 2026-09-07
+
+**Status:** Amended · closes [#21](https://github.com/adamgreenwell/kitsune/issues/21)
+
+This ADR settles the kernel on three attributes and puts **users** among the `#[OrgScoped]` models. The second half of that could not be implemented, and the reason is not an oversight in this ADR — it is a fact about users that only became load-bearing once someone tried.
+
+**`OrgScope` compares `org_id = current`, and a user has no `org_id`.** Membership is many-to-many; `architecture.md` §3 has modelled it through `org_user` since before this ADR. Declaring `#[OrgScoped]` on `User` would have been a declaration the kernel could not keep — the attribute would have resolved, the scope would have been applied, and it would have compared a column that does not exist.
+
+So there is a fourth: **`#[OrgScopedThroughPivot(table:, foreignKey:)]`**, enforced by `OrgMembershipScope`.
+
+A separate attribute rather than an option on `#[OrgScoped]`, because the two enforce genuinely different things — one reads a column, the other tests a relationship. Conflating them would mean a reviewer seeing `#[OrgScoped]` could no longer tell which behaviour a model got, and this ADR's whole point is that the declaration is readable at a glance.
+
+Everything else in this ADR is unchanged and still binding. The new attribute inherits all of it: it **fails closed with no org context**, it gets **no framework safety net** (Filament does not model Org at any level), and it needs the same hostile test the other two have.
+
+**Two consequences worth stating, because both cost time:**
+
+- **Failing closed makes the authentication path a carve-out.** A user is resolved before any org exists — the org is derived from the site they are on their way to — so the login query must stand the scope down explicitly. That carve-out belongs in the **user provider**, not on the model: `EloquentUserProvider` builds its own query through `newModelQuery()` and never calls a method on the user, so a carve-out written as `User::resolveForAuthentication()` reads correctly in review and never executes. It is safe because every query there resolves ONE user by an identifier the caller already supplied, and never lists them.
+- **The attribute is a declaration, not an enforcement.** `User` carried `#[Unscoped]` and did not `use EnforcesScope`, so it was labelled correctly and completely unconstrained for two phases. A model can pass the declaration sweep that exists to catch exactly this and still be globally readable. Both are now required together, and AGENTS.md says so.
+
+---
+
 ### Amendment — the route key must be globally unique, 2026-09-07
 
 `UNIQUE (org_id, handle)` makes a site's handle unique **within an org**, which is right: a handle is how an operator names a site inside their own organisation, and two customers may both reasonably call one "golfdom".
@@ -924,7 +945,7 @@ Supporting only one of the two costs a real constituency, so both ship.
 
 `curl | bash` is the format users expect, and refusing it outright costs adoption that this project cannot afford to lose. But Kitsune's own stated highest-severity category is data isolation, and normalising "pipe an unverified URL into a shell" sits badly with that. The resolution:
 
-- The script is served over HTTPS from the project domain, **versioned and checksum-pinned** — never from a redirect, never from a URL shortener
+- The script is served over HTTPS from the project domain — `kitsunecms.org` — **versioned and checksum-pinned**, never from a redirect, never from a URL shortener. ⚠️ That rules out serving it from a domain that may later redirect, which is why the installer URL waited for a domain the project actually owns
 - **The documented primary instruction is the two-step**: download, inspect, run. The one-liner is offered alongside it, not instead of it
 - Releases are signed, and the installer verifies what it fetches
 - **The installer never creates a default administrator account.** Onboarding creates the first user interactively. Default credentials at install time are the most reliably exploited mistake in CMS history and there is no version of it that is acceptable
@@ -1105,7 +1126,9 @@ From prior-art analysis of Drupal, October, Winter, Statamic, Directus, Strapi, 
 - Blueprint rollback semantics when content already exists
 - Revision storage growth — full-JSON snapshots get expensive; consider diffs
 - Do relations target the translation group or a specific locale row (ADR-017)? Group-targeting with an optional locale override is the leading candidate
-- **Name/trademark clearance** — no PHP/CMS collision, but Mozilla's support platform and a Rust ActivityPub project both use "Kitsune." Confirm availability in software/SaaS classes **before** spending on a logo
+- **Name/trademark clearance** — no PHP/CMS collision, but Mozilla's support platform and a Rust ActivityPub project both use "Kitsune." Confirm availability in software/SaaS classes **before** spending on a logo.
+
+  **Domain settled provisionally, 2026-09-07: `kitsunecms.org`.** `kitsune.org` is held by another party and is being pursued; acquiring it would make it a redirect, not a rename. Naming the domain now unblocks ADR-026's installer, which cannot be served from a URL that might later move — a checksum-pinned script behind a redirect is exactly what that ADR refuses.
 - KaaS deployment topology beneath the org- and site-aware core — now an ops decision, not architecture, though ADR-020 gives it a legal input via data residency
 
 **Unverifiable, do not cite:** the free/paid split of Filament's plugin directory. Filters exist; counts are not published.
