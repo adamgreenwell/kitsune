@@ -71,6 +71,22 @@ final class SlugType extends BaseFieldType
         return $input === null || $input === '' ? null : str((string) $input)->slug()->value();
     }
 
+    /**
+     * The 255-character input limit is PUBLISHED (AGENTS.md invariant 13).
+     *
+     * ⚠️ There is a SECOND limit JSON Schema cannot express: the value must
+     * also be at most 255 characters and non-empty AFTER slugification, and
+     * transliteration can move it in either direction — `!!!` normalises to
+     * nothing, a romanised Cyrillic title grows. Stating it here rather than
+     * leaving the schema implying the submitted length is the whole rule.
+     *
+     * @return array<string, mixed>
+     */
+    protected function scalarApiSchema(FieldConfig $config): array
+    {
+        return ['type' => 'string', 'maxLength' => 255];
+    }
+
     /** @return array<int, mixed> */
     protected function scalarValidationRules(FieldConfig $config): array
     {

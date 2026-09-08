@@ -335,6 +335,74 @@ it('publishes the text length and pattern it enforces', function (): void {
         ->toBe(['type' => 'string', 'maxLength' => 40, 'pattern' => '^[a-z]+$']);
 });
 
+describe('one pattern string cannot serve two grammars', function (): void {
+    /*
+     * ⚠️ JSON Schema wants an UNDELIMITED pattern; `preg_match()` requires
+     * delimiters. `^[a-z]+$` — the form the published schema needs, and the
+     * form the test above uses — is not a valid PCRE, and it was handed
+     * straight to Laravel's `regex:` rule. A server-valid `/^[a-z]+$/`
+     * publishes literal slashes, which in JSON Schema match literal slashes.
+     *
+     * The test above asserted only the published half, which is why this
+     * survived: it proved the schema was right and never proved the rule ran.
+     */
+    it('ENFORCES the pattern it publishes', function (): void {
+        expect(validate('text', ['f' => 'abc'], ['pattern' => '^[a-z]+$'])->fails())->toBeFalse()
+            ->and(validate('text', ['f' => 'ABC'], ['pattern' => '^[a-z]+$'])->fails())->toBeTrue()
+            ->and(validate('text', ['f' => 'a1'], ['pattern' => '^[a-z]+$'])->fails())->toBeTrue();
+    });
+
+    it('handles a quantifier, which Laravel\'s regex rule splits on the comma', function (): void {
+        // `regex:^[a-z]{2,4}$` arrives at the rule parser as two parameters,
+        // so the pattern was truncated before it ever compiled.
+        expect(validate('text', ['f' => 'abc'], ['pattern' => '^[a-z]{2,4}$'])->fails())->toBeFalse()
+            ->and(validate('text', ['f' => 'a'], ['pattern' => '^[a-z]{2,4}$'])->fails())->toBeTrue()
+            ->and(validate('text', ['f' => 'abcde'], ['pattern' => '^[a-z]{2,4}$'])->fails())->toBeTrue();
+    });
+
+    it('handles a pattern containing a slash, without escaping it', function (): void {
+        // A delimiter the pattern does not contain is chosen, because escaping
+        // is where the already-escaped cases go wrong.
+        expect(validate('text', ['f' => 'a/b'], ['pattern' => '^[a-z]/[a-z]$'])->fails())->toBeFalse()
+            ->and(validate('text', ['f' => 'ab'], ['pattern' => '^[a-z]/[a-z]$'])->fails())->toBeTrue();
+    });
+
+    it('REFUSES a value when the pattern cannot compile', function (): void {
+        // An uncompilable pattern means the constraint cannot be checked, and
+        // passing the value would silently drop a rule the schema advertises.
+        expect(validate('text', ['f' => 'anything'], ['pattern' => '^[a-z'])->fails())->toBeTrue();
+    });
+});
+
+it('publishes the textarea limit it enforces', function (): void {
+    $type = app(FieldTypeRegistry::class)->get('textarea');
+
+    expect($type->apiSchema(configFor('textarea')))->toBe(['type' => 'string', 'maxLength' => 65535])
+        ->and($type->apiSchema(configFor('textarea', ['maxLength' => 500])))
+        ->toBe(['type' => 'string', 'maxLength' => 500]);
+});
+
+it('publishes the slug input limit', function (): void {
+    $type = app(FieldTypeRegistry::class)->get('slug');
+
+    expect($type->apiSchema(configFor('slug')))->toBe(['type' => 'string', 'maxLength' => 255]);
+});
+
+it('publishes the number bounds it enforces', function (): void {
+    // A DECIMAL(12,2) cannot hold 10000000000 and the rules say so, but the
+    // schema published only {"type": "number"}.
+    $type = app(FieldTypeRegistry::class)->get('number');
+
+    $decimal = $type->apiSchema(configFor('number', ['min' => 1, 'max' => 50, 'step' => 0.5]));
+
+    expect($decimal['type'])->toBe('number')
+        ->and($decimal['minimum'])->toBe(1)
+        ->and($decimal['maximum'])->toBe(50)
+        ->and($decimal['multipleOf'])->toBe(0.5)
+        ->and($decimal['exclusiveMaximum'])->toBe(10000000000)
+        ->and($type->apiSchema(configFor('number', ['format' => 'integer']))['type'])->toBe('integer');
+});
+
 it('publishes the relation cardinality bound too', function (): void {
     // RelationType overrides apiSchema(), so it did not inherit the bound —
     // a generated client could submit three targets to a two-target relation
