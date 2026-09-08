@@ -659,10 +659,19 @@ class Entry extends Model implements RequiresModelSave
             // Erasure has to reach the row wherever it is, so it goes
             // straight at the pivot by the two keys that define it. Scoping
             // is the reader's protection; it must not become the attacker's.
-            return EntryRelation::query()
+            $detached = EntryRelation::query()
                 ->where('source_entry_id', $this->getKey())
                 ->where('field_storage_id', $storage->getKey())
                 ->delete();
+
+            // ⚠️ And the REVISIONS, which is the half a new column just broke.
+            //
+            // `relation_state` records the target ids at each version, so
+            // deleting the live pivots and returning left every erased id sitting
+            // in history — and a restore would recreate the relation, undoing the
+            // erasure. ADR-020 requires erasure to reach revisions, and adding a
+            // place where relations are stored added a place erasure has to sweep.
+            return $detached + $this->redactRelationHistory($storage);
         }
 
         if ($storage?->strategy() === StorageStrategy::Promoted) {
@@ -719,6 +728,42 @@ class Entry extends Model implements RequiresModelSave
         // The handle, into `values`, whatever the handle happens to be called.
         foreach ($this->revisions()->get() as $revision) {
             $rewritten += $revision->redactValue($handle, $replacement) ? 1 : 0;
+        }
+
+        return $rewritten;
+    }
+
+    /**
+     * Remove a storage definition's targets from every revision's snapshot.
+     *
+     * Returns how many revisions were rewritten, so the caller's count still
+     * distinguishes an erasure that reached something from one that silently
+     * matched nothing.
+     *
+     * The key is dropped rather than emptied: an empty list is a STATEMENT that
+     * the entry had no relations for that field at that version, and a restore
+     * treats it as one. Erasure does not know that and must not claim it — an
+     * absent key says the version records nothing about this field, which is the
+     * truth once its data is gone.
+     */
+    private function redactRelationHistory(FieldStorage $storage): int
+    {
+        $key = (string) $storage->getKey();
+        $rewritten = 0;
+
+        foreach ($this->revisions()->get() as $revision) {
+            $state = $revision->relation_state;
+
+            if ($state === null || ! array_key_exists($key, $state)) {
+                continue;
+            }
+
+            unset($state[$key]);
+
+            $revision->relation_state = $state;
+            $revision->save();
+
+            $rewritten++;
         }
 
         return $rewritten;
@@ -794,88 +839,138 @@ class Entry extends Model implements RequiresModelSave
             ));
         }
 
-        $this->fill($revision->snapshot())->save();
+        $state = $revision->relation_state;
 
-        // ⚠️ AFTER the entry save, and separately from `snapshot()`.
+        // ⚠️ VALIDATED before anything is written. The refusal below says
+        // "nothing has been changed", and that has to be true when it is
+        // raised — an earlier version validated after the entry save, so the
+        // message was a lie for the scalar half.
+        if ($state !== null) {
+            $this->refuseMissingTargets($revision, $state);
+        }
+
+        // ⚠️ Refreshed, so "did anything change" can be answered at all.
         //
-        // `entries` has no relations column, so this cannot ride along in the
-        // fill — and it has to happen inside the same restore, because a restore
-        // that puts the text back and leaves the relations alone is the defect
-        // this exists to fix.
-        $this->restoreRelations($revision);
+        // A model returned by `create()` holds only the attributes the caller
+        // set, so `slug` and `published_at` are absent from BOTH `$attributes`
+        // and `$original`. Filling them from the snapshot with the same nulls
+        // they already have in the database then marks them dirty, and
+        // `wasChanged()` reports a change that did not happen — so a restore of
+        // the newest revision filed a redundant version. Loading the row first
+        // makes the comparison reflect the database rather than which columns
+        // this instance happened to be given.
+        $this->refresh();
+
+        $relationsBefore = $this->relationState();
+
+        DB::transaction(function () use ($revision, $state, $relationsBefore): void {
+            // ⚠️ ONE transaction over both halves. Without it the entry save
+            // persisted the title and values, a relation rebuild then threw, and
+            // its inner transaction rolled back only the pivots — so a restore
+            // reported as failed had in fact changed the content.
+            //
+            // ⚠️ And ONE version, recorded at the END. The scalar save fires
+            // `updated`, so the revision it filed described the entry with its
+            // OLD relations — and when nothing scalar changed it filed nothing at
+            // all, leaving the newest revision not describing the entry. Both
+            // halves are one restore, so recording waits for both.
+            RevisionWrites::suspend(function () use ($revision, $state): void {
+                $this->fill($revision->snapshot())->save();
+
+                // `null` means the revision predates the column and says nothing
+                // about relations. `[]` means it says there were none.
+                if ($state !== null) {
+                    $this->replaceRelations($state);
+                }
+            });
+
+            if ($this->hasVersionedChanges() || $this->relationState() !== $relationsBefore) {
+                $this->recordRevision();
+            }
+        });
 
         return $this;
     }
 
     /**
-     * Rebuild this entry's relations from a revision.
+     * Refuse a restore whose recorded targets are no longer there.
      *
-     * ⚠️ REFUSED rather than partially applied when a target is gone. A
-     * revision naming an entry that has since been deleted cannot be restored
-     * faithfully, and quietly restoring the subset would report success for a
-     * version the author cannot actually have back. `entry_relations` has
-     * `cascadeOnDelete` on both entry keys, so the row would fail the foreign
-     * key anyway — this says why instead of surfacing a constraint error.
+     * ⚠️ Separate from the rebuild, and run BEFORE any write, because the
+     * message promises nothing has changed.
+     *
+     * Quietly restoring the subset would report success for a version the author
+     * cannot actually have back, and `entry_relations` cascades on delete so the
+     * row would fail its foreign key regardless — this says why instead of
+     * surfacing a constraint error.
+     *
+     * @param  array<string, list<int>>  $state
      */
-    private function restoreRelations(EntryRevision $revision): void
+    private function refuseMissingTargets(EntryRevision $revision, array $state): void
     {
-        // ⚠️ `relation_state`, NOT `relations`. `Model::$relations` is a
-        // protected property holding loaded relationships, and PHP resolves a
-        // protected member declared in a common ancestor directly — so reading
-        // `$revision->relations` from inside Entry returned that array rather
-        // than the column, and the restore silently did nothing while the same
-        // read from outside a class worked. The column carries a name Eloquent
-        // does not already own.
-        $state = $revision->relation_state;
+        $targets = collect($state)->flatten()->map(fn (mixed $id): int => (int) $id)->unique();
 
-        if ($state === null || $state === []) {
-            // Nothing recorded is not the same as "no relations": a revision
-            // written before this column existed has null, and clearing an
-            // entry's relations on that basis would destroy data the revision
-            // never claimed to describe.
+        if ($targets->isEmpty()) {
             return;
         }
 
-        $targets = collect($state)->flatten()->map(fn (mixed $id): int => (int) $id)->unique();
-        $present = self::query()->withoutGlobalScopes()->whereKey($targets->all())->pluck('id');
-        $missing = $targets->diff($present);
+        $missing = $targets->diff(
+            self::query()->withoutGlobalScopes()->whereKey($targets->all())->pluck('id'),
+        );
 
-        if ($missing->isNotEmpty()) {
-            throw new RuntimeException(sprintf(
-                'Revision [%s] relates this entry to %s, which no longer exist%s. Restoring it '
-                .'would put back a version this entry cannot have again, so nothing has been '
-                .'changed (ADR-015).',
-                (string) $revision->getKey(),
-                'entr'.($missing->count() === 1 ? 'y ' : 'ies ').$missing->implode(', '),
-                $missing->count() === 1 ? 's' : '',
-            ));
+        if ($missing->isEmpty()) {
+            return;
         }
 
-        DB::transaction(function () use ($state): void {
-            foreach ($state as $storageId => $ids) {
-                EntryRelation::query()
-                    ->where('source_entry_id', $this->getKey())
-                    ->where('field_storage_id', (int) $storageId)
-                    ->delete();
+        throw new RuntimeException(sprintf(
+            'Revision [%s] relates this entry to %s, which no longer exist%s. Restoring it '
+            .'would put back a version this entry cannot have again, so nothing has been '
+            .'changed (ADR-015).',
+            (string) $revision->getKey(),
+            'entr'.($missing->count() === 1 ? 'y ' : 'ies ').$missing->implode(', '),
+            $missing->count() === 1 ? 's' : '',
+        ));
+    }
 
-                foreach ($ids as $ordering => $targetId) {
-                    EntryRelation::create([
-                        // ⚠️ `org_id` explicitly. The `related()` relation
-                        // supplies it through `withPivotValue()`, and writing
-                        // `EntryRelation` directly does not — it defaulted to 0
-                        // and `EntryRelation`'s own guard refused the row,
-                        // rolling the whole restore back. A relation belongs to
-                        // the org of the entry it hangs off, so that is the
-                        // value.
-                        'org_id' => $this->org_id,
-                        'source_entry_id' => $this->getKey(),
-                        'target_entry_id' => (int) $targetId,
-                        'field_storage_id' => (int) $storageId,
-                        'ordering' => $ordering,
-                    ]);
-                }
+    /**
+     * Make this entry's field-backed relations exactly what the snapshot says.
+     *
+     * ⚠️ REPLACES, and an earlier version patched. It deleted only the storage
+     * ids present in the snapshot, so a relation added to a DIFFERENT field after
+     * the revision was taken survived a restore — and an empty snapshot was
+     * treated as "nothing recorded" and skipped entirely, leaving every current
+     * link attached while reporting a successful restore. `[]` is a statement:
+     * at that version, this entry had no relations.
+     *
+     * Only field-backed rows are touched. A row whose `field_storage_id` is NULL
+     * belongs to a deleted field definition, is not addressable by any field, and
+     * was never recorded — so a restore has nothing to say about it and must not
+     * remove it.
+     *
+     * @param  array<string, list<int>>  $state
+     */
+    private function replaceRelations(array $state): void
+    {
+        EntryRelation::query()
+            ->where('source_entry_id', $this->getKey())
+            ->whereNotNull('field_storage_id')
+            ->delete();
+
+        foreach ($state as $storageId => $ids) {
+            foreach ($ids as $ordering => $targetId) {
+                EntryRelation::create([
+                    // ⚠️ `org_id` explicitly. The `related()` relation supplies
+                    // it through `withPivotValue()`, and writing `EntryRelation`
+                    // directly does not — it defaulted to 0 and the model's own
+                    // guard refused the row, rolling the whole restore back. A
+                    // relation belongs to the org of the entry it hangs off.
+                    'org_id' => $this->org_id,
+                    'source_entry_id' => $this->getKey(),
+                    'target_entry_id' => (int) $targetId,
+                    'field_storage_id' => (int) $storageId,
+                    'ordering' => $ordering,
+                ]);
             }
-        });
+        }
     }
 
     /** Run a save that leaves no revision behind. */

@@ -777,3 +777,202 @@ describe('every revision names the schema it was written against', function (): 
         ]))->toThrow(QueryException::class, 'entry_type_id');
     });
 });
+
+describe('a restore is one version, atomic, and authoritative', function (): void {
+    $relationalField = function (string $handle = 'people'): FieldStorage {
+        $storage = FieldStorage::create([
+            'org_id' => test()->org->id, 'handle' => $handle, 'type' => 'relation',
+            'pii_class' => 'personal', 'cardinality' => -1,
+        ]);
+
+        Field::create([
+            'entry_type_id' => test()->type->id, 'field_storage_id' => $storage->id, 'label' => 'People',
+        ]);
+
+        return $storage;
+    };
+
+    it('treats an EMPTY snapshot as authoritative, not as silence', function () use ($relationalField): void {
+        // ⚠️ `[]` is a statement: at that version this entry had no relations.
+        // Treating it as "nothing recorded" left every current link attached
+        // while reporting a successful restore. Only `null` — a revision written
+        // before the column existed — says nothing.
+        $storage = $relationalField();
+        $entry = anEntry();
+        $alice = anEntry(['title' => 'Alice']);
+
+        $empty = $entry->revisions()->first();
+        expect($empty->relation_state)->toBe([]);
+
+        $entry->related()->attach($alice->id, ['field_storage_id' => $storage->id]);
+        expect($entry->related()->count())->toBe(1);
+
+        $entry->restoreRevision($empty);
+
+        expect($entry->related()->count())->toBe(0);
+    });
+
+    it('REPLACES rather than patching, so a later field is not left behind', function () use ($relationalField): void {
+        // ⚠️ The rebuild deleted only the storage ids present in the snapshot, so
+        // a relation added to a DIFFERENT field after the revision was taken
+        // survived the restore.
+        $people = $relationalField('people');
+        $entry = anEntry();
+        $alice = anEntry(['title' => 'Alice']);
+        $bob = anEntry(['title' => 'Bob']);
+
+        $entry->related()->attach($alice->id, ['field_storage_id' => $people->id]);
+        $onlyAlice = $entry->revisions()->latest('id')->first();
+
+        $editors = $relationalField('editors');
+        $entry->related()->attach($bob->id, ['field_storage_id' => $editors->id]);
+
+        $entry->restoreRevision($onlyAlice);
+
+        expect($entry->related()->pluck('entries.id')->all())->toBe([$alice->id]);
+    });
+
+    it('records ONE version, describing the entry as restored', function () use ($relationalField): void {
+        // ⚠️ The scalar save fired `updated`, so the revision it filed described
+        // the entry with its OLD relations — and when nothing scalar changed it
+        // filed nothing at all, leaving the newest revision not describing the
+        // entry. Restoring that would revert the relations again.
+        $storage = $relationalField();
+        $entry = anEntry();
+        $alice = anEntry(['title' => 'Alice']);
+
+        $entry->related()->attach($alice->id, ['field_storage_id' => $storage->id]);
+        $withAlice = $entry->revisions()->latest('id')->first();
+
+        $entry->related()->detach($alice->id);
+        $before = $entry->revisions()->count();
+
+        $entry->restoreRevision($withAlice);
+
+        expect($entry->revisions()->count())->toBe($before + 1)
+            ->and($entry->revisions()->latest('id')->first()->relation_state)
+            ->toBe([(string) $storage->id => [$alice->id]]);
+    });
+
+    it('records NOTHING for a restore that changes nothing', function () use ($relationalField): void {
+        $relationalField();
+        $entry = anEntry();
+        $newest = $entry->revisions()->latest('id')->first();
+
+        $before = $entry->revisions()->count();
+
+        $entry->restoreRevision($newest);
+
+        expect($entry->revisions()->count())->toBe($before);
+    });
+
+    it('changes NOTHING when a recorded target is gone', function () use ($relationalField): void {
+        // ⚠️ The refusal says "nothing has been changed", and validating after
+        // the entry save made that a lie for the scalar half: the title was
+        // already persisted when the rebuild threw.
+        $storage = $relationalField();
+        $entry = anEntry(['title' => 'Original']);
+        $alice = anEntry(['title' => 'Alice']);
+
+        $entry->related()->attach($alice->id, ['field_storage_id' => $storage->id]);
+        $withAlice = $entry->revisions()->latest('id')->first();
+
+        $entry->update(['title' => 'Current']);
+        $alice->forceDelete();
+
+        expect(fn () => $entry->restoreRevision($withAlice))
+            ->toThrow(RuntimeException::class, 'no longer exist');
+
+        expect($entry->fresh()->title)->toBe('Current');
+    });
+});
+
+describe('erasure reaches the relations recorded in history', function (): void {
+    /*
+     * ⚠️ A new place to store relations is a new place erasure has to sweep.
+     *
+     * The relational branch deleted the live pivots and returned, so every erased
+     * target id stayed in `relation_state` — and restoring one of those revisions
+     * would recreate the relation, undoing the erasure. ADR-020 requires erasure
+     * to reach revision history, and that requirement does not care which column
+     * the data is in.
+     */
+    it('removes the erased field from every revision snapshot', function (): void {
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'patient', 'type' => 'relation',
+            'pii_class' => 'sensitive', 'cardinality' => -1,
+        ]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id, 'label' => 'Patient',
+        ]);
+
+        $entry = anEntry();
+        $alice = anEntry(['title' => 'Alice']);
+
+        $entry->related()->attach($alice->id, ['field_storage_id' => $storage->id]);
+        $recorded = $entry->revisions()->latest('id')->first();
+
+        expect($recorded->relation_state)->toBe([(string) $storage->id => [$alice->id]]);
+
+        $entry->redactField('patient');
+
+        foreach ($entry->revisions()->get() as $revision) {
+            expect($revision->relation_state ?? [])->not->toHaveKey((string) $storage->id);
+        }
+    });
+
+    it('so restoring an erased version cannot bring the link back', function (): void {
+        // The consequence, asserted end to end — which is what ADR-020 is about.
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'patient2', 'type' => 'relation',
+            'pii_class' => 'sensitive', 'cardinality' => -1,
+        ]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id, 'label' => 'Patient',
+        ]);
+
+        $entry = anEntry();
+        $alice = anEntry(['title' => 'Alice']);
+        $entry->related()->attach($alice->id, ['field_storage_id' => $storage->id]);
+        $recorded = $entry->revisions()->latest('id')->first();
+
+        $entry->redactField('patient2');
+        $entry->restoreRevision($recorded->fresh());
+
+        expect($entry->related()->count())->toBe(0);
+    });
+});
+
+describe('quiet creation still files an initial version', function (): void {
+    it('records one for createQuietly', function (): void {
+        // ⚠️ The creation half of the quiet-save gap. A quiet UPDATE is treated
+        // as a version, so an entry arriving with no initial revision at all made
+        // the two halves disagree about what a quiet write means.
+        // ⚠️ Every DERIVED column is explicit, because `createQuietly()`
+        // suppresses the listeners that normally stamp them: `EnforcesScope`'s
+        // `creating` supplies `org_id` and `site_id`, and `Entry::saving()`
+        // restamps `type_handle` from the type. A quiet create has to supply all
+        // three or the insert fails its own NOT NULL constraints — which is
+        // exactly why an importer is the realistic caller for this path, and why
+        // it needs an initial revision as much as any other.
+        $entry = Entry::createQuietly([
+            'org_id' => $this->org->id,
+            'site_id' => $this->site->id,
+            'entry_type_id' => $this->type->id,
+            'type_handle' => $this->type->handle,
+            'title' => 'Imported',
+            'values' => ['body' => 'from a feed'],
+        ]);
+
+        expect($entry->revisions()->count())->toBe(1)
+            ->and($entry->revisions()->first()->title)->toBe('Imported');
+    });
+
+    it('still records exactly ONE for an ordinary create', function (): void {
+        // The other half of the discriminator: recording in both the listener and
+        // the builder would file two for one insert.
+        $entry = anEntry();
+
+        expect($entry->revisions()->count())->toBe(1);
+    });
+});

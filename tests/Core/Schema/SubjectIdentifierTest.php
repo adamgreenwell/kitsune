@@ -324,7 +324,12 @@ describe('a relational subject lives in entry_relations, not in values', functio
         // There is nothing to replace in place, so erasure IS the detach —
         // and the array-key path found nothing and returned 0 while every
         // pivot row survived.
-        expect($this->record->redactField('person'))->toBe(1)
+        //
+        // TWO rows reached: the live pivot, and the revision that recorded it.
+        // A relation change files a version, and `relation_state` holds the
+        // target ids — so leaving history alone would let a restore recreate the
+        // erased link (ADR-020).
+        expect($this->record->redactField('person'))->toBe(2)
             ->and($this->record->fresh()->subjectValue())->toBe([]);
     });
 
@@ -377,7 +382,8 @@ describe('erasure resolves the field through this entry\'s type', function (): v
         // Resolved by handle alone this found the rival's `text` row, took
         // the inline branch, found no key in `values`, and returned 0 with
         // every link still attached.
-        expect($this->record->redactField('contact'))->toBe(1)
+        // Two: the live pivot and the revision holding its target id.
+        expect($this->record->redactField('contact'))->toBe(2)
             ->and($this->record->related()->count())->toBe(0);
     });
 });
@@ -1452,7 +1458,8 @@ describe('the pivot guards hold on the bulk path, which had none', function (): 
         // Removing a relation can only relax a bound, never violate one, and
         // redactField() deletes through this builder because erasure has to
         // reach a row whatever org stamped it.
-        expect($this->src->redactField('subject'))->toBe(1)
+        // Two: the live pivot and the revision holding its target id.
+        expect($this->src->redactField('subject'))->toBe(2)
             ->and(EntryRelation::query()->where('source_entry_id', $this->src->id)->count())->toBe(0);
     });
 

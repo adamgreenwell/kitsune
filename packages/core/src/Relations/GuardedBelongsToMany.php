@@ -173,24 +173,46 @@ class GuardedBelongsToMany extends BelongsToMany
             return $write();
         }
 
-        $entries = Entry::query()->withoutGlobalScopes()->whereKey($sources)->get();
-        $before = $entries->mapWithKeys(
-            fn (Entry $entry): array => [$entry->getKey() => $entry->relationState()],
-        )->all();
+        // ⚠️ ONE transaction, and the LOCK is taken before the before-state is
+        // read.
+        //
+        // `serialised()` opened its own transaction, so it committed and released
+        // the source lock before the after-state was read — leaving a window in
+        // which a second writer could commit. The first operation's revision then
+        // snapshotted both operations, so one version went missing and another
+        // was recorded twice. The lock has to span read-write-read, not just the
+        // write, and taking it here means the inner `serialised()` re-locks rows
+        // this transaction already holds, which is free.
+        return DB::transaction(function () use ($sources, $write): mixed {
+            if ($sources !== []) {
+                // withoutGlobalScopes: this is a lock, not a read that reaches a
+                // caller. A source in another scope must still serialise, and a
+                // scoped query that matched nothing would take no lock at all.
+                Entry::query()->withoutGlobalScopes()
+                    ->whereKey($sources)
+                    ->lockForUpdate()
+                    ->get();
+            }
 
-        $this->depth++;
+            $entries = Entry::query()->withoutGlobalScopes()->whereKey($sources)->get();
+            $before = $entries->mapWithKeys(
+                fn (Entry $entry): array => [$entry->getKey() => $entry->relationState()],
+            )->all();
 
-        try {
-            $result = $write();
-        } finally {
-            $this->depth--;
-        }
+            $this->depth++;
 
-        foreach ($entries as $entry) {
-            $entry->recordRevisionForRelationChange($before[$entry->getKey()] ?? []);
-        }
+            try {
+                $result = $write();
+            } finally {
+                $this->depth--;
+            }
 
-        return $result;
+            foreach ($entries as $entry) {
+                $entry->recordRevisionForRelationChange($before[$entry->getKey()] ?? []);
+            }
+
+            return $result;
+        });
     }
 
     /**

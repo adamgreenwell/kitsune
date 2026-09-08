@@ -106,8 +106,43 @@ class AuditedBuilder extends ScopedBuilder
 
             app(Auditor::class)->recordOrFail(Str::snake(class_basename($model)).'.created', $target);
 
+            $this->recordInitialRevision($id);
+
             return $id;
         });
+    }
+
+    /**
+     * File the initial revision when no `created` listener will.
+     *
+     * ⚠️ The creation half of the quiet-save gap. `createQuietly()` and anything
+     * inside `withoutEvents()` suppress the `created` listener, so an entry
+     * arrived with NO initial revision at all — while a quiet UPDATE is now
+     * treated as a version, which made the two halves disagree about what a
+     * quiet write means.
+     *
+     * Same discriminator as the update path, and for the same reason:
+     * `withoutEvents()` swaps in a `NullDispatcher` rather than unsetting one, so
+     * a real dispatcher means the listener will record this and a null one means
+     * nobody will. Recording in both would file two revisions for one insert.
+     *
+     * The row is re-read rather than recorded from `$this->model`: at this point
+     * `Model::performInsert()` has not yet set the key on the instance, and
+     * setting it here to suit the recorder would be reaching into the caller's
+     * object to make our own bookkeeping work.
+     */
+    private function recordInitialRevision(mixed $id): void
+    {
+        $dispatcher = Entry::getEventDispatcher();
+
+        if (RevisionWrites::suspended() || ($dispatcher !== null && ! $dispatcher instanceof NullDispatcher)) {
+            return;
+        }
+
+        $entry = $this->getModel()->newQueryWithoutScopes()->find($id);
+
+        // An empty before-state, because the row did not exist a moment ago.
+        $entry?->recordRevisionForEventlessWrite([], $this->rawVersionedRows([$id])[$id] ?? []);
     }
 
     /**
