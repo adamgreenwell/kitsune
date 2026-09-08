@@ -63,7 +63,12 @@ abstract class TestCase extends Orchestra
         $connection = env('DB_CONNECTION', 'testing');
         $app['config']->set('database.default', $connection);
 
-        if ($connection === 'pgsql' || $connection === 'mysql') {
+        // ⚠️ mariadb is a distinct DRIVER name, not a flavour of mysql.
+        // DriverFactory routes it to MySqlDriver, and README, architecture.md
+        // and roadmap.md all document it as supported — but nothing ran
+        // against it, so two MySQL-only constructs had shipped: a JSON cast
+        // MariaDB rejects outright, and a collation it does not have.
+        if ($connection === 'pgsql' || $connection === 'mysql' || $connection === 'mariadb') {
             $app['config']->set("database.connections.{$connection}", [
                 'driver' => $connection,
                 'host' => env('DB_HOST', '127.0.0.1'),
@@ -71,7 +76,7 @@ abstract class TestCase extends Orchestra
                 'database' => env('DB_DATABASE', 'kitsune'),
                 'username' => env('DB_USERNAME', 'kitsune'),
                 'password' => env('DB_PASSWORD', 'kitsune'),
-                'charset' => $connection === 'mysql' ? 'utf8mb4' : 'utf8',
+                'charset' => $connection === 'pgsql' ? 'utf8' : 'utf8mb4',
                 'prefix' => '',
             ]);
         }

@@ -509,6 +509,26 @@ describe('cardinality has a documented domain, and it is enforced', function ():
     });
 });
 
+it('distinguishes TRAILING SPACE in an indexed string, on every engine', function (): void {
+    /*
+     * ⚠️ `utf8mb4_bin` fixed the case half and left this one: it is a PAD
+     * SPACE collation, so `'ABC '` and `'ABC'` compared equal and either
+     * lookup returned both rows. The NO PAD alternative,
+     * `utf8mb4_0900_bin`, does not exist on MariaDB — which is documented as
+     * supported and routed to the same driver. VARBINARY is both, on both.
+     */
+    $storage = storageFor('code', 'text', ['org_id' => $this->orgA->id, 'is_indexed' => true]);
+    $this->manager->index($storage);
+
+    Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Bare', 'values' => ['code' => 'ABC']]);
+    Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Padded', 'values' => ['code' => 'ABC ']]);
+
+    $column = $storage->generatedColumnName();
+
+    expect(Entry::where($column, 'ABC')->pluck('title')->all())->toBe(['Bare'])
+        ->and(Entry::where($column, 'ABC ')->pluck('title')->all())->toBe(['Padded']);
+});
+
 it('distinguishes case in an indexed string, on every engine', function (): void {
     /*
      * ⚠️ MySQL's default collation is case AND accent insensitive, so an
