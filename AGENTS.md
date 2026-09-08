@@ -20,14 +20,19 @@ Say `Org` or `Site` explicitly. Reserve "tenant" for the Filament API boundary o
 ## 2. Every model declares its scope, and org has no safety net
 
 ```php
-#[SiteScoped]   // entries and most content — Filament's tenancy scopes these
-#[OrgScoped]    // users, billing, settings, shared media — KITSUNE scopes these
-#[Unscoped]     // genuinely global: modules, system entry types
+#[SiteScoped]              // entries and most content — Filament's tenancy scopes these
+#[OrgScoped]               // billing, settings, shared media — KITSUNE scopes these
+#[OrgScopedThroughPivot]   // users: membership is many-to-many, so there is no org_id
+#[Unscoped]                // genuinely global: modules, system entry types
 ```
 
-A model with none of the three **throws in development and refuses to serve in production**. Fail closed.
+A model with none of the four **throws in development and refuses to serve in production**. Fail closed.
 
-**The part that matters:** Filament's tenancy segment is the Site, so its automatic global scope enforces *site* isolation only. **Org is a level Filament does not model at all.** An `#[OrgScoped]` model gets **no framework scope whatsoever** and must receive a Kitsune-authored one. A cross-org leak would be caught by nothing Filament does.
+⚠️ **The attribute is a declaration, not an enforcement.** It does nothing unless the model also `use`s `EnforcesScope` — `User` carried `#[Unscoped]` and no trait for two phases, so it was labelled correctly and completely unconstrained. If you add the attribute, add the trait.
+
+**The part that matters:** Filament's tenancy segment is the Site, so its automatic global scope enforces *site* isolation only. **Org is a level Filament does not model at all.** An org-scoped model gets **no framework scope whatsoever** and must receive a Kitsune-authored one. A cross-org leak would be caught by nothing Filament does.
+
+Every org scope **fails closed with no context**, which is why the authentication path needs an explicit carve-out (`OrgAwareUserProvider`) — a user is resolved before any org exists. Put such a carve-out where the query is actually built: Laravel's user provider constructs its own, so a carve-out written as a method on `User` would read correctly and never run.
 
 ## 3. Never Laravel's `unique` or `exists`
 

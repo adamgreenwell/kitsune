@@ -61,7 +61,7 @@ Those consumed 5,000–15,000 hours. 12–18 months part-time is ~1,200. **So: c
 - [ ] **`CLA.md` + CLA bot wired in before the first external PR** ([#3](https://github.com/adamgreenwell/kitsune/issues/3)). The only irreversible item in the project
 - [x] **`GOVERNANCE.md`** — stated BDFL with a disclosed bus factor, binding licence and open/paid commitments, staged succession, and a disclosed commercial conflict of interest (ADR-023)
 - [x] `CONTRIBUTING.md`
-- [ ] `CODE_OF_CONDUCT.md` ([#4](https://github.com/adamgreenwell/kitsune/issues/4)) and `SECURITY.md` with a real disclosure address ([#5](https://github.com/adamgreenwell/kitsune/issues/5)) — ⚠️ both are already linked from `GOVERNANCE.md` and `CONTRIBUTING.md`, so those links are live-broken on a public repo
+- [x] `CODE_OF_CONDUCT.md` ([#4](https://github.com/adamgreenwell/kitsune/issues/4)) and `SECURITY.md` ([#5](https://github.com/adamgreenwell/kitsune/issues/5)). Both exist, so the links from `GOVERNANCE.md` and `CONTRIBUTING.md` resolve — the ⚠️ that used to sit here warned they were live-broken, and it outlived the problem by several phases. `SECURITY.md` routes disclosure through GitHub's private advisory flow rather than an email address, which is encrypted in transit and keeps the report attached to its eventual fix
 - [x] Repo: monorepo with `packages/core`. Layout follows `laravel/framework` — tests at the root, because Pest resolves its test directory from the project root with no configuration hook
 - [x] Installable app skeleton — `skeleton/`, published as `kitsune/kitsune`. SQLite by default, no Node, no Vite, no `config/` directory (Laravel's defaults plus `.env` suffice). Verified booting and rendering ([#6](https://github.com/adamgreenwell/kitsune/issues/6))
 - [ ] Split-publish `kitsune/core` to Packagist ([#8](https://github.com/adamgreenwell/kitsune/issues/8))
@@ -69,7 +69,7 @@ Those consumed 5,000–15,000 hours. 12–18 months part-time is ~1,200. **So: c
 - [x] Playwright browser job — 4 smoke tests against the skeleton, one browser, Node confined to that job ([#7](https://github.com/adamgreenwell/kitsune/issues/7)). When Phase 4 lands the admin, CONTRIBUTING's standing regression test (a page loaded from *outside* `/c/{type}`) goes here
 - [x] ⚠️ **Bare-clone guard** — a CI job declaring no service containers at all, running the default suite on PHP 8.4 and 8.5. **Passed on first run**, so ADR-024's pillar-three mitigation is verified rather than promised. If it ever goes red the fix is never to add services to it, but to fix the test that reached for one
 - [x] `laravel/boost` as a **dev** dependency. Never a runtime dependency of `kitsune/core` (ADR-025)
-- [ ] Kitsune's own guidelines file, encoding the invariants an agent violates by default ([#9](https://github.com/adamgreenwell/kitsune/issues/9))
+- [x] Kitsune's own guidelines file, encoding the invariants an agent violates by default ([#9](https://github.com/adamgreenwell/kitsune/issues/9)) — `AGENTS.md`, fourteen invariants. Several were added *because* something violated them: `once()` keys, foreign keys in tests, and amending an ADR rather than routing around it
 - [ ] **Name clearance before spending on a logo** ([#1](https://github.com/adamgreenwell/kitsune/issues/1)) — Mozilla's support platform and a Rust ActivityPub project both use "Kitsune"
 
 ## Phase 1 — Remaining spikes
@@ -137,7 +137,9 @@ ADR-012 removed the boot-order collision structurally — the route table no lon
 
 - [x] `Org`, `SiteGroup` and `Site` models; `Context` carrying the current org and site (ADR-021). Deliberately Filament-independent — core is headless-capable, so the API and console get the same enforcement
 - [x] Site resolution middleware — `SetKitsuneContext` mirrors Filament's resolved tenant into Kitsune's own `Context`, which is what the global scopes read
-- [x] **`#[SiteScoped]` / `#[OrgScoped]` / `#[Unscoped]` mandatory on every model.** Undeclared throws at boot. **Fail closed**
+- [x] **`#[SiteScoped]` / `#[OrgScoped]` / `#[OrgScopedThroughPivot]` / `#[Unscoped]` mandatory on every model.** Undeclared throws at boot. **Fail closed**.
+
+  The fourth arrived with [#21](https://github.com/adamgreenwell/kitsune/issues/21) and is recorded as an ADR-021 amendment: a user belongs to many orgs, so `OrgScope`'s `org_id = current` had no column to compare. ⚠️ And the attribute is a **declaration, not an enforcement** — it does nothing unless the model also `use`s `EnforcesScope`, which `User` did not for two phases
 - [x] `EnforcesScope` applying the right global scope from the attribute, and stamping the scope key on create
 - [x] ⚠️ **`OrgScope`, Kitsune-authored, for `#[OrgScoped]` models.** Filament gives them no scope at all
 - [x] Settings resolution: org → site group → site — sparse overrides, shallow merge, provenance on every value (ADR-022). Admin rendering of it comes with the panel
@@ -159,11 +161,17 @@ ADR-012 removed the boot-order collision structurally — the route table no lon
 - [ ] Install/upgrade/uninstall lifecycle with migrations and rollback
 - [ ] Settings store backing the org → site group → site resolution (ADR-022)
 - [ ] RBAC: roles, permissions, per-org assignment. Permissions named `entry.{type}.{action}`
+
+  🟡 The **org-scoping half is done** ([#21](https://github.com/adamgreenwell/kitsune/issues/21)). `User` is `#[OrgScopedThroughPivot]` through `org_user`, because membership is many-to-many and `OrgScope`'s `org_id = current` never applied. Roles and permissions themselves remain open.
+
+  ⚠️ **The attribute had never been enforced.** `User` carried `#[Unscoped]` and did not `use EnforcesScope`, so it was labelled correctly and completely unconstrained — a model can pass the declaration sweep and still be globally readable. AGENTS.md invariant 2 now says so.
 - [x] Audit log — **actor, action and target only, never payloads** (ADR-020), so erasure can reach everything it must.
 
   **What is absent from the table is the design**, and a test asserts the column list *exactly* — adding `changes`, `before`, `after` or `payload` fails the build rather than passing review on a busy day. `Auditor::record()` takes an action and a target and has **no parameter for a diff**, which is a stronger guarantee than a convention everybody agrees with and someone eventually breaks.
 
-  Written from model events rather than from the admin, so the API and the console are audited by the same code path — an audit trail that only covers the UI is one with a documented hole. The actor is NULL when the system acts on its own; attributing a scheduled prune to whoever happened to be logged in would be a lie in the one place that must not hold one.
+  Written at the **query builder**, not from the admin, so the API and the console are audited by the same code path — an audit trail that only covers the UI is one with a documented hole. Model events alone were not enough: `Entry::query()->update()` and its siblings compile straight to SQL and dispatch nothing per row, so the bulk path was untraced. They were also not *safe* alongside it, since `$entry->save()` is itself a builder write and recorded everything twice. One choke point, and the builder tells the cases apart on its own — a soft delete is an update that sets `deleted_at`, a restore is one that clears it.
+
+  The actor is NULL when the system acts on its own; attributing a scheduled prune to whoever happened to be logged in would be a lie in the one place that must not hold one.
 
   🟡 `erasure_log` (ADR-020 primitive 5) has its table and stores the target and the **replacement**, never the original — enough to replay on a restore, disclosing nothing. Wiring it to `redactField()` waits on the erasure work in [#30](https://github.com/adamgreenwell/kitsune/pull/30)
 - [ ] One hardcoded entity type end to end as a normal module, to prove the stack

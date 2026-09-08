@@ -43,10 +43,26 @@ return new class extends Migration
             $table->string('label');
             $table->index(['org_id']);
         });
+
+        // Stands in for the skeleton's `User`: org membership through a
+        // pivot, which is the one shape OrgScope cannot express.
+        Schema::create('pivot_scoped_things', function (Blueprint $table): void {
+            $table->id();
+            $table->string('name');
+        });
+
+        Schema::create('pivot_scoped_thing_org', function (Blueprint $table): void {
+            $table->foreignId('org_id');
+            $table->foreignId('pivot_scoped_thing_id');
+            $table->primary(['org_id', 'pivot_scoped_thing_id']);
+            $table->index(['pivot_scoped_thing_id', 'org_id']);
+        });
     }
 
     public function down(): void
     {
+        Schema::dropIfExists('pivot_scoped_thing_org');
+        Schema::dropIfExists('pivot_scoped_things');
         Schema::dropIfExists('shared_things');
         Schema::dropIfExists('site_things');
     }
