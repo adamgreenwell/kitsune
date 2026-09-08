@@ -292,3 +292,188 @@ describe('editing a field writes its own storage', function (): void {
         expect($field->fieldStorage->fresh()->is_indexed)->toBeTrue();
     });
 });
+
+describe('shared storage is not one org\'s to change', function (): void {
+    /*
+     * ⚠️ Introduced BY the fix that made editing work at all, and caught in
+     * the next review round.
+     *
+     * `Field::guardStorageOwnership()` deliberately permits an org-owned type to
+     * attach GLOBAL storage (`org_id IS NULL`), the same way it permits a global
+     * entry type. So making the edit path write meant one org could rewrite the
+     * classification, indexing and settings of a row every org depends on — a
+     * wider blast radius than the cross-org case, not a narrower one. The create
+     * path never had this hole, because adoption never wrote to the adopted row.
+     *
+     * The refusal is for the STORAGE half only: the `Field` row is this type's
+     * own, so relabelling a global field here stays allowed. That separation is
+     * the point of ADR-006's split.
+     */
+    $globalFieldOn = function (int $typeId, array $storage = []): Field {
+        $row = FieldStorage::create([
+            'org_id' => null, 'handle' => 'global_email', 'type' => 'text',
+            'pii_class' => 'personal', 'cardinality' => 1, 'settings' => ['maxLength' => 320], ...$storage,
+        ]);
+
+        return Field::create([
+            'entry_type_id' => $typeId, 'field_storage_id' => $row->id, 'label' => 'Email',
+        ]);
+    };
+
+    it('refuses a reclassification of GLOBAL storage', function () use ($globalFieldOn): void {
+        $type = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'people', 'name' => 'P', 'plural_name' => 'Ps',
+        ]);
+        $field = $globalFieldOn($type->id);
+
+        expect(fn () => (new FieldsRelationManager)->updateStorage([
+            'storage_handle' => 'global_email', 'storage_type' => 'text',
+            'storage_pii_class' => 'none', 'label' => 'Email',
+        ], $field))->toThrow(RuntimeException::class, 'shared by every organisation');
+
+        expect($field->fieldStorage->fresh()->pii_class)->toBe('personal');
+    });
+
+    it('refuses an indexing change to GLOBAL storage', function () use ($globalFieldOn): void {
+        $type = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'people2', 'name' => 'P', 'plural_name' => 'Ps',
+        ]);
+        $field = $globalFieldOn($type->id);
+
+        expect(fn () => (new FieldsRelationManager)->updateStorage([
+            'storage_handle' => 'global_email', 'storage_type' => 'text',
+            'storage_pii_class' => 'personal', 'storage_is_indexed' => true, 'label' => 'Email',
+        ], $field))->toThrow(RuntimeException::class, 'indexing is not this organisation\'s to change');
+
+        expect($field->fieldStorage->fresh()->is_indexed)->toBeFalse();
+    });
+
+    it('ALLOWS a presentation-only edit of a global field', function () use ($globalFieldOn): void {
+        // The Field row is this type's own. Refusing this would make a shared
+        // field unusable rather than merely uneditable.
+        $type = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'people3', 'name' => 'P', 'plural_name' => 'Ps',
+        ]);
+        $field = $globalFieldOn($type->id);
+
+        $presentation = (new FieldsRelationManager)->updateStorage([
+            'storage_handle' => 'global_email', 'storage_type' => 'text',
+            // Unchanged — the values the form round-tripped out of the row.
+            'storage_pii_class' => 'personal', 'storage_settings' => ['maxLength' => 320],
+            'storage_is_indexed' => false,
+            'label' => 'Work email', 'help_text' => 'Used for invoices', 'is_required' => true,
+        ], $field);
+
+        expect($presentation['label'])->toBe('Work email')
+            ->and($presentation['is_required'])->toBeTrue()
+            ->and($field->fieldStorage->fresh()->pii_class)->toBe('personal');
+    });
+
+    it('does not refuse a no-op edit because of a cast', function () use ($globalFieldOn): void {
+        // ⚠️ The form returns `"320"` where the row holds `320`. Comparing by
+        // hand, a strict test refuses an edit that changes nothing and a loose
+        // one lets a real change through — so the model's own dirty check
+        // decides, on a clone.
+        $type = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'people4', 'name' => 'P', 'plural_name' => 'Ps',
+        ]);
+        $field = $globalFieldOn($type->id);
+
+        expect(fn () => (new FieldsRelationManager)->updateStorage([
+            'storage_handle' => 'global_email', 'storage_type' => 'text',
+            'storage_pii_class' => 'personal', 'storage_settings' => ['maxLength' => '320'],
+            'storage_is_indexed' => '0', 'label' => 'Email',
+        ], $field))->not->toThrow(RuntimeException::class);
+    });
+
+    it('still refuses a GENUINE settings change on shared storage', function () use ($globalFieldOn): void {
+        // The loose comparison exists to ignore `'320'` versus `320`. It must
+        // not also ignore 320 versus 40.
+        $type = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'people6', 'name' => 'P', 'plural_name' => 'Ps',
+        ]);
+        $field = $globalFieldOn($type->id);
+
+        expect(fn () => (new FieldsRelationManager)->updateStorage([
+            'storage_handle' => 'global_email', 'storage_type' => 'text',
+            'storage_pii_class' => 'personal', 'storage_settings' => ['maxLength' => 40],
+            'label' => 'Email',
+        ], $field))->toThrow(RuntimeException::class, 'settings is not this organisation');
+
+        expect($field->fieldStorage->fresh()->settings['maxLength'])->toBe(320);
+    });
+
+    it('still lets the org edit its OWN storage', function (): void {
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'mine_email', 'type' => 'text',
+            'pii_class' => 'none', 'cardinality' => 1,
+        ]);
+        $type = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'people5', 'name' => 'P', 'plural_name' => 'Ps',
+        ]);
+        $field = Field::create([
+            'entry_type_id' => $type->id, 'field_storage_id' => $storage->id, 'label' => 'Email',
+        ]);
+
+        (new FieldsRelationManager)->updateStorage([
+            'storage_handle' => 'mine_email', 'storage_type' => 'text',
+            'storage_pii_class' => 'sensitive', 'label' => 'Email',
+        ], $field);
+
+        expect($storage->fresh()->pii_class)->toBe('sensitive');
+    });
+});
+
+describe('the subject selector offers only fields that can be saved', function (): void {
+    /*
+     * ⚠️ Every field was listed, and `guardSubjectShape()` refuses a
+     * multi-valued one — so choosing it produced a save that threw. An option
+     * presented as valid that cannot be saved.
+     *
+     * The predicate is now shared with the guard rather than reimplemented,
+     * because a second copy drifts: review found exactly that failure four
+     * times in one PR, where a field type's validation and its published schema
+     * were maintained separately (invariant 14).
+     */
+    $fieldOfCardinality = function (int $typeId, string $handle, int $cardinality): Field {
+        $storage = FieldStorage::create([
+            'org_id' => test()->org->id, 'handle' => $handle, 'type' => 'text',
+            'pii_class' => 'personal', 'cardinality' => $cardinality,
+        ]);
+
+        return Field::create([
+            'entry_type_id' => $typeId, 'field_storage_id' => $storage->id, 'label' => ucfirst($handle),
+        ]);
+    };
+
+    it('reports no refusal for a single-valued field', function () use ($fieldOfCardinality): void {
+        $type = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'subj1', 'name' => 'S', 'plural_name' => 'Ss',
+        ]);
+        $field = $fieldOfCardinality($type->id, 'email', 1);
+
+        expect($type->subjectShapeRefusal($field))->toBeNull();
+    });
+
+    it('reports a refusal for a MULTI-valued field, with the reason', function () use ($fieldOfCardinality): void {
+        $type = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'subj2', 'name' => 'S', 'plural_name' => 'Ss',
+        ]);
+        $field = $fieldOfCardinality($type->id, 'aliases', -1);
+
+        expect($type->subjectShapeRefusal($field))->toContain('holds many values');
+    });
+
+    it('is the SAME predicate the model refuses on', function () use ($fieldOfCardinality): void {
+        // The point of the refactor: if these two could disagree, the selector
+        // would offer a field the save rejects — which is the bug.
+        $type = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'subj3', 'name' => 'S', 'plural_name' => 'Ss',
+        ]);
+        $field = $fieldOfCardinality($type->id, 'aliases', -1);
+
+        expect($type->subjectShapeRefusal($field))->not->toBeNull()
+            ->and(fn () => $type->update(['subject_field_id' => $field->getKey()]))
+            ->toThrow(RuntimeException::class, 'holds many values');
+    });
+});

@@ -154,7 +154,14 @@ class FieldsRelationManager extends RelationManager
                             'sensitive' => 'Sensitive — GDPR Article 9 special category',
                         ])
                         ->default(fn (Get $get): string => self::type($get)?->suggestedPiiClass() ?? 'none')
-                        ->helperText('Suggested by the field type; confirm it, because the platform cannot know.'),
+                        // Shared storage is refused on save (see
+                        // refuseSharedStorageChange). Disabled here so the author
+                        // finds that out before typing rather than after.
+                        ->disabled(fn (?Field $record): bool => $this->editsSharedStorage($record))
+                        ->dehydrated()
+                        ->helperText(fn (?Field $record): string => $this->editsSharedStorage($record)
+                            ? 'Shared with every entity type using this storage, so it is not editable here.'
+                            : 'Suggested by the field type; confirm it, because the platform cannot know.'),
                 ]),
 
             Section::make('Presentation')
@@ -172,7 +179,8 @@ class FieldsRelationManager extends RelationManager
                     Toggle::make('storage_is_indexed')
                         ->label('Index this field')
                         ->helperText('Adds a generated column and an index so this field can be filtered and sorted efficiently.')
-                        ->disabled(fn (Get $get): bool => self::type($get)?->isIndexable() !== true)
+                        ->disabled(fn (Get $get, ?Field $record): bool => self::type($get)?->isIndexable() !== true
+                            || $this->editsSharedStorage($record))
                         ->dehydrated(),
                 ]),
 
@@ -183,6 +191,11 @@ class FieldsRelationManager extends RelationManager
                     ? []
                     : SettingsSchemaRenderer::for($type, 'storage_settings'))
                 ->visible(fn (Get $get): bool => (self::type($get)?->settingsSchema() ?? []) !== [])
+                // Cascades to every rendered setting, which is why the whole
+                // section carries it rather than each component the renderer
+                // produced — the renderer returns data and knows nothing about
+                // ownership (ADR-002).
+                ->disabled(fn (?Field $record): bool => $this->editsSharedStorage($record))
                 ->columns(2),
         ]);
     }
@@ -356,13 +369,76 @@ class FieldsRelationManager extends RelationManager
             return $this->writeStorage($data);
         }
 
-        // ⚠️ Present-key tests, not `?? false` / `?? []` as on create.
+        // ⚠️ SHARED storage is not this org's to change, and making the edit
+        // path write at all is what opened this.
         //
-        // The two paths differ in what an ABSENT key means. On create it means
-        // "not requested", and false is right. Here it would mean "destroy the
-        // index" or "erase the settings" — so a key the form did not submit
-        // leaves the stored value alone. Every one of these is `dehydrated()`,
-        // so absence is a form-shape bug; it should not also be data loss.
+        // `Field::guardStorageOwnership()` deliberately permits an org-owned
+        // type to attach GLOBAL storage (`org_id IS NULL`), the same way it
+        // permits a global entry type. So the row this form just loaded may be
+        // one every org depends on — and writing the submitted classification,
+        // indexing and settings to it would let one customer decide every
+        // customer's behaviour. That is a wider blast radius than the cross-org
+        // case, not a narrower one.
+        //
+        // Refused for the STORAGE half only. The `Field` row is this type's own,
+        // so relabelling a global field, or making it required here, stays
+        // allowed — which is the point of ADR-006's split.
+        if (! $this->ownsStorage($storage)) {
+            $this->refuseSharedStorageChange($storage, $data);
+
+            // Nothing saved, so nothing to sync — and leaving a pending row set
+            // would have `syncSchema()` act on attributes this refused to write.
+            $this->pendingStorage = null;
+
+            return $this->presentation($data, $storage);
+        }
+
+        $this->applyStorageAttributes($storage, $data);
+
+        // Through the model, so `guardShape()` runs: locked shape, projection
+        // settings on a locked row, and the pii_class fail-closed check.
+        $storage->save();
+
+        $this->pendingStorage = $storage;
+
+        return $this->presentation($data, $storage);
+    }
+
+    /**
+     * Whether the form is editing a field whose STORAGE is shared.
+     *
+     * Null record means create, where storage is either adopted as it stands or
+     * defined fresh — neither of which edits somebody else's row.
+     */
+    private function editsSharedStorage(?Field $record): bool
+    {
+        $storage = $record?->fieldStorage;
+
+        return $storage !== null && ! $this->ownsStorage($storage);
+    }
+
+    /** Whether this storage row belongs to the org currently signed in. */
+    private function ownsStorage(FieldStorage $storage): bool
+    {
+        return $storage->org_id !== null
+            && (int) $storage->org_id === app(Context::class)->orgId();
+    }
+
+    /**
+     * Assign the storage attributes the edit modal leaves enabled.
+     *
+     * ⚠️ Present-key tests, not `?? false` / `?? []` as on create.
+     *
+     * The two paths differ in what an ABSENT key means. On create it means "not
+     * requested", and false is right. Here it would mean "destroy the index" or
+     * "erase the settings" — so a key the form did not submit leaves the stored
+     * value alone. Every one of these is `dehydrated()`, so absence is a
+     * form-shape bug; it should not also be data loss.
+     *
+     * @param  array<string, mixed>  $data
+     */
+    private function applyStorageAttributes(FieldStorage $storage, array $data): void
+    {
         if (array_key_exists('storage_pii_class', $data)) {
             $storage->pii_class = $data['storage_pii_class'];
         }
@@ -374,14 +450,66 @@ class FieldsRelationManager extends RelationManager
         if (array_key_exists('storage_settings', $data)) {
             $storage->setAttribute('settings', $data['storage_settings']);
         }
+    }
 
-        // Through the model, so `guardShape()` runs: locked shape, projection
-        // settings on a locked row, and the pii_class fail-closed check.
-        $storage->save();
+    /**
+     * Refuse a change to storage this org does not own — and only a CHANGE.
+     *
+     * ⚠️ NOT `isDirty()`, which was the first attempt and was wrong.
+     *
+     * `isDirty()` encodes a cast JSON attribute on both sides and compares the
+     * strings, and Filament's numeric inputs submit STRINGS — so an untouched
+     * form returns `['maxLength' => '320']` for a row holding
+     * `['maxLength' => 320]` and the check called that a change. Every
+     * presentation-only edit of a shared field would then have been refused,
+     * which is the opposite of the intent: the `Field` row IS this type's own,
+     * and refusing to relabel a global field makes it unusable rather than
+     * merely uneditable. Caught by a test written for exactly this.
+     *
+     * So each attribute is compared on its own terms, and the reasoning is per
+     * attribute rather than delegated to a helper that cannot know it.
+     *
+     * @param  array<string, mixed>  $data
+     */
+    private function refuseSharedStorageChange(FieldStorage $storage, array $data): void
+    {
+        $changes = [];
 
-        $this->pendingStorage = $storage;
+        // Both sides are one of three known strings.
+        if (array_key_exists('storage_pii_class', $data)
+            && (string) $data['storage_pii_class'] !== (string) $storage->pii_class) {
+            $changes[] = 'privacy classification';
+        }
 
-        return $this->presentation($data, $storage);
+        // A checkbox arrives as "1"/"0"/true/false depending on the transport.
+        if (array_key_exists('storage_is_indexed', $data)
+            && (bool) $data['storage_is_indexed'] !== (bool) $storage->is_indexed) {
+            $changes[] = 'indexing';
+        }
+
+        // ⚠️ Loose comparison, and only here. It is what lets `'320'` equal
+        // `320` while still catching a real edit — PHP 8 compares a non-numeric
+        // string AS a string, so it does not collapse distinct values the way
+        // PHP 7's would have.
+        if (array_key_exists('storage_settings', $data)
+            && ($data['storage_settings'] ?? []) != ($storage->settings ?? [])) {
+            $changes[] = 'settings';
+        }
+
+        if ($changes === []) {
+            return;
+        }
+
+        throw new RuntimeException(sprintf(
+            'Field storage [%s] is %s, so its %s %s not this organisation\'s to change '
+            .'(ADR-006, ADR-021) — a change there would reach every entity type and every '
+            .'organisation using it. The label, help text and whether it is required on THIS '
+            .'type are yours to edit.',
+            $storage->handle,
+            $storage->org_id === null ? 'shared by every organisation' : 'owned by another organisation',
+            implode(' and ', $changes),
+            count($changes) === 1 ? 'is' : 'are',
+        ));
     }
 
     /**

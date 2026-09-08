@@ -138,10 +138,33 @@ class EntryType extends Model implements RefusesCascadingDeletes, RequiresModelS
      */
     private function guardSubjectShape(Field $field): void
     {
+        $refusal = $this->subjectShapeRefusal($field);
+
+        if ($refusal !== null) {
+            throw new RuntimeException($refusal);
+        }
+    }
+
+    /**
+     * Why this field cannot identify a data subject, or null if it can.
+     *
+     * ⚠️ ONE implementation, because there are two callers with opposite jobs:
+     * the model guard refuses a bad nomination, and the admin's selector has to
+     * avoid offering one. Written as a second predicate, those two drift — the
+     * builder review found that exact failure four times in one PR, where a
+     * field type's validation and its published schema were maintained
+     * separately. The selector offered every field, and choosing a multi-valued
+     * one produced a save that threw: an option presented as valid that cannot
+     * be saved.
+     *
+     * Returns the message rather than a bool so the reason survives to the UI.
+     */
+    public function subjectShapeRefusal(Field $field): ?string
+    {
         $storage = $field->fieldStorage;
 
         if ($storage === null) {
-            return;
+            return null;
         }
 
         // ⚠️ Storage ownership, checked HERE because `Field::create()` skips
@@ -158,14 +181,14 @@ class EntryType extends Model implements RefusesCascadingDeletes, RequiresModelS
         // of them — a wider blast radius than the cross-org case, not a
         // narrower one.
         if ($storage->org_id !== $this->org_id && $storage->org_id !== null) {
-            throw new RuntimeException(sprintf(
+            return sprintf(
                 'Field [%s] is backed by %s and cannot identify a data subject on %s. '
                 .'Subject-access requests would be answered against a definition this entry type '
                 .'does not control (ADR-020, ADR-021).',
                 $storage->handle,
                 "another organisation's storage",
                 $this->org_id === null ? 'a global entry type' : 'this entry type',
-            ));
+            );
         }
 
         $config = new FieldConfig($storage, $field);
@@ -178,25 +201,22 @@ class EntryType extends Model implements RefusesCascadingDeletes, RequiresModelS
         // subject to both of them.
         if ($storage->strategy() === StorageStrategy::Relational) {
             if ($config->isMultiValue()) {
-                throw new RuntimeException(
-                    "Field [{$storage->handle}] can point to several entries and cannot identify a data "
+                return "Field [{$storage->handle}] can point to several entries and cannot identify a data "
                     .'subject: a request about one person would return records belonging to another '
-                    .'(ADR-020). Nominate a relation limited to one target.'
-                );
+                    .'(ADR-020). Nominate a relation limited to one target.';
             }
 
-            return;
+            return null;
         }
 
         if ($config->isMultiValue() || $this->publishesAnArray($storage, $config)) {
-            throw new RuntimeException(
-                "Field [{$storage->handle}] holds many values and cannot identify a data subject. "
+            return "Field [{$storage->handle}] holds many values and cannot identify a data subject. "
                 .'A subject identifier names one person; `whereSubjectIs()` would match nothing at '
                 .'all, which looks exactly like a type with no subject nominated (ADR-020). Nominate '
-                .'a single-valued field, or a relation if the subject is another entry.'
-            );
+                .'a single-valued field, or a relation if the subject is another entry.';
         }
 
+        return null;
     }
 
     private function publishesAnArray(FieldStorage $storage, FieldConfig $config): bool
