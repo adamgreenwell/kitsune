@@ -397,6 +397,31 @@ describe('a locked field cannot be narrowed, only widened', function (): void {
         ]))->not->toThrow(RuntimeException::class);
     });
 
+    /*
+     * ⚠️ An ADDED constraint narrows too, and the first version of this guard
+     * could not see one: it walked only the settings that existed BEFORE the
+     * edit. An absent constraint is not the absence of a setting — it means
+     * unrestricted, which is the widest value there is.
+     */
+    it('refuses a constraint ADDED to a locked field', function (): void {
+        $storage = storageFor('score', 'number', [
+            'org_id' => $this->orgA->id, 'is_locked' => true,
+            'settings' => ['format' => 'integer'],
+        ]);
+
+        expect(fn () => $storage->update(['settings' => ['format' => 'integer', 'min' => 0]]))
+            ->toThrow(RuntimeException::class, 'cannot be narrowed');
+    });
+
+    it('refuses a pattern added to a locked text field', function (): void {
+        $storage = storageFor('code', 'text', [
+            'org_id' => $this->orgA->id, 'is_locked' => true, 'settings' => ['maxLength' => 64],
+        ]);
+
+        expect(fn () => $storage->update(['settings' => ['maxLength' => 64, 'pattern' => '^[a-z]+$']]))
+            ->toThrow(RuntimeException::class, 'cannot be narrowed');
+    });
+
     it('ALLOWS relabelling an option, since the label is presentation', function (): void {
         $storage = storageFor('status', 'select', [
             'org_id' => $this->orgA->id, 'is_locked' => true,
@@ -423,6 +448,18 @@ describe('cardinality has a documented domain, and it is enforced', function ():
     it('refuses a negative other than -1', function (): void {
         expect(fn () => storageFor('tags', 'text', ['org_id' => $this->orgA->id, 'cardinality' => -2]))
             ->toThrow(RuntimeException::class, 'not a value');
+    });
+
+    it('treats a form\'s string as the number it is', function (): void {
+        // ⚠️ A form posts "1". Without an integer cast the strict comparisons
+        // asking whether cardinality differs from 1 answered TRUE for a
+        // single-value field — validation demanded an array, the schema
+        // advertised one, and toStorage() wrapped the scalar in a singleton,
+        // until the model was refreshed out of the database.
+        $storage = storageFor('title_alt', 'text', ['org_id' => $this->orgA->id, 'cardinality' => '1']);
+
+        expect($storage->isMultiValue())->toBeFalse()
+            ->and($storage->cardinality)->toBe(1);
     });
 
     it('defaults to one on the model, not only in the database', function (): void {
@@ -721,16 +758,25 @@ describe('settings that change the projection are shape, and lock with it', func
         expect(fn () => $storage->save())->toThrow(RuntimeException::class, 'is locked');
     });
 
-    it('still allows a setting that leaves the projection alone', function (): void {
-        // Presentation is safe to edit on a field holding data; only shape is
-        // not. Naming the settings would have banned both.
+    it('refuses a CONSTRAINT that leaves the projection alone', function (): void {
+        /*
+         * ⚠️ This test used to assert the opposite, on the reasoning that
+         * only shape is locked and everything else is presentation. `min` is
+         * not presentation: adding it to a field holding data can make a
+         * stored value invalid, so the next unrelated edit to the entry
+         * holding it fails for a reason its author cannot see — which is the
+         * outcome ADR-006's lock exists to prevent.
+         *
+         * The projection is where a value LIVES. The lock is about what the
+         * field ACCEPTS, and those come apart exactly here.
+         */
         $storage = storageFor('price', 'number', [
             'org_id' => $this->orgA->id, 'is_locked' => true, 'settings' => ['format' => 'decimal'],
         ]);
 
         $storage->settings = ['format' => 'decimal', 'min' => 0];
 
-        expect(fn () => $storage->save())->not->toThrow(RuntimeException::class);
+        expect(fn () => $storage->save())->toThrow(RuntimeException::class, 'cannot be narrowed');
     });
 
     it('leaves an unlocked field free to change', function (): void {

@@ -75,7 +75,11 @@ class Entry extends Model
             // a pivot changes. A field configured to accept `person` would go
             // on naming a target that had since become an `article`.
             if ($entry->exists
-                && ($field = EntryRelation::forbidsTypeChange((int) $entry->getKey(), (string) $entry->type_handle)) !== null) {
+                && ($field = EntryRelation::forbidsTypeChange(
+                    (int) $entry->getKey(),
+                    (string) $entry->type_handle,
+                    (int) $entry->org_id,
+                )) !== null) {
                 throw new RuntimeException(
                     "Entry {$entry->getKey()} cannot become a [{$entry->type_handle}]: field "
                     ."[{$field}] relates to it and does not accept that type. Detach the relation "

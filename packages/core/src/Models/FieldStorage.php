@@ -98,6 +98,12 @@ class FieldStorage extends Model
     ];
 
     protected $casts = [
+        // ⚠️ A form posts `"1"`. Without this the strict comparisons that ask
+        // whether cardinality differs from 1 answered TRUE for a
+        // single-value field, so validation demanded an array, the schema
+        // advertised one, and toStorage() wrapped the scalar in a singleton
+        // — until the model was refreshed out of the database.
+        'cardinality' => 'integer',
         'settings' => 'array',
         'is_indexed' => 'boolean',
         'is_locked' => 'boolean',
@@ -281,6 +287,14 @@ class FieldStorage extends Model
      * reinterpreting are what this refuses, which is the same distinction the
      * projection guard draws, applied to what the field ACCEPTS rather than
      * to where it is stored.
+     *
+     * ⚠️ Walks the UNION of both sides, not just the keys that existed
+     * before. A locked `number` could ADD `min: 0`, or a locked `text` a
+     * `pattern`, and neither appeared in the original settings — so a loop
+     * over `$before` never saw them, neither moves the projection, and both
+     * narrow what the field accepts. An absent constraint is not the absence
+     * of a setting: it means unrestricted, which is the widest value there
+     * is.
      */
     private function guardNarrowedSettings(self $original): void
     {
@@ -289,13 +303,26 @@ class FieldStorage extends Model
         }
     }
 
-    /** Whether this save removes or reinterprets anything the field accepts. */
-    private function narrowsAcceptedValues(): bool
+    /**
+     * Whether this save restricts which entry types the relation accepts.
+     *
+     * ⚠️ An EMPTY list is unrestricted, so `[] → ['patient']` is the widest
+     * possible narrowing rather than a widening — which a set comparison
+     * reads backwards.
+     */
+    private function narrowsTargetTypes(): bool
     {
         $original = clone $this;
         $original->setRawAttributes($this->getRawOriginal(), true);
 
-        return $this->narrowedSetting($original) !== null;
+        $before = (array) (($original->settings['targetTypes'] ?? []) ?: []);
+        $after = (array) (($this->settings['targetTypes'] ?? []) ?: []);
+
+        if ($before === []) {
+            return $after !== [];
+        }
+
+        return array_diff($before, $after) !== [];
     }
 
     /** The first setting this save narrows, or null if it only widens. */
@@ -304,8 +331,26 @@ class FieldStorage extends Model
         $before = (array) ($original->settings ?? []);
         $after = (array) ($this->settings ?? []);
 
-        foreach ($before as $key => $was) {
+        foreach (array_keys($before + $after) as $key) {
+            $was = $before[$key] ?? null;
             $now = $after[$key] ?? null;
+
+            if ($was === $now) {
+                continue;
+            }
+
+            // Added where there was nothing. A constraint that did not exist
+            // cannot have been satisfied by accident, so introducing one
+            // narrows — an empty or absent value is the widest there is.
+            // ⚠️ An EMPTY value is the widest, not the narrowest.
+            // `targetTypes = []` means unrestricted, so changing it to
+            // `['patient']` looked like widening to a set comparison while
+            // actually forbidding everything else — a nominated relation
+            // could attach an article while unconstrained and then restrict
+            // to patients, and the article kept answering as the subject.
+            if (! array_key_exists($key, $before) || $was === null || $was === [] || $was === '') {
+                return (string) $key;
+            }
 
             if (! is_array($was)) {
                 // Every scalar setting is semantic — format, precision,
@@ -375,7 +420,7 @@ class FieldStorage extends Model
             fn (string $attribute): bool => $this->isDirty($attribute),
         );
 
-        // ⚠️ `settings` counts too, when it NARROWS what the field accepts.
+        // ⚠️ `targetTypes` counts too, when it NARROWS.
         //
         // The projection guard always sees `none` for a relation, so
         // `targetTypes` was editable on a nominated one: attach a target
@@ -384,10 +429,12 @@ class FieldStorage extends Model
         // relational `whereSubjectIs()` branch both keep treating that target
         // as the subject (ADR-020).
         //
-        // Narrowing only. Adding a permitted target cannot invalidate a row
-        // that already exists, which is the same line the lock draws.
-        if ($this->isDirty('settings') && $this->narrowsAcceptedValues()) {
-            $frozen[] = 'settings';
+        // Narrowing only, and only this setting. Everything else a nominated
+        // field accepts is covered by the LOCK once data exists, and while no
+        // data exists narrowing cannot invalidate anything — which is why
+        // editing other settings on a nominated field stays free.
+        if ($this->isDirty('settings') && $this->narrowsTargetTypes()) {
+            $frozen[] = 'targetTypes';
         }
 
         if ($frozen === []) {

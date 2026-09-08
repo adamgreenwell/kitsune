@@ -56,6 +56,25 @@ class EntryRelation extends Pivot
             $relation->guardTargetType();
         });
 
+        // ⚠️ The lock arms HERE for a relation, not from `Entry::saved`.
+        //
+        // `$entry->related()->attach(...)` writes the pivot AFTER the entry
+        // was saved and does not save it again, so the entry-side check never
+        // ran for the ordinary path — `is_locked` stayed false while relation
+        // data existed, leaving the type and cardinality free to change and
+        // orphan the links. The relation-locking test masked it by calling
+        // save() again afterwards, which no real caller does.
+        static::created(function (self $relation): void {
+            if ($relation->field_storage_id === null) {
+                return;
+            }
+
+            FieldStorage::query()
+                ->whereKey($relation->field_storage_id)
+                ->where('is_locked', false)
+                ->update(['is_locked' => true]);
+        });
+
         // ⚠️ And on UPDATE. `updateExistingPivot()` can move an existing row
         // onto a different field, so a second target from an unlimited
         // relation could be repointed at a nominated cardinality-one field —
@@ -119,9 +138,18 @@ class EntryRelation extends Pivot
      * relation that no configuration permits is a state to prevent, not one
      * to keep working around.
      */
-    public static function forbidsTypeChange(int $targetId, string $newHandle): ?string
+    public static function forbidsTypeChange(int $targetId, string $newHandle, int $targetOrgId): ?string
     {
-        $relations = static::query()->where('target_entry_id', $targetId)->get();
+        // ⚠️ Scoped to the TARGET'S OWN ORG, and this is a denial-of-service
+        // fix rather than a tidy-up. `attach()` does not validate target
+        // visibility, so org A can create a pivot pointing at org B's entry.
+        // An unscoped scan then let A's storage configuration VETO B's
+        // updates — freezing a rival's record indefinitely, from a row B
+        // cannot see and did not create.
+        $relations = static::query()
+            ->where('target_entry_id', $targetId)
+            ->where('org_id', $targetOrgId)
+            ->get();
 
         foreach ($relations as $relation) {
             $storage = $relation->storage();

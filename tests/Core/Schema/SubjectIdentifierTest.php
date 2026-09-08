@@ -937,8 +937,12 @@ describe('the lock reaches every storage strategy, not just inline', function ()
 
         expect($storage->fresh()->is_locked)->toBeFalse();
 
+        // ⚠️ NO save() afterwards, deliberately. This test used to call one,
+        // which masked the defect: `attach()` writes the pivot AFTER the
+        // entry was saved and does not save it again, so the entry-side check
+        // never ran for the ordinary path and the lock stayed false while
+        // relation data existed. The lock arms from the pivot write now.
         $visit->related()->attach($alice->id, ['field_storage_id' => $storage->id]);
-        $visit->save();
 
         expect($storage->fresh()->is_locked)->toBeTrue();
     });
@@ -954,9 +958,12 @@ describe('a nomination freezes what the relation ACCEPTS, not only its shape', f
      * subject.
      */
     beforeEach(function (): void {
+        // Configured BEFORE nominating: restricting an unconstrained relation
+        // is itself a narrowing, so doing it afterwards is refused.
         $this->rel = FieldStorage::create([
             'org_id' => $this->org->id, 'handle' => 'person', 'type' => 'relation',
-            'pii_class' => 'personal', 'cardinality' => 1, 'settings' => ['targetTypes' => []],
+            'pii_class' => 'personal', 'cardinality' => 1,
+            'settings' => ['targetTypes' => ['patient', 'article']],
         ]);
         $this->relField = Field::create([
             'entry_type_id' => $this->type->id, 'field_storage_id' => $this->rel->id, 'label' => 'Person',
@@ -965,18 +972,36 @@ describe('a nomination freezes what the relation ACCEPTS, not only its shape', f
     });
 
     it('refuses to narrow targetTypes while nominated', function (): void {
-        $this->rel->update(['settings' => ['targetTypes' => ['patient', 'article']]]);
-
         expect(fn () => $this->rel->fresh()->update(['settings' => ['targetTypes' => ['patient']]]))
-            ->toThrow(RuntimeException::class, 'settings');
+            ->toThrow(RuntimeException::class, 'targetTypes');
     });
 
     it('still allows WIDENING, which cannot invalidate an existing row', function (): void {
-        $this->rel->update(['settings' => ['targetTypes' => ['patient']]]);
-
         expect(fn () => $this->rel->fresh()->update([
-            'settings' => ['targetTypes' => ['patient', 'article']],
+            'settings' => ['targetTypes' => ['patient', 'article', 'note']],
         ]))->not->toThrow(RuntimeException::class);
+    });
+
+    /*
+     * ⚠️ An EMPTY list means UNRESTRICTED, so restricting one is the widest
+     * possible narrowing — and a set comparison reads it backwards, seeing
+     * `[]` as the smallest accepted set and any addition as a widening. A
+     * nominated relation could attach an article while unconstrained and then
+     * switch to `['patient']`, and the article went on answering as the
+     * subject.
+     */
+    it('refuses restricting an UNCONSTRAINED relation, which reads as widening', function (): void {
+        $open = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'anyone', 'type' => 'relation',
+            'pii_class' => 'personal', 'cardinality' => 1,
+        ]);
+        $field = Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $open->id, 'label' => 'Anyone',
+        ]);
+        $this->type->update(['subject_field_id' => $field->id]);
+
+        expect(fn () => $open->fresh()->update(['settings' => ['targetTypes' => ['patient']]]))
+            ->toThrow(RuntimeException::class, 'targetTypes');
     });
 });
 
@@ -1044,6 +1069,35 @@ describe('changing an entry\'s type cannot orphan a relation pointing at it', fu
             ->toThrow(RuntimeException::class, 'does not accept that type');
 
         expect($alice->fresh()->entry_type_id)->toBe($this->type->id);
+    });
+
+    /*
+     * ⚠️ A denial of service, not a tidy-up. `attach()` does not validate
+     * target visibility, so org A can create a pivot pointing at org B's
+     * entry. An unscoped veto then let A's storage configuration freeze B's
+     * record indefinitely — from a row B cannot see and did not create.
+     */
+    it('ignores a foreign org\'s pivot when vetoing a type change', function (): void {
+        $rival = Org::create(['name' => 'V', 'slug' => 'veto-rival']);
+        $other = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'article', 'name' => 'A', 'plural_name' => 'As',
+        ]);
+        $hostile = FieldStorage::create([
+            'org_id' => $rival->id, 'handle' => 'person', 'type' => 'relation',
+            'pii_class' => 'personal', 'cardinality' => 1,
+            'settings' => ['targetTypes' => [$this->type->handle]],
+        ]);
+
+        $mine = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Mine']);
+
+        // The attacker's row, written straight at the table.
+        DB::table('entry_relations')->insert([
+            'org_id' => $rival->id, 'source_entry_id' => $mine->id,
+            'target_entry_id' => $mine->id, 'field_storage_id' => $hostile->id,
+        ]);
+
+        expect(fn () => $mine->update(['entry_type_id' => $other->id]))
+            ->not->toThrow(RuntimeException::class);
     });
 
     it('allows a type change the relation still accepts', function (): void {
