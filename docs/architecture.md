@@ -142,8 +142,10 @@ orgs                           -- the customer; billing and user boundary
   id, name, slug, settings json
   timestamps, soft deletes
 
-org_user
-  org_id, user_id, created_at
+org_user                       -- membership; the reason User cannot use org_id
+  org_id, user_id
+  PRIMARY (org_id, user_id)
+  INDEX (user_id, org_id)      -- the scope asks "is this user in that org?"
 
 site_groups                    -- the brand; settings inheritance
   id, org_id, handle, name, settings json

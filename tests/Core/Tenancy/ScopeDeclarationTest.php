@@ -26,9 +26,9 @@ use Kitsune\Core\Tests\Fixtures\UndeclaredThing;
 
 /*
  * CONTRIBUTING makes this a rule that fails the build: every model declares
- * exactly one of #[SiteScoped], #[OrgScoped] or #[Unscoped]. There is no
- * default, because a model that forgot would otherwise be readable across
- * every org on the installation.
+ * exactly one of #[SiteScoped], #[OrgScoped], #[OrgScopedThroughPivot] or
+ * #[Unscoped]. There is no default, because a model that forgot would
+ * otherwise be readable across every org on the installation.
  */
 
 it('refuses to boot a model with no scope declaration', function (): void {
@@ -44,10 +44,17 @@ it('explains what to do rather than just failing', function (): void {
         ScopeResolver::for(UndeclaredThing::class);
         $this->fail('expected UndeclaredScopeException');
     } catch (UndeclaredScopeException $e) {
+        // ⚠️ The pivot option is asserted because omitting it MISDIRECTS: a
+        // developer told to pick from three would reach for #[OrgScoped],
+        // whose scope compares an `org_id` column their model does not have.
+        // A fail-closed error that points at the wrong fix is worse than a
+        // terse one.
         expect($e->getMessage())
             ->toContain('#[SiteScoped]')
             ->toContain('#[OrgScoped]')
+            ->toContain('#[OrgScopedThroughPivot]')
             ->toContain('#[Unscoped]')
+            ->toContain('compare a column that is not there')
             ->toContain('readable across every org');
     }
 });

@@ -137,7 +137,9 @@ ADR-012 removed the boot-order collision structurally — the route table no lon
 
 - [x] `Org`, `SiteGroup` and `Site` models; `Context` carrying the current org and site (ADR-021). Deliberately Filament-independent — core is headless-capable, so the API and console get the same enforcement
 - [x] Site resolution middleware — `SetKitsuneContext` mirrors Filament's resolved tenant into Kitsune's own `Context`, which is what the global scopes read
-- [x] **`#[SiteScoped]` / `#[OrgScoped]` / `#[Unscoped]` mandatory on every model.** Undeclared throws at boot. **Fail closed**
+- [x] **`#[SiteScoped]` / `#[OrgScoped]` / `#[OrgScopedThroughPivot]` / `#[Unscoped]` mandatory on every model.** Undeclared throws at boot. **Fail closed**.
+
+  The fourth arrived with [#21](https://github.com/adamgreenwell/kitsune/issues/21) and is recorded as an ADR-021 amendment: a user belongs to many orgs, so `OrgScope`'s `org_id = current` had no column to compare. ⚠️ And the attribute is a **declaration, not an enforcement** — it does nothing unless the model also `use`s `EnforcesScope`, which `User` did not for two phases
 - [x] `EnforcesScope` applying the right global scope from the attribute, and stamping the scope key on create
 - [x] ⚠️ **`OrgScope`, Kitsune-authored, for `#[OrgScoped]` models.** Filament gives them no scope at all
 - [x] Settings resolution: org → site group → site — sparse overrides, shallow merge, provenance on every value (ADR-022). Admin rendering of it comes with the panel
@@ -159,6 +161,10 @@ ADR-012 removed the boot-order collision structurally — the route table no lon
 - [ ] Install/upgrade/uninstall lifecycle with migrations and rollback
 - [ ] Settings store backing the org → site group → site resolution (ADR-022)
 - [ ] RBAC: roles, permissions, per-org assignment. Permissions named `entry.{type}.{action}`
+
+  🟡 The **org-scoping half is done** ([#21](https://github.com/adamgreenwell/kitsune/issues/21)). `User` is `#[OrgScopedThroughPivot]` through `org_user`, because membership is many-to-many and `OrgScope`'s `org_id = current` never applied. Roles and permissions themselves remain open.
+
+  ⚠️ **The attribute had never been enforced.** `User` carried `#[Unscoped]` and did not `use EnforcesScope`, so it was labelled correctly and completely unconstrained — a model can pass the declaration sweep and still be globally readable. AGENTS.md invariant 2 now says so.
 - [ ] Audit log — **actor, action and target only, never payloads** (ADR-020), so erasure can reach everything it must
 - [ ] One hardcoded entity type end to end as a normal module, to prove the stack
 
