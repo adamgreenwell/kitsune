@@ -96,6 +96,12 @@ class FieldStorage extends Model
     ];
 
     protected $casts = [
+        // ⚠️ A form posts `"1"`. Without this the strict comparisons that ask
+        // whether cardinality differs from 1 answered TRUE for a
+        // single-value field, so validation demanded an array, the schema
+        // advertised one, and toStorage() wrapped the scalar in a singleton
+        // — until the model was refreshed out of the database.
+        'cardinality' => 'integer',
         'settings' => 'array',
         'is_indexed' => 'boolean',
         'is_locked' => 'boolean',
@@ -250,23 +256,39 @@ class FieldStorage extends Model
      * reinterpreting are what this refuses, which is the same distinction the
      * projection guard draws, applied to what the field ACCEPTS rather than
      * to where it is stored.
+     *
+     * ⚠️ Walks the UNION of both sides, not just the keys that existed
+     * before. A locked `number` could ADD `min: 0`, or a locked `text` a
+     * `pattern`, and neither appeared in the original settings — so a loop
+     * over `$before` never saw them, neither moves the projection, and both
+     * narrow what the field accepts. An absent constraint is not the absence
+     * of a setting: it means unrestricted, which is the widest value there
+     * is.
      */
     private function guardNarrowedSettings(self $original): void
     {
         $before = (array) ($original->settings ?? []);
         $after = (array) ($this->settings ?? []);
 
-        foreach ($before as $key => $was) {
+        foreach (array_keys($before + $after) as $key) {
+            $was = $before[$key] ?? null;
             $now = $after[$key] ?? null;
+
+            if ($was === $now) {
+                continue;
+            }
+
+            // Added where there was nothing. A constraint that did not exist
+            // cannot have been satisfied by accident, so introducing one
+            // narrows — an empty or absent value is the widest there is.
+            if (! array_key_exists($key, $before) || $was === null || $was === []) {
+                $this->refuseNarrowing((string) $key);
+            }
 
             if (! is_array($was)) {
                 // Every scalar setting is semantic — format, precision,
                 // scale, maxLength, pattern. None is presentation.
-                if ($was !== $now) {
-                    $this->refuseNarrowing($key);
-                }
-
-                continue;
+                $this->refuseNarrowing((string) $key);
             }
 
             // What the setting ACCEPTS: an option map is keyed by the stored
@@ -276,7 +298,7 @@ class FieldStorage extends Model
             $remaining = is_array($now) ? (array_is_list($now) ? $now : array_keys($now)) : [];
 
             if (array_diff($accepted, $remaining) !== []) {
-                $this->refuseNarrowing($key);
+                $this->refuseNarrowing((string) $key);
             }
         }
     }
