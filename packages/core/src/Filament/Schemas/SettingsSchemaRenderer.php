@@ -10,12 +10,14 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Filament\Schemas;
 
+use Closure;
 use Filament\Forms\Components\KeyValue;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Toggle;
 use Illuminate\Support\Str;
 use Kitsune\Core\Fields\FieldType;
+use Kitsune\Core\Fields\Pattern;
 use Kitsune\Core\Models\EntryType;
 use RuntimeException;
 
@@ -93,6 +95,28 @@ final class SettingsSchemaRenderer
 
         if (isset($descriptor['help'])) {
             $component = $component->helperText($descriptor['help']);
+        }
+
+        // ⚠️ A declared FORMAT is a constraint, so it is enforced here as well
+        // as published.
+        //
+        // A `regex` setting that cannot compile made the field unusable rather
+        // than merely misconfigured: `TextType::patternRule()` refuses every
+        // value when the pattern will not compile — correctly, since an
+        // uncheckable constraint must not pass — so nothing could be stored in
+        // the field until an author went back and repaired its settings. The
+        // rule failing closed was right; accepting the setting was not.
+        //
+        // `FieldStorage` enforces the same declaration on save, because a form
+        // is one door (invariant 6's lesson, applied to settings).
+        if (($descriptor['format'] ?? null) === 'regex') {
+            $component = $component->rule(
+                static fn (): Closure => static function (string $attribute, mixed $value, Closure $fail): void {
+                    if (is_string($value) && $value !== '' && ! Pattern::compiles($value)) {
+                        $fail('That pattern cannot be compiled, so nothing could ever be saved in this field.');
+                    }
+                },
+            );
         }
 
         return $component;

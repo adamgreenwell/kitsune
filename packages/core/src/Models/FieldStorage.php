@@ -16,6 +16,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Query\Builder as QueryBuilder;
 use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Fields\FieldTypeRegistry;
+use Kitsune\Core\Fields\Pattern;
 use Kitsune\Core\Fields\Projection;
 use Kitsune\Core\Fields\StorageStrategy;
 use Kitsune\Core\Schema\GuardedStorageBuilder;
@@ -168,6 +169,12 @@ class FieldStorage extends Model
         }
 
         $this->guardHandle();
+        // ⚠️ A setting the field type declared a FORMAT for has to satisfy it,
+        // whatever wrote the row. The builder validates it in the form, and a
+        // form is one door — a seeder, an importer or a direct save reaches this
+        // instead, and an uncompilable pattern makes the field unusable rather
+        // than merely misconfigured.
+        $this->guardSettingFormats();
         // Nomination first: when both apply — a nominated field given a
         // cardinality its type cannot hold — the more specific refusal is the
         // one the caller reads.
@@ -640,6 +647,49 @@ class FieldStorage extends Model
             $this->handle,
             $cardinality,
         ));
+    }
+
+    /**
+     * Enforce the formats a field type declares for its own settings.
+     *
+     * ⚠️ GENERIC on purpose: the model asks the type what it declared rather
+     * than knowing about patterns. `settingsSchema()` returns data (ADR-002
+     * keeps core headless-capable), so a new type declaring `format` is enforced
+     * here with no change to this method — and the alternative, a `pattern`
+     * special case in the model, is how a field-type concern leaks into every
+     * layer that touches it.
+     *
+     * Silent when the type is unknown: `pii_class` and the registry lookup have
+     * their own refusals, and duplicating them here would report the wrong
+     * reason first.
+     */
+    private function guardSettingFormats(): void
+    {
+        if (! app(FieldTypeRegistry::class)->has((string) $this->type)) {
+            return;
+        }
+
+        $settings = $this->settings ?? [];
+
+        foreach (app(FieldTypeRegistry::class)->get((string) $this->type)->settingsSchema() as $key => $descriptor) {
+            if (($descriptor['format'] ?? null) !== 'regex') {
+                continue;
+            }
+
+            $value = $settings[$key] ?? null;
+
+            if (! is_string($value) || $value === '' || Pattern::compiles($value)) {
+                continue;
+            }
+
+            throw new RuntimeException(sprintf(
+                'Setting [%s] on field [%s] is not a regular expression that can be compiled, so '
+                .'every value for this field would be refused and nothing could be stored in it. '
+                .'Fix the pattern, or leave it empty for no constraint.',
+                $key,
+                $this->handle,
+            ));
+        }
     }
 
     private function guardHandle(): void

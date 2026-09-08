@@ -27,6 +27,7 @@ use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Filament\Icons;
 use Kitsune\Core\Filament\Resources\EntryTypes\Pages\CreateEntryType;
 use Kitsune\Core\Filament\Resources\EntryTypes\Pages\EditEntryType;
@@ -214,11 +215,7 @@ class EntryTypeResource extends Resource
             ->toolbarActions([
                 BulkActionGroup::make([
                     DeleteBulkAction::make()->authorize(fn (): bool => true)
-                        ->action(function (Collection $records): void {
-                            self::refuseGlobal($records);
-
-                            $records->each->delete();
-                        }),
+                        ->action(self::deleteSelected(...)),
                 ]),
             ])
             ->defaultSort('ordering');
@@ -302,6 +299,34 @@ class EntryTypeResource extends Resource
     public static function ownsRecord(EntryType $record): bool
     {
         return $record->org_id !== null && (int) $record->org_id === app(Context::class)->orgId();
+    }
+
+    /**
+     * Delete a selection of entry types, or none of them.
+     *
+     * ⚠️ Extracted from the action closure so it can be TESTED, because the
+     * defect here was partial application and a closure inside a table
+     * definition is not reachable from a test.
+     *
+     * `refuseGlobal()` checks the whole selection up front, but each delete then
+     * runs its own cascade refusal — so a selection holding an entry-free type
+     * followed by one that still has entries deleted the first and threw on the
+     * second. The author saw a failure after part of their schema was already
+     * gone, which is the worst way to report one.
+     *
+     * A transaction rather than a second preflight pass: checking every record
+     * first would still race a row inserted between the check and the delete,
+     * which is the lesson `ScopedBuilder::guardingCascade()` already learned. It
+     * takes its own lock inside this transaction, and Laravel nests via
+     * savepoints, so an inner refusal rolls back everything.
+     *
+     * @param  Collection<int, EntryType>  $records
+     */
+    public static function deleteSelected(Collection $records): void
+    {
+        self::refuseGlobal($records);
+
+        DB::transaction(fn () => $records->each->delete());
     }
 
     /**

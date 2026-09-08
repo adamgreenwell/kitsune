@@ -13,6 +13,7 @@ namespace Kitsune\Core\Fields\Types;
 use Closure;
 use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Fields\LogicalType;
+use Kitsune\Core\Fields\Pattern;
 use Kitsune\Core\Fields\Projection;
 
 final class TextType extends BaseFieldType
@@ -53,7 +54,6 @@ final class TextType extends BaseFieldType
         return $input === null ? null : (string) $input;
     }
 
-    /** @return array<int, mixed> */
     /**
      * ⚠️ The constraints are PUBLISHED, not only enforced.
      *
@@ -103,12 +103,12 @@ final class TextType extends BaseFieldType
                 return;
             }
 
-            $delimited = $this->delimited($pattern);
+            $delimited = Pattern::delimit($pattern);
 
             // An uncompilable pattern is a refusal, not a pass. It means the
             // constraint cannot be checked, and letting the value through
             // would silently drop a rule the schema still advertises.
-            if ($delimited === null || @preg_match($delimited, '') === false) {
+            if ($delimited === null || ! Pattern::compiles($pattern)) {
                 $fail("The {$attribute} field is constrained by a pattern that cannot be compiled.");
 
                 return;
@@ -120,22 +120,7 @@ final class TextType extends BaseFieldType
         };
     }
 
-    /**
-     * Wrap a JSON Schema pattern for PCRE, choosing a delimiter it does not
-     * contain rather than escaping — escaping is where the already-escaped
-     * cases go wrong.
-     */
-    private function delimited(string $pattern): ?string
-    {
-        foreach (['/', '#', '~', '%', '!'] as $delimiter) {
-            if (! str_contains($pattern, $delimiter)) {
-                return $delimiter.$pattern.$delimiter.'u';
-            }
-        }
-
-        return null;
-    }
-
+    /** @return array<int, mixed> */
     protected function scalarValidationRules(FieldConfig $config): array
     {
         $rules = [];
@@ -154,7 +139,20 @@ final class TextType extends BaseFieldType
     {
         return [
             'maxLength' => ['type' => 'integer', 'default' => 255, 'label' => 'Maximum length'],
-            'pattern' => ['type' => 'string', 'nullable' => true, 'label' => 'Pattern (regex)'],
+            // ⚠️ `format` declares the constraint so the builder can enforce
+            // it. Without it an author could save a pattern that cannot compile,
+            // and then EVERY value for the field was refused by `patternRule()` —
+            // correctly, since an uncheckable constraint must not pass — leaving
+            // a field nothing could be stored in until its settings were
+            // repaired. The rule failing closed was right; accepting the setting
+            // in the first place was not.
+            'pattern' => [
+                'type' => 'string',
+                'format' => 'regex',
+                'nullable' => true,
+                'label' => 'Pattern (regex)',
+                'help' => 'Without delimiters, e.g. ^[A-Z]{2}-\\d+$. Refused if it cannot compile.',
+            ],
         ];
     }
 
