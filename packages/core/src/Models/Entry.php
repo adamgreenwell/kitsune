@@ -601,49 +601,56 @@ class Entry extends Model implements RequiresModelSave
      */
     public function redactField(string $handle, mixed $replacement = null): int
     {
-        // ⚠️ Resolved through THIS ENTRY'S TYPE, not by handle alone.
+        // ⚠️ ONE transaction, with this entry LOCKED, and everything the erasure
+        // depends on resolved INSIDE it.
         //
-        // `field_storage` is UNIQUE (org_id, handle) and the model is
-        // #[Unscoped], so a bare handle lookup can return ANOTHER ORG's row —
-        // and then a relational erasure detaches on the wrong
-        // field_storage_id, reports 0, and leaves every link intact. Two
-        // orgs defining `email` is the ordinary case, not a contrived one.
+        // Two separate races lived here. The live change committed before the
+        // revisions were loaded and rewritten, so a restore starting in that
+        // interval could read an as-yet-unredacted revision and write the erased
+        // value back onto the already-redacted entry. And the storages and this
+        // model's own attributes were resolved BEFORE the lock, so a stale
+        // instance could skip a live value another writer had just committed,
+        // redact only the new revision, and return a positive count while the live
+        // entry still held the data.
         //
-        // ⚠️ And EVERY match, not the first one. UNIQUE (org_id, handle)
-        // lets a GLOBAL row and the org's own row share a handle, and
-        // `Field::guardStorageOwnership()` permits both to attach to the same
-        // type — so a bare `first()` picked one arbitrarily. If it took the
-        // relational row it detached the pivots and returned, leaving
-        // `values['contact']` and every revision copy of it intact while
-        // reporting success; if it took the inline row the pivot survived
-        // instead. Either way personal data remained and the caller's success
-        // check passed, and WHICH depended on row order — so the same request
-        // erased different data on different engines.
-        //
-        // Elsewhere this shadowing is resolved with explicit precedence
-        // (`IdentifyEntryType`, `EntryType::visibleFor()`). Precedence is
-        // wrong here: erasure has to reach the data, and the shadowed row
-        // holds data too. So every match is erased and the counts are summed.
-        $storages = FieldStorage::query()
-            ->where('handle', $handle)
-            ->whereHas('fields', fn (Builder $query): Builder => $query->where('entry_type_id', $this->entry_type_id))
-            ->get();
-
-        // ⚠️ ONE transaction, with this entry LOCKED for the whole sweep.
-        //
-        // The live change committed before the revisions were loaded and
-        // rewritten, with nothing spanning the two phases — so a restore starting
-        // in that interval could lock and read an as-yet-unredacted revision,
-        // write the erased value back onto the already-redacted entry, and commit
-        // before the sweep reached that revision. `redactField()` then returned
-        // success while the live entry held the erased data again.
-        //
-        // The lock is the same row `restoreRevision()` locks first, so the two
+        // The lock is the same row `restoreRevision()` takes first, so the two
         // serialise: whichever starts second sees the other's completed work
         // rather than half of it. An erasure that reports success has to mean it
         // (ADR-020).
-        return (int) DB::transaction(function () use ($handle, $storages, $replacement): int {
+        return (int) DB::transaction(function () use ($handle, $replacement): int {
             self::query()->withoutGlobalScopes()->whereKey($this->getKey())->lockForUpdate()->get();
+
+            // Under the lock, so the attributes being swept are the committed
+            // ones rather than whatever this instance was loaded with.
+            $this->refresh();
+
+            // ⚠️ Resolved through THIS ENTRY'S TYPE, not by handle alone.
+            //
+            // `field_storage` is UNIQUE (org_id, handle) and the model is
+            // #[Unscoped], so a bare handle lookup can return ANOTHER ORG's row —
+            // and then a relational erasure detaches on the wrong
+            // field_storage_id, reports 0, and leaves every link intact. Two
+            // orgs defining `email` is the ordinary case, not a contrived one.
+            //
+            // ⚠️ And EVERY match, not the first one. UNIQUE (org_id, handle)
+            // lets a GLOBAL row and the org's own row share a handle, and
+            // `Field::guardStorageOwnership()` permits both to attach to the same
+            // type — so a bare `first()` picked one arbitrarily. If it took the
+            // relational row it detached the pivots and returned, leaving
+            // `values['contact']` and every revision copy of it intact while
+            // reporting success; if it took the inline row the pivot survived
+            // instead. Either way personal data remained and the caller's success
+            // check passed, and WHICH depended on row order — so the same request
+            // erased different data on different engines.
+            //
+            // Elsewhere this shadowing is resolved with explicit precedence
+            // (`IdentifyEntryType`, `EntryType::visibleFor()`). Precedence is
+            // wrong here: erasure has to reach the data, and the shadowed row
+            // holds data too. So every match is erased and the counts are summed.
+            $storages = FieldStorage::query()
+                ->where('handle', $handle)
+                ->whereHas('fields', fn (Builder $query): Builder => $query->where('entry_type_id', $this->entry_type_id))
+                ->get();
 
             if ($storages->count() > 1) {
                 return (int) $storages->sum(

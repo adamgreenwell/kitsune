@@ -131,13 +131,43 @@ class GuardedRelationBuilder extends Builder
      * entries, and for the same reason: the set audited and the set written have
      * to be the same set.
      *
-     * The keys are read before the write for the original reason too — after a
-     * delete there is nothing left to read.
+     * ⚠️ ENTRY locks are taken before the pivot rows, and doing it the other way
+     * round deadlocked. `restoreRevision()` and `GuardedBelongsToMany` both lock
+     * the source entry first and then reach its pivots; this locked the pivot and
+     * then waited for the entry, so two interleaved operations each held what the
+     * other needed and one was aborted — and neither retries. Lock ORDER is a
+     * property of the whole system, not of one method, so this one conforms.
+     *
+     * The discovery read is deliberately unlocked. It only has to name candidate
+     * sources; a pivot inserted after it belongs to a transaction that locked its
+     * own source first, so it is outside the frozen set and left untouched —
+     * which is exactly the guarantee constraining the write to frozen ids gives.
      *
      * @return list<mixed>
      */
     private function freezingRows(): array
     {
+        // Unlocked discovery: which entries might this statement touch?
+        $sources = (clone $this)->toBase()
+            ->distinct()
+            ->pluck('entry_relations.source_entry_id')
+            ->filter()
+            ->unique()
+            // Sorted, so concurrent writers over the same pair take the locks in
+            // the same order and cannot deadlock against each other either.
+            ->sort()
+            ->values()
+            ->all();
+
+        if ($sources !== []) {
+            Entry::withoutScopeBecause(
+                'locking the source entries before their pivots, so every relation path takes the '
+                .'locks in one order',
+                fn ($query) => $query->whereKey($sources)->lockForUpdate()->get(),
+            );
+        }
+
+        // Now the pivots, under the entry locks that were just taken.
         $rows = $this->toBase()->lockForUpdate()->get(['id', 'source_entry_id']);
 
         // whereKey qualifies the column, so this stays unambiguous even when the
