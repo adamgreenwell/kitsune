@@ -1157,6 +1157,104 @@ describe('changing an entry\'s type cannot orphan a relation pointing at it', fu
     });
 });
 
+describe('a denormalised handle is derived, never accepted', function (): void {
+    /*
+     * ⚠️ `type_handle` is denormalised and fully mass assignable, and every
+     * relational read and write resolves a target's type through IT rather
+     * than through `entry_type_id` — guardTargetType(), forbidsTypeChange(),
+     * RelationType::elementValidationRules() and scopeOfType() all read the
+     * handle. The guard returned early unless `entry_type_id` was dirty, so
+     * `update(['type_handle' => 'article'])` reached exactly the state the
+     * guard exists to prevent, without it running.
+     */
+    it('overwrites a forged handle with the type it actually points at', function (): void {
+        $entry = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Forged']);
+
+        $entry->update(['type_handle' => 'article']);
+
+        expect($entry->fresh()->type_handle)->toBe($this->type->handle);
+    });
+
+    it('runs the relation veto when only the handle was written', function (): void {
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'author', 'type' => 'relation',
+            'pii_class' => 'personal', 'cardinality' => 1,
+            'settings' => ['targetTypes' => [$this->type->handle]],
+        ]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id, 'label' => 'Author',
+        ]);
+
+        $alice = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Alice']);
+        $post = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Post']);
+        $post->related()->attach($alice->id, ['field_storage_id' => $storage->id]);
+
+        // The handle is corrected back, so the relation still names a target
+        // of a type the field accepts.
+        $alice->update(['type_handle' => 'article']);
+
+        expect($alice->fresh()->type_handle)->toBe($this->type->handle);
+    });
+
+    it('still restamps when the type id changes, as before', function (): void {
+        $other = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'article', 'name' => 'A', 'plural_name' => 'As',
+        ]);
+        $entry = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Moved']);
+
+        $entry->update(['entry_type_id' => $other->id]);
+
+        expect($entry->fresh()->type_handle)->toBe('article');
+    });
+});
+
+describe('erasure reaches a SHADOWED handle too, not an arbitrary one', function (): void {
+    /*
+     * ⚠️ UNIQUE (org_id, handle) lets a GLOBAL row and the org's own row share
+     * a handle, and Field::guardStorageOwnership() permits both to attach to
+     * one type. A bare `first()` then picked one arbitrarily: taking the
+     * relational row detached the pivots and returned, leaving
+     * `values['contact']` and every revision copy intact while reporting
+     * success; taking the inline row left the pivot instead. Either way
+     * personal data remained and the caller's success check passed — and which
+     * happened depended on row order, so the same request erased different
+     * data on different engines.
+     *
+     * Precedence would be the wrong fix here. Erasure has to reach the data,
+     * and the shadowed row holds data too.
+     */
+    it('erases BOTH the global and the org row behind one handle', function (): void {
+        $global = FieldStorage::create([
+            'org_id' => null, 'handle' => 'contact', 'type' => 'text',
+            'pii_class' => 'personal', 'cardinality' => 1,
+        ]);
+        $mine = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'contact', 'type' => 'relation',
+            'pii_class' => 'personal', 'cardinality' => 1,
+        ]);
+
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $global->id, 'label' => 'Contact text',
+        ]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $mine->id, 'label' => 'Contact person',
+        ]);
+
+        $alice = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Alice']);
+        $visit = Entry::create([
+            'entry_type_id' => $this->type->id, 'title' => 'Visit',
+            'values' => ['contact' => 'alice@example.com'],
+        ]);
+        $visit->related()->attach($alice->id, ['field_storage_id' => $mine->id]);
+
+        $rewritten = $visit->redactField('contact');
+
+        expect($rewritten)->toBeGreaterThan(1)
+            ->and($visit->fresh()->values['contact'])->toBeNull()
+            ->and(EntryRelation::query()->where('source_entry_id', $visit->id)->count())->toBe(0);
+    });
+});
+
 describe('the pivot guards hold on the bulk path, which had none', function (): void {
     /*
      * ⚠️ Every guard on this pivot hangs off a model event — ownership,
@@ -1467,6 +1565,18 @@ it('locks the source named in a PER-ID attach map, not just the parent', functio
      * meant the pivot was written against the overridden source while just
      * the parent was locked — so the cardinality count was taken against a
      * row nothing had serialised on.
+     *
+     * ⚠️ THIS TEST USED TO PROVE NOTHING. It asserted the cardinality
+     * exception, which `guardCardinality()` throws from the pivot's own
+     * `source_entry_id` no matter which rows were locked — so deleting the
+     * per-ID override loop entirely left it green, and its second assertion
+     * held too. It read as coverage for the defect it names while that defect
+     * was reintroduced.
+     *
+     * So it observes the LOCK now: the query that takes it selects from
+     * `entries` by key, and the key has to be the source the row lands on.
+     * That select runs on every engine — SQLite compiles the FOR UPDATE away,
+     * not the predicate.
      */
     $one = FieldStorage::create([
         'org_id' => $this->org->id, 'handle' => 'person', 'type' => 'relation',
@@ -1475,17 +1585,41 @@ it('locks the source named in a PER-ID attach map, not just the parent', functio
 
     $visitA = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Visit A']);
     $visitB = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Visit B']);
-    $alice = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Alice']);
     $bob = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Bob']);
 
-    $visitA->related()->attach($alice->id, ['field_storage_id' => $one->id]);
+    // ⚠️ The lock query is identified EXACTLY, and its id list parsed.
+    //
+    // Two earlier versions of this assertion proved nothing. The first
+    // asserted the cardinality exception, which fires from the pivot's own
+    // source no matter what was locked. The second matched the id as a
+    // substring of the SQL, and an id like "1" appears in every scoped query.
+    //
+    // `whereKey()` with integers compiles to `in (1, 2)` with NO bindings —
+    // Laravel inlines them — so the list has to come out of the SQL, from the
+    // one query shaped like the lock.
+    $lockedKeys = [];
+
+    DB::listen(function ($query) use (&$lockedKeys): void {
+        if (! preg_match('/^select \* from [`"]entries[`"] where [`"]entries[`"]\.[`"]id[`"] in \(([^)]*)\)/', $query->sql, $m)) {
+            return;
+        }
+
+        foreach (explode(',', $m[1]) as $id) {
+            $lockedKeys[] = (int) trim($id);
+        }
+    });
 
     // Attached through B's relation, but pointed at A in the per-ID map.
-    expect(fn () => $visitB->related()->attach([
-        $bob->id => ['field_storage_id' => $one->id, 'source_entry_id' => $visitA->id],
-    ]))->toThrow(RuntimeException::class, 'already has that many');
+    try {
+        $visitB->related()->attach([
+            $bob->id => ['field_storage_id' => $one->id, 'source_entry_id' => $visitA->id],
+        ]);
+    } catch (RuntimeException) {
+        // Irrelevant here: what matters is which row was locked first.
+    }
 
-    expect(EntryRelation::query()->where('source_entry_id', $visitA->id)->count())->toBe(1);
+    expect($lockedKeys)->not->toBe([], 'the lock query was not observed at all')
+        ->and($lockedKeys)->toContain($visitA->id);
 });
 
 it('serialises the count-then-insert behind a lock on the source entry', function (): void {

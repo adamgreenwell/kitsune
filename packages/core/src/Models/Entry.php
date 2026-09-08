@@ -62,7 +62,22 @@ class Entry extends Model
         // type_handle is denormalised for routing lookups, so it must never
         // disagree with the type it points at.
         static::saving(function (self $entry): void {
-            if (! $entry->isDirty('entry_type_id')) {
+            // ⚠️ `type_handle` too, not only `entry_type_id`.
+            //
+            // The handle is DENORMALISED and fully mass assignable, and every
+            // relational read and write resolves a target's type through it —
+            // `guardTargetType()`, `forbidsTypeChange()`,
+            // `RelationType::elementValidationRules()` and `scopeOfType()` all
+            // read the handle, never the id. So `$entry->update(['type_handle'
+            // => 'article'])` reached exactly the state this guard exists to
+            // prevent, without the guard running: no restamp, no relation
+            // check, and a field configured to accept `patient` went on naming
+            // a target that now claims to be an `article`.
+            //
+            // A forged handle is now overwritten rather than merely refused,
+            // because the column is derived: whatever the caller wrote, the
+            // type it points at is the truth.
+            if (! $entry->isDirty(['entry_type_id', 'type_handle'])) {
                 return;
             }
 
@@ -315,10 +330,45 @@ class Entry extends Model
         // and then a relational erasure detaches on the wrong
         // field_storage_id, reports 0, and leaves every link intact. Two
         // orgs defining `email` is the ordinary case, not a contrived one.
-        $storage = FieldStorage::query()
+        //
+        // ⚠️ And EVERY match, not the first one. UNIQUE (org_id, handle)
+        // lets a GLOBAL row and the org's own row share a handle, and
+        // `Field::guardStorageOwnership()` permits both to attach to the same
+        // type — so a bare `first()` picked one arbitrarily. If it took the
+        // relational row it detached the pivots and returned, leaving
+        // `values['contact']` and every revision copy of it intact while
+        // reporting success; if it took the inline row the pivot survived
+        // instead. Either way personal data remained and the caller's success
+        // check passed, and WHICH depended on row order — so the same request
+        // erased different data on different engines.
+        //
+        // Elsewhere this shadowing is resolved with explicit precedence
+        // (`IdentifyEntryType`, `EntryType::visibleFor()`). Precedence is
+        // wrong here: erasure has to reach the data, and the shadowed row
+        // holds data too. So every match is erased and the counts are summed.
+        $storages = FieldStorage::query()
             ->where('handle', $handle)
             ->whereHas('fields', fn (Builder $query): Builder => $query->where('entry_type_id', $this->entry_type_id))
-            ->first();
+            ->get();
+
+        if ($storages->count() > 1) {
+            return (int) $storages->sum(
+                fn (FieldStorage $storage): int => $this->redactStorage($handle, $storage, $replacement),
+            );
+        }
+
+        return $this->redactStorage($handle, $storages->first(), $replacement);
+    }
+
+    /**
+     * Erase one storage definition's data wherever its strategy puts it.
+     *
+     * The handle is passed rather than read off the storage row, because the
+     * JSON path below still has to run when NO storage row matched — an
+     * unclassified or already-deleted definition must not make erasure a no-op.
+     */
+    private function redactStorage(string $handle, ?FieldStorage $storage, mixed $replacement): int
+    {
 
         // Erasure has to reach wherever the value actually lives.
         //
