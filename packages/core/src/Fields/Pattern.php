@@ -73,6 +73,24 @@ final class Pattern
         'X' => '\X',
         'C' => '\C',
         'N' => '\N',
+    ];
+
+    /**
+     * Escapes that diverge INSIDE a character class as well as outside it.
+     *
+     * ⚠️ Separate from the list above, and lumping them together was wrong in one
+     * direction or the other.
+     *
+     * `\A` inside `[...]` is a literal A in PCRE, so screening it there would
+     * refuse a valid class — which is why class context is skipped for those. But
+     * `\h` inside a class is STILL horizontal whitespace in PCRE while ECMAScript
+     * still reads the letter h, so `[\h]+` published a materially different
+     * constraint and the class exemption let it through. The difference is whether
+     * the escape means anything inside a class at all.
+     *
+     * @var array<string, string>
+     */
+    private const DIVERGENT_ANYWHERE = [
         'h' => '\\h — PCRE horizontal whitespace; ECMAScript reads it as the letter h. Use [ \\t]',
         'H' => '\\H — PCRE non-horizontal-whitespace; ECMAScript reads it as the letter H',
         'v' => '\\v — PCRE vertical whitespace; ECMAScript reads a single vertical tab',
@@ -115,6 +133,11 @@ final class Pattern
                 // makes `\\A` a literal backslash and an A rather than an anchor.
                 $escaped = mb_substr($pattern, $i + 1, 1);
                 $i++;
+
+                // These diverge wherever they appear, class or not.
+                if (isset(self::DIVERGENT_ANYWHERE[$escaped])) {
+                    return self::DIVERGENT_ANYWHERE[$escaped];
+                }
 
                 // Inside a class these are literals, not anchors.
                 if (! $inClass && isset(self::PCRE_ONLY_ESCAPES[$escaped])) {
