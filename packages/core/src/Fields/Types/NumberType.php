@@ -241,11 +241,15 @@ final class NumberType extends BaseFieldType
         $min = $settings['min'] ?? null;
         $max = $settings['max'] ?? null;
 
-        if (! is_numeric($min) || ! is_numeric($max)) {
+        // ⚠️ EITHER bound is enough to reach the check, and requiring both let a
+        // one-sided empty range through: a decimal field is validated
+        // `lt:10^(precision-scale)`, so precision 2 / scale 1 with `min = 10` and
+        // no maximum admits nothing. The projection supplies the other side.
+        if (! is_numeric($min) && ! is_numeric($max)) {
             return null;
         }
 
-        if ((float) $min > (float) $max) {
+        if (is_numeric($min) && is_numeric($max) && (float) $min > (float) $max) {
             return sprintf(
                 'The minimum (%s) is above the maximum (%s), so no value could ever be stored in '
                 .'this field. Swap them, or clear one.',
@@ -290,8 +294,8 @@ final class NumberType extends BaseFieldType
         $scale = $integer ? 0 : self::clampedScale($settings['scale'] ?? 2, $precision);
 
         // Units of the quantum: v = units * 10^-scale.
-        $min = self::unitsAtLeast($settings['min'], $scale);
-        $max = self::unitsAtMost($settings['max'], $scale);
+        $min = self::unitsAtLeast($settings['min'] ?? null, $scale);
+        $max = self::unitsAtMost($settings['max'] ?? null, $scale);
 
         // ⚠️ The PROJECTION's bound, which the rules also emit. A decimal field
         // is validated `lt:10^(precision-scale)`, so precision 2 / scale 1 admits
@@ -303,9 +307,13 @@ final class NumberType extends BaseFieldType
             $min = $min === null ? -$bound : max($min, -$bound);
         }
 
+        // ⚠️ A ONE-SIDED range can be empty, and returning early when either
+        // bound was absent missed it. A decimal field is validated
+        // `lt:10^(precision-scale)`, so precision 2 / scale 1 with `min = 10` and
+        // no maximum admits nothing — the projection supplies the other side, and
+        // the block above has already applied it. Only an integer field, which has
+        // no projection bound, is genuinely open.
         if ($min === null || $max === null) {
-            // An open side cannot be empty on its own: there is always a value
-            // beyond it on the grid.
             return null;
         }
 
@@ -347,7 +355,7 @@ final class NumberType extends BaseFieldType
             return $this->emptyStepReason($settings);
         }
 
-        $offset = (int) round((float) ($settings['min'] ?? 0) * (10 ** $scale));
+        $offset = (int) self::unitsAtLeast($settings['min'] ?? 0, $scale);
 
         // The first candidate at or above the minimum.
         $first = $offset + (int) ceil(($min - $offset) / $stepUnits) * $stepUnits;
@@ -358,36 +366,74 @@ final class NumberType extends BaseFieldType
     /** The value as whole quanta, rounded UP; null when it is not a number. */
     private static function unitsAtLeast(mixed $value, int $scale): ?int
     {
-        return is_numeric($value) ? (int) ceil((float) $value * (10 ** $scale)) : null;
+        return self::units($value, $scale, up: true);
     }
 
     /** The value as whole quanta, rounded DOWN; null when it is not a number. */
     private static function unitsAtMost(mixed $value, int $scale): ?int
     {
-        return is_numeric($value) ? (int) floor((float) $value * (10 ** $scale)) : null;
+        return self::units($value, $scale, up: false);
     }
 
     /** Whether the value is exactly representable at this scale. */
     private static function isOnGrid(mixed $value, int $scale): bool
     {
+        return is_numeric($value) && self::units($value, $scale, up: true) === self::units($value, $scale, up: false);
+    }
+
+    /**
+     * The value in whole quanta, rounded up or down, without a float multiply.
+     *
+     * ⚠️ Parsed from the DECIMAL TEXT, because `0.29 * 100` is
+     * `28.999999999999996` — so the previous version took `ceil()` to 29 and
+     * `floor()` to 28 for the same number, decided 29 > 28, and refused a
+     * singleton range at 0.29 that the runtime rules plainly accept. Moving to
+     * integer arithmetic fixed the comparisons and left the CONVERSION in floats,
+     * which is where the imprecision actually was.
+     *
+     * `%F` is used rather than a cast because `(string) 5.0E-15` is exponent
+     * notation, and this needs a fixed-point representation to shift a decimal
+     * point in. Two guard digits past the scale are enough to see whether
+     * anything remains below the quantum, which is the only question here.
+     */
+    private static function units(mixed $value, int $scale, bool $up): ?int
+    {
         if (! is_numeric($value)) {
-            return false;
+            return null;
         }
 
-        $units = (float) $value * (10 ** $scale);
+        $text = sprintf('%.'.($scale + 2).'F', (float) $value);
+        $negative = str_starts_with($text, '-');
+        [$whole, $fraction] = explode('.', ltrim($text, '-').'.');
 
-        return abs($units - round($units)) === 0.0;
+        // The digits that land ON the grid, and whatever is left below it.
+        $units = (int) ($whole.substr($fraction, 0, $scale));
+        $below = rtrim(substr($fraction, $scale), '0') !== '';
+
+        // Rounding away from zero happens on the MAGNITUDE, so the direction
+        // swaps for a negative value: ceil(-29.5) is -29, floor(-29.5) is -30.
+        $awayFromZero = $negative ? ! $up : $up;
+
+        if ($below && $awayFromZero) {
+            $units++;
+        }
+
+        return $negative ? -$units : $units;
     }
 
     /** @param  array<string, mixed>  $settings */
     private function emptyRangeReason(array $settings, int $scale, int $min, int $max): string
     {
+        // A bound the author did not set is reported as the one the PROJECTION
+        // imposes, because that is the constraint actually doing the refusing —
+        // saying "between 10 and " would leave them looking for a setting that is
+        // not there.
         return sprintf(
             'No value this field can represent falls between %s and %s: it stores %s, and the '
             .'closest representable values leave nothing in that interval. Widen the range, or '
             .'change the format%s.',
-            (string) $settings['min'],
-            (string) $settings['max'],
+            (string) ($settings['min'] ?? self::asDecimal($min, $scale)),
+            (string) ($settings['max'] ?? self::asDecimal($max, $scale)),
             $scale === 0 ? 'whole numbers' : 'multiples of '.self::quantumLabel($scale),
             ($settings['format'] ?? 'decimal') === 'integer' ? '' : ', precision or scale',
         );
@@ -402,6 +448,14 @@ final class NumberType extends BaseFieldType
             (string) $settings['step'],
             (string) ($settings['min'] ?? 0),
         );
+    }
+
+    /** Whole quanta back as a decimal string, for a message. */
+    private static function asDecimal(int $units, int $scale): string
+    {
+        return $scale === 0
+            ? (string) $units
+            : rtrim(rtrim(number_format($units / (10 ** $scale), $scale, '.', ''), '0'), '.');
     }
 
     private static function quantumLabel(int $scale): string

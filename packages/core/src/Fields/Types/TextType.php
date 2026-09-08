@@ -147,8 +147,9 @@ final class TextType extends BaseFieldType
                 'type' => 'string',
                 'nullable' => true,
                 'label' => 'Pattern (regex)',
-                'help' => 'Without delimiters, e.g. ^[A-Z]{2}-\\d+$. Must compile, and must be valid '
-                    .'in the JSON Schema dialect, because it is published to API consumers.',
+                'help' => 'Without delimiters, e.g. ^[A-Z]{2}-[0-9]+$. Must compile, and must mean the '
+                    .'same thing in the JSON Schema dialect, because it is published to API '
+                    .'consumers verbatim — so [0-9] rather than \\d.',
             ],
         ];
     }

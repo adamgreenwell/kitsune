@@ -91,6 +91,26 @@ final class Pattern
      * @var array<string, string>
      */
     private const DIVERGENT_ANYWHERE = [
+        // ⚠️ `\d` and `\w` are the most commonly written escapes of all, and they
+        // are the worst offenders — MEASURED on both engines rather than assumed:
+        //
+        //   PCRE 10.48 under /u   ECMAScript (Node 24, /u)
+        //   \d on ١٢     matches           does not
+        //   \w on аб     matches           does not
+        //
+        // PHP's `u` modifier sets PCRE2_UCP as well as UTF, so `\d` becomes "any
+        // Unicode decimal digit" while ECMAScript's stays exactly [0-9]. A field
+        // published as `^\d+$` therefore accepts Arabic-Indic digits through the
+        // API and rejects them in every generated client.
+        //
+        // Refused, reluctantly, because the rule this settles on says to: a
+        // portable equivalent exists and is one character longer. `\s` and `\S`
+        // are NOT here — the same measurement found them agreeing on NBSP and
+        // ideographic space, so there is nothing to refuse.
+        'd' => '\\d — PCRE matches any Unicode digit here; ECMAScript matches only 0-9. Use [0-9]',
+        'D' => '\\D — the negation of a class that differs; use [^0-9]',
+        'w' => '\\w — PCRE matches Unicode letters here; ECMAScript matches only [A-Za-z0-9_]',
+        'W' => '\\W — the negation of a class that differs; use [^A-Za-z0-9_]',
         'h' => '\\h — PCRE horizontal whitespace; ECMAScript reads it as the letter h. Use [ \\t]',
         'H' => '\\H — PCRE non-horizontal-whitespace; ECMAScript reads it as the letter H',
         'v' => '\\v — PCRE vertical whitespace; ECMAScript reads a single vertical tab',
