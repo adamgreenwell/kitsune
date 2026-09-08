@@ -18,6 +18,8 @@ use Illuminate\Support\Collection;
 use Kitsune\Core\Exceptions\ReservedHandleException;
 use Kitsune\Core\Tenancy\Attributes\Unscoped;
 use Kitsune\Core\Tenancy\Context;
+use Kitsune\Core\Tenancy\Contracts\RefusesCascadingDeletes;
+use Kitsune\Core\Tenancy\ScopedBuilder;
 use RuntimeException;
 
 /**
@@ -30,7 +32,7 @@ use RuntimeException;
  * @property array<string, mixed>|null $settings
  */
 #[Unscoped]
-class EntryType extends Model
+class EntryType extends Model implements RefusesCascadingDeletes
 {
     /**
      * Handles that would collide with a route segment (ADR-012).
@@ -146,6 +148,68 @@ class EntryType extends Model
         });
     }
 
+    /**
+     * ⚠️ Refuses while entries still reference it, because the database would
+     * remove them itself.
+     *
+     * `entries.entry_type_id` is `cascadeOnDelete`, so deleting this removed every
+     * referenced entry INSIDE the database: no per-row model event, so no audit
+     * row, and a hard DELETE, so Entry's SoftDeletes never applied and the rows
+     * were unrecoverable. Verified by probe — three entries gone, zero audit
+     * rows, the org still present, so not the org-cascade exception ADR-020
+     * documents.
+     *
+     * Reachable from the BUILDER as well as from `deleting`, through
+     * `RefusesCascadingDeletes`. Written only as a model event it covered one
+     * path: `query()->delete()`, `deleteQuietly()` and `withoutEvents()` all
+     * dispatch straight past it, which is the same shape found on four other
+     * guards in this project.
+     *
+     * Deleting an ORG still takes everything. That cascade happens in the
+     * database and fires nothing here, which is what keeps the documented
+     * exception working.
+     */
+    /**
+     * ⚠️ This model is #[Unscoped] and still needs the builder.
+     *
+     * It does not `use EnforcesScope` — global types must be visible to every
+     * org, so it constrains by query instead — which meant it had no builder
+     * at all, and the cascade refusal was reachable only through the model
+     * event. `EntryType::query()->delete()` walked past it.
+     *
+     * ScopedBuilder's scope-key check is inert here rather than wrong: a global
+     * type's `org_id` is NULL and skipped, and an org's own type matches the
+     * context it is created in.
+     *
+     * @param  \Illuminate\Database\Query\Builder  $query
+     * @return ScopedBuilder<$this>
+     */
+    public function newEloquentBuilder($query): ScopedBuilder
+    {
+        return new ScopedBuilder($query, $this);
+    }
+
+    public function guardCascade(): void
+    {
+        $entries = Entry::withoutScopeBecause(
+            'counting entries before their type is deleted, to refuse rather than cascade',
+            fn ($query) => $query->withTrashed()->where('entry_type_id', $this->getKey())->count(),
+        );
+
+        if ($entries === 0) {
+            return;
+        }
+
+        throw new RuntimeException(sprintf(
+            'Entry type [%s] still has %d entr%s, and the database would delete them by cascade — '
+            .'permanently, with nothing in the audit trail saying they existed (ADR-020). Delete '
+            .'the entries first, which is audited.',
+            $this->handle,
+            $entries,
+            $entries === 1 ? 'y' : 'ies',
+        ));
+    }
+
     public function isReservedHandle(): bool
     {
         return in_array(strtolower($this->handle), self::RESERVED_HANDLES, true);
@@ -174,23 +238,7 @@ class EntryType extends Model
      */
     protected static function booted(): void
     {
-        static::deleting(function (self $type): void {
-            $entries = Entry::withoutScopeBecause(
-                'counting entries before their type is deleted, to refuse rather than cascade',
-                fn ($query) => $query->withTrashed()->where('entry_type_id', $type->getKey())->count(),
-            );
-
-            if ($entries > 0) {
-                throw new RuntimeException(sprintf(
-                    'Entry type [%s] still has %d entr%s, and the database would delete them by '
-                    .'cascade — permanently, with nothing in the audit trail saying they existed '
-                    .'(ADR-020). Delete the entries first, which is audited.',
-                    $type->handle,
-                    $entries,
-                    $entries === 1 ? 'y' : 'ies',
-                ));
-            }
-        });
+        static::deleting(fn (self $type) => $type->guardCascade());
 
         // Rejected at creation time, not escaped later. The collision is with
         // the URL contract, not with SQL: a type named "create" would make

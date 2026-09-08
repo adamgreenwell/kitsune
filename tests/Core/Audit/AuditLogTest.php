@@ -205,6 +205,13 @@ describe('an entry write that cannot be audited is refused', function (): void {
         expect(AuditLog::for($entry)->pluck('action')->all())->toBe(['entry.created']);
     });
 
+    /*
+     * ⚠️ The refusal now comes from the TENANCY guard rather than the auditor,
+     * and earlier: a row carrying explicit scope keys with no context
+     * established cannot be vouched for by anything, so it is refused before
+     * the insert rather than after it. The auditor still owns the case where no
+     * keys were supplied at all.
+     */
     it('refuses a create with no org context, and leaves no entry behind', function (): void {
         $org = $this->org;
         $site = $this->site;
@@ -215,7 +222,7 @@ describe('an entry write that cannot be audited is refused', function (): void {
         expect(fn () => Entry::create([
             'org_id' => $org->id, 'site_id' => $site->id, 'entry_type_id' => $type->id,
             'type_handle' => 'page', 'title' => 'Untraceable',
-        ]))->toThrow(RuntimeException::class, 'no organisation context');
+        ]))->toThrow(RuntimeException::class, 'no org context is established');
 
         app(Context::class)->setOrg($org);
         app(Context::class)->setSite($site);
@@ -358,6 +365,35 @@ describe('a cascade that removes entries has to be refused, not audited', functi
         Entry::query()->delete();
 
         expect(fn () => $this->site->delete())
+            ->toThrow(RuntimeException::class, 'would delete them by cascade');
+    });
+
+    /*
+     * ⚠️ A `deleting` model event covers ONE path. `query()->delete()`,
+     * `deleteQuietly()` and `withoutEvents()` all dispatch straight past it,
+     * and the cascade behind it then hard-deletes every referenced entry — the
+     * exact loss the refusal was added to close. Same shape as four other
+     * guards in this project, so it lives on the builder now.
+     */
+    it('refuses a BULK delete of the site, which dispatches no event', function (): void {
+        expect(fn () => Site::query()->whereKey($this->site->getKey())->delete())
+            ->toThrow(RuntimeException::class, 'would delete them by cascade');
+
+        expect(Entry::withoutGlobalScopes()->withTrashed()->count())->toBe(1);
+    });
+
+    it('refuses a BULK delete of the entry type', function (): void {
+        expect(fn () => EntryType::query()->whereKey($this->type->getKey())->delete())
+            ->toThrow(RuntimeException::class, 'would delete them by cascade');
+    });
+
+    it('refuses deleteQuietly, which suppresses the event', function (): void {
+        expect(fn () => $this->site->deleteQuietly())
+            ->toThrow(RuntimeException::class, 'would delete them by cascade');
+    });
+
+    it('refuses a delete inside withoutEvents', function (): void {
+        expect(fn () => Site::withoutEvents(fn () => $this->site->delete()))
             ->toThrow(RuntimeException::class, 'would delete them by cascade');
     });
 

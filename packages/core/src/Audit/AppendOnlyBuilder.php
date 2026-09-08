@@ -32,6 +32,11 @@ use RuntimeException;
  */
 class AppendOnlyBuilder extends Builder
 {
+    private const NO_SUBQUERY_APPEND =
+        'Audit rows cannot be appended from a subquery: the values are never seen here, so the org '
+        .'they claim cannot be checked, and a trail an outsider can write to is worse than no '
+        .'trail (ADR-020).';
+
     private const APPEND_ONLY =
         'Audit rows are append-only (ADR-020). Record a new action instead of rewriting the trail.';
 
@@ -167,6 +172,63 @@ class AppendOnlyBuilder extends Builder
     public function touch($column = null)
     {
         throw new RuntimeException(self::APPEND_ONLY);
+    }
+
+    /**
+     * ⚠️ EVERY insert path, not just `insert()`.
+     *
+     * `insertOrIgnore()`, `insertUsing()` and their siblings are forwarded
+     * straight to the query builder, so guarding `insert()` alone left them
+     * open — and a non-conflicting row carrying a rival `org_id` appended
+     * forged evidence to that org's trail. Being appendable is not the same as
+     * being unguarded, and "inserts are allowed" was doing the work of both.
+     *
+     * The two `Using` forms take a SUBQUERY rather than values, so there are no
+     * scope keys to check here at all — they are refused instead. Appending
+     * rows selected by a query nobody validated is not something this log has
+     * a use for.
+     *
+     * @param  array<string, mixed>  $values
+     * @return int
+     */
+    public function insertOrIgnore(array $values)
+    {
+        $this->guardScopeKeys($values);
+
+        return parent::insertOrIgnore($values);
+    }
+
+    /**
+     * @param  array<string, mixed>  $values
+     * @param  array<int, string>  $returning
+     * @param  array<int, string>|string|null  $uniqueBy
+     * @return mixed
+     */
+    public function insertOrIgnoreReturning(array $values, array $returning = ['*'], array|string|null $uniqueBy = null)
+    {
+        $this->guardScopeKeys($values);
+
+        return parent::insertOrIgnoreReturning($values, $returning, $uniqueBy);
+    }
+
+    /**
+     * @param  \Closure|\Illuminate\Database\Query\Builder|Builder<*>|string  $query
+     * @param  array<int, string>  $columns
+     * @return int
+     */
+    public function insertUsing(array $columns, $query)
+    {
+        throw new RuntimeException(self::NO_SUBQUERY_APPEND);
+    }
+
+    /**
+     * @param  \Closure|\Illuminate\Database\Query\Builder|Builder<*>|string  $query
+     * @param  array<int, string>  $columns
+     * @return int
+     */
+    public function insertOrIgnoreUsing(array $columns, $query)
+    {
+        throw new RuntimeException(self::NO_SUBQUERY_APPEND);
     }
 
     /**

@@ -10,10 +10,12 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Tenancy\Concerns;
 
+use Illuminate\Database\Query\Builder;
 use Kitsune\Core\Tenancy\Attributes\OrgScoped;
 use Kitsune\Core\Tenancy\Attributes\OrgScopedThroughPivot;
 use Kitsune\Core\Tenancy\Attributes\SiteScoped;
 use Kitsune\Core\Tenancy\Context;
+use Kitsune\Core\Tenancy\ScopedBuilder;
 use Kitsune\Core\Tenancy\ScopeResolver;
 use Kitsune\Core\Tenancy\Scopes\OrgMembershipScope;
 use Kitsune\Core\Tenancy\Scopes\OrgScope;
@@ -88,6 +90,23 @@ trait EnforcesScope
     }
 
     /**
+     * ⚠️ Every write goes through the scoped builder as well.
+     *
+     * The guards below run from model events, and a mass update instantiates
+     * no models: `Entry::query()->update(['org_id' => $rival])` transferred
+     * rows into another org without dispatching anything. A model that needs a
+     * different builder overrides this — `Entry`, `FieldStorage` and
+     * `AuditLog` each do, and each carries the same scope-key check.
+     *
+     * @param  Builder  $query
+     * @return ScopedBuilder<$this>
+     */
+    public function newEloquentBuilder($query): ScopedBuilder
+    {
+        return new ScopedBuilder($query, $this);
+    }
+
+    /**
      * ⚠️ Stamping is not ENFORCING, and this trait's docblock claimed both.
      *
      * The stamp filled `site_id` only when the key was absent and `org_id`
@@ -133,6 +152,28 @@ trait EnforcesScope
 
         if ($value === null && $nullable) {
             return;
+        }
+
+        // ⚠️ A non-null key with NO context is refused, not waved through.
+        //
+        // The partial-context case: with only an org set, a site-scoped row
+        // could be written with this org's `org_id` and ANOTHER org's
+        // `site_id`, because `$current === null` returned here. SiteScope
+        // matches on `site_id` and does not additionally check the row's org,
+        // so selecting through that site exposed the planted row across the
+        // boundary. Nothing establishes that a caller with no site context may
+        // name a site, so naming one is the escape hatch's job.
+        if ($current === null && $value !== null) {
+            throw new RuntimeException(sprintf(
+                'Refusing to write %s with [%s] = %s when no %s context is established. Nothing '
+                .'here can say the value is yours, and a scope key nobody vouched for is how a row '
+                .'ends up visible in another tenant (ADR-021). Use withoutScopeBecause() if this is '
+                .'deliberate.',
+                static::class,
+                $column,
+                (string) $value,
+                str_replace('_id', '', $column),
+            ));
         }
 
         if ($current === null || $value === null || (int) $value === $current) {

@@ -16,6 +16,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Kitsune\Core\Tenancy\Attributes\OrgScoped;
 use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
+use Kitsune\Core\Tenancy\Contracts\RefusesCascadingDeletes;
 use RuntimeException;
 
 /**
@@ -40,7 +41,7 @@ use RuntimeException;
  * @property array<string, mixed>|null $settings
  */
 #[OrgScoped]
-class Site extends Model
+class Site extends Model implements RefusesCascadingDeletes
 {
     use EnforcesScope;
 
@@ -83,23 +84,49 @@ class Site extends Model
      */
     protected static function booted(): void
     {
-        static::deleting(function (self $site): void {
-            $entries = Entry::withoutScopeBecause(
-                'counting entries before their site is deleted, to refuse rather than cascade',
-                fn ($query) => $query->withTrashed()->where('site_id', $site->getKey())->count(),
-            );
+        static::deleting(fn (self $site) => $site->guardCascade());
+    }
 
-            if ($entries > 0) {
-                throw new RuntimeException(sprintf(
-                    'Site [%s] still holds %d entr%s, and the database would delete them by cascade '
-                    .'— permanently, with nothing in the audit trail saying they existed (ADR-020). '
-                    .'Delete the entries first, which is audited.',
-                    $site->handle,
-                    $entries,
-                    $entries === 1 ? 'y' : 'ies',
-                ));
-            }
-        });
+    /**
+     * ⚠️ Refuses while entries still reference it, because the database would
+     * remove them itself.
+     *
+     * `entries.site_id` is `cascadeOnDelete`, so deleting this removed every
+     * referenced entry INSIDE the database: no per-row model event, so no audit
+     * row, and a hard DELETE, so Entry's SoftDeletes never applied and the rows
+     * were unrecoverable. Verified by probe — three entries gone, zero audit
+     * rows, the org still present, so not the org-cascade exception ADR-020
+     * documents.
+     *
+     * Reachable from the BUILDER as well as from `deleting`, through
+     * `RefusesCascadingDeletes`. Written only as a model event it covered one
+     * path: `query()->delete()`, `deleteQuietly()` and `withoutEvents()` all
+     * dispatch straight past it, which is the same shape found on four other
+     * guards in this project.
+     *
+     * Deleting an ORG still takes everything. That cascade happens in the
+     * database and fires nothing here, which is what keeps the documented
+     * exception working.
+     */
+    public function guardCascade(): void
+    {
+        $entries = Entry::withoutScopeBecause(
+            'counting entries before their site is deleted, to refuse rather than cascade',
+            fn ($query) => $query->withTrashed()->where('site_id', $this->getKey())->count(),
+        );
+
+        if ($entries === 0) {
+            return;
+        }
+
+        throw new RuntimeException(sprintf(
+            'Site [%s] still holds %d entr%s, and the database would delete them by cascade — '
+            .'permanently, with nothing in the audit trail saying they existed (ADR-020). Delete '
+            .'the entries first, which is audited.',
+            $this->handle,
+            $entries,
+            $entries === 1 ? 'y' : 'ies',
+        ));
     }
 
     public function getRouteKeyName(): string
