@@ -45,6 +45,24 @@ final class Kitsune
      */
     public const RTL_LANGUAGES = ['ar', 'ckb', 'fa', 'he', 'ku', 'ur'];
 
+    /**
+     * Scripts written right-to-left, as ISO 15924 codes.
+     *
+     * ⚠️ Deliberately only the scripts the languages above are written in —
+     * Arabic, its Nastaliq style (Urdu), and Hebrew. Anything else carrying an
+     * explicit script subtag is treated as left-to-right, which is the same
+     * fail-safe direction an unknown locale takes: most of the world's scripts
+     * are LTR, and a wrong guess here is a layout annoyance rather than a data
+     * problem.
+     *
+     * The list is short for the same reason `RTL_LANGUAGES` is: it covers what
+     * this project can actually render, and extending it is a visible change
+     * rather than a quiet assumption.
+     *
+     * @var list<string>
+     */
+    public const RTL_SCRIPTS = ['Arab', 'Aran', 'Hebr'];
+
     public static function version(): string
     {
         return '0.0.1-dev';
@@ -64,9 +82,28 @@ final class Kitsune
     {
         $locale ??= app()->getLocale();
 
-        // The LANGUAGE subtag decides it: `ar`, `ar_EG` and `ar-EG` are one
-        // language, and a region never changes which way it is written.
-        $language = strtolower((string) preg_split('/[_-]/', $locale)[0]);
+        $subtags = preg_split('/[_-]/', $locale) ?: [];
+
+        // ⚠️ An explicit SCRIPT wins over the language's default, and reading
+        // only the language was wrong.
+        //
+        // Direction is a property of the script, not the language, and two of
+        // the six are routinely written in more than one. Kurmanji Kurdish is
+        // usually LATIN — `ku-Latn` is the common case, not an exotic one — and
+        // Sorani has a Latin orthography too. Taking the language subtag alone
+        // returned `rtl` for both, so configuring `ku-Latn` served Latin text in
+        // a right-to-left document: the same defect as the missing `dir`, with
+        // the sign flipped.
+        //
+        // BCP 47 puts the script second and it is always four letters, which is
+        // what distinguishes `ku-Latn` from `ku-IQ`.
+        if (isset($subtags[1]) && preg_match('/^[A-Za-z]{4}$/', $subtags[1]) === 1) {
+            return in_array(ucfirst(strtolower($subtags[1])), self::RTL_SCRIPTS, true) ? 'rtl' : 'ltr';
+        }
+
+        // No script named, so the language's usual one decides. A REGION never
+        // does: `ar_EG` and `ar` are written the same way.
+        $language = strtolower((string) ($subtags[0] ?? ''));
 
         return in_array($language, self::RTL_LANGUAGES, true) ? 'rtl' : 'ltr';
     }

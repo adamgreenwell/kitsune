@@ -138,6 +138,8 @@ Default `per_locale`, read by nothing. The column asserts a capability that does
 **G5 — the RTL language list is limited to what was measured.**
 Six languages. A site publishing in Divehi, Pashto, Sindhi, Uyghur or Yiddish renders LTR. This is a deliberate, recorded limitation rather than an oversight (see `Kitsune::RTL_LANGUAGES`), and extending it means adding a translation, not just a string.
 
+Direction resolves from an explicit **script** subtag when the locale carries one, because direction is a property of the script rather than the language and two of the six are written in more than one: `ku-Latn` and `ckb-Latn` are Latin and must render LTR, while `ku-IQ` — a region, not a script — stays RTL. Reading the language subtag alone got both Kurdish cases wrong, which was caught in review. The recognised RTL scripts are `Arab`, `Aran` and `Hebr`; any other explicit script is treated as LTR, the same fail-safe direction an unknown locale takes.
+
 **G6 — the mirror test covers landmarks, not every element.**
 It compares five structural elements, so it catches direction failing at the document level. A single physical offset on some inner component would slip past it; the no-overflow assertion and the logical-versus-physical CSS ratio are the backstops, and neither is exhaustive. Stated because a test's coverage is part of its result.
 

@@ -35,6 +35,34 @@ it('reads the LANGUAGE subtag, not the whole tag', function (string $locale): vo
     expect(Kitsune::textDirection($locale))->toBe('rtl');
 })->with(['ar_EG', 'ar-EG', 'AR', 'he_IL', 'fa-IR']);
 
+it('reads an explicit SCRIPT subtag, which overrides the language', function (string $locale, string $expected): void {
+    /*
+     * ⚠️ Direction is a property of the SCRIPT, not the language, and reading
+     * only the language subtag was wrong for two of the six.
+     *
+     * Kurmanji Kurdish is usually written in LATIN — `ku-Latn` is the common
+     * case, not an exotic one — and Sorani has a Latin orthography too. Taking
+     * the language alone returned `rtl` for both, so configuring `ku-Latn` served
+     * Latin text in a right-to-left document: the same defect as the missing
+     * `dir`, with the sign flipped.
+     */
+    expect(Kitsune::textDirection($locale))->toBe($expected);
+})->with([
+    ['ku-Latn', 'ltr'],
+    ['ckb-Latn', 'ltr'],
+    ['zh-Hans', 'ltr'],
+    ['ar-Arab', 'rtl'],
+    ['he-Hebr', 'rtl'],
+    // Nastaliq, the style Urdu is set in.
+    ['ur-Aran', 'rtl'],
+]);
+
+it('does not mistake a REGION for a script', function (string $locale): void {
+    // BCP 47 puts the script second and it is always four letters, which is
+    // what separates `ku-Latn` from `ku-IQ`. A region never changes direction.
+    expect(Kitsune::textDirection($locale))->toBe('rtl');
+})->with(['ku-IQ', 'ar-EG', 'he_IL', 'fa-AF']);
+
 it('falls back to ltr for a locale it does not know', function (): void {
     // Fail SAFE rather than fail closed: an unknown locale renders the way
     // most of the world's languages do, and a wrong guess here is a layout
