@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Audit;
 
+use Illuminate\Contracts\Database\Query\Expression;
 use Illuminate\Database\Eloquent\Builder;
 use Kitsune\Core\Models\AuditLog;
 use RuntimeException;
@@ -30,6 +31,9 @@ use RuntimeException;
  */
 class AppendOnlyBuilder extends Builder
 {
+    private const APPEND_ONLY =
+        'Audit rows are append-only (ADR-020). Record a new action instead of rewriting the trail.';
+
     /** @param  array<string, mixed>  $values */
     public function update(array $values)
     {
@@ -61,5 +65,62 @@ class AppendOnlyBuilder extends Builder
             'Audit rows are append-only and cannot be force-deleted either. Retention is an '
             .'operator policy applied to the table (ADR-020).'
         );
+    }
+
+    /**
+     * ⚠️ Every remaining mutator the builder exposes, refused together.
+     *
+     * `update()`, `delete()` and `forceDelete()` were overridden one at a
+     * time as each was found, which is how `truncate()` survived three
+     * rounds: Eloquent forwards it to the query builder, so it erased the
+     * entire table with no override and no model event. `upsert()` rewrites
+     * an existing row by key, and the increments move a value in place.
+     *
+     * Enumerated rather than left to the next review, because "append-only"
+     * is a claim about EVERY path, and the ones nobody thought of are the
+     * ones that make it false.
+     */
+    public function truncate(): void
+    {
+        throw new RuntimeException(self::APPEND_ONLY);
+    }
+
+    /**
+     * @param  array<string, mixed>  $values
+     * @param  array<int, string>|string  $uniqueBy
+     * @param  array<int, string>|null  $update
+     * @return int
+     */
+    public function upsert(array $values, $uniqueBy, $update = null)
+    {
+        throw new RuntimeException(self::APPEND_ONLY);
+    }
+
+    /**
+     * @param  array<string, mixed>  $attributes
+     * @param  array<string, mixed>  $values
+     * @return bool
+     */
+    public function updateOrInsert(array $attributes, array|callable $values = [])
+    {
+        throw new RuntimeException(self::APPEND_ONLY);
+    }
+
+    /**
+     * @param  string|Expression  $column
+     * @param  array<string, mixed>  $extra
+     */
+    public function increment($column, $amount = 1, array $extra = [])
+    {
+        throw new RuntimeException(self::APPEND_ONLY);
+    }
+
+    /**
+     * @param  string|Expression  $column
+     * @param  array<string, mixed>  $extra
+     */
+    public function decrement($column, $amount = 1, array $extra = [])
+    {
+        throw new RuntimeException(self::APPEND_ONLY);
     }
 }

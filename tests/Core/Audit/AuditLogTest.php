@@ -150,6 +150,48 @@ it('records an action that has no target at all', function (): void {
         ->and($row->target_id)->toBeNull();
 });
 
+describe('creation cannot be made quiet', function (): void {
+    /*
+     * ⚠️ A `created` model listener is silently skipped by createQuietly()
+     * and by anything inside withoutEvents(), both of which still insert the
+     * row — through insertGetId(), which is where creation is audited now.
+     * That is the one insert path that CAN be audited: it returns the id it
+     * wrote, so there is a target to name.
+     */
+    /*
+     * ⚠️ org_id and site_id are stamped by an EnforcesScope `creating`
+     * listener, which quiet creation suppresses along with everything else —
+     * so these have to be supplied by hand here. Entry happens to be saved
+     * from the worst of it by a NOT NULL org_id, which turns a quiet create
+     * into a constraint violation rather than an unscoped row. That is a
+     * database constraint doing the work, not the design, and it says nothing
+     * about a nullable column: auditing at insertGetId() holds either way.
+     */
+    it('audits an entry created quietly', function (): void {
+        $entry = Entry::createQuietly([
+            'org_id' => $this->org->id, 'site_id' => $this->site->id,
+            'entry_type_id' => $this->type->id, 'type_handle' => 'page', 'title' => 'Quiet',
+        ]);
+
+        expect(AuditLog::for($entry)->pluck('action')->all())->toBe(['entry.created']);
+    });
+
+    it('audits an entry created inside withoutEvents', function (): void {
+        $entry = Entry::withoutEvents(fn () => Entry::create([
+            'org_id' => $this->org->id, 'site_id' => $this->site->id,
+            'entry_type_id' => $this->type->id, 'type_handle' => 'page', 'title' => 'Silent',
+        ]));
+
+        expect(AuditLog::for($entry)->pluck('action')->all())->toBe(['entry.created']);
+    });
+
+    it('still records creation exactly once on the ordinary path', function (): void {
+        $entry = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Loud']);
+
+        expect(AuditLog::for($entry)->where('action', 'entry.created')->count())->toBe(1);
+    });
+});
+
 describe('the log is append-only, enforced', function (): void {
     it('refuses to rewrite a row', function (): void {
         // An audit log application code can rewrite is not evidence of
@@ -167,6 +209,22 @@ describe('the log is append-only, enforced', function (): void {
 
         expect(fn () => AuditLog::for($entry)->first()->delete())
             ->toThrow(RuntimeException::class, 'append-only');
+    });
+
+    it('refuses every other mutator the builder exposes', function (): void {
+        // ⚠️ These were overridden one at a time as each was found, which is
+        // how truncate() survived three rounds — Eloquent forwards it to the
+        // query builder, so it erased the whole table with no override and no
+        // model event. "Append-only" is a claim about every path.
+        $before = AuditLog::query()->count();
+
+        expect(fn () => AuditLog::query()->truncate())->toThrow(RuntimeException::class)
+            ->and(fn () => AuditLog::query()->upsert([['action' => 'x']], ['id']))->toThrow(RuntimeException::class)
+            ->and(fn () => AuditLog::query()->updateOrInsert(['action' => 'x'], ['action' => 'y']))->toThrow(RuntimeException::class)
+            ->and(fn () => AuditLog::query()->increment('actor_id'))->toThrow(RuntimeException::class)
+            ->and(fn () => AuditLog::query()->decrement('actor_id'))->toThrow(RuntimeException::class);
+
+        expect(AuditLog::query()->count())->toBe($before);
     });
 
     it('still lets the org cascade take them, which is the intended exception', function (): void {
@@ -360,6 +418,25 @@ describe('bulk entry writes are audited too', function (): void {
         // The guard has to fire BEFORE the write, or it documents a hole
         // rather than closing one.
         expect(Entry::query()->where('title', 'Smuggled')->exists())->toBeFalse();
+    });
+
+    it('refuses the forwarded writers that create or modify without an override', function (): void {
+        // ⚠️ updateOrInsert() is forwarded WHOLE to the query builder, so its
+        // internal insert or update reaches neither these overrides nor the
+        // created event — it could create or modify an entry untraced
+        // depending only on whether the predicate matched.
+        expect(fn () => Entry::query()->updateOrInsert(['title' => 'X'], ['status' => 'draft']))
+            ->toThrow(RuntimeException::class)
+            ->and(Entry::query()->where('title', 'X')->exists())->toBeFalse();
+    });
+
+    it('audits an increment, which is an update that skips update()', function (): void {
+        // Audited rather than refused: unlike the insert paths, the rows
+        // already exist and have keys to name.
+        Entry::query()->whereKey($this->one->getKey())->increment('id', 0);
+
+        expect(AuditLog::for($this->one)->where('action', 'entry.updated')->count())->toBe(1)
+            ->and(AuditLog::for($this->two)->where('action', 'entry.updated')->count())->toBe(0);
     });
 
     it('refuses a truncate, which would leave nothing to say what had been there', function (): void {

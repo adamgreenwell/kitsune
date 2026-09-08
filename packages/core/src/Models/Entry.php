@@ -17,7 +17,6 @@ use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Kitsune\Core\Audit\AuditedBuilder;
-use Kitsune\Core\Audit\Auditor;
 use Kitsune\Core\Tenancy\Attributes\SiteScoped;
 use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
 
@@ -64,14 +63,11 @@ class Entry extends Model
         // written from model events rather than from the admin, so the API
         // and the console are audited by the same code path — an audit trail
         // that only covers the UI is an audit trail with a documented hole.
-        // ⚠️ Creation ONLY. Every other action is derived in AuditedBuilder,
-        // because `$model->save()` and `$model->delete()` both go through it
-        // — listening here as well produced two audit rows per write. An
-        // insert never reaches the builder's methods, so it stays an event.
-        static::created(function (self $entry): void {
-            app(Auditor::class)->record('entry.created', $entry);
-        });
-
+        // ⚠️ NOTHING is audited from model events. Every action, creation
+        // included, is derived in AuditedBuilder — see the class docblock.
+        // Listening here as well double-recorded ordinary writes, and a
+        // `created` listener is silently skipped by createQuietly() and by
+        // anything inside withoutEvents(), which insert the row regardless.
         static::saving(function (self $entry): void {
             if ($entry->isDirty('entry_type_id')) {
                 $entry->type_handle = EntryType::query()

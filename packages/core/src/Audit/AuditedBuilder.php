@@ -10,7 +10,9 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Audit;
 
+use Illuminate\Contracts\Database\Query\Expression;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Kitsune\Core\Models\Entry;
 use RuntimeException;
@@ -43,10 +45,51 @@ use RuntimeException;
  */
 class AuditedBuilder extends Builder
 {
+    /**
+     * Set on the builder that performs the write, so the write does not
+     * audit itself a second time. Private, and only ever set on an instance
+     * this class made — see plainQueryFor().
+     */
+    private bool $suppressed = false;
+
     private const NO_BULK_CREATE =
         'Entries cannot be written in bulk, because these paths return a row count rather than '
         .'the keys they wrote — there would be nothing to record as the target, and an entry '
         .'would appear with no audit trail (ADR-020). Use create(), which is audited.';
+
+    /**
+     * ⚠️ Creation is audited HERE, not from the `created` model event.
+     *
+     * `Entry::createQuietly()` and any creation inside
+     * `Model::withoutEvents()` suppress that listener while still inserting
+     * the row — through this very method, which `Model::performInsert()`
+     * uses for an incrementing key. So the entry persisted with no audit row,
+     * and the quiet variants are ordinary Eloquent that application code
+     * reaches for without thinking about the trail.
+     *
+     * This is the one insert path that CAN be audited: it returns the id it
+     * wrote, so there is a target to name. Every other bulk insert path is
+     * refused below for exactly the reason this one works.
+     *
+     * @param  array<string, mixed>  $values
+     * @param  string|null  $sequence
+     * @return int
+     */
+    public function insertGetId(array $values, $sequence = null)
+    {
+        $model = $this->getModel();
+
+        return DB::transaction(function () use ($values, $sequence, $model) {
+            $id = parent::insertGetId($values, $sequence);
+
+            $target = $model->newInstance([], true);
+            $target->forceFill([$model->getKeyName() => $id]);
+
+            app(Auditor::class)->record(Str::snake(class_basename($model)).'.created', $target);
+
+            return $id;
+        });
+    }
 
     /**
      * ⚠️ Creation has a bulk path too, and it is the same hole in reverse.
@@ -86,6 +129,30 @@ class AuditedBuilder extends Builder
     }
 
     /**
+     * @param  \Closure|\Illuminate\Database\Query\Builder|\Illuminate\Database\Eloquent\Builder<*>|string  $query
+     * @param  array<int, string>  $columns
+     * @return int
+     */
+    public function insertUsing(array $columns, $query)
+    {
+        throw new RuntimeException(self::NO_BULK_CREATE);
+    }
+
+    /**
+     * ⚠️ Forwarded WHOLE to the query builder, so neither these overrides nor
+     * the `created` event sees it. Depending on whether the predicate matches
+     * it either creates or modifies an entry, and did so untraced either way.
+     *
+     * @param  array<string, mixed>  $attributes
+     * @param  array<string, mixed>  $values
+     * @return bool
+     */
+    public function updateOrInsert(array $attributes, array|callable $values = [])
+    {
+        throw new RuntimeException(self::NO_BULK_CREATE);
+    }
+
+    /**
      * ⚠️ Not an insert, but the same gap: it removes every row at once and
      * dispatches nothing, so the whole table could vanish untraced.
      */
@@ -100,7 +167,11 @@ class AuditedBuilder extends Builder
     /** @param  array<string, mixed>  $values */
     public function update(array $values)
     {
-        return $this->auditing($this->actionFor($values), fn () => parent::update($values));
+        if ($this->suppressed) {
+            return parent::update($values);
+        }
+
+        return $this->auditing($this->actionFor($values), fn (self $query) => $query->update($values));
     }
 
     // delete() is deliberately NOT overridden. Entry soft-deletes, so both
@@ -110,7 +181,42 @@ class AuditedBuilder extends Builder
 
     public function forceDelete()
     {
-        return $this->auditing('force_deleted', fn () => parent::forceDelete());
+        if ($this->suppressed) {
+            return parent::forceDelete();
+        }
+
+        return $this->auditing('force_deleted', fn (self $query) => $query->forceDelete());
+    }
+
+    /**
+     * ⚠️ Increments are UPDATES that skip update(). Both forward to the query
+     * builder, so a counter could be moved on any number of entries with no
+     * trail. Audited rather than refused — unlike the insert paths, the rows
+     * already exist and have keys to name.
+     *
+     * @param  string|Expression  $column
+     * @param  array<string, mixed>  $extra
+     */
+    public function increment($column, $amount = 1, array $extra = [])
+    {
+        if ($this->suppressed) {
+            return parent::increment($column, $amount, $extra);
+        }
+
+        return $this->auditing('updated', fn (self $query) => $query->increment($column, $amount, $extra));
+    }
+
+    /**
+     * @param  string|Expression  $column
+     * @param  array<string, mixed>  $extra
+     */
+    public function decrement($column, $amount = 1, array $extra = [])
+    {
+        if ($this->suppressed) {
+            return parent::decrement($column, $amount, $extra);
+        }
+
+        return $this->auditing('updated', fn (self $query) => $query->decrement($column, $amount, $extra));
     }
 
     /**
@@ -138,32 +244,69 @@ class AuditedBuilder extends Builder
     }
 
     /**
-     * Read the affected keys BEFORE the write.
+     * Capture the affected keys, then write against THOSE KEYS, in one
+     * transaction.
      *
-     * After it they cannot be found: a deleted row has no id left to look up
-     * and an updated one may no longer match the predicate. One extra query
-     * buys a complete trail, and an audit log with a silent gap at "bulk" is
-     * not evidence of anything (ADR-020).
+     * ⚠️ Auditing the predicate and writing the predicate are two different
+     * statements over a set that can move between them. On PostgreSQL a row
+     * inserted after the `pluck()` and before the write is modified by the
+     * write and absent from the trail; one that stops matching in the same
+     * interval gets an audit record for a change it never received. The trail
+     * would be quietly wrong in both directions under ordinary load.
+     *
+     * So the write does not re-run the predicate. It runs against exactly the
+     * keys that were audited, on a PLAIN builder — which also avoids
+     * recursing back into these overrides. Global scopes are already applied,
+     * because the keys came from this query.
+     *
+     * The keys are read BEFORE the write for the original reason too: after
+     * it a deleted row has no id to look up.
+     *
+     * @param  callable(self): mixed  $write
      */
     private function auditing(string $action, callable $write): mixed
     {
         $model = $this->getModel();
-        $keys = $this->toBase()->pluck($model->getQualifiedKeyName())->all();
 
-        $result = $write();
+        return DB::transaction(function () use ($action, $write, $model): mixed {
+            $keys = $this->toBase()->lockForUpdate()->pluck($model->getQualifiedKeyName())->all();
 
-        // `entry.updated`, not `entries.updated` — an action names the thing
-        // acted on, and the rest of the trail is written in those terms.
-        $auditor = app(Auditor::class);
-        $action = Str::snake(class_basename($model)).'.'.$action;
+            if ($keys === []) {
+                return $write($this->plainQueryFor([]));
+            }
 
-        foreach ($keys as $key) {
-            $target = $model->newInstance([], true);
-            $target->forceFill([$model->getKeyName() => $key]);
+            $result = $write($this->plainQueryFor($keys));
 
-            $auditor->record($action, $target);
-        }
+            // `entry.updated`, not `entries.updated` — an action names the
+            // thing acted on, and the rest of the trail is written in those
+            // terms.
+            $auditor = app(Auditor::class);
+            $action = Str::snake(class_basename($model)).'.'.$action;
 
-        return $result;
+            foreach ($keys as $key) {
+                $target = $model->newInstance([], true);
+                $target->forceFill([$model->getKeyName() => $key]);
+
+                $auditor->record($action, $target);
+            }
+
+            return $result;
+        });
+    }
+
+    /**
+     * A builder over exactly these keys, without the audit overrides.
+     *
+     * Constructed rather than taken from the model, because `newQuery()`
+     * returns another AuditedBuilder and the write would audit itself twice.
+     *
+     * @param  list<mixed>  $keys
+     */
+    private function plainQueryFor(array $keys): self
+    {
+        $query = $this->getModel()->newModelQuery();
+        $query->suppressed = true;
+
+        return $query->whereKey($keys);
     }
 }
