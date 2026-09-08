@@ -926,9 +926,51 @@ describe('erasure reaches the relations recorded in history', function (): void 
 
         $entry->redactField('patient');
 
-        foreach ($entry->revisions()->get() as $revision) {
-            expect($revision->relation_state ?? [])->not->toHaveKey((string) $storage->id);
-        }
+        $key = (string) $storage->id;
+        $states = $entry->revisions()->get()->map(fn (EntryRevision $r): array => $r->relation_state ?? []);
+
+        // ⚠️ The key is KEPT and set to null where it existed, not removed. Three
+        // states have to be distinguishable: a list is what the field held,
+        // `null` is "erased, so this version says nothing", and an ABSENT key is
+        // "this field had no relations at that version" — which is the true state
+        // of the initial revision here, taken before anything was attached.
+        // Dropping the key collapsed the last two, so restoring a redacted
+        // revision deleted a replacement relation added after the erasure.
+        expect($states->filter(fn (array $s): bool => ($s[$key] ?? null) !== null))->toBeEmpty()
+            ->and($states->filter(fn (array $s): bool => array_key_exists($key, $s)))->not->toBeEmpty();
+    });
+
+    it('leaves a REPLACEMENT relation alone when a redacted revision is restored', function (): void {
+        // ⚠️ The conflict between two earlier decisions: erasure makes the
+        // snapshot sparse, and the restore replaces every field-backed relation.
+        // Together they deleted a relation the revision had nothing to say about.
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'patient3', 'type' => 'relation',
+            'pii_class' => 'sensitive', 'cardinality' => -1,
+        ]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id, 'label' => 'Patient',
+        ]);
+
+        $entry = anEntry(['title' => 'Before']);
+        $alice = anEntry(['title' => 'Alice']);
+        $bob = anEntry(['title' => 'Bob']);
+
+        $entry->related()->attach($alice->id, ['field_storage_id' => $storage->id]);
+        $recorded = $entry->revisions()->latest('id')->first();
+
+        $entry->redactField('patient3');
+
+        // A replacement arrives after the erasure.
+        $entry->related()->attach($bob->id, ['field_storage_id' => $storage->id]);
+        $entry->update(['title' => 'After']);
+
+        $entry->restoreRevision($recorded->fresh());
+
+        // The scalar half restored, and the replacement survived — the revision
+        // records nothing about that field, so it may not speak for it.
+        expect($entry->fresh()->title)->toBe('Before')
+            ->and($entry->related()->pluck('entries.id')->all())->toBe([$bob->id]);
     });
 
     it('so restoring an erased version cannot bring the link back', function (): void {
@@ -1254,5 +1296,93 @@ describe('an ordinary create records inside the insert transaction', function ()
         ]);
 
         expect($entry->revisions()->count())->toBe(1);
+    });
+});
+
+describe('a restore cannot resurrect what erasure removed', function (): void {
+    $relationalField = function (string $handle = 'people'): FieldStorage {
+        $storage = FieldStorage::create([
+            'org_id' => test()->org->id, 'handle' => $handle, 'type' => 'relation',
+            'pii_class' => 'sensitive', 'cardinality' => -1,
+        ]);
+        Field::create([
+            'entry_type_id' => test()->type->id, 'field_storage_id' => $storage->id, 'label' => 'People',
+        ]);
+
+        return $storage;
+    };
+
+    it('re-reads a STALE revision instance rather than trusting it', function (): void {
+        /*
+         * ⚠️ `redactField()` sweeps revisions through separately loaded models, so
+         * a caller holding an `EntryRevision` from before an erasure still has the
+         * pre-erasure snapshot in memory — and restoring it wrote the erased
+         * values straight back. An erasure that succeeded could be undone by a
+         * restore that never re-read anything (ADR-020).
+         */
+        $entry = anEntry(['values' => ['secret' => 'Jane Doe']]);
+
+        FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'secret', 'type' => 'text',
+            'pii_class' => 'personal', 'cardinality' => 1,
+        ]);
+
+        // Held from before the erasure, exactly as a UI action would hold it.
+        $stale = $entry->revisions()->latest('id')->first();
+        expect($stale->values['secret'])->toBe('Jane Doe');
+
+        $entry->redactField('secret');
+
+        $entry->restoreRevision($stale);
+
+        expect($entry->fresh()->values['secret'])->toBeNull();
+    });
+
+    it('re-reads a stale RELATION snapshot too', function () use ($relationalField): void {
+        $storage = $relationalField('patient4');
+        $entry = anEntry();
+        $alice = anEntry(['title' => 'Alice']);
+
+        $entry->related()->attach($alice->id, ['field_storage_id' => $storage->id]);
+        $stale = $entry->revisions()->latest('id')->first();
+        expect($stale->relation_state[(string) $storage->id])->toBe([$alice->id]);
+
+        $entry->redactField('patient4');
+
+        $entry->restoreRevision($stale);
+
+        expect($entry->related()->count())->toBe(0);
+    });
+});
+
+describe('one API call takes one history slot', function (): void {
+    it('records ONE version for a toggle', function (): void {
+        // ⚠️ Laravel's `toggle()` reaches the overridden `attach()` and `detach()`
+        // directly, so without an outer frame it recorded the intermediate
+        // detached state and then the attached one — two versions for one call,
+        // and one of them a state the entry never meaningfully had. `sync()` was
+        // wrapped for exactly this and `toggle()` was missed beside it.
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'people2', 'type' => 'relation',
+            'pii_class' => 'none', 'cardinality' => -1,
+        ]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id, 'label' => 'People',
+        ]);
+
+        $entry = anEntry();
+        $alice = anEntry(['title' => 'Alice']);
+        $bob = anEntry(['title' => 'Bob']);
+        $entry->related()->attach($alice->id, ['field_storage_id' => $storage->id]);
+
+        $before = $entry->revisions()->count();
+
+        $entry->related()->toggle([
+            $alice->id => ['field_storage_id' => $storage->id],
+            $bob->id => ['field_storage_id' => $storage->id],
+        ]);
+
+        expect($entry->revisions()->count())->toBe($before + 1)
+            ->and($entry->related()->pluck('entries.id')->all())->toBe([$bob->id]);
     });
 });

@@ -69,16 +69,28 @@ class GuardedRelationBuilder extends Builder
         // still lost the version. Nothing else recorded it: the revision recorder
         // lived only on `GuardedBelongsToMany`, so the ordinary Eloquent surface
         // changed relational content and left the newest revision stale.
-        return $this->versioned($this->freezingRows(...), function () use ($values) {
-            // An instance save arrives here too, with its guards already run.
-            if ($this->getModel()->guardsRan) {
+        // ⚠️ Both ENDS of a move. Assigning a new `source_entry_id` on a loaded
+        // `EntryRelation` and saving it sets `guardsRan`, so the update is
+        // permitted — and the frozen rows report only the row's OLD source. The
+        // destination was therefore neither locked nor versioned: its newest
+        // revision stayed stale, and its cardinality was counted before any lock
+        // on it, so concurrent moves could both land on a single-valued relation.
+        return $this->versioned(
+            fn (): array => array_values(array_unique([
+                ...$this->freezingRows(),
+                ...(isset($values['source_entry_id']) ? [$values['source_entry_id']] : []),
+            ])),
+            function () use ($values) {
+                // An instance save arrives here too, with its guards already run.
+                if ($this->getModel()->guardsRan) {
+                    return parent::update($values);
+                }
+
+                $this->refuseGuardedColumns($values);
+
                 return parent::update($values);
-            }
-
-            $this->refuseGuardedColumns($values);
-
-            return parent::update($values);
-        });
+            },
+        );
     }
 
     /**
@@ -121,6 +133,18 @@ class GuardedRelationBuilder extends Builder
         // whereKey qualifies the column, so this stays unambiguous even when the
         // caller joined another table.
         $this->whereKey($rows->pluck('id')->all());
+
+        // ⚠️ And the PAGINATION goes, because it has already been spent.
+        //
+        // `orderBy('id')->offset(1)->limit(1)->delete()` froze the second row and
+        // then reapplied offset 1 to that singleton, so the statement touched
+        // nothing while the version was recorded anyway. `AuditedBuilder` learned
+        // this on the entry side; the set frozen and the set written have to be
+        // the same set, and a limit that already chose the rows must not choose
+        // among them again.
+        $base = $this->getQuery();
+        $base->offset = null;
+        $base->limit = null;
 
         return $rows->pluck('source_entry_id')->unique()->filter()->values()->all();
     }

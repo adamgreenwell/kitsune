@@ -159,23 +159,36 @@ class Field extends Model implements RefusesCascadingDeletes, RequiresModelSave
                     // A correlated subquery rather than materialising every id:
                     // a type can hold a hundred thousand entries, and this runs
                     // on the delete path.
-                    StorageStrategy::Relational => $query->whereExists(
-                        fn (Builder $sub) => $sub->from('entry_relations')
-                            ->whereColumn('entry_relations.source_entry_id', 'entries.id')
-                            ->where('entry_relations.field_storage_id', $storage->getKey()),
-                    )->count(),
-                    // ⚠️ The LIVE column only, and adding a revision check here
-                    // was wrong: `entry_revisions` holds `values` and revision
-                    // metadata, and no promoted columns at all — so querying
-                    // `entry_revisions.slug` was a missing-column error that made
-                    // even an UNUSED promoted field unremovable.
+                    // ⚠️ And the relation SNAPSHOTS, not only the live pivots.
+                    // `relation_state` holds the target ids per storage id, so a
+                    // relation erased from the live table but recorded in a
+                    // revision is data that a restore could bring back and that
+                    // nothing could find once the field is gone.
+                    StorageStrategy::Relational => $query
+                        ->where(fn ($entries) => $entries
+                            ->whereExists(
+                                fn (Builder $sub) => $sub->from('entry_relations')
+                                    ->whereColumn('entry_relations.source_entry_id', 'entries.id')
+                                    ->where('entry_relations.field_storage_id', $storage->getKey()),
+                            )
+                            ->orWhereHas('revisions', fn ($revisions) => $revisions
+                                ->whereNotNull('relation_state->'.$storage->getKey())))
+                        ->count(),
+                    // ⚠️ Revisions DO snapshot promoted columns now, so the
+                    // check reaches them — and the comment here previously said
+                    // the opposite, correctly, before this branch added them. A
+                    // note that stops being true is worse than no note, so it is
+                    // replaced rather than amended.
                     //
-                    // `Entry::redactStorage()` documents the same thing from the
-                    // erasure side. If the revision table ever snapshots promoted
-                    // columns, this check gains the same `orWhereHas` the inline
-                    // branch has, and not before.
+                    // A promoted value surviving only in history is the same
+                    // defect as an inline one: removing the field removes the
+                    // metadata `redactField()` needs to resolve the strategy, so
+                    // the historical slug is stranded and uneraseable (ADR-020).
                     StorageStrategy::Promoted => $query
-                        ->whereNotNull((string) $storage->promotedColumn())
+                        ->where(fn ($entries) => $entries
+                            ->whereNotNull($column = (string) $storage->promotedColumn())
+                            ->orWhereHas('revisions', fn ($revisions) => $revisions
+                                ->whereNotNull($column)))
                         ->count(),
                     // ⚠️ REVISIONS too, and checking the live row alone was a
                     // hole big enough to lose personal data through.

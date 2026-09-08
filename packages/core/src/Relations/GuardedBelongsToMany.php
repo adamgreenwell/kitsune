@@ -99,6 +99,32 @@ class GuardedBelongsToMany extends BelongsToMany
     }
 
     /**
+     * ⚠️ `toggle()` owns its version too, for the reason `sync()` does.
+     *
+     * Laravel's implementation reaches the overridden `attach()` and `detach()`
+     * directly, so without an outer frame it recorded the intermediate detached
+     * state and then the attached one — two or more versions for one API call,
+     * and one of them a state the entry never meaningfully had. `sync()` was
+     * wrapped for exactly this and `toggle()` was missed beside it.
+     *
+     * @param  mixed  $ids
+     * @param  bool  $touch
+     * @return array<string, list<mixed>>
+     */
+    public function toggle($ids, $touch = true)
+    {
+        return $this->versioned(
+            // Both directions: toggling attaches and detaches, so the sources it
+            // could touch are the union of what each would.
+            fn (): array => array_values(array_unique([
+                ...$this->detachSourceKeys(null),
+                ...$this->sourceKeys($ids, []),
+            ])),
+            fn () => parent::toggle($ids, $touch),
+        );
+    }
+
+    /**
      * ⚠️ Overridden for VERSIONING, not for locking.
      *
      * Detaching cannot exceed a cardinality, so it never needed the serialising

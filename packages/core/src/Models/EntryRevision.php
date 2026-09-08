@@ -28,7 +28,7 @@ use RuntimeException;
  * @property int $entry_id
  * @property array<string, mixed>|null $values
  * @property string $status
- * @property array<string, list<int>>|null $relation_state
+ * @property array<string, list<int>|null>|null $relation_state
  * @property int $entry_type_id
  * @property string|null $title
  * @property string|null $slug

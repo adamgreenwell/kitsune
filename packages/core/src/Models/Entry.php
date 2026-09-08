@@ -751,11 +751,21 @@ class Entry extends Model implements RequiresModelSave
      * distinguishes an erasure that reached something from one that silently
      * matched nothing.
      *
-     * The key is dropped rather than emptied: an empty list is a STATEMENT that
-     * the entry had no relations for that field at that version, and a restore
-     * treats it as one. Erasure does not know that and must not claim it — an
-     * absent key says the version records nothing about this field, which is the
-     * truth once its data is gone.
+     * ⚠️ The key is kept and set to NULL, and dropping it was wrong.
+     *
+     * Three states have to be distinguishable, and dropping the key collapsed two
+     * of them:
+     *
+     *   a list  — this field had exactly these targets at that version
+     *   `null`  — this field's history was erased; the version says nothing
+     *   absent  — this field had no relations at that version
+     *
+     * An empty list and an absent key are STATEMENTS, and `replaceRelations()`
+     * acts on them by clearing the field. So dropping the key made an erased
+     * field indistinguishable from one that never had relations — and restoring a
+     * redacted revision then deleted a replacement relation added after the
+     * erasure, which is the opposite of what erasure is for. `null` says
+     * "unknown", and a restore leaves an unknown field alone.
      */
     private function redactRelationHistory(FieldStorage $storage): int
     {
@@ -765,11 +775,13 @@ class Entry extends Model implements RequiresModelSave
         foreach ($this->revisions()->get() as $revision) {
             $state = $revision->relation_state;
 
-            if ($state === null || ! array_key_exists($key, $state)) {
+            // A key already null has been erased before; there is nothing left
+            // to sweep and rewriting it would inflate the count.
+            if ($state === null || ($state[$key] ?? null) === null) {
                 continue;
             }
 
-            unset($state[$key]);
+            $state[$key] = null;
 
             $revision->relation_state = $state;
             $revision->save();
@@ -838,6 +850,21 @@ class Entry extends Model implements RequiresModelSave
         DB::transaction(function () use ($revision): void {
             // The lock first, so nothing below can be answered from stale state.
             self::query()->withoutGlobalScopes()->whereKey($this->getKey())->lockForUpdate()->get();
+
+            // ⚠️ And the REVISION is re-read under the same lock, because the
+            // caller's instance can be stale in the one way that matters.
+            //
+            // `redactField()` sweeps revisions through separately loaded models,
+            // so a caller holding an `EntryRevision` from before an erasure still
+            // has the pre-erasure snapshot in memory — and restoring it wrote the
+            // erased values and relation ids straight back. An erasure that
+            // succeeded could be undone by a restore that never re-read anything
+            // (ADR-020). Trusting a caller's snapshot is trusting a copy of the
+            // data to be the data.
+            $revision = $revision->newQueryWithoutScopes()
+                ->whereKey($revision->getKey())
+                ->lockForUpdate()
+                ->firstOrFail();
 
             // ⚠️ And the refresh is needed for a second, separate reason: a model
             // from `create()` holds only the attributes the caller set, so `slug`
@@ -916,11 +943,19 @@ class Entry extends Model implements RequiresModelSave
      * row would fail its foreign key regardless — this says why instead of
      * surfacing a constraint error.
      *
-     * @param  array<string, list<int>>  $state
+     * @param  array<string, list<int>|null>  $state
      */
     private function refuseMissingTargets(EntryRevision $revision, array $state): void
     {
-        $targets = collect($state)->flatten()->map(fn (mixed $id): int => (int) $id)->unique();
+        // ⚠️ Unknown fields are skipped, not flattened. A null marks a field
+        // whose history was erased, and casting it to an int produced target 0 —
+        // refusing every restore of a redacted revision because "entry 0 no
+        // longer exists".
+        $targets = collect($state)
+            ->filter(fn (mixed $ids): bool => $ids !== null)
+            ->flatten()
+            ->map(fn (mixed $id): int => (int) $id)
+            ->unique();
 
         if ($targets->isEmpty()) {
             return;
@@ -959,13 +994,25 @@ class Entry extends Model implements RequiresModelSave
      * was never recorded — so a restore has nothing to say about it and must not
      * remove it.
      *
-     * @param  array<string, list<int>>  $state
+     * @param  array<string, list<int>|null>  $state
      */
     private function replaceRelations(array $state): void
     {
+        // ⚠️ A key whose value is NULL is UNKNOWN, not empty. Its history was
+        // erased, so the revision says nothing about that field and a restore must
+        // leave whatever is there now alone — otherwise restoring a redacted
+        // revision deletes a replacement relation added after the erasure, which
+        // is the opposite of what erasure is for.
+        $unknown = array_map(
+            'intval',
+            array_keys(array_filter($state, fn (mixed $ids): bool => $ids === null)),
+        );
+
+        // Everything field-backed goes, except the fields marked unknown.
         EntryRelation::query()
             ->where('source_entry_id', $this->getKey())
             ->whereNotNull('field_storage_id')
+            ->when($unknown !== [], fn ($query) => $query->whereNotIn('field_storage_id', $unknown))
             ->delete();
 
         // ⚠️ A snapshot can name storage that no longer exists, and the insert
@@ -986,6 +1033,11 @@ class Entry extends Model implements RequiresModelSave
             ->all();
 
         foreach (array_intersect_key($state, array_flip($live)) as $storageId => $ids) {
+            // Unknown: nothing was deleted above and nothing is rebuilt here.
+            if ($ids === null) {
+                continue;
+            }
+
             foreach ($ids as $ordering => $targetId) {
                 EntryRelation::create([
                     // ⚠️ `org_id` explicitly. The `related()` relation supplies
