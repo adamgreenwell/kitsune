@@ -761,14 +761,14 @@ describe('a pattern that cannot compile is refused where it is authored', functi
         $constrained = FieldStorage::create([
             'org_id' => $this->org->id, 'handle' => 'code3', 'type' => 'text',
             'pii_class' => 'none', 'cardinality' => 1,
-            'settings' => ['pattern' => '^[A-Z]{2}-\d+$'],
+            'settings' => ['pattern' => '^[A-Z]{2}-[0-9]+$'],
         ]);
         $unconstrained = FieldStorage::create([
             'org_id' => $this->org->id, 'handle' => 'code4', 'type' => 'text',
             'pii_class' => 'none', 'cardinality' => 1, 'settings' => ['maxLength' => 20],
         ]);
 
-        expect($constrained->settings['pattern'])->toBe('^[A-Z]{2}-\d+$')
+        expect($constrained->settings['pattern'])->toBe('^[A-Z]{2}-[0-9]+$')
             ->and($unconstrained->settings)->not->toHaveKey('pattern');
     });
 
@@ -788,7 +788,7 @@ describe('a pattern that cannot compile is refused where it is authored', functi
         // ⚠️ The point of one shared implementation. If the guard and the rule
         // could disagree, a pattern the builder accepted could still refuse every
         // value — which is the defect, restated.
-        expect(Pattern::compiles('^[A-Z]{2}-\d+$'))->toBeTrue()
+        expect(Pattern::compiles('^[A-Z]{2}-[0-9]+$'))->toBeTrue()
             ->and(Pattern::compiles('^[A-Z'))->toBeFalse()
             ->and(Pattern::compiles('a/b#c~d%e!f'))->toBeFalse()
             ->and(Pattern::delimit('^[a-z]+$'))->toBe('/^[a-z]+$/u')
@@ -866,6 +866,60 @@ describe('settings that contradict themselves are refused', function (): void {
             'org_id' => $this->org->id, 'handle' => 'bounded_rate', 'type' => 'number',
             'pii_class' => 'none', 'cardinality' => 1,
             'settings' => ['format' => 'decimal', 'precision' => 2, 'scale' => 1, 'min' => 10, 'max' => 10],
+        ]))->toThrow(RuntimeException::class, 'No value this field can represent');
+    });
+
+    it('refuses a ONE-SIDED range the projection closes', function (): void {
+        // ⚠️ Requiring both bounds let this through: `lt:10^(precision-scale)` is
+        // emitted regardless, so precision 2 / scale 1 with `min = 10` and no
+        // maximum admits nothing. The projection supplies the other side, and the
+        // message names it rather than leaving a blank where a setting is not.
+        expect(fn () => FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'one_sided', 'type' => 'number',
+            'pii_class' => 'none', 'cardinality' => 1,
+            'settings' => ['format' => 'decimal', 'precision' => 2, 'scale' => 1, 'min' => 10],
+        ]))->toThrow(RuntimeException::class, 'between 10 and 9.9');
+    });
+
+    it('leaves an integer field genuinely open-ended', function (): void {
+        // An integer field has no projection bound, so one-sided really is open.
+        $open = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'one_sided2', 'type' => 'number',
+            'pii_class' => 'none', 'cardinality' => 1,
+            'settings' => ['format' => 'integer', 'min' => 10],
+        ]);
+
+        expect($open->exists)->toBeTrue();
+    });
+
+    it('accepts a SINGLETON range a float multiply would have refused', function (): void {
+        // ⚠️ `0.29 * 100` is `28.999999999999996`, so `ceil()` gave 29 and
+        // `floor()` gave 28 for the same number — 29 > 28, and a range containing
+        // exactly 0.29 was refused. Moving the comparisons to integers fixed the
+        // comparisons and left the CONVERSION in floats, which is where the
+        // imprecision was. It is parsed from the decimal text now.
+        $singleton = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'exact', 'type' => 'number',
+            'pii_class' => 'none', 'cardinality' => 1,
+            'settings' => ['format' => 'decimal', 'precision' => 12, 'scale' => 2, 'min' => 0.29, 'max' => 0.29],
+        ]);
+        $negative = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'exact_negative', 'type' => 'number',
+            'pii_class' => 'none', 'cardinality' => 1,
+            'settings' => ['format' => 'decimal', 'precision' => 12, 'scale' => 2, 'min' => -0.29, 'max' => -0.29],
+        ]);
+
+        expect($singleton->exists)->toBeTrue()->and($negative->exists)->toBeTrue();
+    });
+
+    it('still refuses a singleton BELOW the grid', function (): void {
+        // The counterpart: 0.295 is not representable at scale 2, so a range
+        // holding only it is empty. Rounding direction has to differ for the two
+        // ends, and this is what proves it does.
+        expect(fn () => FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'inexact', 'type' => 'number',
+            'pii_class' => 'none', 'cardinality' => 1,
+            'settings' => ['format' => 'decimal', 'precision' => 12, 'scale' => 2, 'min' => 0.295, 'max' => 0.295],
         ]))->toThrow(RuntimeException::class, 'No value this field can represent');
     });
 
@@ -961,10 +1015,10 @@ describe('settings that contradict themselves are refused', function (): void {
         $named = FieldStorage::create([
             'org_id' => $this->org->id, 'handle' => 'ref2', 'type' => 'text',
             'pii_class' => 'none', 'cardinality' => 1,
-            'settings' => ['maxLength' => 30, 'pattern' => '^(?<code>[A-Z]{2})-\d+$'],
+            'settings' => ['maxLength' => 30, 'pattern' => '^(?<code>[A-Z]{2})-[0-9]+$'],
         ]);
 
-        expect($named->settings['pattern'])->toBe('^(?<code>[A-Z]{2})-\d+$');
+        expect($named->settings['pattern'])->toBe('^(?<code>[A-Z]{2})-[0-9]+$');
     });
 
     it('screens with SYNTAX awareness, not substrings', function (): void {
@@ -983,7 +1037,7 @@ describe('settings that contradict themselves are refused', function (): void {
             ->and(Pattern::unpublishable('\\\\A'))->toBeNull()
             // Inside a character class these are literals.
             ->and(Pattern::unpublishable('[(?>]'))->toBeNull()
-            ->and(Pattern::unpublishable('[\\d\\-]+'))->toBeNull()
+            ->and(Pattern::unpublishable('[0-9\\-]+'))->toBeNull()
             // Every group form ECMAScript actually has.
             ->and(Pattern::unpublishable('(?:ab)+'))->toBeNull()
             ->and(Pattern::unpublishable('(?=x)y'))->toBeNull()
@@ -1076,8 +1130,37 @@ describe('settings that contradict themselves are refused', function (): void {
             ->and(Pattern::unpublishable('[\H\V]'))->not->toBeNull()
             // A literal inside a class, and it must stay allowed.
             ->and(Pattern::unpublishable('[\A]'))->toBeNull()
-            ->and(Pattern::unpublishable('[\d\-]+'))->toBeNull()
+            ->and(Pattern::unpublishable('[0-9\-]+'))->toBeNull()
             ->and(Pattern::unpublishable('[ \t]+'))->toBeNull();
+    });
+
+    it('refuses the Unicode shorthands, measured on both engines', function (): void {
+        /*
+         * ⚠️ `\d` and `\w` are the most commonly written escapes of all, and the
+         * worst offenders. MEASURED rather than assumed, on PCRE 10.48 under the
+         * `u` modifier `delimit()` adds and on Node's ECMAScript with `u`:
+         *
+         *   \d on Arabic-Indic ١٢   PCRE matches, ECMAScript does not
+         *   \w on Cyrillic аб       PCRE matches, ECMAScript does not
+         *
+         * PHP's `u` sets PCRE2_UCP as well as UTF, so `\d` becomes "any Unicode
+         * digit" while ECMAScript's stays exactly [0-9]. A field published as
+         * `^\d+$` accepts ١٢ through the API and rejects it in every client.
+         *
+         * `\s` and `\S` are NOT refused — the same measurement found them
+         * agreeing on NBSP and ideographic space, so there is nothing to refuse.
+         */
+        expect(Pattern::unpublishable('^\d+$'))->toContain('any Unicode digit')
+            ->and(Pattern::unpublishable('^\w+$'))->toContain('Unicode letters')
+            ->and(Pattern::unpublishable('^\D$'))->not->toBeNull()
+            ->and(Pattern::unpublishable('^\W$'))->not->toBeNull()
+            // Inside a class too, where they still diverge.
+            ->and(Pattern::unpublishable('[\d]'))->not->toBeNull()
+            // The portable spellings, and the classes that agree.
+            ->and(Pattern::unpublishable('^[0-9]+$'))->toBeNull()
+            ->and(Pattern::unpublishable('^[A-Za-z0-9_]+$'))->toBeNull()
+            ->and(Pattern::unpublishable('^\s+$'))->toBeNull()
+            ->and(Pattern::unpublishable('^\S+$'))->toBeNull();
     });
 
     it('allowlists group prefixes rather than listing offenders', function (): void {
