@@ -16,6 +16,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Kitsune\Core\Tenancy\Attributes\OrgScoped;
 use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
+use RuntimeException;
 
 /**
  * Anything with its own base URL. Carries the locale (ADR-021), so
@@ -59,6 +60,48 @@ class Site extends Model
      * who belongs to both orgs, that URL would be genuinely ambiguous rather
      * than merely awkward, silently opening the wrong customer's site.
      */
+    /**
+     * ⚠️ Refuses while entries still reference it, because the database would
+     * remove them itself.
+     *
+     * `entries.site_id` and `entries.entry_type_id` are both
+     * `cascadeOnDelete`, so `$site->delete()` removed every entry INSIDE the
+     * database: no per-row model event, so no audit row, and a hard DELETE, so
+     * Entry's SoftDeletes never applied and the rows were unrecoverable.
+     * Verified by probe — three entries gone, zero audit rows, the org still
+     * present, so not the documented org-cascade exception.
+     *
+     * AuditedBuilder's guarantee is "no Eloquent path creates, changes or
+     * removes an entry without an audit row or a refusal", and it enumerates
+     * where it stops: `toBase()` and `DB::`. This was neither. Refusing here
+     * is the refusal that claim allows for, and it forces the removal through
+     * the audited path where it belongs.
+     *
+     * Deleting an ORG still takes everything, which ADR-020 documents as the
+     * intended exception — that cascade happens in the database and fires no
+     * model event, so this guard correctly never sees it.
+     */
+    protected static function booted(): void
+    {
+        static::deleting(function (self $site): void {
+            $entries = Entry::withoutScopeBecause(
+                'counting entries before their site is deleted, to refuse rather than cascade',
+                fn ($query) => $query->withTrashed()->where('site_id', $site->getKey())->count(),
+            );
+
+            if ($entries > 0) {
+                throw new RuntimeException(sprintf(
+                    'Site [%s] still holds %d entr%s, and the database would delete them by cascade '
+                    .'— permanently, with nothing in the audit trail saying they existed (ADR-020). '
+                    .'Delete the entries first, which is audited.',
+                    $site->handle,
+                    $entries,
+                    $entries === 1 ? 'y' : 'ies',
+                ));
+            }
+        });
+    }
+
     public function getRouteKeyName(): string
     {
         return 'slug';

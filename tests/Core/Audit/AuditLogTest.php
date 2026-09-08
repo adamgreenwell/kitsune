@@ -286,6 +286,48 @@ describe('a trail an outsider can append to is worse than no trail', function ()
     });
 });
 
+describe('a cascade that removes entries has to be refused, not audited', function (): void {
+    /*
+     * ⚠️ `entries.site_id` and `entries.entry_type_id` are both
+     * `cascadeOnDelete`, so deleting either removed every entry INSIDE the
+     * database: no per-row event, so no audit row, and a hard DELETE, so
+     * SoftDeletes never applied and the rows were unrecoverable. Verified by
+     * probe — three entries gone, zero audit rows, the org still present, so
+     * not the documented org-cascade exception.
+     *
+     * The guarantee is "no Eloquent path creates, changes or removes an entry
+     * without an audit row OR A REFUSAL". This is the refusal.
+     */
+    beforeEach(function (): void {
+        Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Held']);
+    });
+
+    it('refuses to delete a site whose entries would cascade', function (): void {
+        expect(fn () => $this->site->delete())
+            ->toThrow(RuntimeException::class, 'would delete them by cascade');
+
+        expect(Entry::withoutGlobalScopes()->withTrashed()->count())->toBe(1);
+    });
+
+    it('refuses to delete an entry type whose entries would cascade', function (): void {
+        expect(fn () => $this->type->delete())
+            ->toThrow(RuntimeException::class, 'would delete them by cascade');
+    });
+
+    it('counts SOFT-deleted entries too, which the cascade would still take', function (): void {
+        Entry::query()->delete();
+
+        expect(fn () => $this->site->delete())
+            ->toThrow(RuntimeException::class, 'would delete them by cascade');
+    });
+
+    it('allows the delete once the entries are gone through the audited path', function (): void {
+        Entry::query()->forceDelete();
+
+        expect(fn () => $this->type->delete())->not->toThrow(RuntimeException::class);
+    });
+});
+
 describe('the log is append-only, enforced', function (): void {
     it('refuses to rewrite a row', function (): void {
         // An audit log application code can rewrite is not evidence of
