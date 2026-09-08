@@ -57,7 +57,17 @@ final class DateTimeType extends BaseFieldType
 
         $date = $input instanceof Carbon ? $input : Carbon::parse((string) $input);
 
-        return $date->utc()->toIso8601String();
+        // ⚠️ NOT toIso8601String(), which emits whole seconds only. An
+        // accepted `03:04:05.123456Z` was stored as `03:04:05+00:00` — the
+        // published schema says `date-time`, which permits a fraction, so the
+        // advertised round trip was lossy.
+        //
+        // Always six digits, never only when present. This projects to a
+        // VARCHAR and is compared as text, so a mixed-width column would sort
+        // `05+00:00` and `05.5+00:00` by their punctuation. A fixed width
+        // keeps lexicographic order and chronological order the same thing,
+        // and 32 characters is exactly what it needs.
+        return $date->utc()->format('Y-m-d\\TH:i:s.uP');
     }
 
     protected function castFromStorage(mixed $stored, FieldConfig $config): mixed

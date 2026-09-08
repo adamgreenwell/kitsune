@@ -23,9 +23,14 @@ use Illuminate\Database\Eloquent\Model;
 final class Rule
 {
     /** @param class-string<Model> $model */
-    public static function scopedUnique(string $model, string $column, mixed $ignoreId = null, ?Closure $using = null): ScopedUnique
-    {
-        return new ScopedUnique($model, $column, $ignoreId, $using);
+    public static function scopedUnique(
+        string $model,
+        string $column,
+        mixed $ignoreId = null,
+        ?Closure $using = null,
+        ?Closure $normalise = null,
+    ): ScopedUnique {
+        return new ScopedUnique($model, $column, $ignoreId, $using, $normalise);
     }
 
     /** @param class-string<Model> $model */
