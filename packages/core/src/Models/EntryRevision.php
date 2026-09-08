@@ -41,15 +41,25 @@ class EntryRevision extends Model
         return $this->belongsTo(Entry::class);
     }
 
-    /** Replace a value in place rather than deleting the record. */
-    public function redact(string $key, mixed $replacement = null): void
+    /**
+     * Replace a value in place rather than deleting the record.
+     *
+     * Returns whether it changed anything. An erasure sweep that reports
+     * success without saying how many rows it reached cannot be distinguished
+     * from one that silently matched nothing — see `Entry::redactField()`.
+     */
+    public function redact(string $key, mixed $replacement = null): bool
     {
         $values = $this->values ?? [];
 
-        if (array_key_exists($key, $values)) {
-            $values[$key] = $replacement;
-            $this->values = $values;
-            $this->save();
+        if (! array_key_exists($key, $values)) {
+            return false;
         }
+
+        $values[$key] = $replacement;
+        $this->values = $values;
+        $this->save();
+
+        return true;
     }
 }

@@ -8,60 +8,60 @@
 
 declare(strict_types=1);
 
-namespace Kitsune\Core\Schema;
+namespace Kitsune\Core\Relations;
 
 use Illuminate\Contracts\Database\Query\Expression;
 use Illuminate\Database\Eloquent\Builder;
-use Kitsune\Core\Models\FieldStorage;
+use Illuminate\Support\Facades\DB;
+use Kitsune\Core\Models\Entry;
+use Kitsune\Core\Models\EntryRelation;
 use RuntimeException;
 
 /**
- * Every ADR-006 and ADR-020 guarantee on FieldStorage, on the paths a model
- * event cannot see.
+ * The pivot's safety story, on the paths a model event cannot see.
  *
- * ⚠️ `FieldStorage` had no builder at all, while `Entry` and `AuditLog` were
- * both given one for exactly this reason. So the guards that say a locked
- * field's shape "cannot change" and that an unclassified field "does not
- * save" were true of the row-at-a-time path and of nothing else:
+ * ⚠️ `guardStorageOwnership()`, `guardEndpointsVisible()`,
+ * `guardCardinality()`, `guardTargetType()` and `armLock()` all hang off
+ * `creating` / `updating` / `updated`. `EntryRelation::query()->insert()` and
+ * `->update()` compile straight to SQL and dispatch nothing, so on those paths
+ * there were no guards at all:
  *
- *   FieldStorage::query()->whereKey($id)->update(['handle' => 'cost'])
+ *   EntryRelation::query()->insert([... 'field_storage_id' => $nominated ...])
  *
- * renamed a LOCKED field's JSON key outright, leaving every stored value under
- * the old key where nothing reads it — the exact outcome SHAPE_ATTRIBUTES
- * documents and, in its own words, "there is no error to notice". Verified by
- * probe, along with `createQuietly()` persisting `pii_class` NULL.
+ * put a SECOND target on a cardinality-one nominated subject field, of a type
+ * that field forbids — the two-subject disclosure ADR-020's cardinality check
+ * exists to prevent, reached with one ordinary Eloquent statement. The update
+ * form repointed two existing rows onto that field just as easily.
  *
- * The bulk idiom is not exotic in this codebase either. `Entry::lockStorage
- * HoldingData()` and `EntryRelation::armLock()` both write this model that
- * way, *because* it skips the listener — which is what made the hole easy to
- * reach and easy to miss.
+ * This is the third model here to need a builder for the same reason.
+ * `AuditLog` got `AppendOnlyBuilder` and `Entry` got `AuditedBuilder`, both
+ * for "bulk writes fire no events"; `FieldStorage` and this one went without,
+ * while core itself already writes this table in bulk —
+ * `Entry::redactField()` deletes through it.
  *
- * @extends Builder<FieldStorage>
+ * @extends Builder<EntryRelation>
  */
-class GuardedStorageBuilder extends Builder
+class GuardedRelationBuilder extends Builder
 {
     /**
-     * Columns whose guards are PER-ROW and so cannot be evaluated in bulk.
+     * Columns whose guards are PER-ROW, so a bulk write cannot evaluate them.
      *
      * A bulk update sees one set of values and any number of rows, each with
-     * its own lock state, type and projection. There is no correct answer to
-     * give it, so it is refused rather than approximated.
+     * its own source, target, field and lock consequences.
      */
-    private const PER_ROW = ['type', 'cardinality', 'handle', 'settings', 'pii_class', 'org_id'];
+    private const PER_ROW = ['source_entry_id', 'target_entry_id', 'field_storage_id', 'org_id'];
 
     private const NO_BULK_CREATE =
-        'Field storage cannot be created in bulk: `pii_class` fails closed per row and these paths '
-        .'dispatch nothing, so an unclassified field would persist — which ADR-020 says cannot '
-        .'exist. Use create().';
+        'Relation rows cannot be created in bulk: cardinality, target type, endpoint visibility '
+        .'and storage ownership are all checked per row, and these paths dispatch nothing — so a '
+        .'second target could land on a nominated single-valued field, of a type it forbids '
+        .'(ADR-020). Attach through the relationship.';
 
     /** @param  array<string, mixed>  $values */
     public function update(array $values)
     {
-        // ⚠️ An instance save arrives here too — `Model::performUpdate()`
-        // writes through the builder — so the flag is what separates a save
-        // whose guards have already run from a bulk write that dispatched
-        // nothing and never could.
-        if ($this->getModel()->shapeGuarded) {
+        // An instance save arrives here too, with its guards already run.
+        if ($this->getModel()->guardsRan) {
             return parent::update($values);
         }
 
@@ -71,9 +71,7 @@ class GuardedStorageBuilder extends Builder
     }
 
     /**
-     * ⚠️ Where a quiet create is caught. `createQuietly()` and anything inside
-     * `withoutEvents()` suppress the `saving` listener while still inserting
-     * through here, so an unclassified row persisted.
+     * ⚠️ Where a quiet create is caught, and where `attach()` lands.
      *
      * @param  array<string, mixed>  $values
      * @param  string|null  $sequence
@@ -81,9 +79,32 @@ class GuardedStorageBuilder extends Builder
      */
     public function insertGetId(array $values, $sequence = null)
     {
-        $this->newModelInstance($values)->guardShape();
+        $row = $this->newModelInstance($values);
 
-        return parent::insertGetId($values, $sequence);
+        // ⚠️ SERIALISED on the source entry, exactly as `attach()` is.
+        //
+        // `guardCardinality()` counts and then inserts, which is two
+        // statements: two concurrent `EntryRelation::create()` calls both
+        // observed zero and both inserted into a cardinality-one nominated
+        // field. `GuardedBelongsToMany` locks the source for `attach()`, and
+        // adding this builder path re-opened the same race beside it — a fix
+        // that created the hole it was modelled on.
+        return DB::transaction(function () use ($row, $values, $sequence) {
+            Entry::withoutScopeBecause(
+                'locking the source entry so the cardinality count cannot interleave',
+                fn ($query) => $query->whereKey($row->source_entry_id)->lockForUpdate()->get(),
+            );
+
+            $row->guardCreate();
+
+            $id = parent::insertGetId($values, $sequence);
+
+            // The `created` event arms the lock on the ordinary path; this
+            // covers a quiet create, which suppresses it while still inserting.
+            $row->forceFill([$row->getKeyName() => $id])->armLockNow();
+
+            return $id;
+        });
     }
 
     /**
@@ -163,19 +184,19 @@ class GuardedStorageBuilder extends Builder
     public function updateFrom(array $values)
     {
         throw new RuntimeException(
-            'updateFrom() writes through a join, so the per-row guards cannot be evaluated at all '
-            .'(ADR-006). Save the model instead.'
+            'updateFrom() writes through a join, so the per-row guards cannot be evaluated at all. '
+            .'Move the row through updateExistingPivot().'
         );
     }
 
     /**
-     * ⚠️ The increments can move `cardinality`, which is a shape attribute,
-     * and they never reach update() where that is checked — but they must
-     * still ADD.
+     * ⚠️ The increments reach the query builder directly, so they could move a
+     * guarded column without passing update() — but they must still ADD.
      *
      * Routing them through `update()` was wrong: that assigns, so incrementing
-     * a value of 10 by 2 produced 2 rather than 12. Guarded columns are
-     * refused and everything else delegates to the parent arithmetic.
+     * an `ordering` of 10 by 2 produced 2 rather than 12, and `decrement()`
+     * assigned a positive amount. Guarded columns are refused and everything
+     * else delegates to the parent arithmetic.
      *
      * @param  string|Expression  $column
      * @param  array<string, mixed>  $extra
@@ -221,44 +242,44 @@ class GuardedStorageBuilder extends Builder
     }
 
     /**
+     * Deletion is deliberately ALLOWED in bulk.
+     *
+     * Removing a relation cannot violate a cardinality bound or a target-type
+     * constraint — it can only relax them — and `Entry::redactField()` deletes
+     * through this builder because erasure has to reach a row whatever org
+     * stamped it.
+     */
+    public function truncate(): void
+    {
+        throw new RuntimeException(
+            'Truncating entry_relations would detach every relation in every org at once. Delete '
+            .'through a predicate instead.'
+        );
+    }
+
+    /**
      * Refuse any column whose guard is per-row.
      *
      * @param  array<string, mixed>  $values
      */
     private function refuseGuardedColumns(array $values): void
     {
-        foreach ($values as $column => $value) {
+        foreach (array_keys($values) as $column) {
             $bare = $this->bareColumn((string) $column);
-
-            // ⚠️ The ONE bulk write that is both needed and safe: arming the
-            // lock. `lockStorageHoldingData()` and `armLock()` do exactly this
-            // and nothing else, and setting it true cannot invalidate content.
-            // Clearing it in bulk is the thing that made every guard optional.
-            if ($bare === 'is_locked') {
-                if ((bool) $value === false) {
-                    throw new RuntimeException(
-                        'A lock cannot be cleared in bulk. It is the record that data exists, not a '
-                        .'preference, and clearing it here would skip every shape guard behind it '
-                        .'(ADR-006).'
-                    );
-                }
-
-                continue;
-            }
 
             if (in_array($bare, self::PER_ROW, true)) {
                 throw new RuntimeException(sprintf(
-                    'Field storage [%s] cannot be written in bulk: its guards depend on the row — '
-                    .'the lock state, the type, and the projection the settings produce. A bulk '
-                    .'write sees one set of values and any number of rows (ADR-006). Save the model '
-                    .'instead.',
+                    'Relation column [%s] cannot be written in bulk: moving a row between sources, '
+                    .'targets or fields is checked per row against cardinality, target type and '
+                    .'visibility, and a bulk write dispatches none of that (ADR-020). Move the row '
+                    .'through updateExistingPivot().',
                     $bare,
                 ));
             }
         }
     }
 
-    /** Strip any table qualification and quoting, so `fs`.`handle` is `handle`. */
+    /** Strip table qualification and quoting, so `er`.`org_id` is `org_id`. */
     private function bareColumn(string $column): string
     {
         $bare = str_contains($column, '.')

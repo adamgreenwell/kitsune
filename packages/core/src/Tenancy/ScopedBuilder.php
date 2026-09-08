@@ -13,6 +13,7 @@ namespace Kitsune\Core\Tenancy;
 use Illuminate\Contracts\Database\Query\Expression;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
+use Kitsune\Core\Tenancy\Contracts\RequiresModelSave;
 use RuntimeException;
 
 /**
@@ -61,8 +62,58 @@ class ScopedBuilder extends Builder
     public function update(array $values)
     {
         $this->guardScopeKeys($values);
+        $this->refusePerRowColumns($values);
 
         return parent::update($values);
+    }
+
+    /**
+     * Refuse a bulk write to a column whose guard can only run per row.
+     *
+     * ⚠️ Six guards in this project have now been found bypassed by a bulk
+     * write. A model names the columns whose correctness depends on the row and
+     * this refuses them, so the model event becomes the only door rather than
+     * the first one.
+     *
+     * @param  array<string, mixed>  $values
+     */
+    private function refusePerRowColumns(array $values): void
+    {
+        $model = $this->getModel();
+
+        if (ScopeWrites::suspended() || ! $model instanceof RequiresModelSave) {
+            return;
+        }
+
+        // ⚠️ An INSTANCE save reaches this method too, because
+        // `Model::performUpdate()` writes through the builder — so refusing
+        // every bulk-shaped write would refuse `$model->update(...)` as well.
+        //
+        // A loaded model is what separates them: `performUpdate()` roots its
+        // query in the instance being saved, while `Model::query()` builds one
+        // from a fresh, non-existent instance. That is the same discriminator
+        // Laravel uses for `setKeysForSaveQuery()`, and the guards it stands
+        // aside for have already run in `saving`.
+        if ($model->exists) {
+            return;
+        }
+
+        $guarded = $model::columnsRequiringModelSave();
+
+        foreach (array_keys($values) as $column) {
+            $bare = $this->bareColumn((string) $column);
+
+            if (isset($guarded[$bare])) {
+                throw new RuntimeException(sprintf(
+                    '[%s] cannot be written in bulk on %s: %s A bulk update dispatches no model '
+                    .'events, so the check that would refuse this never runs. Save the model '
+                    .'instead.',
+                    $bare,
+                    $model::class,
+                    $guarded[$bare],
+                ));
+            }
+        }
     }
 
     /**
@@ -151,17 +202,37 @@ class ScopedBuilder extends Builder
      *
      * @param  array<string, mixed>  $values
      */
+    /** Strip table qualification and quoting, so `entries`.`org_id` is `org_id`. */
+    private function bareColumn(string $column): string
+    {
+        $bare = str_contains($column, '.')
+            ? substr($column, (int) strrpos($column, '.') + 1)
+            : $column;
+
+        return trim($bare, '`"[]');
+    }
+
+    /**
+     * A row this scope writes has to belong to this scope.
+     *
+     * Silent with no context, matching EnforcesScope: console commands,
+     * migrations and the installer legitimately run without one. NULL
+     * `site_id` is org-shared and legitimate.
+     *
+     * @param  array<string, mixed>  $values
+     */
     private function guardScopeKeys(array $values): void
     {
+        // The reviewable escape hatch stands BOTH enforcers down, not one.
+        if (ScopeWrites::suspended()) {
+            return;
+        }
+
         $context = app(Context::class);
         $normalised = [];
 
         foreach ($values as $column => $value) {
-            $bare = str_contains((string) $column, '.')
-                ? substr((string) $column, (int) strrpos((string) $column, '.') + 1)
-                : (string) $column;
-
-            $normalised[trim($bare, '`"[]')] = $value;
+            $normalised[$this->bareColumn((string) $column)] = $value;
         }
 
         foreach (['org_id' => $context->orgId(), 'site_id' => $context->siteId()] as $column => $current) {
