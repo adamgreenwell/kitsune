@@ -10,10 +10,12 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Tenancy\Concerns;
 
+use Illuminate\Database\Query\Builder;
 use Kitsune\Core\Tenancy\Attributes\OrgScoped;
 use Kitsune\Core\Tenancy\Attributes\OrgScopedThroughPivot;
 use Kitsune\Core\Tenancy\Attributes\SiteScoped;
 use Kitsune\Core\Tenancy\Context;
+use Kitsune\Core\Tenancy\ScopedBuilder;
 use Kitsune\Core\Tenancy\ScopeResolver;
 use Kitsune\Core\Tenancy\Scopes\OrgMembershipScope;
 use Kitsune\Core\Tenancy\Scopes\OrgScope;
@@ -85,6 +87,23 @@ trait EnforcesScope
                 $model->guardScopeWrite($declared);
             }
         });
+    }
+
+    /**
+     * ⚠️ Every write goes through the scoped builder as well.
+     *
+     * The guards below run from model events, and a mass update instantiates
+     * no models: `Entry::query()->update(['org_id' => $rival])` transferred
+     * rows into another org without dispatching anything. A model that needs a
+     * different builder overrides this — `Entry`, `FieldStorage` and
+     * `AuditLog` each do, and each carries the same scope-key check.
+     *
+     * @param  Builder  $query
+     * @return ScopedBuilder<$this>
+     */
+    public function newEloquentBuilder($query): ScopedBuilder
+    {
+        return new ScopedBuilder($query, $this);
     }
 
     /**

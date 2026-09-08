@@ -120,8 +120,22 @@ final class NumberType extends BaseFieldType
             $schema['maximum'] = $max + 0;
         }
 
+        // ⚠️ `multipleOf` measures from ZERO; validation measures the step
+        // from `min`, which is what a form input does. So they describe the
+        // same set only when `min` is itself a multiple of the step.
+        //
+        // With `min: 0.1, step: 0.5` validation accepts 0.1 and 0.6 while
+        // `multipleOf: 0.5` rejects both — a generated client would refuse
+        // server-valid values and offer ones the server refuses. JSON Schema
+        // cannot express the offset, so it is omitted rather than published
+        // wrongly (AGENTS.md invariant 13: say so instead).
         if (($step = $config->setting('step')) !== null && is_numeric($step) && (float) $step > 0) {
-            $schema['multipleOf'] = $step + 0;
+            $offset = (float) ($config->setting('min') ?? 0);
+            $steps = $offset / (float) $step;
+
+            if (abs($steps - round($steps)) < 1e-9) {
+                $schema['multipleOf'] = $step + 0;
+            }
         }
 
         return $schema;

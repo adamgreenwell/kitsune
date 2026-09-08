@@ -218,6 +218,47 @@ describe('a pattern that can desynchronise from the parser is a denylist', funct
         expect(sanitised('<script>evil()</script>keep'))->toBe('keep');
     });
 
+    /*
+     * ⚠️ The first parser-based version treated its synthetic wrapper as a
+     * BOUNDARY and serialised only that element's children — so a stray
+     * `</div>`, ordinary in pasted markup, closed it and everything after was
+     * silently discarded. `hello</div>world` returned `hello`. Data loss
+     * introduced by a sanitiser is worse than the hole it replaced.
+     *
+     * These assert CONTENT PRESERVED rather than byte-exact output: input that
+     * closes the wrapper leaves its tail as loose text, which libxml wraps in
+     * a `<p>`. Nothing is lost, and only already-malformed markup shifts shape.
+     */
+    it('keeps content that follows a stray closing tag', function (string $html, array $keep): void {
+        $stored = sanitised($html);
+
+        foreach ($keep as $fragment) {
+            expect($stored)->toContain($fragment);
+        }
+    })->with([
+        ['hello</div>world', ['hello', 'world']],
+        ['<p>one</p></div><p>two</p>', ['one', 'two']],
+        ['<p>a</p></div></div><p>b</p>', ['a', 'b']],
+        ['text</div><img src=x alt="ok">', ['text', 'alt="ok"']],
+    ]);
+
+    it('still strips an event handler in the tail after a stray close', function (): void {
+        // The tail is now parsed rather than discarded, so it has to be
+        // cleaned rather than merely kept.
+        $stored = sanitised('safe</div><img src=x onerror=alert(1)>');
+
+        expect($stored)->toContain('safe')
+            ->and($stored)->not->toContain('onerror');
+    });
+
+    it('preserves non-ASCII text through the parse', function (): void {
+        expect(sanitised('<p>Ünïcödé café</p>'))->toBe('<p>Ünïcödé café</p>');
+    });
+
+    it('leaves an empty value alone', function (): void {
+        expect(sanitised(''))->toBe('');
+    });
+
     it('leaves legitimate markup byte-identical', function (): void {
         expect(sanitised('<p>Hello <strong>world</strong></p>'))
             ->toBe('<p>Hello <strong>world</strong></p>');

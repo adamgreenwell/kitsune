@@ -156,6 +156,54 @@ describe('cross-org isolation', function (): void {
         expect($mine->fresh()->org_id)->toBe($this->orgA->id);
     });
 
+    /*
+     * ⚠️ The guards live in model events, and a MASS UPDATE instantiates no
+     * models. The global scope limits which rows are SELECTED and says nothing
+     * about the values assigned, so this transferred the current scope's rows
+     * into another org — where the scope then showed them to their new owner
+     * and hid them from their author — without going near
+     * withoutScopeBecause().
+     *
+     * Fourth model in this project to need a builder for this shape. It is not
+     * a property of any of them: a guard in a model event is a guard on one
+     * path.
+     */
+    it('cannot be escaped by a MASS UPDATE, which dispatches nothing', function (): void {
+        app(Context::class)->setSite($this->siteA1);
+        SiteThing::create(['label' => 'mine']);
+
+        expect(fn () => SiteThing::query()->update([
+            'org_id' => $this->orgB->id, 'site_id' => $this->siteB1->id,
+        ]))->toThrow(RuntimeException::class, 'Refusing to write');
+
+        expect(SiteThing::where('label', 'mine')->exists())->toBeTrue();
+    });
+
+    it('catches a QUALIFIED column name in a mass update', function (): void {
+        app(Context::class)->setSite($this->siteA1);
+        SiteThing::create(['label' => 'mine']);
+
+        expect(fn () => SiteThing::query()->update(['site_things.org_id' => $this->orgB->id]))
+            ->toThrow(RuntimeException::class, 'Refusing to write');
+    });
+
+    it('refuses updateFrom, whose assignments are invisible here', function (): void {
+        app(Context::class)->setSite($this->siteA1);
+
+        expect(fn () => SiteThing::query()->updateFrom(['org_id' => $this->orgB->id]))
+            ->toThrow(RuntimeException::class, 'assigns through a join');
+    });
+
+    it('still allows a mass update that leaves the scope keys alone', function (): void {
+        app(Context::class)->setSite($this->siteA1);
+        SiteThing::create(['label' => 'mine']);
+
+        expect(fn () => SiteThing::query()->update(['label' => 'renamed']))
+            ->not->toThrow(RuntimeException::class);
+
+        expect(SiteThing::where('label', 'renamed')->exists())->toBeTrue();
+    });
+
     it('still lets an org-shared row be written with a null site', function (): void {
         // NULL site_id is legitimate and must stay so: it is how a row is
         // shared across an org's sites.

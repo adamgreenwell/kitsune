@@ -45,6 +45,12 @@ final class MySqlDriver implements SchemaDriver
         return true;
     }
 
+    /**
+     * utf8mb4's maximum encoded width, because the column is sized in bytes
+     * and the projection is specified in characters.
+     */
+    private const BYTES_PER_CHARACTER = 4;
+
     public function columnType(Projection $projection): string
     {
         return match ($projection->logical) {
@@ -73,7 +79,16 @@ final class MySqlDriver implements SchemaDriver
             //
             // Applied to dates too, matching PostgreSQL, which cannot use a
             // real DATE in a generated column at all.
-            LogicalType::String, LogicalType::Date, LogicalType::DateTime => "VARBINARY({$projection->precision})",
+            // ⚠️ Sized in BYTES, and the projection's precision counts
+            // CHARACTERS. A width of 64 validates 64 characters, and 64 `é`
+            // are 128 UTF-8 bytes — so the column either refused the ALTER
+            // over existing data or truncated the indexed value, while
+            // PostgreSQL and SQLite kept all 64. Four bytes per character is
+            // utf8mb4's maximum, which is what the connection uses.
+            LogicalType::String, LogicalType::Date, LogicalType::DateTime => sprintf(
+                'VARBINARY(%d)',
+                $projection->precision * self::BYTES_PER_CHARACTER,
+            ),
         };
     }
 
