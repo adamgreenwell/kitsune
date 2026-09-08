@@ -254,38 +254,159 @@ final class NumberType extends BaseFieldType
             );
         }
 
-        // ⚠️ ORDERED is not the same as INHABITED, and checking only the ordering
-        // let an empty range through.
+        // ⚠️ ORDERED is not the same as INHABITED, and this check has been wrong
+        // three times: first it compared only the ordering, then it tested the
+        // scale grid alone with a float epsilon.
         //
-        // `scalarValidationRules()` emits the format alongside both bounds, so an
-        // `integer` field with min 0.1 and max 0.9 accepts nothing at all — the
-        // bounds are ordered and there is no integer between them. A `decimal`
-        // field has the same problem at a finer grain: with scale 2 the values are
-        // multiples of 0.01, so [0.001, 0.002] is equally empty.
+        // `scalarValidationRules()` emits SEVERAL constraints together, and a
+        // value has to satisfy all of them. An `integer` field with min 0.1 and
+        // max 0.9 accepts nothing; so does a decimal field whose range is
+        // narrower than its own scale; so does one whose range sits outside the
+        // bound the DECIMAL projection imposes; and so does one whose step grid
+        // never lands on its scale grid.
         //
-        // Same unusable outcome as an uncompilable pattern, reached by arithmetic.
+        // ⚠️ Computed in INTEGER units of the field's own quantum, which is what
+        // makes it answerable. The previous version used an absolute `1e-9`
+        // tolerance, and at scale 14 that fudge is larger than every value being
+        // compared — it accepted min = max = 5e-15 on a 1e-14 grid. Scaling the
+        // tolerance would have been another fudge; there is no float comparison
+        // left to tolerate.
+        return $this->uninhabitedReason($settings);
+    }
+
+    /**
+     * Why no value can satisfy this configuration, or null if one can.
+     *
+     * Everything is expressed as a multiple of the quantum — 1 for an integer
+     * field, 10^-scale for a decimal one — so the question becomes whether an
+     * INTEGER exists in an integer interval, which needs no tolerance at all.
+     *
+     * @param  array<string, mixed>  $settings
+     */
+    private function uninhabitedReason(array $settings): ?string
+    {
+        $integer = ($settings['format'] ?? 'decimal') === 'integer';
         $precision = self::clampedPrecision($settings['precision'] ?? 12);
-        $quantum = ($settings['format'] ?? 'decimal') === 'integer'
-            ? 1.0
-            : 10 ** -self::clampedScale($settings['scale'] ?? 2, $precision);
+        $scale = $integer ? 0 : self::clampedScale($settings['scale'] ?? 2, $precision);
 
-        // The smallest value the field can represent that is not below the
-        // minimum. A tiny epsilon, because 0.29 / 0.01 is not exactly 29 in binary
-        // floating point and ceil() would round it up to 30.
-        $smallest = ceil(((float) $min / $quantum) - 1e-9) * $quantum;
+        // Units of the quantum: v = units * 10^-scale.
+        $min = self::unitsAtLeast($settings['min'], $scale);
+        $max = self::unitsAtMost($settings['max'], $scale);
 
-        if ($smallest > (float) $max + 1e-9) {
-            return sprintf(
-                'No value this field can represent falls between %s and %s: it stores %s, and the '
-                .'nearest one at or above the minimum is %s. Widen the range, or change the format.',
-                (string) $min,
-                (string) $max,
-                $quantum === 1.0 ? 'whole numbers' : 'multiples of '.rtrim(rtrim(number_format($quantum, 10, '.', ''), '0'), '.'),
-                rtrim(rtrim(number_format($smallest, 10, '.', ''), '0'), '.'),
-            );
+        // ⚠️ The PROJECTION's bound, which the rules also emit. A decimal field
+        // is validated `lt:10^(precision-scale)`, so precision 2 / scale 1 admits
+        // nothing at or above 10 — and min = max = 10 was accepted because that
+        // constraint was not part of the interval being tested.
+        if (! $integer) {
+            $bound = 10 ** $precision - 1;
+            $max = $max === null ? $bound : min($max, $bound);
+            $min = $min === null ? -$bound : max($min, -$bound);
         }
 
-        return null;
+        if ($min === null || $max === null) {
+            // An open side cannot be empty on its own: there is always a value
+            // beyond it on the grid.
+            return null;
+        }
+
+        if ($min > $max) {
+            return $this->emptyRangeReason($settings, $scale, $min, $max);
+        }
+
+        // ⚠️ The STEP grid as well, and it is offset from `min` rather than from
+        // zero — so its candidates are min, min + step, … and each must ALSO land
+        // on the scale grid.
+        $step = $settings['step'] ?? null;
+
+        if (! is_numeric($step) || (float) $step <= 0) {
+            return null;
+        }
+
+        $stepUnits = (float) $step * (10 ** $scale);
+
+        // ⚠️ A step finer than the quantum is left alone deliberately. Whether any
+        // of its candidates lands on the grid depends on the step's own fraction —
+        // 0.005 on a two-decimal field hits every second candidate — and deciding
+        // that exactly needs rational arithmetic this check will not carry. It
+        // fails OPEN rather than refusing a configuration that may well work: a
+        // false refusal blocks an author, a miss leaves an unusual field that the
+        // value rules still police.
+        if (abs($stepUnits - round($stepUnits)) > 0.0) {
+            return null;
+        }
+
+        $stepUnits = (int) round($stepUnits);
+
+        // ⚠️ The offset has to be ON the grid, and converting it with `ceil()`
+        // hid that. `scale 2` with `min = 0.001` offers 0.001, 0.011, 0.021 … and
+        // none has two decimals — but rounding the offset up to 0.01 invented a
+        // candidate the runtime rule would never accept. With an integral step,
+        // every candidate carries the offset's fraction, so an off-grid offset
+        // means nothing is ever representable.
+        if (! self::isOnGrid($settings['min'] ?? 0, $scale)) {
+            return $this->emptyStepReason($settings);
+        }
+
+        $offset = (int) round((float) ($settings['min'] ?? 0) * (10 ** $scale));
+
+        // The first candidate at or above the minimum.
+        $first = $offset + (int) ceil(($min - $offset) / $stepUnits) * $stepUnits;
+
+        return $first <= $max ? null : $this->emptyStepReason($settings);
+    }
+
+    /** The value as whole quanta, rounded UP; null when it is not a number. */
+    private static function unitsAtLeast(mixed $value, int $scale): ?int
+    {
+        return is_numeric($value) ? (int) ceil((float) $value * (10 ** $scale)) : null;
+    }
+
+    /** The value as whole quanta, rounded DOWN; null when it is not a number. */
+    private static function unitsAtMost(mixed $value, int $scale): ?int
+    {
+        return is_numeric($value) ? (int) floor((float) $value * (10 ** $scale)) : null;
+    }
+
+    /** Whether the value is exactly representable at this scale. */
+    private static function isOnGrid(mixed $value, int $scale): bool
+    {
+        if (! is_numeric($value)) {
+            return false;
+        }
+
+        $units = (float) $value * (10 ** $scale);
+
+        return abs($units - round($units)) === 0.0;
+    }
+
+    /** @param  array<string, mixed>  $settings */
+    private function emptyRangeReason(array $settings, int $scale, int $min, int $max): string
+    {
+        return sprintf(
+            'No value this field can represent falls between %s and %s: it stores %s, and the '
+            .'closest representable values leave nothing in that interval. Widen the range, or '
+            .'change the format%s.',
+            (string) $settings['min'],
+            (string) $settings['max'],
+            $scale === 0 ? 'whole numbers' : 'multiples of '.self::quantumLabel($scale),
+            ($settings['format'] ?? 'decimal') === 'integer' ? '' : ', precision or scale',
+        );
+    }
+
+    /** @param  array<string, mixed>  $settings */
+    private function emptyStepReason(array $settings): string
+    {
+        return sprintf(
+            'A step of %s counted from %s never lands on a value this field can store, so nothing '
+            .'could be saved in it. Align the step with the field\'s scale, or clear it.',
+            (string) $settings['step'],
+            (string) ($settings['min'] ?? 0),
+        );
+    }
+
+    private static function quantumLabel(int $scale): string
+    {
+        return rtrim(rtrim(number_format(10 ** -$scale, max(1, $scale), '.', ''), '0'), '.');
     }
 
     public function settingsSchema(): array

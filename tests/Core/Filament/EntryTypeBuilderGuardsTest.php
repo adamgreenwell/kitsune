@@ -857,6 +857,65 @@ describe('settings that contradict themselves are refused', function (): void {
         ]))->toThrow(RuntimeException::class, 'No value this field can represent');
     });
 
+    it('refuses a range outside the PROJECTION\'s own bound', function (): void {
+        // ⚠️ The rules emit `lt:10^(precision-scale)` for a decimal field, so
+        // precision 2 / scale 1 admits nothing at or above 10 — and min = max = 10
+        // was accepted because that constraint was not part of the interval being
+        // tested. Ordered, on the grid, and still empty.
+        expect(fn () => FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'bounded_rate', 'type' => 'number',
+            'pii_class' => 'none', 'cardinality' => 1,
+            'settings' => ['format' => 'decimal', 'precision' => 2, 'scale' => 1, 'min' => 10, 'max' => 10],
+        ]))->toThrow(RuntimeException::class, 'No value this field can represent');
+    });
+
+    it('accepts the largest value that bound DOES admit', function (): void {
+        $edge = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'bounded_rate2', 'type' => 'number',
+            'pii_class' => 'none', 'cardinality' => 1,
+            'settings' => ['format' => 'decimal', 'precision' => 2, 'scale' => 1, 'min' => 9.9, 'max' => 9.9],
+        ]);
+
+        expect($edge->exists)->toBeTrue();
+    });
+
+    it('refuses a step whose candidates never land on the scale grid', function (): void {
+        // ⚠️ The step is offset from `min`, so scale 2 with min 0.001 and step 0.01
+        // offers 0.001, 0.011, 0.021 … and none has two decimals. An earlier
+        // version rounded the offset UP onto the grid and thereby invented a
+        // candidate the runtime rule would never accept.
+        expect(fn () => FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'stepped', 'type' => 'number',
+            'pii_class' => 'none', 'cardinality' => 1,
+            'settings' => ['format' => 'decimal', 'precision' => 12, 'scale' => 2,
+                'min' => 0.001, 'max' => 0.1, 'step' => 0.01],
+        ]))->toThrow(RuntimeException::class, 'never lands on a value this field can store');
+    });
+
+    it('accepts a step aligned with the scale', function (): void {
+        $aligned = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'stepped2', 'type' => 'number',
+            'pii_class' => 'none', 'cardinality' => 1,
+            'settings' => ['format' => 'decimal', 'precision' => 12, 'scale' => 2,
+                'min' => 0.05, 'max' => 0.1, 'step' => 0.01],
+        ]);
+
+        expect($aligned->exists)->toBeTrue();
+    });
+
+    it('is exact at a scale where a float tolerance would not be', function (): void {
+        // ⚠️ The previous check used an absolute 1e-9 tolerance, which at scale 14
+        // is larger than every value being compared — it accepted min = max = 5e-15
+        // on a 1e-14 grid. The check is computed in integer quanta now, so there is
+        // no tolerance to be wrong about.
+        expect(fn () => FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'tiny', 'type' => 'number',
+            'pii_class' => 'none', 'cardinality' => 1,
+            'settings' => ['format' => 'decimal', 'precision' => 15, 'scale' => 14,
+                'min' => 5e-15, 'max' => 5e-15],
+        ]))->toThrow(RuntimeException::class, 'No value this field can represent');
+    });
+
     it('refuses a decimal range narrower than its own scale', function (): void {
         // The same emptiness at a finer grain: with scale 2 the values are
         // multiples of 0.01, so [0.001, 0.002] holds none of them.
@@ -999,6 +1058,26 @@ describe('settings that contradict themselves are refused', function (): void {
             // remove the capability rather than redirect it.
             ->and(Pattern::unpublishable('^\p{L}+$'))->toBeNull()
             ->and(Pattern::unpublishable('^\p{Lu}{2,}$'))->toBeNull();
+    });
+
+    it('screens divergent escapes inside a character class too', function (): void {
+        /*
+         * ⚠️ The class exemption was right for anchors and wrong for these, and
+         * lumping them into one list was wrong in one direction or the other.
+         *
+         * `\A` inside `[...]` is a literal A in PCRE, so screening it there would
+         * refuse a valid class. `\h` inside a class is STILL horizontal whitespace
+         * in PCRE while ECMAScript still reads the letter h — so `[\h]+` published
+         * a materially different constraint and the exemption let it through. The
+         * difference is whether the escape means anything inside a class at all.
+         */
+        expect(Pattern::unpublishable('[\h]+'))->toContain('horizontal whitespace')
+            ->and(Pattern::unpublishable('[\v]'))->toContain('vertical whitespace')
+            ->and(Pattern::unpublishable('[\H\V]'))->not->toBeNull()
+            // A literal inside a class, and it must stay allowed.
+            ->and(Pattern::unpublishable('[\A]'))->toBeNull()
+            ->and(Pattern::unpublishable('[\d\-]+'))->toBeNull()
+            ->and(Pattern::unpublishable('[ \t]+'))->toBeNull();
     });
 
     it('allowlists group prefixes rather than listing offenders', function (): void {
