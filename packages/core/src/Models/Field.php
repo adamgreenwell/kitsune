@@ -23,6 +23,11 @@ use Kitsune\Core\Tenancy\Attributes\Unscoped;
  * @property int $field_storage_id
  * @property string $label
  * @property bool $is_required
+ * @property string|null $help_text
+ * @property array<string, mixed>|null $settings
+ * @property array<string, mixed>|null $default_value
+ * @property int $ordering
+ * @property string|null $group
  */
 #[Unscoped]
 class Field extends Model

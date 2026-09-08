@@ -1020,6 +1020,87 @@ ADR-026 offered two install paths and named **Docker** the recommended default, 
 
 **Commercial interest, per ADR-023.** Interests mostly align here — a leaner core means more tenants per box on KaaS. The exception is the same one ADR-026 already discloses: the lower the self-host floor, the more optional the hosted service becomes. Disclosed once there; not re-litigated here.
 
+## ADR-028 — A generated column is named for its projection, not for its owner
+
+**Status:** Decided · 2026-09-07
+
+Found while implementing ADR-006's index-on-demand mechanism, before it shipped.
+
+`entries` is **one table shared by every org** (ADR-021), and `field_storage` is `UNIQUE (org_id, handle)` — so two orgs may each define a field called `price`. The first implementation named the generated column after the handle alone, `idx_price`. That is wrong in two ways, and both are silent:
+
+- **Type collision.** Org A's `price` is a `number`, Org B's is `text`. One column gets created, with one type. The other org's queries then filter on a projection that casts their data to the wrong type — wrong results, no error.
+- **Drop collision.** Org A un-indexes `price`, the column is dropped, and Org B's queries start failing on a column that another org removed. Cross-org action at a distance, which is precisely the class of defect ADR-021 says has no framework safety net.
+
+**Decision: the column's identity is `(handle, field type)`, rendered `idx_{handle}__{type}`.**
+
+`FieldType::generatedColumnType()` takes only a driver — it reads no per-field configuration. The projection is therefore a pure function of the type handle. Two field storage rows with the same handle and the same type generate a byte-identical expression, so sharing one column is not coupling, it is deduplication. Two rows that disagree on type generate different expressions and get different columns.
+
+This follows from that:
+
+- **Creation is idempotent and shared.** The second org to index `price` as a `number` finds the column already there and adds nothing.
+- **Dropping is reference-counted.** `idx_price__number` survives until no field storage row still asks for it. An org un-indexing its own field never removes another org's index.
+- **No coordination, and no leak.** Neither org can block the other, and neither learns the other exists — the failure mode a "handles are globally reserved by first use" rule would have introduced.
+
+**Identifier length.** PostgreSQL truncates identifiers at 63 bytes and MySQL rejects them past 64, and a truncated column name is a silent collision — exactly what this ADR exists to prevent. Field handles are therefore bounded at 40 characters and constrained to `[a-z][a-z0-9_]*` with no doubled underscore, which keeps `__` unambiguous as the separator and leaves room for the type. The full identifier is re-checked at index time and refused if it still does not fit.
+
+**The cap counts columns, not rows.** The first implementation capped "indexed fields per entity type" and then counted `field_storage` rows globally — the name and the code disagreed, and neither described the resource being protected. The scarce resource is columns on the shared `entries` table: PostgreSQL stops at 1600, MySQL at a 65,535-byte row. The cap is therefore on generated columns present on `entries`, counted from the table itself.
+
+| Rejected | Why it lost |
+|---|---|
+| `idx_{org_id}_{handle}` — a column per org | Correct isolation, unbounded cost. 500 orgs × 5 indexed fields is 2,500 columns on one table; PostgreSQL's limit is 1,600. It converts a correctness bug into a capacity ceiling. |
+| A handle is globally reserved by whoever indexes it first | Simple, and it leaks. Org B learns that `price` exists elsewhere as a `number`, and cannot proceed without coordinating with a tenant it must not be able to see. |
+| Hash the identity — `idx_a3f9c2d1` | Collision-free and unreadable. The column is a query surface; `where('idx_price__number', ...)` is debuggable and a hash is not. |
+| A table per org | Solves this and reintroduces Drupal's problem one level up: schema operations become O(orgs), and ADR-021's single-database model exists to avoid exactly that. |
+| Leave it — one org per install is the common case | The common case is not the risky case. Shared hosting is the deployment KaaS depends on (ADR-023), and a silent cross-org data defect there is unrecoverable reputationally. |
+
+**Consequence.** Column names are longer and carry a type suffix. Any query written against a generated column must resolve the name through the field storage row rather than assuming `idx_{handle}`.
+
+### Amendment, same day — naming was only half of it
+
+**Status:** Amended · 2026-09-07 · found in review of the first implementation
+
+Naming the column for its projection stopped orgs from *colliding on the name*. It did nothing about the expression, and the expression is the larger problem: **a generated column reads its JSON key from every row in the shared table**, including rows belonging to orgs that gave that handle a different type. Measured against live engines:
+
+| | unguarded `(values->>'price')::NUMERIC` where another org's `price` is `"contact us"` |
+|---|---|
+| PostgreSQL 17 | `ERROR: invalid input syntax for type numeric` — **the column cannot be created at all** |
+| MySQL 8.4 | `ERROR 1366: Incorrect DECIMAL value` — same |
+| SQLite | **indexes it as `0`**, silently. A price of zero, matching queries for one |
+
+So the expression is now **total**: it tests the JSON type first and yields NULL for anything else. The wrong type is not this projection's data, and NULL is the honest answer for it.
+
+Three further defects surfaced while fixing that, all of the same shape — a claim the tests did not check:
+
+- **`integer` was unindexable on MySQL.** The driver returned one string for both the column type and the cast, and MySQL needs two: `BIGINT` in `ADD COLUMN`, `SIGNED` inside `CAST`, each rejected where the other belongs. The driver interface now exposes `columnType()` and keeps the cast spelling private.
+- **`boolean` was unindexable on MySQL.** `->>` renders a JSON boolean as the text `'true'`, and `CAST('true' AS UNSIGNED)` is an error. Booleans compare the JSON value directly instead.
+- **`date` and `datetime` were unindexable on PostgreSQL.** A stored generated column's expression must be IMMUTABLE, and a text-to-`DATE` cast is only STABLE: `ERROR: generation expression is not immutable`. There is no immutable text-to-date path — `to_date` is STABLE too. **Dates therefore project to fixed-width ISO-8601 strings on every engine**, which `toStorage()` already normalises to, so string ordering is exact chronological ordering. Uniform across engines rather than a real `DATE` on the two that would accept one, because one behaviour is worth more than three bytes.
+
+**Why all four hid:** the parity suite exercised `decimal` and `string` only. It now covers every logical type on every engine, and the registry test renders every indexable type against all three drivers rather than only the connected one. `LogicalType` is an enum so PHPStan fails an unhandled match — a new logical type cannot silently leave one engine behind.
+
+**Consequence for field types.** `generatedColumnType(SchemaDriver)` is replaced by `projection(FieldConfig): ?Projection`. A field type now describes what it projects to and takes no driver at all — handing it one was the wrong seam, since it still had to know that a rendered type serves two grammars, and it left the driver no place to put the guard.
+
+### Second amendment — the identity is the projection, and the projection depends on configuration
+
+**Status:** Amended · 2026-09-07 · found in re-review
+
+Naming the column `idx_{handle}__{type}` assumed the projection was a pure function of the field type handle. It is not:
+
+- A `number` with `format: integer` must project to BIGINT. Through `DECIMAL(12,2)` — which is what every `number` used — the value `10000000000` is accepted by the validator and by `toStorage()`, and PostgreSQL then **refuses the column with `numeric field overflow`.**
+- A `text` with `maxLength: 400` must project at that width. Through `VARCHAR(255)` it is **silently truncated in the index**, so two distinct values compare equal and an exact filter returns wrong rows — and SQLite, which does not enforce declared widths, disagrees with the other two engines about which rows those are.
+
+So two orgs configuring the same handle differently would have collided on `idx_count__number` with incompatible column types — the very defect this ADR was written to close, reintroduced one level down.
+
+**The column is therefore named for the projection's signature**, which carries the width where the width varies: `idx_count__integer`, `idx_price__decimal12_2`, `idx_sku__string64`, `idx_active__boolean`, `idx_when__date`. Rows that project identically still share a column; rows that differ in any way that changes the SQL do not.
+
+**Indexing constrains configuration, and says so.** An indexed string wider than 700 characters is refused with the reason: MySQL caps an index key at 3,072 bytes and utf8mb4 costs four bytes a character, so `VARCHAR(1000)` fails with `ERROR 1071` while `VARCHAR(700)` succeeds — measured, not derived. Long text that needs searching wants full-text search, not a scalar projection.
+
+`field_storage.handle` drops from 40 characters to **32**, because the signature suffix is longer than a type handle was and the assembled index name has to stay inside PostgreSQL's 63 bytes.
+
+Two consequences followed and are worth recording, because both were wrong in the first pass:
+
+- **Reference counting compares the COLUMN, not the field type.** `text` with `maxLength: 64` and `select` both project to `string64` and share a column deliberately, while two `number` rows configured `integer` and `decimal` do not. A `type` predicate got both directions wrong — dropping a column another org still queried, and leaving an orphan behind.
+- **Settings that change the projection are shape, and lock with it.** ADR-006 locks storage once data exists, and the lock checked `type` and `cardinality` only — so switching `format` from decimal to integer on a table full of fractions was permitted, changing both the conversion and the column. The guard compares projections rather than naming settings, so a field type adding a projection-affecting setting is covered without anyone remembering it exists.
+
 ---
 
 ## Standing principles

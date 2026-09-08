@@ -10,6 +10,8 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Schema;
 
+use Kitsune\Core\Fields\Projection;
+
 /**
  * The seam ADR-006 depends on.
  *
@@ -36,28 +38,41 @@ interface SchemaDriver
     public function supportsStoredGeneratedColumns(): bool;
 
     /**
-     * Render a LOGICAL type as this engine's SQL spelling.
+     * The column type for a projection, valid in ALTER TABLE ADD COLUMN.
      *
-     * Without this the caller has to know engine specifics, which is exactly
-     * what the driver exists to prevent. MySQL is the reason it is not
-     * cosmetic: it accepts NUMERIC as a column type but rejects it inside
-     * CAST, where it demands DECIMAL. Found by the storage benchmark passing
-     * one type to all three engines — the parity test had been hiding it by
-     * hardcoding the correct spelling per engine at the call site.
+     * Not the same string as the cast inside the expression, and MySQL is why
+     * it cannot be: it accepts NUMERIC as a column type and rejects it inside
+     * CAST, and accepts SIGNED inside CAST while rejecting it as a column
+     * type entirely. A single "SQL type" string cannot serve both grammars,
+     * and pretending it could left `integer` and `boolean` fields unindexable
+     * on MySQL until the parity suite started covering every logical type.
      *
-     * An unknown logical type throws rather than falling back to TEXT.
-     * A generated column silently created with the wrong type would index
-     * the wrong thing, which is worse than failing loudly.
-     *
-     * @param  'decimal'|'integer'|'string'|'boolean'|'datetime'  $logical
+     * An unknown logical type throws rather than falling back to TEXT. A
+     * generated column silently created with the wrong type would index the
+     * wrong thing, which is worse than failing loudly.
      */
-    public function sqlType(string $logical, int $precision = 12, int $scale = 2): string;
+    public function columnType(Projection $projection): string;
 
-    /** An expression projecting a JSON path to a scalar of the given SQL type. */
-    public function jsonExtractExpression(string $jsonColumn, string $path, string $sqlType): string;
+    /**
+     * A TOTAL expression projecting a JSON path to a scalar.
+     *
+     * Total is the operative word. `entries` is one table shared by every
+     * org, and a generated column reads its JSON key from every row in it —
+     * including rows whose org gave the same handle a different type
+     * (ADR-028). An unguarded cast makes one org's data break another org's
+     * column: PostgreSQL and MySQL refuse to create it, and SQLite quietly
+     * indexes `"contact us"` as 0.
+     *
+     * So the expression tests the JSON type first and yields NULL rather than
+     * erroring. It must also be immutable in PostgreSQL's sense, which is why
+     * `date` and `datetime` project to fixed-width ISO-8601 strings: a
+     * text-to-DATE cast is only STABLE, and PostgreSQL refuses it outright in
+     * a stored generated column.
+     */
+    public function jsonExtractExpression(string $jsonColumn, string $path, Projection $projection): string;
 
     /** SQL adding a generated column over a JSON path. */
-    public function addGeneratedColumnSql(string $table, string $column, string $jsonColumn, string $path, string $sqlType): string;
+    public function addGeneratedColumnSql(string $table, string $column, string $jsonColumn, string $path, Projection $projection): string;
 
     /** SQL dropping it again. */
     public function dropGeneratedColumnSql(string $table, string $column): string;

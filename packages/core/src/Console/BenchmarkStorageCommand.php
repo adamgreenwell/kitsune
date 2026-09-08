@@ -12,6 +12,8 @@ namespace Kitsune\Core\Console;
 
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
+use Kitsune\Core\Fields\LogicalType;
+use Kitsune\Core\Fields\Projection;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Org;
@@ -62,10 +64,12 @@ final class BenchmarkStorageCommand extends Command
                 $column = "bench_idx_{$i}";
 
                 if (! in_array($column, DB::getSchemaBuilder()->getColumnListing('entries'), true)) {
-                    // Ask the driver for the spelling — MySQL rejects NUMERIC
-                    // inside CAST and needs DECIMAL, which is exactly the kind of
-                    // divergence the caller must not have to know.
-                    DB::statement($driver->addGeneratedColumnSql('entries', $column, 'values', "f{$i}", $driver->sqlType('decimal')));
+                    // Describe the projection; the driver renders it. It knows
+                    // that MySQL rejects NUMERIC inside CAST, and it emits the
+                    // JSON-type guard that keeps the column total (ADR-028).
+                    DB::statement($driver->addGeneratedColumnSql(
+                        'entries', $column, 'values', "f{$i}", new Projection(LogicalType::Decimal),
+                    ));
                     DB::statement($driver->createIndexSql('entries', "entries_bench_{$i}", 'site_id', $column));
                 }
             }

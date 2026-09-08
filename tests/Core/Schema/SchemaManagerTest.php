@@ -1,0 +1,1325 @@
+<?php
+
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
+ */
+
+declare(strict_types=1);
+
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
+use Kitsune\Core\Fields\FieldTypeRegistry;
+use Kitsune\Core\Fields\LogicalType;
+use Kitsune\Core\Fields\Types\BaseFieldType;
+use Kitsune\Core\Models\Entry;
+use Kitsune\Core\Models\EntryType;
+use Kitsune\Core\Models\Field;
+use Kitsune\Core\Models\FieldStorage;
+use Kitsune\Core\Models\Org;
+use Kitsune\Core\Models\Site;
+use Kitsune\Core\Schema\DriverFactory;
+use Kitsune\Core\Schema\SchemaManager;
+use Kitsune\Core\Tenancy\Context;
+
+/*
+ * ADR-006: one table, real indexes on the fields that need them. This is the
+ * mechanism that avoids Drupal's join explosion — the 27-join, 697-second
+ * production query that came from a table per field.
+ *
+ * This file alters the real `entries` table, and DDL implicitly commits on
+ * MySQL — so RefreshDatabase's rollback is already broken by the time each
+ * test ends. The teardown below therefore removes both the columns and the
+ * rows itself rather than relying on it. Getting this wrong once already
+ * turned 52 passes into 42 failures on the engine matrix.
+ */
+
+beforeEach(function (): void {
+    $this->manager = new SchemaManager(new FieldTypeRegistry);
+
+    $this->orgA = Org::create(['name' => 'A', 'slug' => 'schema-a']);
+    $this->orgB = Org::create(['name' => 'B', 'slug' => 'schema-b']);
+
+    app(Context::class)->setOrg($this->orgA);
+    $this->site = Site::create(['org_id' => $this->orgA->id, 'handle' => 'main', 'slug' => 'schema-a-main', 'name' => 'Main']);
+    app(Context::class)->setSite($this->site);
+
+    $this->type = EntryType::create(['org_id' => $this->orgA->id, 'handle' => 'product', 'name' => 'Product', 'plural_name' => 'Products']);
+});
+
+afterEach(function (): void {
+    $driver = DriverFactory::for(DB::connection());
+
+    // Index names checked first: MySQL's DROP INDEX has no IF EXISTS, and a
+    // test that dropped one itself would break the teardown for every test
+    // after it — the same defect this file covers in the code.
+    $indexes = array_map(
+        static fn (array $index): string => strtolower((string) $index['name']),
+        Schema::getIndexes('entries'),
+    );
+
+    foreach (Schema::getColumnListing('entries') as $column) {
+        if (! str_starts_with($column, 'idx_')) {
+            continue;
+        }
+
+        if (in_array(strtolower($column.'_site_idx'), $indexes, true)) {
+            DB::statement($driver->dropIndexSql('entries', $column.'_site_idx'));
+        }
+
+        DB::statement($driver->dropGeneratedColumnSql('entries', $column));
+    }
+
+    // Raw deletes, in dependency order: global scopes and soft deletes would
+    // both leave rows behind, and there is no transaction left to roll back.
+    foreach ([
+        'entry_relations', 'entry_revisions', 'entry_type_availability',
+        'entries', 'fields', 'field_storage', 'entry_types', 'sites',
+        'site_groups', 'orgs',
+    ] as $table) {
+        DB::table($table)->delete();
+    }
+
+    app(Context::class)->forget();
+});
+
+function indexNames(): array
+{
+    return array_map(
+        static fn (array $index): string => strtolower((string) $index['name']),
+        Schema::getIndexes('entries'),
+    );
+}
+
+function storageFor(string $handle, string $type, array $attrs = []): FieldStorage
+{
+    return FieldStorage::create(array_merge([
+        'handle' => $handle,
+        'type' => $type,
+        'pii_class' => 'none',
+        'cardinality' => 1,
+    ], $attrs));
+}
+
+it('creates a generated column and queries through it', function (): void {
+    $storage = storageFor('price', 'number', ['org_id' => $this->orgA->id, 'is_indexed' => true]);
+
+    $this->manager->index($storage);
+
+    expect(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeTrue();
+
+    Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Cheap', 'values' => ['price' => 10]]);
+    Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Dear', 'values' => ['price' => 900]]);
+
+    // Filtering on the projected scalar rather than on JSON is the entire
+    // point of the mechanism.
+    expect(Entry::where('idx_price__decimal12_2', '<', 100)->count())->toBe(1);
+});
+
+it('drops the index before the column, which SQLite requires', function (): void {
+    $storage = storageFor('price', 'number', ['org_id' => $this->orgA->id, 'is_indexed' => true]);
+    $this->manager->index($storage);
+
+    $this->manager->dropIndex($storage);
+
+    expect(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeFalse();
+});
+
+it('reconciles from the is_indexed flag', function (): void {
+    $storage = storageFor('price', 'number', ['org_id' => $this->orgA->id, 'is_indexed' => true]);
+
+    $this->manager->sync($storage);
+    expect(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeTrue();
+
+    $storage->update(['is_indexed' => false]);
+    $this->manager->sync($storage);
+    expect(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeFalse();
+});
+
+it('is idempotent, so a repeated sync is harmless', function (): void {
+    $storage = storageFor('price', 'number', ['org_id' => $this->orgA->id, 'is_indexed' => true]);
+
+    $this->manager->index($storage);
+    $this->manager->index($storage);
+
+    expect(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeTrue();
+});
+
+it('recreates a missing index even though its column is already there', function (): void {
+    // The column and the index are two statements, and DDL implicitly commits
+    // on MySQL — so the pair can half-succeed. Returning early on the column
+    // alone left the index permanently missing while the dry run reported the
+    // schema as in sync and every query scanned.
+    $storage = storageFor('price', 'number', ['org_id' => $this->orgA->id, 'is_indexed' => true]);
+    $this->manager->index($storage);
+
+    DB::statement(DriverFactory::for(DB::connection())->dropIndexSql('entries', $storage->generatedIndexName()));
+    expect(indexNames())->not->toContain(strtolower($storage->generatedIndexName()));
+
+    $this->manager->index($storage);
+
+    expect(indexNames())->toContain(strtolower($storage->generatedIndexName()))
+        ->and(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeTrue();
+});
+
+it('reports a missing index as drift, not as in sync', function (): void {
+    $storage = storageFor('price', 'number', ['org_id' => $this->orgA->id, 'is_indexed' => true]);
+    $this->manager->index($storage);
+
+    DB::statement(DriverFactory::for(DB::connection())->dropIndexSql('entries', $storage->generatedIndexName()));
+
+    expect($this->manager->reconcile()['added'])->toBe(['idx_price__decimal12_2'])
+        ->and(indexNames())->toContain(strtolower($storage->generatedIndexName()));
+});
+
+/*
+ * ADR-028. `entries` is one table shared by every org, and field_storage is
+ * UNIQUE (org_id, handle) — so two orgs may each define `price`. Naming the
+ * column after the handle alone made one org's schema change visible in
+ * another org's queries, silently.
+ */
+describe('a column belongs to its projection, not to an org (ADR-028)', function (): void {
+    it('gives orgs that disagree on type separate columns', function (): void {
+        $a = storageFor('price', 'number', ['org_id' => $this->orgA->id, 'is_indexed' => true]);
+        $b = storageFor('price', 'text', ['org_id' => $this->orgB->id, 'is_indexed' => true]);
+
+        $this->manager->index($a);
+        $this->manager->index($b);
+
+        // Without this, org B would be filtering on a column that casts its
+        // strings to DECIMAL — wrong answers, no error.
+        expect(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeTrue()
+            ->and(Schema::hasColumn('entries', 'idx_price__string255'))->toBeTrue();
+    });
+
+    it('shares one column between orgs that project identically', function (): void {
+        $a = storageFor('price', 'number', ['org_id' => $this->orgA->id, 'is_indexed' => true]);
+        $b = storageFor('price', 'number', ['org_id' => $this->orgB->id, 'is_indexed' => true]);
+
+        $this->manager->index($a);
+        $this->manager->index($b);
+
+        // The expression is byte-identical, so this is deduplication rather
+        // than a conflict: one column, not two.
+        $generated = array_filter(
+            Schema::getColumnListing('entries'),
+            static fn (string $c): bool => str_starts_with($c, 'idx_'),
+        );
+
+        expect($generated)->toHaveCount(1);
+    });
+
+    it('will not let one org drop a column another org still queries', function (): void {
+        $a = storageFor('price', 'number', ['org_id' => $this->orgA->id, 'is_indexed' => true]);
+        $b = storageFor('price', 'number', ['org_id' => $this->orgB->id, 'is_indexed' => true]);
+
+        $this->manager->index($a);
+        $this->manager->index($b);
+
+        $a->update(['is_indexed' => false]);
+        $this->manager->sync($a);
+
+        // Cross-org action at a distance is the defect class ADR-021 says has
+        // no framework safety net. This is the safety net.
+        expect(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeTrue();
+
+        $b->update(['is_indexed' => false]);
+        $this->manager->sync($b);
+
+        expect(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeFalse();
+    });
+});
+
+describe('refusing to index what cannot be indexed', function (): void {
+    it('refuses a multi-value field', function (): void {
+        // A JSON array cannot project to a scalar column.
+        $storage = storageFor('tags', 'text', ['cardinality' => -1, 'is_indexed' => true]);
+
+        expect(fn () => $this->manager->index($storage))
+            ->toThrow(RuntimeException::class, 'cannot be projected to a scalar');
+    });
+
+    it('refuses a relational field, which entry_relations already indexes', function (): void {
+        $storage = storageFor('author', 'relation', ['is_indexed' => true]);
+
+        expect(fn () => $this->manager->index($storage))
+            ->toThrow(RuntimeException::class, 'indexed by entry_relations');
+    });
+
+    it('refuses a promoted field, which is already a real column', function (): void {
+        $storage = storageFor('slug', 'slug', ['is_indexed' => true]);
+
+        expect(fn () => $this->manager->index($storage))
+            ->toThrow(RuntimeException::class, 'already a real column');
+    });
+
+    it('refuses a type that is not indexable at all', function (): void {
+        $storage = storageFor('body', 'rich_text', ['is_indexed' => true]);
+
+        expect(fn () => $this->manager->index($storage))
+            ->toThrow(RuntimeException::class, 'not indexable');
+    });
+});
+
+describe('handles have to survive being SQL identifiers (ADR-028)', function (): void {
+    it('refuses a handle longer than an identifier can carry', function (): void {
+        expect(fn () => storageFor(str_repeat('a', FieldStorage::MAX_HANDLE_LENGTH + 1), 'number'))
+            ->toThrow(RuntimeException::class, 'exceeds 32 characters');
+    });
+
+    it('refuses a doubled underscore, which is the separator', function (): void {
+        // Otherwise `idx_a__b__c` is ambiguous between handle `a` type `b__c`
+        // and handle `a__b` type `c`.
+        expect(fn () => storageFor('unit__price', 'number'))
+            ->toThrow(RuntimeException::class, 'lowercase snake_case');
+    });
+
+    it('refuses an uppercase handle', function (): void {
+        expect(fn () => storageFor('unitPrice', 'number'))
+            ->toThrow(RuntimeException::class, 'lowercase snake_case');
+    });
+
+    it('accepts an ordinary snake_case handle', function (): void {
+        expect(storageFor('unit_price', 'number')->generatedColumnName())
+            ->toBe('idx_unit_price__decimal12_2');
+    });
+});
+
+it('enforces the cap on the shared table, counting columns rather than rows', function (): void {
+    // Without a cap this is a noisy-neighbour incident on shared
+    // infrastructure, not just a slow page.
+    for ($i = 0; $i < SchemaManager::MAX_GENERATED_COLUMNS; $i++) {
+        $this->manager->index(storageFor("filler_{$i}", 'number', ['org_id' => $this->orgA->id, 'is_indexed' => true]));
+    }
+
+    $storage = storageFor('one_too_many', 'number', ['org_id' => $this->orgA->id, 'is_indexed' => true]);
+
+    expect(fn () => $this->manager->index($storage))
+        ->toThrow(RuntimeException::class, 'Generated column limit reached');
+});
+
+it('does not count a column it is about to share against the cap', function (): void {
+    for ($i = 0; $i < SchemaManager::MAX_GENERATED_COLUMNS; $i++) {
+        $this->manager->index(storageFor("filler_{$i}", 'number', ['org_id' => $this->orgA->id, 'is_indexed' => true]));
+    }
+
+    // Org B adopting an existing projection adds no column, so the cap must
+    // not refuse it.
+    $shared = storageFor('filler_0', 'number', ['org_id' => $this->orgB->id, 'is_indexed' => true]);
+
+    expect(fn () => $this->manager->index($shared))->not->toThrow(RuntimeException::class);
+});
+
+describe('reconcile repairs drift', function (): void {
+    it('adds a column whose row says it should exist', function (): void {
+        storageFor('price', 'number', ['org_id' => $this->orgA->id, 'is_indexed' => true]);
+
+        $result = $this->manager->reconcile();
+
+        expect($result['added'])->toBe(['idx_price__decimal12_2'])
+            ->and(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeTrue();
+    });
+
+    it('drops a column no row asks for any more', function (): void {
+        $storage = storageFor('price', 'number', ['org_id' => $this->orgA->id, 'is_indexed' => true]);
+        $this->manager->index($storage);
+
+        // The row goes away without a matching drop — a restore from a dump
+        // taken mid-change looks exactly like this.
+        $storage->delete();
+
+        $result = $this->manager->reconcile();
+
+        expect($result['dropped'])->toBe(['idx_price__decimal12_2'])
+            ->and(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeFalse();
+    });
+
+    it('changes nothing when there is nothing to change', function (): void {
+        $this->manager->index(storageFor('price', 'number', ['org_id' => $this->orgA->id, 'is_indexed' => true]));
+
+        expect($this->manager->reconcile())->toBe(['added' => [], 'dropped' => []]);
+    });
+});
+
+/*
+ * ADR-028 named the column for its projection. The projection turned out to
+ * depend on CONFIGURATION as well as on the field type, so the name had to
+ * follow it there — two orgs configuring `number` differently would otherwise
+ * have shared `idx_count__number` with incompatible column types.
+ */
+describe('the guards hold on the bulk path, which had none', function (): void {
+    /*
+     * ⚠️ `FieldStorage` had no builder at all, while `Entry` and `AuditLog`
+     * were both given one for exactly this reason. So every ADR-006 and
+     * ADR-020 guarantee on this model was true of the row-at-a-time path and
+     * of nothing else. Both of these were verified by probe before the fix:
+     *
+     *   FieldStorage::query()->whereKey($id)->update(['handle' => 'cost', 'type' => 'number'])
+     *     -> changed BOTH on a locked row
+     *   FieldStorage::createQuietly([...without pii_class])
+     *     -> persisted a row ADR-020 says cannot exist
+     *
+     * The bulk idiom is not exotic here: lockStorageHoldingData() and
+     * armLock() both use it, BECAUSE it skips the listener.
+     */
+    beforeEach(function (): void {
+        $this->guarded = storageFor('price', 'number', [
+            'org_id' => $this->orgA->id, 'is_locked' => true, 'settings' => ['format' => 'decimal'],
+        ]);
+    });
+
+    it('refuses a bulk rename of a locked field', function (): void {
+        expect(fn () => FieldStorage::query()->whereKey($this->guarded->id)->update(['handle' => 'cost']))
+            ->toThrow(RuntimeException::class, 'cannot be written in bulk');
+
+        expect($this->guarded->fresh()->handle)->toBe('price');
+    });
+
+    it('refuses a bulk retype, and a qualified column name', function (): void {
+        expect(fn () => FieldStorage::query()->update(['type' => 'text']))
+            ->toThrow(RuntimeException::class)
+            ->and(fn () => FieldStorage::query()->update(['field_storage.type' => 'text']))
+            ->toThrow(RuntimeException::class);
+
+        expect($this->guarded->fresh()->type)->toBe('number');
+    });
+
+    it('refuses to CLEAR a lock in bulk, which skipped every guard behind it', function (): void {
+        expect(fn () => FieldStorage::query()->whereKey($this->guarded->id)->update(['is_locked' => false]))
+            ->toThrow(RuntimeException::class, 'cannot be cleared in bulk');
+
+        expect($this->guarded->fresh()->is_locked)->toBeTrue();
+    });
+
+    it('still ARMS a lock in bulk, which is what the codebase does', function (): void {
+        // The one bulk write that is both needed and safe: setting it true
+        // cannot invalidate content, and both lock-arming paths do exactly it.
+        $open = storageFor('other', 'number', ['org_id' => $this->orgA->id]);
+
+        expect(fn () => FieldStorage::query()->whereKey($open->id)->update(['is_locked' => true]))
+            ->not->toThrow(RuntimeException::class);
+
+        expect($open->fresh()->is_locked)->toBeTrue();
+    });
+
+    it('still allows an ordinary instance save', function (): void {
+        // The flag is what separates the two: an instance save has already run
+        // its guards, a bulk update dispatched nothing and never could.
+        $open = storageFor('other', 'text', ['org_id' => $this->orgA->id]);
+
+        expect(fn () => $open->update(['handle' => 'renamed']))->not->toThrow(RuntimeException::class);
+        expect($open->fresh()->handle)->toBe('renamed');
+    });
+
+    it('refuses a QUIET create with no classification', function (): void {
+        // createQuietly() suppresses the saving listener while still inserting,
+        // so pii_class fail-closed did not apply — ADR-020 says such a row
+        // cannot exist.
+        expect(fn () => FieldStorage::createQuietly([
+            'org_id' => $this->orgA->id, 'handle' => 'notes', 'type' => 'text',
+        ]))->toThrow(RuntimeException::class, 'no pii_class');
+
+        expect(FieldStorage::query()->where('handle', 'notes')->exists())->toBeFalse();
+    });
+
+    it('refuses bulk creation outright', function (): void {
+        expect(fn () => FieldStorage::query()->insert([[
+            'org_id' => $this->orgA->id, 'handle' => 'bulk', 'type' => 'text', 'cardinality' => 1,
+        ]]))->toThrow(RuntimeException::class, 'cannot be created in bulk');
+    });
+});
+
+describe('a locked field cannot be narrowed, only widened', function (): void {
+    /*
+     * ⚠️ The projection guard compares where a value is STORED, and a field
+     * can be narrowed without moving that: a `multi_select` signs as `none`
+     * whatever its options are, and a `select` swapping options of the same
+     * maximum width keeps `string64`. Existing entries could then hold
+     * choices validation no longer accepts, so an unrelated edit to such an
+     * entry began failing — on a field ADR-006 says is locked.
+     */
+    it('refuses to remove an option from a locked select', function (): void {
+        $storage = storageFor('status', 'select', [
+            'org_id' => $this->orgA->id, 'is_locked' => true,
+            'settings' => ['options' => ['draft' => 'Draft', 'live' => 'Live']],
+        ]);
+
+        expect(fn () => $storage->update(['settings' => ['options' => ['draft' => 'Draft']]]))
+            ->toThrow(RuntimeException::class, 'cannot be narrowed');
+    });
+
+    it('refuses it on a multi_select too, whose projection never moves', function (): void {
+        $storage = storageFor('tags', 'multi_select', [
+            'org_id' => $this->orgA->id, 'is_locked' => true,
+            'settings' => ['options' => ['a' => 'A', 'b' => 'B']],
+        ]);
+
+        expect(fn () => $storage->update(['settings' => ['options' => ['a' => 'A']]]))
+            ->toThrow(RuntimeException::class, 'cannot be narrowed');
+    });
+
+    it('refuses swapping options of the SAME width, which keeps the signature', function (): void {
+        $storage = storageFor('status', 'select', [
+            'org_id' => $this->orgA->id, 'is_locked' => true,
+            'settings' => ['options' => ['draft' => 'Draft']],
+        ]);
+
+        expect(fn () => $storage->update(['settings' => ['options' => ['final' => 'Final']]]))
+            ->toThrow(RuntimeException::class, 'cannot be narrowed');
+    });
+
+    /*
+     * ⚠️ Direction matters. Refusing every scalar difference refused safe
+     * maintenance too: lowering a floor, raising a ceiling or dropping either
+     * leaves every stored value valid, and a lock that blocks those is a lock
+     * nobody can live with.
+     */
+    it('ALLOWS lowering a min on a locked field', function (): void {
+        $storage = storageFor('score', 'number', [
+            'org_id' => $this->orgA->id, 'is_locked' => true,
+            'settings' => ['format' => 'integer', 'min' => 0],
+        ]);
+
+        expect(fn () => $storage->update(['settings' => ['format' => 'integer', 'min' => -10]]))
+            ->not->toThrow(RuntimeException::class);
+    });
+
+    it('ALLOWS raising a max, and removing one', function (): void {
+        $storage = storageFor('score', 'number', [
+            'org_id' => $this->orgA->id, 'is_locked' => true,
+            'settings' => ['format' => 'integer', 'max' => 10],
+        ]);
+
+        expect(fn () => $storage->update(['settings' => ['format' => 'integer', 'max' => 100]]))
+            ->not->toThrow(RuntimeException::class);
+
+        expect(fn () => $storage->fresh()->update(['settings' => ['format' => 'integer']]))
+            ->not->toThrow(RuntimeException::class);
+    });
+
+    it('still refuses RAISING a min, which can invalidate a stored value', function (): void {
+        $storage = storageFor('score', 'number', [
+            'org_id' => $this->orgA->id, 'is_locked' => true,
+            'settings' => ['format' => 'integer', 'min' => 0],
+        ]);
+
+        expect(fn () => $storage->update(['settings' => ['format' => 'integer', 'min' => 5]]))
+            ->toThrow(RuntimeException::class, 'cannot be narrowed');
+    });
+
+    it('ALLOWS adding an option, which cannot invalidate a stored value', function (): void {
+        $storage = storageFor('status', 'select', [
+            'org_id' => $this->orgA->id, 'is_locked' => true,
+            'settings' => ['options' => ['draft' => 'Draft']],
+        ]);
+
+        expect(fn () => $storage->update([
+            'settings' => ['options' => ['draft' => 'Draft', 'live' => 'Live']],
+        ]))->not->toThrow(RuntimeException::class);
+    });
+
+    /*
+     * ⚠️ An ADDED constraint narrows too, and the first version of this guard
+     * could not see one: it walked only the settings that existed BEFORE the
+     * edit. An absent constraint is not the absence of a setting — it means
+     * unrestricted, which is the widest value there is.
+     */
+    it('refuses a constraint ADDED to a locked field', function (): void {
+        $storage = storageFor('score', 'number', [
+            'org_id' => $this->orgA->id, 'is_locked' => true,
+            'settings' => ['format' => 'integer'],
+        ]);
+
+        expect(fn () => $storage->update(['settings' => ['format' => 'integer', 'min' => 0]]))
+            ->toThrow(RuntimeException::class, 'cannot be narrowed');
+    });
+
+    it('refuses a pattern added to a locked text field', function (): void {
+        $storage = storageFor('code', 'text', [
+            'org_id' => $this->orgA->id, 'is_locked' => true, 'settings' => ['maxLength' => 64],
+        ]);
+
+        expect(fn () => $storage->update(['settings' => ['maxLength' => 64, 'pattern' => '^[a-z]+$']]))
+            ->toThrow(RuntimeException::class, 'cannot be narrowed');
+    });
+
+    it('ALLOWS relabelling an option, since the label is presentation', function (): void {
+        $storage = storageFor('status', 'select', [
+            'org_id' => $this->orgA->id, 'is_locked' => true,
+            'settings' => ['options' => ['draft' => 'Draft']],
+        ]);
+
+        expect(fn () => $storage->update(['settings' => ['options' => ['draft' => 'Unpublished']]]))
+            ->not->toThrow(RuntimeException::class);
+    });
+});
+
+describe('cardinality has a documented domain, and it is enforced', function (): void {
+    /*
+     * ⚠️ Only -1 and positive integers mean anything, but 0 and -2 passed
+     * straight through — and BaseFieldType reads anything other than 1 as
+     * multi-valued, so an invalid number quietly became an unlimited array
+     * with no maximum at all.
+     */
+    it('refuses zero', function (): void {
+        expect(fn () => storageFor('tags', 'text', ['org_id' => $this->orgA->id, 'cardinality' => 0]))
+            ->toThrow(RuntimeException::class, 'not a value');
+    });
+
+    it('refuses a negative other than -1', function (): void {
+        expect(fn () => storageFor('tags', 'text', ['org_id' => $this->orgA->id, 'cardinality' => -2]))
+            ->toThrow(RuntimeException::class, 'not a value');
+    });
+
+    it('treats a form\'s string as the number it is', function (): void {
+        // ⚠️ A form posts "1". Without an integer cast the strict comparisons
+        // asking whether cardinality differs from 1 answered TRUE for a
+        // single-value field — validation demanded an array, the schema
+        // advertised one, and toStorage() wrapped the scalar in a singleton,
+        // until the model was refreshed out of the database.
+        $storage = storageFor('title_alt', 'text', ['org_id' => $this->orgA->id, 'cardinality' => '1']);
+
+        expect($storage->isMultiValue())->toBeFalse()
+            ->and($storage->cardinality)->toBe(1);
+    });
+
+    it('defaults to one on the model, not only in the database', function (): void {
+        // Unset, the attribute was NULL until the insert returned, so
+        // isMultiValue() answered true for every new single-value field.
+        expect((new FieldStorage)->isMultiValue())->toBeFalse();
+    });
+});
+
+it('keeps a full-width non-ASCII value in an indexed string, on every engine', function (): void {
+    /*
+     * ⚠️ VARBINARY is sized in BYTES and the projection's precision counts
+     * CHARACTERS. A width of 64 validates 64 characters, and 64 `é` are 128
+     * UTF-8 bytes — so MySQL and MariaDB either refused the ALTER over
+     * existing data or truncated the indexed value, while PostgreSQL and
+     * SQLite kept all 64. The same query would then find the row on one engine
+     * and not another.
+     */
+    $storage = storageFor('code', 'text', [
+        'org_id' => $this->orgA->id, 'is_indexed' => true, 'settings' => ['maxLength' => 64],
+    ]);
+    $this->manager->index($storage);
+
+    $wide = str_repeat('é', 64);
+
+    Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Wide', 'values' => ['code' => $wide]]);
+
+    expect(Entry::where($storage->generatedColumnName(), $wide)->pluck('title')->all())->toBe(['Wide']);
+});
+
+it('distinguishes TRAILING SPACE in an indexed string, on every engine', function (): void {
+    /*
+     * ⚠️ `utf8mb4_bin` fixed the case half and left this one: it is a PAD
+     * SPACE collation, so `'ABC '` and `'ABC'` compared equal and either
+     * lookup returned both rows. The NO PAD alternative,
+     * `utf8mb4_0900_bin`, does not exist on MariaDB — which is documented as
+     * supported and routed to the same driver. VARBINARY is both, on both.
+     */
+    $storage = storageFor('code', 'text', ['org_id' => $this->orgA->id, 'is_indexed' => true]);
+    $this->manager->index($storage);
+
+    Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Bare', 'values' => ['code' => 'ABC']]);
+    Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Padded', 'values' => ['code' => 'ABC ']]);
+
+    $column = $storage->generatedColumnName();
+
+    expect(Entry::where($column, 'ABC')->pluck('title')->all())->toBe(['Bare'])
+        ->and(Entry::where($column, 'ABC ')->pluck('title')->all())->toBe(['Padded']);
+});
+
+it('distinguishes case in an indexed string, on every engine', function (): void {
+    /*
+     * ⚠️ MySQL's default collation is case AND accent insensitive, so an
+     * indexed exact filter matched `abc` for `ABC` there while PostgreSQL and
+     * SQLite distinguished them — the same query returning different rows on
+     * different engines, which is the one thing the driver abstraction exists
+     * to prevent. The JSON value being projected is byte-exact, so the column
+     * has to compare that way.
+     */
+    $storage = storageFor('code', 'text', ['org_id' => $this->orgA->id, 'is_indexed' => true]);
+    $this->manager->index($storage);
+
+    Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Upper', 'values' => ['code' => 'ABC']]);
+    Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Lower', 'values' => ['code' => 'abc']]);
+
+    $column = $storage->generatedColumnName();
+
+    expect(Entry::where($column, 'ABC')->pluck('title')->all())->toBe(['Upper'])
+        ->and(Entry::where($column, 'abc')->pluck('title')->all())->toBe(['Lower']);
+});
+
+it('refuses a second implementation behind one handle', function (): void {
+    /*
+     * ⚠️ `field_storage.type` records the handle alone, so a module reusing
+     * one would silently change the validation, conversion and projection of
+     * every existing row — reinterpreting stored content, or disagreeing with
+     * a generated column built from the other implementation's signature.
+     * Which behaviour you got depended on module registration order.
+     */
+    $registry = new FieldTypeRegistry;
+
+    $imposter = new class extends BaseFieldType
+    {
+        public static function handle(): string
+        {
+            return 'text';
+        }
+
+        public static function label(): string
+        {
+            return 'Imposter';
+        }
+    };
+
+    expect(fn () => $registry->register($imposter))
+        ->toThrow(RuntimeException::class, 'already registered');
+});
+
+describe('the lock arms itself when data first appears', function (): void {
+    /*
+     * ⚠️ ADR-006 says storage locks the moment data exists, and FieldStorage
+     * has carried the guard from the first commit — but `is_locked` defaulted
+     * to false and NOTHING ever set it. A repo-wide search found the guard
+     * and tests that flip the flag by hand, and no write path at all.
+     *
+     * So every field in every install was unlocked while holding content, and
+     * the guard refusing a decimal-to-integer change or a narrowed text field
+     * was reachable only by a caller who had remembered to arm it. A lock
+     * nobody arms is a comment.
+     */
+    beforeEach(function (): void {
+        $this->locking = storageFor('price', 'number', [
+            'org_id' => $this->orgA->id, 'settings' => ['format' => 'decimal'],
+        ]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $this->locking->id, 'label' => 'Price',
+        ]);
+    });
+
+    it('leaves storage unlocked while no entry holds a value', function (): void {
+        Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Empty']);
+
+        expect($this->locking->fresh()->is_locked)->toBeFalse();
+    });
+
+    it('locks a PROMOTED field, whose data is not in values', function (): void {
+        // ⚠️ A configured slug lives in `entries.slug` because SlugType is
+        // promoted (ADR-015), so deriving held fields from `values` alone
+        // never selected its storage row — it stayed unlocked while holding
+        // live data, free to change shape afterwards.
+        $slug = storageFor('permalink', 'slug', ['org_id' => $this->orgA->id]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $slug->id, 'label' => 'Permalink',
+        ]);
+
+        Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Has slug', 'slug' => 'has-slug']);
+
+        expect($slug->fresh()->is_locked)->toBeTrue();
+    });
+
+    it('leaves a promoted field unlocked while its column is empty', function (): void {
+        $slug = storageFor('permalink', 'slug', ['org_id' => $this->orgA->id]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $slug->id, 'label' => 'Permalink',
+        ]);
+
+        Entry::create(['entry_type_id' => $this->type->id, 'title' => 'No slug']);
+
+        expect($slug->fresh()->is_locked)->toBeFalse();
+    });
+
+    it('cannot be cleared once armed', function (): void {
+        // ⚠️ The guard read the value being SAVED, so setting the flag false
+        // — alone or alongside a shape change — skipped every check below it.
+        // The model is fully mass assignable, so that was one array key away
+        // from routing around ADR-006 entirely.
+        Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Priced', 'values' => ['price' => 9.99]]);
+
+        expect(fn () => $this->locking->fresh()->update(['is_locked' => false]))
+            ->toThrow(RuntimeException::class, 'cannot be cleared');
+    });
+
+    it('cannot be cleared in the same save as a shape change', function (): void {
+        Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Priced', 'values' => ['price' => 9.99]]);
+
+        expect(fn () => $this->locking->fresh()->update([
+            'is_locked' => false, 'settings' => ['format' => 'integer'],
+        ]))->toThrow(RuntimeException::class);
+
+        expect($this->locking->fresh()->settings['format'])->toBe('decimal');
+    });
+
+    it('locks it the moment an entry writes one', function (): void {
+        Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Priced', 'values' => ['price' => 9.99]]);
+
+        expect($this->locking->fresh()->is_locked)->toBeTrue();
+    });
+
+    it('makes the projection guard actually bite', function (): void {
+        // The whole point. Before this the change went through silently and
+        // reinterpreted every stored value.
+        Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Priced', 'values' => ['price' => 9.99]]);
+
+        expect(fn () => $this->locking->fresh()->update(['settings' => ['format' => 'integer']]))
+            ->toThrow(RuntimeException::class);
+    });
+
+    it('does not lock another type\'s storage of the same handle', function (): void {
+        // field_storage is UNIQUE (org_id, handle), so two orgs share handles
+        // routinely. Locking by handle alone would freeze a row holding no
+        // data at all.
+        $theirs = storageFor('price', 'number', ['org_id' => $this->orgB->id]);
+
+        Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Priced', 'values' => ['price' => 9.99]]);
+
+        expect($theirs->fresh()->is_locked)->toBeFalse();
+    });
+
+    it('ignores a null written under the handle', function (): void {
+        Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Blank', 'values' => ['price' => null]]);
+
+        expect($this->locking->fresh()->is_locked)->toBeFalse();
+    });
+});
+
+it('excludes a JSON number one below the integer bound, on every engine', function (): void {
+    /*
+     * ⚠️ `-9223372036854775809` is one below the BIGINT bound, and SQLite
+     * extracts it as a REAL. Rounded to a double it becomes the SAME value as
+     * the bound literal, so the range guard passed and the integer cast then
+     * CLAMPED it to the bound — meaning imported out-of-range JSON matched a
+     * legitimate minimum-value lookup, on SQLite only. That is exactly the
+     * cross-engine disagreement the driver abstraction exists to prevent.
+     */
+    $storage = storageFor('count', 'number', [
+        'org_id' => $this->orgA->id, 'is_indexed' => true, 'settings' => ['format' => 'integer'],
+    ]);
+    $this->manager->index($storage);
+
+    // Written as raw JSON, which is how imported data arrives — the field's
+    // own validation would refuse this.
+    Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Below']);
+    DB::table('entries')->where('title', 'Below')
+        ->update(['values' => '{"count":-9223372036854775809}']);
+
+    $column = $storage->generatedColumnName();
+
+    expect(Entry::where($column, -9223372036854775807 - 1)->pluck('title')->all())->toBe([])
+        ->and(Entry::where('title', 'Below')->value($column))->toBeNull();
+});
+
+describe('the range guard has to EXCLUDE an out-of-range value, not throw on it', function (): void {
+    /*
+     * ⚠️ A generated column's expression is evaluated for every row, so it
+     * has to be TOTAL (ADR-028): a value it cannot project must yield NULL,
+     * never an error. An error does not fail one row, it fails the ALTER that
+     * adds the column and every later write to the table.
+     *
+     * `1e100` is the case that breaks a bounded intermediate cast. It is a
+     * perfectly ordinary JSON number — MySQL parses every JSON number as a
+     * double — and it overflows DECIMAL(65,10) under strict mode before
+     * BETWEEN can return false. Another org writing it into ITS OWN field of
+     * the same name is enough, because the column is shared by projection.
+     */
+    it('adds the column over a row that is far out of range', function (): void {
+        Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Huge', 'values' => ['count' => 1e100]]);
+
+        $storage = storageFor('count', 'number', [
+            'org_id' => $this->orgA->id, 'is_indexed' => true, 'settings' => ['format' => 'integer'],
+        ]);
+
+        expect(fn () => $this->manager->index($storage))->not->toThrow(Exception::class);
+        expect(Entry::where('title', 'Huge')->value('idx_count__integer'))->toBeNull();
+    });
+
+    it('accepts a write of one AFTER the column exists', function (): void {
+        $storage = storageFor('count', 'number', [
+            'org_id' => $this->orgA->id, 'is_indexed' => true, 'settings' => ['format' => 'integer'],
+        ]);
+        $this->manager->index($storage);
+
+        expect(fn () => Entry::create([
+            'entry_type_id' => $this->type->id, 'title' => 'Huge', 'values' => ['count' => 1e100],
+        ]))->not->toThrow(Exception::class);
+
+        expect(Entry::where('title', 'Huge')->value('idx_count__integer'))->toBeNull();
+    });
+
+    it('still projects a value that IS in range', function (): void {
+        $storage = storageFor('count', 'number', [
+            'org_id' => $this->orgA->id, 'is_indexed' => true, 'settings' => ['format' => 'integer'],
+        ]);
+        $this->manager->index($storage);
+
+        Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Fine', 'values' => ['count' => 42]]);
+
+        expect((int) Entry::where('title', 'Fine')->value('idx_count__integer'))->toBe(42);
+    });
+});
+
+describe('a configured projection changes the column, not just the value', function (): void {
+    it('gives an integer-formatted number an integer column', function (): void {
+        // DECIMAL(12,2) is not merely imprecise here: `10000000000` is a
+        // valid value both the validator and toStorage() accept, and
+        // PostgreSQL then refuses the column with `numeric field overflow`.
+        $storage = storageFor('count', 'number', [
+            'org_id' => $this->orgA->id, 'is_indexed' => true, 'settings' => ['format' => 'integer'],
+        ]);
+
+        expect($storage->projection()->logical)->toBe(LogicalType::Integer)
+            ->and($storage->generatedColumnName())->toBe('idx_count__integer');
+
+        $this->manager->index($storage);
+
+        Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Big', 'values' => ['count' => 10000000000]]);
+
+        expect((int) Entry::where('title', 'Big')->value('idx_count__integer'))->toBe(10000000000);
+    });
+
+    it('keeps a decimal-formatted number on a decimal column', function (): void {
+        $storage = storageFor('price', 'number', ['org_id' => $this->orgA->id, 'is_indexed' => true]);
+
+        expect($storage->generatedColumnName())->toBe('idx_price__decimal12_2');
+    });
+
+    it('separates two orgs that configured the same handle differently', function (): void {
+        // The collision the signature exists to prevent.
+        $a = storageFor('count', 'number', [
+            'org_id' => $this->orgA->id, 'is_indexed' => true, 'settings' => ['format' => 'integer'],
+        ]);
+        $b = storageFor('count', 'number', ['org_id' => $this->orgB->id, 'is_indexed' => true]);
+
+        $this->manager->index($a);
+        $this->manager->index($b);
+
+        expect(Schema::hasColumn('entries', 'idx_count__integer'))->toBeTrue()
+            ->and(Schema::hasColumn('entries', 'idx_count__decimal12_2'))->toBeTrue();
+    });
+
+    it('projects a wider text field at its configured width', function (): void {
+        // Projecting a 400-character field through VARCHAR(255) truncates the
+        // index, so two distinct values compare equal and an exact filter
+        // returns the wrong rows.
+        $storage = storageFor('summary', 'text', [
+            'org_id' => $this->orgA->id, 'is_indexed' => true, 'settings' => ['maxLength' => 400],
+        ]);
+
+        expect($storage->generatedColumnName())->toBe('idx_summary__string400');
+
+        $this->manager->index($storage);
+
+        $long = str_repeat('x', 400);
+        Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Long', 'values' => ['summary' => $long]]);
+
+        expect(Entry::where('title', 'Long')->value('idx_summary__string400'))->toBe($long);
+    });
+
+    it('refuses to index a string wider than an engine will key', function (): void {
+        // Measured: MySQL caps an index key at 3,072 bytes, so VARCHAR(1000)
+        // in utf8mb4 fails with ERROR 1071. Better to refuse with the reason
+        // than to fail at ALTER TABLE, and far better than truncating.
+        $storage = storageFor('essay', 'text', [
+            'org_id' => $this->orgA->id, 'is_indexed' => true, 'settings' => ['maxLength' => 5000],
+        ]);
+
+        expect(fn () => $this->manager->index($storage))
+            ->toThrow(RuntimeException::class, 'cannot be indexed');
+    });
+});
+
+it('drops an orphan column whose index is already gone', function (): void {
+    // MySQL's DROP INDEX has no IF EXISTS and errors with 1091 when the index
+    // is absent — which is exactly the half-applied state reconcile() exists
+    // to repair, so dropping unconditionally meant it never reached the
+    // column and the drift was permanent.
+    $storage = storageFor('price', 'number', ['org_id' => $this->orgA->id, 'is_indexed' => true]);
+    $this->manager->index($storage);
+
+    DB::statement(DriverFactory::for(DB::connection())->dropIndexSql('entries', $storage->generatedIndexName()));
+    $storage->delete();
+
+    expect($this->manager->reconcile()['dropped'])->toBe(['idx_price__decimal12_2'])
+        ->and(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeFalse();
+});
+
+/*
+ * ⚠️ The column is named for its projection SIGNATURE, and a signature is not
+ * a function of the field type. Reference counting on `type` got both
+ * directions wrong. Reported in review.
+ */
+describe('reference counting follows the column, not the field type', function (): void {
+    it('will not drop a column a DIFFERENT field type shares', function (): void {
+        // text(maxLength: 64) and select both project to string64 and
+        // deliberately share one column. Counting by type saw two unrelated
+        // rows and dropped the column the other org was still querying.
+        $text = storageFor('code', 'text', [
+            'org_id' => $this->orgA->id, 'is_indexed' => true, 'settings' => ['maxLength' => 64],
+        ]);
+        $select = storageFor('code', 'select', [
+            'org_id' => $this->orgB->id, 'is_indexed' => true, 'settings' => ['options' => ['a' => 'A']],
+        ]);
+
+        expect($text->generatedColumnName())->toBe($select->generatedColumnName());
+
+        $this->manager->index($text);
+        $this->manager->index($select);
+
+        $text->update(['is_indexed' => false]);
+        $this->manager->sync($text);
+
+        expect(Schema::hasColumn('entries', 'idx_code__string64'))->toBeTrue();
+    });
+
+    it('DOES drop a column when the other row of the same type projects elsewhere', function (): void {
+        // Two `number` rows, one integer and one decimal: same type, different
+        // columns. Counting by type left an orphan behind.
+        $integer = storageFor('count', 'number', [
+            'org_id' => $this->orgA->id, 'is_indexed' => true, 'settings' => ['format' => 'integer'],
+        ]);
+        $decimal = storageFor('count', 'number', ['org_id' => $this->orgB->id, 'is_indexed' => true]);
+
+        $this->manager->index($integer);
+        $this->manager->index($decimal);
+
+        $integer->update(['is_indexed' => false]);
+        $this->manager->sync($integer);
+
+        expect(Schema::hasColumn('entries', 'idx_count__integer'))->toBeFalse()
+            ->and(Schema::hasColumn('entries', 'idx_count__decimal12_2'))->toBeTrue();
+    });
+});
+
+it('drops an orphan before adding, so a swap fits under the cap', function (): void {
+    // With the table at the cap, adding first hits guardCap() and throws —
+    // so a capacity-NEUTRAL replacement could never be repaired and --force
+    // reported a failure the operator could not act on.
+    for ($i = 0; $i < SchemaManager::MAX_GENERATED_COLUMNS; $i++) {
+        $this->manager->index(storageFor("filler_{$i}", 'number', ['org_id' => $this->orgA->id, 'is_indexed' => true]));
+    }
+
+    // One row goes away, another arrives. Net zero columns.
+    FieldStorage::query()->where('handle', 'filler_0')->delete();
+    storageFor('replacement', 'number', ['org_id' => $this->orgA->id, 'is_indexed' => true]);
+
+    $result = $this->manager->reconcile();
+
+    expect($result['dropped'])->toBe(['idx_filler_0__decimal12_2'])
+        ->and($result['added'])->toBe(['idx_replacement__decimal12_2'])
+        ->and(Schema::hasColumn('entries', 'idx_replacement__decimal12_2'))->toBeTrue();
+});
+
+/*
+ * ADR-006: storage locks the moment data exists. The lock checked `type` and
+ * `cardinality` only, so a setting that changes the PROJECTION slipped past
+ * it — and those change the conversion too.
+ */
+describe('settings that change the projection are shape, and lock with it', function (): void {
+    it('refuses to switch a locked number from decimal to integer', function (): void {
+        // 1.5 would become 1, and the column would move from DECIMAL to
+        // BIGINT under rows that already hold fractions.
+        $storage = storageFor('price', 'number', [
+            'org_id' => $this->orgA->id, 'is_locked' => true, 'settings' => ['format' => 'decimal'],
+        ]);
+
+        $storage->settings = ['format' => 'integer'];
+
+        expect(fn () => $storage->save())
+            ->toThrow(RuntimeException::class, 'the projection would move from');
+    });
+
+    it('refuses to narrow a locked text field', function (): void {
+        $storage = storageFor('summary', 'text', [
+            'org_id' => $this->orgA->id, 'is_locked' => true, 'settings' => ['maxLength' => 400],
+        ]);
+
+        $storage->settings = ['maxLength' => 100];
+
+        expect(fn () => $storage->save())->toThrow(RuntimeException::class, 'is locked');
+    });
+
+    it('refuses a CONSTRAINT that leaves the projection alone', function (): void {
+        /*
+         * ⚠️ This test used to assert the opposite, on the reasoning that
+         * only shape is locked and everything else is presentation. `min` is
+         * not presentation: adding it to a field holding data can make a
+         * stored value invalid, so the next unrelated edit to the entry
+         * holding it fails for a reason its author cannot see — which is the
+         * outcome ADR-006's lock exists to prevent.
+         *
+         * The projection is where a value LIVES. The lock is about what the
+         * field ACCEPTS, and those come apart exactly here.
+         */
+        $storage = storageFor('price', 'number', [
+            'org_id' => $this->orgA->id, 'is_locked' => true, 'settings' => ['format' => 'decimal'],
+        ]);
+
+        $storage->settings = ['format' => 'decimal', 'min' => 0];
+
+        expect(fn () => $storage->save())->toThrow(RuntimeException::class, 'cannot be narrowed');
+    });
+
+    it('leaves an unlocked field free to change', function (): void {
+        $storage = storageFor('price', 'number', ['org_id' => $this->orgA->id, 'settings' => ['format' => 'decimal']]);
+
+        $storage->settings = ['format' => 'integer'];
+
+        expect(fn () => $storage->save())->not->toThrow(RuntimeException::class);
+    });
+});
+
+describe('sync is safe for a field that projects to nothing', function (): void {
+    it('does not throw for a type with no generated column', function (string $type): void {
+        // ⚠️ dropIndex() starts by asking for the column NAME, which throws
+        // for these — so the documented "call sync() after saving" flow blew
+        // up on four ordinary field types and every caller would have had to
+        // special-case them.
+        $storage = storageFor("probe_{$type}", $type, ['org_id' => $this->orgA->id, 'is_indexed' => false]);
+
+        expect(fn () => $this->manager->sync($storage))->not->toThrow(RuntimeException::class);
+    })->with(['rich_text', 'json', 'relation', 'slug']);
+
+    it('still indexes a type that does project', function (): void {
+        $storage = storageFor('price', 'number', ['org_id' => $this->orgA->id, 'is_indexed' => true]);
+
+        $this->manager->sync($storage);
+
+        expect(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeTrue();
+    });
+});
+
+it('still REFUSES an index requested on a projection-less field', function (): void {
+    // ⚠️ The no-op added for the removal path must not swallow this. Returning
+    // early for every projection-less type left an `is_indexed = true` row
+    // looking synchronised, and reconcile() then choked on it for the whole
+    // table — one bad row poisoning the global repair command.
+    $storage = storageFor('body', 'rich_text', ['org_id' => $this->orgA->id, 'is_indexed' => true]);
+
+    expect(fn () => $this->manager->sync($storage))
+        ->toThrow(RuntimeException::class, 'not indexable');
+});
+
+describe('a moved projection takes its old column with it', function (): void {
+    it('drops the column a changed setting orphaned', function (): void {
+        // ⚠️ Adding the new column alone left the old one and its index
+        // behind — paying write overhead on every entry save and consuming
+        // the cap. At the cap, a capacity-NEUTRAL replacement failed outright.
+        $storage = storageFor('price', 'number', [
+            'org_id' => $this->orgA->id, 'is_indexed' => true, 'settings' => ['format' => 'decimal'],
+        ]);
+        $this->manager->sync($storage);
+
+        expect(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeTrue();
+
+        $storage->update(['settings' => ['format' => 'integer']]);
+        $this->manager->sync($storage);
+
+        expect(Schema::hasColumn('entries', 'idx_price__integer'))->toBeTrue()
+            ->and(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeFalse();
+    });
+
+    it('keeps the old column when ANOTHER row still projects that way', function (): void {
+        // Reference-counted like any other drop: one org moving must not take
+        // another org's column with it.
+        $mine = storageFor('price', 'number', ['org_id' => $this->orgA->id, 'is_indexed' => true]);
+        $theirs = storageFor('price', 'number', ['org_id' => $this->orgB->id, 'is_indexed' => true]);
+
+        $this->manager->sync($mine);
+        $this->manager->sync($theirs);
+
+        $mine->update(['settings' => ['format' => 'integer']]);
+        $this->manager->sync($mine);
+
+        expect(Schema::hasColumn('entries', 'idx_price__integer'))->toBeTrue()
+            ->and(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeTrue();
+    });
+
+    it('lets a capacity-neutral replacement fit at the cap', function (): void {
+        for ($i = 0; $i < SchemaManager::MAX_GENERATED_COLUMNS - 1; $i++) {
+            $this->manager->index(storageFor("filler_{$i}", 'number', ['org_id' => $this->orgA->id, 'is_indexed' => true]));
+        }
+
+        $moving = storageFor('price', 'number', ['org_id' => $this->orgA->id, 'is_indexed' => true]);
+        $this->manager->sync($moving);
+
+        // At the cap now. Changing the projection is net zero columns, and
+        // adding before dropping made it throw.
+        $moving->update(['settings' => ['format' => 'integer']]);
+
+        expect(fn () => $this->manager->sync($moving))->not->toThrow(RuntimeException::class);
+        expect(Schema::hasColumn('entries', 'idx_price__integer'))->toBeTrue();
+    });
+});
+
+describe('a capability flag that nothing reads is only a comment', function (): void {
+    /*
+     * ⚠️ `supportsCardinality()` was advisory. BaseFieldType branches on
+     * `cardinality !== 1` alone, so a type declaring no support for multiple
+     * values converted, validated and published as an array anyway once a
+     * storage row said so — a promoted `slug` could produce an array for a
+     * column that is scalar in the database.
+     */
+    it('refuses cardinality above one on a type that holds one value', function (): void {
+        expect(fn () => storageFor('nickname', 'slug', ['org_id' => $this->orgA->id, 'cardinality' => 3]))
+            ->toThrow(RuntimeException::class, 'cannot have cardinality 3');
+    });
+
+    it('refuses unlimited cardinality just the same', function (): void {
+        expect(fn () => storageFor('flag', 'boolean', ['org_id' => $this->orgA->id, 'cardinality' => -1]))
+            ->toThrow(RuntimeException::class);
+    });
+
+    it('still allows it on a type that does support it', function (): void {
+        expect(storageFor('tags', 'text', ['org_id' => $this->orgA->id, 'cardinality' => -1])->cardinality)
+            ->toBe(-1);
+    });
+
+    it('leaves an intrinsically multi-valued type at one', function (): void {
+        // multi_select stores an array at cardinality 1 and says so itself,
+        // so the guard must not read that as a contradiction.
+        expect(storageFor('picks', 'multi_select', ['org_id' => $this->orgA->id])->cardinality)->toBe(1);
+    });
+});
+
+describe('reconcile reports an invalid indexed row rather than skipping it', function (): void {
+    /*
+     * ⚠️ Catching RuntimeException around generatedColumnName() swallowed an
+     * UNKNOWN type as readily as a projection-less one. `--force` therefore
+     * skipped a genuinely invalid indexed row, could drop the column it used
+     * to have, and still reported the schema as synchronised — while the dry
+     * run threw on the very same row.
+     */
+    it('surfaces a row whose type no longer exists', function (): void {
+        $storage = storageFor('price', 'number', ['org_id' => $this->orgA->id, 'is_indexed' => true]);
+        $this->manager->sync($storage);
+
+        // Straight to the database: the model guards would refuse this, which
+        // is exactly why it represents drift rather than an ordinary save.
+        DB::table('field_storage')->where('id', $storage->id)->update(['type' => 'no_such_type']);
+
+        expect(fn () => $this->manager->reconcile())->toThrow(RuntimeException::class);
+        expect(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeTrue();
+    });
+
+    it('still skips an UNINDEXED row whose type projects to nothing', function (): void {
+        // The one case that is not an error: it wants no column, so it
+        // contributes none and reconcile carries on.
+        storageFor('body', 'rich_text', ['org_id' => $this->orgA->id]);
+
+        expect(fn () => $this->manager->reconcile())->not->toThrow(RuntimeException::class);
+    });
+
+    it('surfaces an INDEXED row whose type projects to nothing', function (): void {
+        // ⚠️ A contradiction, not a skip: the row says index me and its type
+        // has nothing to index. Skipping it meant --force omitted the row and
+        // reported the schema as synchronised, while the dry run threw on it.
+        $storage = storageFor('body', 'rich_text', ['org_id' => $this->orgA->id]);
+        DB::table('field_storage')->where('id', $storage->id)->update(['is_indexed' => true]);
+
+        expect(fn () => $this->manager->reconcile())
+            ->toThrow(RuntimeException::class, 'projects to no scalar column');
+    });
+});
+
+describe('a renamed handle takes its old column with it', function (): void {
+    /*
+     * ⚠️ Reconciling by handle PREFIX assumed a row's handle never moves.
+     * Rename `price` to `cost` and the prefix is built from the NEW handle,
+     * so `idx_price__…` fell outside it and was never examined again — a slot
+     * against the cap and write overhead on every entry save, until someone
+     * happened to run a full reconcile.
+     */
+    it('drops the column the old handle owned', function (): void {
+        $storage = storageFor('price', 'number', ['org_id' => $this->orgA->id, 'is_indexed' => true]);
+        $this->manager->sync($storage);
+
+        expect(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeTrue();
+
+        $storage->update(['handle' => 'cost']);
+        $this->manager->sync($storage);
+
+        expect(Schema::hasColumn('entries', 'idx_cost__decimal12_2'))->toBeTrue()
+            ->and(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeFalse();
+    });
+
+    it('drops it when the row is renamed and un-indexed in one save', function (): void {
+        $storage = storageFor('price', 'number', ['org_id' => $this->orgA->id, 'is_indexed' => true]);
+        $this->manager->sync($storage);
+
+        $storage->update(['handle' => 'cost', 'is_indexed' => false]);
+        $this->manager->sync($storage);
+
+        expect(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeFalse()
+            ->and(Schema::hasColumn('entries', 'idx_cost__decimal12_2'))->toBeFalse();
+    });
+
+    it('keeps the old column when another org still uses that handle', function (): void {
+        $mine = storageFor('price', 'number', ['org_id' => $this->orgA->id, 'is_indexed' => true]);
+        $theirs = storageFor('price', 'number', ['org_id' => $this->orgB->id, 'is_indexed' => true]);
+
+        $this->manager->sync($mine);
+        $this->manager->sync($theirs);
+
+        $mine->update(['handle' => 'cost']);
+        $this->manager->sync($mine);
+
+        expect(Schema::hasColumn('entries', 'idx_cost__decimal12_2'))->toBeTrue()
+            ->and(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeTrue();
+    });
+
+    it('refuses the rename outright once entries hold data', function (): void {
+        // The orphaned COLUMN is the visible half. The handle is also the
+        // JSON key SchemaManager extracts on, so renaming a locked field
+        // leaves every stored value under the old key where nothing reads
+        // it — the field appears to empty itself, with no error to notice.
+        $storage = storageFor('price', 'number', ['org_id' => $this->orgA->id, 'is_locked' => true]);
+
+        expect(fn () => $storage->update(['handle' => 'cost']))
+            ->toThrow(RuntimeException::class, '[handle] cannot change');
+    });
+});
+
+describe('un-indexing cleans up whatever the row used to project to', function (): void {
+    it('drops the OLD column when the projection changed in the same save', function (): void {
+        // ⚠️ dropIndex() derives the NEW column name, which was never
+        // created — so a row saved with both `is_indexed = false` AND a
+        // projection-affecting change left the old column orphaned.
+        $storage = storageFor('price', 'number', ['org_id' => $this->orgA->id, 'is_indexed' => true]);
+        $this->manager->sync($storage);
+        expect(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeTrue();
+
+        $storage->update(['is_indexed' => false, 'settings' => ['format' => 'integer']]);
+        $this->manager->sync($storage);
+
+        expect(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeFalse()
+            ->and(Schema::hasColumn('entries', 'idx_price__integer'))->toBeFalse();
+    });
+
+    it('drops it when the type changed to one that projects to nothing', function (): void {
+        // This path returned without attempting any removal at all.
+        $storage = storageFor('body', 'text', ['org_id' => $this->orgA->id, 'is_indexed' => true]);
+        $this->manager->sync($storage);
+        expect(Schema::hasColumn('entries', 'idx_body__string255'))->toBeTrue();
+
+        $storage->update(['is_indexed' => false, 'type' => 'rich_text']);
+        $this->manager->sync($storage);
+
+        expect(Schema::hasColumn('entries', 'idx_body__string255'))->toBeFalse();
+    });
+
+    it('leaves a column another row still projects to', function (): void {
+        $mine = storageFor('price', 'number', ['org_id' => $this->orgA->id, 'is_indexed' => true]);
+        $theirs = storageFor('price', 'number', ['org_id' => $this->orgB->id, 'is_indexed' => true]);
+        $this->manager->sync($mine);
+        $this->manager->sync($theirs);
+
+        $mine->update(['is_indexed' => false]);
+        $this->manager->sync($mine);
+
+        expect(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeTrue();
+    });
+});
