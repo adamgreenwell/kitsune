@@ -102,7 +102,7 @@ class AuditedBuilder extends Builder
     }
 
     /**
-     * ⚠️ The row being inserted must belong to the org being audited.
+     * ⚠️ The row being written must belong to the org being audited.
      *
      * `createQuietly()` and `withoutEvents()` suppress EnforcesScope's
      * `creating` listener, which is what normally STAMPS these columns — so a
@@ -112,6 +112,13 @@ class AuditedBuilder extends Builder
      * this one gains a trail pointing at a row it does not own. Both halves
      * are wrong, and the trail is wrong in the direction that reads as
      * evidence.
+     *
+     * The same applies to an UPDATE. `EnforcesScope` stamps these columns on
+     * create only, so `Entry::query()->update(['org_id' => $rival])` moved an
+     * entry out of the current scope while the audit row was written under
+     * the OLD context — leaving the destination org holding an entry whose
+     * only trail belongs to somebody else. The existing scope restricts which
+     * rows are SELECTED and says nothing about the values written.
      *
      * Refused rather than restamped: a caller who passed an explicit org_id
      * meant something by it, and silently rewriting it would be its own kind
@@ -137,9 +144,10 @@ class AuditedBuilder extends Builder
             }
 
             throw new RuntimeException(
-                "Refusing to create an entry with [{$column}] outside the current scope. The audit "
-                .'row would be written under this context, so the other scope would gain an entry '
-                .'with no trail and this one a trail for a row it does not own (ADR-020).'
+                "Refusing to write [{$column}] outside the current scope. The audit row is written "
+                .'under this context, so the other scope would gain an entry whose only trail '
+                .'belongs to somebody else (ADR-020). Scoping restricts which rows are selected; '
+                .'it does not police the values written.'
             );
         }
     }
@@ -297,6 +305,8 @@ class AuditedBuilder extends Builder
     /** @param  array<string, mixed>  $values */
     public function update(array $values)
     {
+        $this->guardScopeKeys($values);
+
         return $this->auditing($this->actionFor($values), fn () => parent::update($values));
     }
 
@@ -321,6 +331,8 @@ class AuditedBuilder extends Builder
      */
     public function increment($column, $amount = 1, array $extra = [])
     {
+        $this->guardScopeKeys([(string) $column => $amount, ...$extra]);
+
         return $this->auditing('updated', fn () => parent::increment($column, $amount, $extra));
     }
 
@@ -330,6 +342,8 @@ class AuditedBuilder extends Builder
      */
     public function decrement($column, $amount = 1, array $extra = [])
     {
+        $this->guardScopeKeys([(string) $column => $amount, ...$extra]);
+
         return $this->auditing('updated', fn () => parent::decrement($column, $amount, $extra));
     }
 
@@ -344,6 +358,9 @@ class AuditedBuilder extends Builder
      */
     public function incrementEach(array $columns, array $extra = [])
     {
+        $this->guardScopeKeys($columns);
+        $this->guardScopeKeys($extra);
+
         return $this->auditing('updated', fn () => parent::incrementEach($columns, $extra));
     }
 
@@ -353,6 +370,9 @@ class AuditedBuilder extends Builder
      */
     public function decrementEach(array $columns, array $extra = [])
     {
+        $this->guardScopeKeys($columns);
+        $this->guardScopeKeys($extra);
+
         return $this->auditing('updated', fn () => parent::decrementEach($columns, $extra));
     }
 
@@ -425,6 +445,18 @@ class AuditedBuilder extends Builder
             // whereKey qualifies the column, so this is unambiguous even
             // when the caller joined another table.
             $this->whereKey($keys);
+
+            // ⚠️ And the PAGINATION goes, because it has already been spent.
+            //
+            // `orderBy('id')->offset(1)->limit(1)->update(...)` captured the
+            // second row and then reapplied offset 1 to that singleton — so
+            // the write touched nothing while the loop below still recorded
+            // the action. The audited set and the written set have to be the
+            // same set, and a limit that already selected the keys must not
+            // select among them again.
+            $base = $this->getQuery();
+            $base->offset = null;
+            $base->limit = null;
 
             $result = $write();
 

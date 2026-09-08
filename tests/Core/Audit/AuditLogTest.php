@@ -692,6 +692,44 @@ describe('bulk entry writes are audited too', function (): void {
         .'guards can exist, so MySQL is where it is asserted.'
     );
 
+    it('does not reapply a spent limit to the captured keys', function (): void {
+        /*
+         * ⚠️ `offset(1)->limit(1)->update(...)` captured the SECOND row and
+         * then reapplied offset 1 to that singleton, so the write touched
+         * nothing while the loop still recorded the action. A limit that has
+         * already selected the keys must not select among them again — the
+         * audited set and the written set have to be the same set.
+         */
+        Entry::query()->orderBy('id')->offset(1)->limit(1)->update(['status' => 'published']);
+
+        expect($this->two->fresh()->status)->toBe('published')
+            ->and($this->one->fresh()->status)->not->toBe('published')
+            ->and(AuditLog::for($this->two)->where('action', 'entry.updated')->count())->toBe(1)
+            ->and(AuditLog::for($this->one)->where('action', 'entry.updated')->count())->toBe(0);
+    });
+
+    it('refuses an update that moves an entry to another scope', function (): void {
+        /*
+         * ⚠️ The scope restricts which rows are SELECTED and says nothing
+         * about the values written. `EnforcesScope` stamps these columns on
+         * create only, so an update could transfer an entry out of the current
+         * scope while the audit row was written under the OLD context —
+         * leaving the destination holding an entry whose only trail belongs to
+         * somebody else.
+         */
+        $rival = Org::create(['name' => 'T', 'slug' => 'transfer-rival']);
+
+        expect(fn () => Entry::query()->whereKey($this->one->getKey())->update(['org_id' => $rival->id]))
+            ->toThrow(RuntimeException::class, 'outside the current scope');
+
+        expect($this->one->fresh()->org_id)->toBe($this->org->id);
+    });
+
+    it('still allows an update that leaves the scope keys alone', function (): void {
+        expect(fn () => Entry::query()->update(['status' => 'published']))
+            ->not->toThrow(RuntimeException::class);
+    });
+
     it('audits only the rows the predicate actually matched', function (): void {
         // Reading the keys BEFORE the write is what makes this possible: after
         // it, an updated row may no longer match and a deleted one has no id.
