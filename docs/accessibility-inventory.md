@@ -28,9 +28,11 @@ Half of this spike sat behind an imaginary blocker for a day because nobody ran 
 The honest starting point, and it reframes everything below:
 
 ```bash
-find packages skeleton -name "*.blade.php" -not -path "*/vendor/*"   # 1 file
-find packages skeleton -name "*.css" -o -name "*.js" | grep -v vendor # 0 files
+find packages/core/src skeleton/app skeleton/resources -name "*.blade.php"              # 1 file
+find packages/core/src skeleton/app skeleton/resources \( -name "*.css" -o -name "*.js" \)  # 0 files
 ```
+
+⚠️ **Named source roots, not `find packages skeleton` minus `vendor`** — which is what this section said first, and it reported 30 CSS/JS files and 2 views rather than 0 and 1. Neither figure was wrong about *authored* code: the 30 are Filament's stylesheet and scripts published into `skeleton/public` by `filament:assets`, and the extra view is a compiled Blade cache in `skeleton/storage`. Both are generated, and an exclusion list that has to name every generated tree rots the moment one is added. Listing the roots where code is written cannot drift the same way. The CSS/JS half was caught in review; the view count had the same defect and was not reported, which is the argument for fixing the command rather than the number.
 
 Kitsune authors **one** Blade view and **zero** lines of CSS or JavaScript. The admin is Filament's markup, Filament's stylesheet and Filament's components, configured through PHP. So today the inherited share of the accessible surface is very close to all of it, and the "must build" column is mostly *future* obligations created by features not yet written — not a backlog of broken markup.
 
