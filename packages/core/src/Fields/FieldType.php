@@ -118,6 +118,25 @@ interface FieldType
      */
     public function settingsSchema(): array;
 
+    /**
+     * Why this combination of settings is unusable, or null if it is fine.
+     *
+     * ⚠️ Separate from `settingsSchema()` because the interesting constraints
+     * are not per-setting. A minimum above a maximum leaves no value that can
+     * satisfy the field, and neither control is individually wrong — so no
+     * per-descriptor rule can see it.
+     *
+     * Data in, reason out: no Filament, no exceptions, so the builder can render
+     * the message and the model can throw it, and core stays headless-capable
+     * (ADR-002).
+     *
+     * The bar is "unusable", not "unwise". A field nothing can ever be stored in
+     * is a defect; an oddly narrow one is the author's business.
+     *
+     * @param  array<string, mixed>  $settings
+     */
+    public function validateSettings(array $settings): ?string;
+
     /** A suggested pii_class; the org confirms it, because only they know (ADR-020). */
     public function suggestedPiiClass(): string;
 }

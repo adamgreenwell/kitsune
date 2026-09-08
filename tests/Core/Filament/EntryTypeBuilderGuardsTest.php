@@ -9,10 +9,13 @@
 declare(strict_types=1);
 
 use Illuminate\Support\Facades\Validator;
+use Kitsune\Core\Fields\Pattern;
 use Kitsune\Core\Filament\Icons;
 use Kitsune\Core\Filament\Resources\EntryTypes\EntryTypeResource;
 use Kitsune\Core\Filament\Resources\EntryTypes\Pages\EditEntryType;
 use Kitsune\Core\Filament\Resources\EntryTypes\RelationManagers\FieldsRelationManager;
+use Kitsune\Core\Models\Entry;
+use Kitsune\Core\Models\EntryRevision;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Field;
 use Kitsune\Core\Models\FieldStorage;
@@ -128,28 +131,77 @@ describe('reusing a handle adopts the field, so the shape has to match', functio
         ]))->toThrow(RuntimeException::class, 'already describes a text field');
     });
 
-    it('ADOPTS a matching one without rewriting its classification', function (): void {
+    it('ADOPTS a MATCHING one without duplicating it', function (): void {
         $existing = FieldStorage::create([
             'org_id' => $this->org->id, 'handle' => 'email', 'type' => 'text',
             'pii_class' => 'personal', 'cardinality' => 1,
             'settings' => ['maxLength' => 320],
         ]);
 
-        $manager = new FieldsRelationManager;
-
-        $manager->writeStorage([
+        $presentation = (new FieldsRelationManager)->writeStorage([
             'storage_handle' => 'email', 'storage_type' => 'text',
-            // The form says `none` and 40 characters; the shared row says
-            // otherwise, and the shared row wins.
-            'storage_pii_class' => 'none', 'storage_settings' => ['maxLength' => 40],
-            'storage_is_indexed' => true, 'label' => 'Email',
+            // The submission agrees with the stored row, which is what adoption
+            // means: one definition, reused.
+            'storage_pii_class' => 'personal', 'storage_settings' => ['maxLength' => 320],
+            'storage_is_indexed' => false, 'label' => 'Email',
         ]);
 
-        $fresh = $existing->fresh();
+        expect($presentation['field_storage_id'])->toBe($existing->getKey())
+            ->and(FieldStorage::query()->where('handle', 'email')->count())->toBe(1)
+            ->and($existing->fresh()->pii_class)->toBe('personal');
+    });
 
-        expect($fresh->pii_class)->toBe('personal')
-            ->and($fresh->settings['maxLength'])->toBe(320)
-            ->and($fresh->is_indexed)->toBeFalse();
+    it('REFUSES an adoption that would silently discard the submission', function (): void {
+        /*
+         * ⚠️ Adoption keeping the stored definition is right; doing it silently
+         * was not. Selecting `personal` for a handle stored as `none` reported
+         * success and attached `none` — so an erasure would never reach that
+         * field — and choosing a different format gave the author a field that
+         * behaves unlike the one they described.
+         *
+         * The shape check already refused a mismatched type or cardinality for
+         * this exact reason. Classification and settings define observable
+         * behaviour just as much.
+         */
+        FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'email', 'type' => 'text',
+            'pii_class' => 'none', 'cardinality' => 1, 'settings' => ['maxLength' => 320],
+        ]);
+
+        expect(fn () => (new FieldsRelationManager)->writeStorage([
+            'storage_handle' => 'email', 'storage_type' => 'text',
+            'storage_pii_class' => 'personal', 'storage_settings' => ['maxLength' => 320],
+            'label' => 'Email',
+        ]))->toThrow(RuntimeException::class, 'privacy classification differs');
+    });
+
+    it('names every attribute that diverges, not just the first', function (): void {
+        FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'email', 'type' => 'text',
+            'pii_class' => 'none', 'cardinality' => 1, 'settings' => ['maxLength' => 320],
+        ]);
+
+        expect(fn () => (new FieldsRelationManager)->writeStorage([
+            'storage_handle' => 'email', 'storage_type' => 'text',
+            'storage_pii_class' => 'sensitive', 'storage_settings' => ['maxLength' => 40],
+            'storage_is_indexed' => true, 'label' => 'Email',
+        ]))->toThrow(RuntimeException::class, 'privacy classification and indexing and settings differ');
+    });
+
+    it('does not refuse an adoption over a cast', function (): void {
+        // Same reasoning as the shared-storage guard: the form returns `'320'`
+        // where the row holds `320`, and refusing that would make every
+        // legitimate adoption fail.
+        FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'email', 'type' => 'text',
+            'pii_class' => 'none', 'cardinality' => 1, 'settings' => ['maxLength' => 320],
+        ]);
+
+        expect(fn () => (new FieldsRelationManager)->writeStorage([
+            'storage_handle' => 'email', 'storage_type' => 'text',
+            'storage_pii_class' => 'none', 'storage_settings' => ['maxLength' => '320'],
+            'storage_is_indexed' => '0', 'label' => 'Email',
+        ]))->not->toThrow(RuntimeException::class);
     });
 });
 
@@ -613,5 +665,606 @@ describe('the builder can express a finite cardinality', function (): void {
             'storage_cardinality' => 'max', 'storage_cardinality_max' => 9,
             'storage_pii_class' => 'none', 'label' => 'B',
         ]))->toThrow(RuntimeException::class, 'already describes');
+    });
+});
+
+describe('a bulk delete is all or nothing', function (): void {
+    /*
+     * ⚠️ `refuseGlobal()` checks the whole selection up front, but each delete
+     * then ran its own cascade refusal — so a selection holding an entry-free
+     * type followed by one that still has entries deleted the first and threw on
+     * the second. The author saw a failure after part of their schema was
+     * already gone, which is the worst way to report one.
+     */
+    it('deletes NOTHING when a later record refuses', function (): void {
+        $empty = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'empty_type', 'name' => 'E', 'plural_name' => 'Es',
+        ]);
+        $occupied = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'busy_type', 'name' => 'B', 'plural_name' => 'Bs',
+        ]);
+
+        Entry::create([
+            'entry_type_id' => $occupied->id, 'title' => 'Holds data', 'values' => [],
+        ]);
+
+        // Ordered deliberately: the deletable one FIRST, so a non-atomic
+        // implementation commits it before the refusal fires.
+        expect(fn () => EntryTypeResource::deleteSelected(collect([$empty, $occupied])))
+            ->toThrow(RuntimeException::class, 'would delete them by cascade');
+
+        expect(EntryType::query()->whereKey($empty->getKey())->exists())->toBeTrue()
+            ->and(EntryType::query()->whereKey($occupied->getKey())->exists())->toBeTrue();
+    });
+
+    it('deletes ALL of them when every record is deletable', function (): void {
+        $first = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'gone_one', 'name' => 'G', 'plural_name' => 'Gs',
+        ]);
+        $second = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'gone_two', 'name' => 'G', 'plural_name' => 'Gs',
+        ]);
+
+        EntryTypeResource::deleteSelected(collect([$first, $second]));
+
+        expect(EntryType::query()->whereKey([$first->getKey(), $second->getKey()])->count())->toBe(0);
+    });
+
+    it('still refuses a selection containing a GLOBAL type, before deleting any', function (): void {
+        $mine = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'mine_bulk', 'name' => 'M', 'plural_name' => 'Ms',
+        ]);
+        $global = EntryType::create([
+            'org_id' => null, 'handle' => 'system_bulk', 'name' => 'S', 'plural_name' => 'Ss',
+        ]);
+
+        expect(fn () => EntryTypeResource::deleteSelected(collect([$mine, $global])))
+            ->toThrow(RuntimeException::class, 'shared by every organisation');
+
+        expect(EntryType::query()->whereKey($mine->getKey())->exists())->toBeTrue();
+    });
+});
+
+describe('a pattern that cannot compile is refused where it is authored', function (): void {
+    /*
+     * ⚠️ `TextType::patternRule()` refuses EVERY value when the pattern will not
+     * compile, which is correct — an uncheckable constraint must not pass. But
+     * the builder accepted the pattern, so the outcome was a field nothing could
+     * be stored in until someone went back and repaired its settings. The rule
+     * failing closed was right; accepting the setting was not.
+     *
+     * Enforced from the field type's own declaration (`format => regex`) rather
+     * than a `pattern` special case, so a new type declaring one is covered with
+     * no further change — and in the model as well as the form, because a form
+     * is one door.
+     */
+    it('refuses an uncompilable pattern on save', function (): void {
+        expect(fn () => FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'code', 'type' => 'text',
+            'pii_class' => 'none', 'cardinality' => 1,
+            // Unbalanced group: PCRE cannot compile it.
+            'settings' => ['maxLength' => 20, 'pattern' => '^[A-Z'],
+        ]))->toThrow(RuntimeException::class, 'That pattern cannot be compiled');
+    });
+
+    it('refuses a pattern that cannot be delimited at all', function (): void {
+        // Every candidate delimiter appears in the pattern, so there is nothing
+        // left to wrap it in — refused rather than silently mangled.
+        expect(fn () => FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'code2', 'type' => 'text',
+            'pii_class' => 'none', 'cardinality' => 1,
+            'settings' => ['pattern' => 'a/b#c~d%e!f'],
+        ]))->toThrow(RuntimeException::class, 'That pattern cannot be compiled');
+    });
+
+    it('accepts a valid pattern, and an absent one', function (): void {
+        $constrained = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'code3', 'type' => 'text',
+            'pii_class' => 'none', 'cardinality' => 1,
+            'settings' => ['pattern' => '^[A-Z]{2}-\d+$'],
+        ]);
+        $unconstrained = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'code4', 'type' => 'text',
+            'pii_class' => 'none', 'cardinality' => 1, 'settings' => ['maxLength' => 20],
+        ]);
+
+        expect($constrained->settings['pattern'])->toBe('^[A-Z]{2}-\d+$')
+            ->and($unconstrained->settings)->not->toHaveKey('pattern');
+    });
+
+    it('ignores the declaration for a type that has none', function (): void {
+        // The guard reads what the TYPE declared, so a number field carries no
+        // regex constraint and is unaffected.
+        $number = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'price', 'type' => 'number',
+            'pii_class' => 'none', 'cardinality' => 1,
+            'settings' => ['format' => 'decimal', 'precision' => 12, 'scale' => 2],
+        ]);
+
+        expect($number->exists)->toBeTrue();
+    });
+
+    it('agrees with the rule that validates values against it', function (): void {
+        // ⚠️ The point of one shared implementation. If the guard and the rule
+        // could disagree, a pattern the builder accepted could still refuse every
+        // value — which is the defect, restated.
+        expect(Pattern::compiles('^[A-Z]{2}-\d+$'))->toBeTrue()
+            ->and(Pattern::compiles('^[A-Z'))->toBeFalse()
+            ->and(Pattern::compiles('a/b#c~d%e!f'))->toBeFalse()
+            ->and(Pattern::delimit('^[a-z]+$'))->toBe('/^[a-z]+$/u')
+            // The first delimiter the pattern does not itself contain.
+            ->and(Pattern::delimit('a/b'))->toBe('#a/b#u');
+    });
+});
+
+describe('settings that contradict themselves are refused', function (): void {
+    /*
+     * ⚠️ The interesting constraints are not per-setting, which is why they live
+     * in `FieldType::validateSettings()` rather than in a descriptor key.
+     *
+     * A minimum above a maximum leaves NO value that can be stored —
+     * `NumberType::scalarValidationRules()` emits both bounds — and neither
+     * control is individually wrong, so no per-setting rule could see it. Same
+     * unusable outcome as an uncompilable pattern, reached by another route.
+     */
+    it('refuses a minimum above the maximum', function (): void {
+        expect(fn () => FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'price', 'type' => 'number',
+            'pii_class' => 'none', 'cardinality' => 1,
+            'settings' => ['format' => 'decimal', 'precision' => 12, 'scale' => 2, 'min' => 100, 'max' => 10],
+        ]))->toThrow(RuntimeException::class, 'no value could ever be stored');
+    });
+
+    it('accepts bounds that can both be satisfied, including equal ones', function (): void {
+        $range = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'price2', 'type' => 'number',
+            'pii_class' => 'none', 'cardinality' => 1,
+            'settings' => ['format' => 'decimal', 'precision' => 12, 'scale' => 2, 'min' => 1, 'max' => 100],
+        ]);
+        $exact = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'price3', 'type' => 'number',
+            'pii_class' => 'none', 'cardinality' => 1,
+            // A single permitted value is narrow, not unusable. The bar is "no
+            // value can satisfy this", not "this looks odd".
+            'settings' => ['format' => 'decimal', 'precision' => 12, 'scale' => 2, 'min' => 5, 'max' => 5],
+        ]);
+
+        expect($range->exists)->toBeTrue()->and($exact->exists)->toBeTrue();
+    });
+
+    it('ignores a bound that is absent or not a number', function (): void {
+        $open = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'price4', 'type' => 'number',
+            'pii_class' => 'none', 'cardinality' => 1,
+            'settings' => ['format' => 'decimal', 'precision' => 12, 'scale' => 2, 'min' => 1],
+        ]);
+
+        expect($open->exists)->toBeTrue();
+    });
+
+    it('refuses a pattern PCRE understands and JSON Schema does not', function (): void {
+        /*
+         * ⚠️ The pattern is PUBLISHED as well as enforced.
+         * `TextType::scalarApiSchema()` emits it verbatim as a JSON Schema
+         * `pattern`, and that dialect is ECMAScript — so a PCRE-only expression
+         * compiles here, enforces correctly server-side, and hands a generated
+         * client a constraint it cannot compile. Invariant 14: publish the
+         * constraint, and a constraint the consumer cannot read is not published.
+         */
+        expect(fn () => FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'ref', 'type' => 'text',
+            'pii_class' => 'none', 'cardinality' => 1,
+            'settings' => ['maxLength' => 30, 'pattern' => '(?P<code>[A-Z]{2})'],
+        ]))->toThrow(RuntimeException::class, 'the JSON Schema dialect does not');
+    });
+
+    it('accepts the ECMAScript spelling of a named group', function (): void {
+        // The point of naming constructs rather than rejecting anything unusual:
+        // `(?<name>...)` is valid in both dialects and must go through.
+        $named = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'ref2', 'type' => 'text',
+            'pii_class' => 'none', 'cardinality' => 1,
+            'settings' => ['maxLength' => 30, 'pattern' => '^(?<code>[A-Z]{2})-\d+$'],
+        ]);
+
+        expect($named->settings['pattern'])->toBe('^(?<code>[A-Z]{2})-\d+$');
+    });
+
+    it('screens with SYNTAX awareness, not substrings', function (): void {
+        /*
+         * ⚠️ A substring scan was unsound in both directions, which is worse
+         * than being unsound in one.
+         *
+         * `\\A` is a literal backslash then an A — valid everywhere — and was
+         * refused because the second slash begins the substring `\A`. `[(?>]` is
+         * a character class of punctuation and was refused the same way. Meanwhile
+         * `(?i)^abc$` was ACCEPTED: it compiles in PCRE, ECMAScript has no bare
+         * inline modifier, and no substring in the old list matched it.
+         */
+        expect(Pattern::unpublishable('^[A-Z]+$'))->toBeNull()
+            // Escaped backslash: two literals, not an anchor.
+            ->and(Pattern::unpublishable('\\\\A'))->toBeNull()
+            // Inside a character class these are literals.
+            ->and(Pattern::unpublishable('[(?>]'))->toBeNull()
+            ->and(Pattern::unpublishable('[\\d\\-]+'))->toBeNull()
+            // Every group form ECMAScript actually has.
+            ->and(Pattern::unpublishable('(?:ab)+'))->toBeNull()
+            ->and(Pattern::unpublishable('(?=x)y'))->toBeNull()
+            ->and(Pattern::unpublishable('(?<=a)b'))->toBeNull()
+            ->and(Pattern::unpublishable('^(?<name>a)$'))->toBeNull();
+    });
+
+    it('refuses what a consumer could not compile', function (): void {
+        expect(Pattern::unpublishable('\Ax'))->toContain('\A anchor')
+            // ⚠️ The false NEGATIVE the substring scan had: a bare inline
+            // modifier compiles in PCRE and has no ECMAScript equivalent.
+            ->and(Pattern::unpublishable('(?i)^abc$'))->toContain('`(?i)`')
+            ->and(Pattern::unpublishable('(?P<a>x)'))->toContain('(?P<')
+            ->and(Pattern::unpublishable('(?>x)'))->toContain('(?>')
+            ->and(Pattern::unpublishable('(?#c)x'))->toContain('(?#c)')
+            ->and(Pattern::unpublishable('(?(1)a|b)'))->toContain('(?(1)');
+    });
+
+    it('refuses possessive quantifiers, which tracking escapes made possible', function (): void {
+        /*
+         * ⚠️ I declined to detect these while the screen was substring-based,
+         * because `\++` — an escaped plus followed by a quantifier — could not be
+         * told from `a++` without a parse, and a false refusal is the worse trade.
+         *
+         * The scanner tracks escapes now, so the objection no longer holds: the
+         * escaped plus is consumed as an escape and never reaches the quantifier
+         * check. That is the case asserted first, because it is the one the
+         * earlier decision was protecting.
+         */
+        expect(Pattern::unpublishable('\\++'))->toBeNull()
+            ->and(Pattern::unpublishable('a\\+\\+b'))->toBeNull()
+            // Ordinary and lazy quantifiers are untouched.
+            ->and(Pattern::unpublishable('a+'))->toBeNull()
+            ->and(Pattern::unpublishable('a+?'))->toBeNull()
+            ->and(Pattern::unpublishable('[+]+'))->toBeNull()
+            // And the possessive forms are refused.
+            ->and(Pattern::unpublishable('a++'))->toContain('possessive')
+            ->and(Pattern::unpublishable('a*+'))->toContain('possessive')
+            ->and(Pattern::unpublishable('x{2,3}+'))->toContain('possessive');
+    });
+
+    it('refuses backtracking control verbs', function (): void {
+        // ⚠️ These open with `(*` rather than `(?`, so the group allowlist never
+        // saw them — a whole family of PCRE-only syntax slipping past a screen
+        // built around one prefix.
+        expect(Pattern::unpublishable('(*SKIP)a'))->toContain('(*SKIP)')
+            ->and(Pattern::unpublishable('(*FAIL)'))->toContain('(*FAIL)')
+            ->and(Pattern::unpublishable('a(*PRUNE)b'))->toContain('(*PRUNE)');
+    });
+
+    it('allowlists group prefixes rather than listing offenders', function (): void {
+        // The point of the allowlist: a construct nobody anticipated is refused
+        // too, which a list of known offenders cannot do. Same reasoning as the
+        // rich-text sanitiser allowlisting tags.
+        expect(Pattern::unpublishable('(?~x)'))->toContain('(?~x)')
+            ->and(Pattern::unpublishable('(?J)a'))->toContain('(?J)');
+    });
+});
+
+describe('a field holding data cannot just be detached', function (): void {
+    /*
+     * ⚠️ Deleting a `Field` removed the configuration and left the DATA.
+     *
+     * Inline JSON keys and `entry_relations` rows survive against the shared
+     * FieldStorage row — and become unreachable, because `Entry::redactField()`
+     * resolves storage through `whereHas('fields')` on the entry type. Once the
+     * field row is gone the lookup finds nothing, falls through to the inline
+     * path, and reports 0 while a relation holding personal data survives. An
+     * erasure request would be answered successfully and truthfully report that
+     * it reached nothing (ADR-020).
+     */
+    $fieldOfType = function (string $handle, string $type): Field {
+        $storage = FieldStorage::create([
+            'org_id' => test()->org->id, 'handle' => $handle, 'type' => $type,
+            'pii_class' => 'personal', 'cardinality' => $type === 'relation' ? -1 : 1,
+        ]);
+
+        return Field::create([
+            'entry_type_id' => test()->entryType->id,
+            'field_storage_id' => $storage->id,
+            'label' => ucfirst($handle),
+        ]);
+    };
+
+    beforeEach(function (): void {
+        $this->entryType = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'record', 'name' => 'R', 'plural_name' => 'Rs',
+        ]);
+    });
+
+    it('refuses while an INLINE field holds a value', function () use ($fieldOfType): void {
+        $field = $fieldOfType('notes', 'text');
+
+        Entry::create([
+            'entry_type_id' => $this->entryType->id, 'title' => 'Has notes',
+            'values' => ['notes' => 'Jane Doe, 12 Elm St'],
+        ]);
+
+        expect(fn () => $field->delete())
+            ->toThrow(RuntimeException::class, 'still hold data for it');
+
+        expect(Field::query()->whereKey($field->getKey())->exists())->toBeTrue();
+    });
+
+    it('refuses while a RELATIONAL field holds links', function () use ($fieldOfType): void {
+        // ⚠️ The strategy that made this an erasure defect rather than a tidiness
+        // one: a relational field's data is rows, and they are what survives.
+        $field = $fieldOfType('patient', 'relation');
+
+        $source = Entry::create(['entry_type_id' => $this->entryType->id, 'title' => 'Visit']);
+        $target = Entry::create(['entry_type_id' => $this->entryType->id, 'title' => 'Alice']);
+        $source->related()->attach($target->id, ['field_storage_id' => $field->field_storage_id]);
+
+        expect(fn () => $field->delete())
+            ->toThrow(RuntimeException::class, 'still hold data for it');
+    });
+
+    it('refuses while a SOFT-DELETED entry holds a value', function () use ($fieldOfType): void {
+        // Trashed data still exists and erasure still has to reach it, so it is
+        // a reason to refuse.
+        $field = $fieldOfType('notes2', 'text');
+
+        $entry = Entry::create([
+            'entry_type_id' => $this->entryType->id, 'title' => 'Trashed',
+            'values' => ['notes2' => 'personal'],
+        ]);
+        $entry->delete();
+
+        expect(fn () => $field->delete())
+            ->toThrow(RuntimeException::class, 'still hold data for it');
+    });
+
+    it('ALLOWS removing a field nothing holds data for', function () use ($fieldOfType): void {
+        $field = $fieldOfType('unused', 'text');
+
+        Entry::create([
+            'entry_type_id' => $this->entryType->id, 'title' => 'Other data',
+            'values' => ['something_else' => 'x'],
+        ]);
+
+        $field->delete();
+
+        expect(Field::query()->whereKey($field->getKey())->exists())->toBeFalse();
+    });
+
+    it('ALLOWS it once the field has been erased', function () use ($fieldOfType): void {
+        // The message names this route, so it has to work: erase first, which is
+        // audited, then remove.
+        $field = $fieldOfType('notes3', 'text');
+
+        $entry = Entry::create([
+            'entry_type_id' => $this->entryType->id, 'title' => 'Erase me',
+            'values' => ['notes3' => 'Jane Doe'],
+        ]);
+
+        $entry->redactField('notes3');
+
+        // ⚠️ Erasure leaves the KEY present with a null value, which still counts
+        // as holding data — so it has to be removed outright before the field can
+        // go. Stated here because the difference matters to an operator following
+        // the message.
+        $entry->update(['values' => []]);
+
+        $field->delete();
+
+        expect(Field::query()->whereKey($field->getKey())->exists())->toBeFalse();
+    });
+});
+
+describe('the field-deletion guard holds on every path', function (): void {
+    /*
+     * ⚠️ The refusal started as a `deleting` event, which is ONE path.
+     * `Field::query()->delete()`, `deleteQuietly()` and anything inside
+     * `withoutEvents()` dispatch straight past it — the seventh time this project
+     * has found that shape. `Field` now implements `RefusesCascadingDeletes`, so
+     * `ScopedBuilder` runs the same rule for every row a bulk delete would
+     * remove, under a lock.
+     */
+    beforeEach(function (): void {
+        $this->holder = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'holder', 'name' => 'H', 'plural_name' => 'Hs',
+        ]);
+
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'secret', 'type' => 'text',
+            'pii_class' => 'personal', 'cardinality' => 1,
+        ]);
+
+        $this->guarded = Field::create([
+            'entry_type_id' => $this->holder->id, 'field_storage_id' => $storage->id, 'label' => 'Secret',
+        ]);
+
+        Entry::create([
+            'entry_type_id' => $this->holder->id, 'title' => 'Holds it',
+            'values' => ['secret' => 'Jane Doe'],
+        ]);
+    });
+
+    it('refuses a BULK delete, which dispatched no event', function (): void {
+        expect(fn () => Field::query()->whereKey($this->guarded->getKey())->delete())
+            ->toThrow(RuntimeException::class, 'still hold data for it');
+
+        expect(Field::query()->whereKey($this->guarded->getKey())->exists())->toBeTrue();
+    });
+
+    it('refuses a QUIET delete, which suppresses the event', function (): void {
+        expect(fn () => $this->guarded->deleteQuietly())
+            ->toThrow(RuntimeException::class, 'still hold data for it');
+
+        expect(Field::query()->whereKey($this->guarded->getKey())->exists())->toBeTrue();
+    });
+
+    it('still refuses the ordinary instance delete', function (): void {
+        expect(fn () => $this->guarded->delete())
+            ->toThrow(RuntimeException::class, 'still hold data for it');
+    });
+});
+
+describe('a field whose data survives only in history cannot be deleted', function (): void {
+    /*
+     * ⚠️ Checking the live row alone was a hole big enough to lose personal data
+     * through: clearing a value and then removing the field left the old value in
+     * every revision snapshot — and removing the field removes the schema metadata
+     * needed to FIND it, so only a caller who already knew the deleted handle
+     * could reach it again. ADR-020 seen from the deletion side.
+     */
+    it('refuses while a REVISION still holds the value', function (): void {
+        $type = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'historic', 'name' => 'H', 'plural_name' => 'Hs',
+        ]);
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'old_note', 'type' => 'text',
+            'pii_class' => 'personal', 'cardinality' => 1,
+        ]);
+        $field = Field::create([
+            'entry_type_id' => $type->id, 'field_storage_id' => $storage->id, 'label' => 'Note',
+        ]);
+
+        $entry = Entry::create([
+            'entry_type_id' => $type->id, 'title' => 'Had a note',
+            'values' => ['old_note' => 'Jane Doe, 12 Elm St'],
+        ]);
+
+        // ⚠️ The revision is written by hand, because nothing on THIS branch
+        // records one — the recorder is the revisions-and-drafts work. The table
+        // and the model are here, so the guard is testable directly, and testing
+        // it here is the point: the guard has to hold whatever put the row there.
+        EntryRevision::create([
+            'entry_id' => $entry->getKey(),
+            'values' => ['old_note' => 'Jane Doe, 12 Elm St'],
+        ]);
+
+        // The live value is gone; the version that recorded it is not.
+        $entry->update(['values' => []]);
+
+        expect($entry->fresh()->values)->toBe([]);
+        expect(fn () => $field->delete())
+            ->toThrow(RuntimeException::class, 'still hold data for it');
+    });
+
+    it('ALLOWS it once the value is erased from history too', function (): void {
+        // `redactField()` sweeps the entry AND its revisions, which is exactly
+        // the route the refusal recommends.
+        $type = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'historic2', 'name' => 'H', 'plural_name' => 'Hs',
+        ]);
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'gone_note', 'type' => 'text',
+            'pii_class' => 'personal', 'cardinality' => 1,
+        ]);
+        $field = Field::create([
+            'entry_type_id' => $type->id, 'field_storage_id' => $storage->id, 'label' => 'Note',
+        ]);
+
+        $entry = Entry::create([
+            'entry_type_id' => $type->id, 'title' => 'Erase me',
+            'values' => ['gone_note' => 'Jane Doe'],
+        ]);
+        EntryRevision::create([
+            'entry_id' => $entry->getKey(),
+            'values' => ['gone_note' => 'Jane Doe'],
+        ]);
+
+        // `redactField()` sweeps the entry AND its revisions, which is what makes
+        // the route the refusal recommends actually work.
+        $entry->redactField('gone_note');
+        $entry->update(['values' => []]);
+
+        $field->delete();
+
+        expect(Field::query()->whereKey($field->getKey())->exists())->toBeFalse();
+    });
+});
+
+describe('the cascade guard sees the whole row, whatever the caller selected', function (): void {
+    /*
+     * ⚠️ `get()` inherits the caller's projection, so
+     * `Field::query()->select('id')->delete()` handed the guard a model with no
+     * `field_storage_id` — and a DELETE ignores a SELECT list, so the row went
+     * and its data stranded. The same failure as the key-only instance, arriving
+     * through the caller instead of the machinery.
+     */
+    it('refuses a delete whose query selected only the key', function (): void {
+        $type = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'projected', 'name' => 'P', 'plural_name' => 'Ps',
+        ]);
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'kept', 'type' => 'text',
+            'pii_class' => 'personal', 'cardinality' => 1,
+        ]);
+        $field = Field::create([
+            'entry_type_id' => $type->id, 'field_storage_id' => $storage->id, 'label' => 'Kept',
+        ]);
+
+        Entry::create([
+            'entry_type_id' => $type->id, 'title' => 'Holds it', 'values' => ['kept' => 'Jane Doe'],
+        ]);
+
+        expect(fn () => Field::query()->select('id')->whereKey($field->getKey())->delete())
+            ->toThrow(RuntimeException::class, 'still hold data for it');
+
+        expect(Field::query()->whereKey($field->getKey())->exists())->toBeTrue();
+    });
+
+    it('ALLOWS a projected delete when nothing holds data', function (): void {
+        // The projection must not become a reason to refuse either.
+        $type = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'projected2', 'name' => 'P', 'plural_name' => 'Ps',
+        ]);
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'spare', 'type' => 'text',
+            'pii_class' => 'none', 'cardinality' => 1,
+        ]);
+        $field = Field::create([
+            'entry_type_id' => $type->id, 'field_storage_id' => $storage->id, 'label' => 'Spare',
+        ]);
+
+        Field::query()->select('id')->whereKey($field->getKey())->delete();
+
+        expect(Field::query()->whereKey($field->getKey())->exists())->toBeFalse();
+    });
+
+    it('lets an unused PROMOTED field be removed', function (): void {
+        // ⚠️ Adding a revision check for promoted columns made even an unused
+        // promoted field unremovable: `entry_revisions` holds `values` and
+        // revision metadata, and no promoted columns — so the query was a
+        // missing-column error rather than a refusal.
+        $type = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'promoted_type', 'name' => 'P', 'plural_name' => 'Ps',
+        ]);
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'public_slug', 'type' => 'slug',
+            'pii_class' => 'none', 'cardinality' => 1,
+        ]);
+        $field = Field::create([
+            'entry_type_id' => $type->id, 'field_storage_id' => $storage->id, 'label' => 'Slug',
+        ]);
+
+        $field->delete();
+
+        expect(Field::query()->whereKey($field->getKey())->exists())->toBeFalse();
+    });
+
+    it('still refuses a promoted field whose column holds a value', function (): void {
+        $type = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'promoted_type2', 'name' => 'P', 'plural_name' => 'Ps',
+        ]);
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'public_slug2', 'type' => 'slug',
+            'pii_class' => 'personal', 'cardinality' => 1,
+        ]);
+        $field = Field::create([
+            'entry_type_id' => $type->id, 'field_storage_id' => $storage->id, 'label' => 'Slug',
+        ]);
+
+        Entry::create(['entry_type_id' => $type->id, 'title' => 'Has a slug', 'slug' => 'jane-doe']);
+
+        expect(fn () => $field->delete())
+            ->toThrow(RuntimeException::class, 'still hold data for it');
     });
 });

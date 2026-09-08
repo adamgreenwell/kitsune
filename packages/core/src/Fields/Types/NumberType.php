@@ -205,6 +205,38 @@ final class NumberType extends BaseFieldType
     }
 
     /** @return array<string, mixed> */
+    /**
+     * ⚠️ Bounds that cannot both be satisfied make the field unusable.
+     *
+     * `scalarValidationRules()` emits `min` and `max` together, so a minimum
+     * above a maximum leaves NO value that can be stored — the same outcome as an
+     * uncompilable pattern, reached by a different route. Neither control is
+     * individually wrong, which is why this cannot be a per-setting rule.
+     *
+     * `precision`, `scale` and `step` are deliberately not checked here: each is
+     * already CLAMPED to a usable range where it is read, so a contradictory
+     * value is corrected rather than fatal. The bar is "no value can satisfy
+     * this", not "this looks odd".
+     *
+     * @param  array<string, mixed>  $settings
+     */
+    public function validateSettings(array $settings): ?string
+    {
+        $min = $settings['min'] ?? null;
+        $max = $settings['max'] ?? null;
+
+        if (! is_numeric($min) || ! is_numeric($max) || (float) $min <= (float) $max) {
+            return null;
+        }
+
+        return sprintf(
+            'The minimum (%s) is above the maximum (%s), so no value could ever be stored in this '
+            .'field. Swap them, or clear one.',
+            (string) $min,
+            (string) $max,
+        );
+    }
+
     public function settingsSchema(): array
     {
         return [

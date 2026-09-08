@@ -370,6 +370,7 @@ class FieldsRelationManager extends RelationManager
         // shared row is shared — one form cannot speak for all of it.
         if ($existing !== null) {
             $this->refuseIncompatibleReuse($existing, $data);
+            $this->refuseDivergentReuse($existing, $data);
             $this->refuseSecondFieldOnThisType($existing);
 
             $this->pendingStorage = $existing;
@@ -551,28 +552,7 @@ class FieldsRelationManager extends RelationManager
      */
     private function refuseSharedStorageChange(FieldStorage $storage, array $data): void
     {
-        $changes = [];
-
-        // Both sides are one of three known strings.
-        if (array_key_exists('storage_pii_class', $data)
-            && (string) $data['storage_pii_class'] !== (string) $storage->pii_class) {
-            $changes[] = 'privacy classification';
-        }
-
-        // A checkbox arrives as "1"/"0"/true/false depending on the transport.
-        if (array_key_exists('storage_is_indexed', $data)
-            && (bool) $data['storage_is_indexed'] !== (bool) $storage->is_indexed) {
-            $changes[] = 'indexing';
-        }
-
-        // ⚠️ Loose comparison, and only here. It is what lets `'320'` equal
-        // `320` while still catching a real edit — PHP 8 compares a non-numeric
-        // string AS a string, so it does not collapse distinct values the way
-        // PHP 7's would have.
-        if (array_key_exists('storage_settings', $data)
-            && ($data['storage_settings'] ?? []) != ($storage->settings ?? [])) {
-            $changes[] = 'settings';
-        }
+        $changes = $this->storageDifferences($storage, $data);
 
         if ($changes === []) {
             return;
@@ -587,6 +567,91 @@ class FieldsRelationManager extends RelationManager
             $storage->org_id === null ? 'shared by every organisation' : 'owned by another organisation',
             implode(' and ', $changes),
             count($changes) === 1 ? 'is' : 'are',
+        ));
+    }
+
+    /**
+     * The storage attributes this submission would change, named for a human.
+     *
+     * ⚠️ ONE comparison, because two callers need the same answer for opposite
+     * reasons: adoption must not silently discard a submitted classification,
+     * and shared storage must not be rewritten at all. Written twice they drift,
+     * which is the failure invariant 14 exists for — and this PR has already had
+     * that four times over.
+     *
+     * ⚠️ NOT `isDirty()`, which is what I reached for first. It encodes a cast
+     * JSON attribute on both sides and compares the strings, and Filament's
+     * numeric inputs submit STRINGS — so an untouched form returns
+     * `['maxLength' => '320']` for a row holding `['maxLength' => 320]` and the
+     * check called that a change. Every presentation-only edit of a shared field
+     * would have been refused. Each attribute is compared on its own terms
+     * instead, with the reasoning stated per attribute.
+     *
+     * @param  array<string, mixed>  $data
+     * @return list<string>
+     */
+    private function storageDifferences(FieldStorage $storage, array $data): array
+    {
+        $differences = [];
+
+        // Both sides are one of three known strings.
+        if (array_key_exists('storage_pii_class', $data)
+            && (string) $data['storage_pii_class'] !== (string) $storage->pii_class) {
+            $differences[] = 'privacy classification';
+        }
+
+        // A checkbox arrives as "1"/"0"/true/false depending on the transport.
+        if (array_key_exists('storage_is_indexed', $data)
+            && (bool) $data['storage_is_indexed'] !== (bool) $storage->is_indexed) {
+            $differences[] = 'indexing';
+        }
+
+        // ⚠️ Loose comparison, and only here. It is what lets `'320'` equal
+        // `320` while still catching a real edit — PHP 8 compares a non-numeric
+        // string AS a string, so it does not collapse distinct values the way
+        // PHP 7's would have.
+        if (array_key_exists('storage_settings', $data)
+            && ($data['storage_settings'] ?? []) != ($storage->settings ?? [])) {
+            $differences[] = 'settings';
+        }
+
+        return $differences;
+    }
+
+    /**
+     * Refuse an adoption that would silently discard what the author submitted.
+     *
+     * ⚠️ Adoption keeps the existing definition — that was the previous round's
+     * fix and it is right — but it did so SILENTLY for the classification and the
+     * settings as well as the shape. Selecting `personal` for a handle whose
+     * stored row says `none` reported success and attached `none`, so an erasure
+     * would never reach that field; choosing `decimal` for a handle stored as
+     * `integer` gave the author a field that truncates.
+     *
+     * The shape check already refuses a mismatched `type` or `cardinality` for
+     * exactly this reason. Classification and settings define observable
+     * behaviour just as much, so they get the same treatment rather than being
+     * quietly overruled.
+     *
+     * @param  array<string, mixed>  $data
+     */
+    private function refuseDivergentReuse(FieldStorage $storage, array $data): void
+    {
+        $differences = $this->storageDifferences($storage, $data);
+
+        if ($differences === []) {
+            return;
+        }
+
+        throw new RuntimeException(sprintf(
+            'Handle [%s] already describes a field in this organisation, and storage is shared '
+            .'across entity types (ADR-006) — so adding it here ADOPTS that definition rather than '
+            .'creating a second one. Its %s %s from what you submitted, and adopting it would give '
+            .'you the stored behaviour without saying so. Match the existing definition, or choose '
+            .'a different handle.',
+            $storage->handle,
+            implode(' and ', $differences),
+            count($differences) === 1 ? 'differs' : 'differ',
         ));
     }
 

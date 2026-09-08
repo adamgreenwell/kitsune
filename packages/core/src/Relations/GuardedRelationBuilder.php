@@ -122,7 +122,13 @@ class GuardedRelationBuilder extends Builder
      */
     public function insertGetId(array $values, $sequence = null)
     {
-        $row = $this->newModelInstance($values);
+        // ⚠️ setRawAttributes, for the reason spelled out in
+        // `GuardedStorageBuilder::insertGetId()`: these values are already
+        // database-ready, and `fill()` would re-encode any JSON-cast attribute.
+        // `entry_relations` has none today, which is exactly why this would have
+        // been a silent trap the first time one was added.
+        $row = $this->newModelInstance();
+        $row->setRawAttributes($values);
 
         // ⚠️ SERIALISED on the source entry, exactly as `attach()` is.
         //
