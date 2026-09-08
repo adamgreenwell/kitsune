@@ -76,7 +76,7 @@ final class SlugType extends BaseFieldType
     }
 
     /**
-     * The 255-character input limit is PUBLISHED (AGENTS.md invariant 13).
+     * The 255-character input limit is PUBLISHED (AGENTS.md invariant 14).
      *
      * ⚠️ There is a SECOND limit JSON Schema cannot express: the value must
      * also be at most 255 characters and non-empty AFTER slugification, and

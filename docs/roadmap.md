@@ -198,12 +198,14 @@ Data model is specified in [`architecture.md`](architecture.md) §3.
   ⚠️ **A cross-org defect was caught before it shipped and cost an ADR.** The first implementation named the column `idx_{handle}`, but `entries` is one table shared by every org while `field_storage` is `UNIQUE (org_id, handle)` — so two orgs each defining `price` would collide silently, one casting the other's data to the wrong type and either able to drop the other's column. Columns are now named for their projection — `idx_price__decimal12_2`, `idx_count__integer` — and dropping is reference-counted ([ADR-028](decision-log.md)). Two amendments followed, both from review: the shared expression also has to be **total**, since it reads its JSON key from every row in the table (unguarded, another org's `"contact us"` stops the column being created on PostgreSQL and MySQL and indexes as `0` on SQLite), and the projection depends on **configuration**, so the column name carries a signature rather than the field type handle. `php artisan kitsune:schema-sync` is the drift repair path, since DDL implicitly commits on MySQL and a row write cannot share a transaction with its schema change
 - [x] `entry_relations` table — a real table, not JSON, so reverse lookups and referential integrity work. Org-scoped rather than site-scoped, because a relation may link a site entry to org-shared media
 - [x] `EntryResource` with the `{type}` route parameter, per ADR-012 and [`architecture.md`](architecture.md) §2. 7–10 routes flat in the number of entity types, verified in a browser including the 201-type case
-- [ ] Memoized `Panel::navigation()` closure, cached per site *(it fires 5× per request)*
-- [ ] `EntryPolicy` resolving per-type authorization against `type_handle`
+- [x] Memoised navigation, cached per site *(Filament calls it 5× per request)*. The memo lives on `EntryType::visibleFor()` rather than on the closure itself, which is where the query actually is — and its `once()` key is the scope IDs, not the objects. ⚠️ Keyed on a `Site` **object** first, and a probe showed PHP reusing the object handle on the very next allocation, so two different sites shared one cache entry. AGENTS.md invariant 13 exists because of it
+- [ ] `EntryPolicy` resolving per-type authorization against `type_handle` — **blocked on Phase 3's RBAC**, not deferred. A policy needs roles and permissions to resolve against, and `entry.{type}.{action}` is the naming Phase 3 settles. Writing it now would mean inventing a permission model here and reconciling it there
 - [ ] Entity type builder UI
 - [ ] Revisions and drafts
 
 **Done when:** a non-developer builds a working "Products" entity with ten field types, relations and permissions entirely through the admin, on 100k rows, with no query over 200ms.
+
+**Where that stands.** The entity, its field types, its relations and its indexing are done and driven from the admin. Two things are not: **permissions**, which wait on Phase 3's RBAC (see `EntryPolicy` above), and the **100k-row / 200ms** measurement, which needs a seeded corpus rather than the floor benchmark that exists — `benchmark:storage` proves the shape holds at the ADR-027 floor, not that it holds at scale. Neither is a surprise and neither is hidden: the checklist above is what shipped, and this paragraph is what "done" still needs.
 
 ## Phase 5 — Blueprints
 
