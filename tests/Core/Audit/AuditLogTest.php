@@ -138,6 +138,33 @@ describe('an entry write that cannot be audited is refused', function (): void {
      * transaction committed — an entry with no trail, which is precisely what
      * ADR-020's amendment says is refused.
      */
+    /*
+     * ⚠️ Quiet creation suppresses EnforcesScope's stamping listener, so the
+     * caller supplies the scope columns — and could supply ANOTHER org's. The
+     * audit row is written under the CURRENT context, so that org would gain
+     * an entry with no trail while this one gained a trail for a row it does
+     * not own. The second half is the worse one: it reads as evidence.
+     */
+    it('refuses a quiet create carrying another org\'s scope keys', function (): void {
+        $rival = Org::create(['name' => 'Q', 'slug' => 'quiet-rival']);
+
+        expect(fn () => Entry::createQuietly([
+            'org_id' => $rival->id, 'site_id' => $this->site->id,
+            'entry_type_id' => $this->type->id, 'type_handle' => 'page', 'title' => 'Smuggled',
+        ]))->toThrow(RuntimeException::class, 'outside the current scope');
+
+        expect(Entry::withoutGlobalScopes()->where('title', 'Smuggled')->exists())->toBeFalse();
+    });
+
+    it('still allows a quiet create in the CURRENT scope', function (): void {
+        $entry = Entry::createQuietly([
+            'org_id' => $this->org->id, 'site_id' => $this->site->id,
+            'entry_type_id' => $this->type->id, 'type_handle' => 'page', 'title' => 'Fine',
+        ]);
+
+        expect(AuditLog::for($entry)->pluck('action')->all())->toBe(['entry.created']);
+    });
+
     it('refuses a create with no org context, and leaves no entry behind', function (): void {
         $org = $this->org;
         $site = $this->site;
@@ -547,6 +574,15 @@ describe('bulk entry writes are audited too', function (): void {
         }
 
         $surface = array_values(array_unique($surface));
+
+        // ⚠️ NOT covered, and deliberately so: `toBase()` hands back the
+        // underlying query builder, which is the same door as
+        // `DB::table('entries')`. No model-layer guard stands in front of raw
+        // SQL, and it cannot be overridden because Laravel's own update(),
+        // count() and pluck() route through it. ADR-020 scopes the guarantee
+        // to the Eloquent layer for exactly this reason. Named here so the
+        // boundary is a decision on the record rather than a silent gap.
+        expect(method_exists(AuditedBuilder::class, 'toBase'))->toBeTrue();
 
         // Handled elsewhere, deliberately, each with its reason.
         $exempt = [

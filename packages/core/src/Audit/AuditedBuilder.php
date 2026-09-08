@@ -15,6 +15,7 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Kitsune\Core\Models\Entry;
+use Kitsune\Core\Tenancy\Context;
 use RuntimeException;
 
 /**
@@ -34,6 +35,20 @@ use RuntimeException;
  * can tell the cases apart on its own anyway — a soft delete IS an update
  * that sets `deleted_at`, and a restore IS one that clears it — so the model
  * keeps only `created`, which an insert never brings through these methods.
+ *
+ * ⚠️ WHERE THIS STOPS. `Entry::query()->toBase()` hands back the underlying
+ * query builder, and a write through it is not audited. That is not a hole
+ * this class can close: `toBase()` is the same door as `DB::table('entries')`
+ * and `DB::statement(...)`, and no model-layer guard can stand in front of
+ * raw SQL. Overriding it is not an option either — Laravel's own `update()`,
+ * `count()` and `pluck()` all go through it, this class included.
+ *
+ * So the guarantee is about the ELOQUENT layer: no Eloquent path creates,
+ * changes or removes an entry without an audit row or a refusal. Reaching
+ * past Eloquent is explicit, visible in review as `toBase()` or `DB::`, and
+ * would need database triggers to prevent — which is a decision with its own
+ * costs and would want its own ADR. ADR-020 says exactly this rather than
+ * claiming more.
  *
  * Bound to Entry rather than made generic, following AppendOnlyBuilder. One
  * model needs this today, and a concrete binding is what lets the analyser
@@ -72,6 +87,8 @@ class AuditedBuilder extends Builder
     {
         $model = $this->getModel();
 
+        $this->guardScopeKeys($values);
+
         return DB::transaction(function () use ($values, $sequence, $model) {
             $id = parent::insertGetId($values, $sequence);
 
@@ -82,6 +99,49 @@ class AuditedBuilder extends Builder
 
             return $id;
         });
+    }
+
+    /**
+     * ⚠️ The row being inserted must belong to the org being audited.
+     *
+     * `createQuietly()` and `withoutEvents()` suppress EnforcesScope's
+     * `creating` listener, which is what normally STAMPS these columns — so a
+     * caller can supply another org's `org_id` and `site_id` and have them
+     * inserted verbatim. The audit row is then written under the CURRENT
+     * context, so the other org gains an entry with no audit record while
+     * this one gains a trail pointing at a row it does not own. Both halves
+     * are wrong, and the trail is wrong in the direction that reads as
+     * evidence.
+     *
+     * Refused rather than restamped: a caller who passed an explicit org_id
+     * meant something by it, and silently rewriting it would be its own kind
+     * of lie.
+     *
+     * @param  array<string, mixed>  $values
+     */
+    private function guardScopeKeys(array $values): void
+    {
+        $context = app(Context::class);
+
+        foreach (['org_id' => $context->orgId(), 'site_id' => $context->siteId()] as $column => $current) {
+            // Absent means the listener will stamp it, or the column does not
+            // apply. NULL is legitimate for site_id: org-shared entries.
+            if (! array_key_exists($column, $values) || $values[$column] === null) {
+                continue;
+            }
+
+            // No context to compare against is a different failure, and
+            // recordOrFail() reports it better — it names the fix.
+            if ($current === null || (int) $values[$column] === (int) $current) {
+                continue;
+            }
+
+            throw new RuntimeException(
+                "Refusing to create an entry with [{$column}] outside the current scope. The audit "
+                .'row would be written under this context, so the other scope would gain an entry '
+                .'with no trail and this one a trail for a row it does not own (ADR-020).'
+            );
+        }
     }
 
     /**
