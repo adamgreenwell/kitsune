@@ -187,11 +187,12 @@ class Entry extends Model implements RequiresModelSave
         // That flag stays true for the lifetime of the instance, so every
         // later save on a freshly created entry recorded another revision —
         // including saves that changed nothing versioned at all.
-        static::created(function (self $entry): void {
-            if (! RevisionWrites::suspended()) {
-                $entry->recordRevision();
-            }
-        });
+        // ⚠️ There is deliberately NO `created` revision listener either, for the
+        // reason the `updated` one went: it fires after `insertGetId()` has
+        // returned and its transaction committed, so a concurrent updater can
+        // commit and record version B before the initial version A is written —
+        // leaving A newest while the live entry is B. Creation is recorded inside
+        // the insert transaction, in `AuditedBuilder::insertGetId()`.
 
         // ⚠️ There is deliberately NO `updated` revision listener.
         //
@@ -824,68 +825,65 @@ class Entry extends Model implements RequiresModelSave
             );
         }
 
-        // ⚠️ Refreshed BEFORE the type comparison, and it used to come after.
+        // ⚠️ Everything that JUDGES happens inside the transaction, after the
+        // row is locked — and refreshing and judging outside it was still a race.
         //
-        // Two reasons, and the first is a hole in the guard below. A stale
-        // instance still holding type A passed the comparison, `refresh()` then
-        // loaded the current type B, and `snapshot()` wrote type A and its values
-        // back — silently reversing the very type change this guard promises to
-        // refuse. A guard that reads in-memory state to decide whether the
-        // DATABASE may be written is guarding the wrong thing.
-        //
-        // The second is that "did anything change" cannot be answered otherwise.
-        // A model returned by `create()` holds only the attributes the caller
-        // set, so `slug` and `published_at` are absent from both `$attributes`
-        // and `$original`; filling them from the snapshot with the same nulls
-        // marks them dirty and `wasChanged()` reports a change that never
-        // happened, filing a redundant version for a no-op restore.
-        $this->refresh();
+        // A refresh read the current type, another request changed it, and the
+        // comparison then passed against a type that was already stale. Worse,
+        // filling the snapshot did not mark `entry_type_id` dirty against the
+        // in-memory value, so the save wrote type A's values onto a row that had
+        // become type B and the final revision claimed a type the row did not
+        // have. A guard that reads outside the lock it is protecting is not a
+        // guard; it is a hint.
+        DB::transaction(function () use ($revision): void {
+            // The lock first, so nothing below can be answered from stale state.
+            self::query()->withoutGlobalScopes()->whereKey($this->getKey())->lockForUpdate()->get();
 
-        // ⚠️ Refused ACROSS a type change, rather than silently applied.
-        //
-        // `values` are keyed by field handle and mean whatever the entry's type
-        // says they mean, and `entry_type_id` is mutable. Restoring a revision
-        // authored under the old type wrote its values back onto an entry that
-        // now resolves a different field set — so the same JSON was read
-        // against the wrong schema, which is the quiet-content-destruction
-        // ADR-006 locks storage shape to prevent, arriving by another door.
-        //
-        // Refused rather than restoring the old type as well: moving an entry
-        // between types changes which fields apply, its URL, and the relations
-        // pointing at it. That is a deliberate act, not a side effect of asking
-        // for last Tuesday's text.
-        if ($revision->entry_type_id !== $this->entry_type_id) {
-            throw new RuntimeException(sprintf(
-                'Revision [%s] was authored while this entry was type [%s] and it is now type [%s]. '
-                .'Its values are keyed by that type\'s field handles, so restoring them here would '
-                .'read them against a different schema (ADR-006, ADR-010). Change the type back '
-                .'first if that is what you mean.',
-                (string) $revision->getKey(),
-                (string) $revision->entry_type_id,
-                (string) $this->entry_type_id,
-            ));
-        }
+            // ⚠️ And the refresh is needed for a second, separate reason: a model
+            // from `create()` holds only the attributes the caller set, so `slug`
+            // and `published_at` are in neither `$attributes` nor `$original`.
+            // Filling them from the snapshot with the same nulls marks them dirty
+            // and `wasChanged()` reports a change that never happened, filing a
+            // redundant version for a no-op restore.
+            $this->refresh();
 
-        $state = $revision->relation_state;
-
-        // ⚠️ VALIDATED before anything is written. The refusal below says
-        // "nothing has been changed", and that has to be true when it is
-        // raised — an earlier version validated after the entry save, so the
-        // message was a lie for the scalar half.
-        if ($state !== null) {
-            $this->refuseMissingTargets($revision, $state);
-        }
-
-        $relationsBefore = $this->relationState();
-
-        DB::transaction(function () use ($revision, $state, $relationsBefore): void {
-            // ⚠️ ONE transaction over both halves. Without it the entry save
-            // persisted the title and values, a relation rebuild then threw, and
-            // its inner transaction rolled back only the pivots — so a restore
-            // reported as failed had in fact changed the content.
+            // ⚠️ Refused ACROSS a type change, rather than silently applied.
             //
-            // ⚠️ And ONE version, recorded at the END. The scalar save fires
-            // `updated`, so the revision it filed described the entry with its
+            // `values` are keyed by field handle and mean whatever the entry's
+            // type says they mean, and `entry_type_id` is mutable. Restoring a
+            // revision authored under the old type wrote its values back onto an
+            // entry that now resolves a different field set — the same JSON read
+            // against the wrong schema, which is the quiet content destruction
+            // ADR-006 locks storage shape to prevent, arriving by another door.
+            //
+            // Refused rather than restoring the old type as well: moving an entry
+            // between types changes which fields apply, its URL, and the relations
+            // pointing at it. That is a deliberate act, not a side effect of
+            // asking for last Tuesday's text.
+            if ($revision->entry_type_id !== $this->entry_type_id) {
+                throw new RuntimeException(sprintf(
+                    'Revision [%s] was authored while this entry was type [%s] and it is now type '
+                    .'[%s]. Its values are keyed by that type\'s field handles, so restoring them '
+                    .'here would read them against a different schema (ADR-006, ADR-010). Change '
+                    .'the type back first if that is what you mean.',
+                    (string) $revision->getKey(),
+                    (string) $revision->entry_type_id,
+                    (string) $this->entry_type_id,
+                ));
+            }
+
+            $state = $revision->relation_state;
+
+            // Validated before anything is written, so the refusal below can say
+            // nothing has changed and be telling the truth.
+            if ($state !== null) {
+                $this->refuseMissingTargets($revision, $state);
+            }
+
+            $relationsBefore = $this->relationState();
+
+            // ⚠️ ONE version, recorded at the END. The scalar save fires
+            // `updated`, so a revision filed there described the entry with its
             // OLD relations — and when nothing scalar changed it filed nothing at
             // all, leaving the newest revision not describing the entry. Both
             // halves are one restore, so recording waits for both.

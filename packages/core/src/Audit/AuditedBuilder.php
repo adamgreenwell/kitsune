@@ -12,7 +12,6 @@ namespace Kitsune\Core\Audit;
 
 use Illuminate\Contracts\Database\Query\Expression;
 use Illuminate\Database\Eloquent\Builder;
-use Illuminate\Events\NullDispatcher;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Kitsune\Core\Models\Entry;
@@ -133,9 +132,14 @@ class AuditedBuilder extends ScopedBuilder
      */
     private function recordInitialRevision(mixed $id): void
     {
-        $dispatcher = Entry::getEventDispatcher();
-
-        if (RevisionWrites::suspended() || ($dispatcher !== null && ! $dispatcher instanceof NullDispatcher)) {
+        // ⚠️ EVERY creation, not only the quiet kind — the `NullDispatcher` test
+        // that used to stand here deferred an ordinary create to the `created`
+        // listener, and that listener fires after this transaction has committed.
+        // A concurrent updater can commit and record version B in that window,
+        // leaving the initial version A newest while the live entry is B. Same
+        // race as the update path, and the same answer: record under the lock
+        // that made the write atomic.
+        if (RevisionWrites::suspended()) {
             return;
         }
 
@@ -575,7 +579,14 @@ class AuditedBuilder extends ScopedBuilder
         $touched = false;
 
         foreach (array_keys($written) as $column) {
-            if (in_array($this->bareColumn((string) $column), Entry::VERSIONED_COLUMNS, true)) {
+            // ⚠️ The JSON PATH's root counts. Laravel supports
+            // `update(['values->body' => '...'])`, and `bareColumn()` returns
+            // `values->body`, which never matched the versioned column `values` —
+            // so an inline field could be rewritten with no version recorded, and
+            // a later restore would silently undo it.
+            $bare = explode('->', $this->bareColumn((string) $column))[0];
+
+            if (in_array($bare, Entry::VERSIONED_COLUMNS, true)) {
                 $touched = true;
 
                 break;

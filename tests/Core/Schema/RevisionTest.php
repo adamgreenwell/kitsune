@@ -1168,3 +1168,91 @@ describe('an arithmetic write is still a version', function (): void {
         expect($entry->revisions()->count())->toBe($before);
     });
 });
+
+describe('a JSON-path write is a write to values', function (): void {
+    it('records a version for update([values->key])', function (): void {
+        // ⚠️ Laravel supports the JSON path syntax, and `bareColumn()` returned
+        // `values->body`, which never matched the versioned column `values` — so
+        // an inline field could be rewritten with no version recorded and a later
+        // restore would silently undo it.
+        $entry = anEntry();
+
+        $before = $entry->revisions()->count();
+
+        Entry::query()->whereKey($entry->getKey())->update(['values->body' => 'rewritten']);
+
+        expect($entry->revisions()->count())->toBe($before + 1)
+            ->and($entry->revisions()->latest('id')->first()->values['body'])->toBe('rewritten');
+    });
+
+    it('still records nothing for a JSON path on an unversioned column', function (): void {
+        // `settings` is not part of the versioned surface, and rooting the check
+        // at the column must not make every JSON path versioned.
+        $entry = anEntry();
+
+        $before = $entry->revisions()->count();
+
+        Entry::query()->whereKey($entry->getKey())->touch();
+
+        expect($entry->revisions()->count())->toBe($before);
+    });
+});
+
+describe('relation arithmetic is a version too', function (): void {
+    it('records one when ordering is incremented', function (): void {
+        // ⚠️ `ordering` is the sequence `relationState()` snapshots, so this
+        // reorders an entry's relations — changing what a revision would record —
+        // while taking no source lock and filing no version.
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'people', 'type' => 'relation',
+            'pii_class' => 'none', 'cardinality' => -1,
+        ]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id, 'label' => 'People',
+        ]);
+
+        $entry = anEntry();
+        $alice = anEntry(['title' => 'Alice']);
+        $bob = anEntry(['title' => 'Bob']);
+        $entry->related()->attach($alice->id, ['field_storage_id' => $storage->id, 'ordering' => 0]);
+        $entry->related()->attach($bob->id, ['field_storage_id' => $storage->id, 'ordering' => 1]);
+
+        $before = $entry->revisions()->count();
+
+        EntryRelation::query()
+            ->where('source_entry_id', $entry->getKey())
+            ->where('target_entry_id', $alice->getKey())
+            ->increment('ordering', 5);
+
+        expect($entry->revisions()->count())->toBe($before + 1)
+            ->and($entry->revisions()->latest('id')->first()->relation_state)
+            ->toBe([(string) $storage->id => [$bob->id, $alice->id]]);
+    });
+});
+
+describe('an ordinary create records inside the insert transaction', function (): void {
+    it('records exactly one initial version', function (): void {
+        // ⚠️ The `created` listener fired after `insertGetId()` had committed, so
+        // a concurrent updater could commit and record version B before the
+        // initial version A was written — leaving A newest while the live entry is
+        // B. Recording moved inside the transaction; this asserts it did not
+        // start recording twice in the process.
+        $entry = anEntry();
+
+        expect($entry->revisions()->count())->toBe(1)
+            ->and($entry->revisions()->first()->title)->toBe('First');
+    });
+
+    it('still records one for a quiet create', function (): void {
+        $entry = Entry::createQuietly([
+            'org_id' => $this->org->id,
+            'site_id' => $this->site->id,
+            'entry_type_id' => $this->type->id,
+            'type_handle' => $this->type->handle,
+            'title' => 'Imported',
+            'values' => [],
+        ]);
+
+        expect($entry->revisions()->count())->toBe(1);
+    });
+});

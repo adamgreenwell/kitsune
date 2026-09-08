@@ -69,7 +69,7 @@ class GuardedRelationBuilder extends Builder
         // still lost the version. Nothing else recorded it: the revision recorder
         // lived only on `GuardedBelongsToMany`, so the ordinary Eloquent surface
         // changed relational content and left the newest revision stale.
-        return $this->versioned($this->affectedSources(), function () use ($values) {
+        return $this->versioned($this->freezingRows(...), function () use ($values) {
             // An instance save arrives here too, with its guards already run.
             if ($this->getModel()->guardsRan) {
                 return parent::update($values);
@@ -92,25 +92,37 @@ class GuardedRelationBuilder extends Builder
      */
     public function delete()
     {
-        return $this->versioned($this->affectedSources(), fn () => parent::delete());
+        return $this->versioned($this->freezingRows(...), fn () => parent::delete());
     }
 
     /**
-     * The source entries this statement's predicate currently matches.
+     * Freeze the rows this statement matches, and report their source entries.
      *
-     * Read BEFORE the write, because after a delete there is nothing left to read
-     * — the same reason `AuditedBuilder` captures its keys up front.
+     * ⚠️ Called INSIDE the versioning transaction, and it constrains the
+     * statement to the rows it saw.
+     *
+     * Reading the sources beforehand left a window: `parent::update()` reruns the
+     * original predicate, so a concurrent attach could create a matching pivot
+     * under a source that had been neither locked nor included in the recording —
+     * and the statement wrote it anyway. Capturing the ids under a lock and
+     * writing against THOSE ids is the pattern `AuditedBuilder` already uses for
+     * entries, and for the same reason: the set audited and the set written have
+     * to be the same set.
+     *
+     * The keys are read before the write for the original reason too — after a
+     * delete there is nothing left to read.
      *
      * @return list<mixed>
      */
-    private function affectedSources(): array
+    private function freezingRows(): array
     {
-        return $this->toBase()
-            ->distinct()
-            ->pluck('entry_relations.source_entry_id')
-            ->filter()
-            ->values()
-            ->all();
+        $rows = $this->toBase()->lockForUpdate()->get(['id', 'source_entry_id']);
+
+        // whereKey qualifies the column, so this stays unambiguous even when the
+        // caller joined another table.
+        $this->whereKey($rows->pluck('id')->all());
+
+        return $rows->pluck('source_entry_id')->unique()->filter()->values()->all();
     }
 
     /**
@@ -138,7 +150,7 @@ class GuardedRelationBuilder extends Builder
         // field. `GuardedBelongsToMany` locks the source for `attach()`, and
         // adding this builder path re-opened the same race beside it — a fix
         // that created the hole it was modelled on.
-        return $this->versioned([$row->source_entry_id], fn () => DB::transaction(function () use ($row, $values, $sequence) {
+        return $this->versioned(fn (): array => [$row->source_entry_id], fn () => DB::transaction(function () use ($row, $values, $sequence) {
             Entry::withoutScopeBecause(
                 'locking the source entry so the cardinality count cannot interleave',
                 fn ($query) => $query->whereKey($row->source_entry_id)->lockForUpdate()->get(),
@@ -250,11 +262,20 @@ class GuardedRelationBuilder extends Builder
      * @param  string|Expression  $column
      * @param  array<string, mixed>  $extra
      */
+    /**
+     * ⚠️ Versioned like every other write here, and these four were not.
+     *
+     * `ordering` is the sequence `relationState()` snapshots, so
+     * `EntryRelation::query()->increment('ordering')` reorders an entry's
+     * relations — changing what a revision would record — while taking no source
+     * lock and filing no version. Restoring the latest revision then silently
+     * undid the reorder.
+     */
     public function increment($column, $amount = 1, array $extra = [])
     {
         $this->refuseGuardedColumns([(string) $column => $amount, ...$extra]);
 
-        return parent::increment($column, $amount, $extra);
+        return $this->versioned($this->freezingRows(...), fn () => parent::increment($column, $amount, $extra));
     }
 
     /**
@@ -265,7 +286,7 @@ class GuardedRelationBuilder extends Builder
     {
         $this->refuseGuardedColumns([(string) $column => $amount, ...$extra]);
 
-        return parent::decrement($column, $amount, $extra);
+        return $this->versioned($this->freezingRows(...), fn () => parent::decrement($column, $amount, $extra));
     }
 
     /**
@@ -276,7 +297,7 @@ class GuardedRelationBuilder extends Builder
     {
         $this->refuseGuardedColumns([...$columns, ...$extra]);
 
-        return parent::incrementEach($columns, $extra);
+        return $this->versioned($this->freezingRows(...), fn () => parent::incrementEach($columns, $extra));
     }
 
     /**
@@ -287,7 +308,7 @@ class GuardedRelationBuilder extends Builder
     {
         $this->refuseGuardedColumns([...$columns, ...$extra]);
 
-        return parent::decrementEach($columns, $extra);
+        return $this->versioned($this->freezingRows(...), fn () => parent::decrementEach($columns, $extra));
     }
 
     /**

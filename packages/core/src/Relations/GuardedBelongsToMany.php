@@ -61,7 +61,7 @@ class GuardedBelongsToMany extends BelongsToMany
     public function attach($id, array $attributes = [], $touch = true)
     {
         $this->versioned(
-            $this->sourceKeys($id, $attributes),
+            fn (): array => $this->sourceKeys($id, $attributes),
             fn () => $this->serialised($id, $attributes, fn () => parent::attach($id, $attributes, $touch)),
         );
     }
@@ -70,7 +70,7 @@ class GuardedBelongsToMany extends BelongsToMany
     public function updateExistingPivot($id, array $attributes, $touch = true)
     {
         return $this->versioned(
-            $this->sourceKeys($id, $attributes),
+            fn (): array => $this->sourceKeys($id, $attributes),
             fn () => $this->serialised($id, $attributes, fn () => parent::updateExistingPivot($id, $attributes, $touch)),
         );
     }
@@ -93,7 +93,7 @@ class GuardedBelongsToMany extends BelongsToMany
         return $this->versioned(
             // Both directions: a sync attaches and detaches, so the sources it
             // could touch are the union of what each would.
-            array_values(array_unique([...$this->detachSourceKeys(null), ...$this->sourceKeys($ids, [])])),
+            fn (): array => array_values(array_unique([...$this->detachSourceKeys(null), ...$this->sourceKeys($ids, [])])),
             fn () => parent::sync($ids, $detaching),
         );
     }
@@ -112,7 +112,7 @@ class GuardedBelongsToMany extends BelongsToMany
     public function detach($ids = null, $touch = true)
     {
         return $this->versioned(
-            $this->detachSourceKeys($ids),
+            fn (): array => $this->detachSourceKeys($ids),
             fn () => parent::detach($ids, $touch),
         );
     }

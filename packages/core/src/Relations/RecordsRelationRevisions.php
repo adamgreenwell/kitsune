@@ -45,10 +45,18 @@ trait RecordsRelationRevisions
      * CHANGED, not merely attempted: the before and after states are compared, so
      * a delete that matched nothing files nothing.
      *
-     * @param  list<mixed>  $sources
+     * ⚠️ `$sources` is a CALLABLE, invoked inside the transaction. It was an
+     * array computed by the caller beforehand, which left a window: a concurrent
+     * attach could create a matching pivot under a source that had not been
+     * locked or included in the recording, and the statement then wrote it
+     * anyway. Deciding what a statement affects has to happen under the same lock
+     * as the statement — the same reason `AuditedBuilder` captures its keys inside
+     * its transaction and constrains the write to them.
+     *
+     * @param  callable(): list<mixed>  $sources
      * @param  callable(): mixed  $write
      */
-    private function versioned(array $sources, callable $write): mixed
+    private function versioned(callable $sources, callable $write): mixed
     {
         // ⚠️ The SHARED flag, not a counter on this object — a per-instance depth
         // was the first attempt and it did not hold.
@@ -65,6 +73,8 @@ trait RecordsRelationRevisions
         }
 
         return DB::transaction(function () use ($sources, $write): mixed {
+            $sources = $sources();
+
             if ($sources !== []) {
                 // withoutGlobalScopes: this is a lock, not a read that reaches a
                 // caller. A source in another scope must still serialise, and a
