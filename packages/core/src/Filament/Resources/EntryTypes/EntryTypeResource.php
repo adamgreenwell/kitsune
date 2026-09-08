@@ -27,6 +27,7 @@ use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Collection;
+use Kitsune\Core\Filament\Icons;
 use Kitsune\Core\Filament\Resources\EntryTypes\Pages\CreateEntryType;
 use Kitsune\Core\Filament\Resources\EntryTypes\Pages\EditEntryType;
 use Kitsune\Core\Filament\Resources\EntryTypes\Pages\ListEntryTypes;
@@ -122,9 +123,18 @@ class EntryTypeResource extends Resource
                         ->dehydrated(),
                     TextInput::make('name')->required()->maxLength(255)->label('Singular name'),
                     TextInput::make('plural_name')->required()->maxLength(255),
-                    TextInput::make('icon')
-                        ->maxLength(255)
-                        ->helperText('A Heroicon name, e.g. heroicon-o-rectangle-stack.'),
+                    Select::make('icon')
+                        ->label('Icon')
+                        // ⚠️ A SELECT, not free text. This column is rendered
+                        // into the navigation on every admin page, and Blade
+                        // Icons throws on a name it cannot resolve — so a typo
+                        // here used to return 500 from every page in the org's
+                        // admin, including this one. Searchable because there
+                        // are 648 of them.
+                        ->options(Icons::options())
+                        ->searchable()
+                        ->native(false)
+                        ->helperText('Shown in the sidebar. Leave empty for the default.'),
                     Textarea::make('description')->rows(2)->columnSpanFull(),
                 ])
                 ->columns(2),

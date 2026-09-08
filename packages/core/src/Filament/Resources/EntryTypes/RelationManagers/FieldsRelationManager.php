@@ -22,6 +22,7 @@ use Filament\Schemas\Components\Section;
 use Filament\Schemas\Components\Utilities\Get;
 use Filament\Schemas\Components\Utilities\Set;
 use Filament\Schemas\Schema;
+use Filament\Support\Exceptions\Halt;
 use Filament\Tables\Columns\IconColumn;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Table;
@@ -53,6 +54,25 @@ class FieldsRelationManager extends RelationManager
     protected static string $relationship = 'fields';
 
     protected static ?string $title = 'Fields';
+
+    /**
+     * The unlimited cardinality, as `field_storage` stores it.
+     *
+     * Named rather than written as -1 in three places, because the form, the
+     * resolution below and the reuse check all have to agree on it.
+     */
+    private const UNLIMITED = -1;
+
+    /**
+     * The form-only choice meaning "many, up to a number I will give you".
+     *
+     * ⚠️ A STRING, so it cannot collide with a cardinality. `0` was the obvious
+     * sentinel and is unusable: Filament returns select state as a string and an
+     * unset control reads as null, so `(int) $get(...)` makes both null and
+     * "0" indistinguishable from the sentinel — the maximum input would appear
+     * before a field type had been chosen. It never reaches storage.
+     */
+    private const LIMITED = 'max';
 
     /**
      * ⚠️ The relation manager authorizes itself, because it is its own route.
@@ -131,13 +151,39 @@ class FieldsRelationManager extends RelationManager
                         ->helperText('Cannot change once the field exists — create a new field, convert, verify, then drop the old one.'),
                     Select::make('storage_cardinality')
                         ->label('Values')
-                        ->options([1 => 'One', -1 => 'Many'])
+                        // ⚠️ Three options, not two. The stored column is an
+                        // integer and every layer below already honours a finite
+                        // bound — `max:{n}` in validation, `maxItems` in the
+                        // published API schema, and the cardinality count the
+                        // relation writer serialises against. Offering only One
+                        // and Many meant the flagship builder could not express
+                        // a capability the rest of the system enforces, so
+                        // "at most three authors" had to be built by hand.
+                        ->options([
+                            1 => 'One',
+                            self::UNLIMITED => 'Many — no limit',
+                            self::LIMITED => 'Many — up to a maximum',
+                        ])
                         ->default(1)
                         ->required()
+                        ->live()
                         // A type intrinsically single-valued says so, rather
                         // than being configured wrong and failing later.
                         ->disabled(fn (Get $get, ?Field $record): bool => $record !== null
                             || self::type($get)?->supportsCardinality() !== true)
+                        ->dehydrated(),
+                    TextInput::make('storage_cardinality_max')
+                        ->label('Maximum values')
+                        ->numeric()
+                        // Two, because a maximum of one IS cardinality one and a
+                        // second way to say it would store a different integer
+                        // for the same meaning.
+                        ->minValue(2)
+                        ->default(2)
+                        ->required(fn (Get $get): bool => $get('storage_cardinality') === self::LIMITED)
+                        ->visible(fn (Get $get): bool => $get('storage_cardinality') === self::LIMITED)
+                        ->disabled(fn (?Field $record): bool => $record !== null)
+                        ->helperText('Stored as the cardinality, so it is part of the locked shape.')
                         ->dehydrated(),
                 ])
                 ->columns(3),
@@ -227,7 +273,9 @@ class FieldsRelationManager extends RelationManager
             ->defaultSort('ordering')
             ->headerActions([
                 CreateAction::make()
-                    ->mutateDataUsing($this->writeStorage(...))
+                    ->mutateDataUsing(fn (array $data): array => $this->reporting(
+                        fn (): array => $this->writeStorage($data),
+                    ))
                     ->after($this->syncSchema(...)),
             ])
             ->recordActions([
@@ -236,7 +284,9 @@ class FieldsRelationManager extends RelationManager
                     // ⚠️ NOT writeStorage(). Editing this field's own storage
                     // and adopting somebody else's are different intents that
                     // happen to submit the same form — see updateStorage().
-                    ->mutateDataUsing($this->updateStorage(...))
+                    ->mutateDataUsing(fn (array $data, Field $record): array => $this->reporting(
+                        fn (): array => $this->updateStorage($data, $record),
+                    ))
                     ->after($this->syncSchema(...)),
                 DeleteAction::make(),
             ]);
@@ -275,11 +325,16 @@ class FieldsRelationManager extends RelationManager
             return $data;
         }
 
+        $cardinality = (int) $storage->cardinality;
+
         return [
             ...$data,
             'storage_handle' => $storage->handle,
             'storage_type' => $storage->type,
-            'storage_cardinality' => $storage->cardinality,
+            // A stored bound above one is the LIMITED choice plus its number;
+            // one and unlimited are the choices themselves.
+            'storage_cardinality' => $cardinality > 1 ? self::LIMITED : $cardinality,
+            'storage_cardinality_max' => $cardinality > 1 ? $cardinality : null,
             'storage_pii_class' => $storage->pii_class,
             'storage_is_indexed' => $storage->is_indexed,
             'storage_settings' => $storage->settings ?? [],
@@ -315,6 +370,7 @@ class FieldsRelationManager extends RelationManager
         // shared row is shared — one form cannot speak for all of it.
         if ($existing !== null) {
             $this->refuseIncompatibleReuse($existing, $data);
+            $this->refuseSecondFieldOnThisType($existing);
 
             $this->pendingStorage = $existing;
 
@@ -324,7 +380,7 @@ class FieldsRelationManager extends RelationManager
         $storage = new FieldStorage(['org_id' => $orgId, 'handle' => $data['storage_handle']]);
 
         $storage->type = $data['storage_type'];
-        $storage->cardinality = (int) ($data['storage_cardinality'] ?? 1);
+        $storage->cardinality = self::resolveCardinality($data);
         $storage->pii_class = $data['storage_pii_class'];
         $storage->is_indexed = (bool) ($data['storage_is_indexed'] ?? false);
         $storage->setAttribute('settings', $data['storage_settings'] ?? []);
@@ -415,6 +471,28 @@ class FieldsRelationManager extends RelationManager
         $storage = $record?->fieldStorage;
 
         return $storage !== null && ! $this->ownsStorage($storage);
+    }
+
+    /**
+     * The integer cardinality a submitted form means.
+     *
+     * The form has two controls for one column: a choice, and a number that
+     * only exists for one of the choices. Resolving it in one place is what
+     * keeps the write and the reuse check from disagreeing.
+     *
+     * @param  array<string, mixed>  $data
+     */
+    private static function resolveCardinality(array $data): int
+    {
+        $choice = $data['storage_cardinality'] ?? 1;
+
+        if ($choice !== self::LIMITED) {
+            return (int) $choice;
+        }
+
+        // Floored at two rather than trusted: `minValue(2)` is a client-side
+        // and validation concern, and this is the value that gets stored.
+        return max(2, (int) ($data['storage_cardinality_max'] ?? 2));
     }
 
     /** Whether this storage row belongs to the org currently signed in. */
@@ -513,6 +591,81 @@ class FieldsRelationManager extends RelationManager
     }
 
     /**
+     * Turn a refusal into something the author can read.
+     *
+     * ⚠️ Every guard in this form threw a RuntimeException out of
+     * `mutateDataUsing`, which Livewire answers with a 500. The author saw the
+     * modal stay open with NO message at all — no validation error, no
+     * notification, nothing — while the log recorded the real reason. Measured:
+     * submitting a duplicate handle left the dialog sitting there and wrote
+     * `UNIQUE constraint failed: fields.entry_type_id, fields.field_storage_id`
+     * to the log. Silence is a worse outcome than the exception it was hiding.
+     *
+     * `Halt` is Filament's own way to abort an action without an error page, so
+     * the notification carries the reason and nothing 500s. One seam, so every
+     * refusal here becomes legible rather than each one having to remember.
+     *
+     * @template TReturn
+     *
+     * @param  callable(): TReturn  $work
+     * @return TReturn
+     */
+    private function reporting(callable $work): mixed
+    {
+        try {
+            return $work();
+        } catch (RuntimeException $e) {
+            Notification::make()
+                ->title('That field could not be saved')
+                ->body($e->getMessage())
+                ->danger()
+                ->persistent()
+                ->send();
+
+            throw new Halt;
+        }
+    }
+
+    /**
+     * Refuse a second field on THIS type backed by the same storage.
+     *
+     * ⚠️ `fields` is `UNIQUE (entry_type_id, field_storage_id)`, and adoption
+     * happily returned the existing storage id for a handle already used on this
+     * very type — so the insert violated the constraint. Reuse across DIFFERENT
+     * types is the whole point of ADR-006's split; reuse twice on one type is an
+     * author repeating themselves, and it has a name they can act on.
+     */
+    private function refuseSecondFieldOnThisType(FieldStorage $storage): void
+    {
+        // ⚠️ `isset` first. `getOwnerRecord()` returns a typed property with no
+        // default, so calling it before Livewire has mounted the component
+        // raises "must not be accessed before initialization" — which is what a
+        // unit test constructing the manager directly does.
+        $type = isset($this->ownerRecord) ? $this->getOwnerRecord() : null;
+
+        if (! $type instanceof EntryType) {
+            return;
+        }
+
+        $existing = Field::query()
+            ->where('entry_type_id', $type->getKey())
+            ->where('field_storage_id', $storage->getKey())
+            ->first();
+
+        if ($existing === null) {
+            return;
+        }
+
+        throw new RuntimeException(sprintf(
+            'This entry type already has a field using storage [%s] — it is labelled "%s". Storage '
+            .'is shared across entity types by design (ADR-006), but a type can only use a given '
+            .'definition once. Edit that field, or choose a different handle.',
+            $storage->handle,
+            $existing->label,
+        ));
+    }
+
+    /**
      * Refuse a reuse the author almost certainly did not mean.
      *
      * A handle already defined in this org is adopted (ADR-006), and adoption
@@ -526,7 +679,10 @@ class FieldsRelationManager extends RelationManager
     private function refuseIncompatibleReuse(FieldStorage $existing, array $data): void
     {
         $type = $data['storage_type'] ?? null;
-        $cardinality = (int) ($data['storage_cardinality'] ?? 1);
+        // ⚠️ Through the same resolution the write uses. Casting the raw value
+        // would read the `max` sentinel as 0, so adopting a storage row with a
+        // finite bound would look like a shape mismatch and be refused.
+        $cardinality = self::resolveCardinality($data);
 
         if ($existing->type === $type && (int) $existing->cardinality === $cardinality) {
             return;
