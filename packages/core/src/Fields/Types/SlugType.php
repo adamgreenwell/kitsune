@@ -74,9 +74,19 @@ final class SlugType extends BaseFieldType
             // Eloquent and would tell one org a slug is taken because
             // another org holds it. Scoped to the entry type as well,
             // matching UNIQUE (site_id, entry_type_id, slug).
-            Rule::scopedUnique(Entry::class, 'slug', null, function ($query): void {
-                if (app()->bound(EntryType::class)) {
-                    $query->where('entry_type_id', app(EntryType::class)->getKey());
+            // ⚠️ The entry being edited is EXCLUDED. Passing null here meant
+            // an update checked the row against itself, so saving a page
+            // without touching its slug reported the slug as already taken.
+            Rule::scopedUnique(Entry::class, 'slug', $config->record?->getKey(), function ($query) use ($config): void {
+                // Falls back to the record's own type, so the constraint
+                // survives a path with no bound type — matching what the
+                // static form already did.
+                $typeId = app()->bound(EntryType::class)
+                    ? app(EntryType::class)->getKey()
+                    : $config->record?->entry_type_id;
+
+                if ($typeId !== null) {
+                    $query->where('entry_type_id', $typeId);
                 }
             }),
         ];

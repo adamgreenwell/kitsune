@@ -109,14 +109,20 @@ final class SchemaManager
         $wanted = [];
 
         foreach (FieldStorage::query()->where('is_indexed', true)->get() as $storage) {
-            try {
-                $wanted[$storage->generatedColumnName()] = $storage;
-            } catch (RuntimeException) {
-                // A row whose type projects to nothing wants no column.
-                // guard() refuses to index one, but a type can be changed out
-                // from under a row that is already indexed.
+            // ⚠️ Asks the registry directly rather than catching whatever
+            // generatedColumnName() throws. Catching RuntimeException swallowed
+            // an UNKNOWN type as readily as a projection-less one, so `--force`
+            // skipped a genuinely invalid indexed row, could drop the column it
+            // used to have, and still reported the schema as synchronised —
+            // while the dry run threw on the same row.
+            //
+            // A projection-less type is the one case that is not an error: it
+            // wants no column, so it contributes none.
+            if ($this->registry->get($storage->type)->projection(new FieldConfig($storage)) === null) {
                 continue;
             }
+
+            $wanted[$storage->generatedColumnName()] = $storage;
         }
 
         return $wanted;

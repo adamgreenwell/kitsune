@@ -194,6 +194,33 @@ final class JsonType extends BaseFieldType
         }
     }
 
+    /**
+     * ⚠️ The size cap belongs in VALIDATION, not only in conversion.
+     *
+     * `castToStorage()` throws for an oversized value, and in a normal
+     * validate-then-save request that arrives after validation has passed —
+     * so a field a user can type into turned an ordinary mistake into a 500
+     * rather than a message next to the input. The conversion-time guard
+     * stays, because it is what protects a path that never validates.
+     *
+     * Measured on the ENCODED bytes for both input forms, which is what the
+     * column stores and what castToStorage() measures.
+     */
+    private function failOnOversize(string $attribute, mixed $value, Closure $fail): void
+    {
+        $encoded = is_string($value) ? $value : json_encode($value);
+
+        if ($encoded === false || strlen($encoded) <= self::MAX_BYTES) {
+            return;
+        }
+
+        $fail(
+            "The {$attribute} field exceeds ".self::MAX_BYTES.' bytes. This field is for '
+            .'machine-readable configuration, not content — a value this large probably wants '
+            .'a real field type.'
+        );
+    }
+
     /** @return array<string, mixed> */
     protected function scalarApiSchema(FieldConfig $config): array
     {
@@ -239,6 +266,8 @@ final class JsonType extends BaseFieldType
 
                     $this->failOnAmbiguousObject($attribute, $decoded, $fail);
 
+                    $this->failOnOversize($attribute, $value, $fail);
+
                     return;
                 }
 
@@ -257,6 +286,8 @@ final class JsonType extends BaseFieldType
                 }
 
                 $this->failOnAmbiguousEmptyArray($attribute, $value, $fail);
+
+                $this->failOnOversize($attribute, $value, $fail);
             },
         ];
     }

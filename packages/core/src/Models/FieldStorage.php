@@ -109,6 +109,7 @@ class FieldStorage extends Model
             }
 
             $storage->guardHandle();
+            $storage->guardCardinalitySupport();
 
             // ADR-006: storage locks the moment data exists. Shipping this
             // guard in v1 rather than later is the whole point of copying it.
@@ -227,6 +228,39 @@ class FieldStorage extends Model
         $type = app(FieldTypeRegistry::class)->get($this->type);
 
         return $type->projection(new FieldConfig($this))?->signature() ?? 'none';
+    }
+
+    /**
+     * ⚠️ `supportsCardinality()` was ADVISORY, and nothing read it on write.
+     *
+     * BaseFieldType branches on `cardinality !== 1` alone, so a type that
+     * declares no support for multiple values converted, validated and
+     * published as an array anyway once a storage row said so. A promoted
+     * `slug` could produce an array for a column that is scalar in the
+     * database — the flag described an intention rather than a rule.
+     *
+     * Refused at the row, because that is the one place every path goes
+     * through: the builder UI, a seeder and a migration all save a
+     * FieldStorage, and only some of them would go through a form.
+     */
+    private function guardCardinalitySupport(): void
+    {
+        if ((int) $this->cardinality === 1) {
+            return;
+        }
+
+        if (app(FieldTypeRegistry::class)->get($this->type)->supportsCardinality()) {
+            return;
+        }
+
+        throw new RuntimeException(sprintf(
+            'Field type [%s] holds exactly one value, so [%s] cannot have cardinality %d. '
+            .'A multi-value setting here would convert and publish an array for storage that '
+            .'is scalar — including a promoted column, where the database disagrees outright.',
+            $this->type,
+            $this->handle,
+            $this->cardinality,
+        ));
     }
 
     private function guardHandle(): void

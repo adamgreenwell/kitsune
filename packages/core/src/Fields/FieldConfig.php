@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Fields;
 
+use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\Field;
 use Kitsune\Core\Models\FieldStorage;
 
@@ -25,7 +26,29 @@ final class FieldConfig
     public function __construct(
         public readonly FieldStorage $storage,
         public readonly ?Field $field = null,
+        /**
+         * The entry being validated, when there is one.
+         *
+         * ⚠️ A uniqueness rule has to exclude the row it is checking, or
+         * editing anything rejects its own unchanged value as taken. The
+         * static EntryResource form had this right because Filament hands it
+         * the record; a field type is handed a FieldConfig, and there was
+         * nowhere in it to say which entry.
+         *
+         * Passed explicitly rather than read from the container. `EntryType`
+         * is bound by IdentifyEntryType so there is always one to find; no
+         * middleware binds the entry, so a container lookup would have
+         * returned null on every path and reintroduced the bug quietly. A
+         * constructor argument makes the caller supply it or visibly not.
+         */
+        public readonly ?Entry $record = null,
     ) {}
+
+    /** The same field, bound to the entry being validated. */
+    public function for(?Entry $record): self
+    {
+        return new self($this->storage, $this->field, $record);
+    }
 
     public function handle(): string
     {

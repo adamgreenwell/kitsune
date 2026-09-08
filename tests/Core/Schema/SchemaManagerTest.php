@@ -630,6 +630,65 @@ describe('a moved projection takes its old column with it', function (): void {
     });
 });
 
+describe('a capability flag that nothing reads is only a comment', function (): void {
+    /*
+     * ⚠️ `supportsCardinality()` was advisory. BaseFieldType branches on
+     * `cardinality !== 1` alone, so a type declaring no support for multiple
+     * values converted, validated and published as an array anyway once a
+     * storage row said so — a promoted `slug` could produce an array for a
+     * column that is scalar in the database.
+     */
+    it('refuses cardinality above one on a type that holds one value', function (): void {
+        expect(fn () => storageFor('nickname', 'slug', ['org_id' => $this->orgA->id, 'cardinality' => 3]))
+            ->toThrow(RuntimeException::class, 'cannot have cardinality 3');
+    });
+
+    it('refuses unlimited cardinality just the same', function (): void {
+        expect(fn () => storageFor('flag', 'boolean', ['org_id' => $this->orgA->id, 'cardinality' => -1]))
+            ->toThrow(RuntimeException::class);
+    });
+
+    it('still allows it on a type that does support it', function (): void {
+        expect(storageFor('tags', 'text', ['org_id' => $this->orgA->id, 'cardinality' => -1])->cardinality)
+            ->toBe(-1);
+    });
+
+    it('leaves an intrinsically multi-valued type at one', function (): void {
+        // multi_select stores an array at cardinality 1 and says so itself,
+        // so the guard must not read that as a contradiction.
+        expect(storageFor('picks', 'multi_select', ['org_id' => $this->orgA->id])->cardinality)->toBe(1);
+    });
+});
+
+describe('reconcile reports an invalid indexed row rather than skipping it', function (): void {
+    /*
+     * ⚠️ Catching RuntimeException around generatedColumnName() swallowed an
+     * UNKNOWN type as readily as a projection-less one. `--force` therefore
+     * skipped a genuinely invalid indexed row, could drop the column it used
+     * to have, and still reported the schema as synchronised — while the dry
+     * run threw on the very same row.
+     */
+    it('surfaces a row whose type no longer exists', function (): void {
+        $storage = storageFor('price', 'number', ['org_id' => $this->orgA->id, 'is_indexed' => true]);
+        $this->manager->sync($storage);
+
+        // Straight to the database: the model guards would refuse this, which
+        // is exactly why it represents drift rather than an ordinary save.
+        DB::table('field_storage')->where('id', $storage->id)->update(['type' => 'no_such_type']);
+
+        expect(fn () => $this->manager->reconcile())->toThrow(RuntimeException::class);
+        expect(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeTrue();
+    });
+
+    it('still skips a row whose type simply projects to nothing', function (): void {
+        // The one case that is not an error: it wants no column, so it
+        // contributes none and reconcile carries on.
+        storageFor('body', 'rich_text', ['org_id' => $this->orgA->id]);
+
+        expect(fn () => $this->manager->reconcile())->not->toThrow(RuntimeException::class);
+    });
+});
+
 describe('a renamed handle takes its old column with it', function (): void {
     /*
      * ⚠️ Reconciling by handle PREFIX assumed a row's handle never moves.

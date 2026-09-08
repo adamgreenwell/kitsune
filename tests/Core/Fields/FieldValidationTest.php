@@ -60,6 +60,75 @@ describe('number', function (): void {
     });
 });
 
+describe('slug uniqueness has to exclude the entry being edited', function (): void {
+    beforeEach(function (): void {
+        $this->org = Org::create(['name' => 'S', 'slug' => 'slug-org']);
+        app(Context::class)->setOrg($this->org);
+        $this->site = Site::create(['org_id' => $this->org->id, 'handle' => 's', 'slug' => 'slug-site', 'name' => 'S']);
+        app(Context::class)->setSite($this->site);
+
+        $this->type = EntryType::create(['org_id' => $this->org->id, 'handle' => 'page', 'name' => 'P', 'plural_name' => 'Ps']);
+        $this->entry = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'About', 'slug' => 'about']);
+    });
+
+    afterEach(fn () => app(Context::class)->forget());
+
+    /*
+     * ⚠️ The rule passed null as the ignored id, so an update checked the row
+     * against ITSELF: saving a page without touching its slug reported the
+     * slug as already taken. The static EntryResource form had this right
+     * because Filament hands it the record — a field type is handed a
+     * FieldConfig, and there was nowhere in it to say which entry.
+     */
+    it('accepts an unchanged slug on the entry that already holds it', function (): void {
+        $type = app(FieldTypeRegistry::class)->get('slug');
+        $config = configFor('slug')->for($this->entry);
+
+        expect(Validator::make(['f' => 'about'], ['f' => $type->validationRules($config)])->fails())
+            ->toBeFalse();
+    });
+
+    it('still rejects a slug another entry holds', function (): void {
+        Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Contact', 'slug' => 'contact']);
+
+        $type = app(FieldTypeRegistry::class)->get('slug');
+        $config = configFor('slug')->for($this->entry);
+
+        expect(Validator::make(['f' => 'contact'], ['f' => $type->validationRules($config)])->fails())
+            ->toBeTrue();
+    });
+
+    it('still rejects a taken slug when there is no record at all', function (): void {
+        $type = app(FieldTypeRegistry::class)->get('slug');
+
+        expect(Validator::make(['f' => 'about'], ['f' => $type->validationRules(configFor('slug'))])->fails())
+            ->toBeTrue();
+    });
+});
+
+it('refuses a JSON value over the cap as VALIDATION, not as an exception later', function (): void {
+    // ⚠️ castToStorage() threw for this, which in a validate-then-save request
+    // arrives after validation has passed — turning an ordinary mistake in a
+    // field a user can type into into a 500 rather than a message.
+    $big = ['blob' => str_repeat('x', 70000)];
+
+    expect(validate('json', ['f' => $big])->fails())->toBeTrue()
+        ->and(validate('json', ['f' => json_encode($big)])->fails())->toBeTrue()
+        ->and(validate('json', ['f' => ['blob' => 'small']])->fails())->toBeFalse();
+});
+
+it('publishes multi-select choices, which validation already enforced', function (): void {
+    // Element validation accepted only the configured keys while the schema
+    // advertised every string — so a generated client could not discover the
+    // options and would submit values the API then rejected.
+    $config = configFor('multi_select', ['options' => ['1' => 'One', 'b' => 'B']]);
+    $schema = app(FieldTypeRegistry::class)->get('multi_select')->apiSchema($config);
+
+    expect($schema['items']['enum'])->toBe(['1', 'b'])
+        ->and(app(FieldTypeRegistry::class)->get('multi_select')->apiSchema(configFor('multi_select'))['items'])
+        ->toBe(['type' => 'string']);
+});
+
 describe('relation, where the rule has to reach each id', function (): void {
     beforeEach(function (): void {
         $this->orgA = Org::create(['name' => 'A', 'slug' => 'val-a']);
