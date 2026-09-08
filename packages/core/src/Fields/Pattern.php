@@ -135,6 +135,29 @@ final class Pattern
                 continue;
             }
 
+            // ⚠️ POSSESSIVE quantifiers, which I declined to detect while the
+            // screen was substring-based — `\++` (an escaped plus, then a
+            // quantifier) was indistinguishable from `a++` without a parse.
+            //
+            // The scanner tracks escapes now, so that objection no longer holds:
+            // `\+` is consumed above as an escape and never reaches here. `a++`
+            // compiles in PCRE and ECMAScript rejects it outright with "Nothing
+            // to repeat", so it is exactly the class of thing this screens.
+            if (in_array($char, ['*', '+', '?', '}'], true) && mb_substr($pattern, $i + 1, 1) === '+') {
+                return sprintf('the possessive quantifier `%s+` — ECMAScript has no possessive form', $char);
+            }
+
+            // ⚠️ And control verbs. `(*SKIP)`, `(*PRUNE)`, `(*FAIL)` and the rest
+            // are backtracking directives with no ECMAScript equivalent at all,
+            // and they open with `(*` rather than `(?` so the group allowlist
+            // never saw them.
+            if ($char === '(' && mb_substr($pattern, $i + 1, 1) === '*') {
+                return sprintf(
+                    'the control verb `%s` — ECMAScript has no backtracking directives',
+                    rtrim(mb_substr($pattern, $i, (int) (mb_strpos($pattern.')', ')', $i) - $i + 1))),
+                );
+            }
+
             if ($char !== '(' || mb_substr($pattern, $i + 1, 1) !== '?') {
                 continue;
             }

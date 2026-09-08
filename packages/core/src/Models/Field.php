@@ -164,14 +164,18 @@ class Field extends Model implements RefusesCascadingDeletes, RequiresModelSave
                             ->whereColumn('entry_relations.source_entry_id', 'entries.id')
                             ->where('entry_relations.field_storage_id', $storage->getKey()),
                     )->count(),
-                    // The promoted columns are snapshotted as well, so the
-                    // same reasoning applies: a cleared column with a revision
-                    // still holding the value is data nothing could find again.
+                    // ⚠️ The LIVE column only, and adding a revision check here
+                    // was wrong: `entry_revisions` holds `values` and revision
+                    // metadata, and no promoted columns at all — so querying
+                    // `entry_revisions.slug` was a missing-column error that made
+                    // even an UNUSED promoted field unremovable.
+                    //
+                    // `Entry::redactStorage()` documents the same thing from the
+                    // erasure side. If the revision table ever snapshots promoted
+                    // columns, this check gains the same `orWhereHas` the inline
+                    // branch has, and not before.
                     StorageStrategy::Promoted => $query
-                        ->where(fn ($entries) => $entries
-                            ->whereNotNull($column = (string) $storage->promotedColumn())
-                            ->orWhereHas('revisions', fn ($revisions) => $revisions
-                                ->whereNotNull($column)))
+                        ->whereNotNull((string) $storage->promotedColumn())
                         ->count(),
                     // ⚠️ REVISIONS too, and checking the live row alone was a
                     // hole big enough to lose personal data through.

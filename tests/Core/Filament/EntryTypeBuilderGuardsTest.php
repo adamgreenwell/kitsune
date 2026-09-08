@@ -905,6 +905,38 @@ describe('settings that contradict themselves are refused', function (): void {
             ->and(Pattern::unpublishable('(?(1)a|b)'))->toContain('(?(1)');
     });
 
+    it('refuses possessive quantifiers, which tracking escapes made possible', function (): void {
+        /*
+         * ⚠️ I declined to detect these while the screen was substring-based,
+         * because `\++` — an escaped plus followed by a quantifier — could not be
+         * told from `a++` without a parse, and a false refusal is the worse trade.
+         *
+         * The scanner tracks escapes now, so the objection no longer holds: the
+         * escaped plus is consumed as an escape and never reaches the quantifier
+         * check. That is the case asserted first, because it is the one the
+         * earlier decision was protecting.
+         */
+        expect(Pattern::unpublishable('\\++'))->toBeNull()
+            ->and(Pattern::unpublishable('a\\+\\+b'))->toBeNull()
+            // Ordinary and lazy quantifiers are untouched.
+            ->and(Pattern::unpublishable('a+'))->toBeNull()
+            ->and(Pattern::unpublishable('a+?'))->toBeNull()
+            ->and(Pattern::unpublishable('[+]+'))->toBeNull()
+            // And the possessive forms are refused.
+            ->and(Pattern::unpublishable('a++'))->toContain('possessive')
+            ->and(Pattern::unpublishable('a*+'))->toContain('possessive')
+            ->and(Pattern::unpublishable('x{2,3}+'))->toContain('possessive');
+    });
+
+    it('refuses backtracking control verbs', function (): void {
+        // ⚠️ These open with `(*` rather than `(?`, so the group allowlist never
+        // saw them — a whole family of PCRE-only syntax slipping past a screen
+        // built around one prefix.
+        expect(Pattern::unpublishable('(*SKIP)a'))->toContain('(*SKIP)')
+            ->and(Pattern::unpublishable('(*FAIL)'))->toContain('(*FAIL)')
+            ->and(Pattern::unpublishable('a(*PRUNE)b'))->toContain('(*PRUNE)');
+    });
+
     it('allowlists group prefixes rather than listing offenders', function (): void {
         // The point of the allowlist: a construct nobody anticipated is refused
         // too, which a list of known offenders cannot do. Same reasoning as the
@@ -1146,5 +1178,93 @@ describe('a field whose data survives only in history cannot be deleted', functi
         $field->delete();
 
         expect(Field::query()->whereKey($field->getKey())->exists())->toBeFalse();
+    });
+});
+
+describe('the cascade guard sees the whole row, whatever the caller selected', function (): void {
+    /*
+     * ⚠️ `get()` inherits the caller's projection, so
+     * `Field::query()->select('id')->delete()` handed the guard a model with no
+     * `field_storage_id` — and a DELETE ignores a SELECT list, so the row went
+     * and its data stranded. The same failure as the key-only instance, arriving
+     * through the caller instead of the machinery.
+     */
+    it('refuses a delete whose query selected only the key', function (): void {
+        $type = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'projected', 'name' => 'P', 'plural_name' => 'Ps',
+        ]);
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'kept', 'type' => 'text',
+            'pii_class' => 'personal', 'cardinality' => 1,
+        ]);
+        $field = Field::create([
+            'entry_type_id' => $type->id, 'field_storage_id' => $storage->id, 'label' => 'Kept',
+        ]);
+
+        Entry::create([
+            'entry_type_id' => $type->id, 'title' => 'Holds it', 'values' => ['kept' => 'Jane Doe'],
+        ]);
+
+        expect(fn () => Field::query()->select('id')->whereKey($field->getKey())->delete())
+            ->toThrow(RuntimeException::class, 'still hold data for it');
+
+        expect(Field::query()->whereKey($field->getKey())->exists())->toBeTrue();
+    });
+
+    it('ALLOWS a projected delete when nothing holds data', function (): void {
+        // The projection must not become a reason to refuse either.
+        $type = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'projected2', 'name' => 'P', 'plural_name' => 'Ps',
+        ]);
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'spare', 'type' => 'text',
+            'pii_class' => 'none', 'cardinality' => 1,
+        ]);
+        $field = Field::create([
+            'entry_type_id' => $type->id, 'field_storage_id' => $storage->id, 'label' => 'Spare',
+        ]);
+
+        Field::query()->select('id')->whereKey($field->getKey())->delete();
+
+        expect(Field::query()->whereKey($field->getKey())->exists())->toBeFalse();
+    });
+
+    it('lets an unused PROMOTED field be removed', function (): void {
+        // ⚠️ Adding a revision check for promoted columns made even an unused
+        // promoted field unremovable: `entry_revisions` holds `values` and
+        // revision metadata, and no promoted columns — so the query was a
+        // missing-column error rather than a refusal.
+        $type = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'promoted_type', 'name' => 'P', 'plural_name' => 'Ps',
+        ]);
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'public_slug', 'type' => 'slug',
+            'pii_class' => 'none', 'cardinality' => 1,
+        ]);
+        $field = Field::create([
+            'entry_type_id' => $type->id, 'field_storage_id' => $storage->id, 'label' => 'Slug',
+        ]);
+
+        $field->delete();
+
+        expect(Field::query()->whereKey($field->getKey())->exists())->toBeFalse();
+    });
+
+    it('still refuses a promoted field whose column holds a value', function (): void {
+        $type = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'promoted_type2', 'name' => 'P', 'plural_name' => 'Ps',
+        ]);
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'public_slug2', 'type' => 'slug',
+            'pii_class' => 'personal', 'cardinality' => 1,
+        ]);
+        $field = Field::create([
+            'entry_type_id' => $type->id, 'field_storage_id' => $storage->id, 'label' => 'Slug',
+        ]);
+
+        Entry::create(['entry_type_id' => $type->id, 'title' => 'Has a slug', 'slug' => 'jane-doe']);
+
+        expect(fn () => $field->delete())
+            ->toThrow(RuntimeException::class, 'still hold data for it');
     });
 });
