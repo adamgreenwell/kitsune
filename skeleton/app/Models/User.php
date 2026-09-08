@@ -18,36 +18,45 @@ use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Illuminate\Support\Collection;
+use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
-use Kitsune\Core\Tenancy\Attributes\Unscoped;
+use Kitsune\Core\Tenancy\Attributes\OrgScopedThroughPivot;
+use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
 
 /**
  * Users are deliberately NOT entries (ADR-016) — different lifecycle,
  * different privacy obligations, and a different deletion story. Erasing a
  * user must not cascade-delete their articles.
  *
- * ⚠️ DECLARED #[Unscoped], AND THAT IS A KNOWN GAP, NOT A CONCLUSION.
+ * ⚠️ ORG-SCOPED THROUGH A PIVOT, and both halves of that matter.
  *
- * ADR-021 lists users among the #[OrgScoped] models, and it is right to.
- * Two things stop that being correct today:
+ * ADR-021 lists users among the org-scoped models. Two things made that
+ * unimplementable until now, and each needed its own answer:
  *
- *  1. Authentication resolves a user before any org context exists. A scope
- *     reading Context would match nothing and nobody could log in — the same
- *     bootstrap cycle that broke getTenants() and Site route binding.
+ *  1. Users belong to MANY orgs, so `OrgScope`'s `org_id = current` never
+ *     applied. `architecture.md` §3 models it through `org_user`, and
+ *     `#[OrgScopedThroughPivot]` tests membership rather than reading a
+ *     column.
  *
- *  2. architecture.md models users-to-orgs as many-to-many through org_user,
- *     so OrgScope (org_id = current) does not apply. It needs a pivot-aware
- *     scope that does not exist yet.
+ *  2. Authentication resolves a user BEFORE any org context exists, and the
+ *     scope fails closed with no org — so login would match nobody. That
+ *     carve-out lives in `OrgAwareUserProvider`, because Laravel's provider
+ *     builds its own query and never calls a method on this model — a
+ *     carve-out here would have looked right and never run.
  *
- * Until then this model is globally readable, which means any admin UI
- * listing users would leak across orgs. Nothing lists users yet. Tracked as
- * a Phase 3 RBAC issue rather than left implicit — declaring #[Unscoped]
- * makes the gap greppable instead of invisible, which is the entire reason
- * the attribute is mandatory.
+ * The exposure this closes: `User` was globally readable, so any admin UI
+ * listing users would have enumerated every account on the installation.
+ * Nothing listed users yet, which is why it was a gap rather than an
+ * incident (issue #21).
  */
-#[Unscoped]
+#[OrgScopedThroughPivot(table: 'org_user', foreignKey: 'user_id')]
 class User extends Authenticatable implements FilamentUser, HasTenants
 {
+    // ⚠️ Without this the attribute above is documentation, not enforcement.
+    // `User` declared `#[Unscoped]` for greppability and applied no trait, so
+    // nothing would have enforced the new scope either — a model can be
+    // labelled correctly and still be unconstrained.
+    use EnforcesScope;
     use Notifiable;
 
     protected $guarded = [];
@@ -64,6 +73,12 @@ class User extends Authenticatable implements FilamentUser, HasTenants
     public function sites(): BelongsToMany
     {
         return $this->belongsToMany(Site::class, 'site_user');
+    }
+
+    /** @return BelongsToMany<Org, $this> */
+    public function orgs(): BelongsToMany
+    {
+        return $this->belongsToMany(Org::class, 'org_user');
     }
 
     public function canAccessPanel(Panel $panel): bool

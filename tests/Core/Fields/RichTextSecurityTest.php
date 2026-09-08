@@ -22,6 +22,11 @@ beforeEach(function (): void {
     $this->config = configFor('rich_text');
 });
 
+function sanitised(string $html): string
+{
+    return (new RichTextType)->sanitize($html);
+}
+
 describe('rich_text sanitisation', function (): void {
     it('strips a script tag AND its contents', function (): void {
         // Removing only the tags would leave the script body as visible text.
@@ -155,6 +160,70 @@ it('suggests `personal` for rich text, matching what its own comment says', func
  * ⚠️ `strip_tags()` keeps every attribute on an allowed tag, and removing
  * event handlers alone was a denylist wearing an allowlist's docblock.
  */
+describe('a pattern that can desynchronise from the parser is a denylist', function (): void {
+    /*
+     * ⚠️ The sanitiser was a chain of regular expressions and it had a hole
+     * exactly where those always have one: a `<` inside an UNQUOTED attribute
+     * value. A browser treats that as a parse error and carries on;
+     * `strip_tags()` leaves it alone; and the attribute-allowlisting pattern
+     * required the attribute section to contain no `<`, so the tag matched
+     * NOTHING and no attribute was inspected.
+     *
+     * `<img src=x alt=< onerror=alert(1)>` came back byte-for-byte unchanged.
+     * So did the full-page overlay the ALLOWED_ATTRIBUTES docblock says is
+     * closed. Every attribute in the block below is QUOTED, which is why the
+     * suite was green.
+     *
+     * The document is parsed and rebuilt now, so these are regression tests
+     * for a class rather than for four payloads.
+     */
+    it('strips an event handler after an unquoted attribute containing <', function (string $payload): void {
+        $stored = sanitised($payload);
+
+        expect($stored)->not->toContain('onerror')
+            ->and($stored)->not->toContain('onmouseover')
+            ->and($stored)->not->toContain('alert(1)');
+    })->with([
+        '<img src=x alt=< onerror=alert(1)>',
+        '<img alt=< src=x onerror=alert(1)>',
+        '<p alt=< onmouseover=alert(1)>hover</p>',
+        '<img src=x alt=<< onerror=alert(1)>',
+        '<img src=x alt=<div onerror=alert(1)>',
+    ]);
+
+    it('strips the full-page overlay its own docblock names', function (): void {
+        // style is absent from ALLOWED_ATTRIBUTES precisely so an allowed <a>
+        // cannot cover a public page. The unquoted `<` walked past that.
+        $stored = sanitised('<a href=# alt=< style=position:fixed;inset:0;z-index:9999>pwn</a>');
+
+        expect($stored)->not->toContain('style')
+            ->and($stored)->not->toContain('position:fixed')
+            ->and($stored)->toContain('pwn');
+    });
+
+    it('removes comments, which can carry markup a browser revives', function (): void {
+        expect(sanitised('<!-- <img src=x onerror=alert(1)> -->'))->not->toContain('onerror');
+    });
+
+    it('unwraps a disallowed tag rather than dropping its text', function (): void {
+        // The behaviour strip_tags() gave, preserved deliberately: a <div>
+        // is not allowed, but the words inside it are still content.
+        expect(sanitised('<div>unwrapped <strong>bold</strong></div>'))
+            ->toBe('unwrapped <strong>bold</strong>');
+    });
+
+    it('still removes a forbidden tag WITH its contents', function (): void {
+        // The distinction that matters: stripping the tag alone would leave a
+        // script body as visible text.
+        expect(sanitised('<script>evil()</script>keep'))->toBe('keep');
+    });
+
+    it('leaves legitimate markup byte-identical', function (): void {
+        expect(sanitised('<p>Hello <strong>world</strong></p>'))
+            ->toBe('<p>Hello <strong>world</strong></p>');
+    });
+});
+
 describe('attributes are allowlisted too, not only tags', function (): void {
     it('strips an attribute that is not on the list', function (string $html, string $gone): void {
         expect((new RichTextType)->sanitize($html))->not->toContain($gone);

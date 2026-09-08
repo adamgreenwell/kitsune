@@ -324,12 +324,20 @@ final class SchemaManager
             ->when($storage->exists, fn ($query) => $query->whereKeyNot($storage->getKey()))
             ->get()
             ->contains(function (FieldStorage $other) use ($column): bool {
-                try {
-                    return $other->generatedColumnName() === $column;
-                } catch (RuntimeException) {
-                    // A row whose type projects to nothing wants no column.
+                // ⚠️ Ask the registry, and let an UNKNOWN type surface.
+                //
+                // A broad catch here treated a type from a temporarily
+                // unavailable module exactly like a deliberately
+                // projection-less one — so un-indexing a row could conclude
+                // nobody wanted the shared column and DROP it, taking the
+                // index another org was still querying through. Reference
+                // counting has to fail closed: only a registered type whose
+                // projection is genuinely null wants no column.
+                if ($this->registry->get($other->type)->projection(new FieldConfig($other)) === null) {
                     return false;
                 }
+
+                return $other->generatedColumnName() === $column;
             });
     }
 

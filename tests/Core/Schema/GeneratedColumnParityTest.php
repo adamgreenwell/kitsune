@@ -116,7 +116,10 @@ it('renders a decimal column type this engine accepts', function (): void {
     // where it demands DECIMAL. One string cannot serve both grammars, which
     // is why columnType() and the driver's private cast spelling are separate
     // — and why `integer` was unindexable on MySQL until they were.
-    $expected = $this->driver->name() === 'mysql' ? 'DECIMAL(12,2)' : 'NUMERIC(12,2)';
+    // MariaDB shares MySqlDriver, so it shares its rendered types.
+    $expected = in_array($this->driver->name(), ['mysql', 'mariadb'], true)
+        ? 'DECIMAL(12,2)'
+        : 'NUMERIC(12,2)';
 
     expect($this->driver->columnType(new Projection(LogicalType::Decimal)))->toBe($expected);
 });

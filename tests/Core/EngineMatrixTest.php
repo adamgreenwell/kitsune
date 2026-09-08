@@ -48,5 +48,7 @@ it('round-trips a row on the configured engine', function (): void {
 it('reports which driver it ran against', function (): void {
     $driver = DB::connection()->getDriverName();
 
-    expect($driver)->toBeIn(['sqlite', 'pgsql', 'mysql']);
+    // mariadb is its own driver name, not a flavour of mysql, and it is
+    // documented as supported in README, architecture.md and roadmap.md.
+    expect($driver)->toBeIn(['sqlite', 'pgsql', 'mysql', 'mariadb']);
 })->group('engine');

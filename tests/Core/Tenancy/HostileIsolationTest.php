@@ -117,13 +117,64 @@ describe('cross-org isolation', function (): void {
         // Reading and writing are separate holes. A scope that only filters
         // SELECTs still lets a caller insert into someone else's org.
         app(Context::class)->setSite($this->siteA1);
-        $thing = SiteThing::create(['label' => 'planted', 'org_id' => $this->orgB->id]);
+
+        expect(fn () => SiteThing::create(['label' => 'planted', 'org_id' => $this->orgB->id]))
+            ->toThrow(RuntimeException::class, 'Refusing to write');
+
+        expect(SiteThing::withoutGlobalScopes()->where('label', 'planted')->exists())->toBeFalse();
+    });
+
+    /*
+     * ⚠️ This is the case the test above USED to stand in for, and its old
+     * comment is why: "even if the attacker forced org_id, site_id still pins
+     * it to site A1". That was true of forcing ONE key. Forcing both was never
+     * tested, and the trait only DEFAULTED them — `site_id` when the key was
+     * absent, `org_id` through `??` — so both supplied values were inserted
+     * verbatim. With `status = published` on an Entry that plants live content
+     * on a rival's public site, which SiteScope then shows to them and hides
+     * from its author.
+     */
+    it('cannot be escaped by forcing BOTH keys, which the old test did not cover', function (): void {
+        app(Context::class)->setSite($this->siteA1);
+
+        expect(fn () => SiteThing::create([
+            'label' => 'planted', 'org_id' => $this->orgB->id, 'site_id' => $this->siteB1->id,
+        ]))->toThrow(RuntimeException::class, 'Refusing to write');
 
         app(Context::class)->setSite($this->siteB1);
 
-        // Even if the attacker forced org_id, site_id still pins it to site A1.
         expect(SiteThing::where('label', 'planted')->exists())->toBeFalse();
-        expect($thing->site_id)->toBe($this->siteA1->id);
+    });
+
+    it('cannot be escaped by MOVING a saved row, which stamping never saw', function (): void {
+        app(Context::class)->setSite($this->siteA1);
+        $mine = SiteThing::create(['label' => 'mine']);
+
+        expect(fn () => $mine->update(['org_id' => $this->orgB->id, 'site_id' => $this->siteB1->id]))
+            ->toThrow(RuntimeException::class, 'Refusing to write');
+
+        expect($mine->fresh()->org_id)->toBe($this->orgA->id);
+    });
+
+    it('still lets an org-shared row be written with a null site', function (): void {
+        // NULL site_id is legitimate and must stay so: it is how a row is
+        // shared across an org's sites.
+        app(Context::class)->setSite($this->siteA1);
+
+        expect(fn () => SiteThing::create(['label' => 'shared', 'site_id' => null]))
+            ->not->toThrow(RuntimeException::class);
+    });
+
+    it('still lets the reviewable escape hatch write across scopes', function (): void {
+        // Provisioning and cross-org admin tooling legitimately do, which is
+        // what withoutScopeBecause() is for.
+        app(Context::class)->setSite($this->siteA1);
+
+        $planted = SiteThing::withoutScopeBecause('test: provisioning another org', fn () => SiteThing::create([
+            'label' => 'provisioned', 'org_id' => $this->orgB->id, 'site_id' => $this->siteB1->id,
+        ]));
+
+        expect($planted->org_id)->toBe($this->orgB->id);
     });
 });
 

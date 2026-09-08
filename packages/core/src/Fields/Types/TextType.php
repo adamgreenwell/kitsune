@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Fields\Types;
 
+use Closure;
 use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Fields\LogicalType;
 use Kitsune\Core\Fields\Projection;
@@ -68,10 +69,71 @@ final class TextType extends BaseFieldType
         $schema = ['type' => 'string', 'maxLength' => $this->length($config)];
 
         if (($pattern = $config->setting('pattern')) !== null) {
+            // Published verbatim, because the CANONICAL form is JSON Schema's:
+            // undelimited, unanchored unless the author anchors it. See
+            // scalarValidationRules() for the other half.
             $schema['pattern'] = (string) $pattern;
         }
 
         return $schema;
+    }
+
+    /**
+     * ⚠️ One string cannot serve both grammars, and this shipped as if it
+     * could.
+     *
+     * JSON Schema wants an UNDELIMITED pattern; `preg_match()` requires
+     * delimiters. So `^[a-z]+$` — the form the published schema needs, and the
+     * form my own test used — is not a valid PCRE, and Laravel's `regex:` rule
+     * handed it straight to `preg_match`. A server-valid `/^[a-z]+$/` publishes
+     * literal slashes, which in JSON Schema match literal slashes. Either way
+     * one consumer was wrong, and the test asserted only the published half.
+     *
+     * The canonical form is JSON Schema's. It is published as authored and
+     * delimited here.
+     *
+     * Not Laravel's `regex:` rule either: that splits its parameters on
+     * commas, so a perfectly ordinary `{2,4}` quantifier would arrive as two
+     * broken halves.
+     */
+    private function patternRule(string $pattern): Closure
+    {
+        return function (string $attribute, mixed $value, Closure $fail) use ($pattern): void {
+            if (! is_string($value)) {
+                return;
+            }
+
+            $delimited = $this->delimited($pattern);
+
+            // An uncompilable pattern is a refusal, not a pass. It means the
+            // constraint cannot be checked, and letting the value through
+            // would silently drop a rule the schema still advertises.
+            if ($delimited === null || @preg_match($delimited, '') === false) {
+                $fail("The {$attribute} field is constrained by a pattern that cannot be compiled.");
+
+                return;
+            }
+
+            if (preg_match($delimited, $value) !== 1) {
+                $fail("The {$attribute} field does not match the required format.");
+            }
+        };
+    }
+
+    /**
+     * Wrap a JSON Schema pattern for PCRE, choosing a delimiter it does not
+     * contain rather than escaping — escaping is where the already-escaped
+     * cases go wrong.
+     */
+    private function delimited(string $pattern): ?string
+    {
+        foreach (['/', '#', '~', '%', '!'] as $delimiter) {
+            if (! str_contains($pattern, $delimiter)) {
+                return $delimiter.$pattern.$delimiter.'u';
+            }
+        }
+
+        return null;
     }
 
     protected function scalarValidationRules(FieldConfig $config): array
@@ -81,7 +143,7 @@ final class TextType extends BaseFieldType
         $rules[] = 'max:'.$this->length($config);
 
         if (($pattern = $config->setting('pattern')) !== null) {
-            $rules[] = 'regex:'.$pattern;
+            $rules[] = $this->patternRule((string) $pattern);
         }
 
         return $rules;

@@ -67,7 +67,13 @@ jobs:
       fail-fast: false
       matrix:
         php: ['8.4', '8.5']
-        engine: [sqlite, pgsql, mysql]
+        # ⚠️ mariadb is in the matrix because README, architecture.md and
+        # roadmap.md all document it as supported and DriverFactory routes it
+        # to MySqlDriver — and nothing ran against it, so two MySQL-only
+        # constructs had shipped: the `->>` operator, which MariaDB does not
+        # have, and `CAST(... AS JSON)`, which it rejects. Documented support
+        # that is never exercised is a claim, not a feature.
+        engine: [sqlite, pgsql, mysql, mariadb]
 
     services:
       postgres:
@@ -93,6 +99,18 @@ jobs:
           --health-cmd "mysqladmin ping -h 127.0.0.1 -ukitsune -pkitsune"
           --health-interval 3s --health-timeout 3s --health-retries 20
 
+      mariadb:
+        image: mariadb:10.6
+        env:
+          MARIADB_DATABASE: kitsune
+          MARIADB_USER: kitsune
+          MARIADB_PASSWORD: kitsune
+          MARIADB_ROOT_PASSWORD: root
+        ports: ['3307:3306']
+        options: >-
+          --health-cmd "healthcheck.sh --connect --innodb_initialized"
+          --health-interval 3s --health-timeout 3s --health-retries 20
+
     steps:
       - uses: actions/checkout@v5
 
@@ -108,7 +126,10 @@ jobs:
         env:
           DB_CONNECTION: ${{ matrix.engine == 'sqlite' && 'testing' || matrix.engine }}
           DB_HOST: 127.0.0.1
-          DB_PORT: ${{ matrix.engine == 'pgsql' && '5432' || '3306' }}
+          DB_PORT: >-
+            ${{ matrix.engine == 'pgsql' && '5432'
+             || matrix.engine == 'mariadb' && '3307'
+             || '3306' }}
           DB_DATABASE: kitsune
           DB_USERNAME: kitsune
           DB_PASSWORD: kitsune

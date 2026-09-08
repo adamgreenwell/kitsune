@@ -83,10 +83,48 @@ final class NumberType extends BaseFieldType
         return $config->setting('format') === 'integer' ? (int) $input : (float) $input;
     }
 
-    /** @return array<string, mixed> */
+    /**
+     * ⚠️ The bounds are PUBLISHED, not only enforced (AGENTS.md invariant 13).
+     *
+     * Validation rejects values outside `min`/`max`, and a decimal field also
+     * has bounds derived from its projection — a DECIMAL(12,2) cannot hold
+     * `10000000000`, and the rules say so. Publishing only `{"type": "number"}`
+     * meant a generated client accepted every one of those.
+     *
+     * `exclusiveMinimum`/`exclusiveMaximum` for the projection bound because
+     * the rules are `lt`/`gt`, and `multipleOf` for `step`. What JSON Schema
+     * cannot express is the SCALE — `decimal:0,2` bounds the number of decimal
+     * places, and `multipleOf` only reaches it when a step is configured — so
+     * that one is stated here rather than left implied.
+     *
+     * @return array<string, mixed>
+     */
     protected function scalarApiSchema(FieldConfig $config): array
     {
-        return ['type' => $config->setting('format') === 'integer' ? 'integer' : 'number'];
+        $integer = $config->setting('format') === 'integer';
+
+        $schema = ['type' => $integer ? 'integer' : 'number'];
+
+        if (! $integer) {
+            $bound = 10 ** ($this->precision($config) - $this->scale($config));
+
+            $schema['exclusiveMinimum'] = -$bound;
+            $schema['exclusiveMaximum'] = $bound;
+        }
+
+        if (($min = $config->setting('min')) !== null && is_numeric($min)) {
+            $schema['minimum'] = $min + 0;
+        }
+
+        if (($max = $config->setting('max')) !== null && is_numeric($max)) {
+            $schema['maximum'] = $max + 0;
+        }
+
+        if (($step = $config->setting('step')) !== null && is_numeric($step) && (float) $step > 0) {
+            $schema['multipleOf'] = $step + 0;
+        }
+
+        return $schema;
     }
 
     /** @return array<int, mixed> */

@@ -39,8 +39,27 @@ final class TextareaType extends BaseFieldType
     }
 
     /** @return array<int, mixed> */
+    /**
+     * The 65,535-character limit is PUBLISHED, not only enforced.
+     *
+     * It inherited `{"type": "string"}` from the base type, so a generated
+     * client accepted a value this field rejects (AGENTS.md invariant 13).
+     *
+     * @return array<string, mixed>
+     */
+    protected function scalarApiSchema(FieldConfig $config): array
+    {
+        return ['type' => 'string', 'maxLength' => $this->length($config)];
+    }
+
     protected function scalarValidationRules(FieldConfig $config): array
     {
-        return ['string', 'max:'.$config->setting('maxLength', 65535)];
+        return ['string', 'max:'.$this->length($config)];
+    }
+
+    /** One source for the limit, so the rule and the schema cannot drift. */
+    private function length(FieldConfig $config): int
+    {
+        return (int) $config->setting('maxLength', 65535);
     }
 }

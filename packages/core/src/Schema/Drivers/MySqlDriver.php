@@ -16,7 +16,8 @@ use Kitsune\Core\Fields\Projection;
 use Kitsune\Core\Schema\SchemaDriver;
 
 /**
- * MySQL: `->>` with a `$`-prefixed path, CAST wrapper, backtick quoting.
+ * MySQL and MariaDB: JSON_UNQUOTE(JSON_EXTRACT(...)) with a `$`-prefixed
+ * path, CAST wrapper, backtick quoting.
  *
  * The engine that needs TWO type spellings, which is why the driver exposes a
  * column type and keeps the cast type to itself:
@@ -28,7 +29,7 @@ use Kitsune\Core\Schema\SchemaDriver;
  * | string  | VARCHAR(n)  | CHAR(n) — VARCHAR is rejected here |
  *
  * Returning one string for both left `integer` fields failing at ADD COLUMN
- * and `boolean` fields failing at CAST, because `->>` renders a JSON boolean
+ * and `boolean` fields failing at CAST, because unquoting renders a JSON boolean
  * as the text `'true'` and `CAST('true' AS UNSIGNED)` is an error. Booleans
  * therefore compare the JSON value directly.
  */
@@ -50,19 +51,29 @@ final class MySqlDriver implements SchemaDriver
             LogicalType::Decimal => "DECIMAL({$projection->precision},{$projection->scale})",
             LogicalType::Integer => 'BIGINT',
             LogicalType::Boolean => 'TINYINT(1)',
-            // ⚠️ An explicit BINARY collation, because MySQL's default is
-            // case AND accent insensitive.
+            // ⚠️ VARBINARY, not VARCHAR with a collation.
             //
-            // Without it an indexed exact filter matched `abc` for `ABC` on
-            // MySQL while PostgreSQL and SQLite distinguished them — the same
-            // query returning different rows on different engines, which is
-            // the one thing the driver abstraction exists to prevent. The
-            // index is for exact lookup and the JSON value it projects is
-            // byte-exact, so the column has to compare that way.
+            // MySQL's default collation is case AND accent insensitive, so an
+            // indexed exact filter matched `abc` for `ABC` while PostgreSQL
+            // and SQLite distinguished them — the same query returning
+            // different rows on different engines, which is the one thing the
+            // driver abstraction exists to prevent.
             //
-            // VARCHAR for dates too, matching PostgreSQL, which cannot use a
+            // `utf8mb4_bin` fixed the case half and left another: it is a
+            // PAD SPACE collation, so `'ABC '` and `'ABC'` still compare
+            // equal and either lookup returned both rows. The NO PAD
+            // alternative, `utf8mb4_0900_bin`, does not exist on MariaDB —
+            // which is documented as supported and routed to this driver.
+            //
+            // A binary type is both, on both engines: byte comparison is
+            // case-sensitive and does not pad. The column exists for exact
+            // lookup on a JSON value that is already byte-exact, and is never
+            // selected for display, so binary is what it should always have
+            // been.
+            //
+            // Applied to dates too, matching PostgreSQL, which cannot use a
             // real DATE in a generated column at all.
-            LogicalType::String, LogicalType::Date, LogicalType::DateTime => "VARCHAR({$projection->precision}) COLLATE utf8mb4_bin",
+            LogicalType::String, LogicalType::Date, LogicalType::DateTime => "VARBINARY({$projection->precision})",
         };
     }
 
@@ -71,11 +82,25 @@ final class MySqlDriver implements SchemaDriver
         $column = $this->quote($jsonColumn);
         $extract = sprintf('JSON_EXTRACT(%s, %s)', $column, $this->literal('$.'.$path));
 
-        // A JSON boolean renders as the text 'true'/'false' through ->>, and
-        // casting that to a number is an error. Compare the JSON instead.
+        // ⚠️ JSON_UNQUOTE(JSON_EXTRACT(...)), never the `->>` shorthand.
+        //
+        // MariaDB 10.6 has no `->>` operator, and it is documented as
+        // supported and routed to this driver — so every generated column
+        // failed to create there with a syntax error. The long form means the
+        // same thing and both engines have it.
+        $unquoted = sprintf('JSON_UNQUOTE(%s)', $extract);
+
+        // A JSON boolean unquotes to the text 'true'/'false', and casting
+        // that to a number is an error. So compare the text.
+        //
+        // ⚠️ NOT `CAST('true' AS JSON)`. MariaDB has no JSON cast, and it is
+        // documented as supported and routed to this driver — so every indexed
+        // boolean field failed to create its column there with a syntax
+        // error. The JSON_TYPE guard above has already established this is a
+        // boolean, so string equality is exact rather than lenient.
         $value = $projection->logical === LogicalType::Boolean
-            ? sprintf('(%s = CAST(%s AS JSON))', $extract, $this->literal('true'))
-            : sprintf('CAST(%s->>%s AS %s)', $column, $this->literal('$.'.$path), $this->castType($projection));
+            ? sprintf('(%s = %s)', $unquoted, $this->literal('true'))
+            : sprintf('CAST(%s AS %s)', $unquoted, $this->castType($projection));
 
         $guard = sprintf(
             'JSON_TYPE(%s) IN (%s)',
@@ -98,13 +123,9 @@ final class MySqlDriver implements SchemaDriver
             // JSON number as a double already, so anything in the document
             // fits one. 1e30 is far inside DECIMAL(65,10)'s 55 integer
             // digits, so passing this gate makes the cast below safe.
-            $magnitude = sprintf(
-                'ABS(CAST(%s->>%s AS DOUBLE)) <= 1e30',
-                $column,
-                $this->literal('$.'.$path),
-            );
+            $magnitude = sprintf('ABS(CAST(%s AS DOUBLE)) <= 1e30', $unquoted);
 
-            $bounded = sprintf('CAST(%s->>%s AS DECIMAL(65,10))', $column, $this->literal('$.'.$path));
+            $bounded = sprintf('CAST(%s AS DECIMAL(65,10))', $unquoted);
 
             if (($scale = $projection->comparisonScale()) !== null) {
                 // Rounded, because the final cast rounds and a value inside

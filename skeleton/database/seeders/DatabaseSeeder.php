@@ -52,6 +52,15 @@ class DatabaseSeeder extends Seeder
 
         $user = User::create(['name' => 'Alpha User', 'email' => 'alpha@kitsune.test', 'password' => Hash::make('password')]);
         $user->sites()->attach([$en->id, $fr->id]);
+        $user->orgs()->attach($orgA->id);
+
+        // A user of the OTHER org, which the admin must never be able to
+        // enumerate. Nothing lists users yet; this row is here so the
+        // boundary has something to fail against the moment something does
+        // (issue #21).
+        $rivalUser = User::create(['name' => 'Rival User', 'email' => 'rival@kitsune.test', 'password' => Hash::make('password')]);
+        $rivalUser->sites()->attach($rival->id);
+        $rivalUser->orgs()->attach($orgB->id);
 
         // A global system type, available to every org (org_id NULL).
         EntryType::create(['org_id' => null, 'handle' => 'image', 'name' => 'Image', 'plural_name' => 'Images', 'is_system' => true, 'icon' => 'heroicon-o-photo']);

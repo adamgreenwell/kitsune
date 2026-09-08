@@ -11,6 +11,7 @@ declare(strict_types=1);
 namespace Kitsune\Core\Tenancy;
 
 use Kitsune\Core\Tenancy\Attributes\OrgScoped;
+use Kitsune\Core\Tenancy\Attributes\OrgScopedThroughPivot;
 use Kitsune\Core\Tenancy\Attributes\SiteScoped;
 use Kitsune\Core\Tenancy\Attributes\Unscoped;
 use ReflectionClass;
@@ -28,7 +29,7 @@ final class ScopeResolver
     private static array $cache = [];
 
     /**
-     * @return class-string<SiteScoped|OrgScoped|Unscoped>
+     * @return class-string<SiteScoped|OrgScoped|OrgScopedThroughPivot|Unscoped>
      *
      * @throws UndeclaredScopeException when a model declares none
      */
@@ -43,7 +44,7 @@ final class ScopeResolver
         $reflection = new ReflectionClass($model);
         $found = null;
 
-        foreach ([SiteScoped::class, OrgScoped::class, Unscoped::class] as $attribute) {
+        foreach ([SiteScoped::class, OrgScoped::class, OrgScopedThroughPivot::class, Unscoped::class] as $attribute) {
             if ($reflection->getAttributes($attribute) !== []) {
                 $found = $attribute;
                 break;
