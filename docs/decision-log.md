@@ -468,13 +468,15 @@ entries
 
 ## ADR-018 — Product internationalization is a requirement, not a nice-to-have
 
-**Status:** Decided · 2026-09-07
+**Status:** Decided · 2026-09-07 · **Amended 2026-09-08** — the RTL spike is closed and one factual claim below was wrong. See *Spike result* at the end of this entry.
 
 Kitsune's own interface, errors and eventually docs are translatable from the first commit. *Open source means open to everyone, not open to everyone who reads English.*
 
 This is a **separate axis from ADR-017.** Content i18n serves a site's readers; product i18n serves its operators. The two locale lists are independent — a tenant may publish in 3 languages while its editors work in 5. Never conflate them.
 
 **Filament does most of the work.** The 5.x branch ships **64 locales** in `filament/panels`, including `ar`, `he`, `fa` and `ur` — all four major RTL languages. The entire admin chrome is already translated; Kitsune only ever translates its own strings.
+
+> ⚠️ **Amended 2026-09-08:** the 64 is right and "four" is wrong. **Six** locales ship a `direction => 'rtl'` translation — `ar`, `ckb`, `fa`, `he`, `ku`, `ur`. Sorani and Kurmanji Kurdish were missing from the count, which was taken from the languages that came to mind rather than from the lang directory. `Kitsune::RTL_LANGUAGES` holds the measured six.
 
 **Three rules:**
 
@@ -499,6 +501,23 @@ falling back to the tenant's default locale. Trivial to design in now; a migrati
 **Also:** CONTRIBUTING states issues in any language are welcome, with an honest disclaimer — the maintainer reads English natively and gets by in German and Italian; everything else goes through machine translation, so nuance and tone will sometimes be lost in both directions, and a reply that reads as blunt is more likely the translation than the intent. Security reports and anything touching the CLA or licensing are safer in English where possible, because a mistranslation there carries consequences a misunderstood feature request does not. Stating the limitation is the point: welcoming other languages while quietly handling them badly is worse than saying what people are getting.
 
 **Open / needs a spike:** Filament ships RTL *translations*, but its RTL **layout** completeness in v5 is unverified — a translated string in a left-aligned sidebar is still broken. Add an RTL render check to the Phase 1 spikes. Separately, **pluralization**: Laravel's helper handles two forms; Polish has four, Arabic six. ICU MessageFormat is the likely answer and should be settled before the first translatable string.
+
+### Spike result — 2026-09-08 (issue #12)
+
+Measured against Filament **v5.7.8**. Full inventory in [`accessibility-inventory.md`](accessibility-inventory.md); the parts that change this ADR:
+
+**The layout question is answered: Filament's RTL layout is complete for every page shape Kitsune uses.** The admin is rendered under `APP_LOCALE=ar` and compared against the LTR render of the same page, and the comparison is a relation rather than an attribute check — an element `n` pixels from the left edge in LTR must sit `n` pixels from the *right* edge in RTL. Drift was **0** on all five layout landmarks across three page shapes at 1280px, with zero axe WCAG 2.1 A/AA violations under RTL and no horizontal overflow. The sidebar is positioned with `inset-inline-start`, so the browser mirrors it. "A translated string in a left-aligned sidebar" does not happen here, and the sidebar moves to the other side of the screen.
+
+**The spike also disproved its own blocker, which is the part worth remembering.** The browser suite had recorded that an RTL render check "needs the locale switcher that does not exist yet". It does not: `dir` comes from `__('filament-panels::layout.direction')`, so `APP_LOCALE` alone decides it and a second server on another port is the entire harness. That claim had been reasoned, not measured, and it parked half of a Phase 1 spike behind nothing. Standing Principle #9 and invariant 15.
+
+**What the spike moved from "unverified" to "Kitsune's to build"** — because with Filament cleared, everything left is ours:
+
+1. **Kitsune's own output had no `dir`.** The skeleton's page emitted `lang` and nothing else, so an RTL locale served RTL text in an LTR document. Filament supplies this for the admin from its own translations, and the public side has no panel and must not depend on one (ADR-002) — so nothing was going to. `Kitsune::textDirection()` supplies it now. **Fixed.**
+2. **`sites.locale` is applied by nothing.** No middleware maps it onto `app()->setLocale()`, so direction resolves per *process* and a multi-site install cannot serve one site RTL and another LTR concurrently. This is the accurate, narrow version of the "locale switcher" claim. Note that rule 2 above makes it **two** mappings, not one: the UI locale is a user preference and the content locale is the site's, and they are allowed to disagree.
+3. **No per-field content direction.** `dir` appears **exactly once** in Filament's entire view layer — the root `<html>`. No input, textarea or table cell carries `dir="auto"`, so content always renders in the direction of the *chrome*. For a bilingual org — which rule 2 exists to serve, and which the seed fixture already models — that lays out punctuation and numerals the wrong way. Kitsune's to add.
+
+**Pluralization is untouched by this spike** and stays open exactly as written above.
+
 
 ---
 
