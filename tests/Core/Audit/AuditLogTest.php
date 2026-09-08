@@ -339,6 +339,34 @@ describe('bulk entry writes are audited too', function (): void {
             ->toBe(['entry.created', 'entry.updated', 'entry.deleted', 'entry.restored']);
     });
 
+    /*
+     * ⚠️ Creation has a bulk path too, and it is the same hole in reverse:
+     * `Entry::query()->insert()` writes rows that dispatch no `created`
+     * event, so an entry could APPEAR with no audit row. These methods return
+     * a row count rather than the keys they wrote, so there is nothing to
+     * name as the target — they are refused instead of quietly unaudited.
+     */
+    it('refuses every bulk path that would create an entry untraced', function (): void {
+        $row = [
+            'org_id' => $this->org->id, 'site_id' => $this->site->id,
+            'entry_type_id' => $this->type->id, 'type_handle' => 'page',
+            'title' => 'Smuggled', 'status' => 'draft',
+        ];
+
+        expect(fn () => Entry::query()->insert([$row]))->toThrow(RuntimeException::class, 'audit trail')
+            ->and(fn () => Entry::query()->insertOrIgnore([$row]))->toThrow(RuntimeException::class)
+            ->and(fn () => Entry::query()->upsert([$row], ['id']))->toThrow(RuntimeException::class);
+
+        // The guard has to fire BEFORE the write, or it documents a hole
+        // rather than closing one.
+        expect(Entry::query()->where('title', 'Smuggled')->exists())->toBeFalse();
+    });
+
+    it('refuses a truncate, which would leave nothing to say what had been there', function (): void {
+        expect(fn () => Entry::query()->truncate())->toThrow(RuntimeException::class)
+            ->and(Entry::query()->count())->toBe(2);
+    });
+
     it('audits only the rows the predicate actually matched', function (): void {
         // Reading the keys BEFORE the write is what makes this possible: after
         // it, an updated row may no longer match and a deleted one has no id.

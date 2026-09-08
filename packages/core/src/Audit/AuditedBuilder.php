@@ -13,6 +13,7 @@ namespace Kitsune\Core\Audit;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Str;
 use Kitsune\Core\Models\Entry;
+use RuntimeException;
 
 /**
  * The single place every write is audited from.
@@ -42,6 +43,60 @@ use Kitsune\Core\Models\Entry;
  */
 class AuditedBuilder extends Builder
 {
+    private const NO_BULK_CREATE =
+        'Entries cannot be written in bulk, because these paths return a row count rather than '
+        .'the keys they wrote — there would be nothing to record as the target, and an entry '
+        .'would appear with no audit trail (ADR-020). Use create(), which is audited.';
+
+    /**
+     * ⚠️ Creation has a bulk path too, and it is the same hole in reverse.
+     *
+     * `Entry::query()->insert()` writes rows that dispatch no `created`
+     * event, so an entry could APPEAR with no audit row — as untraceable as
+     * the bulk update that could change one. Auditing it is not possible
+     * here: these methods return a row count, not the keys they wrote, so
+     * there is nothing to name as the target.
+     *
+     * Refused rather than left silently unaudited, and the message names the
+     * way through. That the guarantee is "there is no unaudited way to create
+     * an entry" is worth more at this stage than a convenient bulk import,
+     * which can come back with an ADR and an audited path of its own.
+     *
+     * @param  array<string, mixed>  $values
+     */
+    public function insert(array $values): bool
+    {
+        throw new RuntimeException(self::NO_BULK_CREATE);
+    }
+
+    /** @param  array<string, mixed>  $values */
+    public function insertOrIgnore(array $values): int
+    {
+        throw new RuntimeException(self::NO_BULK_CREATE);
+    }
+
+    /**
+     * @param  array<string, mixed>  $values
+     * @param  array<int, string>|string  $uniqueBy
+     * @param  array<int, string>|null  $update
+     */
+    public function upsert(array $values, $uniqueBy, $update = null)
+    {
+        throw new RuntimeException(self::NO_BULK_CREATE);
+    }
+
+    /**
+     * ⚠️ Not an insert, but the same gap: it removes every row at once and
+     * dispatches nothing, so the whole table could vanish untraced.
+     */
+    public function truncate(): void
+    {
+        throw new RuntimeException(
+            'Truncating entries would remove every row with no audit trail, and there would be '
+            .'nothing left to say what had been there (ADR-020). Delete through the model.'
+        );
+    }
+
     /** @param  array<string, mixed>  $values */
     public function update(array $values)
     {
