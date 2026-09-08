@@ -24,7 +24,7 @@ class CreateEntryType extends CreateRecord
      * `EnforcesScope` stamps the scope key on create for scoped models; an
      * unscoped one has none, so an org-owned type created without this would
      * save with `org_id` NULL — a GLOBAL system type, visible to every org.
-     * The one place where forgetting a line makes a tenant's schema public.
+     * The one place where forgetting a line makes an ORG's schema public.
      */
     protected function mutateFormDataBeforeCreate(array $data): array
     {

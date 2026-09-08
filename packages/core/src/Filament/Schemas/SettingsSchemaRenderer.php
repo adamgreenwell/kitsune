@@ -16,6 +16,7 @@ use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Toggle;
 use Illuminate\Support\Str;
 use Kitsune\Core\Fields\FieldType;
+use Kitsune\Core\Models\EntryType;
 use RuntimeException;
 
 /**
@@ -63,10 +64,10 @@ final class SettingsSchemaRenderer
             'string' => TextInput::make($path),
             'boolean' => Toggle::make($path),
             'enum' => Select::make($path)->options(
-                self::options((array) ($descriptor['options'] ?? []))
+                self::choices($descriptor, $key)
             ),
             'multiSelect' => Select::make($path)->multiple()->options(
-                self::options((array) ($descriptor['options'] ?? []))
+                self::choices($descriptor, $key)
             ),
             'keyValue' => KeyValue::make($path)
                 ->keyLabel('Stored value')
@@ -128,6 +129,52 @@ final class SettingsSchemaRenderer
      * A list becomes value => Headline; a map is already labelled.
      *
      * @param  array<int|string, string>  $options
+     * @return array<string, string>
+     */
+    /**
+     * A descriptor's choices, static or resolved at render time.
+     *
+     * ⚠️ `optionsFrom` exists because some option lists are not knowable when
+     * a field type declares its settings — a relation's permitted targets are
+     * the ORG's entry types. Rendering that control from an absent `options`
+     * key produced an empty list, and since an empty `targetTypes` means
+     * unrestricted, the constraint could not be configured at all.
+     *
+     * A NAME rather than a closure, because `settingsSchema()` returns data so
+     * that core stays usable headless (ADR-002). A closure would tie the
+     * declaration to Filament.
+     *
+     * @param  array<string, mixed>  $descriptor
+     * @return array<string, string>
+     */
+    private static function choices(array $descriptor, string $key): array
+    {
+        $source = $descriptor['optionsFrom'] ?? null;
+
+        if ($source === null) {
+            return self::options((array) ($descriptor['options'] ?? []));
+        }
+
+        return match ($source) {
+            // Visible to this org, which includes the global system types a
+            // relation may legitimately point at.
+            'entryTypes' => EntryType::query()
+                ->availableToCurrentOrg()
+                ->orderBy('name')
+                ->pluck('name', 'handle')
+                ->all(),
+            default => throw new RuntimeException(sprintf(
+                'Unknown options source [%s] for [%s]. Fails closed rather than rendering an empty '
+                .'list: an empty choice list reads as "no constraint available" and silently '
+                .'prevents the setting being configured.',
+                is_string($source) ? $source : get_debug_type($source),
+                $key,
+            )),
+        };
+    }
+
+    /**
+     * @param  array<int|string, mixed>  $options
      * @return array<string, string>
      */
     private static function options(array $options): array

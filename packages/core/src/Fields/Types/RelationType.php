@@ -139,7 +139,23 @@ final class RelationType extends BaseFieldType
     public function settingsSchema(): array
     {
         return [
-            'targetTypes' => ['type' => 'multiSelect', 'label' => 'Allowed entry types', 'default' => []],
+            // ⚠️ `optionsFrom`, not a static `options` list. The permitted
+            // targets are the org's own entry types, which core cannot know at
+            // declaration time — and rendering the control with an EMPTY list
+            // made the documented constraint unconfigurable through the
+            // builder, while an empty value means unrestricted. So the field
+            // silently could not be narrowed at all.
+            //
+            // A named source rather than a closure, because `settingsSchema()`
+            // returns DATA so core stays headless-capable (ADR-002): a closure
+            // here would only be callable from Filament.
+            'targetTypes' => [
+                'type' => 'multiSelect',
+                'label' => 'Allowed entry types',
+                'default' => [],
+                'optionsFrom' => 'entryTypes',
+                'help' => 'Leave empty to accept any type.',
+            ],
         ];
     }
 }

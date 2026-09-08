@@ -25,7 +25,14 @@ class EditEntryType extends EditRecord
             // A global system type belongs to every org, so no single org may
             // delete it. Until RBAC lands (Phase 3) the ownership test is the
             // guard.
-            DeleteAction::make()->visible(fn (EntryType $record): bool => $record->org_id !== null),
+            //
+            // ⚠️ `org_id !== null` was the test here, which is weaker than
+            // ownership: it asks whether SOMEBODY owns the row, not whether
+            // WE do. The resource now gates the page itself, so reaching this
+            // means the record is already owned — the test stays anyway,
+            // because a guard that depends on a caller having run another
+            // guard is the shape this project keeps finding bypassed.
+            DeleteAction::make()->visible(fn (EntryType $record): bool => EntryTypeResource::ownsRecord($record)),
         ];
     }
 }
