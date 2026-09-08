@@ -645,6 +645,16 @@ methods does not work, and wants its own audited path and its own ADR.
 `insertGetId()` is the exception, and the reason is exactly why the others are
 not: it returns the id it wrote. Creation is audited there.
 
+**And "refused" has to mean refused when the context is missing, too.**
+`Auditor::record()` is deliberately silent with no org context, which is right
+for an action a caller chose to record — console commands, migrations and the
+installer all run without one, and an audit system people switch off records
+nothing at all. It is wrong for a write that has already happened: console
+code supplying `org_id` and `site_id` by hand inserts an entry perfectly well
+without populating `Context`, and the audit would return null while the
+transaction committed. The entry paths use `recordOrFail()`, so the write
+rolls back rather than landing untraced.
+
 **The audited set and the written set must be the same set.** Reading keys and
 then re-running the predicate are two statements over a set that moves between
 them: on PostgreSQL a row inserted in the interval is written and not audited,

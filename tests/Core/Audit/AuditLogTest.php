@@ -125,6 +125,35 @@ describe('the log obeys the org boundary it records', function (): void {
     });
 });
 
+describe('an entry write that cannot be audited is refused', function (): void {
+    /*
+     * ⚠️ `record()` is deliberately silent with no org context, and that
+     * leniency is right for an action a caller CHOSE to record. It is wrong
+     * for a write that has already happened: console code supplying `org_id`
+     * and `site_id` by hand inserts an entry perfectly well without
+     * populating Context, and the audit then returned null while the
+     * transaction committed — an entry with no trail, which is precisely what
+     * ADR-020's amendment says is refused.
+     */
+    it('refuses a create with no org context, and leaves no entry behind', function (): void {
+        $org = $this->org;
+        $site = $this->site;
+        $type = $this->type;
+
+        app(Context::class)->forget();
+
+        expect(fn () => Entry::create([
+            'org_id' => $org->id, 'site_id' => $site->id, 'entry_type_id' => $type->id,
+            'type_handle' => 'page', 'title' => 'Untraceable',
+        ]))->toThrow(RuntimeException::class, 'no organisation context');
+
+        app(Context::class)->setOrg($org);
+        app(Context::class)->setSite($site);
+
+        expect(Entry::query()->where('title', 'Untraceable')->exists())->toBeFalse();
+    });
+});
+
 it('records nothing rather than throwing when there is no org', function (): void {
     // Console commands, migrations and the installer all run without one.
     // Throwing would make audit an obstacle to routine work, and an audit
@@ -209,6 +238,14 @@ describe('the log is append-only, enforced', function (): void {
 
         expect(fn () => AuditLog::for($entry)->first()->delete())
             ->toThrow(RuntimeException::class, 'append-only');
+    });
+
+    it('refuses the plural increments too', function (): void {
+        $before = AuditLog::query()->count();
+
+        expect(fn () => AuditLog::query()->incrementEach(['actor_id' => 1]))->toThrow(RuntimeException::class)
+            ->and(fn () => AuditLog::query()->decrementEach(['actor_id' => 1]))->toThrow(RuntimeException::class)
+            ->and(AuditLog::query()->count())->toBe($before);
     });
 
     it('refuses every other mutator the builder exposes', function (): void {
@@ -437,6 +474,15 @@ describe('bulk entry writes are audited too', function (): void {
 
         expect(AuditLog::for($this->one)->where('action', 'entry.updated')->count())->toBe(1)
             ->and(AuditLog::for($this->two)->where('action', 'entry.updated')->count())->toBe(0);
+    });
+
+    it('audits the PLURAL increments, which are separate methods', function (): void {
+        // ⚠️ `incrementEach()` is its own query-builder method, so overriding
+        // the singular ones left a multi-column increment forwarding straight
+        // past every guard — the same omission, one API call along.
+        Entry::query()->whereKey($this->one->getKey())->incrementEach(['id' => 0]);
+
+        expect(AuditLog::for($this->one)->where('action', 'entry.updated')->count())->toBe(1);
     });
 
     it('refuses a truncate, which would leave nothing to say what had been there', function (): void {

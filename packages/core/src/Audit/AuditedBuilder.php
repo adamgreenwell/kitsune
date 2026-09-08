@@ -85,7 +85,7 @@ class AuditedBuilder extends Builder
             $target = $model->newInstance([], true);
             $target->forceFill([$model->getKeyName() => $id]);
 
-            app(Auditor::class)->record(Str::snake(class_basename($model)).'.created', $target);
+            app(Auditor::class)->recordOrFail(Str::snake(class_basename($model)).'.created', $target);
 
             return $id;
         });
@@ -220,6 +220,37 @@ class AuditedBuilder extends Builder
     }
 
     /**
+     * ⚠️ The PLURAL forms too. `incrementEach()` and `decrementEach()` are
+     * separate methods on the query builder, so overriding the singular ones
+     * left a multi-column increment forwarding straight past every guard
+     * here — the same omission, one API call along.
+     *
+     * @param  array<string, float|int>  $columns
+     * @param  array<string, mixed>  $extra
+     */
+    public function incrementEach(array $columns, array $extra = [])
+    {
+        if ($this->suppressed) {
+            return parent::incrementEach($columns, $extra);
+        }
+
+        return $this->auditing('updated', fn (self $query) => $query->incrementEach($columns, $extra));
+    }
+
+    /**
+     * @param  array<string, float|int>  $columns
+     * @param  array<string, mixed>  $extra
+     */
+    public function decrementEach(array $columns, array $extra = [])
+    {
+        if ($this->suppressed) {
+            return parent::decrementEach($columns, $extra);
+        }
+
+        return $this->auditing('updated', fn (self $query) => $query->decrementEach($columns, $extra));
+    }
+
+    /**
      * Name the action from the values being written, not from the caller.
      *
      * Eloquent expresses a soft delete and a restore as updates, so reading
@@ -287,7 +318,7 @@ class AuditedBuilder extends Builder
                 $target = $model->newInstance([], true);
                 $target->forceFill([$model->getKeyName() => $key]);
 
-                $auditor->record($action, $target);
+                $auditor->recordOrFail($action, $target);
             }
 
             return $result;

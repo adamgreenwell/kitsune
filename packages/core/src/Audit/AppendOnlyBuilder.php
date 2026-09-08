@@ -123,4 +123,26 @@ class AppendOnlyBuilder extends Builder
     {
         throw new RuntimeException(self::APPEND_ONLY);
     }
+
+    /**
+     * ⚠️ The plural forms are separate methods on the query builder, so
+     * refusing the singular ones left the multi-column variants forwarding
+     * straight through — the same omission as truncate(), one API along.
+     *
+     * @param  array<string, float|int>  $columns
+     * @param  array<string, mixed>  $extra
+     */
+    public function incrementEach(array $columns, array $extra = [])
+    {
+        throw new RuntimeException(self::APPEND_ONLY);
+    }
+
+    /**
+     * @param  array<string, float|int>  $columns
+     * @param  array<string, mixed>  $extra
+     */
+    public function decrementEach(array $columns, array $extra = [])
+    {
+        throw new RuntimeException(self::APPEND_ONLY);
+    }
 }

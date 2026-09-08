@@ -13,6 +13,7 @@ namespace Kitsune\Core\Audit;
 use Illuminate\Database\Eloquent\Model;
 use Kitsune\Core\Models\AuditLog;
 use Kitsune\Core\Tenancy\Context;
+use RuntimeException;
 
 /**
  * Records what happened, and deliberately not what changed (ADR-020).
@@ -26,10 +27,35 @@ use Kitsune\Core\Tenancy\Context;
  * is `#[OrgScoped]` — and console commands, migrations and the installer all
  * run without one. Throwing there would make audit an obstacle to routine
  * work, and an audit system people switch off records nothing at all.
+ *
+ * ⚠️ That leniency is for actions the caller CHOSE to record. It is wrong for
+ * a write that has already happened: console code supplying `org_id` and
+ * `site_id` by hand inserts an entry perfectly well without populating
+ * Context, and this would then return null and let the transaction commit an
+ * entry with no audit row — the exact thing ADR-020's amendment says is
+ * refused. `recordOrFail()` is what the entry paths use.
  */
 final class Auditor
 {
     public function __construct(private readonly Context $context) {}
+
+    /**
+     * Record, or refuse the write that could not be recorded.
+     *
+     * Used by AuditedBuilder for every entry write. Failing here rolls the
+     * surrounding transaction back, which is the whole point: an entry that
+     * cannot be audited must not exist. The fix is always the same, so the
+     * message says it.
+     */
+    public function recordOrFail(string $action, ?Model $target = null): AuditLog
+    {
+        return $this->record($action, $target) ?? throw new RuntimeException(
+            "Refusing [{$action}]: there is no organisation context, so the write could not be "
+            .'audited and an unauditable write is refused (ADR-020). Set the org context — '
+            .'app(Context::class)->setOrg(...) — before writing entries from a command, a '
+            .'migration or a seeder.'
+        );
+    }
 
     public function record(string $action, ?Model $target = null): ?AuditLog
     {
