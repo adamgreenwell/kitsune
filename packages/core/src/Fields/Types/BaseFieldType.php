@@ -169,7 +169,13 @@ abstract class BaseFieldType implements FieldType
             return [...$presence, ...$this->scalarValidationRules($config)];
         }
 
-        $rules = [...$presence, 'array'];
+        // ⚠️ `list`, not just `array`. A decoded API object such as
+        // `{"primary": "a", "secondary": "b"}` is an associative PHP
+        // array, so `array` accepted it and the element rules validated
+        // its values — then `toStorage()` called `array_values()` and
+        // stored `["a", "b"]`. An object accepted against a published
+        // array schema, and its shape changed on the way in.
+        $rules = [...$presence, 'array', 'list'];
 
         // -1 is the explicit "unlimited". A cardinality of 2 means TWO, and
         // accepting three silently stored a shape the configuration forbids.

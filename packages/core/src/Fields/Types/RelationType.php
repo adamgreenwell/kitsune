@@ -90,7 +90,13 @@ final class RelationType extends BaseFieldType
         // their SHAPE — but they still have to honour its SIZE. Overriding
         // this method bypassed the bound the base class applies, so a
         // relation limited to one target accepted five.
-        $rules = [...($config->isRequired() ? ['required'] : ['nullable']), 'array'];
+        // ⚠️ `list`, not just `array`. A decoded API object such as
+        // `{"primary": "a", "secondary": "b"}` is an associative PHP
+        // array, so `array` accepted it and the element rules validated
+        // its values — then `toStorage()` called `array_values()` and
+        // stored `["a", "b"]`. An object accepted against a published
+        // array schema, and its shape changed on the way in.
+        $rules = [...($config->isRequired() ? ['required'] : ['nullable']), 'array', 'list'];
 
         if ($config->cardinality() > 0) {
             $rules[] = 'max:'.$config->cardinality();

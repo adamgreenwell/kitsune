@@ -12,6 +12,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Kitsune\Core\Fields\FieldTypeRegistry;
 use Kitsune\Core\Fields\LogicalType;
+use Kitsune\Core\Fields\Types\BaseFieldType;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Field;
@@ -506,6 +507,54 @@ describe('cardinality has a documented domain, and it is enforced', function ():
         // isMultiValue() answered true for every new single-value field.
         expect((new FieldStorage)->isMultiValue())->toBeFalse();
     });
+});
+
+it('distinguishes case in an indexed string, on every engine', function (): void {
+    /*
+     * ⚠️ MySQL's default collation is case AND accent insensitive, so an
+     * indexed exact filter matched `abc` for `ABC` there while PostgreSQL and
+     * SQLite distinguished them — the same query returning different rows on
+     * different engines, which is the one thing the driver abstraction exists
+     * to prevent. The JSON value being projected is byte-exact, so the column
+     * has to compare that way.
+     */
+    $storage = storageFor('code', 'text', ['org_id' => $this->orgA->id, 'is_indexed' => true]);
+    $this->manager->index($storage);
+
+    Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Upper', 'values' => ['code' => 'ABC']]);
+    Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Lower', 'values' => ['code' => 'abc']]);
+
+    $column = $storage->generatedColumnName();
+
+    expect(Entry::where($column, 'ABC')->pluck('title')->all())->toBe(['Upper'])
+        ->and(Entry::where($column, 'abc')->pluck('title')->all())->toBe(['Lower']);
+});
+
+it('refuses a second implementation behind one handle', function (): void {
+    /*
+     * ⚠️ `field_storage.type` records the handle alone, so a module reusing
+     * one would silently change the validation, conversion and projection of
+     * every existing row — reinterpreting stored content, or disagreeing with
+     * a generated column built from the other implementation's signature.
+     * Which behaviour you got depended on module registration order.
+     */
+    $registry = new FieldTypeRegistry;
+
+    $imposter = new class extends BaseFieldType
+    {
+        public static function handle(): string
+        {
+            return 'text';
+        }
+
+        public static function label(): string
+        {
+            return 'Imposter';
+        }
+    };
+
+    expect(fn () => $registry->register($imposter))
+        ->toThrow(RuntimeException::class, 'already registered');
 });
 
 describe('the lock arms itself when data first appears', function (): void {

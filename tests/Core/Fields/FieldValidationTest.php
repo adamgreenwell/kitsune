@@ -274,6 +274,57 @@ it('rejects a non-string slug without reaching the normaliser', function (): voi
         ->and($v->fails())->toBeTrue();
 });
 
+describe('a slug is validated as the value that gets STORED', function (): void {
+    /*
+     * ⚠️ `!!!` passes `required`, `string` and `max`, slugifies to the empty
+     * string, and the entry satisfies validation with no usable URL segment.
+     * Transliteration runs the other way too: a romanised title can grow past
+     * the 255-character input limit the column enforces.
+     */
+    it('refuses input that normalises to nothing', function (): void {
+        $type = app(FieldTypeRegistry::class)->get('slug');
+        $v = Validator::make(['f' => '!!!'], ['f' => $type->validationRules(configFor('slug'))]);
+
+        expect($v->fails())->toBeTrue()
+            ->and($v->errors()->first('f'))->toContain('nothing a URL can use');
+    });
+
+    it('refuses input that normalises past the column width', function (): void {
+        // Cyrillic romanises to roughly two Latin characters per source
+        // character, so this is under 255 submitted and over it stored.
+        $type = app(FieldTypeRegistry::class)->get('slug');
+        $v = Validator::make(
+            ['f' => str_repeat('щ', 200)],
+            ['f' => $type->validationRules(configFor('slug'))],
+        );
+
+        expect($v->fails())->toBeTrue()
+            ->and($v->errors()->first('f'))->toContain('once normalised');
+    });
+
+    it('still accepts a slug that normalises to something usable', function (): void {
+        $type = app(FieldTypeRegistry::class)->get('slug');
+
+        expect(Validator::make(['f' => 'Hello World!'], ['f' => $type->validationRules(configFor('slug'))])->fails())
+            ->toBeFalse();
+    });
+});
+
+it('requires a LIST for a multi-value field, not an object', function (): void {
+    /*
+     * ⚠️ A decoded API object such as {"primary": "a", "secondary": "b"} is an
+     * associative PHP array, so `array` accepted it and the element rules
+     * validated its values — then toStorage() called array_values() and stored
+     * ["a", "b"]. An object accepted against a published array schema, with
+     * its shape changed on the way in.
+     */
+    $object = ['primary' => 'a', 'secondary' => 'b'];
+
+    expect(validate('text', ['f' => $object])->fails())->toBeTrue()
+        ->and(validate('multi_select', ['f' => $object], ['options' => ['a' => 'A', 'b' => 'B']])->fails())->toBeTrue()
+        ->and(validate('text', ['f' => ['a', 'b']])->fails())->toBeFalse();
+});
+
 it('publishes the text length and pattern it enforces', function (): void {
     // The inherited schema said {"type": "string"} while validation rejected
     // anything past 255 characters, so a generated client accepted payloads
