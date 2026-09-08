@@ -629,3 +629,44 @@ describe('a moved projection takes its old column with it', function (): void {
         expect(Schema::hasColumn('entries', 'idx_price__integer'))->toBeTrue();
     });
 });
+
+describe('un-indexing cleans up whatever the row used to project to', function (): void {
+    it('drops the OLD column when the projection changed in the same save', function (): void {
+        // ⚠️ dropIndex() derives the NEW column name, which was never
+        // created — so a row saved with both `is_indexed = false` AND a
+        // projection-affecting change left the old column orphaned.
+        $storage = storageFor('price', 'number', ['org_id' => $this->orgA->id, 'is_indexed' => true]);
+        $this->manager->sync($storage);
+        expect(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeTrue();
+
+        $storage->update(['is_indexed' => false, 'settings' => ['format' => 'integer']]);
+        $this->manager->sync($storage);
+
+        expect(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeFalse()
+            ->and(Schema::hasColumn('entries', 'idx_price__integer'))->toBeFalse();
+    });
+
+    it('drops it when the type changed to one that projects to nothing', function (): void {
+        // This path returned without attempting any removal at all.
+        $storage = storageFor('body', 'text', ['org_id' => $this->orgA->id, 'is_indexed' => true]);
+        $this->manager->sync($storage);
+        expect(Schema::hasColumn('entries', 'idx_body__string255'))->toBeTrue();
+
+        $storage->update(['is_indexed' => false, 'type' => 'rich_text']);
+        $this->manager->sync($storage);
+
+        expect(Schema::hasColumn('entries', 'idx_body__string255'))->toBeFalse();
+    });
+
+    it('leaves a column another row still projects to', function (): void {
+        $mine = storageFor('price', 'number', ['org_id' => $this->orgA->id, 'is_indexed' => true]);
+        $theirs = storageFor('price', 'number', ['org_id' => $this->orgB->id, 'is_indexed' => true]);
+        $this->manager->sync($mine);
+        $this->manager->sync($theirs);
+
+        $mine->update(['is_indexed' => false]);
+        $this->manager->sync($mine);
+
+        expect(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeTrue();
+    });
+});

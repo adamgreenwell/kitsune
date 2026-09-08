@@ -490,3 +490,23 @@ it('still accepts a legitimate nested ARRAY', function (): void {
 it('finds an ambiguous object inside an array', function (): void {
     expect(validate('json', ['f' => '{"items":[{"0":"a","1":"b"}]}'])->fails())->toBeTrue();
 });
+
+it('refuses a NESTED empty object, which cannot survive decoding', function (): void {
+    /*
+     * ⚠️ Different from the top level, and the reason is worth stating: the
+     * field's contract says the WHOLE value is an object, so castFromStorage
+     * restores a top-level `[]` to `{}` unambiguously. Nested there is no
+     * such contract — `{"config":{}}` decodes to `['config' => []]` and
+     * re-encodes as `{"config":[]}`, with nothing able to tell it from a
+     * genuine empty array.
+     */
+    $v = validate('json', ['f' => '{"config":{}}']);
+
+    expect($v->fails())->toBeTrue()
+        ->and($v->errors()->first('f'))->toContain('[config]');
+});
+
+it('still accepts the TOP-LEVEL empty object', function (): void {
+    // The asymmetry is deliberate, so a later tidy-up does not "fix" it.
+    expect(validate('json', ['f' => '{}'])->fails())->toBeFalse();
+});

@@ -80,11 +80,15 @@ final class SchemaManager
         // then chokes on for the whole table. `index()` refuses it with the
         // reason instead.
         if (! $storage->is_indexed) {
-            if ($this->registry->get($storage->type)->projection(new FieldConfig($storage)) === null) {
-                return;
-            }
-
-            $this->dropIndex($storage);
+            // ⚠️ Handle-based, not `dropIndex()`. A row saved with BOTH
+            // `is_indexed = false` and a projection-affecting change derives
+            // the NEW column name, which was never created — so the old one
+            // stayed orphaned. And a change to a projection-less type
+            // returned here without attempting any removal at all.
+            //
+            // Dropping everything for the handle that no row still wants
+            // covers all three, and subsumes what dropIndex() did.
+            $this->dropObsoleteProjections($storage, keep: null);
 
             return;
         }
@@ -98,6 +102,10 @@ final class SchemaManager
         // Before the add, not after, for the same reason `reconcile()` drops
         // orphans first: at the cap a capacity-NEUTRAL replacement would
         // otherwise fail on a table that needs no net new column.
+        // No `keep` argument: the method computes it, and that indirection
+        // is load-bearing — computing it HERE calls generatedColumnName()
+        // before the projection-less guard runs, so `index()` never gets to
+        // raise its clearer "not indexable" error.
         $this->dropObsoleteProjections($storage);
 
         $this->index($storage);
@@ -115,22 +123,25 @@ final class SchemaManager
      * Reconciling also clears historical orphans for the handle rather than
      * only the one this call created.
      */
-    private function dropObsoleteProjections(FieldStorage $storage): void
+    private function dropObsoleteProjections(FieldStorage $storage, ?string $keep = null): void
     {
-        // Step aside for a type that projects to nothing, so `index()` can
-        // raise its own "not indexable" error rather than this method
-        // throwing a less useful one from `generatedColumnName()` first.
-        if ($this->registry->get($storage->type)->projection(new FieldConfig($storage)) === null) {
-            return;
-        }
-
         // The separator is part of the prefix, so `idx_price__` cannot match
         // a column belonging to `price_extra`.
         $prefix = 'idx_'.$storage->handle.'__';
-        $current = $storage->generatedColumnName();
+
+        if ($keep === null && $storage->is_indexed) {
+            // Step aside for a type that projects to nothing, so `index()`
+            // can raise its own "not indexable" error rather than this method
+            // throwing a less useful one from `generatedColumnName()` first.
+            if ($this->registry->get($storage->type)->projection(new FieldConfig($storage)) === null) {
+                return;
+            }
+
+            $keep = $storage->generatedColumnName();
+        }
 
         foreach ($this->generatedColumns() as $column) {
-            if ($column === $current || ! str_starts_with($column, $prefix)) {
+            if ($column === $keep || ! str_starts_with($column, $prefix)) {
                 continue;
             }
 

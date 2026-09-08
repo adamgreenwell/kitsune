@@ -104,6 +104,23 @@ final class JsonType extends BaseFieldType
         if ($node instanceof stdClass) {
             $properties = (array) $node;
 
+            // ⚠️ A NESTED empty object cannot survive either, and the reason
+            // it differs from the top level is worth stating: the field's
+            // contract says the WHOLE value is an object, so `castFromStorage`
+            // can restore a top-level `[]` to `{}` unambiguously. Nested,
+            // there is no such contract — `{"config":{}}` decodes to
+            // `['config' => []]` and re-encodes as `{"config":[]}` with
+            // nothing able to tell it apart from a genuine empty array.
+            if ($properties === [] && $path !== '') {
+                $fail(
+                    "The {$attribute} field has an empty object at [{$path}], which PHP cannot tell "
+                    .'apart from an empty array once decoded — it would silently become `[]` on save. '
+                    .'Omit the key, or give the object a property.'
+                );
+
+                return;
+            }
+
             if ($properties !== [] && array_is_list($properties)) {
                 $where = $path === '' ? '' : " at [{$path}]";
 
