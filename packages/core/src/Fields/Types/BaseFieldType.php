@@ -49,6 +49,12 @@ abstract class BaseFieldType implements FieldType
         return null;
     }
 
+    /** Inline by default: the value lives in `values`, keyed by handle. */
+    public function promotedColumn(): ?string
+    {
+        return null;
+    }
+
     /**
      * Cardinality is handled HERE, once, rather than in every scalar type.
      *

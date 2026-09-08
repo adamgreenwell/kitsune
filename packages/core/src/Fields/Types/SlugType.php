@@ -59,6 +59,12 @@ final class SlugType extends BaseFieldType
         return null;
     }
 
+    /** ADR-015: a slug is promoted, so its data is `entries.slug`. */
+    public function promotedColumn(): string
+    {
+        return 'slug';
+    }
+
     protected function castToStorage(mixed $input, FieldConfig $config): mixed
     {
         return $input === null || $input === '' ? null : str((string) $input)->slug()->value();
@@ -68,6 +74,12 @@ final class SlugType extends BaseFieldType
     protected function scalarValidationRules(FieldConfig $config): array
     {
         return [
+            // ⚠️ `bail` FIRST. Laravel keeps evaluating rules after `string`
+            // fails, so a slug submitted as an array reached the normaliser
+            // below and `castToStorage()` attempted a string cast on it —
+            // producing a PHP Error instead of a validation response, from
+            // input that had already been rejected.
+            'bail',
             'string',
             'max:255',
             // scopedUnique, never Laravel's unique — that rule bypasses

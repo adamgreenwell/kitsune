@@ -386,6 +386,45 @@ describe('a locked field cannot be narrowed, only widened', function (): void {
             ->toThrow(RuntimeException::class, 'cannot be narrowed');
     });
 
+    /*
+     * ⚠️ Direction matters. Refusing every scalar difference refused safe
+     * maintenance too: lowering a floor, raising a ceiling or dropping either
+     * leaves every stored value valid, and a lock that blocks those is a lock
+     * nobody can live with.
+     */
+    it('ALLOWS lowering a min on a locked field', function (): void {
+        $storage = storageFor('score', 'number', [
+            'org_id' => $this->orgA->id, 'is_locked' => true,
+            'settings' => ['format' => 'integer', 'min' => 0],
+        ]);
+
+        expect(fn () => $storage->update(['settings' => ['format' => 'integer', 'min' => -10]]))
+            ->not->toThrow(RuntimeException::class);
+    });
+
+    it('ALLOWS raising a max, and removing one', function (): void {
+        $storage = storageFor('score', 'number', [
+            'org_id' => $this->orgA->id, 'is_locked' => true,
+            'settings' => ['format' => 'integer', 'max' => 10],
+        ]);
+
+        expect(fn () => $storage->update(['settings' => ['format' => 'integer', 'max' => 100]]))
+            ->not->toThrow(RuntimeException::class);
+
+        expect(fn () => $storage->fresh()->update(['settings' => ['format' => 'integer']]))
+            ->not->toThrow(RuntimeException::class);
+    });
+
+    it('still refuses RAISING a min, which can invalidate a stored value', function (): void {
+        $storage = storageFor('score', 'number', [
+            'org_id' => $this->orgA->id, 'is_locked' => true,
+            'settings' => ['format' => 'integer', 'min' => 0],
+        ]);
+
+        expect(fn () => $storage->update(['settings' => ['format' => 'integer', 'min' => 5]]))
+            ->toThrow(RuntimeException::class, 'cannot be narrowed');
+    });
+
     it('ALLOWS adding an option, which cannot invalidate a stored value', function (): void {
         $storage = storageFor('status', 'select', [
             'org_id' => $this->orgA->id, 'is_locked' => true,
@@ -494,6 +533,53 @@ describe('the lock arms itself when data first appears', function (): void {
         Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Empty']);
 
         expect($this->locking->fresh()->is_locked)->toBeFalse();
+    });
+
+    it('locks a PROMOTED field, whose data is not in values', function (): void {
+        // ⚠️ A configured slug lives in `entries.slug` because SlugType is
+        // promoted (ADR-015), so deriving held fields from `values` alone
+        // never selected its storage row — it stayed unlocked while holding
+        // live data, free to change shape afterwards.
+        $slug = storageFor('permalink', 'slug', ['org_id' => $this->orgA->id]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $slug->id, 'label' => 'Permalink',
+        ]);
+
+        Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Has slug', 'slug' => 'has-slug']);
+
+        expect($slug->fresh()->is_locked)->toBeTrue();
+    });
+
+    it('leaves a promoted field unlocked while its column is empty', function (): void {
+        $slug = storageFor('permalink', 'slug', ['org_id' => $this->orgA->id]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $slug->id, 'label' => 'Permalink',
+        ]);
+
+        Entry::create(['entry_type_id' => $this->type->id, 'title' => 'No slug']);
+
+        expect($slug->fresh()->is_locked)->toBeFalse();
+    });
+
+    it('cannot be cleared once armed', function (): void {
+        // ⚠️ The guard read the value being SAVED, so setting the flag false
+        // — alone or alongside a shape change — skipped every check below it.
+        // The model is fully mass assignable, so that was one array key away
+        // from routing around ADR-006 entirely.
+        Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Priced', 'values' => ['price' => 9.99]]);
+
+        expect(fn () => $this->locking->fresh()->update(['is_locked' => false]))
+            ->toThrow(RuntimeException::class, 'cannot be cleared');
+    });
+
+    it('cannot be cleared in the same save as a shape change', function (): void {
+        Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Priced', 'values' => ['price' => 9.99]]);
+
+        expect(fn () => $this->locking->fresh()->update([
+            'is_locked' => false, 'settings' => ['format' => 'integer'],
+        ]))->toThrow(RuntimeException::class);
+
+        expect($this->locking->fresh()->settings['format'])->toBe('decimal');
     });
 
     it('locks it the moment an entry writes one', function (): void {

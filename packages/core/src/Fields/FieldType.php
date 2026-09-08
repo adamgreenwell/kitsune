@@ -52,6 +52,17 @@ interface FieldType
      */
     public function projection(FieldConfig $config): ?Projection;
 
+    /**
+     * The real column on `entries` this type writes to, if it is promoted.
+     *
+     * ADR-015 promotes title, slug, status and published_at because every
+     * list view, URL resolution and status filter touches them. A promoted
+     * type's data is therefore NOT in `values`, which anything reasoning
+     * about where a field's data lives has to know — the storage lock got
+     * this wrong and left a slug field unlocked while holding content.
+     */
+    public function promotedColumn(): ?string;
+
     public function toStorage(mixed $input, FieldConfig $config): mixed;
 
     public function fromStorage(mixed $stored, FieldConfig $config): mixed;

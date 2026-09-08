@@ -129,9 +129,26 @@ class FieldStorage extends Model
             $storage->guardHandle();
             $storage->guardCardinalitySupport();
 
+            // ⚠️ The ORIGINAL lock state, and the flag cannot be cleared.
+            //
+            // Reading `$storage->is_locked` read the value being SAVED, so a
+            // caller could set it false — alone or alongside a shape change —
+            // and every guard below skipped itself. The model is fully mass
+            // assignable, so that was one array key away from routing around
+            // ADR-006 entirely, without an amendment.
+            if ($storage->exists
+                && (bool) $storage->getRawOriginal('is_locked')
+                && ! $storage->is_locked) {
+                throw new RuntimeException(
+                    "Field [{$storage->handle}] is locked because entries hold data for it, and "
+                    .'the lock cannot be cleared while that is true. It is not a preference — it '
+                    .'is the record that data exists (ADR-006).'
+                );
+            }
+
             // ADR-006: storage locks the moment data exists. Shipping this
             // guard in v1 rather than later is the whole point of copying it.
-            if ($storage->is_locked && $storage->exists) {
+            if ($storage->exists && (bool) $storage->getRawOriginal('is_locked')) {
                 foreach (self::SHAPE_ATTRIBUTES as $attribute) {
                     if ($storage->isDirty($attribute)) {
                         throw new RuntimeException(
@@ -286,9 +303,15 @@ class FieldStorage extends Model
             }
 
             if (! is_array($was)) {
-                // Every scalar setting is semantic — format, precision,
-                // scale, maxLength, pattern. None is presentation.
-                $this->refuseNarrowing((string) $key);
+                // ⚠️ DIRECTION matters. Refusing every scalar difference
+                // refused safe maintenance too: lowering a `min`, raising a
+                // `max` or dropping either leaves every stored value valid.
+                // Only a change that could invalidate one is narrowing.
+                if ($this->scalarNarrows((string) $key, $was, $now)) {
+                    $this->refuseNarrowing((string) $key);
+                }
+
+                continue;
             }
 
             // What the setting ACCEPTS: an option map is keyed by the stored
@@ -301,6 +324,28 @@ class FieldStorage extends Model
                 $this->refuseNarrowing((string) $key);
             }
         }
+    }
+
+    /**
+     * Whether changing a scalar constraint could invalidate a stored value.
+     *
+     * Removal always widens — an absent bound is no bound. A lower floor or a
+     * higher ceiling widens. Anything whose direction cannot be reasoned
+     * about, such as a regular expression or a projection setting, is treated
+     * as narrowing: guessing in the permissive direction is how content gets
+     * quietly invalidated.
+     */
+    private function scalarNarrows(string $setting, mixed $was, mixed $now): bool
+    {
+        if ($now === null) {
+            return false;
+        }
+
+        return match ($setting) {
+            'min' => is_numeric($was) && is_numeric($now) && $now > $was,
+            'max', 'maxLength' => is_numeric($was) && is_numeric($now) && $now < $was,
+            default => true,
+        };
     }
 
     private function refuseNarrowing(string $setting): void
