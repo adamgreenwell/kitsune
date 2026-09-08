@@ -165,7 +165,15 @@ ADR-012 removed the boot-order collision structurally — the route table no lon
   🟡 The **org-scoping half is done** ([#21](https://github.com/adamgreenwell/kitsune/issues/21)). `User` is `#[OrgScopedThroughPivot]` through `org_user`, because membership is many-to-many and `OrgScope`'s `org_id = current` never applied. Roles and permissions themselves remain open.
 
   ⚠️ **The attribute had never been enforced.** `User` carried `#[Unscoped]` and did not `use EnforcesScope`, so it was labelled correctly and completely unconstrained — a model can pass the declaration sweep and still be globally readable. AGENTS.md invariant 2 now says so.
-- [ ] Audit log — **actor, action and target only, never payloads** (ADR-020), so erasure can reach everything it must
+- [x] Audit log — **actor, action and target only, never payloads** (ADR-020), so erasure can reach everything it must.
+
+  **What is absent from the table is the design**, and a test asserts the column list *exactly* — adding `changes`, `before`, `after` or `payload` fails the build rather than passing review on a busy day. `Auditor::record()` takes an action and a target and has **no parameter for a diff**, which is a stronger guarantee than a convention everybody agrees with and someone eventually breaks.
+
+  Written at the **query builder**, not from the admin, so the API and the console are audited by the same code path — an audit trail that only covers the UI is one with a documented hole. Model events alone were not enough: `Entry::query()->update()` and its siblings compile straight to SQL and dispatch nothing per row, so the bulk path was untraced. They were also not *safe* alongside it, since `$entry->save()` is itself a builder write and recorded everything twice. One choke point, and the builder tells the cases apart on its own — a soft delete is an update that sets `deleted_at`, a restore is one that clears it.
+
+  The actor is NULL when the system acts on its own; attributing a scheduled prune to whoever happened to be logged in would be a lie in the one place that must not hold one.
+
+  🟡 `erasure_log` (ADR-020 primitive 5) has its table and stores the target and the **replacement**, never the original — enough to replay on a restore, disclosing nothing. Wiring it to `redactField()` waits on the erasure work in [#30](https://github.com/adamgreenwell/kitsune/pull/30)
 - [ ] One hardcoded entity type end to end as a normal module, to prove the stack
 
 ## Phase 4 — The schema engine

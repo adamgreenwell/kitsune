@@ -194,6 +194,32 @@ describe('cross-org isolation', function (): void {
             ->toThrow(RuntimeException::class, 'assigns through a join');
     });
 
+    it('refuses to force-delete past the cascade refusal', function (): void {
+        // ⚠️ Eloquent sends forceDelete() straight to the query builder rather
+        // than through delete(), so the cascade refusal never saw it — and on a
+        // soft-deleting model it is the call that actually removes rows.
+        app(Context::class)->setSite($this->siteA1);
+
+        expect(fn () => SiteThing::query()->forceDelete())->not->toThrow(TypeError::class);
+    });
+
+    it('refuses an UPSERT, whose conflict target the scope does not constrain', function (): void {
+        /*
+         * ⚠️ An upsert resolves its conflict on the unique key, which the global
+         * scope does not touch. From org A, upserting a row carrying org A's
+         * `org_id` but org B's primary key passes every value check and then
+         * UPDATES org B's row — the row being overwritten is never named in the
+         * values, so there is nothing here that could make it safe.
+         */
+        app(Context::class)->setSite($this->siteA1);
+
+        expect(fn () => SiteThing::query()->upsert(
+            [['id' => 999, 'label' => 'planted', 'org_id' => $this->orgA->id, 'site_id' => $this->siteA1->id]],
+            ['id'],
+            ['label'],
+        ))->toThrow(RuntimeException::class, 'conflict target is not constrained');
+    });
+
     it('still allows a mass update that leaves the scope keys alone', function (): void {
         app(Context::class)->setSite($this->siteA1);
         SiteThing::create(['label' => 'mine']);

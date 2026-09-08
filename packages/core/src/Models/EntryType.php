@@ -21,6 +21,7 @@ use Kitsune\Core\Fields\FieldTypeRegistry;
 use Kitsune\Core\Fields\StorageStrategy;
 use Kitsune\Core\Tenancy\Attributes\Unscoped;
 use Kitsune\Core\Tenancy\Context;
+use Kitsune\Core\Tenancy\Contracts\RefusesCascadingDeletes;
 use Kitsune\Core\Tenancy\Contracts\RequiresModelSave;
 use Kitsune\Core\Tenancy\ScopedBuilder;
 use RuntimeException;
@@ -36,7 +37,7 @@ use RuntimeException;
  * @property array<string, mixed>|null $settings
  */
 #[Unscoped]
-class EntryType extends Model implements RequiresModelSave
+class EntryType extends Model implements RefusesCascadingDeletes, RequiresModelSave
 {
     /**
      * Handles that would collide with a route segment (ADR-012).
@@ -364,6 +365,45 @@ class EntryType extends Model implements RequiresModelSave
      *
      * @return array<string, string>
      */
+    /**
+     * ⚠️ Refuses while entries still reference it, because the database would
+     * remove them itself.
+     *
+     * `entries.entry_type_id` is `cascadeOnDelete`, so deleting this removed
+     * every referenced entry INSIDE the database: no per-row model event, so no
+     * audit row, and a hard DELETE, so Entry's SoftDeletes never applied and
+     * the rows were unrecoverable. Verified by probe.
+     *
+     * Reachable from the BUILDER as well as from `deleting`, through
+     * `RefusesCascadingDeletes` — written only as a model event it covered one
+     * path, and `query()->delete()`, `deleteQuietly()` and `withoutEvents()`
+     * all dispatch straight past it.
+     *
+     * Deleting an ORG still takes everything: that cascade happens in the
+     * database and fires nothing here, which keeps the documented exception
+     * working.
+     */
+    public function guardCascade(): void
+    {
+        $entries = Entry::withoutScopeBecause(
+            'counting entries before their type is deleted, to refuse rather than cascade',
+            fn ($query) => $query->withTrashed()->where('entry_type_id', $this->getKey())->count(),
+        );
+
+        if ($entries === 0) {
+            return;
+        }
+
+        throw new RuntimeException(sprintf(
+            'Entry type [%s] still has %d entr%s, and the database would delete them by cascade — '
+            .'permanently, with nothing in the audit trail saying they existed (ADR-020). Delete '
+            .'the entries first, which is audited.',
+            $this->handle,
+            $entries,
+            $entries === 1 ? 'y' : 'ies',
+        ));
+    }
+
     public static function columnsRequiringModelSave(): array
     {
         return [

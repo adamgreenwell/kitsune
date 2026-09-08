@@ -16,6 +16,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Support\Collection;
+use Kitsune\Core\Audit\AuditedBuilder;
 use Kitsune\Core\Fields\StorageStrategy;
 use Kitsune\Core\Relations\GuardedBelongsToMany;
 use Kitsune\Core\Tenancy\Attributes\SiteScoped;
@@ -222,6 +223,18 @@ class Entry extends Model implements RequiresModelSave
         return [
             'type_handle' => 'it is derived from entry_type_id, and a bulk write skips the restamp that keeps them agreeing.',
         ];
+    }
+
+    /**
+     * ⚠️ Every write goes through the audited builder, which is itself a
+     * ScopedBuilder — Entry needs the tenancy guards and the audit trail, and
+     * a model has only one builder (ADR-020).
+     *
+     * @param  \Illuminate\Database\Query\Builder  $query
+     */
+    public function newEloquentBuilder($query): AuditedBuilder
+    {
+        return new AuditedBuilder($query, $this);
     }
 
     /**

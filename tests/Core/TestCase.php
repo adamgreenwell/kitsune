@@ -63,6 +63,19 @@ abstract class TestCase extends Orchestra
         $connection = env('DB_CONNECTION', 'testing');
         $app['config']->set('database.default', $connection);
 
+        // ⚠️ SQLite does not enforce foreign keys unless asked, and Testbench
+        // does not ask. PostgreSQL and MySQL always do — so without this the
+        // default suite never exercised a single `cascadeOnDelete`,
+        // `nullOnDelete` or `constrained()` in any migration, while the two
+        // engine legs silently did.
+        //
+        // That matters beyond tidiness: deleting an org is supposed to remove
+        // its data, and deleting a nominated field is supposed to NULL the
+        // nomination — behaviour ADR-020 relies on and nothing was checking.
+        if ($connection === 'testing' || $connection === 'sqlite') {
+            $app['config']->set('database.connections.'.$connection.'.foreign_key_constraints', true);
+        }
+
         // ⚠️ mariadb is a distinct DRIVER name, not a flavour of mysql.
         // DriverFactory routes it to MySqlDriver, and README, architecture.md
         // and roadmap.md all document it as supported — but nothing ran

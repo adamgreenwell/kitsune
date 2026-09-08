@@ -13,6 +13,8 @@ namespace Kitsune\Core\Tenancy;
 use Illuminate\Contracts\Database\Query\Expression;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\DB;
+use Kitsune\Core\Tenancy\Contracts\RefusesCascadingDeletes;
 use Kitsune\Core\Tenancy\Contracts\RequiresModelSave;
 use RuntimeException;
 
@@ -68,6 +70,92 @@ class ScopedBuilder extends Builder
     }
 
     /**
+     * ⚠️ Deletion is guarded HERE as well as in the model event.
+     *
+     * `Site::query()->delete()`, `deleteQuietly()` and anything inside
+     * `withoutEvents()` dispatch no `deleting` callback, so a refusal written
+     * as a model event covered one path — and the `ON DELETE CASCADE` on
+     * `entries.site_id` and `entries.entry_type_id` then hard-deleted every
+     * referenced entry with no audit row and no soft delete.
+     */
+    public function delete()
+    {
+        return $this->guardingCascade(fn () => parent::delete());
+    }
+
+    /**
+     * ⚠️ `forceDelete()` too. Eloquent sends it straight to the query builder
+     * rather than through `delete()`, so the cascade refusal did not see it —
+     * and on a soft-deleting model it is the one that actually removes rows.
+     */
+    public function forceDelete()
+    {
+        return $this->guardingCascade(fn () => parent::forceDelete());
+    }
+
+    /**
+     * Run a deletion with the cascade refusal, atomically.
+     *
+     * ⚠️ In a TRANSACTION, with the referencing rows locked. The check counted
+     * references and the DELETE ran as separate statements, so a child inserted
+     * between them was cascaded away permanently despite the refusal — the
+     * refusal was advisory under concurrent load, which is the state it exists
+     * to prevent.
+     */
+    private function guardingCascade(callable $delete): mixed
+    {
+        $model = $this->getModel();
+
+        if (ScopeWrites::suspended() || ! $model instanceof RefusesCascadingDeletes) {
+            return $delete();
+        }
+
+        return DB::transaction(function () use ($model, $delete) {
+            foreach ($this->toBase()->lockForUpdate()->pluck($model->getQualifiedKeyName()) as $key) {
+                $model->newInstance([], true)
+                    ->forceFill([$model->getKeyName() => $key])
+                    ->guardCascade();
+            }
+
+            return $delete();
+        });
+    }
+
+    /**
+     * ⚠️ Arithmetic on a scope column is refused outright, never compared.
+     *
+     * The scope-key guard reads a value; an increment supplies an AMOUNT. So
+     * `increment('org_id', 1)` with the current org 1 compared 1 against 1 and
+     * PASSED — then added 1, moving the row to org 2. The guard was reading the
+     * delta as though it were the destination, and no amount added to a scope
+     * key lands somewhere this context can vouch for.
+     *
+     * Protected, because AuditedBuilder extends this and needs it: Entry has
+     * one builder and both sets of guards.
+     *
+     * @param  array<string, mixed>  $values
+     */
+    protected function refuseScopeArithmetic(array $values): void
+    {
+        if (ScopeWrites::suspended()) {
+            return;
+        }
+
+        foreach (array_keys($values) as $column) {
+            $bare = $this->bareColumn((string) $column);
+
+            if ($bare === 'org_id' || $bare === 'site_id') {
+                throw new RuntimeException(sprintf(
+                    'Refusing to increment or decrement [%s]: it is a scope key, and no amount added '
+                    .'to one lands somewhere this context can vouch for (ADR-021). Set the value '
+                    .'through a save if the move is deliberate.',
+                    $bare,
+                ));
+            }
+        }
+    }
+
+    /**
      * Refuse a bulk write to a column whose guard can only run per row.
      *
      * ⚠️ Six guards in this project have now been found bypassed by a bulk
@@ -77,7 +165,7 @@ class ScopedBuilder extends Builder
      *
      * @param  array<string, mixed>  $values
      */
-    private function refusePerRowColumns(array $values): void
+    protected function refusePerRowColumns(array $values): void
     {
         $model = $this->getModel();
 
@@ -122,7 +210,7 @@ class ScopedBuilder extends Builder
      */
     public function increment($column, $amount = 1, array $extra = [])
     {
-        $this->guardScopeKeys([(string) $column => $amount, ...$extra]);
+        $this->refuseScopeArithmetic([(string) $column => $amount, ...$extra]);
 
         return parent::increment($column, $amount, $extra);
     }
@@ -133,7 +221,7 @@ class ScopedBuilder extends Builder
      */
     public function decrement($column, $amount = 1, array $extra = [])
     {
-        $this->guardScopeKeys([(string) $column => $amount, ...$extra]);
+        $this->refuseScopeArithmetic([(string) $column => $amount, ...$extra]);
 
         return parent::decrement($column, $amount, $extra);
     }
@@ -144,7 +232,7 @@ class ScopedBuilder extends Builder
      */
     public function incrementEach(array $columns, array $extra = [])
     {
-        $this->guardScopeKeys([...$columns, ...$extra]);
+        $this->refuseScopeArithmetic([...$columns, ...$extra]);
 
         return parent::incrementEach($columns, $extra);
     }
@@ -155,7 +243,7 @@ class ScopedBuilder extends Builder
      */
     public function decrementEach(array $columns, array $extra = [])
     {
-        $this->guardScopeKeys([...$columns, ...$extra]);
+        $this->refuseScopeArithmetic([...$columns, ...$extra]);
 
         return parent::decrementEach($columns, $extra);
     }
@@ -168,11 +256,20 @@ class ScopedBuilder extends Builder
      */
     public function upsert(array $values, $uniqueBy, $update = null)
     {
-        /** @var array<int, array<string, mixed>> $rows */
-        $rows = array_is_list($values) ? $values : [$values];
-
-        foreach ($rows as $row) {
-            $this->guardScopeKeys($row);
+        // ⚠️ REFUSED, not guarded. The conflict target is not constrained by
+        // the global scope, so validating the proposed values is not enough:
+        // from org A, upserting a row carrying org A's `org_id` and org B's
+        // primary key passes every check and then UPDATES org B's row. The row
+        // being overwritten is never named in the values, so there is nothing
+        // here that validation could inspect to make it safe.
+        if (! ScopeWrites::suspended()) {
+            throw new RuntimeException(sprintf(
+                'Refusing to upsert %s: the conflict target is not constrained by the scope, so a '
+                .'row belonging to another org or site could be overwritten by an insert that looks '
+                .'entirely valid (ADR-021). Save the model, or use withoutScopeBecause() if this is '
+                .'deliberate.',
+                $this->getModel()::class,
+            ));
         }
 
         return parent::upsert($values, $uniqueBy, $update);
@@ -203,7 +300,7 @@ class ScopedBuilder extends Builder
      * @param  array<string, mixed>  $values
      */
     /** Strip table qualification and quoting, so `entries`.`org_id` is `org_id`. */
-    private function bareColumn(string $column): string
+    protected function bareColumn(string $column): string
     {
         $bare = str_contains($column, '.')
             ? substr($column, (int) strrpos($column, '.') + 1)
@@ -221,7 +318,7 @@ class ScopedBuilder extends Builder
      *
      * @param  array<string, mixed>  $values
      */
-    private function guardScopeKeys(array $values): void
+    protected function guardScopeKeys(array $values): void
     {
         // The reviewable escape hatch stands BOTH enforcers down, not one.
         if (ScopeWrites::suspended()) {

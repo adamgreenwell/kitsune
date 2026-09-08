@@ -155,6 +155,29 @@ trait EnforcesScope
             return;
         }
 
+        // ⚠️ A non-null key with NO context is refused, not waved through.
+        //
+        // The partial-context case: with only an org set, a site-scoped row
+        // could be written with this org's `org_id` and ANOTHER org's
+        // `site_id`, because `$current === null` returned here. SiteScope
+        // matches on `site_id` and does not additionally check the row's org,
+        // so selecting through that site exposed the planted row across the
+        // boundary. Nothing establishes that a caller with no site context may
+        // name a site, so naming one is the escape hatch's job.
+        if ($current === null && $value !== null) {
+            throw new RuntimeException(sprintf(
+                'Refusing to write %s with [%s] = %s when no %s context is established. Nothing '
+                .'here can say the value is yours, and a scope key nobody vouched for is how a row '
+                .'ends up visible to another %s (ADR-021). Use withoutScopeBecause() if this is '
+                .'deliberate.',
+                static::class,
+                $column,
+                (string) $value,
+                $scope = str_replace('_id', '', $column),
+                $scope,
+            ));
+        }
+
         if ($current === null || $value === null || (int) $value === $current) {
             return;
         }
