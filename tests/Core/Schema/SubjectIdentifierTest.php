@@ -1100,6 +1100,42 @@ describe('changing an entry\'s type cannot orphan a relation pointing at it', fu
             ->not->toThrow(RuntimeException::class);
     });
 
+    it('ignores a relation whose source has since become invisible', function (): void {
+        /*
+         * ⚠️ A pivot valid when written can become cross-site later. Move an
+         * org-shared or site-A source to another site and its now-invisible
+         * relation could still veto a type change here, because the veto was
+         * scoped by org and two sites share an org stamp.
+         */
+        $otherSite = Site::create([
+            'org_id' => $this->org->id, 'handle' => 'd', 'slug' => 'veto-site', 'name' => 'D',
+        ]);
+        $other = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'article', 'name' => 'A', 'plural_name' => 'As',
+        ]);
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'person', 'type' => 'relation',
+            'pii_class' => 'personal', 'cardinality' => 1,
+            'settings' => ['targetTypes' => [$this->type->handle]],
+        ]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id, 'label' => 'Person',
+        ]);
+
+        $alice = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Alice']);
+        $visit = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Visit']);
+        $visit->related()->attach($alice->id, ['field_storage_id' => $storage->id]);
+
+        // The source moves away, so the relation is no longer visible here.
+        Entry::withoutScopeBecause(
+            'fixture: moving the source out of this site',
+            fn () => $visit->forceFill(['site_id' => $otherSite->id])->saveQuietly(),
+        );
+
+        expect(fn () => $alice->update(['entry_type_id' => $other->id]))
+            ->not->toThrow(RuntimeException::class);
+    });
+
     it('allows a type change the relation still accepts', function (): void {
         $other = EntryType::create([
             'org_id' => $this->org->id, 'handle' => 'article', 'name' => 'A', 'plural_name' => 'As',
@@ -1183,6 +1219,53 @@ describe('a pivot cannot reach past what the writer can see', function (): void 
             ->toThrow(RuntimeException::class, 'belongs to another organisation');
 
         expect($theirs->fresh()->is_locked)->toBeFalse();
+    });
+
+    it('refuses a rival\'s storage even when the pivot stamp agrees with it', function (): void {
+        /*
+         * ⚠️ `withPivotValue()` supplies `org_id`, but `attach()` attributes
+         * OVERRIDE it. So comparing storage against the pivot's own stamp
+         * compared two values the same caller controls: pass org B's
+         * `field_storage_id` AND org B's `org_id` and the equality held, right
+         * before the created hook armed org B's lock. Ownership is derived
+         * from the source entry now.
+         */
+        $theirs = FieldStorage::create([
+            'org_id' => $this->rivalOrg->id, 'handle' => 'person', 'type' => 'relation',
+            'pii_class' => 'personal', 'cardinality' => -1,
+        ]);
+        $alice = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Alice']);
+
+        expect(fn () => $this->visit->related()->attach($alice->id, [
+            'field_storage_id' => $theirs->id,
+            'org_id' => $this->rivalOrg->id,
+        ]))->toThrow(RuntimeException::class);
+
+        expect($theirs->fresh()->is_locked)->toBeFalse();
+    });
+
+    it('refuses a guessed SOURCE from the reverse direction', function (): void {
+        /*
+         * ⚠️ `referencedBy()` inverts the endpoints: the visible parent is the
+         * TARGET, and the attached id becomes `source_entry_id`. Checking only
+         * the target said nothing about the source, so a site-A caller could
+         * attach a guessed site-B source to its own visible target — a row
+         * hidden from B's relation reads that still counted in
+         * guardCardinality(), letting A fill B's single-valued relation and
+         * block its legitimate attach.
+         */
+        $otherSite = Site::create([
+            'org_id' => $this->org->id, 'handle' => 'c', 'slug' => 'reverse-site', 'name' => 'C',
+        ]);
+        $theirs = Entry::withoutScopeBecause('fixture: another site\'s row', fn () => Entry::create([
+            'org_id' => $this->org->id, 'site_id' => $otherSite->id,
+            'entry_type_id' => $this->type->id, 'title' => 'Theirs',
+        ]));
+
+        $mine = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Mine']);
+
+        expect(fn () => $mine->referencedBy()->attach($theirs->id, ['field_storage_id' => $this->storage->id]))
+            ->toThrow(RuntimeException::class, 'cannot be the source');
     });
 
     it('still allows GLOBAL storage, which every org may use', function (): void {

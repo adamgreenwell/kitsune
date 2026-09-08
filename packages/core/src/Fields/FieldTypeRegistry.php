@@ -58,7 +58,31 @@ final class FieldTypeRegistry
 
     public function register(FieldType $type): self
     {
-        $this->types[$type::handle()] = $type;
+        $handle = $type::handle();
+
+        // ⚠️ A duplicate handle is REFUSED, not last-one-wins.
+        //
+        // `field_storage.type` identifies a type by handle alone, so a module
+        // that reuses one silently changes the validation, conversion and
+        // projection of every existing row — reinterpreting stored content,
+        // or disagreeing with a generated column that was built from the
+        // other implementation's signature. Which behaviour you got would
+        // depend on module registration order.
+        //
+        // Replacing an implementation deliberately is a different operation
+        // and wants its own name, so it can be reviewed as the override it is.
+        if (isset($this->types[$handle]) && $type::class !== $this->types[$handle]::class) {
+            throw new RuntimeException(sprintf(
+                'Field type handle [%s] is already registered by [%s], so [%s] cannot take it. '
+                .'`field_storage.type` records the handle alone, so two implementations behind one '
+                .'handle would reinterpret existing rows according to load order.',
+                $handle,
+                $this->types[$handle]::class,
+                $type::class,
+            ));
+        }
+
+        $this->types[$handle] = $type;
 
         return $this;
     }

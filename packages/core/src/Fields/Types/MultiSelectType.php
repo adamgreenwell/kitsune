@@ -81,7 +81,13 @@ final class MultiSelectType extends BaseFieldType
         // Intrinsically multi-valued: supportsCardinality() is false, so the
         // storage row's cardinality says nothing about how many options may
         // be chosen and must not bound the array.
-        return [...($config->isRequired() ? ['required'] : ['nullable']), 'array'];
+        // ⚠️ `list`, not just `array`. A decoded API object such as
+        // `{"primary": "a", "secondary": "b"}` is an associative PHP
+        // array, so `array` accepted it and the element rules validated
+        // its values — then `toStorage()` called `array_values()` and
+        // stored `["a", "b"]`. An object accepted against a published
+        // array schema, and its shape changed on the way in.
+        return [...($config->isRequired() ? ['required'] : ['nullable']), 'array', 'list'];
     }
 
     /**

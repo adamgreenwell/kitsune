@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Fields\Types;
 
+use Closure;
 use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Fields\Projection;
 use Kitsune\Core\Fields\StorageStrategy;
@@ -86,6 +87,38 @@ final class SlugType extends BaseFieldType
             'bail',
             'string',
             'max:255',
+            // ⚠️ And again on the NORMALISED value, because that is what gets
+            // stored. `!!!` passes `required`, `string` and `max`, slugifies
+            // to the empty string, and the entry ends up satisfying validation
+            // with no usable URL segment. Transliteration runs the other way
+            // too — a Cyrillic or CJK title can grow past 255 characters once
+            // romanised, and the column would truncate it.
+            function (string $attribute, mixed $value, Closure $fail) use ($config): void {
+                if (! is_string($value)) {
+                    return;
+                }
+
+                $normalised = (string) $this->castToStorage($value, $config);
+
+                if ($normalised === '') {
+                    $fail(
+                        "The {$attribute} field contains nothing a URL can use. Slugs keep letters, "
+                        .'numbers and hyphens, and this reduces to an empty string.'
+                    );
+
+                    return;
+                }
+
+                if (mb_strlen($normalised) > 255) {
+                    $length = mb_strlen($normalised);
+
+                    $fail(
+                        "The {$attribute} field is {$length} characters once normalised, which "
+                        .'exceeds 255. Transliteration can make a slug longer than the text it came '
+                        .'from.'
+                    );
+                }
+            },
             // scopedUnique, never Laravel's unique — that rule bypasses
             // Eloquent and would tell one org a slug is taken because
             // another org holds it. Scoped to the entry type as well,

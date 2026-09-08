@@ -50,9 +50,19 @@ final class MySqlDriver implements SchemaDriver
             LogicalType::Decimal => "DECIMAL({$projection->precision},{$projection->scale})",
             LogicalType::Integer => 'BIGINT',
             LogicalType::Boolean => 'TINYINT(1)',
+            // ⚠️ An explicit BINARY collation, because MySQL's default is
+            // case AND accent insensitive.
+            //
+            // Without it an indexed exact filter matched `abc` for `ABC` on
+            // MySQL while PostgreSQL and SQLite distinguished them — the same
+            // query returning different rows on different engines, which is
+            // the one thing the driver abstraction exists to prevent. The
+            // index is for exact lookup and the JSON value it projects is
+            // byte-exact, so the column has to compare that way.
+            //
             // VARCHAR for dates too, matching PostgreSQL, which cannot use a
             // real DATE in a generated column at all.
-            LogicalType::String, LogicalType::Date, LogicalType::DateTime => "VARCHAR({$projection->precision})",
+            LogicalType::String, LogicalType::Date, LogicalType::DateTime => "VARCHAR({$projection->precision}) COLLATE utf8mb4_bin",
         };
     }
 

@@ -53,7 +53,7 @@ class EntryRelation extends Pivot
     {
         static::creating(function (self $relation): void {
             $relation->guardStorageOwnership();
-            $relation->guardTargetVisible();
+            $relation->guardEndpointsVisible();
             $relation->guardCardinality();
             $relation->guardTargetType();
         });
@@ -98,8 +98,9 @@ class EntryRelation extends Pivot
                 $relation->guardCardinality();
             }
 
-            if ($relation->isDirty('target_entry_id')) {
-                $relation->guardTargetVisible();
+            // Either endpoint moving needs rechecking, not just the target.
+            if ($relation->isDirty(['source_entry_id', 'target_entry_id'])) {
+                $relation->guardEndpointsVisible();
             }
 
             if ($relation->isDirty(['field_storage_id', 'target_entry_id'])) {
@@ -126,18 +127,30 @@ class EntryRelation extends Pivot
      * SiteScope permits org-shared entries (`site_id` NULL), so those stay
      * attachable, which is the case the relation exists for.
      */
-    private function guardTargetVisible(): void
+    private function guardEndpointsVisible(): void
     {
-        if (Entry::query()->whereKey($this->target_entry_id)->exists()) {
-            return;
-        }
+        // ⚠️ BOTH ends. Checking the target alone said nothing about the
+        // source, and `referencedBy()` inverts them: the visible parent is the
+        // TARGET there, and the attached id becomes `source_entry_id`. So a
+        // site-A caller could attach a guessed site-B source to its own
+        // visible target — a row hidden from B's own relation reads that still
+        // counted in `guardCardinality()`, letting A fill B's single-valued
+        // relation and block its legitimate attach.
+        foreach (['source_entry_id', 'target_entry_id'] as $end) {
+            $id = $this->getAttribute($end);
 
-        throw new RuntimeException(sprintf(
-            'Entry %d is not visible here, so it cannot be a relation target. `attach()` takes an '
-            .'id and never loads the model, which is how a pivot came to point across a site or '
-            .'organisation boundary at all (ADR-021).',
-            (int) $this->target_entry_id,
-        ));
+            if ($id === null || Entry::query()->whereKey($id)->exists()) {
+                continue;
+            }
+
+            throw new RuntimeException(sprintf(
+                'Entry %d is not visible here, so it cannot be the %s of a relation. `attach()` '
+                .'takes an id and never loads the model, which is how a pivot came to point across '
+                .'a site or organisation boundary at all (ADR-021).',
+                (int) $id,
+                $end === 'source_entry_id' ? 'source' : 'target',
+            ));
+        }
     }
 
     /**
@@ -164,9 +177,34 @@ class EntryRelation extends Pivot
             return;
         }
 
+        // ⚠️ The SOURCE ENTRY'S org, not this pivot's `org_id`.
+        //
+        // `withPivotValue()` supplies that stamp, but `attach()` attributes
+        // override it — `Entry::redactField()` exists partly because such rows
+        // are reachable. So comparing storage against the pivot's own org_id
+        // compared two values the same caller controls: pass org B's
+        // `field_storage_id` AND org B's `org_id` and the equality held, right
+        // before the `created` hook armed org B's lock. The whole cross-org
+        // freeze came back through the door the fix had just closed.
+        $sourceOrg = Entry::withoutScopeBecause(
+            'resolving the source entry\'s org to validate the pivot, not to expose the row',
+            fn ($query) => $query->whereKey($this->source_entry_id)->value('org_id'),
+        );
+
+        if ($sourceOrg !== null && (int) $this->org_id !== (int) $sourceOrg) {
+            throw new RuntimeException(sprintf(
+                'Relation stamped org %d but entry %d belongs to org %d. The stamp is not evidence '
+                .'of ownership — `attach()` attributes can set it — so it has to agree with the '
+                .'entry it hangs off (ADR-021).',
+                (int) $this->org_id,
+                (int) $this->source_entry_id,
+                (int) $sourceOrg,
+            ));
+        }
+
         $storageOrg = FieldStorage::query()->whereKey($this->field_storage_id)->value('org_id');
 
-        if ($storageOrg === null || (int) $storageOrg === (int) $this->org_id) {
+        if ($storageOrg === null || ($sourceOrg !== null && (int) $storageOrg === (int) $sourceOrg)) {
             return;
         }
 
@@ -246,9 +284,16 @@ class EntryRelation extends Pivot
         // An unscoped scan then let A's storage configuration VETO B's
         // updates — freezing a rival's record indefinitely, from a row B
         // cannot see and did not create.
+        // ⚠️ Visibility NOW, not the org stamp. A pivot valid when written
+        // can become cross-site later — move an org-shared or site-A target to
+        // site B and site A's now-invisible relation could still veto B's type
+        // change. Requiring the SOURCE to be visible from here means a
+        // relation only constrains an entry while both ends can still see each
+        // other.
         $relations = static::query()
             ->where('target_entry_id', $targetId)
             ->where('org_id', $targetOrgId)
+            ->whereIn('source_entry_id', Entry::query()->select('id')->toBase())
             ->get();
 
         foreach ($relations as $relation) {
