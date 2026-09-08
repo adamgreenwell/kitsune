@@ -82,27 +82,52 @@ final class JsonType extends BaseFieldType
     }
 
     /**
-     * ⚠️ Refuse `{"0":"a","1":"b"}`, which PHP cannot keep distinct.
+     * ⚠️ Refuse an object whose keys are a 0-based sequence, at any depth.
      *
-     * It is a valid JSON object and it decodes to the PHP list `['a','b']`,
-     * which re-encodes as `["a","b"]` — so the value silently changes shape
-     * on a round trip through storage. `Entry.values` casts to array, so
-     * there is nowhere later to recover the distinction either.
+     * `{"0":"a","1":"b"}` is a valid JSON object that decodes to the PHP list
+     * `['a','b']` and re-encodes as `["a","b"]`, so the value silently
+     * changes shape on save. `Entry.values` casts to array, so there is
+     * nowhere later to recover the distinction either.
      *
-     * Refused with the reason rather than accepted and quietly mangled. This
-     * field is for machine-readable configuration (§4), where a key that is
-     * also its own index is a naming accident rather than a requirement.
+     * ⚠️ Walks the structure decoded WITHOUT assoc, and that is the only way
+     * it can work: after `assoc: true` a nested `{"0":"a"}` and a nested
+     * `["a"]` are the same PHP value, so the check could not tell an
+     * ambiguous object from a perfectly ordinary array — and a first attempt
+     * at this rejected legitimate nested lists for exactly that reason.
      *
-     * @param  array<array-key, mixed>  $decoded
+     * Refused rather than accepted and quietly mangled. This field is for
+     * machine-readable configuration (§4), where a key that is also its own
+     * index is a naming accident rather than a requirement.
      */
-    private function failOnSequentialKeys(string $attribute, array $decoded, Closure $fail): void
+    private function failOnAmbiguousObject(string $attribute, mixed $node, Closure $fail, string $path = ''): void
     {
-        if ($decoded !== [] && array_is_list($decoded)) {
-            $fail(
-                "The {$attribute} field has keys that are a 0-based sequence, which PHP cannot tell "
-                .'apart from a list — the value would silently become an array on save. Use keys that '
-                .'are not consecutive integers from zero.'
-            );
+        if ($node instanceof stdClass) {
+            $properties = (array) $node;
+
+            if ($properties !== [] && array_is_list($properties)) {
+                $where = $path === '' ? '' : " at [{$path}]";
+
+                $fail(
+                    "The {$attribute} field has an object{$where} whose keys are a 0-based sequence, "
+                    .'which PHP cannot tell apart from a list — it would silently become an array on '
+                    .'save. Use keys that are not consecutive integers from zero.'
+                );
+
+                return;
+            }
+
+            foreach ($properties as $key => $value) {
+                $this->failOnAmbiguousObject($attribute, $value, $fail, $path === '' ? (string) $key : $path.'.'.$key);
+            }
+
+            return;
+        }
+
+        // A genuine JSON array. Its ELEMENTS may still be ambiguous objects.
+        if (is_array($node)) {
+            foreach ($node as $key => $value) {
+                $this->failOnAmbiguousObject($attribute, $value, $fail, $path === '' ? (string) $key : $path.'.'.$key);
+            }
         }
     }
 
@@ -149,7 +174,7 @@ final class JsonType extends BaseFieldType
                         return;
                     }
 
-                    $this->failOnSequentialKeys($attribute, (array) $decoded, $fail);
+                    $this->failOnAmbiguousObject($attribute, $decoded, $fail);
 
                     return;
                 }
@@ -168,7 +193,9 @@ final class JsonType extends BaseFieldType
                     return;
                 }
 
-                $this->failOnSequentialKeys($attribute, $value, $fail);
+                // A PHP array carries no object/list distinction to lose, so
+                // only the top-level list case is checkable here — it is
+                // handled above.
             },
         ];
     }

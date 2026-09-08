@@ -89,7 +89,59 @@ final class SchemaManager
             return;
         }
 
+        // ⚠️ Drop what this row USED to project to FIRST. An unlocked indexed
+        // row that changes a projection-affecting setting — or its type — now
+        // names a different column, and adding the new one alone leaves the
+        // old column and index orphaned: write overhead on every entry save,
+        // and a slot against the cap.
+        //
+        // Before the add, not after, for the same reason `reconcile()` drops
+        // orphans first: at the cap a capacity-NEUTRAL replacement would
+        // otherwise fail on a table that needs no net new column.
+        $this->dropObsoleteProjections($storage);
+
         $this->index($storage);
+    }
+
+    /**
+     * Drop any column for this handle that no indexed row projects to.
+     *
+     * ⚠️ Reconciled by HANDLE rather than by remembering the previous name.
+     * The documented flow calls `sync()` AFTER the row is saved, and Eloquent
+     * has synced the original by then — so `getRawOriginal()` returns the NEW
+     * value and a before/after comparison finds no change. That version of
+     * this method read correctly and did nothing.
+     *
+     * Reconciling also clears historical orphans for the handle rather than
+     * only the one this call created.
+     */
+    private function dropObsoleteProjections(FieldStorage $storage): void
+    {
+        // Step aside for a type that projects to nothing, so `index()` can
+        // raise its own "not indexable" error rather than this method
+        // throwing a less useful one from `generatedColumnName()` first.
+        if ($this->registry->get($storage->type)->projection(new FieldConfig($storage)) === null) {
+            return;
+        }
+
+        // The separator is part of the prefix, so `idx_price__` cannot match
+        // a column belonging to `price_extra`.
+        $prefix = 'idx_'.$storage->handle.'__';
+        $current = $storage->generatedColumnName();
+
+        foreach ($this->generatedColumns() as $column) {
+            if ($column === $current || ! str_starts_with($column, $prefix)) {
+                continue;
+            }
+
+            // Reference-counted like every other drop: one row moving must
+            // not take a column another org still projects to.
+            if ($this->otherRowsWantColumn($storage, $column)) {
+                continue;
+            }
+
+            $this->dropColumn($column, $column.'_site_idx');
+        }
     }
 
     /**
@@ -239,14 +291,24 @@ final class SchemaManager
      */
     private function otherRowsWant(FieldStorage $storage): bool
     {
-        $column = $storage->generatedColumnName();
+        return $this->otherRowsWantColumn($storage, $storage->generatedColumnName());
+    }
 
+    private function otherRowsWantColumn(FieldStorage $storage, string $column): bool
+    {
         return FieldStorage::query()
             ->where('is_indexed', true)
             ->where('handle', $storage->handle)
             ->when($storage->exists, fn ($query) => $query->whereKeyNot($storage->getKey()))
             ->get()
-            ->contains(fn (FieldStorage $other): bool => $other->generatedColumnName() === $column);
+            ->contains(function (FieldStorage $other) use ($column): bool {
+                try {
+                    return $other->generatedColumnName() === $column;
+                } catch (RuntimeException) {
+                    // A row whose type projects to nothing wants no column.
+                    return false;
+                }
+            });
     }
 
     private function projectionFor(FieldStorage $storage): Projection

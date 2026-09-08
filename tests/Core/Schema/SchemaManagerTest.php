@@ -577,3 +577,55 @@ it('still REFUSES an index requested on a projection-less field', function (): v
     expect(fn () => $this->manager->sync($storage))
         ->toThrow(RuntimeException::class, 'not indexable');
 });
+
+describe('a moved projection takes its old column with it', function (): void {
+    it('drops the column a changed setting orphaned', function (): void {
+        // ⚠️ Adding the new column alone left the old one and its index
+        // behind — paying write overhead on every entry save and consuming
+        // the cap. At the cap, a capacity-NEUTRAL replacement failed outright.
+        $storage = storageFor('price', 'number', [
+            'org_id' => $this->orgA->id, 'is_indexed' => true, 'settings' => ['format' => 'decimal'],
+        ]);
+        $this->manager->sync($storage);
+
+        expect(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeTrue();
+
+        $storage->update(['settings' => ['format' => 'integer']]);
+        $this->manager->sync($storage);
+
+        expect(Schema::hasColumn('entries', 'idx_price__integer'))->toBeTrue()
+            ->and(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeFalse();
+    });
+
+    it('keeps the old column when ANOTHER row still projects that way', function (): void {
+        // Reference-counted like any other drop: one org moving must not take
+        // another org's column with it.
+        $mine = storageFor('price', 'number', ['org_id' => $this->orgA->id, 'is_indexed' => true]);
+        $theirs = storageFor('price', 'number', ['org_id' => $this->orgB->id, 'is_indexed' => true]);
+
+        $this->manager->sync($mine);
+        $this->manager->sync($theirs);
+
+        $mine->update(['settings' => ['format' => 'integer']]);
+        $this->manager->sync($mine);
+
+        expect(Schema::hasColumn('entries', 'idx_price__integer'))->toBeTrue()
+            ->and(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeTrue();
+    });
+
+    it('lets a capacity-neutral replacement fit at the cap', function (): void {
+        for ($i = 0; $i < SchemaManager::MAX_GENERATED_COLUMNS - 1; $i++) {
+            $this->manager->index(storageFor("filler_{$i}", 'number', ['org_id' => $this->orgA->id, 'is_indexed' => true]));
+        }
+
+        $moving = storageFor('price', 'number', ['org_id' => $this->orgA->id, 'is_indexed' => true]);
+        $this->manager->sync($moving);
+
+        // At the cap now. Changing the projection is net zero columns, and
+        // adding before dropping made it throw.
+        $moving->update(['settings' => ['format' => 'integer']]);
+
+        expect(fn () => $this->manager->sync($moving))->not->toThrow(RuntimeException::class);
+        expect(Schema::hasColumn('entries', 'idx_price__integer'))->toBeTrue();
+    });
+});

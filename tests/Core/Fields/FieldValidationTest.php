@@ -467,3 +467,26 @@ it('refuses a JSON object whose keys are a 0-based sequence', function (): void 
 it('still accepts an object with non-sequential numeric keys', function (): void {
     expect(validate('json', ['f' => '{"1":"a","5":"b"}'])->fails())->toBeFalse();
 });
+
+it('refuses an ambiguous object NESTED inside a valid one', function (): void {
+    // toStorage() decodes recursively, so checking the outer object let
+    // {"config":{"0":"a","1":"b"}} through and the child collapsed to
+    // ["a","b"] on save — the same defect one level down, where it is harder
+    // to notice.
+    $v = validate('json', ['f' => '{"config":{"0":"a","1":"b"}}']);
+
+    expect($v->fails())->toBeTrue()
+        ->and($v->errors()->first('f'))->toContain('[config]');
+});
+
+it('still accepts a legitimate nested ARRAY', function (): void {
+    // ⚠️ The distinction only survives before decoding: after `assoc: true` a
+    // nested {"0":"a"} and a nested ["a"] are the same PHP value. A first
+    // attempt at the recursion rejected ordinary lists for exactly that
+    // reason, so the walk runs over the structure decoded WITHOUT assoc.
+    expect(validate('json', ['f' => '{"tags":["a","b"],"nested":{"deep":{"x":1}}}'])->fails())->toBeFalse();
+});
+
+it('finds an ambiguous object inside an array', function (): void {
+    expect(validate('json', ['f' => '{"items":[{"0":"a","1":"b"}]}'])->fails())->toBeTrue();
+});
