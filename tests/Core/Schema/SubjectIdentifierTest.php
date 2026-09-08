@@ -151,6 +151,7 @@ describe('erasure reaches revision history (ADR-020)', function (): void {
         foreach (['a@example.test', 'a@example.test', 'a@example.test'] as $i => $email) {
             EntryRevision::create([
                 'entry_id' => $this->entry->id,
+                'entry_type_id' => $this->entry->entry_type_id,
                 'values' => ['email' => $email, 'notes' => "draft {$i}"],
                 'status' => 'draft',
             ]);

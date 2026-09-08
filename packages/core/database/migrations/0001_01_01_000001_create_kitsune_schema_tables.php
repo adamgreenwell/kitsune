@@ -149,8 +149,37 @@ return new class extends Migration
             // older version onto a retyped entry would write those values back to
             // be read by the wrong field set. Nullable because a revision may
             // outlive nothing here, but the FK cascade matches `entry_id`.
-            $table->foreignId('entry_type_id')->nullable()->constrained()->cascadeOnDelete();
+            //
+            // ⚠️ NOT NULL, deliberately. Nullable first, and that put a
+            // restore-time constraint violation one row away: `snapshot()`
+            // includes this column, `restoreRevision()` fills the entry from the
+            // snapshot, and `entries.entry_type_id` is NOT NULL — so a revision
+            // with no discriminator ended the History restore in a database
+            // error. Every revision is written by `recordRevision()` from an
+            // entry whose own column is NOT NULL, so the value is always there;
+            // the schema now says that rather than leaving a hole to handle.
+            $table->foreignId('entry_type_id')->constrained()->cascadeOnDelete();
             $table->json('values')->nullable();
+            // ⚠️ Relations are the THIRD storage strategy and a revision that
+            // omits them is not a version of the entry.
+            //
+            // A relational field's data is rows in `entry_relations`, not a key
+            // in `values` and not a promoted column — so snapshotting only the
+            // other two meant restoring a revision left every relation at its
+            // CURRENT value while telling the author the entry now matched the
+            // version they picked. Shaped as {field_storage_id: [target ids in
+            // order]}, which is what a restore needs to rebuild them.
+            //
+            // ⚠️ NOT called `relations`, and that is not a style preference.
+            // `Model::$relations` is a PROTECTED property holding an Eloquent
+            // model's loaded relationships. A column of that name is shadowed by
+            // it for any code reading the attribute from inside another model:
+            // PHP resolves a protected member declared in a common ancestor
+            // directly, so `$revision->relations` never reaches `__get()` and
+            // returns the loaded-relationships array instead — `[]`. Restoring
+            // silently did nothing, and the same read from outside a class
+            // returned the column correctly, which is what made it confusing.
+            $table->json('relation_state')->nullable();
             $table->string('status')->default('draft');
             $table->string('title')->nullable();
             $table->string('slug')->nullable();

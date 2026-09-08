@@ -12,6 +12,7 @@ namespace Kitsune\Core\Audit;
 
 use Illuminate\Contracts\Database\Query\Expression;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Events\NullDispatcher;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Kitsune\Core\Models\Entry;
@@ -492,7 +493,31 @@ class AuditedBuilder extends ScopedBuilder
     {
         $model = $this->getModel();
 
-        if ($keys === [] || $model->exists || RevisionWrites::suspended()) {
+        if ($keys === [] || RevisionWrites::suspended()) {
+            return [];
+        }
+
+        // ⚠️ An instance save is normally recorded by the `updated` listener, and
+        // recording here as well would file two revisions for one save. But
+        // `saveQuietly()` and `updateQuietly()` suppress that listener while
+        // still writing through this builder — so NEITHER recorder ran, and a
+        // versioned quiet save left the newest revision stale while the entry
+        // moved on.
+        //
+        // ⚠️ `NullDispatcher`, not a missing dispatcher — I assumed the latter
+        // and the tests said otherwise. `Model::withoutEvents()` does not unset
+        // anything: it SWAPS IN a `NullDispatcher` wrapping the real one, so
+        // `getEventDispatcher()` stays non-null throughout a quiet save. Testing
+        // for null looked right and covered nothing.
+        //
+        // That class exists precisely to mark "events are being swallowed", so
+        // it is the condition to read: a real dispatcher means the `updated`
+        // listener will record this save, a null one means nobody will. Cheaper
+        // than making every ordinary save do the extra reads, and explicit about
+        // which case it covers.
+        $dispatcher = $model::getEventDispatcher();
+
+        if ($model->exists && $dispatcher !== null && ! $dispatcher instanceof NullDispatcher) {
             return [];
         }
 

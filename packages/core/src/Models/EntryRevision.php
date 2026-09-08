@@ -28,7 +28,8 @@ use RuntimeException;
  * @property int $entry_id
  * @property array<string, mixed>|null $values
  * @property string $status
- * @property int|null $entry_type_id
+ * @property array<string, list<int>>|null $relation_state
+ * @property int $entry_type_id
  * @property string|null $title
  * @property string|null $slug
  */
@@ -73,6 +74,7 @@ class EntryRevision extends Model
 
     protected $casts = [
         'values' => 'array',
+        'relation_state' => 'array',
         'published_at' => 'datetime',
     ];
 

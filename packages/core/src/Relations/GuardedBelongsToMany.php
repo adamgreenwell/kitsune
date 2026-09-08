@@ -13,6 +13,8 @@ namespace Kitsune\Core\Relations;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\Pivot;
 use Illuminate\Support\Facades\DB;
+use Kitsune\Core\Models\Entry;
+use Kitsune\Core\Schema\RevisionWrites;
 
 /**
  * `attach()` and `updateExistingPivot()`, made atomic.
@@ -54,16 +56,141 @@ class GuardedBelongsToMany extends BelongsToMany
      */
     private const SOURCE_COLUMN = 'source_entry_id';
 
+    /**
+     * How deep we are inside a relation write on this instance.
+     *
+     * ⚠️ `sync()` calls `attach()` and `detach()` on this same object, so
+     * recording a revision in each would file two or three versions for one
+     * sync. Only the outermost write records.
+     */
+    private int $depth = 0;
+
     /** @param  array<string, mixed>  $attributes */
     public function attach($id, array $attributes = [], $touch = true)
     {
-        $this->serialised($id, $attributes, fn () => parent::attach($id, $attributes, $touch));
+        $this->versioned(
+            $this->sourceKeys($id, $attributes),
+            fn () => $this->serialised($id, $attributes, fn () => parent::attach($id, $attributes, $touch)),
+        );
     }
 
     /** @param  array<string, mixed>  $attributes */
     public function updateExistingPivot($id, array $attributes, $touch = true)
     {
-        return $this->serialised($id, $attributes, fn () => parent::updateExistingPivot($id, $attributes, $touch));
+        return $this->versioned(
+            $this->sourceKeys($id, $attributes),
+            fn () => $this->serialised($id, $attributes, fn () => parent::updateExistingPivot($id, $attributes, $touch)),
+        );
+    }
+
+    /**
+     * ⚠️ Overridden ONLY to own the version, and it has to be.
+     *
+     * `sync()` calls `detach()` and then `attach()` on this same instance. Both
+     * are overridden, so without this each filed its own revision and one sync
+     * produced two or three versions — measured, before this existed. Opening
+     * the depth here makes the inner calls pass through and the single
+     * comparison at the end decide.
+     *
+     * @param  mixed  $ids
+     * @param  bool  $detaching
+     * @return array<string, list<mixed>>
+     */
+    public function sync($ids, $detaching = true)
+    {
+        return $this->versioned(
+            // Both directions: a sync attaches and detaches, so the sources it
+            // could touch are the union of what each would.
+            array_values(array_unique([...$this->detachSourceKeys(null), ...$this->sourceKeys($ids, [])])),
+            fn () => parent::sync($ids, $detaching),
+        );
+    }
+
+    /**
+     * ⚠️ Overridden for VERSIONING, not for locking.
+     *
+     * Detaching cannot exceed a cardinality, so it never needed the serialising
+     * lock — but it very much changes the entry, and a revision that misses a
+     * removed relation is as wrong as one that misses an added one.
+     *
+     * @param  mixed  $ids
+     * @param  bool  $touch
+     * @return int
+     */
+    public function detach($ids = null, $touch = true)
+    {
+        return $this->versioned(
+            $this->detachSourceKeys($ids),
+            fn () => parent::detach($ids, $touch),
+        );
+    }
+
+    /**
+     * Every source entry a detach could touch.
+     *
+     * Over-approximates on purpose. The comparison in `versioned()` decides
+     * whether anything actually changed, so naming an extra entry costs a query
+     * and never files a spurious version — whereas missing one loses history.
+     *
+     * @return list<mixed>
+     */
+    private function detachSourceKeys(mixed $ids): array
+    {
+        // Outgoing: the parent IS the source, whatever is being detached.
+        if ($this->getForeignPivotKeyName() === self::SOURCE_COLUMN) {
+            return [$this->getParent()->getKey()];
+        }
+
+        // Incoming, with no ids: every entry currently pointing at the parent.
+        if ($ids === null) {
+            return $this->pluck($this->getRelated()->getQualifiedKeyName())->all();
+        }
+
+        return $this->sourceKeys($ids, []);
+    }
+
+    /**
+     * Run a relation write and file a revision for whatever it changed.
+     *
+     * ⚠️ A pivot write fires NO `Entry` event, so a relation change filed no
+     * version at all — and the newest revision then no longer described the
+     * entry, which makes "restore the latest version" silently revert it. The
+     * same shape as the bulk-update gap, one storage strategy along, and the
+     * seventh time in this project that a guard on a model event turned out to
+     * be a guard on one path.
+     *
+     * CHANGED, not merely attempted: the before and after states are compared,
+     * so a detach that matched nothing files nothing.
+     *
+     * @param  list<mixed>  $sources
+     * @param  callable(): mixed  $write
+     */
+    private function versioned(array $sources, callable $write): mixed
+    {
+        if ($this->depth > 0 || RevisionWrites::suspended()) {
+            // Already inside a relation write on this instance — `sync()` is
+            // the case — or recording is stood down.
+            return $write();
+        }
+
+        $entries = Entry::query()->withoutGlobalScopes()->whereKey($sources)->get();
+        $before = $entries->mapWithKeys(
+            fn (Entry $entry): array => [$entry->getKey() => $entry->relationState()],
+        )->all();
+
+        $this->depth++;
+
+        try {
+            $result = $write();
+        } finally {
+            $this->depth--;
+        }
+
+        foreach ($entries as $entry) {
+            $entry->recordRevisionForRelationChange($before[$entry->getKey()] ?? []);
+        }
+
+        return $result;
     }
 
     /**

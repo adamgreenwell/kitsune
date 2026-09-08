@@ -49,6 +49,19 @@ class EntryRelation extends Pivot
 {
     public $incrementing = true;
 
+    /**
+     * ⚠️ Declared, because `AsPivot` only sets it on the hydration path.
+     *
+     * `entry_relations` has no `created_at`/`updated_at` — it is a pivot, and
+     * the pivot's own timestamps are not what anyone asks it about. `AsPivot`
+     * infers this flag in `fromAttributes()` and `fromRawAttributes()`, which is
+     * how rows arrive through `attach()`; a direct `EntryRelation::create()`
+     * goes through neither, so it inherited Model's default of true and wrote
+     * two columns the table does not have. Latent until something created a row
+     * without the relationship — a revision restore was the first.
+     */
+    public $timestamps = false;
+
     protected $table = 'entry_relations';
 
     protected static function booted(): void

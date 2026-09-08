@@ -8,7 +8,9 @@
 
 declare(strict_types=1);
 
+use Illuminate\Database\QueryException;
 use Kitsune\Core\Models\Entry;
+use Kitsune\Core\Models\EntryRelation;
 use Kitsune\Core\Models\EntryRevision;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Field;
@@ -485,5 +487,287 @@ describe('a bulk write is still a version', function (): void {
         }
 
         expect($entry->revisions()->count())->toBe(Entry::KEEP_REVISIONS);
+    });
+});
+
+describe('a version includes the third storage strategy', function (): void {
+    /*
+     * ⚠️ ADR-006 has THREE storage strategies and revisions handled two.
+     *
+     * A relational field's data is rows in `entry_relations` — not a key in
+     * `values`, not a promoted column. So two things were wrong at once. A pivot
+     * write fires no `Entry` event, so changing a relation filed no version at
+     * all; and the snapshot omitted relations, so restoring a revision left every
+     * relation at its CURRENT value while telling the author the entry now
+     * matched the version they picked.
+     *
+     * This project has been burned by the same "handled two of the three"
+     * omission twice already — a subject identifier that answered null for a
+     * relational field, and an erasure that reported success while every link
+     * survived.
+     */
+    $relationalField = function (): FieldStorage {
+        $storage = FieldStorage::create([
+            'org_id' => test()->org->id, 'handle' => 'people', 'type' => 'relation',
+            'pii_class' => 'none', 'cardinality' => -1,
+        ]);
+
+        Field::create([
+            'entry_type_id' => test()->type->id,
+            'field_storage_id' => $storage->id,
+            'label' => 'People',
+        ]);
+
+        return $storage;
+    };
+
+    it('snapshots the related ids, in order', function () use ($relationalField): void {
+        $storage = $relationalField();
+        $entry = anEntry();
+        $alice = anEntry(['title' => 'Alice']);
+        $bob = anEntry(['title' => 'Bob']);
+
+        $entry->related()->attach($alice->id, ['field_storage_id' => $storage->id, 'ordering' => 0]);
+        $entry->related()->attach($bob->id, ['field_storage_id' => $storage->id, 'ordering' => 1]);
+
+        $latest = $entry->revisions()->latest('id')->first();
+
+        expect($latest->relation_state)->toBe([(string) $storage->id => [$alice->id, $bob->id]]);
+    });
+
+    it('records a version when a relation is ATTACHED', function () use ($relationalField): void {
+        $storage = $relationalField();
+        $entry = anEntry();
+        $alice = anEntry(['title' => 'Alice']);
+
+        $before = $entry->revisions()->count();
+
+        $entry->related()->attach($alice->id, ['field_storage_id' => $storage->id]);
+
+        expect($entry->revisions()->count())->toBe($before + 1);
+    });
+
+    it('records a version when a relation is DETACHED', function () use ($relationalField): void {
+        // Detaching never needed the cardinality lock, so `detach()` was not
+        // overridden at all — but it changes the entry just as much.
+        $storage = $relationalField();
+        $entry = anEntry();
+        $alice = anEntry(['title' => 'Alice']);
+        $entry->related()->attach($alice->id, ['field_storage_id' => $storage->id]);
+
+        $before = $entry->revisions()->count();
+
+        $entry->related()->detach($alice->id);
+
+        expect($entry->revisions()->count())->toBe($before + 1);
+    });
+
+    it('records NOTHING for a detach that matched nothing', function () use ($relationalField): void {
+        $relationalField();
+        $entry = anEntry();
+        $unrelated = anEntry(['title' => 'Unrelated']);
+
+        $before = $entry->revisions()->count();
+
+        $entry->related()->detach($unrelated->id);
+
+        expect($entry->revisions()->count())->toBe($before);
+    });
+
+    it('records ONE version for a sync, not one per inner call', function () use ($relationalField): void {
+        // ⚠️ `sync()` calls `attach()` and `detach()` on the same instance, so
+        // recording in each would file two or three versions for one sync.
+        $storage = $relationalField();
+        $entry = anEntry();
+        $alice = anEntry(['title' => 'Alice']);
+        $bob = anEntry(['title' => 'Bob']);
+        $entry->related()->attach($alice->id, ['field_storage_id' => $storage->id]);
+
+        $before = $entry->revisions()->count();
+
+        $entry->related()->sync([$bob->id => ['field_storage_id' => $storage->id]]);
+
+        expect($entry->revisions()->count())->toBe($before + 1);
+    });
+
+    it('RESTORES the relations a revision recorded', function () use ($relationalField): void {
+        $storage = $relationalField();
+        $entry = anEntry();
+        $alice = anEntry(['title' => 'Alice']);
+        $bob = anEntry(['title' => 'Bob']);
+
+        $entry->related()->attach($alice->id, ['field_storage_id' => $storage->id]);
+        $withAlice = $entry->revisions()->latest('id')->first();
+
+        $entry->related()->detach($alice->id);
+        $entry->related()->attach($bob->id, ['field_storage_id' => $storage->id]);
+
+        expect($entry->related()->pluck('entries.id')->all())->toBe([$bob->id]);
+
+        $entry->restoreRevision($withAlice);
+
+        expect($entry->related()->pluck('entries.id')->all())->toBe([$alice->id]);
+    });
+
+    it('restores the ORDER, not just the set', function () use ($relationalField): void {
+        // `ordering` is what the author arranged, so a restore that puts the
+        // right entries back in the wrong sequence has still lost the version.
+        $storage = $relationalField();
+        $entry = anEntry();
+        $alice = anEntry(['title' => 'Alice']);
+        $bob = anEntry(['title' => 'Bob']);
+
+        $entry->related()->attach($alice->id, ['field_storage_id' => $storage->id, 'ordering' => 0]);
+        $entry->related()->attach($bob->id, ['field_storage_id' => $storage->id, 'ordering' => 1]);
+        $aliceFirst = $entry->revisions()->latest('id')->first();
+
+        $entry->related()->detach();
+        $entry->related()->attach($bob->id, ['field_storage_id' => $storage->id, 'ordering' => 0]);
+        $entry->related()->attach($alice->id, ['field_storage_id' => $storage->id, 'ordering' => 1]);
+
+        $entry->restoreRevision($aliceFirst);
+
+        expect(
+            EntryRelation::query()
+                ->where('source_entry_id', $entry->getKey())
+                ->orderBy('ordering')
+                ->pluck('target_entry_id')
+                ->all(),
+        )->toBe([$alice->id, $bob->id]);
+    });
+
+    it('REFUSES a restore whose related entry is gone', function () use ($relationalField): void {
+        // ⚠️ Refused rather than partially applied. Quietly restoring the subset
+        // would report success for a version the author cannot actually have
+        // back — and `entry_relations` cascades on delete, so the row would fail
+        // its foreign key anyway. This says why instead.
+        $storage = $relationalField();
+        $entry = anEntry();
+        $alice = anEntry(['title' => 'Alice']);
+
+        $entry->related()->attach($alice->id, ['field_storage_id' => $storage->id]);
+        $withAlice = $entry->revisions()->latest('id')->first();
+
+        $alice->forceDelete();
+
+        expect(fn () => $entry->restoreRevision($withAlice))
+            ->toThrow(RuntimeException::class, 'no longer exist');
+    });
+
+    it('leaves relations alone for a revision that recorded none', function (): void {
+        // A revision written before the column existed holds null, and clearing
+        // an entry's relations on that basis would destroy data the revision
+        // never claimed to describe.
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'people2', 'type' => 'relation',
+            'pii_class' => 'none', 'cardinality' => -1,
+        ]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id, 'label' => 'People',
+        ]);
+
+        $entry = anEntry();
+        $alice = anEntry(['title' => 'Alice']);
+        $revision = $entry->revisions()->first();
+        $revision->forceFill(['relation_state' => null])->save();
+
+        $entry->related()->attach($alice->id, ['field_storage_id' => $storage->id]);
+
+        $entry->restoreRevision($revision);
+
+        expect($entry->related()->pluck('entries.id')->all())->toBe([$alice->id]);
+    });
+
+    it('is stood down by withoutRevisions', function () use ($relationalField): void {
+        $storage = $relationalField();
+        $entry = anEntry();
+        $alice = anEntry(['title' => 'Alice']);
+
+        $before = $entry->revisions()->count();
+
+        RevisionWrites::suspend(function () use ($entry, $alice, $storage): void {
+            $entry->related()->attach($alice->id, ['field_storage_id' => $storage->id]);
+        });
+
+        expect($entry->revisions()->count())->toBe($before)
+            ->and($entry->related()->pluck('entries.id')->all())->toBe([$alice->id]);
+    });
+});
+
+describe('a quiet save is still a version', function (): void {
+    /*
+     * ⚠️ `saveQuietly()` and `updateQuietly()` suppress the `updated` listener
+     * while still writing through the builder — and the builder skipped every
+     * instance save to avoid double-recording. So NEITHER recorder ran: the
+     * entry moved on and its newest revision stayed stale, which makes "restore
+     * the latest version" revert a change nobody recorded.
+     *
+     * `withoutRevisions()` is meant to be the explicit opt-out. A quiet save is
+     * not that: it says "do not fire events", not "do not keep history".
+     *
+     * The discriminator is Laravel's own mechanism — `withoutEvents()` unsets
+     * the dispatcher — so the builder records exactly when no listener will.
+     */
+    it('records one for updateQuietly', function (): void {
+        $entry = anEntry();
+
+        $entry->updateQuietly(['title' => 'Quietly changed']);
+
+        expect($entry->revisions()->count())->toBe(2)
+            ->and($entry->revisions()->latest('id')->first()->title)->toBe('Quietly changed');
+    });
+
+    it('records one for saveQuietly', function (): void {
+        $entry = anEntry();
+
+        $entry->values = ['body' => 'quiet'];
+        $entry->saveQuietly();
+
+        expect($entry->revisions()->count())->toBe(2)
+            ->and($entry->revisions()->latest('id')->first()->values['body'])->toBe('quiet');
+    });
+
+    it('records NOTHING for a quiet save that changes nothing versioned', function (): void {
+        $entry = anEntry();
+
+        $entry->updateQuietly(['type_handle' => $entry->type_handle]);
+
+        expect($entry->revisions()->count())->toBe(1);
+    });
+
+    it('still records exactly ONE for a noisy instance save', function (): void {
+        // The regression the `exists` skip existed to prevent. The dispatcher
+        // test has to keep preventing it, or every ordinary save files two.
+        $entry = anEntry();
+
+        $entry->update(['title' => 'Loudly changed']);
+
+        expect($entry->revisions()->count())->toBe(2);
+    });
+
+    it('is still stood down by withoutRevisions, quietly or not', function (): void {
+        $entry = anEntry();
+
+        $entry->withoutRevisions(fn (Entry $e) => $e->updateQuietly(['title' => 'Silent']));
+
+        expect($entry->revisions()->count())->toBe(1)
+            ->and($entry->fresh()->title)->toBe('Silent');
+    });
+});
+
+describe('every revision names the schema it was written against', function (): void {
+    it('cannot be written without a type', function (): void {
+        // ⚠️ NOT NULL, and nullable put a restore-time constraint violation one
+        // row away: `snapshot()` includes this column and `restoreRevision()`
+        // fills the entry from it, while `entries.entry_type_id` is NOT NULL —
+        // so a discriminator-less revision ended the restore in a database
+        // error. Every revision is written from an entry whose own column is
+        // NOT NULL, so the schema states the invariant instead.
+        $entry = anEntry();
+
+        expect(fn () => EntryRevision::create([
+            'entry_id' => $entry->id,
+            'values' => ['body' => 'orphaned'],
+        ]))->toThrow(QueryException::class, 'entry_revisions.entry_type_id');
     });
 });
