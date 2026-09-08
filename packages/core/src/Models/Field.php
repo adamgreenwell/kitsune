@@ -15,6 +15,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Query\Builder;
 use Kitsune\Core\Fields\StorageStrategy;
 use Kitsune\Core\Tenancy\Attributes\Unscoped;
+use Kitsune\Core\Tenancy\Contracts\RefusesCascadingDeletes;
 use Kitsune\Core\Tenancy\Contracts\RequiresModelSave;
 use Kitsune\Core\Tenancy\ScopedBuilder;
 use RuntimeException;
@@ -35,7 +36,7 @@ use RuntimeException;
  * @property string|null $group
  */
 #[Unscoped]
-class Field extends Model implements RequiresModelSave
+class Field extends Model implements RefusesCascadingDeletes, RequiresModelSave
 {
     protected $guarded = [];
 
@@ -99,7 +100,18 @@ class Field extends Model implements RequiresModelSave
         // reports 0 while a relation — possibly holding personal data — survives.
         // An erasure request would be answered successfully and truthfully
         // report that it reached nothing (ADR-020).
-        static::deleting(fn (self $field) => $field->guardHoldsNoData());
+        // ⚠️ Kept alongside the CONTRACT, not instead of it.
+        //
+        // A `deleting` event is one path. `Field::query()->delete()`,
+        // `deleteQuietly()` and anything inside `withoutEvents()` dispatch
+        // straight past it — and this project has now found that shape seven
+        // times. Implementing `RefusesCascadingDeletes` makes `ScopedBuilder`
+        // run the same rule for every row a bulk delete would remove, under a
+        // lock, so an importer or cleanup command cannot orphan the data either.
+        //
+        // The event still earns its place: it is what refuses an ordinary
+        // `$field->delete()` before a transaction is opened.
+        static::deleting(fn (self $field) => $field->guardCascade());
     }
 
     /**
@@ -117,8 +129,13 @@ class Field extends Model implements RequiresModelSave
      *
      * ⚠️ Soft-deleted entries count. Their data still exists, and erasure has to
      * reach it — so a trashed entry holding a value is a reason to refuse.
+     *
+     * Named `guardCascade()` because that is the contract `ScopedBuilder` calls,
+     * and public for the same reason. "Cascade" is right even though no foreign
+     * key fires here: the data is not deleted, it is stranded — which is worse,
+     * because a cascade at least leaves nothing behind to be missed.
      */
-    private function guardHoldsNoData(): void
+    public function guardCascade(): void
     {
         $storage = $this->fieldStorage;
         $type = $this->entryType;
@@ -147,11 +164,30 @@ class Field extends Model implements RequiresModelSave
                             ->whereColumn('entry_relations.source_entry_id', 'entries.id')
                             ->where('entry_relations.field_storage_id', $storage->getKey()),
                     )->count(),
+                    // The promoted columns are snapshotted as well, so the
+                    // same reasoning applies: a cleared column with a revision
+                    // still holding the value is data nothing could find again.
                     StorageStrategy::Promoted => $query
-                        ->whereNotNull((string) $storage->promotedColumn())
+                        ->where(fn ($entries) => $entries
+                            ->whereNotNull($column = (string) $storage->promotedColumn())
+                            ->orWhereHas('revisions', fn ($revisions) => $revisions
+                                ->whereNotNull($column)))
                         ->count(),
+                    // ⚠️ REVISIONS too, and checking the live row alone was a
+                    // hole big enough to lose personal data through.
+                    //
+                    // Clearing a value and then removing the field left the old
+                    // value in every `entry_revisions.values` snapshot — and
+                    // removing the field removes the schema metadata needed to
+                    // FIND it, so only a caller who already knew the deleted
+                    // handle could ever reach it again. ADR-020 requires erasure
+                    // to reach revisions; this is the same requirement seen from
+                    // the deletion side.
                     StorageStrategy::Inline => $query
-                        ->whereNotNull('values->'.$storage->handle)
+                        ->where(fn ($entries) => $entries
+                            ->whereNotNull('values->'.$storage->handle)
+                            ->orWhereHas('revisions', fn ($revisions) => $revisions
+                                ->whereNotNull('values->'.$storage->handle)))
                         ->count(),
                 };
             },

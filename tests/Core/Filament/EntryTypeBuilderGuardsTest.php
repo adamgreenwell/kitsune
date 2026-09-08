@@ -15,6 +15,7 @@ use Kitsune\Core\Filament\Resources\EntryTypes\EntryTypeResource;
 use Kitsune\Core\Filament\Resources\EntryTypes\Pages\EditEntryType;
 use Kitsune\Core\Filament\Resources\EntryTypes\RelationManagers\FieldsRelationManager;
 use Kitsune\Core\Models\Entry;
+use Kitsune\Core\Models\EntryRevision;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Field;
 use Kitsune\Core\Models\FieldStorage;
@@ -869,12 +870,47 @@ describe('settings that contradict themselves are refused', function (): void {
         expect($named->settings['pattern'])->toBe('^(?<code>[A-Z]{2})-\d+$');
     });
 
-    it('names the constructs it will not publish', function (): void {
+    it('screens with SYNTAX awareness, not substrings', function (): void {
+        /*
+         * ⚠️ A substring scan was unsound in both directions, which is worse
+         * than being unsound in one.
+         *
+         * `\\A` is a literal backslash then an A — valid everywhere — and was
+         * refused because the second slash begins the substring `\A`. `[(?>]` is
+         * a character class of punctuation and was refused the same way. Meanwhile
+         * `(?i)^abc$` was ACCEPTED: it compiles in PCRE, ECMAScript has no bare
+         * inline modifier, and no substring in the old list matched it.
+         */
         expect(Pattern::unpublishable('^[A-Z]+$'))->toBeNull()
-            ->and(Pattern::unpublishable('(?P<a>x)'))->toContain('PHP-style named groups')
-            ->and(Pattern::unpublishable('\Ax'))->toContain('\A anchor')
-            ->and(Pattern::unpublishable('(?>x)'))->toContain('atomic groups')
-            ->and(Pattern::unpublishable('[[:alpha:]]'))->toContain('POSIX');
+            // Escaped backslash: two literals, not an anchor.
+            ->and(Pattern::unpublishable('\\\\A'))->toBeNull()
+            // Inside a character class these are literals.
+            ->and(Pattern::unpublishable('[(?>]'))->toBeNull()
+            ->and(Pattern::unpublishable('[\\d\\-]+'))->toBeNull()
+            // Every group form ECMAScript actually has.
+            ->and(Pattern::unpublishable('(?:ab)+'))->toBeNull()
+            ->and(Pattern::unpublishable('(?=x)y'))->toBeNull()
+            ->and(Pattern::unpublishable('(?<=a)b'))->toBeNull()
+            ->and(Pattern::unpublishable('^(?<name>a)$'))->toBeNull();
+    });
+
+    it('refuses what a consumer could not compile', function (): void {
+        expect(Pattern::unpublishable('\Ax'))->toContain('\A anchor')
+            // ⚠️ The false NEGATIVE the substring scan had: a bare inline
+            // modifier compiles in PCRE and has no ECMAScript equivalent.
+            ->and(Pattern::unpublishable('(?i)^abc$'))->toContain('`(?i)`')
+            ->and(Pattern::unpublishable('(?P<a>x)'))->toContain('(?P<')
+            ->and(Pattern::unpublishable('(?>x)'))->toContain('(?>')
+            ->and(Pattern::unpublishable('(?#c)x'))->toContain('(?#c)')
+            ->and(Pattern::unpublishable('(?(1)a|b)'))->toContain('(?(1)');
+    });
+
+    it('allowlists group prefixes rather than listing offenders', function (): void {
+        // The point of the allowlist: a construct nobody anticipated is refused
+        // too, which a list of known offenders cannot do. Same reasoning as the
+        // rich-text sanitiser allowlisting tags.
+        expect(Pattern::unpublishable('(?~x)'))->toContain('(?~x)')
+            ->and(Pattern::unpublishable('(?J)a'))->toContain('(?J)');
     });
 });
 
@@ -980,6 +1016,131 @@ describe('a field holding data cannot just be detached', function (): void {
         // as holding data — so it has to be removed outright before the field can
         // go. Stated here because the difference matters to an operator following
         // the message.
+        $entry->update(['values' => []]);
+
+        $field->delete();
+
+        expect(Field::query()->whereKey($field->getKey())->exists())->toBeFalse();
+    });
+});
+
+describe('the field-deletion guard holds on every path', function (): void {
+    /*
+     * ⚠️ The refusal started as a `deleting` event, which is ONE path.
+     * `Field::query()->delete()`, `deleteQuietly()` and anything inside
+     * `withoutEvents()` dispatch straight past it — the seventh time this project
+     * has found that shape. `Field` now implements `RefusesCascadingDeletes`, so
+     * `ScopedBuilder` runs the same rule for every row a bulk delete would
+     * remove, under a lock.
+     */
+    beforeEach(function (): void {
+        $this->holder = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'holder', 'name' => 'H', 'plural_name' => 'Hs',
+        ]);
+
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'secret', 'type' => 'text',
+            'pii_class' => 'personal', 'cardinality' => 1,
+        ]);
+
+        $this->guarded = Field::create([
+            'entry_type_id' => $this->holder->id, 'field_storage_id' => $storage->id, 'label' => 'Secret',
+        ]);
+
+        Entry::create([
+            'entry_type_id' => $this->holder->id, 'title' => 'Holds it',
+            'values' => ['secret' => 'Jane Doe'],
+        ]);
+    });
+
+    it('refuses a BULK delete, which dispatched no event', function (): void {
+        expect(fn () => Field::query()->whereKey($this->guarded->getKey())->delete())
+            ->toThrow(RuntimeException::class, 'still hold data for it');
+
+        expect(Field::query()->whereKey($this->guarded->getKey())->exists())->toBeTrue();
+    });
+
+    it('refuses a QUIET delete, which suppresses the event', function (): void {
+        expect(fn () => $this->guarded->deleteQuietly())
+            ->toThrow(RuntimeException::class, 'still hold data for it');
+
+        expect(Field::query()->whereKey($this->guarded->getKey())->exists())->toBeTrue();
+    });
+
+    it('still refuses the ordinary instance delete', function (): void {
+        expect(fn () => $this->guarded->delete())
+            ->toThrow(RuntimeException::class, 'still hold data for it');
+    });
+});
+
+describe('a field whose data survives only in history cannot be deleted', function (): void {
+    /*
+     * ⚠️ Checking the live row alone was a hole big enough to lose personal data
+     * through: clearing a value and then removing the field left the old value in
+     * every revision snapshot — and removing the field removes the schema metadata
+     * needed to FIND it, so only a caller who already knew the deleted handle
+     * could reach it again. ADR-020 seen from the deletion side.
+     */
+    it('refuses while a REVISION still holds the value', function (): void {
+        $type = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'historic', 'name' => 'H', 'plural_name' => 'Hs',
+        ]);
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'old_note', 'type' => 'text',
+            'pii_class' => 'personal', 'cardinality' => 1,
+        ]);
+        $field = Field::create([
+            'entry_type_id' => $type->id, 'field_storage_id' => $storage->id, 'label' => 'Note',
+        ]);
+
+        $entry = Entry::create([
+            'entry_type_id' => $type->id, 'title' => 'Had a note',
+            'values' => ['old_note' => 'Jane Doe, 12 Elm St'],
+        ]);
+
+        // ⚠️ The revision is written by hand, because nothing on THIS branch
+        // records one — the recorder is the revisions-and-drafts work. The table
+        // and the model are here, so the guard is testable directly, and testing
+        // it here is the point: the guard has to hold whatever put the row there.
+        EntryRevision::create([
+            'entry_id' => $entry->getKey(),
+            'values' => ['old_note' => 'Jane Doe, 12 Elm St'],
+        ]);
+
+        // The live value is gone; the version that recorded it is not.
+        $entry->update(['values' => []]);
+
+        expect($entry->fresh()->values)->toBe([]);
+        expect(fn () => $field->delete())
+            ->toThrow(RuntimeException::class, 'still hold data for it');
+    });
+
+    it('ALLOWS it once the value is erased from history too', function (): void {
+        // `redactField()` sweeps the entry AND its revisions, which is exactly
+        // the route the refusal recommends.
+        $type = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'historic2', 'name' => 'H', 'plural_name' => 'Hs',
+        ]);
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'gone_note', 'type' => 'text',
+            'pii_class' => 'personal', 'cardinality' => 1,
+        ]);
+        $field = Field::create([
+            'entry_type_id' => $type->id, 'field_storage_id' => $storage->id, 'label' => 'Note',
+        ]);
+
+        $entry = Entry::create([
+            'entry_type_id' => $type->id, 'title' => 'Erase me',
+            'values' => ['gone_note' => 'Jane Doe'],
+        ]);
+        EntryRevision::create([
+            'entry_id' => $entry->getKey(),
+            'values' => ['gone_note' => 'Jane Doe'],
+        ]);
+
+        // `redactField()` sweeps the entry AND its revisions, which is what makes
+        // the route the refusal recommends actually work.
+        $entry->redactField('gone_note');
         $entry->update(['values' => []]);
 
         $field->delete();
