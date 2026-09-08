@@ -43,6 +43,8 @@ use RuntimeException;
  */
 class GuardedRelationBuilder extends Builder
 {
+    use RecordsRelationRevisions;
+
     /**
      * Columns whose guards are PER-ROW, so a bulk write cannot evaluate them.
      *
@@ -60,14 +62,55 @@ class GuardedRelationBuilder extends Builder
     /** @param  array<string, mixed>  $values */
     public function update(array $values)
     {
-        // An instance save arrives here too, with its guards already run.
-        if ($this->getModel()->guardsRan) {
+        // ⚠️ Versioned, because this path CHANGES an entry's relations.
+        //
+        // `ordering` is explicitly permitted here, and order is part of what a
+        // revision records — restoring the right targets in the wrong sequence has
+        // still lost the version. Nothing else recorded it: the revision recorder
+        // lived only on `GuardedBelongsToMany`, so the ordinary Eloquent surface
+        // changed relational content and left the newest revision stale.
+        return $this->versioned($this->affectedSources(), function () use ($values) {
+            // An instance save arrives here too, with its guards already run.
+            if ($this->getModel()->guardsRan) {
+                return parent::update($values);
+            }
+
+            $this->refuseGuardedColumns($values);
+
             return parent::update($values);
-        }
+        });
+    }
 
-        $this->refuseGuardedColumns($values);
+    /**
+     * ⚠️ `delete()` too, and it was not overridden at all.
+     *
+     * It needed no guard — removing a relation can only relax a cardinality — but
+     * it very much changes the entry, and `Entry::redactField()` erases through
+     * exactly this path.
+     *
+     * @return int
+     */
+    public function delete()
+    {
+        return $this->versioned($this->affectedSources(), fn () => parent::delete());
+    }
 
-        return parent::update($values);
+    /**
+     * The source entries this statement's predicate currently matches.
+     *
+     * Read BEFORE the write, because after a delete there is nothing left to read
+     * — the same reason `AuditedBuilder` captures its keys up front.
+     *
+     * @return list<mixed>
+     */
+    private function affectedSources(): array
+    {
+        return $this->toBase()
+            ->distinct()
+            ->pluck('entry_relations.source_entry_id')
+            ->filter()
+            ->values()
+            ->all();
     }
 
     /**
@@ -89,7 +132,7 @@ class GuardedRelationBuilder extends Builder
         // field. `GuardedBelongsToMany` locks the source for `attach()`, and
         // adding this builder path re-opened the same race beside it — a fix
         // that created the hole it was modelled on.
-        return DB::transaction(function () use ($row, $values, $sequence) {
+        return $this->versioned([$row->source_entry_id], fn () => DB::transaction(function () use ($row, $values, $sequence) {
             Entry::withoutScopeBecause(
                 'locking the source entry so the cardinality count cannot interleave',
                 fn ($query) => $query->whereKey($row->source_entry_id)->lockForUpdate()->get(),
@@ -104,7 +147,7 @@ class GuardedRelationBuilder extends Builder
             $row->forceFill([$row->getKeyName() => $id])->armLockNow();
 
             return $id;
-        });
+        }));
     }
 
     /**

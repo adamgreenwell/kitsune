@@ -193,13 +193,18 @@ class Entry extends Model implements RequiresModelSave
             }
         });
 
-        static::updated(function (self $entry): void {
-            // Only the versioned surface. Touching `updated_at` or restamping
-            // `type_handle` is not a new version of the content.
-            if (! RevisionWrites::suspended() && $entry->hasVersionedChanges()) {
-                $entry->recordRevision();
-            }
-        });
+        // ⚠️ There is deliberately NO `updated` revision listener.
+        //
+        // It fired after `AuditedBuilder` had committed and released its row
+        // lock, so two writers interleaved: T1 commits A, T2 commits and records
+        // B, then T1 records A — leaving revision A newest while the live entry
+        // is B, and a relation write in the same window could contaminate A's
+        // snapshot. A version has to be recorded under the lock that made the
+        // write atomic.
+        //
+        // Every update — instance, quiet, or bulk — is therefore recorded inside
+        // the builder's transaction. `created` stays here because an insert has
+        // no prior state to race with, and the builder covers the quiet case.
     }
 
     /**
@@ -659,10 +664,15 @@ class Entry extends Model implements RequiresModelSave
             // Erasure has to reach the row wherever it is, so it goes
             // straight at the pivot by the two keys that define it. Scoping
             // is the reader's protection; it must not become the attacker's.
-            $detached = EntryRelation::query()
+            // ⚠️ withoutRevisions, for the reason the promoted and inline paths
+            // use it: an erasure is not an authored version, and filing one would
+            // add a row to the very history it is clearing. The relational path
+            // did not need this until the relation builder started recording —
+            // adding a recorder added a place erasure has to stand it down.
+            $detached = (int) RevisionWrites::suspend(fn (): int => EntryRelation::query()
                 ->where('source_entry_id', $this->getKey())
                 ->where('field_storage_id', $storage->getKey())
-                ->delete();
+                ->delete());
 
             // ⚠️ And the REVISIONS, which is the half a new column just broke.
             //
@@ -814,6 +824,23 @@ class Entry extends Model implements RequiresModelSave
             );
         }
 
+        // ⚠️ Refreshed BEFORE the type comparison, and it used to come after.
+        //
+        // Two reasons, and the first is a hole in the guard below. A stale
+        // instance still holding type A passed the comparison, `refresh()` then
+        // loaded the current type B, and `snapshot()` wrote type A and its values
+        // back — silently reversing the very type change this guard promises to
+        // refuse. A guard that reads in-memory state to decide whether the
+        // DATABASE may be written is guarding the wrong thing.
+        //
+        // The second is that "did anything change" cannot be answered otherwise.
+        // A model returned by `create()` holds only the attributes the caller
+        // set, so `slug` and `published_at` are absent from both `$attributes`
+        // and `$original`; filling them from the snapshot with the same nulls
+        // marks them dirty and `wasChanged()` reports a change that never
+        // happened, filing a redundant version for a no-op restore.
+        $this->refresh();
+
         // ⚠️ Refused ACROSS a type change, rather than silently applied.
         //
         // `values` are keyed by field handle and mean whatever the entry's type
@@ -848,18 +875,6 @@ class Entry extends Model implements RequiresModelSave
         if ($state !== null) {
             $this->refuseMissingTargets($revision, $state);
         }
-
-        // ⚠️ Refreshed, so "did anything change" can be answered at all.
-        //
-        // A model returned by `create()` holds only the attributes the caller
-        // set, so `slug` and `published_at` are absent from BOTH `$attributes`
-        // and `$original`. Filling them from the snapshot with the same nulls
-        // they already have in the database then marks them dirty, and
-        // `wasChanged()` reports a change that did not happen — so a restore of
-        // the newest revision filed a redundant version. Loading the row first
-        // makes the comparison reflect the database rather than which columns
-        // this instance happened to be given.
-        $this->refresh();
 
         $relationsBefore = $this->relationState();
 
@@ -955,7 +970,24 @@ class Entry extends Model implements RequiresModelSave
             ->whereNotNull('field_storage_id')
             ->delete();
 
-        foreach ($state as $storageId => $ids) {
+        // ⚠️ A snapshot can name storage that no longer exists, and the insert
+        // below would hit the `entry_relations.field_storage_id` foreign key —
+        // failing the whole restore because an unrelated field was removed.
+        //
+        // DISCARDED rather than refused, unlike a missing target entry. Deleting
+        // the storage row already nulled those pivots (`nullOnDelete`), so the
+        // relation is gone as a concept: there is no field left to restore it
+        // into, and no version of this entry that could have it back. Refusing
+        // would make every revision written before that field was removed
+        // permanently unrestorable. It is the same rule `relationState()` applies
+        // when it skips a null `field_storage_id`.
+        $live = FieldStorage::query()
+            ->whereKey(array_map('intval', array_keys($state)))
+            ->pluck('id')
+            ->map(fn (mixed $id): string => (string) $id)
+            ->all();
+
+        foreach (array_intersect_key($state, array_flip($live)) as $storageId => $ids) {
             foreach ($ids as $ordering => $targetId) {
                 EntryRelation::create([
                     // ⚠️ `org_id` explicitly. The `related()` relation supplies

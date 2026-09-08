@@ -14,7 +14,6 @@ use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\Pivot;
 use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Models\Entry;
-use Kitsune\Core\Schema\RevisionWrites;
 
 /**
  * `attach()` and `updateExistingPivot()`, made atomic.
@@ -47,6 +46,8 @@ use Kitsune\Core\Schema\RevisionWrites;
  */
 class GuardedBelongsToMany extends BelongsToMany
 {
+    use RecordsRelationRevisions;
+
     /**
      * The pivot column naming the entry a cardinality is counted against.
      *
@@ -55,15 +56,6 @@ class GuardedBelongsToMany extends BelongsToMany
      * second pivot with a different shape can generalise it then.
      */
     private const SOURCE_COLUMN = 'source_entry_id';
-
-    /**
-     * How deep we are inside a relation write on this instance.
-     *
-     * ⚠️ `sync()` calls `attach()` and `detach()` on this same object, so
-     * recording a revision in each would file two or three versions for one
-     * sync. Only the outermost write records.
-     */
-    private int $depth = 0;
 
     /** @param  array<string, mixed>  $attributes */
     public function attach($id, array $attributes = [], $touch = true)
@@ -147,72 +139,6 @@ class GuardedBelongsToMany extends BelongsToMany
         }
 
         return $this->sourceKeys($ids, []);
-    }
-
-    /**
-     * Run a relation write and file a revision for whatever it changed.
-     *
-     * ⚠️ A pivot write fires NO `Entry` event, so a relation change filed no
-     * version at all — and the newest revision then no longer described the
-     * entry, which makes "restore the latest version" silently revert it. The
-     * same shape as the bulk-update gap, one storage strategy along, and the
-     * seventh time in this project that a guard on a model event turned out to
-     * be a guard on one path.
-     *
-     * CHANGED, not merely attempted: the before and after states are compared,
-     * so a detach that matched nothing files nothing.
-     *
-     * @param  list<mixed>  $sources
-     * @param  callable(): mixed  $write
-     */
-    private function versioned(array $sources, callable $write): mixed
-    {
-        if ($this->depth > 0 || RevisionWrites::suspended()) {
-            // Already inside a relation write on this instance — `sync()` is
-            // the case — or recording is stood down.
-            return $write();
-        }
-
-        // ⚠️ ONE transaction, and the LOCK is taken before the before-state is
-        // read.
-        //
-        // `serialised()` opened its own transaction, so it committed and released
-        // the source lock before the after-state was read — leaving a window in
-        // which a second writer could commit. The first operation's revision then
-        // snapshotted both operations, so one version went missing and another
-        // was recorded twice. The lock has to span read-write-read, not just the
-        // write, and taking it here means the inner `serialised()` re-locks rows
-        // this transaction already holds, which is free.
-        return DB::transaction(function () use ($sources, $write): mixed {
-            if ($sources !== []) {
-                // withoutGlobalScopes: this is a lock, not a read that reaches a
-                // caller. A source in another scope must still serialise, and a
-                // scoped query that matched nothing would take no lock at all.
-                Entry::query()->withoutGlobalScopes()
-                    ->whereKey($sources)
-                    ->lockForUpdate()
-                    ->get();
-            }
-
-            $entries = Entry::query()->withoutGlobalScopes()->whereKey($sources)->get();
-            $before = $entries->mapWithKeys(
-                fn (Entry $entry): array => [$entry->getKey() => $entry->relationState()],
-            )->all();
-
-            $this->depth++;
-
-            try {
-                $result = $write();
-            } finally {
-                $this->depth--;
-            }
-
-            foreach ($entries as $entry) {
-                $entry->recordRevisionForRelationChange($before[$entry->getKey()] ?? []);
-            }
-
-            return $result;
-        });
     }
 
     /**

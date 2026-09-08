@@ -986,3 +986,185 @@ describe('quiet creation still files an initial version', function (): void {
         expect($entry->revisions()->count())->toBe(1);
     });
 });
+
+describe('every supported relation write files a version', function (): void {
+    /*
+     * ⚠️ Recording lived only on `GuardedBelongsToMany`, so the ordinary Eloquent
+     * surface bypassed it — `EntryRelation::create()`, a predicate delete, and an
+     * `ordering` update, which `GuardedRelationBuilder` explicitly permits. Each
+     * changes relational content, and each left the newest revision stale so
+     * restoring it silently undid the change.
+     */
+    $relationalField = function (): FieldStorage {
+        $storage = FieldStorage::create([
+            'org_id' => test()->org->id, 'handle' => 'people', 'type' => 'relation',
+            'pii_class' => 'none', 'cardinality' => -1,
+        ]);
+
+        Field::create([
+            'entry_type_id' => test()->type->id, 'field_storage_id' => $storage->id, 'label' => 'People',
+        ]);
+
+        return $storage;
+    };
+
+    it('records one for a direct EntryRelation::create', function () use ($relationalField): void {
+        $storage = $relationalField();
+        $entry = anEntry();
+        $alice = anEntry(['title' => 'Alice']);
+
+        $before = $entry->revisions()->count();
+
+        EntryRelation::create([
+            'org_id' => $this->org->id,
+            'source_entry_id' => $entry->getKey(),
+            'target_entry_id' => $alice->getKey(),
+            'field_storage_id' => $storage->getKey(),
+            'ordering' => 0,
+        ]);
+
+        expect($entry->revisions()->count())->toBe($before + 1)
+            ->and($entry->revisions()->latest('id')->first()->relation_state)
+            ->toBe([(string) $storage->id => [$alice->id]]);
+    });
+
+    it('records one for a predicate delete', function () use ($relationalField): void {
+        $storage = $relationalField();
+        $entry = anEntry();
+        $alice = anEntry(['title' => 'Alice']);
+        $entry->related()->attach($alice->id, ['field_storage_id' => $storage->id]);
+
+        $before = $entry->revisions()->count();
+
+        EntryRelation::query()->where('source_entry_id', $entry->getKey())->delete();
+
+        expect($entry->revisions()->count())->toBe($before + 1)
+            ->and($entry->revisions()->latest('id')->first()->relation_state)->toBe([]);
+    });
+
+    it('records one for an ORDERING update, which that builder permits', function () use ($relationalField): void {
+        // Order is part of what a revision records: restoring the right targets in
+        // the wrong sequence has still lost the version.
+        $storage = $relationalField();
+        $entry = anEntry();
+        $alice = anEntry(['title' => 'Alice']);
+        $bob = anEntry(['title' => 'Bob']);
+        $entry->related()->attach($alice->id, ['field_storage_id' => $storage->id, 'ordering' => 0]);
+        $entry->related()->attach($bob->id, ['field_storage_id' => $storage->id, 'ordering' => 1]);
+
+        $before = $entry->revisions()->count();
+
+        EntryRelation::query()
+            ->where('source_entry_id', $entry->getKey())
+            ->where('target_entry_id', $alice->getKey())
+            ->update(['ordering' => 5]);
+
+        expect($entry->revisions()->count())->toBe($before + 1)
+            ->and($entry->revisions()->latest('id')->first()->relation_state)
+            ->toBe([(string) $storage->id => [$bob->id, $alice->id]]);
+    });
+
+    it('records ONE for an attach, not one per builder it passes through', function () use ($relationalField): void {
+        // ⚠️ A per-instance depth counter did not hold: one attach starts on
+        // `GuardedBelongsToMany` and lands on `EntryRelation`'s own builder, a
+        // different object with its own counter — so both recorded. The shared
+        // suspension makes the outermost write the only recorder.
+        $storage = $relationalField();
+        $entry = anEntry();
+        $alice = anEntry(['title' => 'Alice']);
+
+        $before = $entry->revisions()->count();
+
+        $entry->related()->attach($alice->id, ['field_storage_id' => $storage->id]);
+
+        expect($entry->revisions()->count())->toBe($before + 1);
+    });
+
+    it('files NOTHING for the relations an erasure clears', function () use ($relationalField): void {
+        // ⚠️ Adding a recorder added a place erasure has to stand it down. An
+        // erasure is not an authored version, and filing one would add a row to
+        // the history it is clearing.
+        $storage = $relationalField();
+        $entry = anEntry();
+        $alice = anEntry(['title' => 'Alice']);
+        $entry->related()->attach($alice->id, ['field_storage_id' => $storage->id]);
+
+        $before = $entry->revisions()->count();
+
+        $entry->redactField('people');
+
+        expect($entry->revisions()->count())->toBe($before);
+    });
+});
+
+describe('the restore does not fail over schema that has since gone', function (): void {
+    it('discards a snapshot entry whose storage was deleted', function (): void {
+        /*
+         * ⚠️ Deleting a FieldStorage nulls its pivots (`nullOnDelete`) but leaves
+         * its id in every snapshot. Rebuilding supplied that id and hit the
+         * foreign key, so the History action failed because an unrelated field had
+         * been removed.
+         *
+         * Discarded rather than refused, unlike a missing target: the relation is
+         * gone as a concept — there is no field left to restore it into — and
+         * refusing would make every revision written before that removal
+         * permanently unrestorable.
+         */
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'doomed', 'type' => 'relation',
+            'pii_class' => 'none', 'cardinality' => -1,
+        ]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id, 'label' => 'Doomed',
+        ]);
+
+        $entry = anEntry(['title' => 'Before']);
+        $alice = anEntry(['title' => 'Alice']);
+        $entry->related()->attach($alice->id, ['field_storage_id' => $storage->id]);
+        $recorded = $entry->revisions()->latest('id')->first();
+
+        $entry->update(['title' => 'After']);
+
+        // Removing the storage nulls the pivot and orphans the snapshot's id.
+        RevisionWrites::suspend(fn () => $storage->delete());
+
+        $entry->restoreRevision($recorded->fresh());
+
+        // The scalar half restored, and the vanished field simply is not rebuilt.
+        expect($entry->fresh()->title)->toBe('Before')
+            ->and(EntryRelation::query()->where('source_entry_id', $entry->getKey())->whereNotNull('field_storage_id')->count())
+            ->toBe(0);
+    });
+});
+
+describe('an arithmetic write is still a version', function (): void {
+    it('records one when $extra assigns a versioned column', function (): void {
+        // ⚠️ Laravel's arithmetic methods take an `$extra` map of ordinary
+        // assignments, and those columns were never passed to revision detection —
+        // so `increment(..., ['status' => 'published'])` was audited, changed a
+        // versioned column, and filed no version. Restoring the latest revision
+        // would then have reverted the publication.
+        $entry = anEntry();
+
+        $before = $entry->revisions()->count();
+
+        // ⚠️ The key incremented by ZERO, which is the shape that makes this a
+        // real exposure rather than a curiosity: `entries` has no ordinary numeric
+        // column, so the arithmetic itself is a no-op and the `$extra` assignment
+        // is the whole point. Audited, and until now unversioned.
+        Entry::query()->whereKey($entry->getKey())->increment('id', 0, ['status' => 'published']);
+
+        expect($entry->revisions()->count())->toBe($before + 1)
+            ->and($entry->revisions()->latest('id')->first()->status)->toBe('published');
+    });
+
+    it('records NOTHING when the arithmetic touches nothing versioned', function (): void {
+        $entry = anEntry();
+
+        $before = $entry->revisions()->count();
+
+        Entry::query()->whereKey($entry->getKey())->increment('id', 0);
+
+        expect($entry->revisions()->count())->toBe($before);
+    });
+});
