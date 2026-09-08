@@ -1,5 +1,7 @@
 // @ts-check
 const { test, expect } = require('@playwright/test');
+const { execFileSync } = require('node:child_process');
+const path = require('node:path');
 
 /*
  * Phase 4's flagship, and the layer that has to cover it.
@@ -167,6 +169,48 @@ test.describe('entity type builder', () => {
         await edited.getByRole('button', { name: 'Save changes' }).click();
 
         await expect(page.getByRole('row', { name: /privacy_probe/ })).toContainText(/sensitive/i);
+    });
+
+    test('an unresolvable icon does not take the admin down with it', async ({ page }) => {
+        /*
+         * ⚠️ The regression this pins is a self-inflicted, unrecoverable outage.
+         *
+         * `entry_types.icon` was free text rendered into the navigation on EVERY
+         * admin page, and Blade Icons throws `SvgNotFound` on a name it cannot
+         * resolve. Measured before the fix: `/admin/{site}`,
+         * `/admin/{site}/entry-types` and `/admin/{site}/c/{type}` all returned
+         * 500 — so an author could brick their own admin with a typo and had no
+         * page left through which to correct it.
+         *
+         * The form is a select now, so this writes the value the way the paths
+         * that BYPASS the form do — a seeder, an importer, a direct UPDATE, or a
+         * row written before the guard existed. Those are exactly the cases the
+         * render-side fallback exists for, and they are the reason a select alone
+         * would not have been enough.
+         */
+        const setIcon = (icon) => execFileSync(
+            'php',
+            ['artisan', 'tinker', '--execute', `\\Kitsune\\Core\\Models\\EntryType::withoutGlobalScopes()->where('handle','article')->first()->forceFill(['icon' => '${icon}'])->saveQuietly();`],
+            { cwd: path.join(__dirname, '..', 'skeleton'), stdio: 'pipe' },
+        );
+
+        setIcon('heroicon-o-this-does-not-exist');
+
+        try {
+            for (const url of [`${SITE}`, `${SITE}/entry-types`, `${SITE}/c/article`]) {
+                const response = await page.goto(url);
+
+                expect(response?.status(), `${url} should survive a bad icon`).toBe(200);
+            }
+
+            // The navigation item still renders, so the fallback made the page
+            // usable rather than merely non-fatal — the sidebar item IS what
+            // used to throw.
+            await expect(page.getByRole('link', { name: 'Articles' }).first()).toBeVisible();
+        } finally {
+            // Restore, because the suite is serial and shares one database.
+            setIcon('heroicon-o-document-text');
+        }
     });
 
     test('creates a field and reports it as indexed', async ({ page }) => {

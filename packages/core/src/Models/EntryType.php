@@ -19,6 +19,7 @@ use Kitsune\Core\Exceptions\ReservedHandleException;
 use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Fields\FieldTypeRegistry;
 use Kitsune\Core\Fields\StorageStrategy;
+use Kitsune\Core\Filament\Icons;
 use Kitsune\Core\Tenancy\Attributes\Unscoped;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tenancy\Contracts\RefusesCascadingDeletes;
@@ -32,6 +33,7 @@ use RuntimeException;
  * @property string $handle
  * @property string $name
  * @property string $plural_name
+ * @property string|null $icon
  * @property bool $is_system
  * @property int|null $subject_field_id
  * @property array<string, mixed>|null $settings
@@ -359,6 +361,26 @@ class EntryType extends Model implements RefusesCascadingDeletes, RequiresModelS
      *
      * Global storage travels freely, matching how global types work.
      */
+    private function guardIcon(): void
+    {
+        $icon = $this->icon;
+
+        // ⚠️ A definite NO only. `Icons::judge()` returns null where the icon
+        // factory is not booted — a console context, or a bare install — and
+        // refusing a save there would block a write for a reason that has
+        // nothing to do with the data.
+        if ($icon === null || $icon === '' || Icons::judge($icon) !== false) {
+            return;
+        }
+
+        throw new RuntimeException(sprintf(
+            'Icon [%s] is not an icon any installed set provides, and it would be rendered into '
+            .'the navigation on every admin page. Use one of the names the entry type form offers, '
+            .'or leave it empty for the default.',
+            $icon,
+        ));
+    }
+
     private function guardOrgMove(): void
     {
         if (! $this->exists || ! $this->isDirty('org_id')) {
@@ -476,6 +498,20 @@ class EntryType extends Model implements RefusesCascadingDeletes, RequiresModelS
         // exact state `Field::saving()` refuses to create, reached by moving
         // the other side of the relationship instead.
         static::saving(fn (self $type) => $type->guardOrgMove());
+
+        // ⚠️ An icon nobody can resolve used to brick the whole admin.
+        //
+        // The column is rendered into the navigation on every admin page and
+        // Blade Icons throws `SvgNotFound`, so one typo returned 500 from every
+        // page in that org's admin — including the entry types page, the only
+        // one that could have corrected it.
+        //
+        // `Icons::orFallback()` at the render boundary is what prevents the
+        // outage, and it holds whatever the source. This exists so a bad write
+        // is REPORTED: silently rendering a different icon than the author asked
+        // for is the quiet kind of wrong, and the author would go looking in the
+        // stylesheet.
+        static::saving(fn (self $type) => $type->guardIcon());
 
         static::saving(function (self $type): void {
             if ($type->subject_field_id === null) {

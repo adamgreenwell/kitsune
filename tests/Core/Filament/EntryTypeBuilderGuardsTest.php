@@ -9,6 +9,7 @@
 declare(strict_types=1);
 
 use Illuminate\Support\Facades\Validator;
+use Kitsune\Core\Filament\Icons;
 use Kitsune\Core\Filament\Resources\EntryTypes\EntryTypeResource;
 use Kitsune\Core\Filament\Resources\EntryTypes\Pages\EditEntryType;
 use Kitsune\Core\Filament\Resources\EntryTypes\RelationManagers\FieldsRelationManager;
@@ -475,5 +476,142 @@ describe('the subject selector offers only fields that can be saved', function (
         expect($type->subjectShapeRefusal($field))->not->toBeNull()
             ->and(fn () => $type->update(['subject_field_id' => $field->getKey()]))
             ->toThrow(RuntimeException::class, 'holds many values');
+    });
+});
+
+describe('an icon nobody can resolve must not brick the admin', function (): void {
+    /*
+     * ⚠️ `entry_types.icon` was free text rendered into the navigation on EVERY
+     * admin page, and Blade Icons throws `SvgNotFound` for a name it cannot
+     * resolve. Measured: setting one type's icon to `heroicon-o-this-does-not-exist`
+     * returned 500 from `/admin/{site}`, `/admin/{site}/entry-types` AND
+     * `/admin/{site}/c/{type}` — so an author could brick their own admin with a
+     * typo and had no page left through which to correct it.
+     *
+     * Three layers, and they are not redundant. `Icons::orFallback()` at the
+     * render boundary is what prevents the outage and holds however the value
+     * arrived — seed, import, or direct SQL. The form's select stops the common
+     * path. This guard makes a bad write REPORTED rather than silently rendered
+     * as some other icon, which would send the author looking in the stylesheet.
+     */
+    it('refuses to save an icon no installed set provides', function (): void {
+        expect(fn () => EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'bad_icon', 'name' => 'B', 'plural_name' => 'Bs',
+            'icon' => 'heroicon-o-this-does-not-exist',
+        ]))->toThrow(RuntimeException::class, 'not an icon any installed set provides');
+    });
+
+    it('accepts a real one, and an empty one', function (): void {
+        $withIcon = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'good_icon', 'name' => 'G', 'plural_name' => 'Gs',
+            'icon' => 'heroicon-o-photo',
+        ]);
+        $without = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'no_icon', 'name' => 'N', 'plural_name' => 'Ns',
+        ]);
+
+        expect($withIcon->icon)->toBe('heroicon-o-photo')
+            ->and($without->icon)->toBeNull();
+    });
+
+    it('falls back at the RENDER boundary, whatever the source of the value', function (): void {
+        // The layer that actually prevents the outage. A row can reach this
+        // state without passing the guard — a seeder, an importer, a direct
+        // UPDATE, or a row written before the guard existed.
+        expect(Icons::orFallback('heroicon-o-this-does-not-exist'))->toBe(Icons::DEFAULT_ENTRY_TYPE)
+            ->and(Icons::orFallback(null))->toBe(Icons::DEFAULT_ENTRY_TYPE)
+            ->and(Icons::orFallback(''))->toBe(Icons::DEFAULT_ENTRY_TYPE)
+            ->and(Icons::orFallback('heroicon-o-photo'))->toBe('heroicon-o-photo');
+    });
+
+    it('offers only names that resolve', function (): void {
+        // A select whose options include an unresolvable name would move the
+        // failure rather than remove it.
+        $options = Icons::options();
+
+        expect($options)->toHaveKeys(['Outlined', 'Solid']);
+
+        foreach ([...array_keys($options['Outlined']), ...array_keys($options['Solid'])] as $name) {
+            expect(Icons::resolves($name))->toBeTrue("[{$name}] does not resolve");
+        }
+    });
+});
+
+describe('the builder can express a finite cardinality', function (): void {
+    /*
+     * ⚠️ The Values control offered One and Many only, while every layer below
+     * honours a finite bound: `max:{n}` in validation, `maxItems` in the
+     * published API schema, and the count the relation writer serialises
+     * against. So "at most three authors" was expressible everywhere except in
+     * the flagship builder, and an author needing it had to choose unlimited.
+     */
+    it('stores a finite maximum from the form\'s two controls', function (): void {
+        (new FieldsRelationManager)->writeStorage([
+            'storage_handle' => 'authors', 'storage_type' => 'text',
+            'storage_cardinality' => 'max', 'storage_cardinality_max' => 3,
+            'storage_pii_class' => 'none', 'label' => 'Authors',
+        ]);
+
+        $storage = FieldStorage::query()->where('handle', 'authors')->first();
+
+        expect($storage->cardinality)->toBe(3)
+            ->and($storage->isMultiValue())->toBeTrue();
+    });
+
+    it('still stores one and unlimited', function (): void {
+        $manager = new FieldsRelationManager;
+
+        $manager->writeStorage([
+            'storage_handle' => 'single', 'storage_type' => 'text',
+            'storage_cardinality' => 1, 'storage_pii_class' => 'none', 'label' => 'S',
+        ]);
+        $manager->writeStorage([
+            'storage_handle' => 'unbounded', 'storage_type' => 'text',
+            'storage_cardinality' => -1, 'storage_pii_class' => 'none', 'label' => 'U',
+        ]);
+
+        expect(FieldStorage::query()->where('handle', 'single')->value('cardinality'))->toBe(1)
+            ->and(FieldStorage::query()->where('handle', 'unbounded')->value('cardinality'))->toBe(-1);
+    });
+
+    it('floors the maximum at two rather than trusting the input', function (): void {
+        // A maximum of one IS cardinality one, and `minValue(2)` is a client and
+        // validation concern — this is the value that reaches the column.
+        (new FieldsRelationManager)->writeStorage([
+            'storage_handle' => 'floored', 'storage_type' => 'text',
+            'storage_cardinality' => 'max', 'storage_cardinality_max' => 0,
+            'storage_pii_class' => 'none', 'label' => 'F',
+        ]);
+
+        expect(FieldStorage::query()->where('handle', 'floored')->value('cardinality'))->toBe(2);
+    });
+
+    it('adopts a bounded storage row rather than calling it a mismatch', function (): void {
+        // ⚠️ The reuse check reads the cardinality too. Casting the raw form
+        // value would read the `max` sentinel as 0, so adopting a row with a
+        // finite bound would look like a shape mismatch and be refused.
+        FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'bounded', 'type' => 'text',
+            'pii_class' => 'none', 'cardinality' => 4,
+        ]);
+
+        expect(fn () => (new FieldsRelationManager)->writeStorage([
+            'storage_handle' => 'bounded', 'storage_type' => 'text',
+            'storage_cardinality' => 'max', 'storage_cardinality_max' => 4,
+            'storage_pii_class' => 'none', 'label' => 'B',
+        ]))->not->toThrow(RuntimeException::class);
+    });
+
+    it('still refuses a reuse whose bound differs', function (): void {
+        FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'bounded2', 'type' => 'text',
+            'pii_class' => 'none', 'cardinality' => 4,
+        ]);
+
+        expect(fn () => (new FieldsRelationManager)->writeStorage([
+            'storage_handle' => 'bounded2', 'storage_type' => 'text',
+            'storage_cardinality' => 'max', 'storage_cardinality_max' => 9,
+            'storage_pii_class' => 'none', 'label' => 'B',
+        ]))->toThrow(RuntimeException::class, 'already describes');
     });
 });

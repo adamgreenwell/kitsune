@@ -15,6 +15,7 @@ use Filament\Navigation\NavigationBuilder;
 use Filament\Navigation\NavigationItem;
 use Filament\Pages\Dashboard;
 use Filament\Panel;
+use Kitsune\Core\Filament\Icons;
 use Kitsune\Core\Filament\Resources\Entries\EntryResource;
 use Kitsune\Core\Filament\Resources\EntryTypes\EntryTypeResource;
 use Kitsune\Core\Http\Middleware\IdentifyEntryType;
@@ -72,7 +73,14 @@ final class KitsunePanel
                 ->isActiveWhen(fn (): bool => request()->routeIs('filament.*.pages.dashboard')),
 
             ...$types->map(fn (EntryType $type): NavigationItem => NavigationItem::make($type->plural_name)
-                ->icon($type->icon ?? 'heroicon-o-rectangle-stack')
+                // ⚠️ Through Icons::orFallback(), because navigation renders on
+                // EVERY admin page and Blade Icons throws on a name it cannot
+                // resolve. A free-text icon holding a typo returned 500 from
+                // every page in the org's admin — including the one that could
+                // have fixed it. The form now offers a select, and this still
+                // holds: a seed, an import or a direct SQL write can put any
+                // string here, and a renderer must not trust its data.
+                ->icon(Icons::orFallback($type->icon))
                 ->url(fn (): string => EntryResource::getUrl('index', ['type' => $type->handle]))
                 ->isActiveWhen(fn (): bool => request()->route()?->parameter('type') === $type->handle))->all(),
 
