@@ -13,6 +13,7 @@ namespace Kitsune\Core\Models;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Kitsune\Core\Audit\AppendOnlyBuilder;
 use Kitsune\Core\Tenancy\Attributes\OrgScoped;
 use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
 use RuntimeException;
@@ -80,6 +81,20 @@ class AuditLog extends Model
                 .'operator policy applied to the table, not a per-row decision (ADR-020).'
             );
         });
+    }
+
+    /**
+     * ⚠️ The append-only guard has to live HERE as well as in the model
+     * events. `AuditLog::query()->update([...])` and `->delete()` compile
+     * straight to SQL and fire no events at all, so the guards below covered
+     * the instance path a test exercises and left the one-liner that rewrites
+     * the whole table wide open.
+     *
+     * @param  \Illuminate\Database\Query\Builder  $query
+     */
+    public function newEloquentBuilder($query): AppendOnlyBuilder
+    {
+        return new AppendOnlyBuilder($query);
     }
 
     /** @return BelongsTo<Site, $this> */

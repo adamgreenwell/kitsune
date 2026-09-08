@@ -204,3 +204,62 @@ describe('a restore is its own action', function (): void {
             ->toBe(['entry.created', 'entry.updated']);
     });
 });
+
+describe('append-only holds for BULK paths too', function (): void {
+    it('refuses a bulk update, which fires no model events at all', function (): void {
+        // ⚠️ `updating`/`deleting` guards cover instance mutations only.
+        // `query()->update()` compiles straight to SQL — so the contract held
+        // for the path a test exercises and not for the one-liner that
+        // rewrites the whole table.
+        Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Hello']);
+
+        expect(fn () => AuditLog::query()->update(['action' => 'nothing.happened']))
+            ->toThrow(RuntimeException::class, 'append-only');
+    });
+
+    it('refuses a bulk delete', function (): void {
+        Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Hello']);
+
+        expect(fn () => AuditLog::query()->delete())
+            ->toThrow(RuntimeException::class, 'append-only');
+    });
+
+    it('leaves the rows untouched after a refused bulk write', function (): void {
+        $entry = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Hello']);
+
+        try {
+            AuditLog::query()->update(['action' => 'nothing.happened']);
+        } catch (RuntimeException) {
+            // expected
+        }
+
+        expect(AuditLog::for($entry)->first()->action)->toBe('entry.created');
+    });
+});
+
+describe('a permanent deletion is its own action', function (): void {
+    it('records force_deleted rather than a second entry.deleted', function (): void {
+        // `deleted` fires during a force-delete too, so recording it
+        // unconditionally gave a permanently removed entry two deletion rows
+        // and never said it had become irrecoverable — the one deletion an
+        // operator most needs to find.
+        $entry = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Hello']);
+        $id = $entry->getKey();
+
+        $entry->delete();
+        $entry->forceDelete();
+
+        expect(AuditLog::query()->where('target_id', $id)->orderBy('id')->pluck('action')->all())
+            ->toBe(['entry.created', 'entry.deleted', 'entry.force_deleted']);
+    });
+
+    it('records a force-delete that skipped the soft delete entirely', function (): void {
+        $entry = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Hello']);
+        $id = $entry->getKey();
+
+        $entry->forceDelete();
+
+        expect(AuditLog::query()->where('target_id', $id)->orderBy('id')->pluck('action')->all())
+            ->toBe(['entry.created', 'entry.force_deleted']);
+    });
+});

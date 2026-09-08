@@ -63,11 +63,27 @@ class Entry extends Model
         // written from model events rather than from the admin, so the API
         // and the console are audited by the same code path — an audit trail
         // that only covers the UI is an audit trail with a documented hole.
-        foreach (['created', 'deleted', 'restored'] as $event) {
+        foreach (['created', 'restored'] as $event) {
             static::{$event}(function (self $entry) use ($event): void {
                 app(Auditor::class)->record("entry.{$event}", $entry);
             });
         }
+
+        // ⚠️ `deleted` fires during a force-delete too, so recording it
+        // unconditionally gave a permanently removed entry a SECOND
+        // `entry.deleted` and never said it had become irrecoverable — the
+        // one deletion an operator most needs to find in the trail.
+        static::deleted(function (self $entry): void {
+            if ($entry->isForceDeleting()) {
+                return;
+            }
+
+            app(Auditor::class)->record('entry.deleted', $entry);
+        });
+
+        static::forceDeleted(function (self $entry): void {
+            app(Auditor::class)->record('entry.force_deleted', $entry);
+        });
 
         // ⚠️ `updated` is separate, because a RESTORE is an update too:
         // `restore()` nulls `deleted_at` and saves, so a delete/restore pair
