@@ -185,6 +185,14 @@ User-supplied HTML rendered on public pages. **The only field type in v1 that is
 - `<script>`, `<style>`, `<iframe>`, event handler attributes and `javascript:` URLs are never permitted, regardless of settings
 - Store sanitized. Store the pre-sanitization original **only** in the revision record, never in `entries.values`
 
+> ⚠️ **Status, measured 2026-09-08: the write half is NOT implemented, and this section previously read as though it were.**
+>
+> `RichTextType::toStorage()` sanitizes, and **nothing calls it on a save.** There is no value-conversion pipeline between a submitted value and `entries.values` yet, so a `rich_text` field stores exactly what it was given — a probe confirms `<p>Hello</p><script>alert(1)</script>` is stored verbatim while the sanitizer would have returned `<p>Hello</p>`.
+>
+> Not currently exploitable: there is no public rendering route for an entry, so nothing renders those bytes. It becomes live the moment one exists, which is Phase 5/6 — so it is tracked rather than left to be discovered, and the tracking issue is labelled `security`.
+>
+> **And the last bullet has a trap in it that the implementation must not walk into.** `Entry::restoreRevision()` writes a revision's `values` back onto the entry. If the revision holds the pre-sanitization original *inside* `values`, restoring it puts unsanitized HTML into `entries.values` — which is the one thing this bullet forbids. So the original has to live somewhere a restore does not read: its own column on `entry_revisions`, not a key in the snapshot. Whoever implements the pipeline should read this bullet as "the original is kept beside the revision", not "inside it".
+
 ### `json`
 
 The escape hatch, and escape hatches get abused.
