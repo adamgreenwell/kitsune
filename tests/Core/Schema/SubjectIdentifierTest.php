@@ -1157,6 +1157,111 @@ describe('changing an entry\'s type cannot orphan a relation pointing at it', fu
     });
 });
 
+describe('a guard that only runs on a save is a guard on one path', function (): void {
+    /*
+     * ⚠️ Six guards in this project have been found bypassed by a bulk write.
+     * These three were the same shape: `Entry::query()->update(['type_handle'
+     * => ...])`, `Field::query()->update(['field_storage_id' => ...])` and
+     * `EntryType::query()->update(['subject_field_id' => ...])` all dispatch
+     * nothing, so the restamp, the ownership check and the nomination check
+     * never ran — and each reached a state its own `save()` refuses.
+     *
+     * Declared per model now, and refused by the builder, so the model event
+     * is the only door rather than the first one.
+     */
+    it('refuses a bulk write to a derived handle', function (): void {
+        $entry = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Forged']);
+
+        expect(fn () => Entry::query()->whereKey($entry->getKey())->update(['type_handle' => 'article']))
+            ->toThrow(RuntimeException::class, 'cannot be written in bulk');
+
+        expect($entry->fresh()->type_handle)->toBe($this->type->handle);
+    });
+
+    it('refuses a bulk repoint of a field at other storage', function (): void {
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'other', 'type' => 'text',
+            'pii_class' => 'none', 'cardinality' => 1,
+        ]);
+
+        expect(fn () => Field::query()->whereKey($this->emailField->getKey())
+            ->update(['field_storage_id' => $storage->id]))
+            ->toThrow(RuntimeException::class, 'cannot be written in bulk');
+    });
+
+    it('refuses a bulk nomination', function (): void {
+        expect(fn () => EntryType::query()->whereKey($this->type->getKey())
+            ->update(['subject_field_id' => $this->emailField->getKey()]))
+            ->toThrow(RuntimeException::class, 'cannot be written in bulk');
+    });
+
+    it('still allows a bulk write to an unguarded column', function (): void {
+        expect(fn () => Entry::query()->update(['status' => 'published']))
+            ->not->toThrow(RuntimeException::class);
+    });
+
+    it('still allows the ordinary instance save', function (): void {
+        expect(fn () => $this->type->update(['name' => 'Renamed']))->not->toThrow(RuntimeException::class);
+    });
+});
+
+describe('a target that leaves a site and comes back is rechecked', function (): void {
+    /*
+     * ⚠️ The type veto ignores relations whose source is invisible from here,
+     * which is right — otherwise one site could freeze another's records — and
+     * it leaves a sequence: move a valid target to site B, change it there to a
+     * type site A's field forbids (A's pivot is invisible, so nothing objects),
+     * then move it back to A without touching `type_handle`. No pivot guard
+     * runs on the final move, and the relation resurfaces with a forbidden
+     * target, treated again as the nominated subject.
+     */
+    it('refuses the move back when the relation would resurface invalid', function (): void {
+        $otherSite = Site::create([
+            'org_id' => $this->org->id, 'handle' => 'e', 'slug' => 'reentry-site', 'name' => 'E',
+        ]);
+        $article = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'article', 'name' => 'A', 'plural_name' => 'As',
+        ]);
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'person', 'type' => 'relation',
+            'pii_class' => 'personal', 'cardinality' => 1,
+            'settings' => ['targetTypes' => [$this->type->handle]],
+        ]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id, 'label' => 'Person',
+        ]);
+
+        $alice = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Alice']);
+        $visit = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Visit']);
+        $visit->related()->attach($alice->id, ['field_storage_id' => $storage->id]);
+
+        // Away, changed while the pivot is invisible, and now back.
+        Entry::withoutScopeBecause('fixture: moving the target between sites', function () use ($alice, $otherSite, $article) {
+            $alice->forceFill(['site_id' => $otherSite->id])->saveQuietly();
+            $alice->forceFill(['entry_type_id' => $article->id, 'type_handle' => 'article'])->saveQuietly();
+        });
+
+        expect(fn () => $alice->fresh()->update(['site_id' => $this->site->id]))
+            ->toThrow(RuntimeException::class, 'does not accept');
+    });
+
+    it('allows the move back when the relation is still valid', function (): void {
+        $otherSite = Site::create([
+            'org_id' => $this->org->id, 'handle' => 'f', 'slug' => 'reentry-ok', 'name' => 'F',
+        ]);
+
+        $alice = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Alice']);
+
+        Entry::withoutScopeBecause(
+            'fixture: moving the target away',
+            fn () => $alice->forceFill(['site_id' => $otherSite->id])->saveQuietly(),
+        );
+
+        expect(fn () => $alice->fresh()->update(['site_id' => $this->site->id]))
+            ->not->toThrow(RuntimeException::class);
+    });
+});
+
 describe('a denormalised handle is derived, never accepted', function (): void {
     /*
      * ⚠️ `type_handle` is denormalised and fully mass assignable, and every
@@ -1551,10 +1656,19 @@ describe('storage and its type cannot be walked across the org boundary', functi
     });
 
     it('allows the type to move once its storage is global', function (): void {
+        // ⚠️ Through the escape hatch, and that is not a workaround. Moving a
+        // row to another org is a cross-scope WRITE, which the tenancy guard
+        // now refuses from inside this org's context — correctly, since nothing
+        // here can vouch for the destination. Provisioning and cross-org admin
+        // tooling are what `withoutScopeBecause()` exists for, and this test
+        // asserts the FIELD-ownership guard stands aside once the storage is
+        // global, not that the tenancy boundary is open.
         $this->moving->update(['org_id' => null]);
 
-        expect(fn () => $this->movingType->fresh()->update(['org_id' => $this->rival->id]))
-            ->not->toThrow(RuntimeException::class);
+        expect(fn () => EntryType::withoutScopeBecause(
+            'test: cross-org admin move, which is what the hatch is for',
+            fn () => $this->movingType->fresh()->update(['org_id' => $this->rival->id]),
+        ))->not->toThrow(RuntimeException::class);
     });
 });
 

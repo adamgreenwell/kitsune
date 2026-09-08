@@ -331,8 +331,12 @@ class EntryRelation extends Pivot
      * relation that no configuration permits is a state to prevent, not one
      * to keep working around.
      */
-    public static function forbidsTypeChange(int $targetId, string $newHandle, int $targetOrgId): ?string
-    {
+    public static function forbidsTypeChange(
+        int $targetId,
+        string $newHandle,
+        int $targetOrgId,
+        bool $visibleOnly = true,
+    ): ?string {
         // ⚠️ Scoped to the TARGET'S OWN ORG, and this is a denial-of-service
         // fix rather than a tidy-up. `attach()` does not validate target
         // visibility, so org A can create a pivot pointing at org B's entry.
@@ -345,10 +349,21 @@ class EntryRelation extends Pivot
         // change. Requiring the SOURCE to be visible from here means a
         // relation only constrains an entry while both ends can still see each
         // other.
+        // ⚠️ `visibleOnly` is FALSE when an endpoint re-enters a site.
+        //
+        // Filtering to visible sources is right for a type change — otherwise
+        // one site could freeze another's records — and it leaves the
+        // move-away, change, move-back sequence, where the relation is
+        // invisible exactly while the change happens. On the way back in, every
+        // relation in the org counts, because they are all about to be visible
+        // again.
         $relations = static::query()
             ->where('target_entry_id', $targetId)
             ->where('org_id', $targetOrgId)
-            ->whereIn('source_entry_id', Entry::query()->select('id')->toBase())
+            ->when($visibleOnly, fn ($query) => $query->whereIn(
+                'source_entry_id',
+                Entry::query()->select('id')->toBase(),
+            ))
             ->get();
 
         foreach ($relations as $relation) {

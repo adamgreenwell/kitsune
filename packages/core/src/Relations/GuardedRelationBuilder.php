@@ -12,6 +12,8 @@ namespace Kitsune\Core\Relations;
 
 use Illuminate\Contracts\Database\Query\Expression;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Support\Facades\DB;
+use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryRelation;
 use RuntimeException;
 
@@ -63,19 +65,7 @@ class GuardedRelationBuilder extends Builder
             return parent::update($values);
         }
 
-        foreach ($values as $column => $value) {
-            $bare = $this->bareColumn((string) $column);
-
-            if (in_array($bare, self::PER_ROW, true)) {
-                throw new RuntimeException(sprintf(
-                    'Relation column [%s] cannot be written in bulk: moving a row between sources, '
-                    .'targets or fields is checked per row against cardinality, target type and '
-                    .'visibility, and a bulk update dispatches none of that (ADR-020). Move the '
-                    .'row through updateExistingPivot().',
-                    $bare,
-                ));
-            }
-        }
+        $this->refuseGuardedColumns($values);
 
         return parent::update($values);
     }
@@ -90,15 +80,31 @@ class GuardedRelationBuilder extends Builder
     public function insertGetId(array $values, $sequence = null)
     {
         $row = $this->newModelInstance($values);
-        $row->guardCreate();
 
-        $id = parent::insertGetId($values, $sequence);
+        // ⚠️ SERIALISED on the source entry, exactly as `attach()` is.
+        //
+        // `guardCardinality()` counts and then inserts, which is two
+        // statements: two concurrent `EntryRelation::create()` calls both
+        // observed zero and both inserted into a cardinality-one nominated
+        // field. `GuardedBelongsToMany` locks the source for `attach()`, and
+        // adding this builder path re-opened the same race beside it — a fix
+        // that created the hole it was modelled on.
+        return DB::transaction(function () use ($row, $values, $sequence) {
+            Entry::withoutScopeBecause(
+                'locking the source entry so the cardinality count cannot interleave',
+                fn ($query) => $query->whereKey($row->source_entry_id)->lockForUpdate()->get(),
+            );
 
-        // The `created` event arms the lock on the ordinary path; this covers
-        // a quiet create, which suppresses it while still inserting.
-        $row->forceFill([$row->getKeyName() => $id])->armLockNow();
+            $row->guardCreate();
 
-        return $id;
+            $id = parent::insertGetId($values, $sequence);
+
+            // The `created` event arms the lock on the ordinary path; this
+            // covers a quiet create, which suppresses it while still inserting.
+            $row->forceFill([$row->getKeyName() => $id])->armLockNow();
+
+            return $id;
+        });
     }
 
     /**
@@ -185,14 +191,21 @@ class GuardedRelationBuilder extends Builder
 
     /**
      * ⚠️ The increments reach the query builder directly, so they could move a
-     * guarded column without passing update().
+     * guarded column without passing update() — but they must still ADD.
+     *
+     * Routing them through `update()` was wrong: that assigns, so incrementing
+     * an `ordering` of 10 by 2 produced 2 rather than 12, and `decrement()`
+     * assigned a positive amount. Guarded columns are refused and everything
+     * else delegates to the parent arithmetic.
      *
      * @param  string|Expression  $column
      * @param  array<string, mixed>  $extra
      */
     public function increment($column, $amount = 1, array $extra = [])
     {
-        return $this->update([(string) $column => $amount, ...$extra]);
+        $this->refuseGuardedColumns([(string) $column => $amount, ...$extra]);
+
+        return parent::increment($column, $amount, $extra);
     }
 
     /**
@@ -201,7 +214,9 @@ class GuardedRelationBuilder extends Builder
      */
     public function decrement($column, $amount = 1, array $extra = [])
     {
-        return $this->update([(string) $column => $amount, ...$extra]);
+        $this->refuseGuardedColumns([(string) $column => $amount, ...$extra]);
+
+        return parent::decrement($column, $amount, $extra);
     }
 
     /**
@@ -210,7 +225,9 @@ class GuardedRelationBuilder extends Builder
      */
     public function incrementEach(array $columns, array $extra = [])
     {
-        return $this->update([...$columns, ...$extra]);
+        $this->refuseGuardedColumns([...$columns, ...$extra]);
+
+        return parent::incrementEach($columns, $extra);
     }
 
     /**
@@ -219,7 +236,9 @@ class GuardedRelationBuilder extends Builder
      */
     public function decrementEach(array $columns, array $extra = [])
     {
-        return $this->update([...$columns, ...$extra]);
+        $this->refuseGuardedColumns([...$columns, ...$extra]);
+
+        return parent::decrementEach($columns, $extra);
     }
 
     /**
@@ -236,6 +255,28 @@ class GuardedRelationBuilder extends Builder
             'Truncating entry_relations would detach every relation in every org at once. Delete '
             .'through a predicate instead.'
         );
+    }
+
+    /**
+     * Refuse any column whose guard is per-row.
+     *
+     * @param  array<string, mixed>  $values
+     */
+    private function refuseGuardedColumns(array $values): void
+    {
+        foreach (array_keys($values) as $column) {
+            $bare = $this->bareColumn((string) $column);
+
+            if (in_array($bare, self::PER_ROW, true)) {
+                throw new RuntimeException(sprintf(
+                    'Relation column [%s] cannot be written in bulk: moving a row between sources, '
+                    .'targets or fields is checked per row against cardinality, target type and '
+                    .'visibility, and a bulk write dispatches none of that (ADR-020). Move the row '
+                    .'through updateExistingPivot().',
+                    $bare,
+                ));
+            }
+        }
     }
 
     /** Strip table qualification and quoting, so `er`.`org_id` is `org_id`. */

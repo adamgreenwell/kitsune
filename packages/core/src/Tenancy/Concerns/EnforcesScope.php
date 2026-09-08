@@ -20,6 +20,7 @@ use Kitsune\Core\Tenancy\ScopeResolver;
 use Kitsune\Core\Tenancy\Scopes\OrgMembershipScope;
 use Kitsune\Core\Tenancy\Scopes\OrgScope;
 use Kitsune\Core\Tenancy\Scopes\SiteScope;
+use Kitsune\Core\Tenancy\ScopeWrites;
 use ReflectionClass;
 use RuntimeException;
 
@@ -129,7 +130,7 @@ trait EnforcesScope
      */
     private function guardScopeWrite(?string $declared): void
     {
-        if (self::$scopeWritesUnguarded) {
+        if (ScopeWrites::suspended()) {
             return;
         }
 
@@ -171,13 +172,6 @@ trait EnforcesScope
     }
 
     /**
-     * Set while withoutScopeBecause() runs, so the reviewable escape hatch can
-     * still write across scopes — provisioning and cross-org admin tooling
-     * legitimately do.
-     */
-    private static bool $scopeWritesUnguarded = false;
-
-    /**
      * Escape hatch, named to be greppable and uncomfortable.
      *
      * Legitimate uses exist — provisioning, cross-org admin tooling, the
@@ -190,17 +184,10 @@ trait EnforcesScope
             throw new \InvalidArgumentException('withoutScopeBecause() requires a reason.');
         }
 
-        $previous = self::$scopeWritesUnguarded;
-        self::$scopeWritesUnguarded = true;
-
-        try {
-            return $callback(static::withoutGlobalScopes([
-                SiteScope::class,
-                OrgScope::class,
-                OrgMembershipScope::class,
-            ]));
-        } finally {
-            self::$scopeWritesUnguarded = $previous;
-        }
+        return ScopeWrites::suspend(fn () => $callback(static::withoutGlobalScopes([
+            SiteScope::class,
+            OrgScope::class,
+            OrgMembershipScope::class,
+        ])));
     }
 }

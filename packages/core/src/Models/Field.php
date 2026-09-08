@@ -12,7 +12,10 @@ namespace Kitsune\Core\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Query\Builder;
 use Kitsune\Core\Tenancy\Attributes\Unscoped;
+use Kitsune\Core\Tenancy\Contracts\RequiresModelSave;
+use Kitsune\Core\Tenancy\ScopedBuilder;
 use RuntimeException;
 
 /**
@@ -31,7 +34,7 @@ use RuntimeException;
  * @property string|null $group
  */
 #[Unscoped]
-class Field extends Model
+class Field extends Model implements RequiresModelSave
 {
     protected $guarded = [];
 
@@ -122,6 +125,35 @@ class Field extends Model
                 .'classified it (ADR-021).'
             );
         }
+    }
+
+    /**
+     * ⚠️ Columns whose guards can only run per row.
+     *
+     * Repointing a field at different storage is checked against the storage's
+     * ORG and, when the field is nominated, against its shape. A bulk update
+     * ran neither, so it could point a nominated field at multi-valued or
+     * another org's storage.
+     *
+     * @return array<string, string>
+     */
+    public static function columnsRequiringModelSave(): array
+    {
+        return [
+            'field_storage_id' => 'the storage must belong to this field\'s org and, when nominated, must name one person.',
+            'entry_type_id' => 'moving a nominated field between types leaves the subject pointer crossing the boundary.',
+        ];
+    }
+
+    /**
+     * ⚠️ #[Unscoped] and still needs a builder: its guards are per row.
+     *
+     * @param  Builder  $query
+     * @return ScopedBuilder<$this>
+     */
+    public function newEloquentBuilder($query): ScopedBuilder
+    {
+        return new ScopedBuilder($query, $this);
     }
 
     /** @return BelongsTo<EntryType, $this> */

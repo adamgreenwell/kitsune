@@ -21,6 +21,8 @@ use Kitsune\Core\Fields\FieldTypeRegistry;
 use Kitsune\Core\Fields\StorageStrategy;
 use Kitsune\Core\Tenancy\Attributes\Unscoped;
 use Kitsune\Core\Tenancy\Context;
+use Kitsune\Core\Tenancy\Contracts\RequiresModelSave;
+use Kitsune\Core\Tenancy\ScopedBuilder;
 use RuntimeException;
 
 /**
@@ -34,7 +36,7 @@ use RuntimeException;
  * @property array<string, mixed>|null $settings
  */
 #[Unscoped]
-class EntryType extends Model
+class EntryType extends Model implements RequiresModelSave
 {
     /**
      * Handles that would collide with a route segment (ADR-012).
@@ -350,6 +352,37 @@ class EntryType extends Model
                 $foreign->fieldStorage->handle,
             ));
         }
+    }
+
+    /**
+     * ⚠️ Columns whose guards can only run per row.
+     *
+     * A nomination is checked against the field's TYPE, its org and its shape.
+     * The foreign key proves only that the field exists, so a bulk update
+     * could point subject-access queries at another type's or another org's
+     * schema.
+     *
+     * @return array<string, string>
+     */
+    public static function columnsRequiringModelSave(): array
+    {
+        return [
+            'subject_field_id' => 'the field must belong to this type and name exactly one person.',
+            'org_id' => 'moving a type across orgs leaves its fields backed by storage that did not move.',
+        ];
+    }
+
+    /**
+     * ⚠️ #[Unscoped] and still needs a builder: global types must be visible
+     * to every org, so this model constrains by query — which left it with no
+     * builder at all, and its guards reachable only through model events.
+     *
+     * @param  \Illuminate\Database\Query\Builder  $query
+     * @return ScopedBuilder<$this>
+     */
+    public function newEloquentBuilder($query): ScopedBuilder
+    {
+        return new ScopedBuilder($query, $this);
     }
 
     public function isReservedHandle(): bool

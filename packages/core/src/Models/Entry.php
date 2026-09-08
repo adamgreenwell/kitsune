@@ -20,6 +20,7 @@ use Kitsune\Core\Fields\StorageStrategy;
 use Kitsune\Core\Relations\GuardedBelongsToMany;
 use Kitsune\Core\Tenancy\Attributes\SiteScoped;
 use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
+use Kitsune\Core\Tenancy\Contracts\RequiresModelSave;
 use RuntimeException;
 
 /**
@@ -45,7 +46,7 @@ use RuntimeException;
  * @property array<string, mixed>|null $values
  */
 #[SiteScoped]
-class Entry extends Model
+class Entry extends Model implements RequiresModelSave
 {
     use EnforcesScope;
     use SoftDeletes;
@@ -61,6 +62,41 @@ class Entry extends Model
     {
         // type_handle is denormalised for routing lookups, so it must never
         // disagree with the type it points at.
+        // ⚠️ A SITE change revalidates the relations pointing at this entry.
+        //
+        // The type veto ignores relations whose source is not visible from
+        // here, which is right — otherwise one site could freeze another's
+        // records. But that leaves a sequence: move a valid target to site B,
+        // change it there to a type site A's field forbids (A's pivot is
+        // invisible, so nothing objects), then move it back to A without
+        // touching `type_handle`. No pivot guard runs on the final move, and
+        // the relation resurfaces with a forbidden target — treated again as
+        // the nominated subject.
+        //
+        // Checked on the way back in, scoped to the entry's own org so this
+        // cannot become a way for one org to pin another's rows.
+        static::saving(function (self $entry): void {
+            if (! $entry->exists || ! $entry->isDirty('site_id')) {
+                return;
+            }
+
+            $field = EntryRelation::forbidsTypeChange(
+                (int) $entry->getKey(),
+                (string) $entry->type_handle,
+                (int) $entry->org_id,
+                visibleOnly: false,
+            );
+
+            if ($field !== null) {
+                throw new RuntimeException(
+                    "Entry {$entry->getKey()} cannot move here: field [{$field}] relates to it and "
+                    ."does not accept a [{$entry->type_handle}]. Its relation is invisible from "
+                    .'where it is now, so moving it back would resurface a target that field '
+                    .'refuses (ADR-020). Detach the relation first.'
+                );
+            }
+        });
+
         static::saving(function (self $entry): void {
             // ⚠️ `type_handle` too, not only `entry_type_id`.
             //
@@ -169,6 +205,23 @@ class Entry extends Model
         $value = $column !== null ? $this->getAttribute($column) : $value;
 
         return $value !== null && $value !== '' && $value !== [];
+    }
+
+    /**
+     * ⚠️ Columns whose guards can only run per row.
+     *
+     * `type_handle` is DERIVED from `entry_type_id`, and every relational read
+     * resolves a target's type through it. A bulk write bypassed the restamp
+     * and the relation veto both, so a forged handle reached
+     * `guardTargetType()`, `forbidsTypeChange()` and the subject queries.
+     *
+     * @return array<string, string>
+     */
+    public static function columnsRequiringModelSave(): array
+    {
+        return [
+            'type_handle' => 'it is derived from entry_type_id, and a bulk write skips the restamp that keeps them agreeing.',
+        ];
     }
 
     /**

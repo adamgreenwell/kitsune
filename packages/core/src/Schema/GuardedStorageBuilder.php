@@ -65,35 +65,7 @@ class GuardedStorageBuilder extends Builder
             return parent::update($values);
         }
 
-        foreach ($values as $column => $value) {
-            $bare = $this->bareColumn((string) $column);
-
-            // ⚠️ The ONE bulk write that is both needed and safe: arming the
-            // lock. `lockStorageHoldingData()` and `armLock()` do exactly this
-            // and nothing else, and setting it true cannot invalidate content.
-            // Clearing it in bulk is the thing that made every guard optional.
-            if ($bare === 'is_locked') {
-                if ((bool) $value === false) {
-                    throw new RuntimeException(
-                        'A lock cannot be cleared in bulk. It is the record that data exists, not a '
-                        .'preference, and clearing it here would skip every shape guard behind it '
-                        .'(ADR-006).'
-                    );
-                }
-
-                continue;
-            }
-
-            if (in_array($bare, self::PER_ROW, true)) {
-                throw new RuntimeException(sprintf(
-                    'Field storage [%s] cannot be written in bulk: its guards depend on the row — '
-                    .'the lock state, the type, and the projection the settings produce. A bulk '
-                    .'update sees one set of values and any number of rows (ADR-006). Save the '
-                    .'model instead.',
-                    $bare,
-                ));
-            }
-        }
+        $this->refuseGuardedColumns($values);
 
         return parent::update($values);
     }
@@ -198,14 +170,21 @@ class GuardedStorageBuilder extends Builder
 
     /**
      * ⚠️ The increments can move `cardinality`, which is a shape attribute,
-     * and they never reach update() where that is checked.
+     * and they never reach update() where that is checked — but they must
+     * still ADD.
+     *
+     * Routing them through `update()` was wrong: that assigns, so incrementing
+     * a value of 10 by 2 produced 2 rather than 12. Guarded columns are
+     * refused and everything else delegates to the parent arithmetic.
      *
      * @param  string|Expression  $column
      * @param  array<string, mixed>  $extra
      */
     public function increment($column, $amount = 1, array $extra = [])
     {
-        return $this->update([(string) $column => $amount, ...$extra]);
+        $this->refuseGuardedColumns([(string) $column => $amount, ...$extra]);
+
+        return parent::increment($column, $amount, $extra);
     }
 
     /**
@@ -214,7 +193,9 @@ class GuardedStorageBuilder extends Builder
      */
     public function decrement($column, $amount = 1, array $extra = [])
     {
-        return $this->update([(string) $column => $amount, ...$extra]);
+        $this->refuseGuardedColumns([(string) $column => $amount, ...$extra]);
+
+        return parent::decrement($column, $amount, $extra);
     }
 
     /**
@@ -223,7 +204,9 @@ class GuardedStorageBuilder extends Builder
      */
     public function incrementEach(array $columns, array $extra = [])
     {
-        return $this->update([...$columns, ...$extra]);
+        $this->refuseGuardedColumns([...$columns, ...$extra]);
+
+        return parent::incrementEach($columns, $extra);
     }
 
     /**
@@ -232,7 +215,47 @@ class GuardedStorageBuilder extends Builder
      */
     public function decrementEach(array $columns, array $extra = [])
     {
-        return $this->update([...$columns, ...$extra]);
+        $this->refuseGuardedColumns([...$columns, ...$extra]);
+
+        return parent::decrementEach($columns, $extra);
+    }
+
+    /**
+     * Refuse any column whose guard is per-row.
+     *
+     * @param  array<string, mixed>  $values
+     */
+    private function refuseGuardedColumns(array $values): void
+    {
+        foreach ($values as $column => $value) {
+            $bare = $this->bareColumn((string) $column);
+
+            // ⚠️ The ONE bulk write that is both needed and safe: arming the
+            // lock. `lockStorageHoldingData()` and `armLock()` do exactly this
+            // and nothing else, and setting it true cannot invalidate content.
+            // Clearing it in bulk is the thing that made every guard optional.
+            if ($bare === 'is_locked') {
+                if ((bool) $value === false) {
+                    throw new RuntimeException(
+                        'A lock cannot be cleared in bulk. It is the record that data exists, not a '
+                        .'preference, and clearing it here would skip every shape guard behind it '
+                        .'(ADR-006).'
+                    );
+                }
+
+                continue;
+            }
+
+            if (in_array($bare, self::PER_ROW, true)) {
+                throw new RuntimeException(sprintf(
+                    'Field storage [%s] cannot be written in bulk: its guards depend on the row — '
+                    .'the lock state, the type, and the projection the settings produce. A bulk '
+                    .'write sees one set of values and any number of rows (ADR-006). Save the model '
+                    .'instead.',
+                    $bare,
+                ));
+            }
+        }
     }
 
     /** Strip any table qualification and quoting, so `fs`.`handle` is `handle`. */
