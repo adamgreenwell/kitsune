@@ -768,6 +768,12 @@ describe('every revision names the schema it was written against', function (): 
         expect(fn () => EntryRevision::create([
             'entry_id' => $entry->id,
             'values' => ['body' => 'orphaned'],
-        ]))->toThrow(QueryException::class, 'entry_revisions.entry_type_id');
+            // ⚠️ The COLUMN name only. Each engine words a not-null violation
+            // differently — SQLite says `entry_revisions.entry_type_id`,
+            // PostgreSQL says `column "entry_type_id"`, MySQL says
+            // `Column 'entry_type_id' cannot be null` — so matching more than
+            // this passes on SQLite and fails the other three legs. Found by
+            // the matrix, which is what it is for.
+        ]))->toThrow(QueryException::class, 'entry_type_id');
     });
 });
