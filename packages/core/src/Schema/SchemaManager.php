@@ -104,7 +104,7 @@ final class SchemaManager
      *
      * @return array<string, FieldStorage>
      */
-    private function wantedColumns(): array
+    private function wantedColumns(bool $strict = false): array
     {
         $wanted = [];
 
@@ -116,10 +116,27 @@ final class SchemaManager
             // used to have, and still reported the schema as synchronised —
             // while the dry run threw on the same row.
             //
-            // A projection-less type is the one case that is not an error: it
-            // wants no column, so it contributes none.
+            // ⚠️ NOT a skip. This query is already filtered to
+            // `is_indexed = true`, so a row here that projects to nothing is
+            // the same configuration error `index()` refuses — and skipping
+            // it meant `--force` omitted the row, could drop the column it
+            // used to have, and reported the schema as synchronised, while
+            // the dry run threw on it. Only an UNINDEXED projection-less row
+            // is harmless, and one of those never reaches this loop.
             if ($this->registry->get($storage->type)->projection(new FieldConfig($storage)) === null) {
-                continue;
+                // ⚠️ Only when RECONCILING. On the sync path `index()` runs
+                // immediately after and raises the same contradiction with a
+                // better message, so throwing here would pre-empt it with a
+                // worse one — the reason the original code stepped aside.
+                if (! $strict) {
+                    continue;
+                }
+
+                throw new RuntimeException(
+                    "[{$storage->handle}] is marked indexed but its type [{$storage->type}] projects "
+                    .'to no scalar column, so no generated column can exist for it. Un-index the '
+                    .'row or change its type — reconciliation cannot repair a contradiction.'
+                );
             }
 
             $wanted[$storage->generatedColumnName()] = $storage;
@@ -145,9 +162,9 @@ final class SchemaManager
      *
      * @return list<string>
      */
-    private function dropOrphanedColumns(): array
+    private function dropOrphanedColumns(bool $strict = false): array
     {
-        $wanted = $this->wantedColumns();
+        $wanted = $this->wantedColumns($strict);
         $dropped = [];
 
         foreach ($this->generatedColumns() as $column) {
@@ -178,11 +195,11 @@ final class SchemaManager
         // and throws — so a capacity-NEUTRAL replacement could never be
         // repaired, and --force reported a failure the operator could not act
         // on. Dropping first makes the swap fit.
-        $dropped = $this->dropOrphanedColumns();
+        $dropped = $this->dropOrphanedColumns(strict: true);
 
         $added = [];
 
-        foreach ($this->wantedColumns() as $column => $storage) {
+        foreach ($this->wantedColumns(strict: true) as $column => $storage) {
             if ($this->hasColumn($column) && $this->hasIndex($storage->generatedIndexName())) {
                 continue;
             }

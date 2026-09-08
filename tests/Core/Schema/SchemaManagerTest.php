@@ -347,6 +347,91 @@ describe('reconcile repairs drift', function (): void {
  * follow it there — two orgs configuring `number` differently would otherwise
  * have shared `idx_count__number` with incompatible column types.
  */
+describe('a locked field cannot be narrowed, only widened', function (): void {
+    /*
+     * ⚠️ The projection guard compares where a value is STORED, and a field
+     * can be narrowed without moving that: a `multi_select` signs as `none`
+     * whatever its options are, and a `select` swapping options of the same
+     * maximum width keeps `string64`. Existing entries could then hold
+     * choices validation no longer accepts, so an unrelated edit to such an
+     * entry began failing — on a field ADR-006 says is locked.
+     */
+    it('refuses to remove an option from a locked select', function (): void {
+        $storage = storageFor('status', 'select', [
+            'org_id' => $this->orgA->id, 'is_locked' => true,
+            'settings' => ['options' => ['draft' => 'Draft', 'live' => 'Live']],
+        ]);
+
+        expect(fn () => $storage->update(['settings' => ['options' => ['draft' => 'Draft']]]))
+            ->toThrow(RuntimeException::class, 'cannot be narrowed');
+    });
+
+    it('refuses it on a multi_select too, whose projection never moves', function (): void {
+        $storage = storageFor('tags', 'multi_select', [
+            'org_id' => $this->orgA->id, 'is_locked' => true,
+            'settings' => ['options' => ['a' => 'A', 'b' => 'B']],
+        ]);
+
+        expect(fn () => $storage->update(['settings' => ['options' => ['a' => 'A']]]))
+            ->toThrow(RuntimeException::class, 'cannot be narrowed');
+    });
+
+    it('refuses swapping options of the SAME width, which keeps the signature', function (): void {
+        $storage = storageFor('status', 'select', [
+            'org_id' => $this->orgA->id, 'is_locked' => true,
+            'settings' => ['options' => ['draft' => 'Draft']],
+        ]);
+
+        expect(fn () => $storage->update(['settings' => ['options' => ['final' => 'Final']]]))
+            ->toThrow(RuntimeException::class, 'cannot be narrowed');
+    });
+
+    it('ALLOWS adding an option, which cannot invalidate a stored value', function (): void {
+        $storage = storageFor('status', 'select', [
+            'org_id' => $this->orgA->id, 'is_locked' => true,
+            'settings' => ['options' => ['draft' => 'Draft']],
+        ]);
+
+        expect(fn () => $storage->update([
+            'settings' => ['options' => ['draft' => 'Draft', 'live' => 'Live']],
+        ]))->not->toThrow(RuntimeException::class);
+    });
+
+    it('ALLOWS relabelling an option, since the label is presentation', function (): void {
+        $storage = storageFor('status', 'select', [
+            'org_id' => $this->orgA->id, 'is_locked' => true,
+            'settings' => ['options' => ['draft' => 'Draft']],
+        ]);
+
+        expect(fn () => $storage->update(['settings' => ['options' => ['draft' => 'Unpublished']]]))
+            ->not->toThrow(RuntimeException::class);
+    });
+});
+
+describe('cardinality has a documented domain, and it is enforced', function (): void {
+    /*
+     * ⚠️ Only -1 and positive integers mean anything, but 0 and -2 passed
+     * straight through — and BaseFieldType reads anything other than 1 as
+     * multi-valued, so an invalid number quietly became an unlimited array
+     * with no maximum at all.
+     */
+    it('refuses zero', function (): void {
+        expect(fn () => storageFor('tags', 'text', ['org_id' => $this->orgA->id, 'cardinality' => 0]))
+            ->toThrow(RuntimeException::class, 'not a value');
+    });
+
+    it('refuses a negative other than -1', function (): void {
+        expect(fn () => storageFor('tags', 'text', ['org_id' => $this->orgA->id, 'cardinality' => -2]))
+            ->toThrow(RuntimeException::class, 'not a value');
+    });
+
+    it('defaults to one on the model, not only in the database', function (): void {
+        // Unset, the attribute was NULL until the insert returned, so
+        // isMultiValue() answered true for every new single-value field.
+        expect((new FieldStorage)->isMultiValue())->toBeFalse();
+    });
+});
+
 describe('the lock arms itself when data first appears', function (): void {
     /*
      * ⚠️ ADR-006 says storage locks the moment data exists, and FieldStorage
@@ -790,12 +875,23 @@ describe('reconcile reports an invalid indexed row rather than skipping it', fun
         expect(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeTrue();
     });
 
-    it('still skips a row whose type simply projects to nothing', function (): void {
+    it('still skips an UNINDEXED row whose type projects to nothing', function (): void {
         // The one case that is not an error: it wants no column, so it
         // contributes none and reconcile carries on.
         storageFor('body', 'rich_text', ['org_id' => $this->orgA->id]);
 
         expect(fn () => $this->manager->reconcile())->not->toThrow(RuntimeException::class);
+    });
+
+    it('surfaces an INDEXED row whose type projects to nothing', function (): void {
+        // ⚠️ A contradiction, not a skip: the row says index me and its type
+        // has nothing to index. Skipping it meant --force omitted the row and
+        // reported the schema as synchronised, while the dry run threw on it.
+        $storage = storageFor('body', 'rich_text', ['org_id' => $this->orgA->id]);
+        DB::table('field_storage')->where('id', $storage->id)->update(['is_indexed' => true]);
+
+        expect(fn () => $this->manager->reconcile())
+            ->toThrow(RuntimeException::class, 'projects to no scalar column');
     });
 });
 

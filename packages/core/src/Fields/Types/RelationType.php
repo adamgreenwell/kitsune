@@ -70,7 +70,17 @@ final class RelationType extends BaseFieldType
     /** Already an array at every cardinality, so it is not wrapped again. */
     public function apiSchema(FieldConfig $config): array
     {
-        return ['type' => 'array', 'items' => ['type' => 'integer']];
+        $schema = ['type' => 'array', 'items' => ['type' => 'integer']];
+
+        // ⚠️ The bound is PUBLISHED, matching the `max:{cardinality}` the
+        // validation path adds. An unbounded schema let a generated client
+        // submit three targets to a two-target relation and be rejected by
+        // the API that advertised it. -1 is the explicit unlimited.
+        if ($config->cardinality() > 0) {
+            $schema['maxItems'] = $config->cardinality();
+        }
+
+        return $schema;
     }
 
     /** @return array<int, mixed> */

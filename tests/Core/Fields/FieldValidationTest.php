@@ -244,6 +244,16 @@ describe('a datetime round trip keeps what the schema advertises', function (): 
     });
 });
 
+it('publishes the relation cardinality bound too', function (): void {
+    // RelationType overrides apiSchema(), so it did not inherit the bound —
+    // a generated client could submit three targets to a two-target relation
+    // and be rejected by the API that advertised it.
+    $type = app(FieldTypeRegistry::class)->get('relation');
+
+    expect($type->apiSchema(configFor('relation', [], 2))['maxItems'])->toBe(2)
+        ->and($type->apiSchema(configFor('relation', [], -1)))->not->toHaveKey('maxItems');
+});
+
 it('publishes the cardinality bound it already enforces', function (): void {
     // Validation enforces `max:{cardinality}`, so an unbounded array schema
     // let a generated client consider three elements valid on a field that
