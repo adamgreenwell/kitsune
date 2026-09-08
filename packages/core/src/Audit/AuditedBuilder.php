@@ -377,7 +377,17 @@ class AuditedBuilder extends Builder
         $model = $this->getModel();
 
         return DB::transaction(function () use ($action, $write, $model): mixed {
-            $keys = $this->toBase()->lockForUpdate()->pluck($model->getQualifiedKeyName())->all();
+            // ⚠️ DEDUPLICATED. A bulk write over a join — say `entries`
+            // joined to `entry_relations`, where several rows point at one
+            // entry — yields that entry's key once per matching row. The
+            // write touches it once, so recording one row per duplicate would
+            // claim a single change happened several times. An audit trail
+            // that overstates is not evidence either.
+            $keys = $this->toBase()->lockForUpdate()
+                ->pluck($model->getQualifiedKeyName())
+                ->unique()
+                ->values()
+                ->all();
 
             if ($keys === []) {
                 return $write($this->plainQueryFor([]));

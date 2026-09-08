@@ -8,8 +8,10 @@
 
 declare(strict_types=1);
 
+use Illuminate\Database\Query\Builder;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use Kitsune\Core\Audit\AuditedBuilder;
 use Kitsune\Core\Audit\Auditor;
 use Kitsune\Core\Models\AuditLog;
 use Kitsune\Core\Models\Entry;
@@ -503,12 +505,61 @@ describe('bulk entry writes are audited too', function (): void {
     });
 
     /*
-     * ⚠️ Enumerated from Illuminate\Database\Query\Builder rather than from
-     * memory. Three review rounds each found one more forwarded mutator —
-     * forceDelete, truncate, then the plural increments — because I kept
-     * overriding the ones I could think of. This is the whole list.
+     * ⚠️ REFLECTED, not listed.
+     *
+     * The previous version of this test invoked four methods by name and
+     * claimed to cover the surface. It did not: adding a forwarded mutator to
+     * Laravel would leave it green while reopening the hole, which is the
+     * same overclaim that let three review rounds each find one more method.
+     *
+     * This walks the builder classes instead and fails on anything mutating
+     * that is neither overridden here nor listed below with a reason. A
+     * dependency upgrade that adds one breaks the build.
      */
-    it('leaves no forwarded mutator unguarded', function (): void {
+    it('leaves no mutating builder method unhandled', function (): void {
+        // Names that write. Matched as prefixes, so a new `insertAnything()`
+        // is caught without this list being edited.
+        $writes = ['insert', 'update', 'upsert', 'delete', 'truncate', 'increment', 'decrement', 'touch', 'restore'];
+
+        // Handled elsewhere, deliberately, with the reason.
+        $exempt = [
+            // Routed to update() by SoftDeletingScope, where actionFor()
+            // names it — auditing here too would record it twice.
+            'delete',
+            // Restores via update() for the same reason.
+            'restore', 'restoreOrCreate', 'createOrRestore',
+            // Not a write: it reads the soft-delete state.
+            'onDelete', 'withTrashed', 'withoutTrashed', 'onlyTrashed',
+            // Eloquent conveniences that funnel into save() or the overrides.
+            'updateOrCreate', 'insertOrIgnoreReturningIds',
+            'firstOrCreate', 'createOrFirst', 'incrementQuietly', 'decrementQuietly',
+        ];
+
+        $handled = array_map(
+            fn (ReflectionMethod $method): string => $method->getName(),
+            (new ReflectionClass(AuditedBuilder::class))->getMethods(ReflectionMethod::IS_PUBLIC),
+        );
+
+        $unhandled = [];
+
+        foreach ([Builder::class, Illuminate\Database\Eloquent\Builder::class] as $class) {
+            foreach ((new ReflectionClass($class))->getMethods(ReflectionMethod::IS_PUBLIC) as $method) {
+                $name = $method->getName();
+
+                foreach ($writes as $prefix) {
+                    if (str_starts_with(strtolower($name), $prefix)
+                        && ! in_array($name, $handled, true)
+                        && ! in_array($name, $exempt, true)) {
+                        $unhandled[] = $name;
+                    }
+                }
+            }
+        }
+
+        expect(array_values(array_unique($unhandled)))->toBe([]);
+    });
+
+    it('refuses the forwarded creators, and writes nothing doing it', function (): void {
         $row = [
             'org_id' => $this->org->id, 'site_id' => $this->site->id,
             'entry_type_id' => $this->type->id, 'type_handle' => 'page',
@@ -527,6 +578,27 @@ describe('bulk entry writes are audited too', function (): void {
     it('refuses a truncate, which would leave nothing to say what had been there', function (): void {
         expect(fn () => Entry::query()->truncate())->toThrow(RuntimeException::class)
             ->and(Entry::query()->count())->toBe(2);
+    });
+
+    it('records ONE row per entry when a join matches it more than once', function (): void {
+        // ⚠️ A bulk write over a join yields an entry's key once per matching
+        // row. The write touches it once, so a row per duplicate would claim
+        // a single change happened several times — an audit trail that
+        // overstates is not evidence either.
+        $alice = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Alice']);
+
+        foreach ([1, 2, 3] as $ordering) {
+            DB::table('entry_relations')->insert([
+                'org_id' => $this->org->id, 'source_entry_id' => $this->one->getKey(),
+                'target_entry_id' => $alice->getKey(), 'ordering' => $ordering,
+            ]);
+        }
+
+        Entry::query()
+            ->join('entry_relations', 'entry_relations.source_entry_id', '=', 'entries.id')
+            ->update(['entries.status' => 'published']);
+
+        expect(AuditLog::for($this->one)->where('action', 'entry.updated')->count())->toBe(1);
     });
 
     it('audits only the rows the predicate actually matched', function (): void {
