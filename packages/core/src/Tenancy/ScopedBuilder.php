@@ -15,6 +15,7 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Tenancy\Contracts\RefusesCascadingDeletes;
+use Kitsune\Core\Tenancy\Contracts\RequiresModelSave;
 use RuntimeException;
 
 /**
@@ -63,6 +64,7 @@ class ScopedBuilder extends Builder
     public function update(array $values)
     {
         $this->guardScopeKeys($values);
+        $this->refusePerRowColumns($values);
 
         return parent::update($values);
     }
@@ -74,11 +76,7 @@ class ScopedBuilder extends Builder
      * `withoutEvents()` dispatch no `deleting` callback, so a refusal written
      * as a model event covered one path — and the `ON DELETE CASCADE` on
      * `entries.site_id` and `entries.entry_type_id` then hard-deleted every
-     * referenced entry with no audit row and no soft delete. That is the exact
-     * data-loss path the model-event refusal was added to close.
-     *
-     * The model supplies the check, because only it knows what cascades from
-     * it. Anything else deletes as before.
+     * referenced entry with no audit row and no soft delete.
      */
     public function delete()
     {
@@ -121,6 +119,89 @@ class ScopedBuilder extends Builder
 
             return $delete();
         });
+    }
+
+    /**
+     * ⚠️ Arithmetic on a scope column is refused outright, never compared.
+     *
+     * The scope-key guard reads a value; an increment supplies an AMOUNT. So
+     * `increment('org_id', 1)` with the current org 1 compared 1 against 1 and
+     * PASSED — then added 1, moving the row to org 2. The guard was reading the
+     * delta as though it were the destination, and no amount added to a scope
+     * key lands somewhere this context can vouch for.
+     *
+     * Protected, because AuditedBuilder extends this and needs it: Entry has
+     * one builder and both sets of guards.
+     *
+     * @param  array<string, mixed>  $values
+     */
+    protected function refuseScopeArithmetic(array $values): void
+    {
+        if (ScopeWrites::suspended()) {
+            return;
+        }
+
+        foreach (array_keys($values) as $column) {
+            $bare = $this->bareColumn((string) $column);
+
+            if ($bare === 'org_id' || $bare === 'site_id') {
+                throw new RuntimeException(sprintf(
+                    'Refusing to increment or decrement [%s]: it is a scope key, and no amount added '
+                    .'to one lands somewhere this context can vouch for (ADR-021). Set the value '
+                    .'through a save if the move is deliberate.',
+                    $bare,
+                ));
+            }
+        }
+    }
+
+    /**
+     * Refuse a bulk write to a column whose guard can only run per row.
+     *
+     * ⚠️ Six guards in this project have now been found bypassed by a bulk
+     * write. A model names the columns whose correctness depends on the row and
+     * this refuses them, so the model event becomes the only door rather than
+     * the first one.
+     *
+     * @param  array<string, mixed>  $values
+     */
+    protected function refusePerRowColumns(array $values): void
+    {
+        $model = $this->getModel();
+
+        if (ScopeWrites::suspended() || ! $model instanceof RequiresModelSave) {
+            return;
+        }
+
+        // ⚠️ An INSTANCE save reaches this method too, because
+        // `Model::performUpdate()` writes through the builder — so refusing
+        // every bulk-shaped write would refuse `$model->update(...)` as well.
+        //
+        // A loaded model is what separates them: `performUpdate()` roots its
+        // query in the instance being saved, while `Model::query()` builds one
+        // from a fresh, non-existent instance. That is the same discriminator
+        // Laravel uses for `setKeysForSaveQuery()`, and the guards it stands
+        // aside for have already run in `saving`.
+        if ($model->exists) {
+            return;
+        }
+
+        $guarded = $model::columnsRequiringModelSave();
+
+        foreach (array_keys($values) as $column) {
+            $bare = $this->bareColumn((string) $column);
+
+            if (isset($guarded[$bare])) {
+                throw new RuntimeException(sprintf(
+                    '[%s] cannot be written in bulk on %s: %s A bulk update dispatches no model '
+                    .'events, so the check that would refuse this never runs. Save the model '
+                    .'instead.',
+                    $bare,
+                    $model::class,
+                    $guarded[$bare],
+                ));
+            }
+        }
     }
 
     /**
@@ -175,15 +256,12 @@ class ScopedBuilder extends Builder
      */
     public function upsert(array $values, $uniqueBy, $update = null)
     {
-        // ⚠️ REFUSED, not guarded. An upsert's conflict target is not
-        // constrained by the global scope, so validating the proposed values
-        // is not enough: from org A,
-        // `Site::upsert([['id' => $orgBSite, 'org_id' => $orgA, ...]], ['id'])`
-        // passes — the supplied org_id is this org's — and then UPDATES org B's
-        // row, because the conflict is resolved on the primary key alone.
-        //
-        // There is nothing to check here that would make that safe, since the
-        // row being overwritten is never named in the values.
+        // ⚠️ REFUSED, not guarded. The conflict target is not constrained by
+        // the global scope, so validating the proposed values is not enough:
+        // from org A, upserting a row carrying org A's `org_id` and org B's
+        // primary key passes every check and then UPDATES org B's row. The row
+        // being overwritten is never named in the values, so there is nothing
+        // here that validation could inspect to make it safe.
         if (! ScopeWrites::suspended()) {
             throw new RuntimeException(sprintf(
                 'Refusing to upsert %s: the conflict target is not constrained by the scope, so a '
@@ -221,41 +299,8 @@ class ScopedBuilder extends Builder
      *
      * @param  array<string, mixed>  $values
      */
-    /**
-     * ⚠️ Arithmetic on a scope column is refused outright, never compared.
-     *
-     * The scope-key guard reads a value; an increment supplies an AMOUNT. So
-     * `increment('org_id', 1)` with the current org 1 compared 1 against 1 and
-     * PASSED — then added 1, moving the row to org 2. The guard was reading the
-     * delta as though it were the destination.
-     *
-     * There is no amount that is safe to add to a scope key, so none is
-     * allowed.
-     *
-     * @param  array<string, mixed>  $values
-     */
-    private function refuseScopeArithmetic(array $values): void
-    {
-        if (ScopeWrites::suspended()) {
-            return;
-        }
-
-        foreach (array_keys($values) as $column) {
-            $bare = $this->bareColumn((string) $column);
-
-            if ($bare === 'org_id' || $bare === 'site_id') {
-                throw new RuntimeException(sprintf(
-                    'Refusing to increment or decrement [%s]: it is a scope key, and no amount added '
-                    .'to one lands somewhere this context can vouch for (ADR-021). Set the value '
-                    .'through a save if the move is deliberate.',
-                    $bare,
-                ));
-            }
-        }
-    }
-
     /** Strip table qualification and quoting, so `entries`.`org_id` is `org_id`. */
-    private function bareColumn(string $column): string
+    protected function bareColumn(string $column): string
     {
         $bare = str_contains($column, '.')
             ? substr($column, (int) strrpos($column, '.') + 1)
@@ -267,11 +312,15 @@ class ScopedBuilder extends Builder
     /**
      * A row this scope writes has to belong to this scope.
      *
+     * Silent with no context, matching EnforcesScope: console commands,
+     * migrations and the installer legitimately run without one. NULL
+     * `site_id` is org-shared and legitimate.
+     *
      * @param  array<string, mixed>  $values
      */
-    private function guardScopeKeys(array $values): void
+    protected function guardScopeKeys(array $values): void
     {
-        // The reviewable escape hatch stands EVERY enforcer down, not one.
+        // The reviewable escape hatch stands BOTH enforcers down, not one.
         if (ScopeWrites::suspended()) {
             return;
         }
@@ -280,11 +329,7 @@ class ScopedBuilder extends Builder
         $normalised = [];
 
         foreach ($values as $column => $value) {
-            $bare = str_contains((string) $column, '.')
-                ? substr((string) $column, (int) strrpos((string) $column, '.') + 1)
-                : (string) $column;
-
-            $normalised[trim($bare, '`"[]')] = $value;
+            $normalised[$this->bareColumn((string) $column)] = $value;
         }
 
         foreach (['org_id' => $context->orgId(), 'site_id' => $context->siteId()] as $column => $current) {

@@ -16,7 +16,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Tenancy\Context;
-use Kitsune\Core\Tenancy\ScopeWrites;
+use Kitsune\Core\Tenancy\ScopedBuilder;
 use RuntimeException;
 
 /**
@@ -57,9 +57,15 @@ use RuntimeException;
  * cannot, so it would have to be suppressed. Generalise when there is a
  * second case to check the design against.
  *
- * @extends Builder<Entry>
+ * ⚠️ Extends ScopedBuilder, not Builder. Entry needs BOTH sets of guards, and
+ * a model has one builder — so when this was a sibling of ScopedBuilder rather
+ * than a subclass, whichever one Entry returned silently disabled the other's
+ * checks. Auditing is what this adds; the tenancy write guards, the per-row
+ * column refusals and the cascade refusal are inherited.
+ *
+ * @extends ScopedBuilder<Entry>
  */
-class AuditedBuilder extends Builder
+class AuditedBuilder extends ScopedBuilder
 {
     private const NO_BULK_CREATE =
         'Entries cannot be written in bulk, because these paths return a row count rather than '
@@ -127,108 +133,6 @@ class AuditedBuilder extends Builder
      *
      * @param  array<string, mixed>  $values
      */
-    /**
-     * ⚠️ Arithmetic on a scope column is refused outright, never compared.
-     *
-     * The scope-key guard reads a value; an increment supplies an AMOUNT. So
-     * `increment('org_id', 1)` with the current org 1 compared 1 against 1 and
-     * PASSED — then added 1, moving the row to org 2. The guard was reading the
-     * delta as though it were the destination.
-     *
-     * There is no amount that is safe to add to a scope key, so none is
-     * allowed.
-     *
-     * @param  array<string, mixed>  $values
-     */
-    private function refuseScopeArithmetic(array $values): void
-    {
-        if (ScopeWrites::suspended()) {
-            return;
-        }
-
-        foreach (array_keys($values) as $column) {
-            $bare = $this->bareColumn((string) $column);
-
-            if ($bare === 'org_id' || $bare === 'site_id') {
-                throw new RuntimeException(sprintf(
-                    'Refusing to increment or decrement [%s]: it is a scope key, and no amount added '
-                    .'to one lands somewhere this context can vouch for (ADR-021). Set the value '
-                    .'through a save if the move is deliberate.',
-                    $bare,
-                ));
-            }
-        }
-    }
-
-    /** Strip table qualification and quoting, so `entries`.`org_id` is `org_id`. */
-    private function bareColumn(string $column): string
-    {
-        $bare = str_contains($column, '.')
-            ? substr($column, (int) strrpos($column, '.') + 1)
-            : $column;
-
-        return trim($bare, '`"[]');
-    }
-
-    /**
-     * A row this scope writes has to belong to this scope.
-     *
-     * @param  array<string, mixed>  $values
-     */
-    private function guardScopeKeys(array $values): void
-    {
-        // ⚠️ The escape hatch stands this down too.
-        //
-        // The flag started private to `EnforcesScope`, so each guard that moved
-        // to a builder became invisible to it — `withoutScopeBecause()` then
-        // suspended some enforcers and not others, and provisioning code that
-        // had been explicit about crossing the boundary failed anyway. That
-        // teaches callers to stop using the reviewable path, which is the worst
-        // outcome available. One flag, read by every enforcer.
-        if (ScopeWrites::suspended()) {
-            return;
-        }
-
-        $context = app(Context::class);
-
-        // ⚠️ Table-QUALIFIED keys count. A joined update writes
-        // `entries.status` — this very class has a MySQL regression test doing
-        // exactly that — so `update(['entries.org_id' => $rival])` walked past
-        // a guard looking for the bare name, and moved entries across orgs
-        // while the audit rows stayed under the old context.
-        $normalised = [];
-
-        foreach ($values as $column => $value) {
-            $bare = str_contains((string) $column, '.')
-                ? substr((string) $column, (int) strrpos((string) $column, '.') + 1)
-                : (string) $column;
-
-            $normalised[trim($bare, '`"[]')] = $value;
-        }
-
-        $values = $normalised;
-
-        foreach (['org_id' => $context->orgId(), 'site_id' => $context->siteId()] as $column => $current) {
-            // Absent means the listener will stamp it, or the column does not
-            // apply. NULL is legitimate for site_id: org-shared entries.
-            if (! array_key_exists($column, $values) || $values[$column] === null) {
-                continue;
-            }
-
-            // No context to compare against is a different failure, and
-            // recordOrFail() reports it better — it names the fix.
-            if ($current === null || (int) $values[$column] === (int) $current) {
-                continue;
-            }
-
-            throw new RuntimeException(
-                "Refusing to write [{$column}] outside the current scope. The audit row is written "
-                .'under this context, so the other scope would gain an entry whose only trail '
-                .'belongs to somebody else (ADR-020). Scoping restricts which rows are selected; '
-                .'it does not police the values written.'
-            );
-        }
-    }
 
     /**
      * ⚠️ Creation has a bulk path too, and it is the same hole in reverse.

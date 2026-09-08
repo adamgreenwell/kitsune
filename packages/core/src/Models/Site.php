@@ -62,6 +62,14 @@ class Site extends Model implements RefusesCascadingDeletes
      * than merely awkward, silently opening the wrong customer's site.
      */
     /**
+     * ⚠️ Enforced by the BUILDER, not by a `deleting` listener.
+     *
+     * There was one, and it was redundant once `ScopedBuilder` gained the
+     * check: every deletion — instance, bulk, quiet, or inside
+     * `withoutEvents()` — reaches the builder, while only the first reaches the
+     * event. Keeping both would have implied the event was load-bearing, which
+     * is the belief that produced six bypassed guards in this project.
+     *
      * ⚠️ Refuses while entries still reference it, because the database would
      * remove them itself.
      *
@@ -82,12 +90,15 @@ class Site extends Model implements RefusesCascadingDeletes
      * intended exception — that cascade happens in the database and fires no
      * model event, so this guard correctly never sees it.
      */
-    protected static function booted(): void
-    {
-        static::deleting(fn (self $site) => $site->guardCascade());
-    }
-
     /**
+     * ⚠️ Enforced by the BUILDER, not by a `deleting` listener.
+     *
+     * There was one, and it was redundant once `ScopedBuilder` gained the
+     * check: every deletion — instance, bulk, quiet, or inside
+     * `withoutEvents()` — reaches the builder, while only the first reaches the
+     * event. Keeping both would have implied the event was load-bearing, which
+     * is the belief that produced six bypassed guards in this project.
+     *
      * ⚠️ Refuses while entries still reference it, because the database would
      * remove them itself.
      *

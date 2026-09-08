@@ -10,12 +10,14 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Models;
 
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
-use Illuminate\Database\Query\Builder;
+use Illuminate\Database\Query\Builder as QueryBuilder;
 use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Fields\FieldTypeRegistry;
 use Kitsune\Core\Fields\Projection;
+use Kitsune\Core\Fields\StorageStrategy;
 use Kitsune\Core\Schema\GuardedStorageBuilder;
 use Kitsune\Core\Tenancy\Attributes\Unscoped;
 use RuntimeException;
@@ -166,6 +168,11 @@ class FieldStorage extends Model
         }
 
         $this->guardHandle();
+        // Nomination first: when both apply — a nominated field given a
+        // cardinality its type cannot hold — the more specific refusal is the
+        // one the caller reads.
+        $this->guardNomination();
+        $this->guardOrgMove();
         $this->guardCardinalitySupport();
 
         // ⚠️ The ORIGINAL lock state, and the flag cannot be cleared.
@@ -207,7 +214,7 @@ class FieldStorage extends Model
     /**
      * ⚠️ Every write goes through the guarded builder (ADR-006).
      *
-     * @param  Builder  $query
+     * @param  QueryBuilder  $query
      */
     public function newEloquentBuilder($query): GuardedStorageBuilder
     {
@@ -217,6 +224,30 @@ class FieldStorage extends Model
     public function isMultiValue(): bool
     {
         return $this->cardinality !== 1;
+    }
+
+    /**
+     * Where this field's values actually live.
+     *
+     * Callers dispatch on all THREE cases — relational rows in
+     * `entry_relations`, a promoted column on `entries`, or a key in
+     * `values`. Handling two of the three is how `slug` came to answer a
+     * subject-access request with null.
+     */
+    public function strategy(): StorageStrategy
+    {
+        return app(FieldTypeRegistry::class)->get($this->type)->strategy();
+    }
+
+    /**
+     * The real column this field writes to, for a promoted field.
+     *
+     * Never the handle: `field_storage` accepts any valid handle for a `slug`
+     * field, so one called `public_slug` still writes `entries.slug`.
+     */
+    public function promotedColumn(): ?string
+    {
+        return app(FieldTypeRegistry::class)->get($this->type)->promotedColumn();
     }
 
     /** Cardinality > 1 cannot project to a scalar column (field-types.md §7). */
@@ -334,6 +365,36 @@ class FieldStorage extends Model
      */
     private function guardNarrowedSettings(self $original): void
     {
+        if (($narrowed = $this->narrowedSetting($original)) !== null) {
+            $this->refuseNarrowing($narrowed);
+        }
+    }
+
+    /**
+     * Whether this save restricts which entry types the relation accepts.
+     *
+     * ⚠️ An EMPTY list is unrestricted, so `[] → ['patient']` is the widest
+     * possible narrowing rather than a widening — which a set comparison
+     * reads backwards.
+     */
+    private function narrowsTargetTypes(): bool
+    {
+        $original = clone $this;
+        $original->setRawAttributes($this->getRawOriginal(), true);
+
+        $before = (array) (($original->settings['targetTypes'] ?? []) ?: []);
+        $after = (array) (($this->settings['targetTypes'] ?? []) ?: []);
+
+        if ($before === []) {
+            return $after !== [];
+        }
+
+        return array_diff($before, $after) !== [];
+    }
+
+    /** The first setting this save narrows, or null if it only widens. */
+    private function narrowedSetting(self $original): ?string
+    {
         $before = (array) ($original->settings ?? []);
         $after = (array) ($this->settings ?? []);
 
@@ -348,8 +409,14 @@ class FieldStorage extends Model
             // Added where there was nothing. A constraint that did not exist
             // cannot have been satisfied by accident, so introducing one
             // narrows — an empty or absent value is the widest there is.
-            if (! array_key_exists($key, $before) || $was === null || $was === []) {
-                $this->refuseNarrowing((string) $key);
+            // ⚠️ An EMPTY value is the widest, not the narrowest.
+            // `targetTypes = []` means unrestricted, so changing it to
+            // `['patient']` looked like widening to a set comparison while
+            // actually forbidding everything else — a nominated relation
+            // could attach an article while unconstrained and then restrict
+            // to patients, and the article kept answering as the subject.
+            if (! array_key_exists($key, $before) || $was === null || $was === [] || $was === '') {
+                return (string) $key;
             }
 
             if (! is_array($was)) {
@@ -358,7 +425,7 @@ class FieldStorage extends Model
                 // `max` or dropping either leaves every stored value valid.
                 // Only a change that could invalidate one is narrowing.
                 if ($this->scalarNarrows((string) $key, $was, $now)) {
-                    $this->refuseNarrowing((string) $key);
+                    return (string) $key;
                 }
 
                 continue;
@@ -371,9 +438,11 @@ class FieldStorage extends Model
             $remaining = is_array($now) ? (array_is_list($now) ? $now : array_keys($now)) : [];
 
             if (array_diff($accepted, $remaining) !== []) {
-                $this->refuseNarrowing((string) $key);
+                return (string) $key;
             }
         }
+
+        return null;
     }
 
     /**
@@ -414,6 +483,115 @@ class FieldStorage extends Model
         $type = app(FieldTypeRegistry::class)->get($this->type);
 
         return $type->projection(new FieldConfig($this))?->signature() ?? 'none';
+    }
+
+    /**
+     * A nominated field's storage is frozen in the ways that matter.
+     *
+     * ⚠️ The `Field` guard watches the FIELD row, so mutating the storage in
+     * place walked past it entirely. An unlocked single-value relation could
+     * have its `cardinality` changed to -1 — recreating the multi-subject
+     * disclosure the nomination guard exists to prevent — and even a LOCKED
+     * storage could have its `handle` or `org_id` changed, because neither is
+     * a shape attribute: subject queries would then read the wrong key, or
+     * the wrong org (ADR-020).
+     *
+     * Only while something nominates it, and only the attributes that change
+     * what the field IS. Editing settings on a nominated field stays free
+     * unless the lock or the projection guard says otherwise.
+     */
+    private function guardNomination(): void
+    {
+        if (! $this->exists) {
+            return;
+        }
+
+        $frozen = array_filter(
+            ['handle', 'org_id', 'cardinality', 'type'],
+            fn (string $attribute): bool => $this->isDirty($attribute),
+        );
+
+        // ⚠️ `targetTypes` counts too, when it NARROWS.
+        //
+        // The projection guard always sees `none` for a relation, so
+        // `targetTypes` was editable on a nominated one: attach a target
+        // while the relation is unconstrained, then narrow it afterwards, and
+        // the existing pivot survives while `subjectValue()` and the
+        // relational `whereSubjectIs()` branch both keep treating that target
+        // as the subject (ADR-020).
+        //
+        // Narrowing only, and only this setting. Everything else a nominated
+        // field accepts is covered by the LOCK once data exists, and while no
+        // data exists narrowing cannot invalidate anything — which is why
+        // editing other settings on a nominated field stays free.
+        if ($this->isDirty('settings') && $this->narrowsTargetTypes()) {
+            $frozen[] = 'targetTypes';
+        }
+
+        if ($frozen === []) {
+            return;
+        }
+
+        $nominated = EntryType::query()
+            ->whereIn('subject_field_id', Field::query()->where('field_storage_id', $this->getKey())->select('id'))
+            ->first();
+
+        if ($nominated !== null) {
+            throw new RuntimeException(sprintf(
+                'Field [%s] backs the data subject identifier of [%s], so [%s] cannot change. '
+                .'Clear the nomination first — changing it here would leave that type answering '
+                .'subject-access requests against a field nobody re-checked (ADR-020).',
+                $this->handle,
+                $nominated->handle,
+                implode(', ', $frozen),
+            ));
+        }
+    }
+
+    /**
+     * Storage cannot walk across the org boundary out from under a field.
+     *
+     * ⚠️ `guardNomination()` freezes `org_id` only while something NOMINATES
+     * the storage. Attached but un-nominated, the same move recreated the
+     * foreign-storage state that `Field::saving()` refuses — without ever
+     * saving a field. `withoutSubjectIdentifier()` then filters the moved row
+     * out and stops naming a type that still holds personal data, which is
+     * the compliance report going quiet about a real hole (ADR-021).
+     */
+    private function guardOrgMove(): void
+    {
+        if (! $this->exists || ! $this->isDirty('org_id')) {
+            return;
+        }
+
+        $field = Field::query()
+            ->where('field_storage_id', $this->getKey())
+            ->whereHas('entryType', function (Builder $query): void {
+                if ($this->org_id === null) {
+                    // Becoming global is safe: global storage is legitimately
+                    // available to every org, including this field's.
+                    $query->whereRaw('1 = 0');
+
+                    return;
+                }
+
+                $query->where(function (Builder $inner): void {
+                    $inner->whereNull('org_id')->orWhere('org_id', '!=', $this->org_id);
+                });
+            })
+            ->with('entryType')
+            ->first();
+
+        if ($field !== null) {
+            throw new RuntimeException(sprintf(
+                'Field storage [%s] is attached to entry type [%s] and cannot move to another '
+                .'organisation. Detach it first — moving it here would leave that type reading '
+                .'another organisation\'s storage, and drop it from the holes report while it '
+                .'still holds personal data (ADR-021).',
+                $this->handle,
+                $field->entryType->handle,
+            ));
+        }
     }
 
     /**

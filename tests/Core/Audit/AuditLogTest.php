@@ -191,7 +191,7 @@ describe('an entry write that cannot be audited is refused', function (): void {
         expect(fn () => Entry::createQuietly([
             'org_id' => $rival->id, 'site_id' => $this->site->id,
             'entry_type_id' => $this->type->id, 'type_handle' => 'page', 'title' => 'Smuggled',
-        ]))->toThrow(RuntimeException::class, 'outside the current scope');
+        ]))->toThrow(RuntimeException::class, 'Refusing to write');
 
         expect(Entry::withoutGlobalScopes()->where('title', 'Smuggled')->exists())->toBeFalse();
     });
@@ -886,7 +886,7 @@ describe('bulk entry writes are audited too', function (): void {
         $rival = Org::create(['name' => 'T', 'slug' => 'transfer-rival']);
 
         expect(fn () => Entry::query()->whereKey($this->one->getKey())->update(['org_id' => $rival->id]))
-            ->toThrow(RuntimeException::class, 'outside the current scope');
+            ->toThrow(RuntimeException::class, 'Refusing to write');
 
         expect($this->one->fresh()->org_id)->toBe($this->org->id);
     });
@@ -901,7 +901,7 @@ describe('bulk entry writes are audited too', function (): void {
         $rival = Org::create(['name' => 'Q', 'slug' => 'qualified-rival']);
 
         expect(fn () => Entry::query()->whereKey($this->one->getKey())->update(['entries.org_id' => $rival->id]))
-            ->toThrow(RuntimeException::class, 'outside the current scope');
+            ->toThrow(RuntimeException::class, 'Refusing to write');
 
         expect($this->one->fresh()->org_id)->toBe($this->org->id);
     });

@@ -60,7 +60,11 @@ final class SlugType extends BaseFieldType
         return null;
     }
 
-    /** ADR-015: a slug is promoted, so its data is `entries.slug`. */
+    /**
+     * ADR-015: a slug is promoted, so its data is `entries.slug` — whatever
+     * the field is called. The handle names the field to an author; it does
+     * not name the column.
+     */
     public function promotedColumn(): string
     {
         return 'slug';
