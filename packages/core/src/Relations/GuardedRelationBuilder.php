@@ -83,6 +83,16 @@ class GuardedRelationBuilder extends Builder
             function () use ($values) {
                 // An instance save arrives here too, with its guards already run.
                 if ($this->getModel()->guardsRan) {
+                    // ⚠️ But cardinality is RE-CHECKED here, under the lock.
+                    //
+                    // `EntryRelation::updating` counted before `save()` reached
+                    // this builder, and the destination lock is taken by the frame
+                    // around this closure — so two concurrent moves onto the same
+                    // cardinality-one (source, field) both counted zero, then
+                    // serialised on the lock, and both wrote. A count taken before
+                    // a lock is a count of the past.
+                    $this->getModel()->guardCardinality();
+
                     return parent::update($values);
                 }
 

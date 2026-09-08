@@ -302,7 +302,19 @@ class EntryRelation extends Pivot
             ->update(['is_locked' => true]);
     }
 
-    private function guardCardinality(): void
+    /**
+     * ⚠️ Public so it can be RE-RUN under the destination lock.
+     *
+     * The `updating` callback runs this before `save()` reaches the builder, and
+     * the builder acquires the destination's row lock after that callback has
+     * returned. So two loaded pivot rows moved concurrently onto the same
+     * cardinality-one `(source, field)` both counted zero, then serialised on the
+     * lock, and both wrote — a count taken before a lock is a count of the past.
+     *
+     * `GuardedRelationBuilder` calls it again inside the locked transaction. The
+     * early call stays: it is what refuses an ordinary move without opening one.
+     */
+    public function guardCardinality(): void
     {
         $storage = $this->storage();
 

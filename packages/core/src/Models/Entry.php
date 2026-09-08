@@ -629,13 +629,30 @@ class Entry extends Model implements RequiresModelSave
             ->whereHas('fields', fn (Builder $query): Builder => $query->where('entry_type_id', $this->entry_type_id))
             ->get();
 
-        if ($storages->count() > 1) {
-            return (int) $storages->sum(
-                fn (FieldStorage $storage): int => $this->redactStorage($handle, $storage, $replacement),
-            );
-        }
+        // ⚠️ ONE transaction, with this entry LOCKED for the whole sweep.
+        //
+        // The live change committed before the revisions were loaded and
+        // rewritten, with nothing spanning the two phases — so a restore starting
+        // in that interval could lock and read an as-yet-unredacted revision,
+        // write the erased value back onto the already-redacted entry, and commit
+        // before the sweep reached that revision. `redactField()` then returned
+        // success while the live entry held the erased data again.
+        //
+        // The lock is the same row `restoreRevision()` locks first, so the two
+        // serialise: whichever starts second sees the other's completed work
+        // rather than half of it. An erasure that reports success has to mean it
+        // (ADR-020).
+        return (int) DB::transaction(function () use ($handle, $storages, $replacement): int {
+            self::query()->withoutGlobalScopes()->whereKey($this->getKey())->lockForUpdate()->get();
 
-        return $this->redactStorage($handle, $storages->first(), $replacement);
+            if ($storages->count() > 1) {
+                return (int) $storages->sum(
+                    fn (FieldStorage $storage): int => $this->redactStorage($handle, $storage, $replacement),
+                );
+            }
+
+            return $this->redactStorage($handle, $storages->first(), $replacement);
+        });
     }
 
     /**
