@@ -73,6 +73,10 @@ final class Pattern
         'X' => '\X',
         'C' => '\C',
         'N' => '\N',
+        'h' => '\\h — PCRE horizontal whitespace; ECMAScript reads it as the letter h. Use [ \\t]',
+        'H' => '\\H — PCRE non-horizontal-whitespace; ECMAScript reads it as the letter H',
+        'v' => '\\v — PCRE vertical whitespace; ECMAScript reads a single vertical tab',
+        'V' => '\\V — PCRE non-vertical-whitespace; ECMAScript reads it as the letter V',
     ];
 
     /**
@@ -143,7 +147,24 @@ final class Pattern
             // `\+` is consumed above as an escape and never reaches here. `a++`
             // compiles in PCRE and ECMAScript rejects it outright with "Nothing
             // to repeat", so it is exactly the class of thing this screens.
-            if (in_array($char, ['*', '+', '?', '}'], true) && mb_substr($pattern, $i + 1, 1) === '+') {
+            // ⚠️ `}` counts only when it closed a {n,m} QUANTIFIER. `\p{L}+` is a
+            // Unicode property followed by an ordinary `+`, and treating every
+            // `}+` as possessive refused it — a false positive of exactly the kind
+            // the escape tracking was added to avoid, reintroduced one character
+            // along.
+            if ($char === '{') {
+                $closes = mb_strpos($pattern, '}', $i);
+                $isQuantifier = $closes !== false
+                    && preg_match('/^\{[0-9]+(,[0-9]*)?\}$/', mb_substr($pattern, $i, $closes - $i + 1)) === 1;
+
+                if ($isQuantifier && mb_substr($pattern, $closes + 1, 1) === '+') {
+                    return 'the possessive quantifier `}+` — ECMAScript has no possessive form';
+                }
+
+                continue;
+            }
+
+            if (in_array($char, ['*', '+', '?'], true) && mb_substr($pattern, $i + 1, 1) === '+') {
                 return sprintf('the possessive quantifier `%s+` — ECMAScript has no possessive form', $char);
             }
 

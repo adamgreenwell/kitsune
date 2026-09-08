@@ -842,6 +842,44 @@ describe('settings that contradict themselves are refused', function (): void {
         expect($open->exists)->toBeTrue();
     });
 
+    it('refuses a range that is ordered but contains no representable value', function (): void {
+        /*
+         * ⚠️ ORDERED is not INHABITED, and checking only the ordering let an empty
+         * range through. `scalarValidationRules()` emits the format alongside both
+         * bounds, so an `integer` field with min 0.1 and max 0.9 accepts nothing
+         * at all — the same unusable outcome as an uncompilable pattern, reached
+         * by arithmetic instead of syntax.
+         */
+        expect(fn () => FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'count', 'type' => 'number',
+            'pii_class' => 'none', 'cardinality' => 1,
+            'settings' => ['format' => 'integer', 'precision' => 12, 'scale' => 0, 'min' => 0.1, 'max' => 0.9],
+        ]))->toThrow(RuntimeException::class, 'No value this field can represent');
+    });
+
+    it('refuses a decimal range narrower than its own scale', function (): void {
+        // The same emptiness at a finer grain: with scale 2 the values are
+        // multiples of 0.01, so [0.001, 0.002] holds none of them.
+        expect(fn () => FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'rate', 'type' => 'number',
+            'pii_class' => 'none', 'cardinality' => 1,
+            'settings' => ['format' => 'decimal', 'precision' => 12, 'scale' => 2, 'min' => 0.001, 'max' => 0.002],
+        ]))->toThrow(RuntimeException::class, 'multiples of 0.01');
+    });
+
+    it('accepts a narrow range that DOES contain one', function (): void {
+        // ⚠️ 0.29 / 0.01 is not exactly 29 in binary floating point, so a naive
+        // ceil() rounds it to 30 and refuses a range that holds 0.29, 0.30 and
+        // 0.31. The epsilon exists for this case, and this test is why.
+        $narrow = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'rate2', 'type' => 'number',
+            'pii_class' => 'none', 'cardinality' => 1,
+            'settings' => ['format' => 'decimal', 'precision' => 12, 'scale' => 2, 'min' => 0.29, 'max' => 0.31],
+        ]);
+
+        expect($narrow->exists)->toBeTrue();
+    });
+
     it('refuses a pattern PCRE understands and JSON Schema does not', function (): void {
         /*
          * ⚠️ The pattern is PUBLISHED as well as enforced.
@@ -935,6 +973,32 @@ describe('settings that contradict themselves are refused', function (): void {
         expect(Pattern::unpublishable('(*SKIP)a'))->toContain('(*SKIP)')
             ->and(Pattern::unpublishable('(*FAIL)'))->toContain('(*FAIL)')
             ->and(Pattern::unpublishable('a(*PRUNE)b'))->toContain('(*PRUNE)');
+    });
+
+    it('refuses escapes that mean different things on each side', function (): void {
+        /*
+         * ⚠️ I argued for leaving these out, on the grounds that this screens what
+         * a consumer cannot COMPILE and all four compile in ECMAScript. That was
+         * the wrong test: compiling is not the goal, enforcing the same constraint
+         * is. `^\h+$` accepts spaces in PCRE and matches the letter h in
+         * ECMAScript, so the published schema advertises a different rule from the
+         * one the API applies — worse than a pattern that fails loudly.
+         *
+         * All four have trivial portable equivalents, so refusing them redirects
+         * the author rather than removing a capability. `\p{...}` is the case
+         * where that is not true, and it is accepted with the reasoning recorded.
+         */
+        expect(Pattern::unpublishable('^\h+$'))->toContain('horizontal whitespace')
+            ->and(Pattern::unpublishable('^\H$'))->toContain('non-horizontal')
+            ->and(Pattern::unpublishable('^\v$'))->toContain('vertical whitespace')
+            ->and(Pattern::unpublishable('^\V$'))->toContain('non-vertical')
+            // The portable spellings must go through.
+            ->and(Pattern::unpublishable('^[ \t]+$'))->toBeNull()
+            ->and(Pattern::unpublishable('^\n$'))->toBeNull()
+            // And a Unicode property is accepted deliberately: refusing it would
+            // remove the capability rather than redirect it.
+            ->and(Pattern::unpublishable('^\p{L}+$'))->toBeNull()
+            ->and(Pattern::unpublishable('^\p{Lu}{2,}$'))->toBeNull();
     });
 
     it('allowlists group prefixes rather than listing offenders', function (): void {
