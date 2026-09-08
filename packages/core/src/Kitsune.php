@@ -107,8 +107,17 @@ final class Kitsune
                 return in_array(ucfirst(strtolower($subtag)), self::RTL_SCRIPTS, true) ? 'rtl' : 'ltr';
             }
 
-            // A region ends the region where a script may legally appear.
+            // A region ends the span where a script may legally appear.
             if (preg_match('/^([A-Za-z]{2}|[0-9]{3})$/', $subtag) === 1) {
+                break;
+            }
+
+            // ⚠️ And so does a SINGLETON. One character opens an extension or
+            // private-use sequence — `ar-x-Latn` is Arabic with a private-use
+            // payload that happens to look like a script, and `ar-u-Latn` is the
+            // same through a Unicode extension. Walking into either read the
+            // payload as the locale's script and answered `ltr` for Arabic.
+            if (mb_strlen($subtag) === 1) {
                 break;
             }
         }

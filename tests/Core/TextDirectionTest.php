@@ -78,6 +78,23 @@ it('finds the script past an EXTLANG', function (string $locale, string $expecte
     ['ar-aao', 'rtl'],
 ]);
 
+it('stops at an extension or private-use SINGLETON', function (string $locale, string $expected): void {
+    /*
+     * ⚠️ One character opens an extension or private-use sequence, and a script
+     * cannot appear after one. `ar-x-Latn` is Arabic with a private-use payload
+     * that happens to look like a script; walking into it read the payload as the
+     * locale's script and answered `ltr` for Arabic.
+     */
+    expect(Kitsune::textDirection($locale))->toBe($expected);
+})->with([
+    ['ar-x-Latn', 'rtl'],
+    ['ar-u-Latn', 'rtl'],
+    ['ar-x-private', 'rtl'],
+    ['he-t-en', 'rtl'],
+    // The script still wins when it comes BEFORE the singleton.
+    ['ar-Latn-x-note', 'ltr'],
+]);
+
 it('does not mistake a REGION for a script', function (string $locale): void {
     // BCP 47 puts the script second and it is always four letters, which is
     // what separates `ku-Latn` from `ku-IQ`. A region never changes direction.
