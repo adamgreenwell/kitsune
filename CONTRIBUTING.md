@@ -140,12 +140,15 @@ Filament's tenancy scopes Resources automatically **and nothing else** — a mod
 So the kernel enforces it instead of trusting anyone to remember:
 
 ```php
-#[SiteScoped]   // entries and most content — Filament's tenancy scopes these
-#[OrgScoped]    // users, billing, settings, shared media — KITSUNE scopes these
-#[Unscoped]     // genuinely global: modules, system entry types
+#[SiteScoped]              // entries and most content — Filament's tenancy scopes these
+#[OrgScoped]               // billing, settings, shared media — KITSUNE scopes these
+#[OrgScopedThroughPivot]   // users: many orgs through a pivot, so there is no org_id to compare
+#[Unscoped]                // genuinely global: modules, system entry types
 ```
 
-**A model with none of the three throws in development and refuses to serve in production.** Fail closed, always. There is no fourth option and there is no opting out.
+**A model with none of the four throws in development and refuses to serve in production.** Fail closed, always. There is no fifth option and there is no opting out.
+
+⚠️ **The attribute is a declaration, not an enforcement.** It does nothing unless the model also `use`s `EnforcesScope`. `User` carried `#[Unscoped]` and no trait for two phases — labelled correctly and completely unconstrained. If you add the attribute, add the trait.
 
 ⚠️ **Read this part twice.** Filament's tenancy segment is the **Site**, so its automatic global scope enforces *site* isolation only. **Org is a level Filament does not model at all**, which means an `#[OrgScoped]` model gets **no framework scope whatsoever** — it must receive a Kitsune-authored global scope. A cross-org leak in `users`, shared media or org settings would be caught by nothing Filament does. This is the invariant with no safety net under it.
 
@@ -159,7 +162,7 @@ Use `scopedUnique()` and `scopedExists()`. They're the defaults in Kitsune's for
 
 ### Every composite index leads with its scope key
 
-`site_id` for `#[SiteScoped]` models, `org_id` for `#[OrgScoped]` ones. No exceptions.
+`site_id` for `#[SiteScoped]` models, `org_id` for `#[OrgScoped]` ones, and the pivot's `(foreign_key, org_id)` for `#[OrgScopedThroughPivot]`. No exceptions.
 
 Leading with `site_id` is sufficient for org isolation too: a site is globally unique and belongs to exactly one org, so the guarantee holds transitively on a narrower index (ADR-021).
 
