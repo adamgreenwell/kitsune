@@ -106,6 +106,69 @@ test.describe('entity type builder', () => {
         await expect(format).toHaveValue('decimal');
     });
 
+    test('403s the edit ROUTE for a global type, not just its link', async ({ page }) => {
+        // ⚠️ The finding this pins: ownership was tested in
+        // `EditAction::visible()`, which decides whether a BUTTON is drawn.
+        // Typing the URL got the form, the save and the field relation
+        // manager, so an org could rewrite schema every other org shares.
+        //
+        // `image` is the first type the seeder creates, so id 1. Hardcoded
+        // because the gate leaves no link to read an id from — which is the
+        // other half of what this asserts. If the seeder is reordered this
+        // fails loudly with 200, pointing here.
+        const response = await page.goto(`${SITE}/entry-types/1/edit`);
+
+        expect(response?.status()).toBe(403);
+    });
+
+    test('shows a global type but offers no way in', async ({ page }) => {
+        await page.goto(`${SITE}/entry-types`);
+
+        // Visible AND not writable: `getEloquentQuery()` includes
+        // `org_id IS NULL` on purpose, so an org can see the system types it
+        // shares. Seeing is the feature; editing is the defect.
+        const row = page.getByRole('row', { name: /Image/ });
+
+        await expect(row).toBeVisible();
+        await expect(row.getByRole('link')).toHaveCount(0);
+    });
+
+    test('persists a change to an existing field, which the edit path dropped', async ({ page }) => {
+        await editType(page, 'Article');
+
+        // Created here rather than reused from another test: sharing a fixture
+        // across tests makes this pass or fail on execution order.
+        await page.getByRole('button', { name: 'New field' }).click();
+
+        const created = page.getByRole('dialog');
+        await created.locator('[id$=".storage_handle"]').fill('privacy_probe');
+        await created.locator('[id$=".storage_type"]').selectOption('text');
+        await created.locator('[id$=".label"]').fill('Privacy probe');
+        await created.locator('[id$=".storage_pii_class"]').selectOption('none');
+        await created.getByRole('button', { name: 'Create', exact: true }).click();
+
+        await expect(page.getByText('privacy_probe')).toBeVisible();
+
+        // ⚠️ THE REGRESSION. The edit action was bound to the create path,
+        // whose lookup always found this field's own storage row and returned
+        // through the adoption branch without applying anything. The save
+        // reported success and changed nothing — and `pii_class` drives
+        // erasure and revision redaction (ADR-020), so the field an author
+        // had correctly marked as sensitive stayed unclassified.
+        // ⚠️ `exact`. Every CELL in the row is also a button that mounts the
+        // same action, so a substring match on "Edit" resolves to three
+        // elements the moment a field's LABEL happens to contain the word.
+        await page.getByRole('row', { name: /privacy_probe/ })
+            .getByRole('button', { name: 'Edit', exact: true })
+            .click();
+
+        const edited = page.getByRole('dialog');
+        await edited.locator('[id$=".storage_pii_class"]').selectOption('sensitive');
+        await edited.getByRole('button', { name: 'Save changes' }).click();
+
+        await expect(page.getByRole('row', { name: /privacy_probe/ })).toContainText(/sensitive/i);
+    });
+
     test('creates a field and reports it as indexed', async ({ page }) => {
         await editType(page, 'Article');
         await page.getByRole('button', { name: 'New field' }).click();

@@ -199,6 +199,34 @@ class EntryTypeResource extends Resource
     }
 
     /**
+     * ⚠️ The ROUTE is the boundary, not the link.
+     *
+     * `EditAction::visible()` below only decides whether a button is drawn.
+     * `/entry-types/{id}/edit` is a URL, and AGENTS.md invariant 6 says
+     * anything reachable from one is untrusted — so an admin typing a global
+     * type's id got the form, the save, and its field relation manager, and
+     * could rewrite schema every other org depends on. Hiding the link removed
+     * the link.
+     *
+     * `EditRecord` calls this from `authorizeAccess()` on mount AND from
+     * `hydrate()`, so it gates every Livewire update on the page rather than
+     * only the initial GET.
+     *
+     * Fails closed on a record that is not an EntryType: this resource has one
+     * model, and a permissive default here is the wrong direction.
+     */
+    public static function canEdit(Model $record): bool
+    {
+        return $record instanceof EntryType && self::ownsRecord($record);
+    }
+
+    /** Same boundary for deletion, which is the less recoverable half. */
+    public static function canDelete(Model $record): bool
+    {
+        return $record instanceof EntryType && self::ownsRecord($record);
+    }
+
+    /**
      * Whether this row belongs to the current org rather than to everyone.
      *
      * A global type (`org_id IS NULL`) is shared schema: every org sees it and

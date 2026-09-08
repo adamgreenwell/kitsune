@@ -25,9 +25,12 @@ use Filament\Schemas\Schema;
 use Filament\Tables\Columns\IconColumn;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Table;
+use Illuminate\Database\Eloquent\Model;
 use Kitsune\Core\Fields\FieldType;
 use Kitsune\Core\Fields\FieldTypeRegistry;
+use Kitsune\Core\Filament\Resources\EntryTypes\EntryTypeResource;
 use Kitsune\Core\Filament\Schemas\SettingsSchemaRenderer;
+use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Field;
 use Kitsune\Core\Models\FieldStorage;
 use Kitsune\Core\Schema\SchemaManager;
@@ -50,6 +53,23 @@ class FieldsRelationManager extends RelationManager
     protected static string $relationship = 'fields';
 
     protected static ?string $title = 'Fields';
+
+    /**
+     * ⚠️ The relation manager authorizes itself, because it is its own route.
+     *
+     * A relation manager is a Livewire component with its own mount, so
+     * gating the parent page is gating the parent page. `CanAuthorizeAccess`
+     * calls this and aborts 403, which closes the direct-component path as
+     * well as the rendered one — the same lesson as every bulk-write guard in
+     * this project: one door is one door.
+     *
+     * Global schema (`org_id IS NULL`) is shared by every org, so no single
+     * org may add fields to it.
+     */
+    public static function canViewForRecord(Model $ownerRecord, string $pageClass): bool
+    {
+        return $ownerRecord instanceof EntryType && EntryTypeResource::ownsRecord($ownerRecord);
+    }
 
     /**
      * The selected field type, or null before one is chosen.
@@ -200,21 +220,42 @@ class FieldsRelationManager extends RelationManager
             ->recordActions([
                 EditAction::make()
                     ->fillForm($this->readStorage(...))
-                    ->mutateDataUsing($this->writeStorage(...))
+                    // ⚠️ NOT writeStorage(). Editing this field's own storage
+                    // and adopting somebody else's are different intents that
+                    // happen to submit the same form — see updateStorage().
+                    ->mutateDataUsing($this->updateStorage(...))
                     ->after($this->syncSchema(...)),
                 DeleteAction::make(),
             ]);
     }
 
     /**
+     * Fill the edit modal from BOTH halves of the split.
+     *
      * Storage attributes are prefixed in the form, so they can share it with
      * the presentation record without colliding on `settings`.
      *
-     * @param  array<string, mixed>  $data
+     * ⚠️ It starts from the RECORD, and taking `array $data` was the bug.
+     *
+     * `fillForm()` replaces `EditAction`'s own filling — which is what called
+     * `$record->attributesToArray()` — and evaluates its callback with the
+     * ACTION's data, which at mount time is `[]`. So the storage half filled
+     * and the presentation half did not: `label` opened empty, and because it
+     * is `required()` every save failed validation with the modal left open.
+     * The field edit modal had never worked, in any form.
+     *
+     * Nothing in the PHP suite could see it — there is no Livewire harness
+     * here — and no browser test had opened the modal. ADR-024's mandatory
+     * browser layer is the only reason it was found.
+     *
      * @return array<string, mixed>
      */
-    public function readStorage(array $data, Field $record): array
+    public function readStorage(Field $record): array
     {
+        // The same source EditAction uses by default, so the presentation
+        // half behaves exactly as an unmodified Filament form would.
+        $data = $record->attributesToArray();
+
         $storage = $record->fieldStorage;
 
         if ($storage === null) {
@@ -274,6 +315,68 @@ class FieldsRelationManager extends RelationManager
         $storage->pii_class = $data['storage_pii_class'];
         $storage->is_indexed = (bool) ($data['storage_is_indexed'] ?? false);
         $storage->setAttribute('settings', $data['storage_settings'] ?? []);
+        $storage->save();
+
+        $this->pendingStorage = $storage;
+
+        return $this->presentation($data, $storage);
+    }
+
+    /**
+     * Apply an edit to the storage row this field already points at.
+     *
+     * ⚠️ `writeStorage()` was bound to BOTH actions, and on edit its lookup
+     * always found this field's OWN storage — so it took the adoption branch
+     * and returned without applying anything. `storage_handle` is `disabled()`
+     * on edit, so that was not an edge case: EVERY storage edit was silently
+     * discarded while the save reported success.
+     *
+     * The worst of it is `pii_class`. It drives erasure and revision
+     * redaction (ADR-020), so an author who correctly reclassified a field as
+     * `personal` was told it saved, and a later erasure request would not
+     * reach it. Adoption is the right rule for a handle somebody else defined;
+     * it is the wrong rule for the row you are editing.
+     *
+     * Shape lives elsewhere on purpose: `type` and `cardinality` are
+     * `disabled()` in the form and locked by `FieldStorage::guardShape()` once
+     * entries hold data, so this writes only what the modal leaves enabled and
+     * lets the model refuse the rest.
+     *
+     * @param  array<string, mixed>  $data
+     * @return array<string, mixed>
+     */
+    public function updateStorage(array $data, Field $record): array
+    {
+        $storage = $record->fieldStorage;
+
+        // A field with no storage row is a broken split, not something this
+        // form can repair by guessing. The create path says adopt-or-create
+        // explicitly, so defer to it rather than inventing a third rule.
+        if ($storage === null) {
+            return $this->writeStorage($data);
+        }
+
+        // ⚠️ Present-key tests, not `?? false` / `?? []` as on create.
+        //
+        // The two paths differ in what an ABSENT key means. On create it means
+        // "not requested", and false is right. Here it would mean "destroy the
+        // index" or "erase the settings" — so a key the form did not submit
+        // leaves the stored value alone. Every one of these is `dehydrated()`,
+        // so absence is a form-shape bug; it should not also be data loss.
+        if (array_key_exists('storage_pii_class', $data)) {
+            $storage->pii_class = $data['storage_pii_class'];
+        }
+
+        if (array_key_exists('storage_is_indexed', $data)) {
+            $storage->is_indexed = (bool) $data['storage_is_indexed'];
+        }
+
+        if (array_key_exists('storage_settings', $data)) {
+            $storage->setAttribute('settings', $data['storage_settings']);
+        }
+
+        // Through the model, so `guardShape()` runs: locked shape, projection
+        // settings on a locked row, and the pii_class fail-closed check.
         $storage->save();
 
         $this->pendingStorage = $storage;
