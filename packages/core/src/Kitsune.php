@@ -95,10 +95,22 @@ final class Kitsune
         // a right-to-left document: the same defect as the missing `dir`, with
         // the sign flipped.
         //
-        // BCP 47 puts the script second and it is always four letters, which is
-        // what distinguishes `ku-Latn` from `ku-IQ`.
-        if (isset($subtags[1]) && preg_match('/^[A-Za-z]{4}$/', $subtags[1]) === 1) {
-            return in_array(ucfirst(strtolower($subtags[1])), self::RTL_SCRIPTS, true) ? 'rtl' : 'ltr';
+        // ⚠️ And the script is not necessarily the SECOND subtag, which the
+        // first fix assumed. BCP 47 allows up to three three-letter extlangs
+        // between the language and the script, so `ar-aao-Latn` names Latin and
+        // was read as `ar` plus something region-shaped. The script is the first
+        // FOUR-letter subtag, and it can only appear before the region — which a
+        // two-letter or three-digit subtag marks — so the scan stops there
+        // rather than searching the whole tag and finding a variant.
+        foreach (array_slice($subtags, 1, 4) as $subtag) {
+            if (preg_match('/^[A-Za-z]{4}$/', $subtag) === 1) {
+                return in_array(ucfirst(strtolower($subtag)), self::RTL_SCRIPTS, true) ? 'rtl' : 'ltr';
+            }
+
+            // A region ends the region where a script may legally appear.
+            if (preg_match('/^([A-Za-z]{2}|[0-9]{3})$/', $subtag) === 1) {
+                break;
+            }
         }
 
         // No script named, so the language's usual one decides. A REGION never

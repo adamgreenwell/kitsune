@@ -57,6 +57,27 @@ it('reads an explicit SCRIPT subtag, which overrides the language', function (st
     ['ur-Aran', 'rtl'],
 ]);
 
+it('finds the script past an EXTLANG', function (string $locale, string $expected): void {
+    /*
+     * ⚠️ The script is not necessarily the second subtag. BCP 47 allows up to
+     * three three-letter extlangs between the language and the script, so
+     * `ar-aao-Latn` names Latin — and reading only position 1 saw `aao`,
+     * called it region-shaped, and fell back to Arabic's default.
+     *
+     * The scan stops at a REGION (two letters, or three digits), because a
+     * script cannot appear after one — otherwise a four-letter VARIANT further
+     * along would be mistaken for a script.
+     */
+    expect(Kitsune::textDirection($locale))->toBe($expected);
+})->with([
+    ['ar-aao-Latn', 'ltr'],
+    ['ar-aao-arb-Latn', 'ltr'],
+    ['ku-Latn-TR', 'ltr'],
+    ['ar-Arab-EG', 'rtl'],
+    // An extlang with no script: the language's default still decides.
+    ['ar-aao', 'rtl'],
+]);
+
 it('does not mistake a REGION for a script', function (string $locale): void {
     // BCP 47 puts the script second and it is always four letters, which is
     // what separates `ku-Latn` from `ku-IQ`. A region never changes direction.
