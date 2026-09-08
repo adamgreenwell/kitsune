@@ -38,6 +38,7 @@ If you're evaluating whether to build on Kitsune later, the decision log is the 
 | [`docs/roadmap.md`](docs/roadmap.md) | **What and when.** Phased plan to v1.0 and beyond, with honest timelines |
 | [`docs/architecture.md`](docs/architecture.md) | **How.** Data model, admin routing, tenancy security model, module and migration contracts |
 | [`docs/field-types.md`](docs/field-types.md) | **The field contract.** Storage strategies, the four faces every field type must answer, and the twelve types shipping in v1.0 |
+| [`docs/accessibility-inventory.md`](docs/accessibility-inventory.md) | **What is inherited.** Measured WCAG and RTL conformance, what Filament supplies, and the gaps that are Kitsune's to build |
 
 ## Shape of the thing
 
