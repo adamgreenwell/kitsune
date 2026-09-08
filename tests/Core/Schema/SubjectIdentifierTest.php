@@ -1157,6 +1157,89 @@ describe('changing an entry\'s type cannot orphan a relation pointing at it', fu
     });
 });
 
+describe('the pivot guards hold on the bulk path, which had none', function (): void {
+    /*
+     * ⚠️ Every guard on this pivot hangs off a model event — ownership,
+     * endpoint visibility, cardinality, target type — and so does the lock
+     * arming. `EntryRelation::query()->insert()` and `->update()` compile
+     * straight to SQL and dispatch nothing, so on those paths there were no
+     * guards at all. One ordinary statement put a SECOND target on a
+     * cardinality-one nominated subject field, of a type that field forbids:
+     * the two-subject disclosure ADR-020's cardinality check exists to
+     * prevent.
+     *
+     * Third model in this project to need a builder for this reason. AuditLog
+     * and Entry each got one; FieldStorage and this went without, while core
+     * itself already writes this table in bulk.
+     */
+    beforeEach(function (): void {
+        $this->one = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'subject', 'type' => 'relation',
+            'pii_class' => 'personal', 'cardinality' => 1,
+            'settings' => ['targetTypes' => [$this->type->handle]],
+        ]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $this->one->id, 'label' => 'Subject',
+        ]);
+
+        $this->src = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Src']);
+        $this->p1 = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'P1']);
+        $this->p2 = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'P2']);
+
+        $this->src->related()->attach($this->p1->id, ['field_storage_id' => $this->one->id]);
+    });
+
+    it('refuses a bulk insert that would give one field two subjects', function (): void {
+        expect(fn () => EntryRelation::query()->insert([[
+            'org_id' => $this->org->id, 'source_entry_id' => $this->src->id,
+            'target_entry_id' => $this->p2->id, 'field_storage_id' => $this->one->id, 'ordering' => 0,
+        ]]))->toThrow(RuntimeException::class, 'cannot be created in bulk');
+
+        expect(EntryRelation::query()->where('source_entry_id', $this->src->id)->count())->toBe(1);
+    });
+
+    it('refuses a bulk repoint onto a nominated single-valued field', function (): void {
+        $open = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'links', 'type' => 'relation',
+            'pii_class' => 'none', 'cardinality' => -1,
+        ]);
+        $other = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Other']);
+        $other->related()->attach($this->p2->id, ['field_storage_id' => $open->id]);
+
+        expect(fn () => EntryRelation::query()
+            ->where('field_storage_id', $open->id)
+            ->update(['field_storage_id' => $this->one->id]))
+            ->toThrow(RuntimeException::class, 'cannot be written in bulk');
+    });
+
+    it('still allows an ordinary attach and a pivot move', function (): void {
+        // The flag is what separates them: a model save has run its guards, a
+        // bulk write dispatched nothing and never could.
+        $open = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'links', 'type' => 'relation',
+            'pii_class' => 'none', 'cardinality' => -1,
+        ]);
+
+        expect(fn () => $this->src->related()->attach($this->p2->id, ['field_storage_id' => $open->id]))
+            ->not->toThrow(RuntimeException::class);
+
+        expect(fn () => $this->src->related()->updateExistingPivot($this->p2->id, ['ordering' => 3]))
+            ->not->toThrow(RuntimeException::class);
+    });
+
+    it('still allows a bulk DELETE, which erasure depends on', function (): void {
+        // Removing a relation can only relax a bound, never violate one, and
+        // redactField() deletes through this builder because erasure has to
+        // reach a row whatever org stamped it.
+        expect($this->src->redactField('subject'))->toBe(1)
+            ->and(EntryRelation::query()->where('source_entry_id', $this->src->id)->count())->toBe(0);
+    });
+
+    it('refuses a truncate, which would detach every org at once', function (): void {
+        expect(fn () => EntryRelation::query()->truncate())->toThrow(RuntimeException::class);
+    });
+});
+
 describe('a pivot cannot reach past what the writer can see', function (): void {
     beforeEach(function (): void {
         $this->rivalOrg = Org::create(['name' => 'W', 'slug' => 'pivot-rival']);

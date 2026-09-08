@@ -11,6 +11,8 @@ declare(strict_types=1);
 namespace Kitsune\Core\Models;
 
 use Illuminate\Database\Eloquent\Relations\Pivot;
+use Illuminate\Database\Query\Builder as QueryBuilder;
+use Kitsune\Core\Relations\GuardedRelationBuilder;
 use Kitsune\Core\Tenancy\Attributes\Unscoped;
 use RuntimeException;
 
@@ -51,11 +53,11 @@ class EntryRelation extends Pivot
 
     protected static function booted(): void
     {
-        static::creating(function (self $relation): void {
-            $relation->guardStorageOwnership();
-            $relation->guardEndpointsVisible();
-            $relation->guardCardinality();
-            $relation->guardTargetType();
+        static::creating(fn (self $relation) => $relation->guardCreate());
+
+        // Cleared once the write lands, so the next one has to earn it again.
+        static::saved(function (self $relation): void {
+            $relation->guardsRan = false;
         });
 
         // ⚠️ The lock arms HERE for a relation, not from `Entry::saved`.
@@ -85,6 +87,8 @@ class EntryRelation extends Pivot
         // recreating the two-subject disclosure through the ordinary
         // relationship API, with no row ever being created.
         static::updating(function (self $relation): void {
+            $relation->guardsRan = true;
+
             // ⚠️ source_entry_id too, not only the field. Cardinality is
             // counted per (source, field), so moving a row from source B onto
             // source A — which `updateExistingPivot()` accepts — lands a
@@ -107,6 +111,57 @@ class EntryRelation extends Pivot
                 $relation->guardTargetType();
             }
         });
+    }
+
+    /**
+     * True only while THIS row's guards have run for the write in flight.
+     *
+     * ⚠️ How the guarded builder tells a model save from a bulk one. Both
+     * reach the builder's methods, so refusing every bulk-shaped write would
+     * refuse `attach()` as well.
+     */
+    public bool $guardsRan = false;
+
+    /**
+     * Every check a new relation row must pass.
+     *
+     * ⚠️ Reachable from the BUILDER, not only from `creating`.
+     * `EntryRelation::query()->insert(...)` compiles straight to SQL and
+     * dispatches nothing, so the pivot's entire safety story — ownership,
+     * endpoint visibility, cardinality, target type — was absent there, and
+     * the lock was never armed either. One ordinary Eloquent statement put a
+     * second target on a nominated cardinality-one field, of a type that field
+     * forbids: exactly the two-subject disclosure ADR-020's cardinality check
+     * exists to prevent.
+     *
+     * This is the third model in this project to need a builder for the same
+     * reason. `AuditLog` and `Entry` each got one; `FieldStorage` and this
+     * both went without.
+     */
+    public function guardCreate(): void
+    {
+        $this->guardStorageOwnership();
+        $this->guardEndpointsVisible();
+        $this->guardCardinality();
+        $this->guardTargetType();
+
+        $this->guardsRan = true;
+    }
+
+    /**
+     * ⚠️ Every write goes through the guarded builder.
+     *
+     * @param  QueryBuilder  $query
+     */
+    public function newEloquentBuilder($query): GuardedRelationBuilder
+    {
+        return new GuardedRelationBuilder($query);
+    }
+
+    /** Arming the lock is public so the builder can do it after a bulk delete. */
+    public function armLockNow(): void
+    {
+        $this->armLock();
     }
 
     /**
