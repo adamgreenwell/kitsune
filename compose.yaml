@@ -30,3 +30,21 @@ services:
       interval: 3s
       timeout: 3s
       retries: 20
+
+  # MariaDB is documented as supported (README, architecture.md, roadmap.md)
+  # and DriverFactory routes it to MySqlDriver — but nothing tested it, and
+  # two MySQL-only constructs had shipped: `CAST(... AS JSON)`, which MariaDB
+  # rejects outright, and `utf8mb4_0900_bin`, which it does not have.
+  mariadb:
+    image: mariadb:10.6
+    environment:
+      MARIADB_DATABASE: kitsune
+      MARIADB_USER: kitsune
+      MARIADB_PASSWORD: kitsune
+      MARIADB_ROOT_PASSWORD: root
+    ports: ["53307:3306"]
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 3s
+      timeout: 3s
+      retries: 20

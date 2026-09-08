@@ -36,6 +36,18 @@ final class ScopedUnique implements ValidationRule
         private readonly string $column,
         private readonly mixed $ignoreId = null,
         private readonly ?Closure $using = null,
+        /**
+         * Turns the submitted value into the one that will be STORED.
+         *
+         * ⚠️ Without it a rule can check a different value from the one the
+         * database will hold: `slug` normalises on the way in, so submitting
+         * `Hello World` against an existing `hello-world` passed here and
+         * then violated the unique index — a 500 where the user should have
+         * seen a validation message. The check has to match what the database
+         * will actually enforce, which is the same reason soft-deleted rows
+         * are included below.
+         */
+        private readonly ?Closure $normalise = null,
     ) {}
 
     public function validate(string $attribute, mixed $value, Closure $fail): void
@@ -58,7 +70,7 @@ final class ScopedUnique implements ValidationRule
             $query->withoutGlobalScope(SoftDeletingScope::class);
         }
 
-        $query->where($this->column, $value);
+        $query->where($this->column, $this->normalise !== null ? ($this->normalise)($value) : $value);
 
         if ($this->ignoreId !== null) {
             $query->whereKeyNot($this->ignoreId);

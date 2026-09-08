@@ -14,6 +14,7 @@ use Illuminate\Contracts\Database\Query\Expression;
 use Illuminate\Database\Eloquent\Builder;
 use Kitsune\Core\Models\AuditLog;
 use Kitsune\Core\Tenancy\Context;
+use Kitsune\Core\Tenancy\ScopeWrites;
 use RuntimeException;
 
 /**
@@ -278,6 +279,10 @@ class AppendOnlyBuilder extends Builder
      */
     private function guardScopeKeys(array $values): void
     {
+        if (ScopeWrites::suspended()) {
+            return;
+        }
+
         $context = app(Context::class);
 
         foreach (['org_id' => $context->orgId(), 'site_id' => $context->siteId()] as $column => $current) {

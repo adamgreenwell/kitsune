@@ -198,7 +198,9 @@ The escape hatch, and escape hatches get abused.
 
 ## 7. Indexing
 
-A field is indexed when `field_storage.is_indexed` is true. The engine then adds a stored generated column plus a composite index leading with the scope key — `site_id`, since `entries` is `#[SiteScoped]`:
+A field is indexed when `field_storage.is_indexed` is true. `Kitsune\Core\Schema\SchemaManager` then adds a stored generated column plus a composite index leading with the scope key — `site_id`, since `entries` is `#[SiteScoped]`. `php artisan kitsune:schema-sync` reconciles the two after a failure, since DDL implicitly commits on MySQL and a row write cannot share a transaction with its schema change.
+
+**The column is named for its projection, not for its owner** — `idx_{handle}__{signature}`, where the signature carries the width wherever the width varies: `idx_price__decimal12_2`, `idx_sku__string64`, `idx_active__boolean` (ADR-028). `entries` is one table shared by every org, so two orgs each defining `price` would otherwise collide: one silently casting the other's data to the wrong type, and either able to drop the other's column. Two rows with the same handle **and** signature generate a byte-identical expression and share the column deliberately; rows that differ in any way that changes the SQL get separate columns. The signature rather than the type handle, because the projection depends on configuration too — a `number` with `format: integer` projects to BIGINT, and through `DECIMAL(12,2)` PostgreSQL refuses the column outright with `numeric field overflow`.
 
 **Verified 2026-09-07** against all three engines (issue #11). The SQL below is what `Kitsune\Core\Schema\Drivers\*` actually emits, and `tests/Core/Schema/GeneratedColumnParityTest.php` runs it on each.
 
@@ -207,33 +209,67 @@ A field is indexed when `field_storage.is_indexed` is true. The engine then adds
 ```sql
 -- MySQL: $-prefixed path, CAST wrapper, backtick quoting
 ALTER TABLE `entries`
-  ADD COLUMN `idx_price` DECIMAL(12,2)
-    GENERATED ALWAYS AS (CAST(`values`->>'$.price' AS DECIMAL(12,2))) STORED;
-CREATE INDEX `entries_site_price` ON `entries` (`site_id`, `idx_price`);
+  ADD COLUMN `idx_price__decimal12_2` DECIMAL(12,2)
+    GENERATED ALWAYS AS (
+      CASE WHEN JSON_TYPE(JSON_EXTRACT(`values`, '$.price'))
+                IN ('INTEGER', 'UNSIGNED INTEGER', 'DOUBLE', 'DECIMAL')
+           THEN CAST(`values`->>'$.price' AS DECIMAL(12,2)) END
+    ) STORED;
+CREATE INDEX `idx_price__decimal12_2_site_idx` ON `entries` (`site_id`, `idx_price__decimal12_2`);
 ```
 
 ```sql
 -- PostgreSQL: bare key, cast suffix, double-quote quoting
 ALTER TABLE "entries"
-  ADD COLUMN "idx_price" NUMERIC(12,2)
-    GENERATED ALWAYS AS (("values" ->> 'price')::NUMERIC(12,2)) STORED;
-CREATE INDEX "entries_site_price" ON "entries" ("site_id", "idx_price");
+  ADD COLUMN "idx_price__decimal12_2" NUMERIC(12,2)
+    GENERATED ALWAYS AS (
+      CASE WHEN jsonb_typeof(("values")::jsonb -> 'price') = 'number'
+           THEN (("values")::jsonb ->> 'price')::NUMERIC(12,2) END
+    ) STORED;
+CREATE INDEX "idx_price__decimal12_2_site_idx" ON "entries" ("site_id", "idx_price__decimal12_2");
 ```
 
 ```sql
 -- SQLite: json_extract, and VIRTUAL rather than STORED
 ALTER TABLE "entries"
-  ADD COLUMN "idx_price" NUMERIC(12,2)
-    GENERATED ALWAYS AS (CAST(json_extract("values", '$.price') AS NUMERIC(12,2))) VIRTUAL;
-CREATE INDEX "entries_site_price" ON "entries" ("site_id", "idx_price");
+  ADD COLUMN "idx_price__decimal12_2" NUMERIC(12,2)
+    GENERATED ALWAYS AS (
+      CASE WHEN json_type("values", '$.price') IN ('integer', 'real')
+           THEN CAST(json_extract("values", '$.price') AS NUMERIC(12,2)) END
+    ) VIRTUAL;
+CREATE INDEX "idx_price__decimal12_2_site_idx" ON "entries" ("site_id", "idx_price__decimal12_2");
 ```
 
-The syntax diverges in four ways — path operator, cast form, identifier quoting, and whether the column can be materialised at all. **That divergence is exactly why the field type asks a driver instead of writing SQL.**
+### The `CASE` is not defensive style — it is the whole isolation guarantee
+
+`entries` is one table shared by every org, so this expression reads the JSON key from **every row in it**, including rows whose org gave `price` a different type. Without the guard, measured against live engines:
+
+| | another org's `"price": "contact us"` |
+|---|---|
+| PostgreSQL 17 | `ERROR: invalid input syntax for type numeric` — the column cannot be created |
+| MySQL 8.4 | `ERROR 1366: Incorrect DECIMAL value` — the same |
+| SQLite | **indexes it as `0`.** A price of zero, answering queries for one |
+
+A value of the wrong JSON type is not this projection's data, so it projects to `NULL` (ADR-028 amendment).
+
+The syntax diverges in five ways — path operator, JSON-type spelling, cast form, identifier quoting, and whether the column can be materialised at all. **That divergence is exactly why a field type describes a `Projection` and never touches SQL.**
+
+Two more divergences the driver owns, each of which made a shipped field type unindexable until the parity suite covered every logical type:
+
+- **MySQL needs two spellings.** `BIGINT` in `ADD COLUMN` and `SIGNED` inside `CAST`, each rejected where the other belongs — so `SchemaDriver` exposes `columnType()` and keeps the cast spelling private. One string for both left every `integer` field unindexable there.
+- **PostgreSQL demands an IMMUTABLE expression.** A text-to-`DATE` cast is only STABLE, and there is no immutable alternative (`to_date` is STABLE too). So **`date` and `datetime` project to fixed-width ISO-8601 strings on every engine** — `YYYY-MM-DD` and UTC `…+00:00`, which `toStorage()` already normalises to, making string order exact chronological order.
 
 ### Rules
 
 - **Indexing is opt-in.** Every generated column costs write throughput and disk. Default off
-- **Cap indexed fields per entity type** — start at 20, revisit with benchmark data. Without a cap, one org can degrade the shared `entries` table for everyone, which on KaaS is a noisy-neighbour incident
+- **Cap generated columns on the shared `entries` table** — `SchemaManager::MAX_GENERATED_COLUMNS`, 20 to start, revisit with benchmark data. The cap counts **columns, not `field_storage` rows**: many rows across many orgs can share one column, and the scarce resource is the table. Without a cap, one org can degrade `entries` for everyone, which on KaaS is a noisy-neighbour incident
+- **Dropping is reference-counted.** Un-indexing removes the column only once no other field storage row still projects to it. An org must never be able to drop a column another org is querying (ADR-021, ADR-028)
+- **Settings that affect storage come from STORAGE, never from the per-type field.** `FieldConfig::setting()` reads `field_storage.settings` only. Presentation merging over storage let an *unlocked* `fields.settings` override a *locked* `field_storage.settings` — a per-type `maxLength: 400` against a column already created as `VARCHAR(255)`, or a per-type `format: integer` changing the conversion under stored decimals — which routes around ADR-006's lock-on-data invariant. A display-only setting uses `presentationSetting()` and says so at the call site
+- **Cardinality is handled by the contract, not by each type.** `validationRules()` puts the scalar constraints on `handle.*` when the field is multi-value, `apiSchema()` wraps the item schema in an array, and `toStorage()` maps over the elements. A type describes one value in `scalarValidationRules()` / `scalarApiSchema()` / `castToStorage()`; types that are arrays at every cardinality (`relation`, `multi_select`) override the outer methods instead
+- **A projection is a promise about what the field accepts, and validation keeps it.** `number` derives its `DECIMAL(p,s)` from configured `precision`/`scale` and bounds the input to match — unbounded, `10000000000` overflowed the column and `1.234` was rounded inside the index so distinct values compared equal. `select` sizes its projection from the widest configured option key, for the same reason
+- **Settings that change the projection lock with the shape.** `is_locked` compares projections rather than naming attributes, so switching `format` from decimal to integer on a field holding data is refused while editing a label is not — and a new projection-affecting setting is covered without anyone remembering to list it
+- **An indexed string is capped at 700 characters.** Measured: MySQL caps an index key at 3,072 bytes and utf8mb4 costs four bytes a character, so `VARCHAR(1000)` fails with `ERROR 1071` while `VARCHAR(700)` succeeds. Wider fields are refused with that reason — long text that needs searching wants full-text search, not a scalar projection
+- **Field handles are bounded at 32 characters, lowercase snake_case, no doubled underscore.** They become SQL identifiers, PostgreSQL truncates those at 63 bytes, and a truncated identifier is a silent collision rather than an error. `__` is reserved as the separator
 - **Adding an index rewrites the table.** On a large `entries` table this locks. Queue it, do it online where the engine supports it, and warn in the UI
 - **Marking a field indexed is not reversible for free** — dropping the column is another rewrite
 - **Cardinality > 1 is not indexable this way.** A JSON array can't project to a scalar column. Multi-value fields that need querying should be `relation`

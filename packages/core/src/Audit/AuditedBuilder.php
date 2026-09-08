@@ -16,6 +16,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Tenancy\Context;
+use Kitsune\Core\Tenancy\ScopeWrites;
 use RuntimeException;
 
 /**
@@ -128,6 +129,18 @@ class AuditedBuilder extends Builder
      */
     private function guardScopeKeys(array $values): void
     {
+        // ⚠️ The escape hatch stands this down too.
+        //
+        // The flag started private to `EnforcesScope`, so each guard that moved
+        // to a builder became invisible to it — `withoutScopeBecause()` then
+        // suspended some enforcers and not others, and provisioning code that
+        // had been explicit about crossing the boundary failed anyway. That
+        // teaches callers to stop using the reviewable path, which is the worst
+        // outcome available. One flag, read by every enforcer.
+        if (ScopeWrites::suspended()) {
+            return;
+        }
+
         $context = app(Context::class);
 
         // ⚠️ Table-QUALIFIED keys count. A joined update writes

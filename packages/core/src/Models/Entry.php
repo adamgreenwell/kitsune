@@ -17,6 +17,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Kitsune\Core\Audit\AuditedBuilder;
+use Kitsune\Core\Fields\FieldTypeRegistry;
 use Kitsune\Core\Tenancy\Attributes\SiteScoped;
 use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
 
@@ -75,6 +76,64 @@ class Entry extends Model
                     ->value('handle') ?? $entry->type_handle;
             }
         });
+
+        // ⚠️ The lock has to be SET by something, and nothing was setting it.
+        //
+        // ADR-006 says storage locks the moment data exists, and FieldStorage
+        // has carried the guard since the first commit — but `is_locked`
+        // defaulted to false and only tests ever wrote it. So every field in
+        // every install was unlocked while holding content, and the guard
+        // that refuses a decimal-to-integer change or a narrowed text field
+        // was reachable only by a caller who had remembered to set the flag
+        // by hand. A lock nobody arms is a comment.
+        static::saved(fn (self $entry) => $entry->lockStorageHoldingData());
+    }
+
+    /**
+     * Lock every storage row this entry now holds data for.
+     *
+     * Cheap once it has done its work: the query returns nothing as soon as a
+     * type's fields are locked, which is the steady state. Written in bulk so
+     * it does not re-enter FieldStorage's own guards, which have nothing to
+     * check here — `is_locked` is not a shape attribute.
+     *
+     * ⚠️ PROMOTED columns as well as `values`. A configured slug lives in
+     * `entries.slug` because SlugType is promoted (ADR-015), so deriving held
+     * fields from `values` alone never selected its storage row and left it
+     * unlocked while holding live data — free to change shape afterwards.
+     *
+     * Relation rows are the third case, and they arrive with
+     * `entry_relations` in #30.
+     */
+    private function lockStorageHoldingData(): void
+    {
+        $unlocked = FieldStorage::query()
+            ->where('is_locked', false)
+            ->whereHas('fields', fn (Builder $query) => $query->where('entry_type_id', $this->entry_type_id))
+            ->get();
+
+        if ($unlocked->isEmpty()) {
+            return;
+        }
+
+        $registry = app(FieldTypeRegistry::class);
+        $values = $this->values ?? [];
+
+        $holding = $unlocked->filter(function (FieldStorage $storage) use ($registry, $values): bool {
+            $column = $registry->get($storage->type)->promotedColumn();
+
+            $value = $column !== null
+                ? $this->getAttribute($column)
+                : ($values[$storage->handle] ?? null);
+
+            return $value !== null && $value !== '' && $value !== [];
+        });
+
+        if ($holding->isEmpty()) {
+            return;
+        }
+
+        FieldStorage::query()->whereKey($holding->modelKeys())->update(['is_locked' => true]);
     }
 
     /**

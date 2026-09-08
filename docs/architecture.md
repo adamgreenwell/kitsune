@@ -264,16 +264,25 @@ entry_relations
 
 ### Indexing — the mechanism that avoids Drupal's join explosion
 
-When a `field_storage` row is marked `is_indexed`, the schema engine adds a **stored generated column** over the JSON plus a composite index that always leads with the scope key — `site_id`, since `entries` is `#[SiteScoped]`:
+When a `field_storage` row is marked `is_indexed`, `SchemaManager` adds a **stored generated column** over the JSON plus a composite index that always leads with the scope key — `site_id`, since `entries` is `#[SiteScoped]`:
 
 ```sql
 -- MySQL. `values` is reserved and must be quoted; see field-types.md §7
 -- for the PostgreSQL and SQLite forms, all three verified against live engines.
 ALTER TABLE `entries`
-  ADD COLUMN `idx_price` DECIMAL(12,2)
-    GENERATED ALWAYS AS (CAST(`values`->>'$.price' AS DECIMAL(12,2))) STORED;
-CREATE INDEX `entries_site_price` ON `entries` (`site_id`, `idx_price`);
+  ADD COLUMN `idx_price__decimal12_2` DECIMAL(12,2)
+    GENERATED ALWAYS AS (
+      CASE WHEN JSON_TYPE(JSON_EXTRACT(`values`, '$.price'))
+                IN ('INTEGER', 'UNSIGNED INTEGER', 'DOUBLE', 'DECIMAL')
+           THEN CAST(`values`->>'$.price' AS DECIMAL(12,2)) END
+    ) STORED;
+CREATE INDEX `idx_price__decimal12_2_site_idx` ON `entries` (`site_id`, `idx_price__decimal12_2`);
 ```
+
+Two things in that statement are load-bearing, and both come from `entries` being **one table shared by every org** while `field_storage` is `UNIQUE (org_id, handle)` — so two orgs may each define `price` (ADR-028).
+
+- **The column carries the field type, not the org.** Naming by handle alone let one org's type silently reinterpret another's data, and let either drop the other's column. Rows projecting identically share the column; dropping is reference-counted.
+- **The `CASE` makes the expression total.** The projection reads that JSON key from every row in the table. Unguarded, another org's `"contact us"` stops the column being created at all on PostgreSQL and MySQL, and indexes as `0` on SQLite. A value of the wrong JSON type projects to `NULL`.
 
 One table, one row per entry, real indexes on the fields that need them. This is the direct answer to Drupal core issue #3022864 — the 27-join, 697-second production query caused by table-per-field.
 

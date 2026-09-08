@@ -83,7 +83,7 @@ class ScopedBuilder extends Builder
     {
         $model = $this->getModel();
 
-        if ($model instanceof RefusesCascadingDeletes) {
+        if (! ScopeWrites::suspended() && $model instanceof RefusesCascadingDeletes) {
             foreach ($this->toBase()->pluck($model->getQualifiedKeyName()) as $key) {
                 $model->newInstance([], true)
                     ->forceFill([$model->getKeyName() => $key])
@@ -182,6 +182,11 @@ class ScopedBuilder extends Builder
      */
     private function guardScopeKeys(array $values): void
     {
+        // The reviewable escape hatch stands EVERY enforcer down, not one.
+        if (ScopeWrites::suspended()) {
+            return;
+        }
+
         $context = app(Context::class);
         $normalised = [];
 
