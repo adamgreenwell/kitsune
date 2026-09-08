@@ -45,13 +45,6 @@ use RuntimeException;
  */
 class AuditedBuilder extends Builder
 {
-    /**
-     * Set on the builder that performs the write, so the write does not
-     * audit itself a second time. Private, and only ever set on an instance
-     * this class made — see plainQueryFor().
-     */
-    private bool $suppressed = false;
-
     private const NO_BULK_CREATE =
         'Entries cannot be written in bulk, because these paths return a row count rather than '
         .'the keys they wrote — there would be nothing to record as the target, and an entry '
@@ -244,11 +237,7 @@ class AuditedBuilder extends Builder
     /** @param  array<string, mixed>  $values */
     public function update(array $values)
     {
-        if ($this->suppressed) {
-            return parent::update($values);
-        }
-
-        return $this->auditing($this->actionFor($values), fn (self $query) => $query->update($values));
+        return $this->auditing($this->actionFor($values), fn () => parent::update($values));
     }
 
     // delete() is deliberately NOT overridden. Entry soft-deletes, so both
@@ -258,11 +247,7 @@ class AuditedBuilder extends Builder
 
     public function forceDelete()
     {
-        if ($this->suppressed) {
-            return parent::forceDelete();
-        }
-
-        return $this->auditing('force_deleted', fn (self $query) => $query->forceDelete());
+        return $this->auditing('force_deleted', fn () => parent::forceDelete());
     }
 
     /**
@@ -276,11 +261,7 @@ class AuditedBuilder extends Builder
      */
     public function increment($column, $amount = 1, array $extra = [])
     {
-        if ($this->suppressed) {
-            return parent::increment($column, $amount, $extra);
-        }
-
-        return $this->auditing('updated', fn (self $query) => $query->increment($column, $amount, $extra));
+        return $this->auditing('updated', fn () => parent::increment($column, $amount, $extra));
     }
 
     /**
@@ -289,11 +270,7 @@ class AuditedBuilder extends Builder
      */
     public function decrement($column, $amount = 1, array $extra = [])
     {
-        if ($this->suppressed) {
-            return parent::decrement($column, $amount, $extra);
-        }
-
-        return $this->auditing('updated', fn (self $query) => $query->decrement($column, $amount, $extra));
+        return $this->auditing('updated', fn () => parent::decrement($column, $amount, $extra));
     }
 
     /**
@@ -307,11 +284,7 @@ class AuditedBuilder extends Builder
      */
     public function incrementEach(array $columns, array $extra = [])
     {
-        if ($this->suppressed) {
-            return parent::incrementEach($columns, $extra);
-        }
-
-        return $this->auditing('updated', fn (self $query) => $query->incrementEach($columns, $extra));
+        return $this->auditing('updated', fn () => parent::incrementEach($columns, $extra));
     }
 
     /**
@@ -320,11 +293,7 @@ class AuditedBuilder extends Builder
      */
     public function decrementEach(array $columns, array $extra = [])
     {
-        if ($this->suppressed) {
-            return parent::decrementEach($columns, $extra);
-        }
-
-        return $this->auditing('updated', fn (self $query) => $query->decrementEach($columns, $extra));
+        return $this->auditing('updated', fn () => parent::decrementEach($columns, $extra));
     }
 
     /**
@@ -362,15 +331,19 @@ class AuditedBuilder extends Builder
      * interval gets an audit record for a change it never received. The trail
      * would be quietly wrong in both directions under ordinary load.
      *
-     * So the write does not re-run the predicate. It runs against exactly the
-     * keys that were audited, on a PLAIN builder — which also avoids
-     * recursing back into these overrides. Global scopes are already applied,
-     * because the keys came from this query.
+     * So the write does not re-run the predicate: this query is CONSTRAINED
+     * to exactly the keys that were audited, and then performed.
+     *
+     * ⚠️ Constrained, not replaced. An earlier version built a fresh
+     * key-only builder, which silently dropped any join — so a joined update
+     * assigning from the joined table compiled against an alias that was no
+     * longer there and failed on an unknown column. Adding a predicate keeps
+     * the statement the caller wrote.
      *
      * The keys are read BEFORE the write for the original reason too: after
      * it a deleted row has no id to look up.
      *
-     * @param  callable(self): mixed  $write
+     * @param  callable(): mixed  $write
      */
     private function auditing(string $action, callable $write): mixed
     {
@@ -389,11 +362,15 @@ class AuditedBuilder extends Builder
                 ->values()
                 ->all();
 
-            if ($keys === []) {
-                return $write($this->plainQueryFor([]));
-            }
+            // whereKey qualifies the column, so this is unambiguous even
+            // when the caller joined another table.
+            $this->whereKey($keys);
 
-            $result = $write($this->plainQueryFor($keys));
+            $result = $write();
+
+            if ($keys === []) {
+                return $result;
+            }
 
             // `entry.updated`, not `entries.updated` — an action names the
             // thing acted on, and the rest of the trail is written in those
@@ -410,21 +387,5 @@ class AuditedBuilder extends Builder
 
             return $result;
         });
-    }
-
-    /**
-     * A builder over exactly these keys, without the audit overrides.
-     *
-     * Constructed rather than taken from the model, because `newQuery()`
-     * returns another AuditedBuilder and the write would audit itself twice.
-     *
-     * @param  list<mixed>  $keys
-     */
-    private function plainQueryFor(array $keys): self
-    {
-        $query = $this->getModel()->newModelQuery();
-        $query->suppressed = true;
-
-        return $query->whereKey($keys);
     }
 }

@@ -11,6 +11,7 @@ declare(strict_types=1);
 use Illuminate\Database\Query\Builder;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use Kitsune\Core\Audit\AppendOnlyBuilder;
 use Kitsune\Core\Audit\AuditedBuilder;
 use Kitsune\Core\Audit\Auditor;
 use Kitsune\Core\Models\AuditLog;
@@ -505,58 +506,83 @@ describe('bulk entry writes are audited too', function (): void {
     });
 
     /*
-     * ⚠️ REFLECTED, not listed.
+     * ⚠️ REFLECTED, and filtered to LOCALLY DECLARED methods.
      *
-     * The previous version of this test invoked four methods by name and
-     * claimed to cover the surface. It did not: adding a forwarded mutator to
-     * Laravel would leave it green while reopening the hole, which is the
-     * same overclaim that let three review rounds each find one more method.
+     * Two earlier versions of this test did not work. The first invoked four
+     * methods by name, so a new mutator left it green. The second reflected
+     * over the builder but counted INHERITED methods as handled — and every
+     * mutator Eloquent\Builder declares is inherited, so `update`, `delete`,
+     * `upsert`, `touch` and the increments were all permanently "covered"
+     * whether overridden or not.
      *
-     * This walks the builder classes instead and fails on anything mutating
-     * that is neither overridden here nor listed below with a reason. A
-     * dependency upgrade that adds one breaks the build.
+     * That is also why my check on the second version passed: I renamed
+     * `insertOrIgnoreUsing`, which Eloquent\Builder does NOT declare — it is
+     * forwarded through __call — so it was the one case the bug did not
+     * affect. Verifying with an example the defect cannot reach proves
+     * nothing, which is the same mistake as the masking save() elsewhere in
+     * this stack.
      */
     it('leaves no mutating builder method unhandled', function (): void {
-        // Names that write. Matched as prefixes, so a new `insertAnything()`
-        // is caught without this list being edited.
+        // Names that write, matched as PREFIXES so a future
+        // `insertAnything()` is caught without editing this list.
         $writes = ['insert', 'update', 'upsert', 'delete', 'truncate', 'increment', 'decrement', 'touch', 'restore'];
 
-        // Handled elsewhere, deliberately, with the reason.
-        $exempt = [
-            // Routed to update() by SoftDeletingScope, where actionFor()
-            // names it — auditing here too would record it twice.
-            'delete',
-            // Restores via update() for the same reason.
-            'restore', 'restoreOrCreate', 'createOrRestore',
-            // Not a write: it reads the soft-delete state.
-            'onDelete', 'withTrashed', 'withoutTrashed', 'onlyTrashed',
-            // Eloquent conveniences that funnel into save() or the overrides.
-            'updateOrCreate', 'insertOrIgnoreReturningIds',
-            'firstOrCreate', 'createOrFirst', 'incrementQuietly', 'decrementQuietly',
-        ];
+        $declaredBy = function (string $class): array {
+            return array_values(array_filter(array_map(
+                fn (ReflectionMethod $m): ?string => $m->getDeclaringClass()->getName() === $class ? $m->getName() : null,
+                (new ReflectionClass($class))->getMethods(ReflectionMethod::IS_PUBLIC),
+            )));
+        };
 
-        $handled = array_map(
-            fn (ReflectionMethod $method): string => $method->getName(),
-            (new ReflectionClass(AuditedBuilder::class))->getMethods(ReflectionMethod::IS_PUBLIC),
-        );
-
-        $unhandled = [];
+        $surface = [];
 
         foreach ([Builder::class, Illuminate\Database\Eloquent\Builder::class] as $class) {
             foreach ((new ReflectionClass($class))->getMethods(ReflectionMethod::IS_PUBLIC) as $method) {
-                $name = $method->getName();
-
                 foreach ($writes as $prefix) {
-                    if (str_starts_with(strtolower($name), $prefix)
-                        && ! in_array($name, $handled, true)
-                        && ! in_array($name, $exempt, true)) {
-                        $unhandled[] = $name;
+                    if (str_starts_with(strtolower($method->getName()), $prefix)) {
+                        $surface[] = $method->getName();
                     }
                 }
             }
         }
 
-        expect(array_values(array_unique($unhandled)))->toBe([]);
+        $surface = array_values(array_unique($surface));
+
+        // Handled elsewhere, deliberately, each with its reason.
+        $exempt = [
+            // Routed to update() by SoftDeletingScope, where actionFor()
+            // names it — auditing here too would record it twice.
+            'delete', 'restore', 'restoreOrCreate', 'createOrRestore',
+            // Reads, not writes.
+            'onDelete', 'withTrashed', 'withoutTrashed', 'onlyTrashed',
+            // Funnel into save() or into the overrides above.
+            'updateOrCreate', 'insertOrIgnoreReturningIds', 'firstOrCreate',
+            'createOrFirst', 'incrementQuietly', 'decrementQuietly',
+            // firstOrCreate() then $instance->increment(): the first reaches
+            // insertGetId() and the second the increment() override, so both
+            // halves are already audited.
+            'incrementOrCreate',
+        ];
+
+        // Append-only means exactly that: INSERTS are the one thing it must
+        // allow, so the insert family is not a gap there.
+        $appendable = [
+            'insert', 'insertOrIgnore', 'insertOrIgnoreReturning', 'insertGetId',
+            'insertUsing', 'insertOrIgnoreUsing',
+            // Reach insert (allowed) or update (refused). Neither adds a path.
+            'updateOrCreate', 'incrementOrCreate', 'firstOrCreate', 'createOrFirst',
+            'onDelete', 'withTrashed', 'withoutTrashed', 'onlyTrashed',
+            'restoreOrCreate', 'createOrRestore', 'restore',
+            'insertOrIgnoreReturningIds', 'incrementQuietly', 'decrementQuietly',
+        ];
+
+        $unhandled = [
+            'entries' => array_values(array_diff($surface, $declaredBy(AuditedBuilder::class), $exempt)),
+            'audit log' => array_values(array_diff($surface, $declaredBy(AppendOnlyBuilder::class), $appendable)),
+        ];
+
+        expect($unhandled['entries'])->toBe([])
+            ->and($unhandled['audit log'])->toBe([]);
     });
 
     it('refuses the forwarded creators, and writes nothing doing it', function (): void {
@@ -600,6 +626,35 @@ describe('bulk entry writes are audited too', function (): void {
 
         expect(AuditLog::for($this->one)->where('action', 'entry.updated')->count())->toBe(1);
     });
+
+    it('keeps a joined update\'s own expressions intact', function (): void {
+        /*
+         * ⚠️ Capturing keys and then writing on a FRESH key-only builder
+         * dropped every join, so an assignment referencing the joined table
+         * compiled against an alias that was no longer there. The query is
+         * constrained now rather than replaced.
+         */
+        $alice = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Alice']);
+
+        DB::table('entry_relations')->insert([
+            'org_id' => $this->org->id, 'source_entry_id' => $this->one->getKey(),
+            'target_entry_id' => $alice->getKey(), 'ordering' => 1,
+        ]);
+
+        Entry::query()
+            ->join('entry_relations', 'entry_relations.source_entry_id', '=', 'entries.id')
+            ->update(['entries.status' => DB::raw('CASE WHEN entry_relations.ordering = 1 THEN \'published\' ELSE \'draft\' END')]);
+
+        expect($this->one->fresh()->status)->toBe('published')
+            ->and($this->two->fresh()->status)->not->toBe('published')
+            ->and(AuditLog::for($this->one)->where('action', 'entry.updated')->count())->toBe(1);
+    })->skip(
+        env('DB_CONNECTION', 'testing') !== 'mysql',
+        'MySQL only, and the reason is an engine difference rather than a Kitsune one: '
+        .'Laravel compiles a joined UPDATE as a subquery on SQLite and PostgreSQL, so their SET '
+        .'clause cannot reference the joined table at all. MySQL is where the expression this '
+        .'guards can exist, so MySQL is where it is asserted.'
+    );
 
     it('audits only the rows the predicate actually matched', function (): void {
         // Reading the keys BEFORE the write is what makes this possible: after
