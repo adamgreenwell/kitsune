@@ -469,9 +469,15 @@ describe('a promoted field writes to its own column, not one named after it', fu
         expect(Entry::whereSubjectIs($this->type, 'a-patient')->pluck('title')->all())->toBe(['A. Patient']);
     });
 
-    it('erases that column', function (): void {
-        expect($this->entry->redactField('public_slug'))->toBe(1)
-            ->and($this->entry->fresh()->slug)->toBeNull();
+    it('erases that column, and the revisions that snapshot it', function (): void {
+        // ⚠️ TWO rewrites, not one, and the second is the point of ADR-020
+        // primitive 3: creating the entry filed a revision that snapshots the
+        // promoted columns, so erasing only the live row would leave the value
+        // sitting in history. The count went from 1 to 2 the moment revisions
+        // existed — the correct answer changing, not a regression.
+        expect($this->entry->redactField('public_slug'))->toBe(2)
+            ->and($this->entry->fresh()->slug)->toBeNull()
+            ->and($this->entry->revisions()->pluck('slug')->filter()->all())->toBe([]);
     });
 });
 
