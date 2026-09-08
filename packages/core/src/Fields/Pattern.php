@@ -49,6 +49,59 @@ final class Pattern
     }
 
     /**
+     * Constructs PCRE has that ECMAScript does not, and why each matters.
+     *
+     * ⚠️ Needed because the pattern is PUBLISHED as well as enforced.
+     * `TextType::scalarApiSchema()` emits it verbatim as a JSON Schema
+     * `pattern`, and JSON Schema's dialect is ECMAScript — so a PCRE-only
+     * expression compiles here, enforces correctly server-side, and is invalid
+     * for a generated client. Invariant 14 says publish the constraint; a
+     * constraint the consumer cannot compile is not published, it is just
+     * advertised.
+     *
+     * ⚠️ A CONSERVATIVE heuristic, and it does not claim otherwise. Verifying
+     * ECMAScript compatibility properly needs an ECMAScript engine, which this
+     * project does not have and will not add for a settings check. So this
+     * catches the unambiguous markers and says so in the refusal.
+     *
+     * Possessive quantifiers (`a++`) are deliberately NOT here: distinguishing
+     * them from an escaped literal followed by a quantifier (`\++`) needs a real
+     * parse, and a false refusal of a valid pattern is a worse trade than a rare
+     * miss on a construct almost nobody writes by hand.
+     *
+     * @var array<string, string>
+     */
+    private const PCRE_ONLY = [
+        '(?P<' => 'PHP-style named groups — ECMAScript spells them (?<name>...)',
+        '(?P=' => 'PHP-style named backreferences',
+        '(?>' => 'atomic groups',
+        '(?(' => 'conditional subpatterns',
+        '(?#' => 'inline comments',
+        '(?R' => 'recursion',
+        '\\A' => 'the \\A anchor — ECMAScript has ^',
+        '\\z' => 'the \\z anchor — ECMAScript has $',
+        '\\Z' => 'the \\Z anchor',
+        '\\K' => '\\K',
+        '\\Q' => '\\Q...\\E literal quoting',
+        '[[:' => 'POSIX character classes',
+    ];
+
+    /**
+     * The first construct that will not travel to a JSON Schema consumer, or
+     * null when none is found.
+     */
+    public static function unpublishable(string $pattern): ?string
+    {
+        foreach (self::PCRE_ONLY as $marker => $reason) {
+            if (str_contains($pattern, $marker)) {
+                return $reason;
+            }
+        }
+
+        return null;
+    }
+
+    /**
      * Whether this pattern can actually be compiled and used.
      *
      * ⚠️ `@preg_match` against the EMPTY string, which is the cheapest way to

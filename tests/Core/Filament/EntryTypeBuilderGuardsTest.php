@@ -743,7 +743,7 @@ describe('a pattern that cannot compile is refused where it is authored', functi
             'pii_class' => 'none', 'cardinality' => 1,
             // Unbalanced group: PCRE cannot compile it.
             'settings' => ['maxLength' => 20, 'pattern' => '^[A-Z'],
-        ]))->toThrow(RuntimeException::class, 'not a regular expression that can be compiled');
+        ]))->toThrow(RuntimeException::class, 'That pattern cannot be compiled');
     });
 
     it('refuses a pattern that cannot be delimited at all', function (): void {
@@ -753,7 +753,7 @@ describe('a pattern that cannot compile is refused where it is authored', functi
             'org_id' => $this->org->id, 'handle' => 'code2', 'type' => 'text',
             'pii_class' => 'none', 'cardinality' => 1,
             'settings' => ['pattern' => 'a/b#c~d%e!f'],
-        ]))->toThrow(RuntimeException::class, 'not a regular expression that can be compiled');
+        ]))->toThrow(RuntimeException::class, 'That pattern cannot be compiled');
     });
 
     it('accepts a valid pattern, and an absent one', function (): void {
@@ -793,5 +793,197 @@ describe('a pattern that cannot compile is refused where it is authored', functi
             ->and(Pattern::delimit('^[a-z]+$'))->toBe('/^[a-z]+$/u')
             // The first delimiter the pattern does not itself contain.
             ->and(Pattern::delimit('a/b'))->toBe('#a/b#u');
+    });
+});
+
+describe('settings that contradict themselves are refused', function (): void {
+    /*
+     * ⚠️ The interesting constraints are not per-setting, which is why they live
+     * in `FieldType::validateSettings()` rather than in a descriptor key.
+     *
+     * A minimum above a maximum leaves NO value that can be stored —
+     * `NumberType::scalarValidationRules()` emits both bounds — and neither
+     * control is individually wrong, so no per-setting rule could see it. Same
+     * unusable outcome as an uncompilable pattern, reached by another route.
+     */
+    it('refuses a minimum above the maximum', function (): void {
+        expect(fn () => FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'price', 'type' => 'number',
+            'pii_class' => 'none', 'cardinality' => 1,
+            'settings' => ['format' => 'decimal', 'precision' => 12, 'scale' => 2, 'min' => 100, 'max' => 10],
+        ]))->toThrow(RuntimeException::class, 'no value could ever be stored');
+    });
+
+    it('accepts bounds that can both be satisfied, including equal ones', function (): void {
+        $range = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'price2', 'type' => 'number',
+            'pii_class' => 'none', 'cardinality' => 1,
+            'settings' => ['format' => 'decimal', 'precision' => 12, 'scale' => 2, 'min' => 1, 'max' => 100],
+        ]);
+        $exact = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'price3', 'type' => 'number',
+            'pii_class' => 'none', 'cardinality' => 1,
+            // A single permitted value is narrow, not unusable. The bar is "no
+            // value can satisfy this", not "this looks odd".
+            'settings' => ['format' => 'decimal', 'precision' => 12, 'scale' => 2, 'min' => 5, 'max' => 5],
+        ]);
+
+        expect($range->exists)->toBeTrue()->and($exact->exists)->toBeTrue();
+    });
+
+    it('ignores a bound that is absent or not a number', function (): void {
+        $open = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'price4', 'type' => 'number',
+            'pii_class' => 'none', 'cardinality' => 1,
+            'settings' => ['format' => 'decimal', 'precision' => 12, 'scale' => 2, 'min' => 1],
+        ]);
+
+        expect($open->exists)->toBeTrue();
+    });
+
+    it('refuses a pattern PCRE understands and JSON Schema does not', function (): void {
+        /*
+         * ⚠️ The pattern is PUBLISHED as well as enforced.
+         * `TextType::scalarApiSchema()` emits it verbatim as a JSON Schema
+         * `pattern`, and that dialect is ECMAScript — so a PCRE-only expression
+         * compiles here, enforces correctly server-side, and hands a generated
+         * client a constraint it cannot compile. Invariant 14: publish the
+         * constraint, and a constraint the consumer cannot read is not published.
+         */
+        expect(fn () => FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'ref', 'type' => 'text',
+            'pii_class' => 'none', 'cardinality' => 1,
+            'settings' => ['maxLength' => 30, 'pattern' => '(?P<code>[A-Z]{2})'],
+        ]))->toThrow(RuntimeException::class, 'the JSON Schema dialect does not');
+    });
+
+    it('accepts the ECMAScript spelling of a named group', function (): void {
+        // The point of naming constructs rather than rejecting anything unusual:
+        // `(?<name>...)` is valid in both dialects and must go through.
+        $named = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'ref2', 'type' => 'text',
+            'pii_class' => 'none', 'cardinality' => 1,
+            'settings' => ['maxLength' => 30, 'pattern' => '^(?<code>[A-Z]{2})-\d+$'],
+        ]);
+
+        expect($named->settings['pattern'])->toBe('^(?<code>[A-Z]{2})-\d+$');
+    });
+
+    it('names the constructs it will not publish', function (): void {
+        expect(Pattern::unpublishable('^[A-Z]+$'))->toBeNull()
+            ->and(Pattern::unpublishable('(?P<a>x)'))->toContain('PHP-style named groups')
+            ->and(Pattern::unpublishable('\Ax'))->toContain('\A anchor')
+            ->and(Pattern::unpublishable('(?>x)'))->toContain('atomic groups')
+            ->and(Pattern::unpublishable('[[:alpha:]]'))->toContain('POSIX');
+    });
+});
+
+describe('a field holding data cannot just be detached', function (): void {
+    /*
+     * ⚠️ Deleting a `Field` removed the configuration and left the DATA.
+     *
+     * Inline JSON keys and `entry_relations` rows survive against the shared
+     * FieldStorage row — and become unreachable, because `Entry::redactField()`
+     * resolves storage through `whereHas('fields')` on the entry type. Once the
+     * field row is gone the lookup finds nothing, falls through to the inline
+     * path, and reports 0 while a relation holding personal data survives. An
+     * erasure request would be answered successfully and truthfully report that
+     * it reached nothing (ADR-020).
+     */
+    $fieldOfType = function (string $handle, string $type): Field {
+        $storage = FieldStorage::create([
+            'org_id' => test()->org->id, 'handle' => $handle, 'type' => $type,
+            'pii_class' => 'personal', 'cardinality' => $type === 'relation' ? -1 : 1,
+        ]);
+
+        return Field::create([
+            'entry_type_id' => test()->entryType->id,
+            'field_storage_id' => $storage->id,
+            'label' => ucfirst($handle),
+        ]);
+    };
+
+    beforeEach(function (): void {
+        $this->entryType = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'record', 'name' => 'R', 'plural_name' => 'Rs',
+        ]);
+    });
+
+    it('refuses while an INLINE field holds a value', function () use ($fieldOfType): void {
+        $field = $fieldOfType('notes', 'text');
+
+        Entry::create([
+            'entry_type_id' => $this->entryType->id, 'title' => 'Has notes',
+            'values' => ['notes' => 'Jane Doe, 12 Elm St'],
+        ]);
+
+        expect(fn () => $field->delete())
+            ->toThrow(RuntimeException::class, 'still hold data for it');
+
+        expect(Field::query()->whereKey($field->getKey())->exists())->toBeTrue();
+    });
+
+    it('refuses while a RELATIONAL field holds links', function () use ($fieldOfType): void {
+        // ⚠️ The strategy that made this an erasure defect rather than a tidiness
+        // one: a relational field's data is rows, and they are what survives.
+        $field = $fieldOfType('patient', 'relation');
+
+        $source = Entry::create(['entry_type_id' => $this->entryType->id, 'title' => 'Visit']);
+        $target = Entry::create(['entry_type_id' => $this->entryType->id, 'title' => 'Alice']);
+        $source->related()->attach($target->id, ['field_storage_id' => $field->field_storage_id]);
+
+        expect(fn () => $field->delete())
+            ->toThrow(RuntimeException::class, 'still hold data for it');
+    });
+
+    it('refuses while a SOFT-DELETED entry holds a value', function () use ($fieldOfType): void {
+        // Trashed data still exists and erasure still has to reach it, so it is
+        // a reason to refuse.
+        $field = $fieldOfType('notes2', 'text');
+
+        $entry = Entry::create([
+            'entry_type_id' => $this->entryType->id, 'title' => 'Trashed',
+            'values' => ['notes2' => 'personal'],
+        ]);
+        $entry->delete();
+
+        expect(fn () => $field->delete())
+            ->toThrow(RuntimeException::class, 'still hold data for it');
+    });
+
+    it('ALLOWS removing a field nothing holds data for', function () use ($fieldOfType): void {
+        $field = $fieldOfType('unused', 'text');
+
+        Entry::create([
+            'entry_type_id' => $this->entryType->id, 'title' => 'Other data',
+            'values' => ['something_else' => 'x'],
+        ]);
+
+        $field->delete();
+
+        expect(Field::query()->whereKey($field->getKey())->exists())->toBeFalse();
+    });
+
+    it('ALLOWS it once the field has been erased', function () use ($fieldOfType): void {
+        // The message names this route, so it has to work: erase first, which is
+        // audited, then remove.
+        $field = $fieldOfType('notes3', 'text');
+
+        $entry = Entry::create([
+            'entry_type_id' => $this->entryType->id, 'title' => 'Erase me',
+            'values' => ['notes3' => 'Jane Doe'],
+        ]);
+
+        $entry->redactField('notes3');
+
+        // ⚠️ Erasure leaves the KEY present with a null value, which still counts
+        // as holding data — so it has to be removed outright before the field can
+        // go. Stated here because the difference matters to an operator following
+        // the message.
+        $entry->update(['values' => []]);
+
+        $field->delete();
+
+        expect(Field::query()->whereKey($field->getKey())->exists())->toBeFalse();
     });
 });
