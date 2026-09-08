@@ -145,4 +145,26 @@ class AppendOnlyBuilder extends Builder
     {
         throw new RuntimeException(self::APPEND_ONLY);
     }
+
+    /**
+     * ⚠️ PostgreSQL exposes this as a separate mutation, so neither builder
+     * saw it: `AuditLog::query()->updateFrom([...])` could rewrite the
+     * evidence through a join.
+     *
+     * @param  array<string, mixed>  $values
+     * @return int
+     */
+    public function updateFrom(array $values)
+    {
+        throw new RuntimeException(self::APPEND_ONLY);
+    }
+
+    /**
+     * @param  array<int, string>|string|null  $column
+     * @return bool|int
+     */
+    public function touch($column = null)
+    {
+        throw new RuntimeException(self::APPEND_ONLY);
+    }
 }

@@ -139,6 +139,83 @@ class AuditedBuilder extends Builder
     }
 
     /**
+     * @param  \Closure|\Illuminate\Database\Query\Builder|\Illuminate\Database\Eloquent\Builder<*>|string  $query
+     * @param  array<int, string>  $columns
+     * @return int
+     */
+    public function insertOrIgnoreUsing(array $columns, $query)
+    {
+        throw new RuntimeException(self::NO_BULK_CREATE);
+    }
+
+    /**
+     * @param  array<string, mixed>  $values
+     * @param  array<int, string>  $returning
+     * @param  array<int, string>|string|null  $uniqueBy
+     * @return array<int, mixed>
+     */
+    public function insertOrIgnoreReturning(array $values, array $returning = ['*'], array|string|null $uniqueBy = null)
+    {
+        throw new RuntimeException(self::NO_BULK_CREATE);
+    }
+
+    /**
+     * ⚠️ PostgreSQL-only, and refused rather than audited.
+     *
+     * It updates through a FROM clause, so the rows it touches are defined by
+     * a join this builder cannot reproduce — and auditing here works by
+     * running the write against the keys it captured, which would silently
+     * change what the statement did. Refusing is the honest option, and it is
+     * the same rule the insert paths follow: what cannot be audited is not
+     * allowed (ADR-020).
+     *
+     * @param  array<string, mixed>  $values
+     * @return int
+     */
+    public function updateFrom(array $values)
+    {
+        throw new RuntimeException(
+            'updateFrom() updates through a join this builder cannot reproduce, so the write '
+            .'could not be audited against the rows it actually touched (ADR-020). Update '
+            .'through a predicate on entries instead.'
+        );
+    }
+
+    /**
+     * ⚠️ Eloquent implements bulk touching as `toBase()->update(...)`, which
+     * goes straight past the override above. Every matching entry had its
+     * `updated_at` moved with no audit row.
+     *
+     * Routed through update() rather than duplicated, so it inherits the
+     * capture-then-write-by-keys behaviour and names the same action.
+     *
+     * @param  array<int, string>|string|null  $column
+     * @return bool|int
+     */
+    public function touch($column = null)
+    {
+        $time = $this->model->freshTimestamp();
+
+        if ($column !== null) {
+            $columns = [];
+
+            foreach ((array) $column as $name) {
+                $columns[$name] = $time;
+            }
+
+            return $this->update($columns);
+        }
+
+        $column = $this->model->getUpdatedAtColumn();
+
+        if (! $this->model->usesTimestamps() || $column === null) {
+            return false;
+        }
+
+        return $this->update([$column => $time]);
+    }
+
+    /**
      * ⚠️ Forwarded WHOLE to the query builder, so neither these overrides nor
      * the `created` event sees it. Depending on whether the predicate matches
      * it either creates or modifies an entry, and did so untraced either way.

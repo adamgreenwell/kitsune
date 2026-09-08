@@ -240,6 +240,14 @@ describe('the log is append-only, enforced', function (): void {
             ->toThrow(RuntimeException::class, 'append-only');
     });
 
+    it('refuses updateFrom and touch, which PostgreSQL and Eloquent add', function (): void {
+        $before = AuditLog::query()->count();
+
+        expect(fn () => AuditLog::query()->updateFrom(['action' => 'forged']))->toThrow(RuntimeException::class)
+            ->and(fn () => AuditLog::query()->touch())->toThrow(RuntimeException::class)
+            ->and(AuditLog::query()->count())->toBe($before);
+    });
+
     it('refuses the plural increments too', function (): void {
         $before = AuditLog::query()->count();
 
@@ -483,6 +491,37 @@ describe('bulk entry writes are audited too', function (): void {
         Entry::query()->whereKey($this->one->getKey())->incrementEach(['id' => 0]);
 
         expect(AuditLog::for($this->one)->where('action', 'entry.updated')->count())->toBe(1);
+    });
+
+    it('audits a bulk touch, which Eloquent implements as toBase()->update()', function (): void {
+        // ⚠️ `touch()` goes straight past the update() override, so every
+        // matching entry had its `updated_at` moved with no audit row.
+        Entry::query()->whereKey($this->one->getKey())->touch();
+
+        expect(AuditLog::for($this->one)->where('action', 'entry.updated')->count())->toBe(1)
+            ->and(AuditLog::for($this->two)->where('action', 'entry.updated')->count())->toBe(0);
+    });
+
+    /*
+     * ⚠️ Enumerated from Illuminate\Database\Query\Builder rather than from
+     * memory. Three review rounds each found one more forwarded mutator —
+     * forceDelete, truncate, then the plural increments — because I kept
+     * overriding the ones I could think of. This is the whole list.
+     */
+    it('leaves no forwarded mutator unguarded', function (): void {
+        $row = [
+            'org_id' => $this->org->id, 'site_id' => $this->site->id,
+            'entry_type_id' => $this->type->id, 'type_handle' => 'page',
+            'title' => 'Smuggled', 'status' => 'draft',
+        ];
+        $sub = Entry::query()->select('id')->toBase();
+
+        expect(fn () => Entry::query()->insertOrIgnoreUsing(['id'], $sub))->toThrow(RuntimeException::class)
+            ->and(fn () => Entry::query()->insertUsing(['id'], $sub))->toThrow(RuntimeException::class)
+            ->and(fn () => Entry::query()->insertOrIgnoreReturning([$row]))->toThrow(RuntimeException::class)
+            ->and(fn () => Entry::query()->updateFrom(['status' => 'published']))->toThrow(RuntimeException::class);
+
+        expect(Entry::query()->where('title', 'Smuggled')->exists())->toBeFalse();
     });
 
     it('refuses a truncate, which would leave nothing to say what had been there', function (): void {
