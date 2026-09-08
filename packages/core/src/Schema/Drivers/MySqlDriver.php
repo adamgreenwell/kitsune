@@ -78,14 +78,13 @@ final class MySqlDriver implements SchemaDriver
             // overflow the type it is protecting. Rounded, because the final
             // cast rounds and a value inside the raw range can overflow once
             // it has.
-            $guard .= sprintf(
-                ' AND ROUND(CAST(%s->>%s AS DECIMAL(65,10)), %d) BETWEEN %s AND %s',
-                $column,
-                $this->literal('$.'.$path),
-                $projection->scale,
-                $range['min'],
-                $range['max'],
-            );
+            $value = sprintf('CAST(%s->>%s AS DECIMAL(65,10))', $column, $this->literal('$.'.$path));
+
+            if (($scale = $projection->comparisonScale()) !== null) {
+                $value = sprintf('ROUND(%s, %d)', $value, $scale);
+            }
+
+            $guard .= sprintf(' AND %s BETWEEN %s AND %s', $value, $range['min'], $range['max']);
         }
 
         return sprintf('CASE WHEN %s THEN %s END', $guard, $value);

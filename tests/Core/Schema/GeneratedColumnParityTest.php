@@ -298,3 +298,32 @@ it('keeps a value that is inside the range once rounded', function (): void {
 
     expect(DB::table('parity_probe')->where('site_id', 1)->value('idx_price'))->not->toBeNull();
 });
+
+it('keeps an integer at the very top of its range', function (): void {
+    /*
+     * ⚠️ SQLite's round() returns a REAL, so round(9223372036854775807, 2)
+     * becomes 9.2233720368547758e+18 — ABOVE the bound it was being compared
+     * against. The guard rejected PHP_INT_MAX and an indexed integer field
+     * holding it disappeared from every query. Integers compare exactly now;
+     * only a decimal is rounded, because only a decimal is rounded by its
+     * cast.
+     */
+    DB::statement($this->driver->addGeneratedColumnSql(
+        'parity_probe', 'idx_n', 'values', 'n', new Projection(LogicalType::Integer),
+    ));
+
+    DB::table('parity_probe')->insert(['site_id' => 1, 'values' => json_encode(['n' => PHP_INT_MAX])]);
+
+    expect((int) DB::table('parity_probe')->where('site_id', 1)->value('idx_n'))->toBe(PHP_INT_MAX);
+});
+
+it('keeps an integer at the very BOTTOM of its range', function (): void {
+    // The asymmetric end, which a magnitude bound excluded outright.
+    DB::statement($this->driver->addGeneratedColumnSql(
+        'parity_probe', 'idx_n', 'values', 'n', new Projection(LogicalType::Integer),
+    ));
+
+    DB::table('parity_probe')->insert(['site_id' => 1, 'values' => json_encode(['n' => PHP_INT_MIN])]);
+
+    expect((int) DB::table('parity_probe')->where('site_id', 1)->value('idx_n'))->toBe(PHP_INT_MIN);
+});

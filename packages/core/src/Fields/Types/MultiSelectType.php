@@ -57,10 +57,22 @@ final class MultiSelectType extends BaseFieldType
         return (array) ($stored ?? []);
     }
 
-    /** Already an array, so it is not wrapped again. */
+    /**
+     * Already an array, so it is not wrapped again.
+     *
+     * ⚠️ The choices are PUBLISHED. Element validation accepts only the
+     * configured keys while this advertised every string as valid, so a
+     * client generated from the schema could not discover the options and
+     * would submit values the API then rejected.
+     */
     public function apiSchema(FieldConfig $config): array
     {
-        return ['type' => 'array', 'items' => ['type' => 'string']];
+        $keys = $this->optionKeys($config);
+
+        return [
+            'type' => 'array',
+            'items' => $keys === [] ? ['type' => 'string'] : ['type' => 'string', 'enum' => $keys],
+        ];
     }
 
     /** @return array<int, mixed> */
@@ -83,10 +95,26 @@ final class MultiSelectType extends BaseFieldType
      */
     public function elementValidationRules(FieldConfig $config): array
     {
+        $keys = $this->optionKeys($config);
+
+        return $keys === [] ? ['string'] : ['string', Rule::in($keys)];
+    }
+
+    /**
+     * The option keys, as the strings they are stored and compared as.
+     *
+     * ⚠️ PHP casts a numeric-string array key to an integer, so an option
+     * `"1"` arrives here as int 1 — published unstringified that is an enum
+     * no JSON string can satisfy. Same coercion as SelectType, same fix.
+     *
+     * @return list<string>
+     */
+    private function optionKeys(FieldConfig $config): array
+    {
         /** @var array<string, string> $options */
         $options = (array) ($config->setting('options', []) ?: []);
 
-        return $options === [] ? ['string'] : ['string', Rule::in(array_keys($options))];
+        return array_map(strval(...), array_keys($options));
     }
 
     /** @return array<string, mixed> */

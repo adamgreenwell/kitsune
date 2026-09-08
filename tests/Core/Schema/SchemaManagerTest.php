@@ -546,3 +546,244 @@ describe('settings that change the projection are shape, and lock with it', func
         expect(fn () => $storage->save())->not->toThrow(RuntimeException::class);
     });
 });
+
+describe('sync is safe for a field that projects to nothing', function (): void {
+    it('does not throw for a type with no generated column', function (string $type): void {
+        // ⚠️ dropIndex() starts by asking for the column NAME, which throws
+        // for these — so the documented "call sync() after saving" flow blew
+        // up on four ordinary field types and every caller would have had to
+        // special-case them.
+        $storage = storageFor("probe_{$type}", $type, ['org_id' => $this->orgA->id, 'is_indexed' => false]);
+
+        expect(fn () => $this->manager->sync($storage))->not->toThrow(RuntimeException::class);
+    })->with(['rich_text', 'json', 'relation', 'slug']);
+
+    it('still indexes a type that does project', function (): void {
+        $storage = storageFor('price', 'number', ['org_id' => $this->orgA->id, 'is_indexed' => true]);
+
+        $this->manager->sync($storage);
+
+        expect(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeTrue();
+    });
+});
+
+it('still REFUSES an index requested on a projection-less field', function (): void {
+    // ⚠️ The no-op added for the removal path must not swallow this. Returning
+    // early for every projection-less type left an `is_indexed = true` row
+    // looking synchronised, and reconcile() then choked on it for the whole
+    // table — one bad row poisoning the global repair command.
+    $storage = storageFor('body', 'rich_text', ['org_id' => $this->orgA->id, 'is_indexed' => true]);
+
+    expect(fn () => $this->manager->sync($storage))
+        ->toThrow(RuntimeException::class, 'not indexable');
+});
+
+describe('a moved projection takes its old column with it', function (): void {
+    it('drops the column a changed setting orphaned', function (): void {
+        // ⚠️ Adding the new column alone left the old one and its index
+        // behind — paying write overhead on every entry save and consuming
+        // the cap. At the cap, a capacity-NEUTRAL replacement failed outright.
+        $storage = storageFor('price', 'number', [
+            'org_id' => $this->orgA->id, 'is_indexed' => true, 'settings' => ['format' => 'decimal'],
+        ]);
+        $this->manager->sync($storage);
+
+        expect(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeTrue();
+
+        $storage->update(['settings' => ['format' => 'integer']]);
+        $this->manager->sync($storage);
+
+        expect(Schema::hasColumn('entries', 'idx_price__integer'))->toBeTrue()
+            ->and(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeFalse();
+    });
+
+    it('keeps the old column when ANOTHER row still projects that way', function (): void {
+        // Reference-counted like any other drop: one org moving must not take
+        // another org's column with it.
+        $mine = storageFor('price', 'number', ['org_id' => $this->orgA->id, 'is_indexed' => true]);
+        $theirs = storageFor('price', 'number', ['org_id' => $this->orgB->id, 'is_indexed' => true]);
+
+        $this->manager->sync($mine);
+        $this->manager->sync($theirs);
+
+        $mine->update(['settings' => ['format' => 'integer']]);
+        $this->manager->sync($mine);
+
+        expect(Schema::hasColumn('entries', 'idx_price__integer'))->toBeTrue()
+            ->and(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeTrue();
+    });
+
+    it('lets a capacity-neutral replacement fit at the cap', function (): void {
+        for ($i = 0; $i < SchemaManager::MAX_GENERATED_COLUMNS - 1; $i++) {
+            $this->manager->index(storageFor("filler_{$i}", 'number', ['org_id' => $this->orgA->id, 'is_indexed' => true]));
+        }
+
+        $moving = storageFor('price', 'number', ['org_id' => $this->orgA->id, 'is_indexed' => true]);
+        $this->manager->sync($moving);
+
+        // At the cap now. Changing the projection is net zero columns, and
+        // adding before dropping made it throw.
+        $moving->update(['settings' => ['format' => 'integer']]);
+
+        expect(fn () => $this->manager->sync($moving))->not->toThrow(RuntimeException::class);
+        expect(Schema::hasColumn('entries', 'idx_price__integer'))->toBeTrue();
+    });
+});
+
+describe('a capability flag that nothing reads is only a comment', function (): void {
+    /*
+     * ⚠️ `supportsCardinality()` was advisory. BaseFieldType branches on
+     * `cardinality !== 1` alone, so a type declaring no support for multiple
+     * values converted, validated and published as an array anyway once a
+     * storage row said so — a promoted `slug` could produce an array for a
+     * column that is scalar in the database.
+     */
+    it('refuses cardinality above one on a type that holds one value', function (): void {
+        expect(fn () => storageFor('nickname', 'slug', ['org_id' => $this->orgA->id, 'cardinality' => 3]))
+            ->toThrow(RuntimeException::class, 'cannot have cardinality 3');
+    });
+
+    it('refuses unlimited cardinality just the same', function (): void {
+        expect(fn () => storageFor('flag', 'boolean', ['org_id' => $this->orgA->id, 'cardinality' => -1]))
+            ->toThrow(RuntimeException::class);
+    });
+
+    it('still allows it on a type that does support it', function (): void {
+        expect(storageFor('tags', 'text', ['org_id' => $this->orgA->id, 'cardinality' => -1])->cardinality)
+            ->toBe(-1);
+    });
+
+    it('leaves an intrinsically multi-valued type at one', function (): void {
+        // multi_select stores an array at cardinality 1 and says so itself,
+        // so the guard must not read that as a contradiction.
+        expect(storageFor('picks', 'multi_select', ['org_id' => $this->orgA->id])->cardinality)->toBe(1);
+    });
+});
+
+describe('reconcile reports an invalid indexed row rather than skipping it', function (): void {
+    /*
+     * ⚠️ Catching RuntimeException around generatedColumnName() swallowed an
+     * UNKNOWN type as readily as a projection-less one. `--force` therefore
+     * skipped a genuinely invalid indexed row, could drop the column it used
+     * to have, and still reported the schema as synchronised — while the dry
+     * run threw on the very same row.
+     */
+    it('surfaces a row whose type no longer exists', function (): void {
+        $storage = storageFor('price', 'number', ['org_id' => $this->orgA->id, 'is_indexed' => true]);
+        $this->manager->sync($storage);
+
+        // Straight to the database: the model guards would refuse this, which
+        // is exactly why it represents drift rather than an ordinary save.
+        DB::table('field_storage')->where('id', $storage->id)->update(['type' => 'no_such_type']);
+
+        expect(fn () => $this->manager->reconcile())->toThrow(RuntimeException::class);
+        expect(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeTrue();
+    });
+
+    it('still skips a row whose type simply projects to nothing', function (): void {
+        // The one case that is not an error: it wants no column, so it
+        // contributes none and reconcile carries on.
+        storageFor('body', 'rich_text', ['org_id' => $this->orgA->id]);
+
+        expect(fn () => $this->manager->reconcile())->not->toThrow(RuntimeException::class);
+    });
+});
+
+describe('a renamed handle takes its old column with it', function (): void {
+    /*
+     * ⚠️ Reconciling by handle PREFIX assumed a row's handle never moves.
+     * Rename `price` to `cost` and the prefix is built from the NEW handle,
+     * so `idx_price__…` fell outside it and was never examined again — a slot
+     * against the cap and write overhead on every entry save, until someone
+     * happened to run a full reconcile.
+     */
+    it('drops the column the old handle owned', function (): void {
+        $storage = storageFor('price', 'number', ['org_id' => $this->orgA->id, 'is_indexed' => true]);
+        $this->manager->sync($storage);
+
+        expect(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeTrue();
+
+        $storage->update(['handle' => 'cost']);
+        $this->manager->sync($storage);
+
+        expect(Schema::hasColumn('entries', 'idx_cost__decimal12_2'))->toBeTrue()
+            ->and(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeFalse();
+    });
+
+    it('drops it when the row is renamed and un-indexed in one save', function (): void {
+        $storage = storageFor('price', 'number', ['org_id' => $this->orgA->id, 'is_indexed' => true]);
+        $this->manager->sync($storage);
+
+        $storage->update(['handle' => 'cost', 'is_indexed' => false]);
+        $this->manager->sync($storage);
+
+        expect(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeFalse()
+            ->and(Schema::hasColumn('entries', 'idx_cost__decimal12_2'))->toBeFalse();
+    });
+
+    it('keeps the old column when another org still uses that handle', function (): void {
+        $mine = storageFor('price', 'number', ['org_id' => $this->orgA->id, 'is_indexed' => true]);
+        $theirs = storageFor('price', 'number', ['org_id' => $this->orgB->id, 'is_indexed' => true]);
+
+        $this->manager->sync($mine);
+        $this->manager->sync($theirs);
+
+        $mine->update(['handle' => 'cost']);
+        $this->manager->sync($mine);
+
+        expect(Schema::hasColumn('entries', 'idx_cost__decimal12_2'))->toBeTrue()
+            ->and(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeTrue();
+    });
+
+    it('refuses the rename outright once entries hold data', function (): void {
+        // The orphaned COLUMN is the visible half. The handle is also the
+        // JSON key SchemaManager extracts on, so renaming a locked field
+        // leaves every stored value under the old key where nothing reads
+        // it — the field appears to empty itself, with no error to notice.
+        $storage = storageFor('price', 'number', ['org_id' => $this->orgA->id, 'is_locked' => true]);
+
+        expect(fn () => $storage->update(['handle' => 'cost']))
+            ->toThrow(RuntimeException::class, '[handle] cannot change');
+    });
+});
+
+describe('un-indexing cleans up whatever the row used to project to', function (): void {
+    it('drops the OLD column when the projection changed in the same save', function (): void {
+        // ⚠️ dropIndex() derives the NEW column name, which was never
+        // created — so a row saved with both `is_indexed = false` AND a
+        // projection-affecting change left the old column orphaned.
+        $storage = storageFor('price', 'number', ['org_id' => $this->orgA->id, 'is_indexed' => true]);
+        $this->manager->sync($storage);
+        expect(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeTrue();
+
+        $storage->update(['is_indexed' => false, 'settings' => ['format' => 'integer']]);
+        $this->manager->sync($storage);
+
+        expect(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeFalse()
+            ->and(Schema::hasColumn('entries', 'idx_price__integer'))->toBeFalse();
+    });
+
+    it('drops it when the type changed to one that projects to nothing', function (): void {
+        // This path returned without attempting any removal at all.
+        $storage = storageFor('body', 'text', ['org_id' => $this->orgA->id, 'is_indexed' => true]);
+        $this->manager->sync($storage);
+        expect(Schema::hasColumn('entries', 'idx_body__string255'))->toBeTrue();
+
+        $storage->update(['is_indexed' => false, 'type' => 'rich_text']);
+        $this->manager->sync($storage);
+
+        expect(Schema::hasColumn('entries', 'idx_body__string255'))->toBeFalse();
+    });
+
+    it('leaves a column another row still projects to', function (): void {
+        $mine = storageFor('price', 'number', ['org_id' => $this->orgA->id, 'is_indexed' => true]);
+        $theirs = storageFor('price', 'number', ['org_id' => $this->orgB->id, 'is_indexed' => true]);
+        $this->manager->sync($mine);
+        $this->manager->sync($theirs);
+
+        $mine->update(['is_indexed' => false]);
+        $this->manager->sync($mine);
+
+        expect(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeTrue();
+    });
+});

@@ -67,14 +67,13 @@ final class SqliteDriver implements SchemaDriver
         );
 
         if (($range = $projection->range()) !== null) {
-            $guard .= sprintf(
-                ' AND round(json_extract(%s, %s), %d) BETWEEN %s AND %s',
-                $column,
-                $key,
-                $projection->scale,
-                $range['min'],
-                $range['max'],
-            );
+            $value = sprintf('json_extract(%s, %s)', $column, $key);
+
+            if (($scale = $projection->comparisonScale()) !== null) {
+                $value = sprintf('round(%s, %d)', $value, $scale);
+            }
+
+            $guard .= sprintf(' AND %s BETWEEN %s AND %s', $value, $range['min'], $range['max']);
         }
 
         return sprintf(

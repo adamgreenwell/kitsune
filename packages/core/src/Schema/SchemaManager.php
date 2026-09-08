@@ -61,10 +61,105 @@ final class SchemaManager
         private readonly FieldTypeRegistry $registry,
     ) {}
 
-    /** Reconcile the database with what this field storage row now says. */
+    /**
+     * Reconcile the database with what this field storage row now says.
+     *
+     * ⚠️ A no-op for a field that projects to nothing. `rich_text`, `json`,
+     * `relation` and `slug` deliberately have no generated column, and
+     * `dropIndex()` starts by asking for the column NAME — which throws for
+     * them. So the documented "call sync() after saving" flow blew up on four
+     * perfectly ordinary field types, and every caller would have had to
+     * special-case them.
+     */
     public function sync(FieldStorage $storage): void
     {
-        $storage->is_indexed ? $this->index($storage) : $this->dropIndex($storage);
+        // ⚠️ Drop orphans FIRST, on both paths.
+        //
+        // At the cap, a capacity-NEUTRAL change — one column replaced by
+        // another — would otherwise fail guardCap() on a table that needs no
+        // net new column, and `reconcile()` drops first for the same reason.
+        //
+        // This also covers three cases a targeted drop kept missing: a row
+        // saved with BOTH `is_indexed = false` and a projection-affecting
+        // change derives the NEW column name, which was never created; a
+        // change to a projection-less type attempted no removal at all; and
+        // an unlocked indexed row that changes a projection-affecting setting
+        // leaves the column it used to project to behind.
+        $this->dropOrphanedColumns();
+
+        // ⚠️ NOT an early return for every projection-less type. That also
+        // swallowed the "not indexable" error for a row saved with
+        // `is_indexed = true`, leaving an invalid row looking synchronised —
+        // which `reconcile()` then choked on for the whole table. `index()`
+        // refuses it with the reason instead.
+        if ($storage->is_indexed) {
+            $this->index($storage);
+        }
+    }
+
+    /**
+     * Every column some indexed row still projects to.
+     *
+     * The single definition of "wanted", shared by sync() and reconcile().
+     *
+     * @return array<string, FieldStorage>
+     */
+    private function wantedColumns(): array
+    {
+        $wanted = [];
+
+        foreach (FieldStorage::query()->where('is_indexed', true)->get() as $storage) {
+            // ⚠️ Asks the registry directly rather than catching whatever
+            // generatedColumnName() throws. Catching RuntimeException swallowed
+            // an UNKNOWN type as readily as a projection-less one, so `--force`
+            // skipped a genuinely invalid indexed row, could drop the column it
+            // used to have, and still reported the schema as synchronised —
+            // while the dry run threw on the same row.
+            //
+            // A projection-less type is the one case that is not an error: it
+            // wants no column, so it contributes none.
+            if ($this->registry->get($storage->type)->projection(new FieldConfig($storage)) === null) {
+                continue;
+            }
+
+            $wanted[$storage->generatedColumnName()] = $storage;
+        }
+
+        return $wanted;
+    }
+
+    /**
+     * Drop every generated column that no indexed row projects to.
+     *
+     * ⚠️ Asks which columns are WANTED rather than reconciling a handle
+     * prefix. The prefix version assumed a row's handle never moves: rename
+     * `price` to `cost` and `idx_price__…` fell outside the prefix built from
+     * the new handle, so it was never examined again — a slot against the cap
+     * and write overhead on every entry save until a full reconcile.
+     *
+     * Safe to run per-row because sync() is documented to run AFTER the save,
+     * so this query already sees the row's new state.
+     *
+     * Reference-counted for free: a column two orgs project to is wanted by
+     * whichever row still points at it, so one row moving cannot take it.
+     *
+     * @return list<string>
+     */
+    private function dropOrphanedColumns(): array
+    {
+        $wanted = $this->wantedColumns();
+        $dropped = [];
+
+        foreach ($this->generatedColumns() as $column) {
+            if (isset($wanted[$column])) {
+                continue;
+            }
+
+            $this->dropColumn($column, $column.'_site_idx');
+            $dropped[] = $column;
+        }
+
+        return $dropped;
     }
 
     /**
@@ -78,29 +173,16 @@ final class SchemaManager
      */
     public function reconcile(): array
     {
-        $wanted = [];
-
-        foreach (FieldStorage::query()->where('is_indexed', true)->get() as $storage) {
-            $wanted[$storage->generatedColumnName()] = $storage;
-        }
-
         // ⚠️ Orphans go FIRST. With the table at the cap and drift consisting
         // of one orphan plus one wanted column, adding first hits guardCap()
         // and throws — so a capacity-NEUTRAL replacement could never be
         // repaired, and --force reported a failure the operator could not act
         // on. Dropping first makes the swap fit.
-        $dropped = [];
-
-        foreach ($this->generatedColumns() as $column) {
-            if (! isset($wanted[$column])) {
-                $this->dropColumn($column, $column.'_site_idx');
-                $dropped[] = $column;
-            }
-        }
+        $dropped = $this->dropOrphanedColumns();
 
         $added = [];
 
-        foreach ($wanted as $column => $storage) {
+        foreach ($this->wantedColumns() as $column => $storage) {
             if ($this->hasColumn($column) && $this->hasIndex($storage->generatedIndexName())) {
                 continue;
             }
@@ -214,14 +296,24 @@ final class SchemaManager
      */
     private function otherRowsWant(FieldStorage $storage): bool
     {
-        $column = $storage->generatedColumnName();
+        return $this->otherRowsWantColumn($storage, $storage->generatedColumnName());
+    }
 
+    private function otherRowsWantColumn(FieldStorage $storage, string $column): bool
+    {
         return FieldStorage::query()
             ->where('is_indexed', true)
             ->where('handle', $storage->handle)
             ->when($storage->exists, fn ($query) => $query->whereKeyNot($storage->getKey()))
             ->get()
-            ->contains(fn (FieldStorage $other): bool => $other->generatedColumnName() === $column);
+            ->contains(function (FieldStorage $other) use ($column): bool {
+                try {
+                    return $other->generatedColumnName() === $column;
+                } catch (RuntimeException) {
+                    // A row whose type projects to nothing wants no column.
+                    return false;
+                }
+            });
     }
 
     private function projectionFor(FieldStorage $storage): Projection
