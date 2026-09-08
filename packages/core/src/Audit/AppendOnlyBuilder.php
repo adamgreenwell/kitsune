@@ -194,7 +194,11 @@ class AppendOnlyBuilder extends Builder
      */
     public function insertOrIgnore(array $values)
     {
-        $this->guardScopeKeys($values);
+        // ⚠️ A LIST of rows, like `insert()`. Passing the outer array straight
+        // to the guard presented no top-level `org_id`, so every row inside it
+        // went unchecked — the same fix as `insert()`, and I made the same
+        // mistake one method along.
+        $this->guardEachRow($values);
 
         return parent::insertOrIgnore($values);
     }
@@ -207,7 +211,7 @@ class AppendOnlyBuilder extends Builder
      */
     public function insertOrIgnoreReturning(array $values, array $returning = ['*'], array|string|null $uniqueBy = null)
     {
-        $this->guardScopeKeys($values);
+        $this->guardEachRow($values);
 
         return parent::insertOrIgnoreReturning($values, $returning, $uniqueBy);
     }
@@ -246,13 +250,7 @@ class AppendOnlyBuilder extends Builder
      */
     public function insert(array $values)
     {
-        $rows = array_is_list($values) ? $values : [$values];
-
-        foreach ($rows as $row) {
-            if (is_array($row)) {
-                $this->guardScopeKeys($row);
-            }
-        }
+        $this->guardEachRow($values);
 
         return parent::insert($values);
     }
@@ -274,6 +272,25 @@ class AppendOnlyBuilder extends Builder
      *
      * Silent with no context, matching EnforcesScope: console commands,
      * migrations and the installer legitimately run without one.
+     *
+     * @param  array<string, mixed>  $values
+     */
+    /**
+     * Validate every row, whether one was passed or a list of them.
+     *
+     * @param  array<int|string, mixed>  $values
+     */
+    private function guardEachRow(array $values): void
+    {
+        foreach (array_is_list($values) ? $values : [$values] as $row) {
+            if (is_array($row)) {
+                $this->guardScopeKeys($row);
+            }
+        }
+    }
+
+    /**
+     * A row this scope writes has to belong to this scope.
      *
      * @param  array<string, mixed>  $values
      */

@@ -127,6 +127,54 @@ class AuditedBuilder extends Builder
      *
      * @param  array<string, mixed>  $values
      */
+    /**
+     * ⚠️ Arithmetic on a scope column is refused outright, never compared.
+     *
+     * The scope-key guard reads a value; an increment supplies an AMOUNT. So
+     * `increment('org_id', 1)` with the current org 1 compared 1 against 1 and
+     * PASSED — then added 1, moving the row to org 2. The guard was reading the
+     * delta as though it were the destination.
+     *
+     * There is no amount that is safe to add to a scope key, so none is
+     * allowed.
+     *
+     * @param  array<string, mixed>  $values
+     */
+    private function refuseScopeArithmetic(array $values): void
+    {
+        if (ScopeWrites::suspended()) {
+            return;
+        }
+
+        foreach (array_keys($values) as $column) {
+            $bare = $this->bareColumn((string) $column);
+
+            if ($bare === 'org_id' || $bare === 'site_id') {
+                throw new RuntimeException(sprintf(
+                    'Refusing to increment or decrement [%s]: it is a scope key, and no amount added '
+                    .'to one lands somewhere this context can vouch for (ADR-021). Set the value '
+                    .'through a save if the move is deliberate.',
+                    $bare,
+                ));
+            }
+        }
+    }
+
+    /** Strip table qualification and quoting, so `entries`.`org_id` is `org_id`. */
+    private function bareColumn(string $column): string
+    {
+        $bare = str_contains($column, '.')
+            ? substr($column, (int) strrpos($column, '.') + 1)
+            : $column;
+
+        return trim($bare, '`"[]');
+    }
+
+    /**
+     * A row this scope writes has to belong to this scope.
+     *
+     * @param  array<string, mixed>  $values
+     */
     private function guardScopeKeys(array $values): void
     {
         // ⚠️ The escape hatch stands this down too.
@@ -361,7 +409,7 @@ class AuditedBuilder extends Builder
      */
     public function increment($column, $amount = 1, array $extra = [])
     {
-        $this->guardScopeKeys([(string) $column => $amount, ...$extra]);
+        $this->refuseScopeArithmetic([(string) $column => $amount, ...$extra]);
 
         return $this->auditing('updated', fn () => parent::increment($column, $amount, $extra));
     }
@@ -372,7 +420,7 @@ class AuditedBuilder extends Builder
      */
     public function decrement($column, $amount = 1, array $extra = [])
     {
-        $this->guardScopeKeys([(string) $column => $amount, ...$extra]);
+        $this->refuseScopeArithmetic([(string) $column => $amount, ...$extra]);
 
         return $this->auditing('updated', fn () => parent::decrement($column, $amount, $extra));
     }
@@ -388,8 +436,7 @@ class AuditedBuilder extends Builder
      */
     public function incrementEach(array $columns, array $extra = [])
     {
-        $this->guardScopeKeys($columns);
-        $this->guardScopeKeys($extra);
+        $this->refuseScopeArithmetic([...$columns, ...$extra]);
 
         return $this->auditing('updated', fn () => parent::incrementEach($columns, $extra));
     }
@@ -400,8 +447,7 @@ class AuditedBuilder extends Builder
      */
     public function decrementEach(array $columns, array $extra = [])
     {
-        $this->guardScopeKeys($columns);
-        $this->guardScopeKeys($extra);
+        $this->refuseScopeArithmetic([...$columns, ...$extra]);
 
         return $this->auditing('updated', fn () => parent::decrementEach($columns, $extra));
     }

@@ -168,12 +168,13 @@ trait EnforcesScope
             throw new RuntimeException(sprintf(
                 'Refusing to write %s with [%s] = %s when no %s context is established. Nothing '
                 .'here can say the value is yours, and a scope key nobody vouched for is how a row '
-                .'ends up visible in another tenant (ADR-021). Use withoutScopeBecause() if this is '
+                .'ends up visible to another %s (ADR-021). Use withoutScopeBecause() if this is '
                 .'deliberate.',
                 static::class,
                 $column,
                 (string) $value,
-                str_replace('_id', '', $column),
+                $scope = str_replace('_id', '', $column),
+                $scope,
             ));
         }
 

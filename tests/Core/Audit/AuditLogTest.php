@@ -326,6 +326,19 @@ describe('a trail an outsider can append to is worse than no trail', function ()
         expect(AuditLog::withoutGlobalScopes()->where('action', 'forged.bulk')->exists())->toBeFalse();
     });
 
+    it('validates every ROW of a bulk insertOrIgnore, not the outer array', function (): void {
+        // ⚠️ A list of rows presents no top-level `org_id`, so passing the outer
+        // array to the guard left every row inside it unchecked — the same fix
+        // as `insert()`, missed one method along.
+        $rival = Org::create(['name' => 'I', 'slug' => 'ignore-rival']);
+
+        expect(fn () => AuditLog::query()->insertOrIgnore([[
+            'org_id' => $rival->id, 'action' => 'forged.ignore', 'created_at' => now(),
+        ]]))->toThrow(RuntimeException::class);
+
+        expect(AuditLog::withoutGlobalScopes()->where('action', 'forged.ignore')->exists())->toBeFalse();
+    });
+
     it('still appends to its own trail', function (): void {
         expect(fn () => AuditLog::create([
             'org_id' => $this->org->id, 'action' => 'legitimate.action', 'created_at' => now(),
@@ -889,6 +902,21 @@ describe('bulk entry writes are audited too', function (): void {
 
         expect(fn () => Entry::query()->whereKey($this->one->getKey())->update(['entries.org_id' => $rival->id]))
             ->toThrow(RuntimeException::class, 'outside the current scope');
+
+        expect($this->one->fresh()->org_id)->toBe($this->org->id);
+    });
+
+    it('refuses ARITHMETIC on a scope key, which the value check waved through', function (): void {
+        /*
+         * ⚠️ The scope-key guard reads a VALUE; an increment supplies an
+         * AMOUNT. So `increment('org_id', 1)` with the current org 1 compared 1
+         * against 1 and PASSED — then added 1, moving the row to org 2. The
+         * guard was reading the delta as though it were the destination.
+         */
+        expect(fn () => Entry::query()->whereKey($this->one->getKey())->increment('org_id'))
+            ->toThrow(RuntimeException::class, 'it is a scope key')
+            ->and(fn () => Entry::query()->decrement('site_id'))->toThrow(RuntimeException::class)
+            ->and(fn () => Entry::query()->incrementEach(['org_id' => 1]))->toThrow(RuntimeException::class);
 
         expect($this->one->fresh()->org_id)->toBe($this->org->id);
     });
