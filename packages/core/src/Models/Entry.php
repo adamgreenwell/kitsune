@@ -19,6 +19,7 @@ use Illuminate\Support\Collection;
 use Kitsune\Core\Audit\AuditedBuilder;
 use Kitsune\Core\Fields\StorageStrategy;
 use Kitsune\Core\Relations\GuardedBelongsToMany;
+use Kitsune\Core\Schema\RevisionWrites;
 use Kitsune\Core\Tenancy\Attributes\SiteScoped;
 use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
 use Kitsune\Core\Tenancy\Contracts\RequiresModelSave;
@@ -61,6 +62,18 @@ class Entry extends Model implements RequiresModelSave
      * database declares NOT NULL.
      */
     protected $attributes = ['status' => 'draft'];
+
+    /**
+     * The columns whose change constitutes a new version.
+     *
+     * ⚠️ One definition, because there are now TWO recorders — the model
+     * events and the builder — and a versioned surface defined twice drifts.
+     * `EntryRevision::SNAPSHOT_ATTRIBUTES` says what a revision stores; this
+     * says what makes one, and `values` is in the second list only.
+     *
+     * @var list<string>
+     */
+    public const VERSIONED_COLUMNS = [...EntryRevision::SNAPSHOT_ATTRIBUTES, 'values'];
 
     protected $guarded = [];
 
@@ -174,7 +187,7 @@ class Entry extends Model implements RequiresModelSave
         // later save on a freshly created entry recorded another revision —
         // including saves that changed nothing versioned at all.
         static::created(function (self $entry): void {
-            if ($entry->recordsRevisions) {
+            if (! RevisionWrites::suspended()) {
                 $entry->recordRevision();
             }
         });
@@ -182,7 +195,7 @@ class Entry extends Model implements RequiresModelSave
         static::updated(function (self $entry): void {
             // Only the versioned surface. Touching `updated_at` or restamping
             // `type_handle` is not a new version of the content.
-            if ($entry->recordsRevisions && $entry->hasVersionedChanges()) {
+            if (! RevisionWrites::suspended() && $entry->hasVersionedChanges()) {
                 $entry->recordRevision();
             }
         });
@@ -275,8 +288,46 @@ class Entry extends Model implements RequiresModelSave
     /** Whether this save changed anything a reader would call a new version. */
     private function hasVersionedChanges(): bool
     {
-        foreach ([...EntryRevision::SNAPSHOT_ATTRIBUTES, 'values'] as $attribute) {
+        foreach (self::VERSIONED_COLUMNS as $attribute) {
             if ($this->wasChanged($attribute)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Record a revision for a write that dispatched no model events.
+     *
+     * ⚠️ Bulk builder writes reach neither `created` nor `updated`, and
+     * `Entry::query()->update(['status' => 'published'])` is a write this
+     * project deliberately ALLOWS and audits (see `AuditLogTest`). So a bulk
+     * publish moved a versioned column with no version recorded: history had a
+     * gap, and the newest revision no longer described the entry — which makes
+     * "restore the latest version" silently revert the bulk change.
+     *
+     * Recorded rather than refused, to match how the same seam is treated for
+     * auditing: the rows already exist and can be named, so there is nothing to
+     * fail closed about. `RevisionWrites::suspend()` is the reviewable opt-out.
+     *
+     * `$before` is the raw pre-write row, so the comparison is raw-to-raw and
+     * cannot go wrong on a cast — a `values` array compared against its own
+     * JSON encoding would differ on every write.
+     *
+     * @param  array<string, mixed>  $before
+     * @param  array<string, mixed>  $after
+     */
+    public function recordRevisionForEventlessWrite(array $before, array $after): bool
+    {
+        if (RevisionWrites::suspended()) {
+            return false;
+        }
+
+        foreach (self::VERSIONED_COLUMNS as $column) {
+            if (($before[$column] ?? null) !== ($after[$column] ?? null)) {
+                $this->recordRevision();
+
                 return true;
             }
         }
@@ -569,8 +620,14 @@ class Entry extends Model implements RequiresModelSave
             // Revisions snapshot the promoted columns too, so the sweep has to
             // reach them there as well — by the same column name, for the same
             // reason.
+            //
+            // ⚠️ `redactColumn`, stated rather than inferred. This dispatched
+            // on strategy correctly and then called a method that decided
+            // between column and JSON key by testing the name against the
+            // snapshot list — so an INLINE field handled `status` was erased as
+            // though it were promoted. See EntryRevision::redactColumn().
             foreach ($this->revisions()->get() as $revision) {
-                $rewritten += $revision->redact($column, $replacement) ? 1 : 0;
+                $rewritten += $revision->redactColumn($column, $replacement) ? 1 : 0;
             }
 
             return $rewritten;
@@ -589,8 +646,9 @@ class Entry extends Model implements RequiresModelSave
             $rewritten++;
         }
 
+        // The handle, into `values`, whatever the handle happens to be called.
         foreach ($this->revisions()->get() as $revision) {
-            $rewritten += $revision->redact($handle, $replacement) ? 1 : 0;
+            $rewritten += $revision->redactValue($handle, $replacement) ? 1 : 0;
         }
 
         return $rewritten;
@@ -614,16 +672,6 @@ class Entry extends Model implements RequiresModelSave
      * Diffs remain the better fix and would raise this number, not remove it.
      */
     public const KEEP_REVISIONS = 50;
-
-    /**
-     * Whether saving records a revision, per entry rather than globally.
-     *
-     * `withoutRevisions()` is the seam for work that MUST NOT appear as an
-     * authored change — a restore writing the state it just read back, and
-     * the second half of an erasure, which would otherwise file the redacted
-     * values as a new revision every time it ran.
-     */
-    protected bool $recordsRevisions = true;
 
     /**
      * Every saved version, newest first.
@@ -659,13 +707,16 @@ class Entry extends Model implements RequiresModelSave
     /** Run a save that leaves no revision behind. */
     public function withoutRevisions(callable $work): mixed
     {
-        $this->recordsRevisions = false;
-
-        try {
-            return $work($this);
-        } finally {
-            $this->recordsRevisions = true;
-        }
+        // ⚠️ Delegates to a SHARED flag rather than holding it on the instance.
+        //
+        // An instance property was right while `created` and `updated` were the
+        // only recorders. Recording now also happens in the builder, which has
+        // no instance to read — so an instance-private flag would stand down one
+        // recorder and not the other, exactly as `withoutScopeBecause()` once
+        // did before `ScopeWrites` existed. Erasure depends on this covering
+        // both: redacting inside `withoutRevisions()` is what stops the redacted
+        // state being filed as a new version of the history being cleared.
+        return RevisionWrites::suspend(fn (): mixed => $work($this));
     }
 
     /** @return HasMany<EntryRevision, $this> */

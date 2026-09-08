@@ -13,6 +13,7 @@ namespace Kitsune\Core\Models;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Kitsune\Core\Tenancy\Attributes\Unscoped;
+use RuntimeException;
 
 /**
  * Field-level redactable, never an immutable blob (ADR-020).
@@ -56,29 +57,66 @@ class EntryRevision extends Model
     }
 
     /**
-     * Replace a value in place rather than deleting the record.
+     * Erase a PROMOTED column on this revision.
+     *
+     * ⚠️ Separate from `redactValue()` on purpose, and it used to be one
+     * method that guessed which it was by testing the key against
+     * `SNAPSHOT_ATTRIBUTES`.
+     *
+     * That guess was unsound, because nothing reserves those names for
+     * promoted fields: `FieldStorage::guardHandle()` checks length and
+     * snake_case and no more, so an INLINE field may legitimately be handled
+     * `status`, `title`, `slug` or `published_at`. Erasing one then wrote NULL
+     * into the revision's promoted column instead of its `values` key — and on
+     * `status`, which is NOT NULL, the write threw. The live entry had already
+     * been erased by that point, so the result was an erasure that cleared the
+     * current row, left every revision holding the personal data, and raised a
+     * QueryException instead of returning a count. Retrying threw in the same
+     * place, so the history could never be erased through this path at all.
+     *
+     * `Entry::redactStorage()` already knows the storage strategy; it dispatches
+     * on it correctly and then handed a bare string to a method that guessed
+     * again. The caller states the intent now, and `SNAPSHOT_ATTRIBUTES` is
+     * back to naming what a revision snapshots rather than doubling as an
+     * oracle for which strategy a field uses.
      *
      * Returns whether it changed anything. An erasure sweep that reports
      * success without saying how many rows it reached cannot be distinguished
      * from one that silently matched nothing — see `Entry::redactField()`.
-     *
-     * Handles a promoted column as well as a key in `values`: a `slug` field
-     * lives in its own column here too, and sweeping only the JSON left it
-     * behind while reporting success.
      */
-    public function redact(string $key, mixed $replacement = null): bool
+    public function redactColumn(string $column, mixed $replacement = null): bool
     {
-        if (in_array($key, self::SNAPSHOT_ATTRIBUTES, true)) {
-            if ($this->getAttribute($key) === $replacement) {
-                return false;
-            }
-
-            $this->setAttribute($key, $replacement);
-            $this->save();
-
-            return true;
+        // Fail closed on a column a revision does not snapshot: Eloquent would
+        // happily set an unknown attribute and then fail at the database, or
+        // worse, succeed against a column erasure has no business writing.
+        if (! in_array($column, self::SNAPSHOT_ATTRIBUTES, true)) {
+            throw new RuntimeException(sprintf(
+                'A revision does not snapshot [%s], so there is no promoted column here to erase. '
+                .'Snapshotted columns are: %s. If this is an inline field, use redactValue().',
+                $column,
+                implode(', ', self::SNAPSHOT_ATTRIBUTES),
+            ));
         }
 
+        if ($this->getAttribute($column) === $replacement) {
+            return false;
+        }
+
+        $this->setAttribute($column, $replacement);
+        $this->save();
+
+        return true;
+    }
+
+    /**
+     * Erase an INLINE field's key inside this revision's `values`.
+     *
+     * Never touches a column, however the key is spelled — see the warning on
+     * `redactColumn()` for what happened when one method decided between them
+     * by inspecting the name.
+     */
+    public function redactValue(string $key, mixed $replacement = null): bool
+    {
         $values = $this->values ?? [];
 
         if (! array_key_exists($key, $values)) {

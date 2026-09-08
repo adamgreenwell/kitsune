@@ -195,7 +195,7 @@ describe('revisions are redactable, not immutable (ADR-020)', function (): void 
             'values' => ['name' => 'Alex Doe', 'city' => 'Berlin'],
         ]);
 
-        $revision->redact('name');
+        $revision->redactValue('name');
 
         // Compared order-insensitively on purpose: MySQL does not preserve
         // JSON object key order, while PostgreSQL and SQLite do. Nothing in
