@@ -177,6 +177,41 @@ test.describe('the admin renders right-to-left (ADR-018)', () => {
         expect(boxes['.fi-sidebar']).not.toBeNull();
         expect(boxes['.fi-sidebar'].left).toBeGreaterThanOrEqual(clientWidth);
     });
+
+    test('has no critical or serious WCAG violations at a mobile width under RTL', async ({ page }) => {
+        // ⚠️ This scan exists because the inventory RECORDED a mobile result
+        // the committed suite could not reproduce.
+        //
+        // It was measured — in the throwaway probe that preceded this file —
+        // and the probe was then replaced by the spec above, which sets a mobile
+        // viewport and never runs axe. So `accessibility-inventory.md` cited a
+        // number no listed command produced. Caught in review, and it is
+        // invariant 15 pointed the other way: a measurement nobody can re-run is
+        // the same liability as a claim nobody measured.
+        //
+        // It is a separate scan rather than a wider loop because the mobile
+        // layout is a DIFFERENT layout: the sidebar becomes a drawer and the
+        // topbar gains a trigger, so it has its own focus order and its own
+        // touch-target sizes for axe to judge.
+        await page.setViewportSize({ width: 390, height: 844 });
+        await page.goto(`/admin/${SITE}/c/article`);
+
+        const results = await new AxeBuilder({ page }).withTags(TAGS).analyze();
+
+        if (results.violations.length > 0) {
+            console.log(`\nmobile RTL — ${results.violations.length} violation(s) at all levels:`);
+            for (const v of results.violations) {
+                console.log(`  [${v.impact}] ${v.id}: ${v.help}`);
+                console.log(`    ${v.nodes.length} node(s), e.g. ${v.nodes[0]?.target?.join(' ')}`);
+            }
+        }
+
+        const blocking = results.violations.filter(
+            (v) => v.impact === 'critical' || v.impact === 'serious',
+        );
+
+        expect(blocking).toEqual([]);
+    });
 });
 
 test.describe('Kitsune\'s own output carries a direction', () => {

@@ -46,6 +46,8 @@ That will change. Every custom Filament component, every published view and ever
 
 **Result: zero violations at any impact level, on every page shape, in both directions**, plus zero at a 390px mobile viewport under RTL.
 
+The mobile figure has its own scan (`rtl.spec.js`, "no critical or serious WCAG violations at a mobile width under RTL") because the mobile layout is a *different* layout — the sidebar becomes a drawer and the topbar gains a trigger, so it has its own focus order and its own touch-target sizes. ⚠️ It did not, at first: the number was measured in a throwaway probe, the probe was replaced by a spec that sets a mobile viewport and never runs axe, and this document cited a result no listed command reproduced. Caught in review. **A measurement nobody can re-run is the same liability as a claim nobody measured** — invariant 15 pointed the other way round.
+
 That is a real result and it is a *narrow* one. Axe evaluates machine-detectable rules: contrast ratios, label associations, ARIA validity, landmark structure, document language. It cannot evaluate whether a control is *understandable*, whether focus order is *sensible*, whether an error message says what to do, or whether the entry editor can be operated by someone who cannot see it. A green axe run means no detectable failures, not conformance.
 
 ### Inherited (verified)
@@ -147,7 +149,7 @@ Mirrored geometry is not the same as comprehensible reading order. This folds in
 | Job | Covers |
 |---|---|
 | `e2e/accessibility.spec.js` | Axe WCAG 2.1 A/AA on five page shapes, LTR; document language; logical-vs-physical CSS ratio as a regression guard |
-| `e2e/rtl.spec.js` (`admin-rtl` project) | `dir`/`lang`, axe under RTL, no overflow, **the mirror assertion**, mobile drawer side, and Kitsune's own public page |
+| `e2e/rtl.spec.js` (`admin-rtl` project) | `dir`/`lang`, axe under RTL on five page shapes **and again at 390px**, no overflow, **the mirror assertion**, mobile drawer side, and Kitsune's own public page |
 | `tests/Core/TextDirectionTest.php` | `Kitsune::textDirection()` across the six RTL languages, LTR languages, `ar_EG`/`ar-EG`/`AR` subtag forms, and the unknown-locale fallback |
 
 The RTL project needs a second server, which `playwright.config.js` starts itself — so CI needs no orchestration beyond what the browser job already does, and invariant 11 is untouched: none of this reaches the bare-clone Pest suite except the direction unit test, which needs nothing.
