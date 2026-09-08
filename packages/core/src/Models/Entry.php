@@ -67,6 +67,72 @@ class Entry extends Model
                     ->value('handle') ?? $entry->type_handle;
             }
         });
+
+        // ⚠️ The lock has to be SET by something, and nothing was setting it.
+        //
+        // ADR-006 says storage locks the moment data exists, and FieldStorage
+        // has carried the guard since the first commit — but `is_locked`
+        // defaulted to false and only tests ever wrote it. So every field in
+        // every install was unlocked while holding content, and the guard
+        // that refuses a decimal-to-integer change or a narrowed text field
+        // was reachable only by a caller who had remembered to set the flag
+        // by hand. A lock nobody arms is a comment.
+        static::saved(fn (self $entry) => $entry->lockStorageHoldingData());
+    }
+
+    /**
+     * Lock every storage row this entry now holds data for.
+     *
+     * Cheap once it has done its work: the query returns nothing as soon as a
+     * type's fields are locked, which is the steady state. Written in bulk so
+     * it does not re-enter FieldStorage's own guards, which have nothing to
+     * check here — `is_locked` is not a shape attribute.
+     *
+     * ⚠️ All THREE strategies, not just inline. A promoted field's data is a
+     * real column and a relational field's is rows in `entry_relations`, so
+     * checking `values` alone would have left a `slug` or a `person` field
+     * unlocked forever while holding content — the same emptiness the lock
+     * had before anything set it, narrowed rather than fixed.
+     */
+    private function lockStorageHoldingData(): void
+    {
+        $candidates = FieldStorage::query()
+            ->where('is_locked', false)
+            ->whereHas('fields', fn (Builder $query) => $query->where('entry_type_id', $this->entry_type_id))
+            ->get();
+
+        if ($candidates->isEmpty()) {
+            return;
+        }
+
+        $values = $this->values ?? [];
+
+        $holding = $candidates->filter(function (FieldStorage $storage) use ($values): bool {
+            return match ($storage->strategy()) {
+                StorageStrategy::Promoted => $this->hasValueFor((string) $storage->promotedColumn()),
+                StorageStrategy::Relational => $this->related()
+                    ->wherePivot('field_storage_id', $storage->getKey())
+                    ->exists(),
+                StorageStrategy::Inline => $this->hasValueFor(null, $values[$storage->handle] ?? null),
+            };
+        });
+
+        if ($holding->isEmpty()) {
+            return;
+        }
+
+        // In bulk, so this does not re-enter FieldStorage's own guards —
+        // which have nothing to check here, `is_locked` not being a shape
+        // attribute.
+        FieldStorage::query()->whereKey($holding->modelKeys())->update(['is_locked' => true]);
+    }
+
+    /** An empty string or an empty array is not data any more than null is. */
+    private function hasValueFor(?string $column, mixed $value = null): bool
+    {
+        $value = $column !== null ? $this->getAttribute($column) : $value;
+
+        return $value !== null && $value !== '' && $value !== [];
     }
 
     /**

@@ -99,7 +99,7 @@ final class SlugType extends BaseFieldType
                 if ($typeId !== null) {
                     $query->where('entry_type_id', $typeId);
                 }
-            }),
+            }, fn (mixed $value): mixed => $this->castToStorage($value, $config)),
         ];
     }
 }

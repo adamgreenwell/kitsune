@@ -98,6 +98,29 @@ describe('slug uniqueness has to exclude the entry being edited', function (): v
             ->toBeTrue();
     });
 
+    /*
+     * ⚠️ The rule checked the SUBMITTED value while the database holds the
+     * NORMALISED one. With `hello-world` taken, submitting `Hello World`
+     * passed uniqueness and then violated the unique index — a 500 where the
+     * user should have seen a validation message. Same reason soft-deleted
+     * rows are included in the check: it has to match what the database will
+     * actually enforce.
+     */
+    it('rejects input that normalises onto a slug already taken', function (): void {
+        $type = app(FieldTypeRegistry::class)->get('slug');
+
+        expect(Validator::make(['f' => 'About'], ['f' => $type->validationRules(configFor('slug'))])->fails())
+            ->toBeTrue();
+    });
+
+    it('still accepts input that normalises onto the entry\'s own slug', function (): void {
+        $type = app(FieldTypeRegistry::class)->get('slug');
+        $config = configFor('slug')->for($this->entry);
+
+        expect(Validator::make(['f' => 'About'], ['f' => $type->validationRules($config)])->fails())
+            ->toBeFalse();
+    });
+
     it('still rejects a taken slug when there is no record at all', function (): void {
         $type = app(FieldTypeRegistry::class)->get('slug');
 
@@ -183,6 +206,55 @@ describe('relation, where the rule has to reach each id', function (): void {
  * `date` threw an unhandled Carbon exception. Handled once in the base class
  * now, because it is a property of the contract rather than of each type.
  */
+describe('a datetime round trip keeps what the schema advertises', function (): void {
+    /*
+     * ⚠️ `toIso8601String()` emits whole seconds, so an accepted
+     * `03:04:05.123456Z` was STORED as `03:04:05+00:00`. The published schema
+     * says `date-time`, which permits a fraction, so the field advertised a
+     * round trip it did not perform — and the value was silently different
+     * from the one submitted.
+     */
+    it('preserves fractional seconds', function (): void {
+        $type = app(FieldTypeRegistry::class)->get('datetime');
+        $config = configFor('datetime');
+
+        $stored = $type->toStorage('2026-01-05T03:04:05.123456Z', $config);
+
+        expect($stored)->toBe('2026-01-05T03:04:05.123456+00:00')
+            ->and($type->fromStorage($stored, $config)->format('u'))->toBe('123456');
+    });
+
+    it('pads a whole second to the same width', function (): void {
+        // Fixed width, not "only when present". This projects to a VARCHAR
+        // and compares as text, so mixing widths would order `05+00:00`
+        // against `05.5+00:00` by punctuation rather than by time.
+        $type = app(FieldTypeRegistry::class)->get('datetime');
+
+        expect($type->toStorage('2026-01-05T03:04:05Z', configFor('datetime')))
+            ->toBe('2026-01-05T03:04:05.000000+00:00');
+    });
+
+    it('stays inside the 32 characters the projection reserves', function (): void {
+        $type = app(FieldTypeRegistry::class)->get('datetime');
+        $stored = $type->toStorage('2026-12-31T23:59:59.999999+14:00', configFor('datetime'));
+
+        expect(strlen((string) $stored))->toBeLessThanOrEqual(
+            $type->projection(configFor('datetime'))->precision
+        );
+    });
+});
+
+it('publishes the cardinality bound it already enforces', function (): void {
+    // Validation enforces `max:{cardinality}`, so an unbounded array schema
+    // let a generated client consider three elements valid on a field that
+    // holds two — and the API rejected what its own schema allowed.
+    $type = app(FieldTypeRegistry::class)->get('text');
+
+    expect($type->apiSchema(configFor('text', [], 2))['maxItems'])->toBe(2)
+        ->and($type->apiSchema(configFor('text', [], -1)))->not->toHaveKey('maxItems')
+        ->and($type->apiSchema(configFor('text', [], 1)))->not->toHaveKey('maxItems');
+});
+
 describe('a multi-value scalar field stores an array of scalars', function (): void {
     it('converts each element rather than the array', function (string $handle, array $input, array $expected): void {
         $type = app(FieldTypeRegistry::class)->get($handle);
@@ -192,7 +264,7 @@ describe('a multi-value scalar field stores an array of scalars', function (): v
         'text' => ['text', [1, 'two'], ['1', 'two']],
         'number' => ['number', ['1.5', '2'], [1.5, 2.0]],
         'date' => ['date', ['2026-01-05', '2026-02-06'], ['2026-01-05', '2026-02-06']],
-        'datetime' => ['datetime', ['2026-01-05T03:04:05+00:00'], ['2026-01-05T03:04:05+00:00']],
+        'datetime' => ['datetime', ['2026-01-05T03:04:05.000000+00:00'], ['2026-01-05T03:04:05.000000+00:00']],
         'textarea' => ['textarea', ['a', 'b'], ['a', 'b']],
     ]);
 

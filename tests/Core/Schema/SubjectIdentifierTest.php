@@ -886,6 +886,64 @@ it('counts cardinality against the SOURCE when attaching from the other end', fu
     expect($bob->referencedBy())->toBeInstanceOf(GuardedBelongsToMany::class);
 });
 
+describe('the lock reaches every storage strategy, not just inline', function (): void {
+    /*
+     * ⚠️ The lock arms on the entry write (see #28), but a promoted field's
+     * data is a real COLUMN and a relational field's is rows in
+     * `entry_relations`. Checking `values` alone would leave a `slug` or a
+     * `person` field unlocked forever while holding content — the same
+     * emptiness the lock had before anything set it, narrowed rather than
+     * fixed.
+     */
+    it('locks a PROMOTED field once its column holds a value', function (): void {
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'public_slug', 'type' => 'slug',
+            'pii_class' => 'personal', 'cardinality' => 1,
+        ]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id, 'label' => 'Slug',
+        ]);
+
+        Entry::create(['entry_type_id' => $this->type->id, 'title' => 'A', 'slug' => 'a-patient']);
+
+        expect($storage->fresh()->is_locked)->toBeTrue();
+    });
+
+    it('leaves a promoted field unlocked while its column is empty', function (): void {
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'public_slug', 'type' => 'slug',
+            'pii_class' => 'personal', 'cardinality' => 1,
+        ]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id, 'label' => 'Slug',
+        ]);
+
+        Entry::create(['entry_type_id' => $this->type->id, 'title' => 'A']);
+
+        expect($storage->fresh()->is_locked)->toBeFalse();
+    });
+
+    it('locks a RELATIONAL field once a relation row exists', function (): void {
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'person', 'type' => 'relation',
+            'pii_class' => 'personal', 'cardinality' => 1,
+        ]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id, 'label' => 'Person',
+        ]);
+
+        $alice = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Alice']);
+        $visit = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Visit']);
+
+        expect($storage->fresh()->is_locked)->toBeFalse();
+
+        $visit->related()->attach($alice->id, ['field_storage_id' => $storage->id]);
+        $visit->save();
+
+        expect($storage->fresh()->is_locked)->toBeTrue();
+    });
+});
+
 describe('a null identifier is unanswerable, not a wildcard', function (): void {
     /*
      * ⚠️ `= null` compiles to `IS NULL`, so both the promoted and the inline

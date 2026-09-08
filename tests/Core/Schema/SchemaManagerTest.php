@@ -14,6 +14,7 @@ use Kitsune\Core\Fields\FieldTypeRegistry;
 use Kitsune\Core\Fields\LogicalType;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
+use Kitsune\Core\Models\Field;
 use Kitsune\Core\Models\FieldStorage;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
@@ -346,6 +347,115 @@ describe('reconcile repairs drift', function (): void {
  * follow it there — two orgs configuring `number` differently would otherwise
  * have shared `idx_count__number` with incompatible column types.
  */
+describe('the lock arms itself when data first appears', function (): void {
+    /*
+     * ⚠️ ADR-006 says storage locks the moment data exists, and FieldStorage
+     * has carried the guard from the first commit — but `is_locked` defaulted
+     * to false and NOTHING ever set it. A repo-wide search found the guard
+     * and tests that flip the flag by hand, and no write path at all.
+     *
+     * So every field in every install was unlocked while holding content, and
+     * the guard refusing a decimal-to-integer change or a narrowed text field
+     * was reachable only by a caller who had remembered to arm it. A lock
+     * nobody arms is a comment.
+     */
+    beforeEach(function (): void {
+        $this->locking = storageFor('price', 'number', [
+            'org_id' => $this->orgA->id, 'settings' => ['format' => 'decimal'],
+        ]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $this->locking->id, 'label' => 'Price',
+        ]);
+    });
+
+    it('leaves storage unlocked while no entry holds a value', function (): void {
+        Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Empty']);
+
+        expect($this->locking->fresh()->is_locked)->toBeFalse();
+    });
+
+    it('locks it the moment an entry writes one', function (): void {
+        Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Priced', 'values' => ['price' => 9.99]]);
+
+        expect($this->locking->fresh()->is_locked)->toBeTrue();
+    });
+
+    it('makes the projection guard actually bite', function (): void {
+        // The whole point. Before this the change went through silently and
+        // reinterpreted every stored value.
+        Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Priced', 'values' => ['price' => 9.99]]);
+
+        expect(fn () => $this->locking->fresh()->update(['settings' => ['format' => 'integer']]))
+            ->toThrow(RuntimeException::class);
+    });
+
+    it('does not lock another type\'s storage of the same handle', function (): void {
+        // field_storage is UNIQUE (org_id, handle), so two orgs share handles
+        // routinely. Locking by handle alone would freeze a row holding no
+        // data at all.
+        $theirs = storageFor('price', 'number', ['org_id' => $this->orgB->id]);
+
+        Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Priced', 'values' => ['price' => 9.99]]);
+
+        expect($theirs->fresh()->is_locked)->toBeFalse();
+    });
+
+    it('ignores a null written under the handle', function (): void {
+        Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Blank', 'values' => ['price' => null]]);
+
+        expect($this->locking->fresh()->is_locked)->toBeFalse();
+    });
+});
+
+describe('the range guard has to EXCLUDE an out-of-range value, not throw on it', function (): void {
+    /*
+     * ⚠️ A generated column's expression is evaluated for every row, so it
+     * has to be TOTAL (ADR-028): a value it cannot project must yield NULL,
+     * never an error. An error does not fail one row, it fails the ALTER that
+     * adds the column and every later write to the table.
+     *
+     * `1e100` is the case that breaks a bounded intermediate cast. It is a
+     * perfectly ordinary JSON number — MySQL parses every JSON number as a
+     * double — and it overflows DECIMAL(65,10) under strict mode before
+     * BETWEEN can return false. Another org writing it into ITS OWN field of
+     * the same name is enough, because the column is shared by projection.
+     */
+    it('adds the column over a row that is far out of range', function (): void {
+        Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Huge', 'values' => ['count' => 1e100]]);
+
+        $storage = storageFor('count', 'number', [
+            'org_id' => $this->orgA->id, 'is_indexed' => true, 'settings' => ['format' => 'integer'],
+        ]);
+
+        expect(fn () => $this->manager->index($storage))->not->toThrow(Exception::class);
+        expect(Entry::where('title', 'Huge')->value('idx_count__integer'))->toBeNull();
+    });
+
+    it('accepts a write of one AFTER the column exists', function (): void {
+        $storage = storageFor('count', 'number', [
+            'org_id' => $this->orgA->id, 'is_indexed' => true, 'settings' => ['format' => 'integer'],
+        ]);
+        $this->manager->index($storage);
+
+        expect(fn () => Entry::create([
+            'entry_type_id' => $this->type->id, 'title' => 'Huge', 'values' => ['count' => 1e100],
+        ]))->not->toThrow(Exception::class);
+
+        expect(Entry::where('title', 'Huge')->value('idx_count__integer'))->toBeNull();
+    });
+
+    it('still projects a value that IS in range', function (): void {
+        $storage = storageFor('count', 'number', [
+            'org_id' => $this->orgA->id, 'is_indexed' => true, 'settings' => ['format' => 'integer'],
+        ]);
+        $this->manager->index($storage);
+
+        Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Fine', 'values' => ['count' => 42]]);
+
+        expect((int) Entry::where('title', 'Fine')->value('idx_count__integer'))->toBe(42);
+    });
+});
+
 describe('a configured projection changes the column, not just the value', function (): void {
     it('gives an integer-formatted number an integer column', function (): void {
         // DECIMAL(12,2) is not merely imprecise here: `10000000000` is a

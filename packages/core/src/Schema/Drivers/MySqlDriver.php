@@ -74,17 +74,48 @@ final class MySqlDriver implements SchemaDriver
         );
 
         if (($range = $projection->range()) !== null) {
-            // DECIMAL(65,10) is MySQL's widest, so the comparison cannot
-            // overflow the type it is protecting. Rounded, because the final
-            // cast rounds and a value inside the raw range can overflow once
-            // it has.
-            $value = sprintf('CAST(%s->>%s AS DECIMAL(65,10))', $column, $this->literal('$.'.$path));
+            // ⚠️ The magnitude gate comes FIRST, and it casts to DOUBLE
+            // rather than DECIMAL.
+            //
+            // DECIMAL(65,10) is MySQL's widest, but it is still bounded: a
+            // perfectly valid JSON number like 1e100 overflows the cast under
+            // strict mode, so the statement ERRORS before BETWEEN can return
+            // false — when adding the column over existing rows, and again on
+            // any later write. A guard that throws instead of excluding is
+            // not a total expression (ADR-028).
+            //
+            // DOUBLE cannot overflow here by construction: MySQL parses every
+            // JSON number as a double already, so anything in the document
+            // fits one. 1e30 is far inside DECIMAL(65,10)'s 55 integer
+            // digits, so passing this gate makes the cast below safe.
+            $magnitude = sprintf(
+                'ABS(CAST(%s->>%s AS DOUBLE)) <= 1e30',
+                $column,
+                $this->literal('$.'.$path),
+            );
+
+            $bounded = sprintf('CAST(%s->>%s AS DECIMAL(65,10))', $column, $this->literal('$.'.$path));
 
             if (($scale = $projection->comparisonScale()) !== null) {
-                $value = sprintf('ROUND(%s, %d)', $value, $scale);
+                // Rounded, because the final cast rounds and a value inside
+                // the raw range can overflow once it has.
+                $bounded = sprintf('ROUND(%s, %d)', $bounded, $scale);
             }
 
-            $guard .= sprintf(' AND %s BETWEEN %s AND %s', $value, $range['min'], $range['max']);
+            // ⚠️ NESTED, not another AND. MySQL does not promise to evaluate
+            // AND operands left to right, so a gate that sits beside the
+            // expression it protects does not protect it. CASE does
+            // short-circuit, so the bounded cast is only ever reached for a
+            // value already known to fit.
+            return sprintf(
+                'CASE WHEN %s AND %s THEN CASE WHEN %s BETWEEN %s AND %s THEN %s END END',
+                $guard,
+                $magnitude,
+                $bounded,
+                $range['min'],
+                $range['max'],
+                $value,
+            );
         }
 
         return sprintf('CASE WHEN %s THEN %s END', $guard, $value);

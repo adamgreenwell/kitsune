@@ -130,7 +130,22 @@ abstract class BaseFieldType implements FieldType
     {
         $item = $this->scalarApiSchema($config);
 
-        return $config->isMultiValue() ? ['type' => 'array', 'items' => $item] : $item;
+        if (! $config->isMultiValue()) {
+            return $item;
+        }
+
+        $schema = ['type' => 'array', 'items' => $item];
+
+        // ⚠️ The bound is PUBLISHED. Validation enforces `max:{cardinality}`,
+        // so describing every multi-value field as an unbounded array meant a
+        // generated client considered three elements valid on a field that
+        // holds two, and the API rejected what its own schema allowed.
+        // -1 is the explicit unlimited and stays unbounded.
+        if ($config->cardinality() > 0) {
+            $schema['maxItems'] = $config->cardinality();
+        }
+
+        return $schema;
     }
 
     /**
