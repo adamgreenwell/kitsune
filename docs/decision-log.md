@@ -924,7 +924,7 @@ Supporting only one of the two costs a real constituency, so both ship.
 
 `curl | bash` is the format users expect, and refusing it outright costs adoption that this project cannot afford to lose. But Kitsune's own stated highest-severity category is data isolation, and normalising "pipe an unverified URL into a shell" sits badly with that. The resolution:
 
-- The script is served over HTTPS from the project domain, **versioned and checksum-pinned** — never from a redirect, never from a URL shortener
+- The script is served over HTTPS from the project domain — `kitsunecms.org` — **versioned and checksum-pinned**, never from a redirect, never from a URL shortener. ⚠️ That rules out serving it from a domain that may later redirect, which is why the installer URL waited for a domain the project actually owns
 - **The documented primary instruction is the two-step**: download, inspect, run. The one-liner is offered alongside it, not instead of it
 - Releases are signed, and the installer verifies what it fetches
 - **The installer never creates a default administrator account.** Onboarding creates the first user interactively. Default credentials at install time are the most reliably exploited mistake in CMS history and there is no version of it that is acceptable
@@ -1024,7 +1024,9 @@ From prior-art analysis of Drupal, October, Winter, Statamic, Directus, Strapi, 
 - Blueprint rollback semantics when content already exists
 - Revision storage growth — full-JSON snapshots get expensive; consider diffs
 - Do relations target the translation group or a specific locale row (ADR-017)? Group-targeting with an optional locale override is the leading candidate
-- **Name/trademark clearance** — no PHP/CMS collision, but Mozilla's support platform and a Rust ActivityPub project both use "Kitsune." Confirm availability in software/SaaS classes **before** spending on a logo
+- **Name/trademark clearance** — no PHP/CMS collision, but Mozilla's support platform and a Rust ActivityPub project both use "Kitsune." Confirm availability in software/SaaS classes **before** spending on a logo.
+
+  **Domain settled provisionally, 2026-09-07: `kitsunecms.org`.** `kitsune.org` is held by another party and is being pursued; acquiring it would make it a redirect, not a rename. Naming the domain now unblocks ADR-026's installer, which cannot be served from a URL that might later move — a checksum-pinned script behind a redirect is exactly what that ADR refuses.
 - KaaS deployment topology beneath the org- and site-aware core — now an ops decision, not architecture, though ADR-020 gives it a legal input via data residency
 
 **Unverifiable, do not cite:** the free/paid split of Filament's plugin directory. Filters exist; counts are not published.
