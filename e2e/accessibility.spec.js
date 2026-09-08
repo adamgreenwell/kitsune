@@ -75,17 +75,25 @@ test.describe('accessibility (automated half of #12)', () => {
 
 test.describe('RTL readiness (ADR-018)', () => {
     /*
-     * ⚠️ THIS IS NOT AN RTL RENDER CHECK, and the earlier version of this
-     * block implied it was. It visited the English site and asserted
-     * dir="ltr", which would stay green even if every RTL layout in the
-     * admin were broken. Caught in review.
+     * ⚠️ THIS IS NOT AN RTL RENDER CHECK, and the first version of this block
+     * implied it was. It visited the English site and asserted dir="ltr",
+     * which would stay green even if every RTL layout in the admin were
+     * broken. Caught in review.
      *
-     * An actual RTL render check needs the admin served under an RTL locale,
-     * which needs the locale switcher that does not exist yet. That half of
-     * #12 stays open, alongside the screen-reader pass.
+     * The real render check now lives in `rtl.spec.js`, against a second
+     * server running under APP_LOCALE=ar.
      *
-     * What follows measures READINESS, which is a different and weaker claim:
-     * whether the CSS that ships would mirror if direction flipped.
+     * ⚠️ This block used to claim that check "needs the locale switcher that
+     * does not exist yet". THAT WAS WRONG, and one command disproved it:
+     * Filament renders `dir` from `__('filament-panels::layout.direction')`,
+     * so the app locale alone decides it and no product feature is involved.
+     * The claim had been reasoned rather than measured — invariant 15, and it
+     * left half of #12 sitting behind an imaginary blocker.
+     *
+     * What follows still earns its place, because it measures something
+     * `rtl.spec.js` cannot: that block compares five layout LANDMARKS, so it
+     * sees the document-level failure and not a physical offset on some inner
+     * element. This counts every declaration in the sheet.
      */
 
     test('the shipped CSS is overwhelmingly direction-agnostic', async ({ page }) => {
