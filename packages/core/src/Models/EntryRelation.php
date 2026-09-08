@@ -104,6 +104,43 @@ class EntryRelation extends Pivot
         }
     }
 
+    /**
+     * Whether any existing relation would forbid this target's new type.
+     *
+     * ⚠️ The guards above run when a PIVOT changes. Nothing ran when the
+     * TARGET changed: save an allowed target with a different
+     * `entry_type_id` and `Entry::saving()` restamps its `type_handle`, while
+     * every relation pointing at it survives with a now-forbidden type — and
+     * both `subjectValue()` and the relational `whereSubjectIs()` branch keep
+     * treating it as the subject, because neither rechecks `targetTypes`
+     * (ADR-020).
+     *
+     * Refused at the type change rather than filtered at read time: a stored
+     * relation that no configuration permits is a state to prevent, not one
+     * to keep working around.
+     */
+    public static function forbidsTypeChange(int $targetId, string $newHandle): ?string
+    {
+        $relations = static::query()->where('target_entry_id', $targetId)->get();
+
+        foreach ($relations as $relation) {
+            $storage = $relation->storage();
+
+            if ($storage === null) {
+                continue;
+            }
+
+            /** @var array<int, string> $targets */
+            $targets = (array) (($storage->settings['targetTypes'] ?? []) ?: []);
+
+            if ($targets !== [] && ! in_array($newHandle, $targets, true)) {
+                return $storage->handle;
+            }
+        }
+
+        return null;
+    }
+
     private function guardTargetType(): void
     {
         $storage = $this->storage();

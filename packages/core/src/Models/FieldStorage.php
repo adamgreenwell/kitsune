@@ -85,6 +85,18 @@ class FieldStorage extends Model
 
     protected $guarded = [];
 
+    /**
+     * ⚠️ The same default the migration declares.
+     *
+     * Without it an unsaved row has `cardinality` NULL until the database
+     * fills it in, so `isMultiValue()` — which asks whether it differs from 1
+     * — answered TRUE for every new single-value field, and the domain guard
+     * below saw 0. The model has to agree with the column, not wait for it.
+     */
+    protected $attributes = [
+        'cardinality' => 1,
+    ];
+
     protected $casts = [
         'settings' => 'array',
         'is_indexed' => 'boolean',
@@ -251,6 +263,82 @@ class FieldStorage extends Model
                 .'convert, verify, then drop the old one (ADR-006).'
             );
         }
+
+        $this->guardNarrowedSettings($original);
+    }
+
+    /**
+     * ⚠️ A locked field can be narrowed without moving its projection.
+     *
+     * A `multi_select` signs as `none` whatever its options are, and a
+     * `select` swapping options of the same maximum width keeps `string64` —
+     * so the comparison above permitted both. Existing entries could then
+     * hold choices validation no longer accepts, and an unrelated edit to
+     * such an entry started failing, on a field ADR-006 says is locked.
+     *
+     * WIDENING is safe and stays allowed: adding an option or another
+     * permitted target type cannot invalidate a stored value. Narrowing and
+     * reinterpreting are what this refuses, which is the same distinction the
+     * projection guard draws, applied to what the field ACCEPTS rather than
+     * to where it is stored.
+     */
+    private function guardNarrowedSettings(self $original): void
+    {
+        if (($narrowed = $this->narrowedSetting($original)) !== null) {
+            $this->refuseNarrowing($narrowed);
+        }
+    }
+
+    /** Whether this save removes or reinterprets anything the field accepts. */
+    private function narrowsAcceptedValues(): bool
+    {
+        $original = clone $this;
+        $original->setRawAttributes($this->getRawOriginal(), true);
+
+        return $this->narrowedSetting($original) !== null;
+    }
+
+    /** The first setting this save narrows, or null if it only widens. */
+    private function narrowedSetting(self $original): ?string
+    {
+        $before = (array) ($original->settings ?? []);
+        $after = (array) ($this->settings ?? []);
+
+        foreach ($before as $key => $was) {
+            $now = $after[$key] ?? null;
+
+            if (! is_array($was)) {
+                // Every scalar setting is semantic — format, precision,
+                // scale, maxLength, pattern. None is presentation.
+                if ($was !== $now) {
+                    return (string) $key;
+                }
+
+                continue;
+            }
+
+            // What the setting ACCEPTS: an option map is keyed by the stored
+            // value and its labels are presentation, while a list of target
+            // types is the values themselves.
+            $accepted = array_is_list($was) ? $was : array_keys($was);
+            $remaining = is_array($now) ? (array_is_list($now) ? $now : array_keys($now)) : [];
+
+            if (array_diff($accepted, $remaining) !== []) {
+                return (string) $key;
+            }
+        }
+
+        return null;
+    }
+
+    private function refuseNarrowing(string $setting): void
+    {
+        throw new RuntimeException(
+            "Field [{$this->handle}] is locked because entries hold data for it, so [{$setting}] "
+            .'cannot be narrowed or reinterpreted — stored values would stop being valid, and the '
+            .'next edit to an entry holding one would fail for no reason its author could see. '
+            .'Adding to it is still allowed (ADR-006).'
+        );
     }
 
     /** The projection's signature, or a marker when the type has none. */
@@ -286,6 +374,21 @@ class FieldStorage extends Model
             ['handle', 'org_id', 'cardinality', 'type'],
             fn (string $attribute): bool => $this->isDirty($attribute),
         );
+
+        // ⚠️ `settings` counts too, when it NARROWS what the field accepts.
+        //
+        // The projection guard always sees `none` for a relation, so
+        // `targetTypes` was editable on a nominated one: attach a target
+        // while the relation is unconstrained, then narrow it afterwards, and
+        // the existing pivot survives while `subjectValue()` and the
+        // relational `whereSubjectIs()` branch both keep treating that target
+        // as the subject (ADR-020).
+        //
+        // Narrowing only. Adding a permitted target cannot invalidate a row
+        // that already exists, which is the same line the lock draws.
+        if ($this->isDirty('settings') && $this->narrowsAcceptedValues()) {
+            $frozen[] = 'settings';
+        }
 
         if ($frozen === []) {
             return;
@@ -368,7 +471,22 @@ class FieldStorage extends Model
      */
     private function guardCardinalitySupport(): void
     {
-        if ((int) $this->cardinality === 1) {
+        $cardinality = (int) $this->cardinality;
+
+        // ⚠️ The DOMAIN first. Only -1 (unlimited) and positive integers mean
+        // anything; `0` and `-2` passed straight through, and BaseFieldType
+        // reads anything other than 1 as multi-valued — so an invalid number
+        // became an unlimited array with no maximum, silently.
+        if ($cardinality !== -1 && $cardinality < 1) {
+            throw new RuntimeException(sprintf(
+                'Cardinality %d is not a value [%s] can hold. Use -1 for unlimited, or a positive '
+                .'number of values.',
+                $cardinality,
+                $this->handle,
+            ));
+        }
+
+        if ($cardinality === 1) {
             return;
         }
 
@@ -382,7 +500,7 @@ class FieldStorage extends Model
             .'is scalar — including a promoted column, where the database disagrees outright.',
             $this->type,
             $this->handle,
-            $this->cardinality,
+            $cardinality,
         ));
     }
 

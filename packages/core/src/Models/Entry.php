@@ -20,6 +20,7 @@ use Kitsune\Core\Fields\StorageStrategy;
 use Kitsune\Core\Relations\GuardedBelongsToMany;
 use Kitsune\Core\Tenancy\Attributes\SiteScoped;
 use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
+use RuntimeException;
 
 /**
  * One model for every user-defined entity type (ADR-010).
@@ -61,10 +62,26 @@ class Entry extends Model
         // type_handle is denormalised for routing lookups, so it must never
         // disagree with the type it points at.
         static::saving(function (self $entry): void {
-            if ($entry->isDirty('entry_type_id')) {
-                $entry->type_handle = EntryType::query()
-                    ->whereKey($entry->entry_type_id)
-                    ->value('handle') ?? $entry->type_handle;
+            if (! $entry->isDirty('entry_type_id')) {
+                return;
+            }
+
+            $entry->type_handle = EntryType::query()
+                ->whereKey($entry->entry_type_id)
+                ->value('handle') ?? $entry->type_handle;
+
+            // ⚠️ Changing an entry's type can invalidate relations that point
+            // AT it, and nothing was checking: the pivot guards only run when
+            // a pivot changes. A field configured to accept `person` would go
+            // on naming a target that had since become an `article`.
+            if ($entry->exists
+                && ($field = EntryRelation::forbidsTypeChange((int) $entry->getKey(), (string) $entry->type_handle)) !== null) {
+                throw new RuntimeException(
+                    "Entry {$entry->getKey()} cannot become a [{$entry->type_handle}]: field "
+                    ."[{$field}] relates to it and does not accept that type. Detach the relation "
+                    .'first — leaving it would point a configured field at something it refuses, '
+                    .'and a subject identifier at the wrong kind of record (ADR-020).'
+                );
             }
         });
 
@@ -306,7 +323,20 @@ class Entry extends Model
         // field is a real column on `entries`. Both fell through to the JSON
         // path, found no key, and reported 0 while the data survived.
         if ($storage?->strategy() === StorageStrategy::Relational) {
-            return $this->related()->wherePivot('field_storage_id', $storage->getKey())->detach();
+            // ⚠️ NOT through `related()`. That relation carries
+            // `withPivotValue('org_id', ...)`, which is right for reading and
+            // wrong for erasing: a pivot row written with a different org_id
+            // — reachable by overriding it in `attach()`'s pivot attributes —
+            // does not match the predicate, so the detach skipped it and
+            // reported 0 while the subject link survived.
+            //
+            // Erasure has to reach the row wherever it is, so it goes
+            // straight at the pivot by the two keys that define it. Scoping
+            // is the reader's protection; it must not become the attacker's.
+            return EntryRelation::query()
+                ->where('source_entry_id', $this->getKey())
+                ->where('field_storage_id', $storage->getKey())
+                ->delete();
         }
 
         if ($storage?->strategy() === StorageStrategy::Promoted) {

@@ -944,6 +944,129 @@ describe('the lock reaches every storage strategy, not just inline', function ()
     });
 });
 
+describe('a nomination freezes what the relation ACCEPTS, not only its shape', function (): void {
+    /*
+     * ⚠️ The projection guard always sees `none` for a relation, so
+     * `targetTypes` stayed editable on a nominated one: attach a target while
+     * the relation is unconstrained, then narrow it afterwards, and the
+     * existing pivot survives while `subjectValue()` and the relational
+     * `whereSubjectIs()` branch both keep treating that target as the
+     * subject.
+     */
+    beforeEach(function (): void {
+        $this->rel = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'person', 'type' => 'relation',
+            'pii_class' => 'personal', 'cardinality' => 1, 'settings' => ['targetTypes' => []],
+        ]);
+        $this->relField = Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $this->rel->id, 'label' => 'Person',
+        ]);
+        $this->type->update(['subject_field_id' => $this->relField->id]);
+    });
+
+    it('refuses to narrow targetTypes while nominated', function (): void {
+        $this->rel->update(['settings' => ['targetTypes' => ['patient', 'article']]]);
+
+        expect(fn () => $this->rel->fresh()->update(['settings' => ['targetTypes' => ['patient']]]))
+            ->toThrow(RuntimeException::class, 'settings');
+    });
+
+    it('still allows WIDENING, which cannot invalidate an existing row', function (): void {
+        $this->rel->update(['settings' => ['targetTypes' => ['patient']]]);
+
+        expect(fn () => $this->rel->fresh()->update([
+            'settings' => ['targetTypes' => ['patient', 'article']],
+        ]))->not->toThrow(RuntimeException::class);
+    });
+});
+
+describe('erasure reaches a relation row whatever org stamped it', function (): void {
+    /*
+     * ⚠️ `related()` carries `withPivotValue('org_id', ...)`, which is right
+     * for READING and wrong for erasing. A pivot row written with a different
+     * org_id — reachable by overriding it in attach()'s pivot attributes —
+     * did not match the predicate, so the detach skipped it and reported 0
+     * while the subject link survived. Scoping is the reader's protection; it
+     * must not become the attacker's.
+     */
+    it('deletes a pivot row carrying another org id', function (): void {
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'person', 'type' => 'relation',
+            'pii_class' => 'personal', 'cardinality' => 1,
+        ]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id, 'label' => 'Person',
+        ]);
+
+        $alice = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Alice']);
+        $visit = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Visit']);
+
+        $rival = Org::create(['name' => 'X', 'slug' => 'erasure-rival']);
+
+        // Straight at the table, which is what overriding org_id in
+        // attach()'s pivot attributes amounts to.
+        DB::table('entry_relations')->insert([
+            'org_id' => $rival->id, 'source_entry_id' => $visit->id,
+            'target_entry_id' => $alice->id, 'field_storage_id' => $storage->id,
+        ]);
+
+        expect($visit->redactField('person'))->toBe(1)
+            ->and(EntryRelation::query()->where('source_entry_id', $visit->id)->count())->toBe(0);
+    });
+});
+
+describe('changing an entry\'s type cannot orphan a relation pointing at it', function (): void {
+    /*
+     * ⚠️ The pivot guards run when a PIVOT changes. Nothing ran when the
+     * TARGET changed: a field configured to accept `patient` went on naming a
+     * target that had since become something else, and neither
+     * `subjectValue()` nor the relational `whereSubjectIs()` branch rechecks
+     * `targetTypes`.
+     */
+    it('refuses the type change while a relation forbids the new type', function (): void {
+        $other = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'article', 'name' => 'A', 'plural_name' => 'As',
+        ]);
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'person', 'type' => 'relation',
+            'pii_class' => 'personal', 'cardinality' => 1,
+            'settings' => ['targetTypes' => [$this->type->handle]],
+        ]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id, 'label' => 'Person',
+        ]);
+
+        $alice = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Alice']);
+        $visit = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Visit']);
+        $visit->related()->attach($alice->id, ['field_storage_id' => $storage->id]);
+
+        expect(fn () => $alice->update(['entry_type_id' => $other->id]))
+            ->toThrow(RuntimeException::class, 'does not accept that type');
+
+        expect($alice->fresh()->entry_type_id)->toBe($this->type->id);
+    });
+
+    it('allows a type change the relation still accepts', function (): void {
+        $other = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'article', 'name' => 'A', 'plural_name' => 'As',
+        ]);
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'person', 'type' => 'relation',
+            'pii_class' => 'personal', 'cardinality' => 1,
+            'settings' => ['targetTypes' => [$this->type->handle, 'article']],
+        ]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id, 'label' => 'Person',
+        ]);
+
+        $alice = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Alice']);
+        $visit = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Visit']);
+        $visit->related()->attach($alice->id, ['field_storage_id' => $storage->id]);
+
+        expect(fn () => $alice->update(['entry_type_id' => $other->id]))->not->toThrow(RuntimeException::class);
+    });
+});
+
 describe('a null identifier is unanswerable, not a wildcard', function (): void {
     /*
      * ⚠️ `= null` compiles to `IS NULL`, so both the promoted and the inline
