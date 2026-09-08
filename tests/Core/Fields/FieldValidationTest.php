@@ -301,6 +301,20 @@ it('sizes a select projection from its widest option key', function (): void {
         ->and($type->projection(configFor('select', ['options' => ['a' => 'A']]))->precision)->toBe(64);
 });
 
+it('publishes numeric select options as the strings they are stored as', function (): void {
+    // ⚠️ PHP casts a numeric-string array key to an integer, so an option
+    // `"1"` reached array_keys() as int 1 and was published as
+    // `{"type": "string", "enum": [1]}` — a schema NO JSON value satisfies,
+    // since "1" has the right type and is not equal to 1. Validation accepted
+    // the choice and storage kept the string, so the field worked while its
+    // own published contract called every value invalid.
+    $config = configFor('select', ['options' => ['1' => 'One', '2' => 'Two']]);
+    $type = app(FieldTypeRegistry::class)->get('select');
+
+    expect($type->apiSchema($config)['enum'])->toBe(['1', '2'])
+        ->and(validate('select', ['f' => '1'], ['options' => ['1' => 'One']])->fails())->toBeFalse();
+});
+
 describe('a finite cardinality bounds the array', function (): void {
     it('rejects more values than the field holds', function (): void {
         // -1 is the explicit "unlimited"; a cardinality of 2 means two, and
@@ -509,4 +523,34 @@ it('refuses a NESTED empty object, which cannot survive decoding', function (): 
 it('still accepts the TOP-LEVEL empty object', function (): void {
     // The asymmetry is deliberate, so a later tidy-up does not "fix" it.
     expect(validate('json', ['f' => '{}'])->fails())->toBeFalse();
+});
+
+describe('the same refusal applies to input that arrives already decoded', function (): void {
+    /*
+     * ⚠️ The string checks above covered ONE of the two ways a value reaches
+     * this field. A request body Laravel parsed — the normal API path —
+     * arrives as a PHP array, where `{"config":{}}` is already
+     * `['config' => []]`. Nothing walked it, and castToStorage() preserved
+     * it, so the identical value was rejected with a clear message when sent
+     * as a string and silently stored as `{"config":[]}` when sent as JSON.
+     */
+    it('refuses a nested empty, whichever way the client sent it', function (): void {
+        $v = validate('json', ['f' => ['config' => []]]);
+
+        expect($v->fails())->toBeTrue()
+            ->and($v->errors()->first('f'))->toContain('[config]');
+    });
+
+    it('refuses one buried several levels down', function (): void {
+        expect(validate('json', ['f' => ['a' => ['b' => ['c' => []]]]])->fails())->toBeTrue();
+    });
+
+    it('still accepts the top-level empty, matching the string path', function (): void {
+        expect(validate('json', ['f' => []])->fails())->toBeFalse();
+    });
+
+    it('leaves populated nested structures alone', function (): void {
+        expect(validate('json', ['f' => ['list' => ['a', 'b'], 'map' => ['k' => 'v']]])->fails())
+            ->toBeFalse();
+    });
 });

@@ -47,8 +47,14 @@ class FieldStorage extends Model
      * conversion and the projection. The guard compares projections rather
      * than attribute names, so a new setting is covered without anyone
      * remembering to add it here.
+     *
+     * ⚠️ `handle` belongs here because it is the JSON KEY, not merely a
+     * label: SchemaManager passes it as the extraction path, so renaming
+     * `price` to `cost` leaves every stored value under `price` where
+     * nothing reads it. The field appears to empty itself across the whole
+     * table, and there is no error to notice.
      */
-    public const SHAPE_ATTRIBUTES = ['type', 'cardinality'];
+    public const SHAPE_ATTRIBUTES = ['type', 'cardinality', 'handle'];
 
     /**
      * Handles become SQL identifiers, and those have hard limits (ADR-028).
@@ -111,8 +117,8 @@ class FieldStorage extends Model
                     if ($storage->isDirty($attribute)) {
                         throw new RuntimeException(
                             "Field [{$storage->handle}] is locked because entries hold data for it. "
-                            ."[{$attribute}] cannot change. Create a new field, convert, verify, then "
-                            .'drop the old one — silent type coercion is how content gets destroyed.'
+                            ."[{$attribute}] cannot change. Create a new field, migrate the data, verify, "
+                            .'then drop the old one — a silent shape change is how content gets destroyed.'
                         );
                     }
                 }

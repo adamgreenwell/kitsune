@@ -630,6 +630,64 @@ describe('a moved projection takes its old column with it', function (): void {
     });
 });
 
+describe('a renamed handle takes its old column with it', function (): void {
+    /*
+     * ⚠️ Reconciling by handle PREFIX assumed a row's handle never moves.
+     * Rename `price` to `cost` and the prefix is built from the NEW handle,
+     * so `idx_price__…` fell outside it and was never examined again — a slot
+     * against the cap and write overhead on every entry save, until someone
+     * happened to run a full reconcile.
+     */
+    it('drops the column the old handle owned', function (): void {
+        $storage = storageFor('price', 'number', ['org_id' => $this->orgA->id, 'is_indexed' => true]);
+        $this->manager->sync($storage);
+
+        expect(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeTrue();
+
+        $storage->update(['handle' => 'cost']);
+        $this->manager->sync($storage);
+
+        expect(Schema::hasColumn('entries', 'idx_cost__decimal12_2'))->toBeTrue()
+            ->and(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeFalse();
+    });
+
+    it('drops it when the row is renamed and un-indexed in one save', function (): void {
+        $storage = storageFor('price', 'number', ['org_id' => $this->orgA->id, 'is_indexed' => true]);
+        $this->manager->sync($storage);
+
+        $storage->update(['handle' => 'cost', 'is_indexed' => false]);
+        $this->manager->sync($storage);
+
+        expect(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeFalse()
+            ->and(Schema::hasColumn('entries', 'idx_cost__decimal12_2'))->toBeFalse();
+    });
+
+    it('keeps the old column when another org still uses that handle', function (): void {
+        $mine = storageFor('price', 'number', ['org_id' => $this->orgA->id, 'is_indexed' => true]);
+        $theirs = storageFor('price', 'number', ['org_id' => $this->orgB->id, 'is_indexed' => true]);
+
+        $this->manager->sync($mine);
+        $this->manager->sync($theirs);
+
+        $mine->update(['handle' => 'cost']);
+        $this->manager->sync($mine);
+
+        expect(Schema::hasColumn('entries', 'idx_cost__decimal12_2'))->toBeTrue()
+            ->and(Schema::hasColumn('entries', 'idx_price__decimal12_2'))->toBeTrue();
+    });
+
+    it('refuses the rename outright once entries hold data', function (): void {
+        // The orphaned COLUMN is the visible half. The handle is also the
+        // JSON key SchemaManager extracts on, so renaming a locked field
+        // leaves every stored value under the old key where nothing reads
+        // it — the field appears to empty itself, with no error to notice.
+        $storage = storageFor('price', 'number', ['org_id' => $this->orgA->id, 'is_locked' => true]);
+
+        expect(fn () => $storage->update(['handle' => 'cost']))
+            ->toThrow(RuntimeException::class, '[handle] cannot change');
+    });
+});
+
 describe('un-indexing cleans up whatever the row used to project to', function (): void {
     it('drops the OLD column when the projection changed in the same save', function (): void {
         // ⚠️ dropIndex() derives the NEW column name, which was never

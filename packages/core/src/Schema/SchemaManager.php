@@ -73,86 +73,87 @@ final class SchemaManager
      */
     public function sync(FieldStorage $storage): void
     {
-        // ⚠️ The no-op is the REMOVAL path only, and that distinction matters.
-        // Returning early for every projection-less type also swallowed the
-        // "not indexable" error for a row saved with `is_indexed = true` —
-        // leaving an invalid row looking synchronised, which `reconcile()`
-        // then chokes on for the whole table. `index()` refuses it with the
-        // reason instead.
-        if (! $storage->is_indexed) {
-            // ⚠️ Handle-based, not `dropIndex()`. A row saved with BOTH
-            // `is_indexed = false` and a projection-affecting change derives
-            // the NEW column name, which was never created — so the old one
-            // stayed orphaned. And a change to a projection-less type
-            // returned here without attempting any removal at all.
-            //
-            // Dropping everything for the handle that no row still wants
-            // covers all three, and subsumes what dropIndex() did.
-            $this->dropObsoleteProjections($storage, keep: null);
-
-            return;
-        }
-
-        // ⚠️ Drop what this row USED to project to FIRST. An unlocked indexed
-        // row that changes a projection-affecting setting — or its type — now
-        // names a different column, and adding the new one alone leaves the
-        // old column and index orphaned: write overhead on every entry save,
-        // and a slot against the cap.
+        // ⚠️ Drop orphans FIRST, on both paths.
         //
-        // Before the add, not after, for the same reason `reconcile()` drops
-        // orphans first: at the cap a capacity-NEUTRAL replacement would
-        // otherwise fail on a table that needs no net new column.
-        // No `keep` argument: the method computes it, and that indirection
-        // is load-bearing — computing it HERE calls generatedColumnName()
-        // before the projection-less guard runs, so `index()` never gets to
-        // raise its clearer "not indexable" error.
-        $this->dropObsoleteProjections($storage);
+        // At the cap, a capacity-NEUTRAL change — one column replaced by
+        // another — would otherwise fail guardCap() on a table that needs no
+        // net new column, and `reconcile()` drops first for the same reason.
+        //
+        // This also covers three cases a targeted drop kept missing: a row
+        // saved with BOTH `is_indexed = false` and a projection-affecting
+        // change derives the NEW column name, which was never created; a
+        // change to a projection-less type attempted no removal at all; and
+        // an unlocked indexed row that changes a projection-affecting setting
+        // leaves the column it used to project to behind.
+        $this->dropOrphanedColumns();
 
-        $this->index($storage);
+        // ⚠️ NOT an early return for every projection-less type. That also
+        // swallowed the "not indexable" error for a row saved with
+        // `is_indexed = true`, leaving an invalid row looking synchronised —
+        // which `reconcile()` then choked on for the whole table. `index()`
+        // refuses it with the reason instead.
+        if ($storage->is_indexed) {
+            $this->index($storage);
+        }
     }
 
     /**
-     * Drop any column for this handle that no indexed row projects to.
+     * Every column some indexed row still projects to.
      *
-     * ⚠️ Reconciled by HANDLE rather than by remembering the previous name.
-     * The documented flow calls `sync()` AFTER the row is saved, and Eloquent
-     * has synced the original by then — so `getRawOriginal()` returns the NEW
-     * value and a before/after comparison finds no change. That version of
-     * this method read correctly and did nothing.
+     * The single definition of "wanted", shared by sync() and reconcile().
      *
-     * Reconciling also clears historical orphans for the handle rather than
-     * only the one this call created.
+     * @return array<string, FieldStorage>
      */
-    private function dropObsoleteProjections(FieldStorage $storage, ?string $keep = null): void
+    private function wantedColumns(): array
     {
-        // The separator is part of the prefix, so `idx_price__` cannot match
-        // a column belonging to `price_extra`.
-        $prefix = 'idx_'.$storage->handle.'__';
+        $wanted = [];
 
-        if ($keep === null && $storage->is_indexed) {
-            // Step aside for a type that projects to nothing, so `index()`
-            // can raise its own "not indexable" error rather than this method
-            // throwing a less useful one from `generatedColumnName()` first.
-            if ($this->registry->get($storage->type)->projection(new FieldConfig($storage)) === null) {
-                return;
-            }
-
-            $keep = $storage->generatedColumnName();
-        }
-
-        foreach ($this->generatedColumns() as $column) {
-            if ($column === $keep || ! str_starts_with($column, $prefix)) {
+        foreach (FieldStorage::query()->where('is_indexed', true)->get() as $storage) {
+            try {
+                $wanted[$storage->generatedColumnName()] = $storage;
+            } catch (RuntimeException) {
+                // A row whose type projects to nothing wants no column.
+                // guard() refuses to index one, but a type can be changed out
+                // from under a row that is already indexed.
                 continue;
             }
+        }
 
-            // Reference-counted like every other drop: one row moving must
-            // not take a column another org still projects to.
-            if ($this->otherRowsWantColumn($storage, $column)) {
+        return $wanted;
+    }
+
+    /**
+     * Drop every generated column that no indexed row projects to.
+     *
+     * ⚠️ Asks which columns are WANTED rather than reconciling a handle
+     * prefix. The prefix version assumed a row's handle never moves: rename
+     * `price` to `cost` and `idx_price__…` fell outside the prefix built from
+     * the new handle, so it was never examined again — a slot against the cap
+     * and write overhead on every entry save until a full reconcile.
+     *
+     * Safe to run per-row because sync() is documented to run AFTER the save,
+     * so this query already sees the row's new state.
+     *
+     * Reference-counted for free: a column two orgs project to is wanted by
+     * whichever row still points at it, so one row moving cannot take it.
+     *
+     * @return list<string>
+     */
+    private function dropOrphanedColumns(): array
+    {
+        $wanted = $this->wantedColumns();
+        $dropped = [];
+
+        foreach ($this->generatedColumns() as $column) {
+            if (isset($wanted[$column])) {
                 continue;
             }
 
             $this->dropColumn($column, $column.'_site_idx');
+            $dropped[] = $column;
         }
+
+        return $dropped;
     }
 
     /**
@@ -166,29 +167,16 @@ final class SchemaManager
      */
     public function reconcile(): array
     {
-        $wanted = [];
-
-        foreach (FieldStorage::query()->where('is_indexed', true)->get() as $storage) {
-            $wanted[$storage->generatedColumnName()] = $storage;
-        }
-
         // ⚠️ Orphans go FIRST. With the table at the cap and drift consisting
         // of one orphan plus one wanted column, adding first hits guardCap()
         // and throws — so a capacity-NEUTRAL replacement could never be
         // repaired, and --force reported a failure the operator could not act
         // on. Dropping first makes the swap fit.
-        $dropped = [];
-
-        foreach ($this->generatedColumns() as $column) {
-            if (! isset($wanted[$column])) {
-                $this->dropColumn($column, $column.'_site_idx');
-                $dropped[] = $column;
-            }
-        }
+        $dropped = $this->dropOrphanedColumns();
 
         $added = [];
 
-        foreach ($wanted as $column => $storage) {
+        foreach ($this->wantedColumns() as $column => $storage) {
             if ($this->hasColumn($column) && $this->hasIndex($storage->generatedIndexName())) {
                 continue;
             }

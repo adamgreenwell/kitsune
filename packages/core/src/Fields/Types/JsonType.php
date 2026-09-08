@@ -148,6 +148,52 @@ final class JsonType extends BaseFieldType
         }
     }
 
+    /**
+     * ⚠️ The same refusal as failOnAmbiguousObject(), for input that arrives
+     * ALREADY DECODED — a request body Laravel parsed, which is the normal
+     * API path.
+     *
+     * By then `{}` and `[]` are both the empty PHP array, so `{"config":{}}`
+     * reached validation as `['config' => []]`, passed with no recursive
+     * check at all, and `castToStorage()` preserved it — storing
+     * `{"config":[]}`. The identical value sent as a STRING was rejected with
+     * a clear message, so the same input was refused one way and quietly
+     * mangled the other.
+     *
+     * Refusing to guess is what the string path already does, and the fix the
+     * client needs is the same, so the message is too. It costs a nested
+     * empty LIST, which is equally indistinguishable here — send the field as
+     * a JSON string when the difference matters, where `{}` survives.
+     *
+     * Only the empty case is decidable. A nested `['a','b']` might have been
+     * `{"0":"a","1":"b"}`, but a client cannot express that through decoded
+     * JSON anyway, and the list reading survives the round trip unchanged.
+     *
+     * @param  array<array-key, mixed>  $node
+     */
+    private function failOnAmbiguousEmptyArray(string $attribute, array $node, Closure $fail, string $path = ''): void
+    {
+        foreach ($node as $key => $value) {
+            if (! is_array($value)) {
+                continue;
+            }
+
+            $where = $path === '' ? (string) $key : $path.'.'.$key;
+
+            if ($value === []) {
+                $fail(
+                    "The {$attribute} field has an empty object or array at [{$where}], which PHP "
+                    .'cannot tell apart once decoded — it would silently become `[]` on save. Omit '
+                    .'the key, give it a property, or send the whole field as a JSON string.'
+                );
+
+                return;
+            }
+
+            $this->failOnAmbiguousEmptyArray($attribute, $value, $fail, $where);
+        }
+    }
+
     /** @return array<string, mixed> */
     protected function scalarApiSchema(FieldConfig $config): array
     {
@@ -210,9 +256,7 @@ final class JsonType extends BaseFieldType
                     return;
                 }
 
-                // A PHP array carries no object/list distinction to lose, so
-                // only the top-level list case is checkable here — it is
-                // handled above.
+                $this->failOnAmbiguousEmptyArray($attribute, $value, $fail);
             },
         ];
     }
