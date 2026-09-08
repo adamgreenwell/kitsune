@@ -13,6 +13,7 @@ namespace Kitsune\Core\Audit;
 use Illuminate\Contracts\Database\Query\Expression;
 use Illuminate\Database\Eloquent\Builder;
 use Kitsune\Core\Models\AuditLog;
+use Kitsune\Core\Tenancy\Context;
 use RuntimeException;
 
 /**
@@ -166,5 +167,69 @@ class AppendOnlyBuilder extends Builder
     public function touch($column = null)
     {
         throw new RuntimeException(self::APPEND_ONLY);
+    }
+
+    /**
+     * ⚠️ Append-only allows INSERT, and that is the path nobody guarded.
+     *
+     * `AuditLog::create(['org_id' => $rival, ...])` wrote an immutable,
+     * apparently authoritative record into another org's trail — and a bulk
+     * `insert()` skipped the model's `creating` hook entirely, so it did not
+     * even get the stamping this relies on. An audit log an outsider can
+     * append to is worse than no audit log, because it is believed.
+     *
+     * @param  array<int|string, mixed>  $values
+     * @return bool
+     */
+    public function insert(array $values)
+    {
+        $rows = array_is_list($values) ? $values : [$values];
+
+        foreach ($rows as $row) {
+            if (is_array($row)) {
+                $this->guardScopeKeys($row);
+            }
+        }
+
+        return parent::insert($values);
+    }
+
+    /**
+     * @param  array<string, mixed>  $values
+     * @param  string|null  $sequence
+     * @return int
+     */
+    public function insertGetId(array $values, $sequence = null)
+    {
+        $this->guardScopeKeys($values);
+
+        return parent::insertGetId($values, $sequence);
+    }
+
+    /**
+     * A row appended to this org's trail has to belong to this org.
+     *
+     * Silent with no context, matching EnforcesScope: console commands,
+     * migrations and the installer legitimately run without one.
+     *
+     * @param  array<string, mixed>  $values
+     */
+    private function guardScopeKeys(array $values): void
+    {
+        $context = app(Context::class);
+
+        foreach (['org_id' => $context->orgId(), 'site_id' => $context->siteId()] as $column => $current) {
+            if (! array_key_exists($column, $values) || $values[$column] === null || $current === null) {
+                continue;
+            }
+
+            if ((int) $values[$column] !== (int) $current) {
+                throw new RuntimeException(
+                    "Refusing to append an audit row with [{$column}] outside the current scope. "
+                    .'A trail an outsider can write to is worse than no trail, because it is '
+                    .'believed (ADR-020).'
+                );
+            }
+        }
     }
 }

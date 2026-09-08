@@ -251,6 +251,41 @@ describe('creation cannot be made quiet', function (): void {
     });
 });
 
+describe('a trail an outsider can append to is worse than no trail', function (): void {
+    /*
+     * ⚠️ Append-only ALLOWS insert, and that is the path nobody guarded.
+     * `AuditLog::create(['org_id' => $rival, ...])` wrote an immutable,
+     * apparently authoritative record into another org's trail — and a bulk
+     * `insert()` skipped the model's creating hook entirely, so it did not
+     * even get the stamping that relied on.
+     */
+    it('refuses a create into another org\'s trail', function (): void {
+        $rival = Org::create(['name' => 'A', 'slug' => 'append-rival']);
+
+        expect(fn () => AuditLog::create([
+            'org_id' => $rival->id, 'action' => 'forged.evidence', 'created_at' => now(),
+        ]))->toThrow(RuntimeException::class);
+
+        expect(AuditLog::withoutGlobalScopes()->where('action', 'forged.evidence')->exists())->toBeFalse();
+    });
+
+    it('refuses a bulk insert into another org\'s trail, which skips the hook', function (): void {
+        $rival = Org::create(['name' => 'B', 'slug' => 'append-rival-bulk']);
+
+        expect(fn () => AuditLog::query()->insert([[
+            'org_id' => $rival->id, 'action' => 'forged.bulk', 'created_at' => now(),
+        ]]))->toThrow(RuntimeException::class, 'worse than no trail');
+
+        expect(AuditLog::withoutGlobalScopes()->where('action', 'forged.bulk')->exists())->toBeFalse();
+    });
+
+    it('still appends to its own trail', function (): void {
+        expect(fn () => AuditLog::create([
+            'org_id' => $this->org->id, 'action' => 'legitimate.action', 'created_at' => now(),
+        ]))->not->toThrow(RuntimeException::class);
+    });
+});
+
 describe('the log is append-only, enforced', function (): void {
     it('refuses to rewrite a row', function (): void {
         // An audit log application code can rewrite is not evidence of
@@ -720,6 +755,21 @@ describe('bulk entry writes are audited too', function (): void {
         $rival = Org::create(['name' => 'T', 'slug' => 'transfer-rival']);
 
         expect(fn () => Entry::query()->whereKey($this->one->getKey())->update(['org_id' => $rival->id]))
+            ->toThrow(RuntimeException::class, 'outside the current scope');
+
+        expect($this->one->fresh()->org_id)->toBe($this->org->id);
+    });
+
+    it('refuses a QUALIFIED scope key, which a joined update writes', function (): void {
+        /*
+         * ⚠️ A joined update writes `entries.status` — this file has a MySQL
+         * regression doing exactly that — so a guard looking for the bare
+         * name was walked past by `entries.org_id`, moving entries across orgs
+         * while the audit rows stayed under the old context.
+         */
+        $rival = Org::create(['name' => 'Q', 'slug' => 'qualified-rival']);
+
+        expect(fn () => Entry::query()->whereKey($this->one->getKey())->update(['entries.org_id' => $rival->id]))
             ->toThrow(RuntimeException::class, 'outside the current scope');
 
         expect($this->one->fresh()->org_id)->toBe($this->org->id);

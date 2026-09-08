@@ -130,6 +130,23 @@ class AuditedBuilder extends Builder
     {
         $context = app(Context::class);
 
+        // ⚠️ Table-QUALIFIED keys count. A joined update writes
+        // `entries.status` — this very class has a MySQL regression test doing
+        // exactly that — so `update(['entries.org_id' => $rival])` walked past
+        // a guard looking for the bare name, and moved entries across orgs
+        // while the audit rows stayed under the old context.
+        $normalised = [];
+
+        foreach ($values as $column => $value) {
+            $bare = str_contains((string) $column, '.')
+                ? substr((string) $column, (int) strrpos((string) $column, '.') + 1)
+                : (string) $column;
+
+            $normalised[trim($bare, '`"[]')] = $value;
+        }
+
+        $values = $normalised;
+
         foreach (['org_id' => $context->orgId(), 'site_id' => $context->siteId()] as $column => $current) {
             // Absent means the listener will stamp it, or the column does not
             // apply. NULL is legitimate for site_id: org-shared entries.
