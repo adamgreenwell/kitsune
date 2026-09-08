@@ -16,6 +16,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Kitsune\Core\Audit\AuditedBuilder;
 use Kitsune\Core\Audit\Auditor;
 use Kitsune\Core\Tenancy\Attributes\SiteScoped;
 use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
@@ -63,39 +64,12 @@ class Entry extends Model
         // written from model events rather than from the admin, so the API
         // and the console are audited by the same code path — an audit trail
         // that only covers the UI is an audit trail with a documented hole.
-        foreach (['created', 'restored'] as $event) {
-            static::{$event}(function (self $entry) use ($event): void {
-                app(Auditor::class)->record("entry.{$event}", $entry);
-            });
-        }
-
-        // ⚠️ `deleted` fires during a force-delete too, so recording it
-        // unconditionally gave a permanently removed entry a SECOND
-        // `entry.deleted` and never said it had become irrecoverable — the
-        // one deletion an operator most needs to find in the trail.
-        static::deleted(function (self $entry): void {
-            if ($entry->isForceDeleting()) {
-                return;
-            }
-
-            app(Auditor::class)->record('entry.deleted', $entry);
-        });
-
-        static::forceDeleted(function (self $entry): void {
-            app(Auditor::class)->record('entry.force_deleted', $entry);
-        });
-
-        // ⚠️ `updated` is separate, because a RESTORE is an update too:
-        // `restore()` nulls `deleted_at` and saves, so a delete/restore pair
-        // was recorded as `entry.deleted` then `entry.updated` — the actual
-        // lifecycle action hidden behind an ordinary-looking edit. The
-        // `restored` listener above names it, and this one steps aside.
-        static::updated(function (self $entry): void {
-            if ($entry->wasChanged($entry->getDeletedAtColumn())) {
-                return;
-            }
-
-            app(Auditor::class)->record('entry.updated', $entry);
+        // ⚠️ Creation ONLY. Every other action is derived in AuditedBuilder,
+        // because `$model->save()` and `$model->delete()` both go through it
+        // — listening here as well produced two audit rows per write. An
+        // insert never reaches the builder's methods, so it stays an event.
+        static::created(function (self $entry): void {
+            app(Auditor::class)->record('entry.created', $entry);
         });
 
         static::saving(function (self $entry): void {
@@ -105,6 +79,22 @@ class Entry extends Model
                     ->value('handle') ?? $entry->type_handle;
             }
         });
+    }
+
+    /**
+     * Route every write through the auditing builder (ADR-020).
+     *
+     * ⚠️ Bulk writes dispatch NO per-model events, so listeners alone cover
+     * the row-at-a-time path only: `Entry::query()->update()` and its
+     * siblings would have changed or removed entries leaving no trace, while
+     * the claim was that the API and the console go through the same code
+     * path as the admin.
+     *
+     * @param  \Illuminate\Database\Query\Builder  $query
+     */
+    public function newEloquentBuilder($query): AuditedBuilder
+    {
+        return new AuditedBuilder($query);
     }
 
     /**

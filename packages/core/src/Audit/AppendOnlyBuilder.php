@@ -46,4 +46,20 @@ class AppendOnlyBuilder extends Builder
             .'applied to the table, not something application code decides (ADR-020).'
         );
     }
+
+    /**
+     * ⚠️ Separately, because it does not go through `delete()`.
+     *
+     * Eloquent's `forceDelete()` calls the UNDERLYING query builder, so
+     * neither the override above nor the model's `deleting` listener sees it
+     * — a one-liner that erases audit evidence past two guards that both look
+     * like they cover deletion.
+     */
+    public function forceDelete()
+    {
+        throw new RuntimeException(
+            'Audit rows are append-only and cannot be force-deleted either. Retention is an '
+            .'operator policy applied to the table (ADR-020).'
+        );
+    }
 }

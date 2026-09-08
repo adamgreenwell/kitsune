@@ -263,3 +263,88 @@ describe('a permanent deletion is its own action', function (): void {
             ->toBe(['entry.created', 'entry.force_deleted']);
     });
 });
+
+it('refuses forceDelete on the audit log, which does not go through delete()', function (): void {
+    // ⚠️ Eloquent's forceDelete() calls the UNDERLYING query builder, so
+    // neither the delete() override nor the model's `deleting` listener saw
+    // it — a one-liner erasing audit evidence past two guards that both look
+    // like they cover deletion.
+    $entry = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Hello']);
+
+    expect(fn () => AuditLog::query()->forceDelete())
+        ->toThrow(RuntimeException::class, 'append-only');
+
+    expect(AuditLog::for($entry)->exists())->toBeTrue();
+});
+
+describe('bulk entry writes are audited too', function (): void {
+    /*
+     * ⚠️ `Entry::query()->update()` and its siblings write straight through
+     * the query builder and dispatch NO per-model events — so entries could
+     * change or disappear leaving no trace, while the claim was that the API
+     * and the console go through the same code path as the admin.
+     */
+    beforeEach(function (): void {
+        $this->one = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'One']);
+        $this->two = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Two']);
+    });
+
+    it('records a row per entry for a bulk update', function (): void {
+        Entry::query()->update(['status' => 'published']);
+
+        expect(AuditLog::for($this->one)->where('action', 'entry.updated')->count())->toBe(1)
+            ->and(AuditLog::for($this->two)->where('action', 'entry.updated')->count())->toBe(1);
+    });
+
+    it('records a bulk soft delete as a DELETE, not an update', function (): void {
+        // A soft delete arrives at the builder as an update; recording both
+        // would file a deletion as an edit as well.
+        Entry::query()->delete();
+
+        expect(AuditLog::for($this->one)->orderBy('id')->pluck('action')->all())
+            ->toBe(['entry.created', 'entry.deleted']);
+    });
+
+    it('records a bulk force delete', function (): void {
+        $id = $this->one->getKey();
+
+        Entry::query()->forceDelete();
+
+        expect(AuditLog::query()->where('target_id', $id)->pluck('action')->all())
+            ->toContain('entry.force_deleted');
+    });
+
+    it('records a bulk restore as a RESTORE', function (): void {
+        Entry::query()->delete();
+
+        Entry::onlyTrashed()->restore();
+
+        expect(AuditLog::for($this->one)->orderBy('id')->pluck('action')->all())
+            ->toBe(['entry.created', 'entry.deleted', 'entry.restored']);
+    });
+
+    /*
+     * ⚠️ The obvious design — model events for single rows, this builder for
+     * bulk — records every ordinary write TWICE, because `$entry->save()` and
+     * `$entry->delete()` are themselves builder writes. Nothing above would
+     * have caught it: they all assert a row EXISTS, and two rows satisfy that
+     * as readily as one.
+     */
+    it('records each single-entry write exactly once, not once per layer', function (): void {
+        $this->one->update(['title' => 'Renamed']);
+        $this->one->delete();
+        $this->one->restore();
+
+        expect(AuditLog::for($this->one)->orderBy('id')->pluck('action')->all())
+            ->toBe(['entry.created', 'entry.updated', 'entry.deleted', 'entry.restored']);
+    });
+
+    it('audits only the rows the predicate actually matched', function (): void {
+        // Reading the keys BEFORE the write is what makes this possible: after
+        // it, an updated row may no longer match and a deleted one has no id.
+        Entry::query()->where('title', 'One')->update(['status' => 'published']);
+
+        expect(AuditLog::for($this->one)->where('action', 'entry.updated')->count())->toBe(1)
+            ->and(AuditLog::for($this->two)->where('action', 'entry.updated')->count())->toBe(0);
+    });
+});
