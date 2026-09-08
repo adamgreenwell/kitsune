@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Fields\Types;
 
+use Closure;
 use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Fields\LogicalType;
 use Kitsune\Core\Fields\Projection;
@@ -123,6 +124,29 @@ final class NumberType extends BaseFieldType
 
         if (($max = $config->setting('max')) !== null) {
             $rules[] = 'max:'.$max;
+        }
+
+        // ⚠️ The step was CONFIGURABLE and unenforced, so it constrained a
+        // form widget and nothing else — an API client or a crafted request
+        // submitted any value it liked. A setting the server does not check
+        // is a suggestion, and this one looks like a rule.
+        if (($step = $config->setting('step')) !== null && is_numeric($step) && (float) $step > 0) {
+            $offset = (float) ($config->setting('min') ?? 0);
+
+            $rules[] = function (string $attribute, mixed $value, Closure $fail) use ($step, $offset): void {
+                if (! is_numeric($value)) {
+                    return;
+                }
+
+                // Compared in integers scaled by the step, because
+                // fmod(0.3, 0.1) is not 0 in binary floating point and would
+                // reject the values it exists to accept.
+                $steps = ((float) $value - $offset) / (float) $step;
+
+                if (abs($steps - round($steps)) > 1e-9) {
+                    $fail("The {$attribute} field must be a multiple of {$step}.");
+                }
+            };
         }
 
         return $rules;

@@ -52,6 +52,8 @@ class EntryRelation extends Pivot
     protected static function booted(): void
     {
         static::creating(function (self $relation): void {
+            $relation->guardStorageOwnership();
+            $relation->guardTargetVisible();
             $relation->guardCardinality();
             $relation->guardTargetType();
         });
@@ -64,15 +66,17 @@ class EntryRelation extends Pivot
         // data existed, leaving the type and cardinality free to change and
         // orphan the links. The relation-locking test masked it by calling
         // save() again afterwards, which no real caller does.
-        static::created(function (self $relation): void {
-            if ($relation->field_storage_id === null) {
-                return;
-            }
+        static::created(fn (self $relation) => $relation->armLock());
 
-            FieldStorage::query()
-                ->whereKey($relation->field_storage_id)
-                ->where('is_locked', false)
-                ->update(['is_locked' => true]);
+        // ⚠️ And after a MOVE. `updateExistingPivot()` can point a row at a
+        // different `field_storage_id`, and only the `created` listener armed
+        // the lock — so the destination held relation data while staying
+        // editable, free to change type or cardinality and orphan the links
+        // it had just acquired.
+        static::updated(function (self $relation): void {
+            if ($relation->wasChanged('field_storage_id')) {
+                $relation->armLock();
+            }
         });
 
         // ⚠️ And on UPDATE. `updateExistingPivot()` can move an existing row
@@ -86,14 +90,110 @@ class EntryRelation extends Pivot
             // source A — which `updateExistingPivot()` accepts — lands a
             // second target on a nominated cardinality-one field with no
             // concurrency involved at all.
+            if ($relation->isDirty('field_storage_id')) {
+                $relation->guardStorageOwnership();
+            }
+
             if ($relation->isDirty(['field_storage_id', 'source_entry_id'])) {
                 $relation->guardCardinality();
+            }
+
+            if ($relation->isDirty('target_entry_id')) {
+                $relation->guardTargetVisible();
             }
 
             if ($relation->isDirty(['field_storage_id', 'target_entry_id'])) {
                 $relation->guardTargetType();
             }
         });
+    }
+
+    /**
+     * The target has to be an entry the writer can actually see.
+     *
+     * ⚠️ `attach()` takes an ID and never loads the model, so a pivot could
+     * point anywhere — and every consequence of that has had to be patched
+     * downstream one boundary at a time. Scoping the type-change veto to the
+     * target's org closed the cross-ORG case and left the cross-SITE one
+     * open, because two sites in one org share an org stamp: site A could
+     * attach site B's entry and then veto B's type changes with its own
+     * `targetTypes`.
+     *
+     * Fixed where it belongs. A target that is not visible is not a target,
+     * and refusing on write means the downstream readers stop needing a
+     * boundary check each.
+     *
+     * SiteScope permits org-shared entries (`site_id` NULL), so those stay
+     * attachable, which is the case the relation exists for.
+     */
+    private function guardTargetVisible(): void
+    {
+        if (Entry::query()->whereKey($this->target_entry_id)->exists()) {
+            return;
+        }
+
+        throw new RuntimeException(sprintf(
+            'Entry %d is not visible here, so it cannot be a relation target. `attach()` takes an '
+            .'id and never loads the model, which is how a pivot came to point across a site or '
+            .'organisation boundary at all (ADR-021).',
+            (int) $this->target_entry_id,
+        ));
+    }
+
+    /**
+     * The storage has to be the source org's, or global.
+     *
+     * ⚠️ Nothing checked, and `field_storage` is #[Unscoped], so an org could
+     * attach one of its OWN entries using a RIVAL'S storage id — a
+     * well-formed pivot that then armed that rival's lock, freezing their
+     * schema from a row they cannot see. Guessing an integer was the whole
+     * attack.
+     *
+     * Runs before the lock is armed and before the target-type guard, since
+     * both read settings off the row this validates.
+     *
+     * Ownership by ORG rather than attachment to the source's type. The
+     * attack is cross-org and this closes it exactly; requiring a `Field` row
+     * would additionally forbid attaching storage that belongs to the org but
+     * is not a field of that particular type — defensible, but a behavioural
+     * change with no security gain, so it is stated rather than smuggled in.
+     */
+    private function guardStorageOwnership(): void
+    {
+        if ($this->field_storage_id === null) {
+            return;
+        }
+
+        $storageOrg = FieldStorage::query()->whereKey($this->field_storage_id)->value('org_id');
+
+        if ($storageOrg === null || (int) $storageOrg === (int) $this->org_id) {
+            return;
+        }
+
+        throw new RuntimeException(sprintf(
+            'Field storage %d belongs to another organisation, so it cannot hold a relation here. '
+            .'Storage is #[Unscoped], and this is the only thing standing between a guessed id '
+            .'and freezing a rival\'s schema (ADR-021).',
+            (int) $this->field_storage_id,
+        ));
+    }
+
+    /**
+     * Record that this storage now holds relation data (ADR-006).
+     *
+     * In bulk, so it does not re-enter FieldStorage's own guards — which have
+     * nothing to check here, `is_locked` not being a shape attribute.
+     */
+    private function armLock(): void
+    {
+        if ($this->field_storage_id === null) {
+            return;
+        }
+
+        FieldStorage::query()
+            ->whereKey($this->field_storage_id)
+            ->where('is_locked', false)
+            ->update(['is_locked' => true]);
     }
 
     private function guardCardinality(): void

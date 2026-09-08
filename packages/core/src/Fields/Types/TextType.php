@@ -53,6 +53,27 @@ final class TextType extends BaseFieldType
     }
 
     /** @return array<int, mixed> */
+    /**
+     * ⚠️ The constraints are PUBLISHED, not only enforced.
+     *
+     * The inherited schema said `{"type": "string"}` while validation
+     * rejected anything past 255 characters by default, so a generated client
+     * accepted payloads the API refused — and the same gap applied to a
+     * configured length or pattern.
+     *
+     * @return array<string, mixed>
+     */
+    protected function scalarApiSchema(FieldConfig $config): array
+    {
+        $schema = ['type' => 'string', 'maxLength' => $this->length($config)];
+
+        if (($pattern = $config->setting('pattern')) !== null) {
+            $schema['pattern'] = (string) $pattern;
+        }
+
+        return $schema;
+    }
+
     protected function scalarValidationRules(FieldConfig $config): array
     {
         $rules = [];

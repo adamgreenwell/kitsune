@@ -244,6 +244,46 @@ describe('a datetime round trip keeps what the schema advertises', function (): 
     });
 });
 
+it('enforces a configured step, rather than decorating a widget', function (): void {
+    // ⚠️ `step` was configurable and unenforced, so it constrained a form
+    // and nothing else — an API client submitted any value it liked. A
+    // setting the server does not check is a suggestion, and this one reads
+    // as a rule.
+    expect(validate('number', ['f' => '0.3'], ['step' => 0.5])->fails())->toBeTrue()
+        ->and(validate('number', ['f' => '1.5'], ['step' => 0.5])->fails())->toBeFalse()
+        ->and(validate('number', ['f' => '0.3'], [])->fails())->toBeFalse();
+});
+
+it('offsets the step from a configured min', function (): void {
+    // A step of 5 from a min of 2 permits 2, 7, 12 — not 5.
+    expect(validate('number', ['f' => '7'], ['step' => 5, 'min' => 2])->fails())->toBeFalse()
+        ->and(validate('number', ['f' => '5'], ['step' => 5, 'min' => 2])->fails())->toBeTrue();
+});
+
+it('rejects a non-string slug without reaching the normaliser', function (): void {
+    // ⚠️ Laravel keeps evaluating rules after `string` fails, so an array
+    // reached the uniqueness normaliser and castToStorage() attempted a
+    // string cast — a PHP Error rather than a validation response, from
+    // input that had already been rejected.
+    // Built directly: the helper reads an array value as a multi-value
+    // field, which is not the shape this guards.
+    $type = app(FieldTypeRegistry::class)->get('slug');
+    $v = Validator::make(['f' => ['not', 'a', 'string']], ['f' => $type->validationRules(configFor('slug'))]);
+
+    expect(fn () => $v->fails())->not->toThrow(Throwable::class)
+        ->and($v->fails())->toBeTrue();
+});
+
+it('publishes the text length and pattern it enforces', function (): void {
+    // The inherited schema said {"type": "string"} while validation rejected
+    // anything past 255 characters, so a generated client accepted payloads
+    // the API refused.
+    $type = app(FieldTypeRegistry::class)->get('text');
+
+    expect($type->apiSchema(configFor('text', ['maxLength' => 40, 'pattern' => '^[a-z]+$'])))
+        ->toBe(['type' => 'string', 'maxLength' => 40, 'pattern' => '^[a-z]+$']);
+});
+
 it('publishes the relation cardinality bound too', function (): void {
     // RelationType overrides apiSchema(), so it did not inherit the bound —
     // a generated client could submit three targets to a two-target relation
@@ -363,8 +403,8 @@ describe('cardinality decides where the scalar rules land', function (): void {
         $type = app(FieldTypeRegistry::class)->get('text');
 
         expect($type->apiSchema(configFor('text', [], -1)))
-            ->toBe(['type' => 'array', 'items' => ['type' => 'string']])
-            ->and($type->apiSchema(configFor('text')))->toBe(['type' => 'string']);
+            ->toBe(['type' => 'array', 'items' => ['type' => 'string', 'maxLength' => 255]])
+            ->and($type->apiSchema(configFor('text')))->toBe(['type' => 'string', 'maxLength' => 255]);
     });
 });
 

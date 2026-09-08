@@ -1121,6 +1121,102 @@ describe('changing an entry\'s type cannot orphan a relation pointing at it', fu
     });
 });
 
+describe('a pivot cannot reach past what the writer can see', function (): void {
+    beforeEach(function (): void {
+        $this->rivalOrg = Org::create(['name' => 'W', 'slug' => 'pivot-rival']);
+
+        $this->storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'person', 'type' => 'relation',
+            'pii_class' => 'personal', 'cardinality' => -1,
+        ]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $this->storage->id, 'label' => 'Person',
+        ]);
+
+        $this->visit = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Visit']);
+    });
+
+    /*
+     * ⚠️ `attach()` takes an ID and never loads the model, so a pivot could
+     * point anywhere — and every consequence has had to be patched downstream
+     * one boundary at a time. Scoping the type-change veto to the target's org
+     * closed the cross-ORG case and left the cross-SITE one open, because two
+     * sites in one org share an org stamp.
+     */
+    it('refuses a target on ANOTHER SITE of the same org', function (): void {
+        $otherSite = Site::create([
+            'org_id' => $this->org->id, 'handle' => 'b', 'slug' => 'other-site', 'name' => 'B',
+        ]);
+
+        $theirs = Entry::withoutScopeBecause('fixture: another site\'s row', fn () => Entry::create([
+            'org_id' => $this->org->id, 'site_id' => $otherSite->id,
+            'entry_type_id' => $this->type->id, 'title' => 'Theirs',
+        ]));
+
+        expect(fn () => $this->visit->related()->attach($theirs->id, ['field_storage_id' => $this->storage->id]))
+            ->toThrow(RuntimeException::class, 'not visible here');
+    });
+
+    it('still allows an ORG-SHARED target, which is what relations are for', function (): void {
+        $shared = Entry::create([
+            'site_id' => null, 'entry_type_id' => $this->type->id, 'title' => 'Shared',
+        ]);
+
+        expect(fn () => $this->visit->related()->attach($shared->id, ['field_storage_id' => $this->storage->id]))
+            ->not->toThrow(RuntimeException::class);
+    });
+
+    /*
+     * ⚠️ `field_storage` is #[Unscoped] and nothing checked ownership, so an
+     * org could attach one of its OWN entries using a rival's storage id — a
+     * well-formed pivot that armed that rival's lock and froze their schema
+     * from a row they cannot see. Guessing an integer was the whole attack.
+     */
+    it('refuses a rival org\'s storage, which would arm their lock', function (): void {
+        $theirs = FieldStorage::create([
+            'org_id' => $this->rivalOrg->id, 'handle' => 'person', 'type' => 'relation',
+            'pii_class' => 'personal', 'cardinality' => -1,
+        ]);
+        $alice = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Alice']);
+
+        expect(fn () => $this->visit->related()->attach($alice->id, ['field_storage_id' => $theirs->id]))
+            ->toThrow(RuntimeException::class, 'belongs to another organisation');
+
+        expect($theirs->fresh()->is_locked)->toBeFalse();
+    });
+
+    it('still allows GLOBAL storage, which every org may use', function (): void {
+        $global = FieldStorage::create([
+            'org_id' => null, 'handle' => 'system_person', 'type' => 'relation',
+            'pii_class' => 'personal', 'cardinality' => -1,
+        ]);
+        $alice = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Alice']);
+
+        expect(fn () => $this->visit->related()->attach($alice->id, ['field_storage_id' => $global->id]))
+            ->not->toThrow(RuntimeException::class);
+    });
+
+    it('arms the DESTINATION lock when a row is moved onto it', function (): void {
+        // ⚠️ Only the `created` listener armed the lock, so a row moved onto
+        // different storage left the destination holding relation data while
+        // staying editable — free to change type or cardinality and orphan
+        // the links it had just acquired.
+        $other = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'reviewer', 'type' => 'relation',
+            'pii_class' => 'none', 'cardinality' => -1,
+        ]);
+        $alice = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Alice']);
+
+        $this->visit->related()->attach($alice->id, ['field_storage_id' => $this->storage->id]);
+
+        expect($other->fresh()->is_locked)->toBeFalse();
+
+        $this->visit->related()->updateExistingPivot($alice->id, ['field_storage_id' => $other->id]);
+
+        expect($other->fresh()->is_locked)->toBeTrue();
+    });
+});
+
 describe('a null identifier is unanswerable, not a wildcard', function (): void {
     /*
      * ⚠️ `= null` compiles to `IS NULL`, so both the promoted and the inline
