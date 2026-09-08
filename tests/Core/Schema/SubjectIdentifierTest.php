@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Models\Entry;
+use Kitsune\Core\Models\EntryRelation;
 use Kitsune\Core\Models\EntryRevision;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Field;
@@ -725,25 +726,48 @@ describe('a nomination survives its storage being edited', function (): void {
     });
 });
 
-it('refuses to nominate a field backed by ANOTHER ORG\'s storage', function (): void {
-    /*
-     * ⚠️ `Field::create()` skips the Field guard entirely — the listener
-     * returns early on a model that does not yet exist — so the ordinary
-     * create-then-nominate sequence could back a nomination with a rival
-     * org's storage, which FieldStorage being #[Unscoped] does nothing to
-     * prevent.
-     */
-    $rival = Org::create(['name' => 'R', 'slug' => 'rival-storage']);
-    $theirs = FieldStorage::create([
-        'org_id' => $rival->id, 'handle' => 'their_email', 'type' => 'text',
-        'pii_class' => 'personal', 'cardinality' => 1,
-    ]);
-    $field = Field::create([
-        'entry_type_id' => $this->type->id, 'field_storage_id' => $theirs->id, 'label' => 'Their email',
-    ]);
+describe('a rival\'s storage cannot be borrowed at all', function (): void {
+    beforeEach(function (): void {
+        $rival = Org::create(['name' => 'R', 'slug' => 'rival-storage']);
 
-    expect(fn () => $this->type->update(['subject_field_id' => $field->id]))
-        ->toThrow(RuntimeException::class, "another organisation's storage");
+        $this->theirs = FieldStorage::create([
+            'org_id' => $rival->id, 'handle' => 'their_email', 'type' => 'text',
+            'pii_class' => 'personal', 'cardinality' => 1,
+        ]);
+    });
+
+    /*
+     * ⚠️ `Field::create()` used to skip the guard entirely — it returned
+     * early on a model that does not yet exist — so the create-then-nominate
+     * sequence could back a nomination with a rival org's storage, which
+     * FieldStorage being #[Unscoped] does nothing to prevent.
+     *
+     * Refused at attachment now, which also closes the case that needs no
+     * nomination: attaching a rival's row to an ordinary type makes the holes
+     * report answer a question about THEIR classification.
+     */
+    it('refuses the attachment itself, before any nomination', function (): void {
+        expect(fn () => Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $this->theirs->id, 'label' => 'Their email',
+        ]))->toThrow(RuntimeException::class, 'belongs to another organisation');
+    });
+
+    it('refuses to repoint an existing field onto it', function (): void {
+        expect(fn () => $this->emailField->update(['field_storage_id' => $this->theirs->id]))
+            ->toThrow(RuntimeException::class);
+    });
+
+    it('still refuses the nomination for a row that predates the guard', function (): void {
+        // Defence in depth: the attachment guard is new, so a row written
+        // before it could already exist. Created without events to represent
+        // exactly that.
+        $field = Field::withoutEvents(fn () => Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $this->theirs->id, 'label' => 'Their email',
+        ]));
+
+        expect(fn () => $this->type->update(['subject_field_id' => $field->id]))
+            ->toThrow(RuntimeException::class, "another organisation's storage");
+    });
 });
 
 it('still allows a nomination backed by GLOBAL storage', function (): void {
@@ -806,6 +830,62 @@ it('lets a row be moved when the destination has room', function (): void {
         ->not->toThrow(RuntimeException::class);
 });
 
+it('enforces the field\'s rules when a pivot row moves to a different SOURCE', function (): void {
+    /*
+     * ⚠️ The update guard watched `field_storage_id` only. Cardinality is
+     * counted per (source, field), so `updateExistingPivot()` moving a row
+     * from source B onto source A — which already holds a target for the same
+     * cardinality-one nominated field — lands two subjects on A with no
+     * concurrency involved at all.
+     */
+    $one = FieldStorage::create([
+        'org_id' => $this->org->id, 'handle' => 'person', 'type' => 'relation',
+        'pii_class' => 'personal', 'cardinality' => 1,
+    ]);
+
+    $alice = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Alice']);
+    $bob = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Bob']);
+    $visitA = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Visit A']);
+    $visitB = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Visit B']);
+
+    $visitA->related()->attach($alice->id, ['field_storage_id' => $one->id]);
+    $visitB->related()->attach($bob->id, ['field_storage_id' => $one->id]);
+
+    // Repoint B's row at A, which already has its one person.
+    expect(fn () => $visitB->related()->updateExistingPivot($bob->id, ['source_entry_id' => $visitA->id]))
+        ->toThrow(RuntimeException::class, 'already has that many');
+
+    expect(EntryRelation::query()->where('source_entry_id', $visitA->id)->count())->toBe(1);
+});
+
+it('counts cardinality against the SOURCE when attaching from the other end', function (): void {
+    /*
+     * ⚠️ `referencedBy()` hangs off the TARGET, so the relation's parent is
+     * not the source. The lock was taken on the parent unconditionally, which
+     * meant two concurrent calls on different targets attaching the same
+     * source took different locks entirely — both passed the count and left
+     * that source with two subject targets.
+     *
+     * The count itself has to be against the source either way, which is what
+     * this asserts; the lock now follows the same end.
+     */
+    $one = FieldStorage::create([
+        'org_id' => $this->org->id, 'handle' => 'person', 'type' => 'relation',
+        'pii_class' => 'personal', 'cardinality' => 1,
+    ]);
+
+    $visit = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Visit']);
+    $alice = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Alice']);
+    $bob = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Bob']);
+
+    $alice->referencedBy()->attach($visit->id, ['field_storage_id' => $one->id]);
+
+    expect(fn () => $bob->referencedBy()->attach($visit->id, ['field_storage_id' => $one->id]))
+        ->toThrow(RuntimeException::class, 'already has that many');
+
+    expect($bob->referencedBy())->toBeInstanceOf(GuardedBelongsToMany::class);
+});
+
 it('serialises the count-then-insert behind a lock on the source entry', function (): void {
     // ⚠️ The check is two statements, and two of those interleave: concurrent
     // attaches to the same single-valued relation both count zero and both
@@ -829,9 +909,16 @@ it('refuses org-owned storage on a GLOBAL entry type', function (): void {
         'org_id' => $this->org->id, 'handle' => 'my_email', 'type' => 'text',
         'pii_class' => 'personal', 'cardinality' => 1,
     ]);
-    $field = Field::create([
+    // The attachment is refused outright now — a global type takes global
+    // storage only. Created without events to reach the nomination guard
+    // underneath, which still has to hold for rows written before that.
+    expect(fn () => Field::create([
         'entry_type_id' => $global->id, 'field_storage_id' => $mine->id, 'label' => 'Email',
-    ]);
+    ]))->toThrow(RuntimeException::class, 'belongs to another organisation');
+
+    $field = Field::withoutEvents(fn () => Field::create([
+        'entry_type_id' => $global->id, 'field_storage_id' => $mine->id, 'label' => 'Email',
+    ]));
 
     expect(fn () => $global->update(['subject_field_id' => $field->id]))
         ->toThrow(RuntimeException::class, 'a global entry type');

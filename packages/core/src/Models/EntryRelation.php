@@ -62,7 +62,12 @@ class EntryRelation extends Pivot
         // recreating the two-subject disclosure through the ordinary
         // relationship API, with no row ever being created.
         static::updating(function (self $relation): void {
-            if ($relation->isDirty('field_storage_id')) {
+            // ⚠️ source_entry_id too, not only the field. Cardinality is
+            // counted per (source, field), so moving a row from source B onto
+            // source A — which `updateExistingPivot()` accepts — lands a
+            // second target on a nominated cardinality-one field with no
+            // concurrency involved at all.
+            if ($relation->isDirty(['field_storage_id', 'source_entry_id'])) {
                 $relation->guardCardinality();
             }
 

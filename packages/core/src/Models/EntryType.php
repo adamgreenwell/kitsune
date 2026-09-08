@@ -261,7 +261,22 @@ class EntryType extends Model
             ->availableToCurrentOrg()
             ->whereNull('subject_field_id')
             ->whereHas('fields.fieldStorage', function (Builder $query): void {
-                $query->whereIn('pii_class', ['personal', 'sensitive']);
+                // ⚠️ The nested query is scoped too. Scoping only the outer
+                // EntryType left FieldStorage — which is #[Unscoped] — free
+                // to match another org's row, so a rival's classification
+                // could decide whether this org's type counted as a hole.
+                // Field now refuses that attachment on save; this keeps the
+                // report right for any row that predates the guard.
+                $orgId = app(Context::class)->orgId();
+
+                $query->whereIn('pii_class', ['personal', 'sensitive'])
+                    ->where(function (Builder $storage) use ($orgId): void {
+                        $storage->whereNull('org_id');
+
+                        if ($orgId !== null) {
+                            $storage->orWhere('org_id', $orgId);
+                        }
+                    });
             });
     }
 
