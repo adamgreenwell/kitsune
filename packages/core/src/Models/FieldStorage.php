@@ -12,9 +12,11 @@ namespace Kitsune\Core\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Query\Builder;
 use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Fields\FieldTypeRegistry;
 use Kitsune\Core\Fields\Projection;
+use Kitsune\Core\Schema\GuardedStorageBuilder;
 use Kitsune\Core\Tenancy\Attributes\Unscoped;
 use RuntimeException;
 
@@ -113,55 +115,103 @@ class FieldStorage extends Model
         // runtime schema engine the platform cannot know whether "Customer
         // Notes" holds personal data, and guessing from the field name fails
         // the moment a tenant labels it in German.
-        static::saving(function (self $storage): void {
-            if ($storage->pii_class === null) {
-                throw new RuntimeException(
-                    "Field [{$storage->handle}] has no pii_class. Classify it as one of: "
-                    .implode(', ', self::PII_CLASSES).'. Without it a subject-access or '
-                    .'erasure request is unanswerable, and nothing else can supply the answer.'
-                );
-            }
+        static::saving(fn (self $storage) => $storage->guardShape());
 
-            if (! in_array($storage->pii_class, self::PII_CLASSES, true)) {
-                throw new RuntimeException("Unknown pii_class [{$storage->pii_class}].");
-            }
-
-            $storage->guardHandle();
-            $storage->guardCardinalitySupport();
-
-            // ⚠️ The ORIGINAL lock state, and the flag cannot be cleared.
-            //
-            // Reading `$storage->is_locked` read the value being SAVED, so a
-            // caller could set it false — alone or alongside a shape change —
-            // and every guard below skipped itself. The model is fully mass
-            // assignable, so that was one array key away from routing around
-            // ADR-006 entirely, without an amendment.
-            if ($storage->exists
-                && (bool) $storage->getRawOriginal('is_locked')
-                && ! $storage->is_locked) {
-                throw new RuntimeException(
-                    "Field [{$storage->handle}] is locked because entries hold data for it, and "
-                    .'the lock cannot be cleared while that is true. It is not a preference — it '
-                    .'is the record that data exists (ADR-006).'
-                );
-            }
-
-            // ADR-006: storage locks the moment data exists. Shipping this
-            // guard in v1 rather than later is the whole point of copying it.
-            if ($storage->exists && (bool) $storage->getRawOriginal('is_locked')) {
-                foreach (self::SHAPE_ATTRIBUTES as $attribute) {
-                    if ($storage->isDirty($attribute)) {
-                        throw new RuntimeException(
-                            "Field [{$storage->handle}] is locked because entries hold data for it. "
-                            ."[{$attribute}] cannot change. Create a new field, migrate the data, verify, "
-                            .'then drop the old one — a silent shape change is how content gets destroyed.'
-                        );
-                    }
-                }
-
-                $storage->guardProjectionSettings();
-            }
+        // Cleared once the write is done, so the next one has to earn it again.
+        static::saved(function (self $storage): void {
+            $storage->shapeGuarded = false;
         });
+    }
+
+    /**
+     * True only while THIS instance's guards have run for the write in flight.
+     *
+     * ⚠️ How the guarded builder tells an instance save from a bulk one. Both
+     * arrive at `GuardedStorageBuilder::update()`, because
+     * `Model::performUpdate()` writes through the builder — so refusing every
+     * bulk-shaped write refused ordinary `$storage->update(...)` as well.
+     *
+     * The flag is set by `guardShape()`, which only the `saving` event
+     * reaches. A bulk update dispatches nothing, so it can never be set, and
+     * the builder refuses.
+     */
+    public bool $shapeGuarded = false;
+
+    /**
+     * Every ADR-006 and ADR-020 guarantee this model makes.
+     *
+     * ⚠️ Reachable from the BUILDER as well as from the model event, because
+     * a model event is not "the one place every path goes through" — this
+     * project's own ADR-020 amendment says so, about a different model, and
+     * this one had no builder at all.
+     *
+     * `FieldStorage::query()->update(['handle' => 'cost', 'type' => 'number'])`
+     * changed both on a LOCKED row, and `createQuietly()` persisted
+     * `pii_class` NULL, which ADR-020 states cannot exist. Both verified by
+     * probe. The bulk idiom is not exotic here either: `lockStorageHoldingData()`
+     * and `armLock()` both use it, precisely because it skips the listener.
+     */
+    public function guardShape(): void
+    {
+        if ($this->pii_class === null) {
+            throw new RuntimeException(
+                "Field [{$this->handle}] has no pii_class. Classify it as one of: "
+                .implode(', ', self::PII_CLASSES).'. Without it a subject-access or '
+                .'erasure request is unanswerable, and nothing else can supply the answer.'
+            );
+        }
+
+        if (! in_array($this->pii_class, self::PII_CLASSES, true)) {
+            throw new RuntimeException("Unknown pii_class [{$this->pii_class}].");
+        }
+
+        $this->guardHandle();
+        $this->guardCardinalitySupport();
+
+        // ⚠️ The ORIGINAL lock state, and the flag cannot be cleared.
+        //
+        // Reading `$this->is_locked` read the value being SAVED, so a caller
+        // could set it false — alone or alongside a shape change — and every
+        // guard below skipped itself. The model is fully mass assignable, so
+        // that was one array key away from routing around ADR-006 entirely,
+        // without an amendment.
+        if ($this->exists
+            && (bool) $this->getRawOriginal('is_locked')
+            && ! $this->is_locked) {
+            throw new RuntimeException(
+                "Field [{$this->handle}] is locked because entries hold data for it, and "
+                .'the lock cannot be cleared while that is true. It is not a preference — it '
+                .'is the record that data exists (ADR-006).'
+            );
+        }
+
+        // ADR-006: storage locks the moment data exists. Shipping this
+        // guard in v1 rather than later is the whole point of copying it.
+        if ($this->exists && (bool) $this->getRawOriginal('is_locked')) {
+            foreach (self::SHAPE_ATTRIBUTES as $attribute) {
+                if ($this->isDirty($attribute)) {
+                    throw new RuntimeException(
+                        "Field [{$this->handle}] is locked because entries hold data for it. "
+                        ."[{$attribute}] cannot change. Create a new field, migrate the data, verify, "
+                        .'then drop the old one — a silent shape change is how content gets destroyed.'
+                    );
+                }
+            }
+
+            $this->guardProjectionSettings();
+        }
+
+        $this->shapeGuarded = true;
+    }
+
+    /**
+     * ⚠️ Every write goes through the guarded builder (ADR-006).
+     *
+     * @param  Builder  $query
+     */
+    public function newEloquentBuilder($query): GuardedStorageBuilder
+    {
+        return new GuardedStorageBuilder($query);
     }
 
     public function isMultiValue(): bool

@@ -348,6 +348,88 @@ describe('reconcile repairs drift', function (): void {
  * follow it there — two orgs configuring `number` differently would otherwise
  * have shared `idx_count__number` with incompatible column types.
  */
+describe('the guards hold on the bulk path, which had none', function (): void {
+    /*
+     * ⚠️ `FieldStorage` had no builder at all, while `Entry` and `AuditLog`
+     * were both given one for exactly this reason. So every ADR-006 and
+     * ADR-020 guarantee on this model was true of the row-at-a-time path and
+     * of nothing else. Both of these were verified by probe before the fix:
+     *
+     *   FieldStorage::query()->whereKey($id)->update(['handle' => 'cost', 'type' => 'number'])
+     *     -> changed BOTH on a locked row
+     *   FieldStorage::createQuietly([...without pii_class])
+     *     -> persisted a row ADR-020 says cannot exist
+     *
+     * The bulk idiom is not exotic here: lockStorageHoldingData() and
+     * armLock() both use it, BECAUSE it skips the listener.
+     */
+    beforeEach(function (): void {
+        $this->guarded = storageFor('price', 'number', [
+            'org_id' => $this->orgA->id, 'is_locked' => true, 'settings' => ['format' => 'decimal'],
+        ]);
+    });
+
+    it('refuses a bulk rename of a locked field', function (): void {
+        expect(fn () => FieldStorage::query()->whereKey($this->guarded->id)->update(['handle' => 'cost']))
+            ->toThrow(RuntimeException::class, 'cannot be written in bulk');
+
+        expect($this->guarded->fresh()->handle)->toBe('price');
+    });
+
+    it('refuses a bulk retype, and a qualified column name', function (): void {
+        expect(fn () => FieldStorage::query()->update(['type' => 'text']))
+            ->toThrow(RuntimeException::class)
+            ->and(fn () => FieldStorage::query()->update(['field_storage.type' => 'text']))
+            ->toThrow(RuntimeException::class);
+
+        expect($this->guarded->fresh()->type)->toBe('number');
+    });
+
+    it('refuses to CLEAR a lock in bulk, which skipped every guard behind it', function (): void {
+        expect(fn () => FieldStorage::query()->whereKey($this->guarded->id)->update(['is_locked' => false]))
+            ->toThrow(RuntimeException::class, 'cannot be cleared in bulk');
+
+        expect($this->guarded->fresh()->is_locked)->toBeTrue();
+    });
+
+    it('still ARMS a lock in bulk, which is what the codebase does', function (): void {
+        // The one bulk write that is both needed and safe: setting it true
+        // cannot invalidate content, and both lock-arming paths do exactly it.
+        $open = storageFor('other', 'number', ['org_id' => $this->orgA->id]);
+
+        expect(fn () => FieldStorage::query()->whereKey($open->id)->update(['is_locked' => true]))
+            ->not->toThrow(RuntimeException::class);
+
+        expect($open->fresh()->is_locked)->toBeTrue();
+    });
+
+    it('still allows an ordinary instance save', function (): void {
+        // The flag is what separates the two: an instance save has already run
+        // its guards, a bulk update dispatched nothing and never could.
+        $open = storageFor('other', 'text', ['org_id' => $this->orgA->id]);
+
+        expect(fn () => $open->update(['handle' => 'renamed']))->not->toThrow(RuntimeException::class);
+        expect($open->fresh()->handle)->toBe('renamed');
+    });
+
+    it('refuses a QUIET create with no classification', function (): void {
+        // createQuietly() suppresses the saving listener while still inserting,
+        // so pii_class fail-closed did not apply — ADR-020 says such a row
+        // cannot exist.
+        expect(fn () => FieldStorage::createQuietly([
+            'org_id' => $this->orgA->id, 'handle' => 'notes', 'type' => 'text',
+        ]))->toThrow(RuntimeException::class, 'no pii_class');
+
+        expect(FieldStorage::query()->where('handle', 'notes')->exists())->toBeFalse();
+    });
+
+    it('refuses bulk creation outright', function (): void {
+        expect(fn () => FieldStorage::query()->insert([[
+            'org_id' => $this->orgA->id, 'handle' => 'bulk', 'type' => 'text', 'cardinality' => 1,
+        ]]))->toThrow(RuntimeException::class, 'cannot be created in bulk');
+    });
+});
+
 describe('a locked field cannot be narrowed, only widened', function (): void {
     /*
      * ⚠️ The projection guard compares where a value is STORED, and a field
