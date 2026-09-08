@@ -109,7 +109,7 @@ This binds the maintainer identically. ADR-026's recommended default was flipped
 
 Capturing an extra scalar purely to fix the key does not work either: **Pint strips unused `use` variables**, and it did — silently reverting the fix. So pass scope keys rather than models (`EntryTypeAvailability::enabledMapFor()` takes `$siteId, $siteGroupId, $orgId` for this reason), and the key becomes correct because the body genuinely uses it.
 
-## 13. A field type's schema and its validation drift by default
+## 14. A field type's schema and its validation drift by default
 
 Overriding `scalarValidationRules()` is what you reach for when a constraint
 is needed; overriding `scalarApiSchema()` is optional and easy to forget. So
@@ -127,7 +127,7 @@ cardinality, bounds for a number. If a constraint cannot be expressed in the
 schema, say so in the type's docblock rather than leaving the schema silently
 wider than the rule.
 
-## 14. Measure; do not reason
+## 15. Measure; do not reason
 
 Standing Principle #9, and it has cost real time when ignored:
 

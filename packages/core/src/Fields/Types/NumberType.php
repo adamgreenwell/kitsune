@@ -84,7 +84,7 @@ final class NumberType extends BaseFieldType
     }
 
     /**
-     * ⚠️ The bounds are PUBLISHED, not only enforced (AGENTS.md invariant 13).
+     * ⚠️ The bounds are PUBLISHED, not only enforced (AGENTS.md invariant 14).
      *
      * Validation rejects values outside `min`/`max`, and a decimal field also
      * has bounds derived from its projection — a DECIMAL(12,2) cannot hold
@@ -128,7 +128,7 @@ final class NumberType extends BaseFieldType
         // `multipleOf: 0.5` rejects both — a generated client would refuse
         // server-valid values and offer ones the server refuses. JSON Schema
         // cannot express the offset, so it is omitted rather than published
-        // wrongly (AGENTS.md invariant 13: say so instead).
+        // wrongly (AGENTS.md invariant 14: say so instead).
         if (($step = $config->setting('step')) !== null && is_numeric($step) && (float) $step > 0) {
             $offset = (float) ($config->setting('min') ?? 0);
             $steps = $offset / (float) $step;

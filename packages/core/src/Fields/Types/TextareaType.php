@@ -43,7 +43,7 @@ final class TextareaType extends BaseFieldType
      * The 65,535-character limit is PUBLISHED, not only enforced.
      *
      * It inherited `{"type": "string"}` from the base type, so a generated
-     * client accepted a value this field rejects (AGENTS.md invariant 13).
+     * client accepted a value this field rejects (AGENTS.md invariant 14).
      *
      * @return array<string, mixed>
      */
