@@ -55,6 +55,21 @@ class EntryRelation extends Pivot
             $relation->guardCardinality();
             $relation->guardTargetType();
         });
+
+        // ⚠️ And on UPDATE. `updateExistingPivot()` can move an existing row
+        // onto a different field, so a second target from an unlimited
+        // relation could be repointed at a nominated cardinality-one field —
+        // recreating the two-subject disclosure through the ordinary
+        // relationship API, with no row ever being created.
+        static::updating(function (self $relation): void {
+            if ($relation->isDirty('field_storage_id')) {
+                $relation->guardCardinality();
+            }
+
+            if ($relation->isDirty(['field_storage_id', 'target_entry_id'])) {
+                $relation->guardTargetType();
+            }
+        });
     }
 
     private function guardCardinality(): void
@@ -69,6 +84,8 @@ class EntryRelation extends Pivot
         $existing = static::query()
             ->where('source_entry_id', $this->source_entry_id)
             ->where('field_storage_id', $this->field_storage_id)
+            // The row being MOVED does not count against its destination.
+            ->when($this->exists, fn ($query) => $query->whereKeyNot($this->getKey()))
             ->count();
 
         if ($existing >= $storage->cardinality) {

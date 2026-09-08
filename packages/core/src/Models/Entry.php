@@ -13,11 +13,11 @@ namespace Kitsune\Core\Models;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
-use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Support\Collection;
 use Kitsune\Core\Fields\StorageStrategy;
+use Kitsune\Core\Relations\GuardedBelongsToMany;
 use Kitsune\Core\Tenancy\Attributes\SiteScoped;
 use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
 
@@ -283,9 +283,9 @@ class Entry extends Model
     /**
      * Outgoing relations through the real table (ADR-015).
      *
-     * @return BelongsToMany<Entry, $this, EntryRelation>
+     * @return GuardedBelongsToMany<Entry, $this>
      */
-    public function related(): BelongsToMany
+    public function related(): GuardedBelongsToMany
     {
         return $this->relationsThrough('source_entry_id', 'target_entry_id');
     }
@@ -294,9 +294,9 @@ class Entry extends Model
      * The reverse lookup that JSON storage cannot answer without a full scan:
      * "what references this asset?"
      *
-     * @return BelongsToMany<Entry, $this, EntryRelation>
+     * @return GuardedBelongsToMany<Entry, $this>
      */
-    public function referencedBy(): BelongsToMany
+    public function referencedBy(): GuardedBelongsToMany
     {
         return $this->relationsThrough('target_entry_id', 'source_entry_id');
     }
@@ -316,11 +316,28 @@ class Entry extends Model
      * non-nullable and EnforcesScope stamps it on create, so it is always
      * available here.
      *
-     * @return BelongsToMany<Entry, $this, EntryRelation>
+     * @return GuardedBelongsToMany<Entry, $this>
      */
-    private function relationsThrough(string $foreignPivotKey, string $relatedPivotKey): BelongsToMany
+    private function relationsThrough(string $foreignPivotKey, string $relatedPivotKey): GuardedBelongsToMany
     {
-        $relation = $this->belongsToMany(self::class, 'entry_relations', $foreignPivotKey, $relatedPivotKey)
+        // Constructed rather than via belongsToMany(), so this relation —
+        // and only this one — serialises its writes. The cardinality check in
+        // EntryRelation is a count followed by an insert, and two of those
+        // interleave: concurrent attaches to the same single-valued relation
+        // both count zero and both insert, restoring the two-subject state
+        // the check exists to prevent (ADR-020).
+        $relation = new GuardedBelongsToMany(
+            self::query(),
+            $this,
+            'entry_relations',
+            $foreignPivotKey,
+            $relatedPivotKey,
+            $this->getKeyName(),
+            $this->getKeyName(),
+            __FUNCTION__,
+        );
+
+        $relation
             // A pivot MODEL, so the field's own cardinality and targetTypes
             // are enforced when a row is written. `attach()` goes nowhere
             // near validation, so without this they were metadata nobody

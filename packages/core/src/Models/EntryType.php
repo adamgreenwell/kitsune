@@ -149,12 +149,20 @@ class EntryType extends Model
         //
         // A global storage row (org_id NULL) is legitimate, matching how
         // global entry types work.
-        if ($storage->org_id !== null && $this->org_id !== null && $storage->org_id !== $this->org_id) {
-            throw new RuntimeException(
-                "Field [{$storage->handle}] is backed by another organisation's storage and cannot "
-                .'identify a data subject here. Subject-access requests would be answered against '
-                .'a definition this organisation does not control (ADR-020, ADR-021).'
-            );
+        // ⚠️ A GLOBAL type may only nominate GLOBAL storage. Exempting it
+        // let one customer's storage definition decide every org's
+        // subject-access behaviour, since a global type is available to all
+        // of them — a wider blast radius than the cross-org case, not a
+        // narrower one.
+        if ($storage->org_id !== $this->org_id && $storage->org_id !== null) {
+            throw new RuntimeException(sprintf(
+                'Field [%s] is backed by %s and cannot identify a data subject on %s. '
+                .'Subject-access requests would be answered against a definition this entry type '
+                .'does not control (ADR-020, ADR-021).',
+                $storage->handle,
+                "another organisation's storage",
+                $this->org_id === null ? 'a global entry type' : 'this entry type',
+            ));
         }
 
         $config = new FieldConfig($storage, $field);

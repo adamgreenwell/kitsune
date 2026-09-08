@@ -16,6 +16,7 @@ use Kitsune\Core\Models\Field;
 use Kitsune\Core\Models\FieldStorage;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
+use Kitsune\Core\Relations\GuardedBelongsToMany;
 use Kitsune\Core\Tenancy\Context;
 
 /*
@@ -756,4 +757,82 @@ it('still allows a nomination backed by GLOBAL storage', function (): void {
     ]);
 
     expect(fn () => $this->type->update(['subject_field_id' => $field->id]))->not->toThrow(RuntimeException::class);
+});
+
+it('enforces the field\'s rules when a pivot row is MOVED, not only created', function (): void {
+    /*
+     * ⚠️ The guards ran on `creating` only, so `updateExistingPivot()` could
+     * move an existing row onto a different field — a second target from an
+     * unlimited relation repointed at a nominated cardinality-one field,
+     * recreating the two-subject state through the ordinary API with no row
+     * ever being created.
+     */
+    $unlimited = FieldStorage::create([
+        'org_id' => $this->org->id, 'handle' => 'links', 'type' => 'relation',
+        'pii_class' => 'none', 'cardinality' => -1,
+    ]);
+    $one = FieldStorage::create([
+        'org_id' => $this->org->id, 'handle' => 'person', 'type' => 'relation',
+        'pii_class' => 'personal', 'cardinality' => 1,
+    ]);
+
+    $alice = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Alice']);
+    $bob = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Bob']);
+    $record = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Visit']);
+
+    $record->related()->attach($alice->id, ['field_storage_id' => $one->id]);
+    $record->related()->attach($bob->id, ['field_storage_id' => $unlimited->id]);
+
+    expect(fn () => $record->related()->updateExistingPivot($bob->id, ['field_storage_id' => $one->id]))
+        ->toThrow(RuntimeException::class, 'already has that many');
+});
+
+it('lets a row be moved when the destination has room', function (): void {
+    // The row being moved must not count against its own destination.
+    $one = FieldStorage::create([
+        'org_id' => $this->org->id, 'handle' => 'person', 'type' => 'relation',
+        'pii_class' => 'personal', 'cardinality' => 1,
+    ]);
+    $other = FieldStorage::create([
+        'org_id' => $this->org->id, 'handle' => 'reviewer', 'type' => 'relation',
+        'pii_class' => 'personal', 'cardinality' => 1,
+    ]);
+
+    $alice = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Alice']);
+    $record = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Visit']);
+    $record->related()->attach($alice->id, ['field_storage_id' => $one->id]);
+
+    expect(fn () => $record->related()->updateExistingPivot($alice->id, ['field_storage_id' => $other->id]))
+        ->not->toThrow(RuntimeException::class);
+});
+
+it('serialises the count-then-insert behind a lock on the source entry', function (): void {
+    // ⚠️ The check is two statements, and two of those interleave: concurrent
+    // attaches to the same single-valued relation both count zero and both
+    // insert. Asserting the SHAPE of the fix rather than racing threads,
+    // which a test cannot do deterministically — the relation is the guarded
+    // subclass, so every attach runs inside a transaction that locks the
+    // parent row first.
+    $record = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Visit']);
+
+    expect($record->related())->toBeInstanceOf(GuardedBelongsToMany::class);
+});
+
+it('refuses org-owned storage on a GLOBAL entry type', function (): void {
+    // A global type is available to every org, so nominating one customer's
+    // storage would make every org's subject-access behaviour depend on it —
+    // a wider blast radius than the cross-org case, not a narrower one.
+    $global = EntryType::create([
+        'org_id' => null, 'handle' => 'system_person', 'name' => 'Person', 'plural_name' => 'People',
+    ]);
+    $mine = FieldStorage::create([
+        'org_id' => $this->org->id, 'handle' => 'my_email', 'type' => 'text',
+        'pii_class' => 'personal', 'cardinality' => 1,
+    ]);
+    $field = Field::create([
+        'entry_type_id' => $global->id, 'field_storage_id' => $mine->id, 'label' => 'Email',
+    ]);
+
+    expect(fn () => $global->update(['subject_field_id' => $field->id]))
+        ->toThrow(RuntimeException::class, 'a global entry type');
 });
