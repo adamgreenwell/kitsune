@@ -128,32 +128,45 @@ final class RichTextType extends BaseFieldType
         // rather than emitted. The parse still yields a tree.
         $previous = libxml_use_internal_errors(true);
 
-        // The meta charset, not a `<?xml` declaration: the latter is echoed
-        // into the output as a processing instruction on some libxml builds.
-        // LIBXML_HTML_NOIMPLIED with an explicit wrapper keeps libxml from
-        // inventing <html><body>, which would then need stripping back off.
+        // ⚠️ The wrapper is a PARSING aid, not a boundary, and the first
+        // version of this treated it as a boundary.
+        //
+        // It serialised the wrapper element's children, so a stray `</div>` in
+        // the input — ordinary in pasted markup — closed it and every node
+        // after landed outside and was silently discarded:
+        // `sanitize('hello</div>world')` returned `hello`, and
+        // `<p>one</p></div><p>two</p>` lost the second paragraph. Data loss
+        // introduced by a sanitiser is worse than the hole it replaced.
+        //
+        // The whole DOCUMENT is walked now, so nothing can fall outside what
+        // is collected. The wrapper needs no special handling on the way out
+        // either: `div` is not in ALLOWED_TAGS, so `clean()` unwraps it like
+        // any other disallowed element.
+        //
+        // It is still there because without it libxml wraps loose top-level
+        // TEXT in an implied `<p>`, which would silently reshape content that
+        // arrived as a bare string. The meta tells the parse the bytes are
+        // UTF-8 and is skipped on the way out.
         $document->loadHTML(
-            '<meta http-equiv="Content-Type" content="text/html; charset=utf-8"><div id="kitsune-root">'.$html.'</div>',
-            LIBXML_HTML_NODEFDTD,
+            '<meta http-equiv="Content-Type" content="text/html; charset=utf-8"><div>'.$html.'</div>',
+            LIBXML_HTML_NOIMPLIED | LIBXML_HTML_NODEFDTD,
         );
 
         libxml_clear_errors();
         libxml_use_internal_errors($previous);
 
-        $root = $document->getElementById('kitsune-root');
-
-        if ($root === null) {
-            // Nothing parseable. Returning the escaped input rather than the
-            // input keeps the fail-closed posture: unparseable markup is not
-            // markup we can vouch for.
-            return htmlspecialchars($html, ENT_QUOTES | ENT_HTML5, 'UTF-8');
-        }
+        $root = $document;
 
         $this->clean($root);
 
         $out = '';
 
         foreach (iterator_to_array($root->childNodes) as $child) {
+            // The charset hint this method added, not content.
+            if ($child instanceof DOMElement && strtolower($child->nodeName) === 'meta') {
+                continue;
+            }
+
             $out .= $document->saveHTML($child);
         }
 

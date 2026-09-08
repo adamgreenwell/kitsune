@@ -66,6 +66,27 @@ final class SqliteDriver implements SchemaDriver
             implode(', ', array_map($this->literal(...), $this->jsonTypes($projection))),
         );
 
+        // ⚠️ An integer projection also checks the extracted value's STORAGE
+        // CLASS, because `json_type()` answers a different question.
+        //
+        // For `-9223372036854775809` — one below the BIGINT bound —
+        // `json_type()` reports 'integer' (it reads the text shape: no point,
+        // no exponent) while `typeof(json_extract(...))` reports 'real',
+        // because SQLite promoted a value that does not fit an int64. Rounded
+        // to a double it then compares EQUAL to the bound literal, so the range
+        // guard passed and the cast CLAMPED it to the bound — meaning imported
+        // out-of-range JSON matched a legitimate minimum-value lookup, on
+        // SQLite only. Verified by probe: json_type 'integer', typeof 'real',
+        // BETWEEN 1, cast -9223372036854775808.
+        if ($projection->logical === LogicalType::Integer) {
+            $guard .= sprintf(
+                ' AND typeof(json_extract(%s, %s)) = %s',
+                $column,
+                $key,
+                $this->literal('integer'),
+            );
+        }
+
         if (($range = $projection->range()) !== null) {
             $value = sprintf('json_extract(%s, %s)', $column, $key);
 

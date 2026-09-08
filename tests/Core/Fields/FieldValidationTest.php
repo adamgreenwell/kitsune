@@ -388,6 +388,27 @@ it('publishes the slug input limit', function (): void {
     expect($type->apiSchema(configFor('slug')))->toBe(['type' => 'string', 'maxLength' => 255]);
 });
 
+it('omits multipleOf when the step is offset from a min', function (): void {
+    /*
+     * ⚠️ `multipleOf` measures from ZERO; validation measures the step from
+     * `min`, which is what a form input does. With `min: 0.1, step: 0.5`
+     * validation accepts 0.1 and 0.6 while `multipleOf: 0.5` rejects both — so
+     * a generated client would refuse server-valid values and offer ones the
+     * server refuses. JSON Schema cannot express the offset, so it is omitted
+     * rather than published wrongly.
+     */
+    $type = app(FieldTypeRegistry::class)->get('number');
+
+    expect($type->apiSchema(configFor('number', ['min' => 0.1, 'step' => 0.5])))
+        ->not->toHaveKey('multipleOf')
+        // Agreeing case: the offset IS a multiple of the step.
+        ->and($type->apiSchema(configFor('number', ['min' => 1, 'step' => 0.5]))['multipleOf'])->toBe(0.5)
+        ->and($type->apiSchema(configFor('number', ['step' => 0.5]))['multipleOf'])->toBe(0.5);
+
+    // And the validator's offset semantics are the ones that stay.
+    expect(validate('number', ['f' => '0.6'], ['min' => 0.1, 'step' => 0.5])->fails())->toBeFalse();
+});
+
 it('publishes the number bounds it enforces', function (): void {
     // A DECIMAL(12,2) cannot hold 10000000000 and the rules say so, but the
     // schema published only {"type": "number"}.

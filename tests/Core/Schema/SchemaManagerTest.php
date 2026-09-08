@@ -591,6 +591,27 @@ describe('cardinality has a documented domain, and it is enforced', function ():
     });
 });
 
+it('keeps a full-width non-ASCII value in an indexed string, on every engine', function (): void {
+    /*
+     * ⚠️ VARBINARY is sized in BYTES and the projection's precision counts
+     * CHARACTERS. A width of 64 validates 64 characters, and 64 `é` are 128
+     * UTF-8 bytes — so MySQL and MariaDB either refused the ALTER over
+     * existing data or truncated the indexed value, while PostgreSQL and
+     * SQLite kept all 64. The same query would then find the row on one engine
+     * and not another.
+     */
+    $storage = storageFor('code', 'text', [
+        'org_id' => $this->orgA->id, 'is_indexed' => true, 'settings' => ['maxLength' => 64],
+    ]);
+    $this->manager->index($storage);
+
+    $wide = str_repeat('é', 64);
+
+    Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Wide', 'values' => ['code' => $wide]]);
+
+    expect(Entry::where($storage->generatedColumnName(), $wide)->pluck('title')->all())->toBe(['Wide']);
+});
+
 it('distinguishes TRAILING SPACE in an indexed string, on every engine', function (): void {
     /*
      * ⚠️ `utf8mb4_bin` fixed the case half and left this one: it is a PAD
@@ -764,6 +785,32 @@ describe('the lock arms itself when data first appears', function (): void {
 
         expect($this->locking->fresh()->is_locked)->toBeFalse();
     });
+});
+
+it('excludes a JSON number one below the integer bound, on every engine', function (): void {
+    /*
+     * ⚠️ `-9223372036854775809` is one below the BIGINT bound, and SQLite
+     * extracts it as a REAL. Rounded to a double it becomes the SAME value as
+     * the bound literal, so the range guard passed and the integer cast then
+     * CLAMPED it to the bound — meaning imported out-of-range JSON matched a
+     * legitimate minimum-value lookup, on SQLite only. That is exactly the
+     * cross-engine disagreement the driver abstraction exists to prevent.
+     */
+    $storage = storageFor('count', 'number', [
+        'org_id' => $this->orgA->id, 'is_indexed' => true, 'settings' => ['format' => 'integer'],
+    ]);
+    $this->manager->index($storage);
+
+    // Written as raw JSON, which is how imported data arrives — the field's
+    // own validation would refuse this.
+    Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Below']);
+    DB::table('entries')->where('title', 'Below')
+        ->update(['values' => '{"count":-9223372036854775809}']);
+
+    $column = $storage->generatedColumnName();
+
+    expect(Entry::where($column, -9223372036854775807 - 1)->pluck('title')->all())->toBe([])
+        ->and(Entry::where('title', 'Below')->value($column))->toBeNull();
 });
 
 describe('the range guard has to EXCLUDE an out-of-range value, not throw on it', function (): void {
