@@ -26,12 +26,15 @@ use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Collection;
 use Kitsune\Core\Filament\Resources\EntryTypes\Pages\CreateEntryType;
 use Kitsune\Core\Filament\Resources\EntryTypes\Pages\EditEntryType;
 use Kitsune\Core\Filament\Resources\EntryTypes\Pages\ListEntryTypes;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Field;
+use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Validation\Rule;
+use RuntimeException;
 
 /**
  * The entity type builder — Phase 4's flagship, and the reason the schema
@@ -94,10 +97,26 @@ class EntryTypeResource extends Resource
                                     $fail("[{$value}] collides with a route segment and cannot be a type handle.");
                                 }
                             },
-                            // scopedUnique, never Laravel's unique: that rule
-                            // bypasses Eloquent, so it would tell one org that
-                            // another org holds the handle.
-                            fn (?EntryType $record): mixed => Rule::scopedUnique(EntryType::class, 'handle', $record?->getKey()),
+                            // ⚠️ scopedUnique, never Laravel's unique — AND
+                            // constrained to this org by hand.
+                            //
+                            // `EntryType` is #[Unscoped], so `newQuery()`
+                            // starts from EVERY org's types: the rule rejected
+                            // a handle another customer happens to use, which
+                            // both leaks that they use it and refuses a
+                            // combination `UNIQUE (org_id, handle)` permits.
+                            // The resource's own constrained listing query is
+                            // not inherited by validation.
+                            //
+                            // The exact org, not `availableToCurrentOrg()`:
+                            // that also matches global types, and a global
+                            // handle SHOULD be shadowable by an org's own.
+                            fn (?EntryType $record): mixed => Rule::scopedUnique(
+                                EntryType::class,
+                                'handle',
+                                $record?->getKey(),
+                                fn ($query) => $query->where('org_id', app(Context::class)->orgId()),
+                            ),
                         ])
                         ->disabled(fn (?EntryType $record): bool => $record?->exists === true)
                         ->dehydrated(),
@@ -156,9 +175,56 @@ class EntryTypeResource extends Resource
                     ->falseColor('warning')
                     ->tooltip('Whether a data subject identifier is nominated.'),
             ])
-            ->recordActions([EditAction::make()])
-            ->toolbarActions([BulkActionGroup::make([DeleteBulkAction::make()])])
+            // ⚠️ Global types are VISIBLE and not writable.
+            //
+            // `getEloquentQuery()` deliberately includes `org_id IS NULL`, so
+            // an org sees the system types it shares — and with unconditional
+            // actions it could edit or bulk-delete schema every other org
+            // depends on. Hiding the edit page's delete button was not enough:
+            // an ordinary save and a table bulk delete both went through.
+            ->recordActions([
+                EditAction::make()->visible(fn (EntryType $record): bool => self::ownsRecord($record)),
+            ])
+            ->toolbarActions([
+                BulkActionGroup::make([
+                    DeleteBulkAction::make()->authorize(fn (): bool => true)
+                        ->action(function (Collection $records): void {
+                            self::refuseGlobal($records);
+
+                            $records->each->delete();
+                        }),
+                ]),
+            ])
             ->defaultSort('ordering');
+    }
+
+    /**
+     * Whether this row belongs to the current org rather than to everyone.
+     *
+     * A global type (`org_id IS NULL`) is shared schema: every org sees it and
+     * none may change it. Ownership is the test rather than a policy, because
+     * Phase 3's RBAC is what will supply policies and this cannot wait for it.
+     */
+    public static function ownsRecord(EntryType $record): bool
+    {
+        return $record->org_id !== null && (int) $record->org_id === app(Context::class)->orgId();
+    }
+
+    /**
+     * @param  Collection<int, EntryType>  $records
+     */
+    private static function refuseGlobal(Collection $records): void
+    {
+        $global = $records->reject(fn (EntryType $record): bool => self::ownsRecord($record));
+
+        if ($global->isNotEmpty()) {
+            throw new RuntimeException(sprintf(
+                'Entry type%s [%s] %s shared by every organisation and cannot be deleted here.',
+                $global->count() === 1 ? '' : 's',
+                $global->pluck('handle')->implode(', '),
+                $global->count() === 1 ? 'is' : 'are',
+            ));
+        }
     }
 
     /**

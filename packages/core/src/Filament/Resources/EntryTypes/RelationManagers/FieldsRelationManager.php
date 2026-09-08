@@ -32,6 +32,7 @@ use Kitsune\Core\Models\Field;
 use Kitsune\Core\Models\FieldStorage;
 use Kitsune\Core\Schema\SchemaManager;
 use Kitsune\Core\Tenancy\Context;
+use RuntimeException;
 use Throwable;
 
 /**
@@ -246,18 +247,30 @@ class FieldsRelationManager extends RelationManager
     {
         $orgId = app(Context::class)->orgId();
 
-        $storage = FieldStorage::query()
+        $existing = FieldStorage::query()
             ->where('org_id', $orgId)
             ->where('handle', $data['storage_handle'])
-            ->first() ?? new FieldStorage(['org_id' => $orgId, 'handle' => $data['storage_handle']]);
+            ->first();
 
-        // Shape only on first write; `is_locked` refuses it later anyway, and
-        // this keeps a second type reusing the field from trying.
-        if (! $storage->exists) {
-            $storage->type = $data['storage_type'];
-            $storage->cardinality = (int) ($data['storage_cardinality'] ?? 1);
+        // ⚠️ Reuse ADOPTS the existing definition; it does not rewrite it.
+        //
+        // Keeping the old type and cardinality while overwriting `pii_class`,
+        // `settings` and `is_indexed` from the new form was the worst of both:
+        // every other field sharing that storage changed behaviour, and the
+        // field just created was not even the type its author selected. The
+        // shared row is shared — one form cannot speak for all of it.
+        if ($existing !== null) {
+            $this->refuseIncompatibleReuse($existing, $data);
+
+            $this->pendingStorage = $existing;
+
+            return $this->presentation($data, $existing);
         }
 
+        $storage = new FieldStorage(['org_id' => $orgId, 'handle' => $data['storage_handle']]);
+
+        $storage->type = $data['storage_type'];
+        $storage->cardinality = (int) ($data['storage_cardinality'] ?? 1);
         $storage->pii_class = $data['storage_pii_class'];
         $storage->is_indexed = (bool) ($data['storage_is_indexed'] ?? false);
         $storage->setAttribute('settings', $data['storage_settings'] ?? []);
@@ -265,6 +278,49 @@ class FieldsRelationManager extends RelationManager
 
         $this->pendingStorage = $storage;
 
+        return $this->presentation($data, $storage);
+    }
+
+    /**
+     * Refuse a reuse the author almost certainly did not mean.
+     *
+     * A handle already defined in this org is adopted (ADR-006), and adoption
+     * only makes sense when the SHAPE matches. Submitting a different type or
+     * cardinality means the author was describing a different field and
+     * happened to pick a taken handle — silently giving them the old shape
+     * creates a field that is not what they selected.
+     *
+     * @param  array<string, mixed>  $data
+     */
+    private function refuseIncompatibleReuse(FieldStorage $existing, array $data): void
+    {
+        $type = $data['storage_type'] ?? null;
+        $cardinality = (int) ($data['storage_cardinality'] ?? 1);
+
+        if ($existing->type === $type && (int) $existing->cardinality === $cardinality) {
+            return;
+        }
+
+        throw new RuntimeException(sprintf(
+            'Handle [%s] already describes a %s field holding %s in this organisation, and storage '
+            .'is shared across entity types (ADR-006) — so reusing it here would give you that '
+            .'field, not the %s you selected. Choose a different handle, or add the existing field '
+            .'as it is.',
+            $existing->handle,
+            $existing->type,
+            (int) $existing->cardinality === 1 ? 'one value' : 'many values',
+            is_string($type) ? $type : 'field',
+        ));
+    }
+
+    /**
+     * The presentation half of the split, plus the storage it points at.
+     *
+     * @param  array<string, mixed>  $data
+     * @return array<string, mixed>
+     */
+    private function presentation(array $data, FieldStorage $storage): array
+    {
         return [
             'field_storage_id' => $storage->getKey(),
             'label' => $data['label'],

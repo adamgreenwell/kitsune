@@ -15,6 +15,10 @@ use Filament\Forms\Components\Toggle;
 use Kitsune\Core\Fields\FieldTypeRegistry;
 use Kitsune\Core\Fields\Types\BaseFieldType;
 use Kitsune\Core\Filament\Schemas\SettingsSchemaRenderer;
+use Kitsune\Core\Models\EntryType;
+use Kitsune\Core\Models\Org;
+use Kitsune\Core\Models\Site;
+use Kitsune\Core\Tenancy\Context;
 
 /*
  * The seam that lets a field type describe its settings as DATA while the
@@ -122,4 +126,96 @@ it('labels a bare option list without the type having to spell it out', function
 
     expect($format)->not->toBeNull()
         ->and($format->getOptions())->toBe(['integer' => 'Integer', 'decimal' => 'Decimal']);
+});
+
+describe('a descriptor whose choices are not knowable at declaration time', function (): void {
+    /*
+     * ⚠️ `relation`'s permitted targets are the ORG's entry types, which core
+     * cannot know when a field type declares its settings. The descriptor had
+     * no `options` key, so the control rendered with an EMPTY list — and since
+     * an empty `targetTypes` means unrestricted, the documented constraint
+     * could not be configured through the builder at all. An empty choice list
+     * reads as "no constraint available" rather than as a bug.
+     */
+    beforeEach(function (): void {
+        $this->org = Org::create(['name' => 'R', 'slug' => 'renderer-org']);
+        app(Context::class)->setOrg($this->org);
+        $this->site = Site::create(['org_id' => $this->org->id, 'handle' => 's', 'slug' => 'renderer-s', 'name' => 'S']);
+        app(Context::class)->setSite($this->site);
+    });
+
+    afterEach(fn () => app(Context::class)->forget());
+
+    it('populates relation target types from the org\'s own types', function (): void {
+        EntryType::create(['org_id' => $this->org->id, 'handle' => 'article', 'name' => 'Article', 'plural_name' => 'Articles']);
+        EntryType::create(['org_id' => $this->org->id, 'handle' => 'person', 'name' => 'Person', 'plural_name' => 'People']);
+
+        $components = SettingsSchemaRenderer::for(
+            app(FieldTypeRegistry::class)->get('relation'),
+            'storage_settings',
+        );
+
+        $select = collect($components)->first(
+            fn ($component): bool => str_ends_with($component->getName(), 'targetTypes'),
+        );
+
+        expect($select)->toBeInstanceOf(Select::class)
+            ->and($select->getOptions())->toBe(['article' => 'Article', 'person' => 'Person']);
+    });
+
+    it('includes a GLOBAL type, which a relation may legitimately point at', function (): void {
+        EntryType::create(['org_id' => null, 'handle' => 'system_media', 'name' => 'Media', 'plural_name' => 'Media']);
+
+        $components = SettingsSchemaRenderer::for(
+            app(FieldTypeRegistry::class)->get('relation'),
+            'storage_settings',
+        );
+
+        $select = collect($components)->first(
+            fn ($component): bool => str_ends_with($component->getName(), 'targetTypes'),
+        );
+
+        expect($select->getOptions())->toHaveKey('system_media');
+    });
+
+    it('leaves out ANOTHER org\'s types', function (): void {
+        $rival = Org::create(['name' => 'V', 'slug' => 'renderer-rival']);
+        EntryType::create(['org_id' => $rival->id, 'handle' => 'theirs', 'name' => 'Theirs', 'plural_name' => 'Theirs']);
+
+        $components = SettingsSchemaRenderer::for(
+            app(FieldTypeRegistry::class)->get('relation'),
+            'storage_settings',
+        );
+
+        $select = collect($components)->first(
+            fn ($component): bool => str_ends_with($component->getName(), 'targetTypes'),
+        );
+
+        expect($select->getOptions())->not->toHaveKey('theirs');
+    });
+
+    it('fails closed on an unknown options source', function (): void {
+        // Same posture as an unknown descriptor type: rendering an empty list
+        // would silently prevent the setting being configured.
+        $type = new class extends BaseFieldType
+        {
+            public static function handle(): string
+            {
+                return 'bad_source';
+            }
+
+            public static function label(): string
+            {
+                return 'Bad source';
+            }
+
+            public function settingsSchema(): array
+            {
+                return ['thing' => ['type' => 'multiSelect', 'label' => 'Thing', 'optionsFrom' => 'nowhere']];
+            }
+        };
+
+        expect(fn () => SettingsSchemaRenderer::for($type, 'storage_settings'))
+            ->toThrow(RuntimeException::class, 'Unknown options source');
+    });
 });
