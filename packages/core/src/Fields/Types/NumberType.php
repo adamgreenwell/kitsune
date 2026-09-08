@@ -66,12 +66,28 @@ final class NumberType extends BaseFieldType
 
     private function precision(FieldConfig $config): int
     {
-        return max(1, min(self::MAX_PRECISION, (int) $config->setting('precision', 12)));
+        return self::clampedPrecision($config->setting('precision', 12));
+    }
+
+    /**
+     * ⚠️ Shared with `validateSettings()`, which sees raw settings rather than a
+     * FieldConfig. Duplicating the clamp would let the authoring check and the
+     * runtime projection disagree about what the field actually accepts, which is
+     * the drift invariant 14 is about.
+     */
+    private static function clampedPrecision(mixed $precision): int
+    {
+        return max(1, min(self::MAX_PRECISION, (int) $precision));
+    }
+
+    private static function clampedScale(mixed $scale, int $precision): int
+    {
+        return max(0, min($precision - 1, (int) $scale));
     }
 
     private function scale(FieldConfig $config): int
     {
-        return max(0, min($this->precision($config) - 1, (int) $config->setting('scale', 2)));
+        return self::clampedScale($config->setting('scale', 2), $this->precision($config));
     }
 
     protected function castToStorage(mixed $input, FieldConfig $config): mixed
@@ -225,16 +241,51 @@ final class NumberType extends BaseFieldType
         $min = $settings['min'] ?? null;
         $max = $settings['max'] ?? null;
 
-        if (! is_numeric($min) || ! is_numeric($max) || (float) $min <= (float) $max) {
+        if (! is_numeric($min) || ! is_numeric($max)) {
             return null;
         }
 
-        return sprintf(
-            'The minimum (%s) is above the maximum (%s), so no value could ever be stored in this '
-            .'field. Swap them, or clear one.',
-            (string) $min,
-            (string) $max,
-        );
+        if ((float) $min > (float) $max) {
+            return sprintf(
+                'The minimum (%s) is above the maximum (%s), so no value could ever be stored in '
+                .'this field. Swap them, or clear one.',
+                (string) $min,
+                (string) $max,
+            );
+        }
+
+        // ⚠️ ORDERED is not the same as INHABITED, and checking only the ordering
+        // let an empty range through.
+        //
+        // `scalarValidationRules()` emits the format alongside both bounds, so an
+        // `integer` field with min 0.1 and max 0.9 accepts nothing at all — the
+        // bounds are ordered and there is no integer between them. A `decimal`
+        // field has the same problem at a finer grain: with scale 2 the values are
+        // multiples of 0.01, so [0.001, 0.002] is equally empty.
+        //
+        // Same unusable outcome as an uncompilable pattern, reached by arithmetic.
+        $precision = self::clampedPrecision($settings['precision'] ?? 12);
+        $quantum = ($settings['format'] ?? 'decimal') === 'integer'
+            ? 1.0
+            : 10 ** -self::clampedScale($settings['scale'] ?? 2, $precision);
+
+        // The smallest value the field can represent that is not below the
+        // minimum. A tiny epsilon, because 0.29 / 0.01 is not exactly 29 in binary
+        // floating point and ceil() would round it up to 30.
+        $smallest = ceil(((float) $min / $quantum) - 1e-9) * $quantum;
+
+        if ($smallest > (float) $max + 1e-9) {
+            return sprintf(
+                'No value this field can represent falls between %s and %s: it stores %s, and the '
+                .'nearest one at or above the minimum is %s. Widen the range, or change the format.',
+                (string) $min,
+                (string) $max,
+                $quantum === 1.0 ? 'whole numbers' : 'multiples of '.rtrim(rtrim(number_format($quantum, 10, '.', ''), '0'), '.'),
+                rtrim(rtrim(number_format($smallest, 10, '.', ''), '0'), '.'),
+            );
+        }
+
+        return null;
     }
 
     public function settingsSchema(): array
