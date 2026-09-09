@@ -117,11 +117,20 @@ Logical inset properties, so the browser does the mirroring. Consistent with the
 **G1 — Kitsune's own output had no direction. FIXED in this spike.**
 `skeleton/resources/views/welcome.blade.php` emitted `lang` from the app locale and no `dir` at all, so an Arabic locale served Arabic text in a left-to-right document. Filament supplies `dir` for the admin from its own translations; the public side has no panel and must not depend on one (ADR-002 keeps core headless-capable), so nothing was going to supply it. `Kitsune::textDirection()` now does.
 
-**G2 — `sites.locale` exists and is applied by nothing.**
+**G2 — `sites.locale` exists and is applied by nothing. ◐ Partly resolved.**
 ```bash
-grep -rn "setLocale" packages/core/src skeleton/app    # no matches
+grep -rn "setLocale" packages/core/src skeleton/app    # no matches, when this was written
 ```
 The column is there with a default, and `golfdom-fr` is seeded with one, but no middleware maps a site's locale onto `app()->setLocale()`. Two consequences: an operator cannot reach RTL at all without editing `APP_LOCALE`, and because direction is resolved per *process*, **a multi-site install cannot serve one site RTL and another LTR concurrently**. That is the accurate version of the "locale switcher" claim — a narrower and more actionable statement than the blocker it was written as. Note ADR-018 rule 2: the **UI** locale is a user preference, not a site setting, so this is two mappings and not one, and they can disagree.
+
+
+**What is done (issue #38):** two middlewares, because they are two axes. `SetSiteLocale` applies the site's content locale; `SetUiLocale` applies the viewer's UI locale over it, and is registered on the panel after `SetKitsuneContext` so it has a site to fall back to. `LocaleResolver` owns the chain — viewer preference → site → application default — and reads the viewer's preference through Laravel's own `HasLocalePreference`, so core never learns which column the application keeps it in (ADR-002). The skeleton's `users` table gains a nullable `locale` and its `User` implements the contract.
+
+The per-process consequence above is the part actually closed: resolution happens per request, and the tests resolve two sites and two viewers back to back inside one process. The disagreement case is asserted directly — a French editor administering an Arabic site gets a French admin around Arabic content.
+
+⚠️ A locale is **not trusted**. Laravel resolves translation files by treating the locale as a path segment, and both sources are editable — the UI locale by the user themselves, the site locale by an operator — so a candidate that is not shaped like a language tag is skipped rather than applied. It falls through to the next locale in the chain rather than throwing: a stored preference that stops matching should not take the admin down for that user.
+
+⚠️ **What is not done:** the criterion about *public* requests. There are no site-scoped public routes yet — `skeleton/routes/web.php` holds the Phase 0 placeholder, and site resolution lives only in the panel's `tenantMiddleware`. `SetSiteLocale` is written and tested against `Context`, so it is ready for the public side, but "a public request to a site whose locale is RTL is served RTL" cannot be demonstrated until routing exists (roadmap Phase 6, *Menus, routing, slugs, redirects*).
 
 **G3 — no per-field content direction, and Filament will not supply it. ◐ Partly resolved.**
 ```bash

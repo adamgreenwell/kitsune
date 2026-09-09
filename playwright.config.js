@@ -15,10 +15,9 @@ const { defineConfig, devices } = require('@playwright/test');
 /*
  * Arabic, because it is one of the six locales Filament ships a
  * `direction => 'rtl'` translation for (ar, ckb, fa, he, ku, ur) and the one
- * ADR-018 names first.
+ * ADR-018 names first. It is carried by a seeded USER's `locale` now rather than
+ * by a port of its own — see the `admin-rtl` project.
  */
-const RTL_PORT = 8137;
-const RTL_BASE_URL = process.env.KITSUNE_RTL_BASE_URL || `http://127.0.0.1:${RTL_PORT}`;
 
 module.exports = defineConfig({
     testDir: './e2e',
@@ -48,6 +47,8 @@ module.exports = defineConfig({
     projects: [
         // Signs in once; everything after reuses the saved session.
         { name: 'setup', testMatch: /auth\.setup\.js/ },
+        // The Arabic-preferring editor, whose session is what makes the admin RTL.
+        { name: 'setup-rtl', testMatch: /auth-rtl\.setup\.js/ },
         {
             name: 'skeleton',
             testMatch: /skeleton\.spec\.js/,
@@ -63,19 +64,24 @@ module.exports = defineConfig({
             dependencies: ['setup'],
             use: { ...devices['Desktop Chrome'], storageState: '.playwright/admin-auth.json' },
         },
-        // Same admin, served under an RTL locale on its own port.
+        // Same admin, same server, a different EDITOR.
         //
-        // The RTL specs need a DIFFERENT baseURL, not a different browser: the
-        // direction comes from the server's locale, so the only way to render
-        // the admin right-to-left is to ask a server that is running in one.
+        // ⚠️ This used to be a second `php artisan serve` with APP_LOCALE=ar, and the
+        // comment here explained that the direction was "fixed for the life of a process
+        // by APP_LOCALE" so "a per-test override cannot reach it". Issue #38 is precisely
+        // the change that made that false: the UI locale now resolves per request from
+        // the viewer's own preference (ADR-018 rule 2).
+        //
+        // So the fixture had to change with it. Proving RTL through an environment
+        // variable would now be proving something Kitsune no longer does — and worse, it
+        // would keep passing if the per-request resolution broke.
         {
             name: 'admin-rtl',
             testMatch: /rtl\.spec\.js/,
-            dependencies: ['setup'],
+            dependencies: ['setup-rtl'],
             use: {
                 ...devices['Desktop Chrome'],
-                storageState: '.playwright/admin-auth.json',
-                baseURL: RTL_BASE_URL,
+                storageState: '.playwright/admin-rtl-auth.json',
             },
         },
     ],
@@ -87,22 +93,16 @@ module.exports = defineConfig({
     // the admin in an RTL locale, because `dir` is rendered from
     // `__('filament-panels::layout.direction')` and therefore fixed for the
     // life of a process by APP_LOCALE. A per-test override cannot reach it.
+    // ⚠️ ONE server now, where there were two. The second existed only to serve the
+    // admin in an RTL locale, because direction was a property of the process. Issue #38
+    // made it a property of the request, so a second process is no longer how you get a
+    // second direction — and keeping it would have hidden a regression in exactly the
+    // mechanism that replaced it.
     webServer: [
         {
             command: 'php artisan serve --port=8125 --no-interaction',
             cwd: './skeleton',
             url: 'http://127.0.0.1:8125/up',
-            reuseExistingServer: !process.env.CI,
-            timeout: 60_000,
-        },
-        {
-            command: `php artisan serve --port=${RTL_PORT} --no-interaction`,
-            cwd: './skeleton',
-            // ⚠️ Spread process.env. Playwright REPLACES the child environment
-            // when this key is set rather than merging into it, so a bare
-            // `{ APP_LOCALE: 'ar' }` drops PATH and the server never starts.
-            env: { ...process.env, APP_LOCALE: 'ar' },
-            url: `${RTL_BASE_URL}/up`,
             reuseExistingServer: !process.env.CI,
             timeout: 60_000,
         },
