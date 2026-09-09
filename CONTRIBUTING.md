@@ -83,7 +83,9 @@ If that is not acceptable to you, that is a completely reasonable position, and 
 
 **Why not a DCO instead:** a Developer Certificate of Origin certifies you have the right to submit the code. It does not grant relicensing rights, so it would quietly close the door the CLA exists to keep open.
 
-The CLA text and signing process will be published before the first external PR is accepted. It will be derived from the Apache Individual CLA, with a corporate variant.
+**The text is written: [`CLA.md`](CLA.md)**, derived from the Apache Individual CLA v2.0 with a corporate section, and it carries its own "not yet in force" warning. This paragraph used to say the text *would* be published, which had been stale since the file landed.
+
+What is genuinely still missing is counsel's review, and the signing bot ships **switched off** until that happens — `.github/workflows/cla.yml` is gated on a repository variable rather than commented out, so enabling it is a settings change. A bot collecting signatures against an unreviewed agreement produces a record that looks like consent and may not be.
 
 ---
 

@@ -62,7 +62,37 @@ The corporate variant is otherwise identical to the individual terms.
 
 ## Signing
 
-Signature collection is not yet wired up. When it is, signing happens on your first pull request — a bot comments with a link, you agree once, and it never asks again.
+Signing happens on your first pull request — a bot comments with a link, you agree once by
+replying to it, and it never asks again. Your GitHub username and the date are recorded on a
+separate `cla-signatures` branch.
+
+⚠️ **What the signing bot records, stated exactly rather than approximately.** Read out of the
+pinned action's own source (`contributor-assistant/github-action` v2.6.1) rather than from its
+documentation, because a privacy claim taken on trust is not a claim:
+
+| Field | What it is |
+|---|---|
+| `name` | your GitHub login |
+| `id` | your GitHub numeric user id |
+| `comment_id` | the id of the comment you signed with |
+| `body` | the signing sentence itself, lowercased |
+| `created_at` | when you signed |
+| `repoId` | this repository's numeric id |
+| `pullRequestNo` | the pull request you signed on |
+
+**No email address, no postal address, no employer, and no name beyond your GitHub login.**
+
+An earlier draft of this section claimed only a username and a date were stored. That was
+wrong — review caught it, and verifying against the source found one field (`body`) that the
+review had not listed either. The reasoning `pii_class` applies to an **org's** fields
+(ADR-020) applies to the project's own records too, and it starts with saying accurately what
+is held.
+
+⚠️ **The bot is wired up and deliberately switched off.** `.github/workflows/cla.yml` is gated
+on a repository variable, so enabling it is a settings change rather than a code change — and
+it must stay off until this text has been through counsel. A bot collecting signatures against
+an unreviewed agreement produces a record that *looks* like consent and may not be, which is
+worse than collecting nothing.
 
 Until then, external pull requests are not being accepted, so there is nothing to sign for.
 
