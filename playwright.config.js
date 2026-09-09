@@ -59,7 +59,7 @@ module.exports = defineConfig({
             // is a value rendering in the direction of the CHROME, so the interesting
             // case is RTL content in an LTR panel — the RTL project would hide it by
             // agreeing with the content.
-            testMatch: /(admin|accessibility|direction)\.spec\.js/,
+            testMatch: /(admin|accessibility|direction|entity-type-builder|revisions)\.spec\.js/,
             dependencies: ['setup'],
             use: { ...devices['Desktop Chrome'], storageState: '.playwright/admin-auth.json' },
         },

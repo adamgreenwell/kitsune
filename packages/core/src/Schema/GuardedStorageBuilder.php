@@ -81,7 +81,22 @@ class GuardedStorageBuilder extends Builder
      */
     public function insertGetId(array $values, $sequence = null)
     {
-        $this->newModelInstance($values)->guardShape();
+        // ⚠️ setRawAttributes, NOT newModelInstance($values).
+        //
+        // These values are already database-ready: a JSON-cast attribute arrives
+        // ENCODED, and passing it through `fill()` runs `setAttribute()` again and
+        // encodes it a second time. The guard then reads a JSON string where it
+        // expects an array — so `FieldStorage::guardProjectionSettings()` was
+        // comparing `(array) '{"...}"'` against a real array on every insert and
+        // silently agreeing with itself. Nothing failed, because nothing read the
+        // value as an array until a settings check did.
+        //
+        // `setRawAttributes()` stores them as given and leaves `exists` false,
+        // which is what the guards branch on — `newFromBuilder()` would fix the
+        // casts and break that instead.
+        $model = $this->newModelInstance();
+        $model->setRawAttributes($values);
+        $model->guardShape();
 
         return parent::insertGetId($values, $sequence);
     }

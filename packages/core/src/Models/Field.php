@@ -13,7 +13,9 @@ namespace Kitsune\Core\Models;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Query\Builder;
+use Kitsune\Core\Fields\StorageStrategy;
 use Kitsune\Core\Tenancy\Attributes\Unscoped;
+use Kitsune\Core\Tenancy\Contracts\RefusesCascadingDeletes;
 use Kitsune\Core\Tenancy\Contracts\RequiresModelSave;
 use Kitsune\Core\Tenancy\ScopedBuilder;
 use RuntimeException;
@@ -34,7 +36,7 @@ use RuntimeException;
  * @property string|null $group
  */
 #[Unscoped]
-class Field extends Model implements RequiresModelSave
+class Field extends Model implements RefusesCascadingDeletes, RequiresModelSave
 {
     protected $guarded = [];
 
@@ -83,9 +85,144 @@ class Field extends Model implements RequiresModelSave
         // refusal is the one the caller reads.
         static::saving(fn (self $field) => $field->guardStorageOwnership());
 
-        // Deleting is safe: the foreign key nulls the nomination, which
-        // leaves the type in the visible-hole state withoutSubjectIdentifier()
-        // reports rather than in a silently wrong one.
+        // ⚠️ Deleting is safe for the NOMINATION and not for the DATA, and this
+        // comment used to claim it was safe outright.
+        //
+        // The foreign key nulls the nomination, which leaves the type in the
+        // visible-hole state `withoutSubjectIdentifier()` reports rather than in
+        // a silently wrong one — that part still holds. But the values do not go
+        // anywhere: inline JSON keys and `entry_relations` rows survive against
+        // the FieldStorage row, which is shared and stays.
+        //
+        // And they become UNREACHABLE. `Entry::redactField()` resolves storage
+        // through `whereHas('fields')` on this entry type, so once the field row
+        // is gone the lookup finds nothing, falls through to the inline path, and
+        // reports 0 while a relation — possibly holding personal data — survives.
+        // An erasure request would be answered successfully and truthfully
+        // report that it reached nothing (ADR-020).
+        // ⚠️ Kept alongside the CONTRACT, not instead of it.
+        //
+        // A `deleting` event is one path. `Field::query()->delete()`,
+        // `deleteQuietly()` and anything inside `withoutEvents()` dispatch
+        // straight past it — and this project has now found that shape seven
+        // times. Implementing `RefusesCascadingDeletes` makes `ScopedBuilder`
+        // run the same rule for every row a bulk delete would remove, under a
+        // lock, so an importer or cleanup command cannot orphan the data either.
+        //
+        // The event still earns its place: it is what refuses an ordinary
+        // `$field->delete()` before a transaction is opened.
+        static::deleting(fn (self $field) => $field->guardCascade());
+    }
+
+    /**
+     * Refuse to detach a field while its entry type still holds data for it.
+     *
+     * Refused rather than cascaded: deleting the values is an erasure and has to
+     * be audited as one, and deleting them from here would be an unaudited bulk
+     * removal — the same reason `EntryType::guardCascade()` refuses rather than
+     * letting the database cascade.
+     *
+     * ⚠️ All THREE storage strategies. Checking `values` alone would let a
+     * promoted or relational field be detached while holding content, which is
+     * the "handled two of the three" omission this project has now hit three
+     * times (the subject identifier, the erasure sweep, and revisions).
+     *
+     * ⚠️ Soft-deleted entries count. Their data still exists, and erasure has to
+     * reach it — so a trashed entry holding a value is a reason to refuse.
+     *
+     * Named `guardCascade()` because that is the contract `ScopedBuilder` calls,
+     * and public for the same reason. "Cascade" is right even though no foreign
+     * key fires here: the data is not deleted, it is stranded — which is worse,
+     * because a cascade at least leaves nothing behind to be missed.
+     */
+    public function guardCascade(): void
+    {
+        $storage = $this->fieldStorage;
+        $type = $this->entryType;
+
+        if ($storage === null || $type === null) {
+            return;
+        }
+
+        $holding = Entry::withoutScopeBecause(
+            'counting entries that hold data for a field before it is detached, to refuse rather than orphan',
+            // Unhinted, like `EntryType::guardCascade()`: this receives an
+            // ELOQUENT builder for a soft-deleting model, and `Builder` in this
+            // file is the QUERY builder — the one `newEloquentBuilder()` takes.
+            // Importing the Eloquent one to hint it here silently changed what
+            // that docblock resolved to, which is the trap Pint set once before.
+            function ($query) use ($storage, $type): int {
+                // A type spans every site in its org, so the count must too.
+                $query->withTrashed()->where('entry_type_id', $type->getKey());
+
+                return match ($storage->strategy()) {
+                    // A correlated subquery rather than materialising every id:
+                    // a type can hold a hundred thousand entries, and this runs
+                    // on the delete path.
+                    StorageStrategy::Relational => $query
+                        ->whereExists(
+                            fn (Builder $sub) => $sub->from('entry_relations')
+                                ->whereColumn('entry_relations.source_entry_id', 'entries.id')
+                                ->where('entry_relations.field_storage_id', $storage->getKey()),
+                        )
+                        ->count(),
+                    // The live promoted column. History is counted separately,
+                    // below, for the reason stated there.
+                    StorageStrategy::Promoted => $query
+                        ->whereNotNull((string) $storage->promotedColumn())
+                        ->count(),
+                    // The live JSON key. History is counted separately, below.
+                    StorageStrategy::Inline => $query
+                        ->whereNotNull('values->'.$storage->handle)
+                        ->count(),
+                };
+            },
+        );
+
+        // ⚠️ HISTORY is counted on its own terms, not through the entry's CURRENT
+        // type — and nesting it under that predicate was a hole.
+        //
+        // `entries.entry_type_id` is mutable. An entry moved from type A to type B
+        // keeps its A-era revisions, and those revisions are the only remaining
+        // record of the A field's values. Asking "does any entry of type A have a
+        // revision holding this?" finds none of them, because no entry is type A
+        // any more — so deleting A's field was permitted, and `redactField()` then
+        // resolves storage through the entry's current B schema and cannot see the
+        // field at all. The historical values are stranded and uneraseable, which
+        // is the precise failure ADR-020 exists to prevent.
+        //
+        // `entry_revisions.entry_type_id` records the schema each snapshot was
+        // written against, so it answers the question directly and needs no join
+        // to `entries` at all.
+        $recorded = EntryRevision::query()
+            ->where('entry_type_id', $type->getKey())
+            ->where(match ($storage->strategy()) {
+                StorageStrategy::Relational => fn ($revisions) => $revisions
+                    ->whereNotNull('relation_state->'.$storage->getKey()),
+                StorageStrategy::Promoted => fn ($revisions) => $revisions
+                    ->whereNotNull((string) $storage->promotedColumn()),
+                StorageStrategy::Inline => fn ($revisions) => $revisions
+                    ->whereNotNull('values->'.$storage->handle),
+            })
+            ->count();
+
+        if ($holding === 0 && $recorded === 0) {
+            return;
+        }
+
+        throw new RuntimeException(sprintf(
+            'Field [%s] cannot be removed from [%s] while %d entr%s and %d revision%s still hold '
+            .'data for it. The values would survive against the shared storage row and become '
+            .'unreachable — `redactField()` resolves storage through this type\'s fields, so an '
+            .'erasure request would report success having found nothing (ADR-020). Erase the field '
+            .'first, which is audited, then remove it.',
+            $storage->handle,
+            $type->handle,
+            $holding,
+            $holding === 1 ? 'y' : 'ies',
+            $recorded,
+            $recorded === 1 ? '' : 's',
+        ));
     }
 
     protected $casts = [

@@ -1,0 +1,2306 @@
+<?php
+
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
+ */
+
+declare(strict_types=1);
+
+use Illuminate\Database\QueryException;
+use Illuminate\Support\Facades\DB;
+use Kitsune\Core\Models\Entry;
+use Kitsune\Core\Models\EntryRelation;
+use Kitsune\Core\Models\EntryRevision;
+use Kitsune\Core\Models\EntryType;
+use Kitsune\Core\Models\Field;
+use Kitsune\Core\Models\FieldStorage;
+use Kitsune\Core\Models\Org;
+use Kitsune\Core\Models\Site;
+use Kitsune\Core\Schema\RevisionWrites;
+use Kitsune\Core\Tenancy\Context;
+
+/*
+ * A revision per saved version, so "what did this say last Tuesday" is
+ * answerable — and so ADR-020's erasure has somewhere to reach.
+ */
+
+beforeEach(function (): void {
+    $this->org = Org::create(['name' => 'Publisher', 'slug' => 'rev-pub']);
+    app(Context::class)->setOrg($this->org);
+    $this->site = Site::create(['org_id' => $this->org->id, 'handle' => 'main', 'slug' => 'rev-main', 'name' => 'Main']);
+    app(Context::class)->setSite($this->site);
+
+    $this->type = EntryType::create([
+        'org_id' => $this->org->id, 'handle' => 'article', 'name' => 'Article', 'plural_name' => 'Articles',
+    ]);
+});
+
+afterEach(fn () => app(Context::class)->forget());
+
+function anEntry(array $attributes = []): Entry
+{
+    return Entry::create([
+        'entry_type_id' => test()->type->id,
+        'title' => 'First',
+        'values' => ['body' => 'one'],
+        ...$attributes,
+    ]);
+}
+
+describe('a revision per saved version', function (): void {
+    it('records one when the entry is created', function (): void {
+        $entry = anEntry();
+
+        expect($entry->revisions()->count())->toBe(1)
+            ->and($entry->revisions()->first()->title)->toBe('First');
+    });
+
+    it('records another on every content change', function (): void {
+        $entry = anEntry();
+
+        $entry->update(['title' => 'Second']);
+        $entry->update(['values' => ['body' => 'two']]);
+
+        expect($entry->revisionHistory()->pluck('title')->all())->toBe(['Second', 'Second', 'First']);
+    });
+
+    it('records NOTHING when nothing versioned changed', function (): void {
+        // Touching a timestamp is not a new version of the content, and
+        // recording one would fill the history with versions nobody authored.
+        $entry = anEntry();
+
+        $entry->touch();
+        $entry->update(['author_id' => 7]);
+
+        expect($entry->revisions()->count())->toBe(1);
+    });
+
+    it('snapshots the promoted columns, not only values', function (): void {
+        // A revision holding only `values` restores an entry with no title,
+        // which is worse than having no revisions at all.
+        $entry = anEntry(['slug' => 'first', 'status' => 'published']);
+
+        $revision = $entry->revisions()->first();
+
+        expect($revision->title)->toBe('First')
+            ->and($revision->slug)->toBe('first')
+            ->and($revision->status)->toBe('published')
+            ->and($revision->values)->toBe(['body' => 'one']);
+    });
+
+    it('records after the write, not before', function (): void {
+        // A revision describing a save that then failed is a history of
+        // things that never happened.
+        $entry = anEntry();
+
+        expect($entry->revisions()->first()->created_at)->not->toBeNull()
+            ->and(Entry::whereKey($entry->getKey())->exists())->toBeTrue();
+    });
+});
+
+describe('restoring puts state back as a NEW version', function (): void {
+    it('writes the old state onto the entry', function (): void {
+        $entry = anEntry();
+        $original = $entry->revisions()->first();
+
+        $entry->update(['title' => 'Changed', 'values' => ['body' => 'different']]);
+        $entry->restoreRevision($original);
+
+        expect($entry->fresh()->title)->toBe('First')
+            ->and($entry->fresh()->values)->toBe(['body' => 'one']);
+    });
+
+    it('ADDS a version rather than rewriting history', function (): void {
+        // Restoring version 1 must not delete version 2. Rewriting history
+        // makes "what did this say last Tuesday" unanswerable, which is the
+        // question revisions exist to answer.
+        $entry = anEntry();
+        $original = $entry->revisions()->first();
+
+        $entry->update(['title' => 'Changed']);
+        $entry->restoreRevision($original);
+
+        expect($entry->revisions()->count())->toBe(3)
+            ->and($entry->revisionHistory()->pluck('title')->all())->toBe(['First', 'Changed', 'First']);
+    });
+
+    it('refuses a revision belonging to another entry', function (): void {
+        $mine = anEntry();
+        $theirs = anEntry(['title' => 'Theirs', 'slug' => 'theirs']);
+
+        expect(fn () => $mine->restoreRevision($theirs->revisions()->first()))
+            ->toThrow(RuntimeException::class, 'belongs to another entry');
+    });
+});
+
+it('keeps a bounded history, because full JSON snapshots are not free', function (): void {
+    // The decision log lists revision storage growth as an open question and
+    // it still is. Retention is the honest interim answer: a bound applied on
+    // write, rather than a cost accumulating quietly while the question waits.
+    $entry = anEntry();
+
+    for ($i = 0; $i < Entry::KEEP_REVISIONS + 5; $i++) {
+        $entry->update(['title' => "Version {$i}"]);
+    }
+
+    expect($entry->revisions()->count())->toBe(Entry::KEEP_REVISIONS)
+        // The OLDEST go, not the newest.
+        ->and($entry->revisionHistory()->first()->title)->toBe('Version '.(Entry::KEEP_REVISIONS + 4))
+        ->and(EntryRevision::where('entry_id', $entry->getKey())->where('title', 'First')->exists())->toBeFalse();
+});
+
+it('leaves no revision behind for work that is not an authored change', function (): void {
+    $entry = anEntry();
+
+    $entry->withoutRevisions(fn (Entry $e) => $e->update(['title' => 'Silent']));
+
+    expect($entry->revisions()->count())->toBe(1)
+        ->and($entry->fresh()->title)->toBe('Silent');
+});
+
+it('restores revision recording afterwards, even when the work throws', function (): void {
+    $entry = anEntry();
+
+    try {
+        $entry->withoutRevisions(fn () => throw new RuntimeException('boom'));
+    } catch (RuntimeException) {
+        // expected
+    }
+
+    $entry->update(['title' => 'After']);
+
+    expect($entry->revisions()->count())->toBe(2);
+});
+
+describe('erasure reaches revisions by STRATEGY, not by guessing at the handle', function (): void {
+    /*
+     * ⚠️ `EntryRevision::redact()` decided whether a key was a promoted column
+     * or a JSON key by testing it against `SNAPSHOT_ATTRIBUTES`. Nothing
+     * reserves those names: `FieldStorage::guardHandle()` checks length and
+     * snake_case and no more, so an INLINE field may legitimately be handled
+     * `status`, `title`, `slug` or `published_at`.
+     *
+     * Erasing one wrote NULL into the revision's promoted column instead of its
+     * `values` key, and on `status` — which is NOT NULL — the write threw. The
+     * live entry had already been erased by then, so the outcome was: current
+     * row cleared, every revision still holding the personal data, and a
+     * QueryException instead of a count. A retry threw in the same place, so
+     * the history could not be erased through this path at all.
+     *
+     * The caller knew the strategy the whole time. It now says so.
+     */
+    $inlineFieldHandled = function (string $handle): FieldStorage {
+        $storage = FieldStorage::create([
+            'org_id' => test()->org->id, 'handle' => $handle, 'type' => 'text',
+            'pii_class' => 'personal', 'cardinality' => 1,
+        ]);
+
+        Field::create([
+            'entry_type_id' => test()->type->id,
+            'field_storage_id' => $storage->id,
+            'label' => 'Note',
+        ]);
+
+        return $storage;
+    };
+
+    it('erases an inline field whose handle collides with a snapshot column', function () use ($inlineFieldHandled): void {
+        $inlineFieldHandled('status');
+
+        $entry = anEntry(['status' => 'published', 'values' => ['status' => 'Jane Doe, 12 Elm St']]);
+        $entry->update(['values' => ['status' => 'Jane Doe, 14 Oak St']]);
+
+        // Two revisions, both holding personal data in `values`.
+        expect($entry->revisions()->count())->toBe(2);
+
+        $rewritten = $entry->redactField('status', null);
+
+        // The live row, and BOTH revisions.
+        expect($rewritten)->toBe(3)
+            ->and($entry->fresh()->values['status'])->toBeNull();
+
+        foreach ($entry->revisions()->get() as $revision) {
+            expect($revision->values['status'])->toBeNull()
+                // ⚠️ And the workflow column is untouched. Erasing a field
+                // that happens to share its name must not rewrite the
+                // revision's publication state — that is history, not content.
+                ->and($revision->status)->toBe('published');
+        }
+    });
+
+    it('leaves the entry\'s own status column alone', function () use ($inlineFieldHandled): void {
+        $inlineFieldHandled('status');
+
+        $entry = anEntry(['status' => 'published', 'values' => ['status' => 'personal']]);
+
+        $entry->redactField('status', null);
+
+        expect($entry->fresh()->status)->toBe('published');
+    });
+
+    it('still erases a genuinely PROMOTED field from its column', function (): void {
+        // `slug` is the one column a field type actually promotes to, so this
+        // is the path the collision case must not be confused with.
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'public_slug', 'type' => 'slug',
+            'pii_class' => 'personal', 'cardinality' => 1,
+        ]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id, 'label' => 'Slug',
+        ]);
+
+        $entry = anEntry(['slug' => 'jane-doe']);
+        $entry->update(['title' => 'Second']);
+
+        // ⚠️ By the DECLARED column, not the handle — the field is handled
+        // `public_slug` and writes `entries.slug`.
+        $rewritten = $entry->redactField('public_slug', null);
+
+        expect($rewritten)->toBeGreaterThan(0)
+            ->and($entry->fresh()->slug)->toBeNull();
+
+        foreach ($entry->revisions()->get() as $revision) {
+            expect($revision->slug)->toBeNull();
+        }
+    });
+
+    it('refuses to erase a column no promoted field can project to', function (): void {
+        $entry = anEntry();
+        $revision = $entry->revisions()->first();
+
+        // Fail closed: Eloquent would set an unknown attribute happily and then
+        // fail at the database, or succeed against a column erasure has no
+        // business writing.
+        expect(fn () => $revision->redactColumn('note', null))
+            ->toThrow(RuntimeException::class, 'no erasable column');
+    });
+
+    it('refuses to erase the type DISCRIMINATOR, which it snapshots', function (): void {
+        // ⚠️ Snapshotted and NOT erasable, which is why the two lists are
+        // separate. Blanking a discriminator turns a revision into values with
+        // no schema — worse than leaving the data, because the row then looks
+        // restorable and is not.
+        $entry = anEntry();
+        $revision = $entry->revisions()->first();
+
+        expect(fn () => $revision->redactColumn('entry_type_id', null))
+            ->toThrow(RuntimeException::class, 'no erasable column')
+            ->and($revision->fresh()->entry_type_id)->toBe($entry->entry_type_id);
+    });
+});
+
+describe('a version records the schema its values were written against', function (): void {
+    /*
+     * ⚠️ `entry_type_id` is MUTABLE — the model supports changing it, restamping
+     * `type_handle` and rechecking inbound relations — and revisions did not
+     * record it.
+     *
+     * Two consequences. A type change filed no version at all, because the
+     * versioned surface did not include the discriminator. And restoring a
+     * revision authored under the old type wrote its `values` back onto an entry
+     * that now resolves a DIFFERENT field set, so the same JSON was read against
+     * the wrong schema: the quiet content destruction ADR-006 locks storage
+     * shape to prevent, arriving through another door.
+     */
+    it('snapshots the type', function (): void {
+        $entry = anEntry();
+
+        expect($entry->revisions()->first()->entry_type_id)->toBe($this->type->id);
+    });
+
+    it('records a version when the TYPE changes', function (): void {
+        $other = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'note', 'name' => 'Note', 'plural_name' => 'Notes',
+        ]);
+        $entry = anEntry();
+
+        $entry->update(['entry_type_id' => $other->id]);
+
+        expect($entry->revisions()->count())->toBe(2)
+            ->and($entry->revisions()->latest('id')->first()->entry_type_id)->toBe($other->id);
+    });
+
+    it('REFUSES a restore across a type change', function (): void {
+        $other = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'note2', 'name' => 'Note', 'plural_name' => 'Notes',
+        ]);
+        $entry = anEntry(['values' => ['body' => 'authored as an article']]);
+        $original = $entry->revisions()->first();
+
+        $entry->update(['entry_type_id' => $other->id]);
+
+        expect(fn () => $entry->restoreRevision($original))
+            ->toThrow(RuntimeException::class, 'read them against a different schema');
+
+        // And nothing moved: a refused restore must not half-apply.
+        expect($entry->fresh()->entry_type_id)->toBe($other->id);
+    });
+
+    it('still allows a restore within the same type', function (): void {
+        $entry = anEntry(['values' => ['body' => 'one']]);
+        $first = $entry->revisions()->first();
+
+        $entry->update(['values' => ['body' => 'two']]);
+
+        $entry->restoreRevision($first);
+
+        expect($entry->fresh()->values['body'])->toBe('one');
+    });
+
+    it('allows a restore once the type is changed BACK', function (): void {
+        // The refusal is not a dead end — it names the way through.
+        $other = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'note3', 'name' => 'Note', 'plural_name' => 'Notes',
+        ]);
+        $entry = anEntry(['values' => ['body' => 'one']]);
+        $original = $entry->revisions()->first();
+
+        $entry->update(['entry_type_id' => $other->id, 'values' => ['body' => 'two']]);
+        $entry->update(['entry_type_id' => $this->type->id]);
+
+        $entry->restoreRevision($original);
+
+        expect($entry->fresh()->values['body'])->toBe('one')
+            ->and($entry->fresh()->entry_type_id)->toBe($this->type->id);
+    });
+});
+
+describe('a bulk write is still a version', function (): void {
+    /*
+     * ⚠️ Revisions were recorded from `created` and `updated`. A bulk builder
+     * write dispatches neither, and `Entry::query()->update(...)` is a write
+     * this project deliberately ALLOWS and audits — `AuditLogTest` asserts it
+     * produces an audit row, and `SubjectIdentifierTest` asserts the per-row
+     * guards do not refuse it.
+     *
+     * So a bulk publish moved a versioned column with no version recorded. The
+     * gap is not merely cosmetic: the newest revision no longer described the
+     * entry, so "restore the latest version" silently reverted the bulk change.
+     *
+     * This is the sixth time in this project that a guard on a model event has
+     * turned out to be a guard on one path. Recording moved to the builder,
+     * which is where the write actually is.
+     */
+    it('records one for a bulk update to a versioned column', function (): void {
+        $entry = anEntry();
+
+        expect($entry->revisions()->count())->toBe(1);
+
+        Entry::query()->whereKey($entry->getKey())->update(['status' => 'published']);
+
+        expect($entry->revisions()->count())->toBe(2)
+            ->and($entry->revisions()->latest('id')->first()->status)->toBe('published');
+    });
+
+    it('records one for a bulk write to `values`', function (): void {
+        $entry = anEntry();
+
+        Entry::query()->whereKey($entry->getKey())->update(['values' => json_encode(['body' => 'two'])]);
+
+        expect($entry->revisions()->count())->toBe(2)
+            ->and($entry->revisions()->latest('id')->first()->values['body'])->toBe('two');
+    });
+
+    it('records NOTHING for a bulk write that changes no version', function (): void {
+        $entry = anEntry();
+
+        // `updated_at` is not content, and a soft delete is not an authored
+        // version either.
+        Entry::query()->whereKey($entry->getKey())->touch();
+        $entry->delete();
+
+        expect($entry->revisions()->count())->toBe(1);
+    });
+
+    it('records NOTHING when the bulk write matches but alters nothing', function (): void {
+        // ⚠️ CHANGED, not merely matched. Setting a column to the value it
+        // already holds matches every row and alters none, and one revision per
+        // matched row would fill the history with copies of its predecessor.
+        $entry = anEntry(['status' => 'published']);
+
+        Entry::query()->whereKey($entry->getKey())->update(['status' => 'published']);
+
+        expect($entry->revisions()->count())->toBe(1);
+    });
+
+    it('records exactly ONE for an ordinary instance save', function (): void {
+        /*
+         * ⚠️ The trap. `Model::performUpdate()` writes through this same
+         * builder, so recording in the builder as well as in `updated` files
+         * TWO revisions for one save.
+         *
+         * That is not hypothetical — adding the audit builder alongside the
+         * audit listeners double-recorded every entry write, and no test caught
+         * it because they asserted a row exists and two satisfy that. So this
+         * asserts the COUNT.
+         */
+        $entry = anEntry();
+
+        $entry->update(['title' => 'Second']);
+
+        expect($entry->revisions()->count())->toBe(2);
+    });
+
+    it('records one per affected row, not one per statement', function (): void {
+        $first = anEntry(['slug' => 'a']);
+        $second = anEntry(['slug' => 'b']);
+        $unaffected = anEntry(['slug' => 'c', 'status' => 'published']);
+
+        Entry::query()->where('status', 'draft')->update(['status' => 'published']);
+
+        expect($first->revisions()->count())->toBe(2)
+            ->and($second->revisions()->count())->toBe(2)
+            // Already published, so it matched nothing and gets no version.
+            ->and($unaffected->revisions()->count())->toBe(1);
+    });
+
+    it('is stood down by withoutRevisions, which the builder can now see', function (): void {
+        /*
+         * ⚠️ The escape hatch has to reach BOTH recorders, and this is the
+         * second time that lesson has been learned here — `withoutScopeBecause()`
+         * once stood down the model event and not the builder. `withoutRevisions()`
+         * held its flag on the instance, which a builder has no way to read.
+         *
+         * Erasure depends on it: `redactField()` writes inside
+         * `withoutRevisions()` so that clearing personal data does not file the
+         * redacted state as a new version of the history being cleared.
+         */
+        $entry = anEntry();
+
+        RevisionWrites::suspend(function () use ($entry): void {
+            Entry::query()->whereKey($entry->getKey())->update(['status' => 'published']);
+        });
+
+        expect($entry->revisions()->count())->toBe(1)
+            ->and($entry->fresh()->status)->toBe('published');
+    });
+
+    it('prunes the bulk-recorded history like any other', function (): void {
+        // The bulk path goes through the model's own snapshot logic rather than
+        // inserting rows itself, so KEEP_REVISIONS still bounds growth — a bulk
+        // write loop must not be a way around the cap.
+        $entry = anEntry();
+
+        foreach (range(1, Entry::KEEP_REVISIONS + 5) as $i) {
+            Entry::query()->whereKey($entry->getKey())->update(['title' => "Bulk {$i}"]);
+        }
+
+        expect($entry->revisions()->count())->toBe(Entry::KEEP_REVISIONS);
+    });
+});
+
+describe('a version includes the third storage strategy', function (): void {
+    /*
+     * ⚠️ ADR-006 has THREE storage strategies and revisions handled two.
+     *
+     * A relational field's data is rows in `entry_relations` — not a key in
+     * `values`, not a promoted column. So two things were wrong at once. A pivot
+     * write fires no `Entry` event, so changing a relation filed no version at
+     * all; and the snapshot omitted relations, so restoring a revision left every
+     * relation at its CURRENT value while telling the author the entry now
+     * matched the version they picked.
+     *
+     * This project has been burned by the same "handled two of the three"
+     * omission twice already — a subject identifier that answered null for a
+     * relational field, and an erasure that reported success while every link
+     * survived.
+     */
+    $relationalField = function (): FieldStorage {
+        $storage = FieldStorage::create([
+            'org_id' => test()->org->id, 'handle' => 'people', 'type' => 'relation',
+            'pii_class' => 'none', 'cardinality' => -1,
+        ]);
+
+        Field::create([
+            'entry_type_id' => test()->type->id,
+            'field_storage_id' => $storage->id,
+            'label' => 'People',
+        ]);
+
+        return $storage;
+    };
+
+    it('snapshots the related ids, in order', function () use ($relationalField): void {
+        $storage = $relationalField();
+        $entry = anEntry();
+        $alice = anEntry(['title' => 'Alice']);
+        $bob = anEntry(['title' => 'Bob']);
+
+        $entry->related()->attach($alice->id, ['field_storage_id' => $storage->id, 'ordering' => 0]);
+        $entry->related()->attach($bob->id, ['field_storage_id' => $storage->id, 'ordering' => 1]);
+
+        $latest = $entry->revisions()->latest('id')->first();
+
+        expect($latest->relation_state)->toBe([(string) $storage->id => [$alice->id, $bob->id]]);
+    });
+
+    it('records a version when a relation is ATTACHED', function () use ($relationalField): void {
+        $storage = $relationalField();
+        $entry = anEntry();
+        $alice = anEntry(['title' => 'Alice']);
+
+        $before = $entry->revisions()->count();
+
+        $entry->related()->attach($alice->id, ['field_storage_id' => $storage->id]);
+
+        expect($entry->revisions()->count())->toBe($before + 1);
+    });
+
+    it('records a version when a relation is DETACHED', function () use ($relationalField): void {
+        // Detaching never needed the cardinality lock, so `detach()` was not
+        // overridden at all — but it changes the entry just as much.
+        $storage = $relationalField();
+        $entry = anEntry();
+        $alice = anEntry(['title' => 'Alice']);
+        $entry->related()->attach($alice->id, ['field_storage_id' => $storage->id]);
+
+        $before = $entry->revisions()->count();
+
+        $entry->related()->detach($alice->id);
+
+        expect($entry->revisions()->count())->toBe($before + 1);
+    });
+
+    it('records NOTHING for a detach that matched nothing', function () use ($relationalField): void {
+        $relationalField();
+        $entry = anEntry();
+        $unrelated = anEntry(['title' => 'Unrelated']);
+
+        $before = $entry->revisions()->count();
+
+        $entry->related()->detach($unrelated->id);
+
+        expect($entry->revisions()->count())->toBe($before);
+    });
+
+    it('records ONE version for a sync, not one per inner call', function () use ($relationalField): void {
+        // ⚠️ `sync()` calls `attach()` and `detach()` on the same instance, so
+        // recording in each would file two or three versions for one sync.
+        $storage = $relationalField();
+        $entry = anEntry();
+        $alice = anEntry(['title' => 'Alice']);
+        $bob = anEntry(['title' => 'Bob']);
+        $entry->related()->attach($alice->id, ['field_storage_id' => $storage->id]);
+
+        $before = $entry->revisions()->count();
+
+        $entry->related()->sync([$bob->id => ['field_storage_id' => $storage->id]]);
+
+        expect($entry->revisions()->count())->toBe($before + 1);
+    });
+
+    it('RESTORES the relations a revision recorded', function () use ($relationalField): void {
+        $storage = $relationalField();
+        $entry = anEntry();
+        $alice = anEntry(['title' => 'Alice']);
+        $bob = anEntry(['title' => 'Bob']);
+
+        $entry->related()->attach($alice->id, ['field_storage_id' => $storage->id]);
+        $withAlice = $entry->revisions()->latest('id')->first();
+
+        $entry->related()->detach($alice->id);
+        $entry->related()->attach($bob->id, ['field_storage_id' => $storage->id]);
+
+        expect($entry->related()->pluck('entries.id')->all())->toBe([$bob->id]);
+
+        $entry->restoreRevision($withAlice);
+
+        expect($entry->related()->pluck('entries.id')->all())->toBe([$alice->id]);
+    });
+
+    it('restores the ORDER, not just the set', function () use ($relationalField): void {
+        // `ordering` is what the author arranged, so a restore that puts the
+        // right entries back in the wrong sequence has still lost the version.
+        $storage = $relationalField();
+        $entry = anEntry();
+        $alice = anEntry(['title' => 'Alice']);
+        $bob = anEntry(['title' => 'Bob']);
+
+        $entry->related()->attach($alice->id, ['field_storage_id' => $storage->id, 'ordering' => 0]);
+        $entry->related()->attach($bob->id, ['field_storage_id' => $storage->id, 'ordering' => 1]);
+        $aliceFirst = $entry->revisions()->latest('id')->first();
+
+        $entry->related()->detach();
+        $entry->related()->attach($bob->id, ['field_storage_id' => $storage->id, 'ordering' => 0]);
+        $entry->related()->attach($alice->id, ['field_storage_id' => $storage->id, 'ordering' => 1]);
+
+        $entry->restoreRevision($aliceFirst);
+
+        expect(
+            EntryRelation::query()
+                ->where('source_entry_id', $entry->getKey())
+                ->orderBy('ordering')
+                ->pluck('target_entry_id')
+                ->all(),
+        )->toBe([$alice->id, $bob->id]);
+    });
+
+    it('REFUSES a restore whose related entry is gone', function () use ($relationalField): void {
+        // ⚠️ Refused rather than partially applied. Quietly restoring the subset
+        // would report success for a version the author cannot actually have
+        // back — and `entry_relations` cascades on delete, so the row would fail
+        // its foreign key anyway. This says why instead.
+        $storage = $relationalField();
+        $entry = anEntry();
+        $alice = anEntry(['title' => 'Alice']);
+
+        $entry->related()->attach($alice->id, ['field_storage_id' => $storage->id]);
+        $withAlice = $entry->revisions()->latest('id')->first();
+
+        $alice->forceDelete();
+
+        expect(fn () => $entry->restoreRevision($withAlice))
+            ->toThrow(RuntimeException::class, 'no longer exist');
+    });
+
+    it('leaves relations alone for a revision that recorded none', function (): void {
+        // A revision written before the column existed holds null, and clearing
+        // an entry's relations on that basis would destroy data the revision
+        // never claimed to describe.
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'people2', 'type' => 'relation',
+            'pii_class' => 'none', 'cardinality' => -1,
+        ]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id, 'label' => 'People',
+        ]);
+
+        $entry = anEntry();
+        $alice = anEntry(['title' => 'Alice']);
+        $revision = $entry->revisions()->first();
+        $revision->forceFill(['relation_state' => null])->save();
+
+        $entry->related()->attach($alice->id, ['field_storage_id' => $storage->id]);
+
+        $entry->restoreRevision($revision);
+
+        expect($entry->related()->pluck('entries.id')->all())->toBe([$alice->id]);
+    });
+
+    it('is stood down by withoutRevisions', function () use ($relationalField): void {
+        $storage = $relationalField();
+        $entry = anEntry();
+        $alice = anEntry(['title' => 'Alice']);
+
+        $before = $entry->revisions()->count();
+
+        RevisionWrites::suspend(function () use ($entry, $alice, $storage): void {
+            $entry->related()->attach($alice->id, ['field_storage_id' => $storage->id]);
+        });
+
+        expect($entry->revisions()->count())->toBe($before)
+            ->and($entry->related()->pluck('entries.id')->all())->toBe([$alice->id]);
+    });
+});
+
+describe('a quiet save is still a version', function (): void {
+    /*
+     * ⚠️ `saveQuietly()` and `updateQuietly()` suppress the `updated` listener
+     * while still writing through the builder — and the builder skipped every
+     * instance save to avoid double-recording. So NEITHER recorder ran: the
+     * entry moved on and its newest revision stayed stale, which makes "restore
+     * the latest version" revert a change nobody recorded.
+     *
+     * `withoutRevisions()` is meant to be the explicit opt-out. A quiet save is
+     * not that: it says "do not fire events", not "do not keep history".
+     *
+     * The discriminator is Laravel's own mechanism — `withoutEvents()` unsets
+     * the dispatcher — so the builder records exactly when no listener will.
+     */
+    it('records one for updateQuietly', function (): void {
+        $entry = anEntry();
+
+        $entry->updateQuietly(['title' => 'Quietly changed']);
+
+        expect($entry->revisions()->count())->toBe(2)
+            ->and($entry->revisions()->latest('id')->first()->title)->toBe('Quietly changed');
+    });
+
+    it('records one for saveQuietly', function (): void {
+        $entry = anEntry();
+
+        $entry->values = ['body' => 'quiet'];
+        $entry->saveQuietly();
+
+        expect($entry->revisions()->count())->toBe(2)
+            ->and($entry->revisions()->latest('id')->first()->values['body'])->toBe('quiet');
+    });
+
+    it('records NOTHING for a quiet save that changes nothing versioned', function (): void {
+        $entry = anEntry();
+
+        $entry->updateQuietly(['type_handle' => $entry->type_handle]);
+
+        expect($entry->revisions()->count())->toBe(1);
+    });
+
+    it('still records exactly ONE for a noisy instance save', function (): void {
+        // The regression the `exists` skip existed to prevent. The dispatcher
+        // test has to keep preventing it, or every ordinary save files two.
+        $entry = anEntry();
+
+        $entry->update(['title' => 'Loudly changed']);
+
+        expect($entry->revisions()->count())->toBe(2);
+    });
+
+    it('is still stood down by withoutRevisions, quietly or not', function (): void {
+        $entry = anEntry();
+
+        $entry->withoutRevisions(fn (Entry $e) => $e->updateQuietly(['title' => 'Silent']));
+
+        expect($entry->revisions()->count())->toBe(1)
+            ->and($entry->fresh()->title)->toBe('Silent');
+    });
+});
+
+describe('every revision names the schema it was written against', function (): void {
+    it('cannot be written without a type', function (): void {
+        // ⚠️ NOT NULL, and nullable put a restore-time constraint violation one
+        // row away: `snapshot()` includes this column and `restoreRevision()`
+        // fills the entry from it, while `entries.entry_type_id` is NOT NULL —
+        // so a discriminator-less revision ended the restore in a database
+        // error. Every revision is written from an entry whose own column is
+        // NOT NULL, so the schema states the invariant instead.
+        $entry = anEntry();
+
+        // ⚠️ Inside its own transaction, which is a SAVEPOINT here.
+        //
+        // PostgreSQL aborts the entire transaction when a statement fails —
+        // `SQLSTATE[25P02] current transaction is aborted, commands ignored` —
+        // and `RefreshDatabase` has already opened one, so provoking a
+        // constraint violation poisoned everything after it. The test passed
+        // alone and failed in the full suite, which is the least helpful way for
+        // a failure to present. Rolling back to a savepoint clears the aborted
+        // state and leaves the surrounding transaction usable.
+        expect(fn () => DB::transaction(fn () => EntryRevision::create([
+            'entry_id' => $entry->id,
+            'values' => ['body' => 'orphaned'],
+            // ⚠️ The COLUMN name only. Each engine words a not-null violation
+            // differently — SQLite says `entry_revisions.entry_type_id`,
+            // PostgreSQL says `column "entry_type_id"`, MySQL says
+            // `Column 'entry_type_id' cannot be null` — so matching more than
+            // this passes on SQLite and fails the other three legs. Found by
+            // the matrix, which is what it is for.
+        ])))->toThrow(QueryException::class, 'entry_type_id');
+    });
+});
+
+describe('a restore is one version, atomic, and authoritative', function (): void {
+    $relationalField = function (string $handle = 'people'): FieldStorage {
+        $storage = FieldStorage::create([
+            'org_id' => test()->org->id, 'handle' => $handle, 'type' => 'relation',
+            'pii_class' => 'personal', 'cardinality' => -1,
+        ]);
+
+        Field::create([
+            'entry_type_id' => test()->type->id, 'field_storage_id' => $storage->id, 'label' => 'People',
+        ]);
+
+        return $storage;
+    };
+
+    it('treats an EMPTY snapshot as authoritative, not as silence', function () use ($relationalField): void {
+        // ⚠️ `[]` is a statement: at that version this entry had no relations.
+        // Treating it as "nothing recorded" left every current link attached
+        // while reporting a successful restore. Only `null` — a revision written
+        // before the column existed — says nothing.
+        $storage = $relationalField();
+        $entry = anEntry();
+        $alice = anEntry(['title' => 'Alice']);
+
+        $empty = $entry->revisions()->first();
+        expect($empty->relation_state)->toBe([]);
+
+        $entry->related()->attach($alice->id, ['field_storage_id' => $storage->id]);
+        expect($entry->related()->count())->toBe(1);
+
+        $entry->restoreRevision($empty);
+
+        expect($entry->related()->count())->toBe(0);
+    });
+
+    it('REPLACES rather than patching, so a later field is not left behind', function () use ($relationalField): void {
+        // ⚠️ The rebuild deleted only the storage ids present in the snapshot, so
+        // a relation added to a DIFFERENT field after the revision was taken
+        // survived the restore.
+        $people = $relationalField('people');
+        $entry = anEntry();
+        $alice = anEntry(['title' => 'Alice']);
+        $bob = anEntry(['title' => 'Bob']);
+
+        $entry->related()->attach($alice->id, ['field_storage_id' => $people->id]);
+        $onlyAlice = $entry->revisions()->latest('id')->first();
+
+        $editors = $relationalField('editors');
+        $entry->related()->attach($bob->id, ['field_storage_id' => $editors->id]);
+
+        $entry->restoreRevision($onlyAlice);
+
+        expect($entry->related()->pluck('entries.id')->all())->toBe([$alice->id]);
+    });
+
+    it('records ONE version, describing the entry as restored', function () use ($relationalField): void {
+        // ⚠️ The scalar save fired `updated`, so the revision it filed described
+        // the entry with its OLD relations — and when nothing scalar changed it
+        // filed nothing at all, leaving the newest revision not describing the
+        // entry. Restoring that would revert the relations again.
+        $storage = $relationalField();
+        $entry = anEntry();
+        $alice = anEntry(['title' => 'Alice']);
+
+        $entry->related()->attach($alice->id, ['field_storage_id' => $storage->id]);
+        $withAlice = $entry->revisions()->latest('id')->first();
+
+        $entry->related()->detach($alice->id);
+        $before = $entry->revisions()->count();
+
+        $entry->restoreRevision($withAlice);
+
+        expect($entry->revisions()->count())->toBe($before + 1)
+            ->and($entry->revisions()->latest('id')->first()->relation_state)
+            ->toBe([(string) $storage->id => [$alice->id]]);
+    });
+
+    it('records NOTHING for a restore that changes nothing', function () use ($relationalField): void {
+        $relationalField();
+        $entry = anEntry();
+        $newest = $entry->revisions()->latest('id')->first();
+
+        $before = $entry->revisions()->count();
+
+        $entry->restoreRevision($newest);
+
+        expect($entry->revisions()->count())->toBe($before);
+    });
+
+    it('changes NOTHING when a recorded target is gone', function () use ($relationalField): void {
+        // ⚠️ The refusal says "nothing has been changed", and validating after
+        // the entry save made that a lie for the scalar half: the title was
+        // already persisted when the rebuild threw.
+        $storage = $relationalField();
+        $entry = anEntry(['title' => 'Original']);
+        $alice = anEntry(['title' => 'Alice']);
+
+        $entry->related()->attach($alice->id, ['field_storage_id' => $storage->id]);
+        $withAlice = $entry->revisions()->latest('id')->first();
+
+        $entry->update(['title' => 'Current']);
+        $alice->forceDelete();
+
+        expect(fn () => $entry->restoreRevision($withAlice))
+            ->toThrow(RuntimeException::class, 'no longer exist');
+
+        expect($entry->fresh()->title)->toBe('Current');
+    });
+});
+
+describe('erasure reaches the relations recorded in history', function (): void {
+    /*
+     * ⚠️ A new place to store relations is a new place erasure has to sweep.
+     *
+     * The relational branch deleted the live pivots and returned, so every erased
+     * target id stayed in `relation_state` — and restoring one of those revisions
+     * would recreate the relation, undoing the erasure. ADR-020 requires erasure
+     * to reach revision history, and that requirement does not care which column
+     * the data is in.
+     */
+    it('removes the erased field from every revision snapshot', function (): void {
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'patient', 'type' => 'relation',
+            'pii_class' => 'sensitive', 'cardinality' => -1,
+        ]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id, 'label' => 'Patient',
+        ]);
+
+        $entry = anEntry();
+        $alice = anEntry(['title' => 'Alice']);
+
+        $entry->related()->attach($alice->id, ['field_storage_id' => $storage->id]);
+        $recorded = $entry->revisions()->latest('id')->first();
+
+        expect($recorded->relation_state)->toBe([(string) $storage->id => [$alice->id]]);
+
+        $entry->redactField('patient');
+
+        $key = (string) $storage->id;
+        $states = $entry->revisions()->get()->map(fn (EntryRevision $r): array => $r->relation_state ?? []);
+
+        // ⚠️ The key is KEPT and set to null where it existed, not removed. Three
+        // states have to be distinguishable: a list is what the field held,
+        // `null` is "erased, so this version says nothing", and an ABSENT key is
+        // "this field had no relations at that version" — which is the true state
+        // of the initial revision here, taken before anything was attached.
+        // Dropping the key collapsed the last two, so restoring a redacted
+        // revision deleted a replacement relation added after the erasure.
+        expect($states->filter(fn (array $s): bool => ($s[$key] ?? null) !== null))->toBeEmpty()
+            ->and($states->filter(fn (array $s): bool => array_key_exists($key, $s)))->not->toBeEmpty();
+    });
+
+    it('leaves a REPLACEMENT relation alone when a redacted revision is restored', function (): void {
+        // ⚠️ The conflict between two earlier decisions: erasure makes the
+        // snapshot sparse, and the restore replaces every field-backed relation.
+        // Together they deleted a relation the revision had nothing to say about.
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'patient3', 'type' => 'relation',
+            'pii_class' => 'sensitive', 'cardinality' => -1,
+        ]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id, 'label' => 'Patient',
+        ]);
+
+        $entry = anEntry(['title' => 'Before']);
+        $alice = anEntry(['title' => 'Alice']);
+        $bob = anEntry(['title' => 'Bob']);
+
+        $entry->related()->attach($alice->id, ['field_storage_id' => $storage->id]);
+        $recorded = $entry->revisions()->latest('id')->first();
+
+        $entry->redactField('patient3');
+
+        // A replacement arrives after the erasure.
+        $entry->related()->attach($bob->id, ['field_storage_id' => $storage->id]);
+        $entry->update(['title' => 'After']);
+
+        $entry->restoreRevision($recorded->fresh());
+
+        // The scalar half restored, and the replacement survived — the revision
+        // records nothing about that field, so it may not speak for it.
+        expect($entry->fresh()->title)->toBe('Before')
+            ->and($entry->related()->pluck('entries.id')->all())->toBe([$bob->id]);
+    });
+
+    it('so restoring an erased version cannot bring the link back', function (): void {
+        // The consequence, asserted end to end — which is what ADR-020 is about.
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'patient2', 'type' => 'relation',
+            'pii_class' => 'sensitive', 'cardinality' => -1,
+        ]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id, 'label' => 'Patient',
+        ]);
+
+        $entry = anEntry();
+        $alice = anEntry(['title' => 'Alice']);
+        $entry->related()->attach($alice->id, ['field_storage_id' => $storage->id]);
+        $recorded = $entry->revisions()->latest('id')->first();
+
+        $entry->redactField('patient2');
+        $entry->restoreRevision($recorded->fresh());
+
+        expect($entry->related()->count())->toBe(0);
+    });
+});
+
+describe('quiet creation still files an initial version', function (): void {
+    it('records one for createQuietly', function (): void {
+        // ⚠️ The creation half of the quiet-save gap. A quiet UPDATE is treated
+        // as a version, so an entry arriving with no initial revision at all made
+        // the two halves disagree about what a quiet write means.
+        // ⚠️ Every DERIVED column is explicit, because `createQuietly()`
+        // suppresses the listeners that normally stamp them: `EnforcesScope`'s
+        // `creating` supplies `org_id` and `site_id`, and `Entry::saving()`
+        // restamps `type_handle` from the type. A quiet create has to supply all
+        // three or the insert fails its own NOT NULL constraints — which is
+        // exactly why an importer is the realistic caller for this path, and why
+        // it needs an initial revision as much as any other.
+        $entry = Entry::createQuietly([
+            'org_id' => $this->org->id,
+            'site_id' => $this->site->id,
+            'entry_type_id' => $this->type->id,
+            'type_handle' => $this->type->handle,
+            'title' => 'Imported',
+            'values' => ['body' => 'from a feed'],
+        ]);
+
+        expect($entry->revisions()->count())->toBe(1)
+            ->and($entry->revisions()->first()->title)->toBe('Imported');
+    });
+
+    it('still records exactly ONE for an ordinary create', function (): void {
+        // The other half of the discriminator: recording in both the listener and
+        // the builder would file two for one insert.
+        $entry = anEntry();
+
+        expect($entry->revisions()->count())->toBe(1);
+    });
+});
+
+describe('every supported relation write files a version', function (): void {
+    /*
+     * ⚠️ Recording lived only on `GuardedBelongsToMany`, so the ordinary Eloquent
+     * surface bypassed it — `EntryRelation::create()`, a predicate delete, and an
+     * `ordering` update, which `GuardedRelationBuilder` explicitly permits. Each
+     * changes relational content, and each left the newest revision stale so
+     * restoring it silently undid the change.
+     */
+    $relationalField = function (): FieldStorage {
+        $storage = FieldStorage::create([
+            'org_id' => test()->org->id, 'handle' => 'people', 'type' => 'relation',
+            'pii_class' => 'none', 'cardinality' => -1,
+        ]);
+
+        Field::create([
+            'entry_type_id' => test()->type->id, 'field_storage_id' => $storage->id, 'label' => 'People',
+        ]);
+
+        return $storage;
+    };
+
+    it('records one for a direct EntryRelation::create', function () use ($relationalField): void {
+        $storage = $relationalField();
+        $entry = anEntry();
+        $alice = anEntry(['title' => 'Alice']);
+
+        $before = $entry->revisions()->count();
+
+        EntryRelation::create([
+            'org_id' => $this->org->id,
+            'source_entry_id' => $entry->getKey(),
+            'target_entry_id' => $alice->getKey(),
+            'field_storage_id' => $storage->getKey(),
+            'ordering' => 0,
+        ]);
+
+        expect($entry->revisions()->count())->toBe($before + 1)
+            ->and($entry->revisions()->latest('id')->first()->relation_state)
+            ->toBe([(string) $storage->id => [$alice->id]]);
+    });
+
+    it('records one for a predicate delete', function () use ($relationalField): void {
+        $storage = $relationalField();
+        $entry = anEntry();
+        $alice = anEntry(['title' => 'Alice']);
+        $entry->related()->attach($alice->id, ['field_storage_id' => $storage->id]);
+
+        $before = $entry->revisions()->count();
+
+        EntryRelation::query()->where('source_entry_id', $entry->getKey())->delete();
+
+        expect($entry->revisions()->count())->toBe($before + 1)
+            ->and($entry->revisions()->latest('id')->first()->relation_state)->toBe([]);
+    });
+
+    it('records one for an ORDERING update, which that builder permits', function () use ($relationalField): void {
+        // Order is part of what a revision records: restoring the right targets in
+        // the wrong sequence has still lost the version.
+        $storage = $relationalField();
+        $entry = anEntry();
+        $alice = anEntry(['title' => 'Alice']);
+        $bob = anEntry(['title' => 'Bob']);
+        $entry->related()->attach($alice->id, ['field_storage_id' => $storage->id, 'ordering' => 0]);
+        $entry->related()->attach($bob->id, ['field_storage_id' => $storage->id, 'ordering' => 1]);
+
+        $before = $entry->revisions()->count();
+
+        EntryRelation::query()
+            ->where('source_entry_id', $entry->getKey())
+            ->where('target_entry_id', $alice->getKey())
+            ->update(['ordering' => 5]);
+
+        expect($entry->revisions()->count())->toBe($before + 1)
+            ->and($entry->revisions()->latest('id')->first()->relation_state)
+            ->toBe([(string) $storage->id => [$bob->id, $alice->id]]);
+    });
+
+    it('records ONE for an attach, not one per builder it passes through', function () use ($relationalField): void {
+        // ⚠️ A per-instance depth counter did not hold: one attach starts on
+        // `GuardedBelongsToMany` and lands on `EntryRelation`'s own builder, a
+        // different object with its own counter — so both recorded. The shared
+        // suspension makes the outermost write the only recorder.
+        $storage = $relationalField();
+        $entry = anEntry();
+        $alice = anEntry(['title' => 'Alice']);
+
+        $before = $entry->revisions()->count();
+
+        $entry->related()->attach($alice->id, ['field_storage_id' => $storage->id]);
+
+        expect($entry->revisions()->count())->toBe($before + 1);
+    });
+
+    it('files NOTHING for the relations an erasure clears', function () use ($relationalField): void {
+        // ⚠️ Adding a recorder added a place erasure has to stand it down. An
+        // erasure is not an authored version, and filing one would add a row to
+        // the history it is clearing.
+        $storage = $relationalField();
+        $entry = anEntry();
+        $alice = anEntry(['title' => 'Alice']);
+        $entry->related()->attach($alice->id, ['field_storage_id' => $storage->id]);
+
+        $before = $entry->revisions()->count();
+
+        $entry->redactField('people');
+
+        expect($entry->revisions()->count())->toBe($before);
+    });
+});
+
+describe('the restore does not fail over schema that has since gone', function (): void {
+    it('discards a snapshot entry whose storage was deleted', function (): void {
+        /*
+         * ⚠️ Deleting a FieldStorage nulls its pivots (`nullOnDelete`) but leaves
+         * its id in every snapshot. Rebuilding supplied that id and hit the
+         * foreign key, so the History action failed because an unrelated field had
+         * been removed.
+         *
+         * Discarded rather than refused, unlike a missing target: the relation is
+         * gone as a concept — there is no field left to restore it into — and
+         * refusing would make every revision written before that removal
+         * permanently unrestorable.
+         */
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'doomed', 'type' => 'relation',
+            'pii_class' => 'none', 'cardinality' => -1,
+        ]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id, 'label' => 'Doomed',
+        ]);
+
+        $entry = anEntry(['title' => 'Before']);
+        $alice = anEntry(['title' => 'Alice']);
+        $entry->related()->attach($alice->id, ['field_storage_id' => $storage->id]);
+        $recorded = $entry->revisions()->latest('id')->first();
+
+        $entry->update(['title' => 'After']);
+
+        // Removing the storage nulls the pivot and orphans the snapshot's id.
+        RevisionWrites::suspend(fn () => $storage->delete());
+
+        $entry->restoreRevision($recorded->fresh());
+
+        // The scalar half restored, and the vanished field simply is not rebuilt.
+        expect($entry->fresh()->title)->toBe('Before')
+            ->and(EntryRelation::query()->where('source_entry_id', $entry->getKey())->whereNotNull('field_storage_id')->count())
+            ->toBe(0);
+    });
+});
+
+describe('an arithmetic write is still a version', function (): void {
+    it('records one when $extra assigns a versioned column', function (): void {
+        // ⚠️ Laravel's arithmetic methods take an `$extra` map of ordinary
+        // assignments, and those columns were never passed to revision detection —
+        // so `increment(..., ['status' => 'published'])` was audited, changed a
+        // versioned column, and filed no version. Restoring the latest revision
+        // would then have reverted the publication.
+        $entry = anEntry();
+
+        $before = $entry->revisions()->count();
+
+        // ⚠️ The key incremented by ZERO, which is the shape that makes this a
+        // real exposure rather than a curiosity: `entries` has no ordinary numeric
+        // column, so the arithmetic itself is a no-op and the `$extra` assignment
+        // is the whole point. Audited, and until now unversioned.
+        Entry::query()->whereKey($entry->getKey())->increment('id', 0, ['status' => 'published']);
+
+        expect($entry->revisions()->count())->toBe($before + 1)
+            ->and($entry->revisions()->latest('id')->first()->status)->toBe('published');
+    });
+
+    it('records NOTHING when the arithmetic touches nothing versioned', function (): void {
+        $entry = anEntry();
+
+        $before = $entry->revisions()->count();
+
+        Entry::query()->whereKey($entry->getKey())->increment('id', 0);
+
+        expect($entry->revisions()->count())->toBe($before);
+    });
+});
+
+describe('a JSON-path write is a write to values', function (): void {
+    it('records a version for update([values->key])', function (): void {
+        // ⚠️ Laravel supports the JSON path syntax, and `bareColumn()` returned
+        // `values->body`, which never matched the versioned column `values` — so
+        // an inline field could be rewritten with no version recorded and a later
+        // restore would silently undo it.
+        $entry = anEntry();
+
+        $before = $entry->revisions()->count();
+
+        Entry::query()->whereKey($entry->getKey())->update(['values->body' => 'rewritten']);
+
+        expect($entry->revisions()->count())->toBe($before + 1)
+            ->and($entry->revisions()->latest('id')->first()->values['body'])->toBe('rewritten');
+    });
+
+    it('still records nothing for a JSON path on an unversioned column', function (): void {
+        // `settings` is not part of the versioned surface, and rooting the check
+        // at the column must not make every JSON path versioned.
+        $entry = anEntry();
+
+        $before = $entry->revisions()->count();
+
+        Entry::query()->whereKey($entry->getKey())->touch();
+
+        expect($entry->revisions()->count())->toBe($before);
+    });
+});
+
+describe('relation arithmetic is a version too', function (): void {
+    it('records one when ordering is incremented', function (): void {
+        // ⚠️ `ordering` is the sequence `relationState()` snapshots, so this
+        // reorders an entry's relations — changing what a revision would record —
+        // while taking no source lock and filing no version.
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'people', 'type' => 'relation',
+            'pii_class' => 'none', 'cardinality' => -1,
+        ]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id, 'label' => 'People',
+        ]);
+
+        $entry = anEntry();
+        $alice = anEntry(['title' => 'Alice']);
+        $bob = anEntry(['title' => 'Bob']);
+        $entry->related()->attach($alice->id, ['field_storage_id' => $storage->id, 'ordering' => 0]);
+        $entry->related()->attach($bob->id, ['field_storage_id' => $storage->id, 'ordering' => 1]);
+
+        $before = $entry->revisions()->count();
+
+        EntryRelation::query()
+            ->where('source_entry_id', $entry->getKey())
+            ->where('target_entry_id', $alice->getKey())
+            ->increment('ordering', 5);
+
+        expect($entry->revisions()->count())->toBe($before + 1)
+            ->and($entry->revisions()->latest('id')->first()->relation_state)
+            ->toBe([(string) $storage->id => [$bob->id, $alice->id]]);
+    });
+});
+
+describe('an ordinary create records inside the insert transaction', function (): void {
+    it('records exactly one initial version', function (): void {
+        // ⚠️ The `created` listener fired after `insertGetId()` had committed, so
+        // a concurrent updater could commit and record version B before the
+        // initial version A was written — leaving A newest while the live entry is
+        // B. Recording moved inside the transaction; this asserts it did not
+        // start recording twice in the process.
+        $entry = anEntry();
+
+        expect($entry->revisions()->count())->toBe(1)
+            ->and($entry->revisions()->first()->title)->toBe('First');
+    });
+
+    it('still records one for a quiet create', function (): void {
+        $entry = Entry::createQuietly([
+            'org_id' => $this->org->id,
+            'site_id' => $this->site->id,
+            'entry_type_id' => $this->type->id,
+            'type_handle' => $this->type->handle,
+            'title' => 'Imported',
+            'values' => [],
+        ]);
+
+        expect($entry->revisions()->count())->toBe(1);
+    });
+});
+
+describe('a restore cannot resurrect what erasure removed', function (): void {
+    $relationalField = function (string $handle = 'people'): FieldStorage {
+        $storage = FieldStorage::create([
+            'org_id' => test()->org->id, 'handle' => $handle, 'type' => 'relation',
+            'pii_class' => 'sensitive', 'cardinality' => -1,
+        ]);
+        Field::create([
+            'entry_type_id' => test()->type->id, 'field_storage_id' => $storage->id, 'label' => 'People',
+        ]);
+
+        return $storage;
+    };
+
+    it('re-reads a STALE revision instance rather than trusting it', function (): void {
+        /*
+         * ⚠️ `redactField()` sweeps revisions through separately loaded models, so
+         * a caller holding an `EntryRevision` from before an erasure still has the
+         * pre-erasure snapshot in memory — and restoring it wrote the erased
+         * values straight back. An erasure that succeeded could be undone by a
+         * restore that never re-read anything (ADR-020).
+         */
+        $entry = anEntry(['values' => ['secret' => 'Jane Doe']]);
+
+        FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'secret', 'type' => 'text',
+            'pii_class' => 'personal', 'cardinality' => 1,
+        ]);
+
+        // Held from before the erasure, exactly as a UI action would hold it.
+        $stale = $entry->revisions()->latest('id')->first();
+        expect($stale->values['secret'])->toBe('Jane Doe');
+
+        $entry->redactField('secret');
+
+        $entry->restoreRevision($stale);
+
+        expect($entry->fresh()->values['secret'])->toBeNull();
+    });
+
+    it('re-reads a stale RELATION snapshot too', function () use ($relationalField): void {
+        $storage = $relationalField('patient4');
+        $entry = anEntry();
+        $alice = anEntry(['title' => 'Alice']);
+
+        $entry->related()->attach($alice->id, ['field_storage_id' => $storage->id]);
+        $stale = $entry->revisions()->latest('id')->first();
+        expect($stale->relation_state[(string) $storage->id])->toBe([$alice->id]);
+
+        $entry->redactField('patient4');
+
+        $entry->restoreRevision($stale);
+
+        expect($entry->related()->count())->toBe(0);
+    });
+});
+
+describe('one API call takes one history slot', function (): void {
+    it('records ONE version for a toggle', function (): void {
+        // ⚠️ Laravel's `toggle()` reaches the overridden `attach()` and `detach()`
+        // directly, so without an outer frame it recorded the intermediate
+        // detached state and then the attached one — two versions for one call,
+        // and one of them a state the entry never meaningfully had. `sync()` was
+        // wrapped for exactly this and `toggle()` was missed beside it.
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'people2', 'type' => 'relation',
+            'pii_class' => 'none', 'cardinality' => -1,
+        ]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id, 'label' => 'People',
+        ]);
+
+        $entry = anEntry();
+        $alice = anEntry(['title' => 'Alice']);
+        $bob = anEntry(['title' => 'Bob']);
+        $entry->related()->attach($alice->id, ['field_storage_id' => $storage->id]);
+
+        $before = $entry->revisions()->count();
+
+        $entry->related()->toggle([
+            $alice->id => ['field_storage_id' => $storage->id],
+            $bob->id => ['field_storage_id' => $storage->id],
+        ]);
+
+        expect($entry->revisions()->count())->toBe($before + 1)
+            ->and($entry->related()->pluck('entries.id')->all())->toBe([$bob->id]);
+    });
+});
+
+describe('a restore checks OWNERSHIP under the lock, not before it', function (): void {
+    it('refuses a revision reassigned after the caller loaded it', function (): void {
+        /*
+         * ⚠️ The ownership check ran on the caller's instance, outside any lock,
+         * and was never repeated on the locked row — so the same lesson that had
+         * been applied to `entry_type_id` was missed for `entry_id`.
+         *
+         * `EntryRevision` is #[Unscoped] and writable, so the column can be
+         * reassigned between the caller's load and the restore. The stale instance
+         * still said "mine", the outer check agreed, and the snapshot was applied.
+         * When both entries share a type the type guard agreed too — so the values
+         * of an entry in ANOTHER ORG could be written onto this one (ADR-021).
+         *
+         * Reassigning the row behind a loaded instance is exactly what the race
+         * produces, and it needs no second connection to reproduce.
+         */
+        $mine = anEntry(['title' => 'Mine']);
+        $mine->update(['title' => 'Mine, edited']);
+
+        $rival = Org::create(['name' => 'Rival', 'slug' => 'rev-rival']);
+        $rivalType = EntryType::create([
+            'org_id' => $rival->id, 'handle' => 'article', 'name' => 'Article', 'plural_name' => 'Articles',
+        ]);
+        $theirs = Entry::withoutScopeBecause(
+            'creating another org\'s entry to prove a reassigned revision cannot cross the boundary',
+            fn ($query) => $query->create([
+                'entry_type_id' => $rivalType->id, 'org_id' => $rival->id,
+                'site_id' => null, 'type_handle' => 'article', 'title' => 'Theirs',
+            ]),
+        );
+
+        $revision = $theirs->revisionHistory()->firstOrFail();
+
+        // The caller holds it while it still belongs to the other entry...
+        expect($revision->entry_id)->toBe($theirs->getKey());
+
+        // ...and it is reassigned onto ours behind that instance, then back, so the
+        // instance in hand is stale in precisely the way the race leaves it.
+        DB::table('entry_revisions')->where('id', $revision->getKey())
+            ->update(['entry_id' => $mine->getKey()]);
+        DB::table('entry_revisions')->where('id', $revision->getKey())
+            ->update(['entry_id' => $theirs->getKey()]);
+
+        $stale = $revision->replicate(); // keeps the in-memory entry_id
+        $stale->id = $revision->getKey();
+        $stale->entry_id = $mine->getKey();
+        $stale->exists = true;
+
+        expect(fn () => $mine->restoreRevision($stale))
+            ->toThrow(RuntimeException::class, 'belongs to another entry');
+
+        // And nothing was written: the refusal happens before the snapshot lands.
+        expect($mine->fresh()->title)->toBe('Mine, edited');
+    });
+
+    it('still restores a revision that genuinely belongs to the entry', function (): void {
+        // The check runs twice now, so the ordinary path has to be asserted or a
+        // stricter guard could pass by refusing everything.
+        $entry = anEntry(['title' => 'First']);
+        $entry->update(['title' => 'Second']);
+
+        // ⚠️ `revisions()`, not `revisionHistory()` — that one is newest-first by
+        // definition, so adding `orderBy('id')` only appends a secondary sort and
+        // still hands back the newest.
+        $first = $entry->revisions()->orderBy('id')->firstOrFail();
+        $entry->restoreRevision($first);
+
+        expect($entry->fresh()->title)->toBe('First');
+    });
+});
+
+describe('lock ORDER is one order for every relation path', function (): void {
+    it('locks a move destination with the sources, before any pivot', function (): void {
+        /*
+         * ⚠️ A lock SET without a lock ORDER is what deadlocks, and the previous
+         * fix supplied only the set.
+         *
+         * `freezingRows()` locks the source entries and then the pivots, and the
+         * destination was appended for `versioned()` to lock AFTERWARDS. So a move
+         * A→B held A and its pivot before asking for B, while the reciprocal move
+         * B→A held B and its pivot before asking for A — a deterministic deadlock
+         * between two ordinary requests.
+         *
+         * Asserted structurally, because a deadlock needs two connections to
+         * observe and the ORDER is the property that prevents it: the entry lock
+         * that names both endpoints must be issued before any pivot lock.
+         */
+        $a = anEntry(['title' => 'A']);
+        $b = anEntry(['title' => 'B']);
+        $target = anEntry(['title' => 'Target']);
+
+        $a->related()->attach($target->getKey());
+        $relation = EntryRelation::query()->firstOrFail();
+
+        /*
+         * ⚠️ Matched on statement SHAPE, not on the word "for update".
+         *
+         * SQLite compiles `lockForUpdate()` to nothing at all, so a matcher keyed
+         * on the lock clause finds no statements there and the test would pass on
+         * the default engine by asserting about an empty list. And the quoting
+         * differs — MySQL uses backticks where the others use double quotes — so
+         * the identifiers are unquoted before matching. Laravel also inlines an
+         * array of integer ids into the SQL rather than binding them, which is why
+         * the endpoints are looked for in the statement rather than the bindings.
+         */
+        $unquote = fn (string $sql): string => (string) preg_replace('/[`"]/', '', $sql);
+
+        $locks = [];
+        DB::listen(function ($query) use (&$locks, $unquote): void {
+            $sql = $unquote($query->sql);
+
+            if (str_starts_with($sql, 'select id, source_entry_id from entry_relations')) {
+                $locks[] = 'pivot';
+            } elseif (str_starts_with($sql, 'select * from entries where entries.id in (')) {
+                $locks[] = 'entries:'.$sql;
+            }
+        });
+
+        $relation->source_entry_id = $b->getKey();
+        $relation->save();
+
+        $firstEntryLock = null;
+        $firstPivotLock = null;
+
+        foreach ($locks as $index => $lock) {
+            if ($firstEntryLock === null && str_starts_with($lock, 'entries:')) {
+                $firstEntryLock = $index;
+            }
+
+            if ($firstPivotLock === null && $lock === 'pivot') {
+                $firstPivotLock = $index;
+            }
+        }
+
+        expect($firstEntryLock)->not->toBeNull()
+            ->and($firstPivotLock)->not->toBeNull()
+            // The entries come first...
+            ->and($firstEntryLock)->toBeLessThan($firstPivotLock);
+
+        // ...and that first entry lock names BOTH endpoints, which is the half the
+        // earlier fix missed: it is not enough for the destination to be locked
+        // eventually, it has to be in the same ordered statement as the source.
+        $bindings = $locks[$firstEntryLock];
+
+        expect($bindings)->toContain((string) $a->getKey())
+            ->and($bindings)->toContain((string) $b->getKey());
+    });
+});
+
+describe('an incoming detach removes the rows it froze', function (): void {
+    it('leaves a relation that arrived after the freeze alone', function (): void {
+        /*
+         * ⚠️ `referencedBy()->detach()` named its sources with an unlocked pluck
+         * and then let the inherited detach rerun its own target-based predicate.
+         * A pivot from a NEW source committing between the two statements was
+         * deleted by a statement that had never locked it, never counted it in
+         * `$before`, and never recorded it — leaving that source's newest revision
+         * claiming a relation the database no longer had.
+         *
+         * The delete is pinned to the frozen ids now. The row that arrives late is
+         * simply not this statement's business, which is the same contract the
+         * direct relation builder provides.
+         *
+         * Reproduced without a second connection by inserting the late row from
+         * inside the freeze itself — the listener fires on the pivot lock, which is
+         * exactly the window the race uses.
+         */
+        $target = anEntry(['title' => 'Referenced']);
+        $early = anEntry(['title' => 'Early']);
+        $late = anEntry(['title' => 'Late']);
+
+        $early->related()->attach($target->getKey());
+
+        // Shape rather than the lock clause, for the reason the lock-order test
+        // states: SQLite compiles `lockForUpdate()` to nothing.
+        $inserted = false;
+        DB::listen(function ($query) use (&$inserted, $late, $target): void {
+            $sql = (string) preg_replace('/[`"]/', '', $query->sql);
+
+            if ($inserted || ! str_starts_with($sql, 'select id, source_entry_id from entry_relations')) {
+                return;
+            }
+
+            $inserted = true;
+
+            // The concurrent attach, landing inside the window the freeze covers.
+            DB::table('entry_relations')->insert([
+                'org_id' => test()->org->id,
+                'source_entry_id' => $late->getKey(),
+                'target_entry_id' => $target->getKey(),
+                'ordering' => 0,
+            ]);
+        });
+
+        $target->referencedBy()->detach();
+
+        expect($inserted)->toBeTrue();
+
+        $survivors = DB::table('entry_relations')
+            ->where('target_entry_id', $target->getKey())
+            ->pluck('source_entry_id')
+            ->all();
+
+        // The frozen row is gone; the late arrival is untouched.
+        expect($survivors)->toBe([$late->getKey()]);
+    });
+
+    it('still removes everything it did freeze', function (): void {
+        // Pinning must not become a way of deleting nothing.
+        $target = anEntry(['title' => 'Referenced']);
+        $one = anEntry(['title' => 'One']);
+        $two = anEntry(['title' => 'Two']);
+
+        $one->related()->attach($target->getKey());
+        $two->related()->attach($target->getKey());
+
+        expect($target->referencedBy()->count())->toBe(2);
+
+        $target->referencedBy()->detach();
+
+        expect(DB::table('entry_relations')->where('target_entry_id', $target->getKey())->count())->toBe(0);
+    });
+});
+
+describe('history is not collateral damage of deleting a type', function (): void {
+    it('refuses to delete a type whose revisions still record it', function (): void {
+        /*
+         * ⚠️ `EntryType::guardCascade()` counted ENTRIES, and `entry_type_id` on an
+         * entry is mutable — so moving every entry of type A to type B made the
+         * count zero and permitted the delete. The foreign key then cascaded away
+         * every surviving entry's A-era revisions: the entries stayed, their history
+         * went, irreversibly, in a system whose revision UI deliberately offers no
+         * way to delete a revision at all.
+         *
+         * Those revisions are the only remaining record of what the values meant
+         * under A, which is exactly why they are recorded against a type at all.
+         */
+        $other = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'note', 'name' => 'Note', 'plural_name' => 'Notes',
+        ]);
+
+        $entry = anEntry(['title' => 'Written as an article']);
+        $entry->update(['title' => 'Still an article']);
+
+        $before = EntryRevision::query()->where('entry_type_id', $this->type->id)->count();
+        expect($before)->toBeGreaterThan(0);
+
+        // Move it, which is a supported operation and leaves the history behind.
+        $entry->update(['entry_type_id' => $other->id]);
+
+        expect(Entry::query()->where('entry_type_id', $this->type->id)->count())->toBe(0)
+            ->and(EntryRevision::query()->where('entry_type_id', $this->type->id)->count())->toBe($before);
+
+        expect(fn () => $this->type->delete())
+            ->toThrow(RuntimeException::class, 'still record it as the schema');
+
+        // And the history is intact, which is the thing being protected.
+        expect(EntryRevision::query()->where('entry_type_id', $this->type->id)->count())->toBe($before)
+            ->and($entry->fresh())->not->toBeNull();
+    });
+
+    it('still deletes a type nothing records', function (): void {
+        // The guard must not become a reason types can never be removed.
+        $unused = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'unused', 'name' => 'Unused', 'plural_name' => 'Unused',
+        ]);
+
+        $unused->delete();
+
+        expect(EntryType::query()->whereKey($unused->getKey())->exists())->toBeFalse();
+    });
+});
+
+describe('a field is discoverable through the history that records it', function (): void {
+    it('refuses to remove a field whose only data is in a moved entry\'s history', function (): void {
+        /*
+         * ⚠️ The revision check sat UNDER `entries.entry_type_id = $type`, so it
+         * asked "does any entry OF THIS TYPE have a revision holding this?" — and
+         * after a move there are none, while the revisions still exist.
+         *
+         * So deleting the field was permitted, and `redactField()` then resolves
+         * storage through the entry's CURRENT schema and cannot see the field at
+         * all. The historical values are stranded and uneraseable, which is the
+         * precise failure ADR-020 exists to prevent.
+         *
+         * `entry_revisions.entry_type_id` records the schema each snapshot was
+         * written against, so the question is answerable without touching `entries`.
+         */
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'author_name', 'type' => 'text',
+            'pii_class' => 'personal', 'cardinality' => 1,
+        ]);
+        $field = Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id,
+            'label' => 'Author name', 'ordering' => 0,
+        ]);
+
+        $entry = anEntry(['title' => 'Profile', 'values' => ['author_name' => 'Alex Doe']]);
+
+        // Clear the live value, so only history holds it...
+        $entry->update(['values' => []]);
+
+        // ...then move the entry to another type, which is what hid the history.
+        $other = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'note', 'name' => 'Note', 'plural_name' => 'Notes',
+        ]);
+        $entry->update(['entry_type_id' => $other->id]);
+
+        expect(fn () => $field->delete())
+            ->toThrow(RuntimeException::class, 'still hold data for it');
+    });
+
+    it('still removes a field nothing holds data for', function (): void {
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'unused_note', 'type' => 'text',
+            'pii_class' => 'none', 'cardinality' => 1,
+        ]);
+        $field = Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id,
+            'label' => 'Unused', 'ordering' => 0,
+        ]);
+
+        $field->delete();
+
+        expect(Field::query()->whereKey($field->getKey())->exists())->toBeFalse();
+    });
+});
+
+describe('a no-op restore files nothing, however the instance got here', function (): void {
+    it('does not file a duplicate for a restore on an instance that already saved', function (): void {
+        /*
+         * ⚠️ `wasChanged()` reads the model's `$changes`, populated by the last save
+         * that actually wrote something — and neither `refresh()` nor a save with
+         * nothing dirty clears it.
+         *
+         * So the SAME instance updating and then restoring its newest revision saw
+         * the earlier edit's changes and filed a revision for a restore that changed
+         * nothing. History is bounded, so enough repetitions prune a genuine older
+         * version off the end — a duplicate is not merely untidy, it costs a real
+         * version.
+         *
+         * The decision is made on a before/after snapshot now, which answers the
+         * question actually being asked rather than depending on when Eloquent last
+         * synced its bookkeeping.
+         */
+        // ⚠️ Keys deliberately NOT in sorted order, because that is what caught the
+        // second half of this bug. MySQL stores and returns `values` in its own key
+        // order, so the state read before the restore and the state written after it
+        // were the same data in a different serialisation — and the comparison
+        // called that a change. SQLite, PostgreSQL and MariaDB all preserved the
+        // order and agreed, so only the engine matrix could see it.
+        $entry = anEntry(['title' => 'First', 'values' => ['zebra' => 1, 'apple' => 2]]);
+
+        // The same instance performs an update, which populates `$changes`...
+        $entry->update(['title' => 'Second']);
+
+        $newest = $entry->revisions()->orderByDesc('id')->firstOrFail();
+        $count = $entry->revisions()->count();
+
+        // ...and then restores the revision it already matches.
+        $entry->restoreRevision($newest);
+
+        expect($entry->revisions()->count())->toBe($count)
+            ->and($entry->fresh()->title)->toBe('Second');
+
+        // Repeatedly, because the bounded history is what a duplicate costs.
+        $entry->restoreRevision($newest);
+        $entry->restoreRevision($newest);
+
+        expect($entry->revisions()->count())->toBe($count);
+    });
+
+    it('still files a version when a restore genuinely changes something', function (): void {
+        // The snapshot comparison must not become a way of never recording.
+        $entry = anEntry(['title' => 'First']);
+        $entry->update(['title' => 'Second']);
+
+        $first = $entry->revisions()->orderBy('id')->firstOrFail();
+        $count = $entry->revisions()->count();
+
+        $entry->restoreRevision($first);
+
+        expect($entry->revisions()->count())->toBe($count + 1)
+            ->and($entry->fresh()->title)->toBe('First');
+    });
+});
+
+describe('the detach pin does not outlive its delete', function (): void {
+    it('detaches twice on the same retained relation object', function (): void {
+        /*
+         * ⚠️ The freeze pins the delete with `wherePivotIn('id', ...)`, which appends
+         * to the RELATION's own `$pivotWhereIns`. A caller holding a
+         * `referencedBy()` object and detaching twice therefore accumulated two
+         * disjoint id sets, ANDed together — so the second detach matched nothing
+         * and silently left the row it was asked to remove.
+         *
+         * Retaining a relation object is ordinary Eloquent usage, so the pin has to
+         * belong to one delete rather than to the relation.
+         */
+        $target = anEntry(['title' => 'Referenced']);
+        $first = anEntry(['title' => 'First source']);
+        $second = anEntry(['title' => 'Second source']);
+
+        // ⚠️ ONE relation object, used for both operations. Resolving it twice
+        // would hide the defect entirely.
+        $incoming = $target->referencedBy();
+
+        $first->related()->attach($target->getKey());
+        $incoming->detach();
+
+        expect(DB::table('entry_relations')->where('target_entry_id', $target->getKey())->count())->toBe(0);
+
+        // A new incoming relation, and the same object asked again.
+        $second->related()->attach($target->getKey());
+        $incoming->detach();
+
+        expect(DB::table('entry_relations')->where('target_entry_id', $target->getKey())->count())->toBe(0);
+    });
+});
+
+describe('erasure reaches a field the entry no longer has', function (): void {
+    it('erases a PROMOTED field through the type its history records', function (): void {
+        /*
+         * ⚠️ The storage lookup used the entry's CURRENT type, so after a move from
+         * A to B there was no A-era field storage to find — `redactStorage()` fell
+         * through to the inline path, returned 0, and left the live promoted column
+         * AND every historical snapshot untouched while reporting success.
+         *
+         * An erasure request was answerable only by changing the entry's type back
+         * first, which is not something a data subject can ask for (ADR-020).
+         *
+         * The revisions record the schema each snapshot was written against, so they
+         * name exactly the types whose fields could hold this entry's data — and the
+         * deletion guard keeps that metadata alive, which is what makes resolving
+         * through it possible at all.
+         */
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'slug', 'type' => 'slug',
+            'pii_class' => 'personal', 'cardinality' => 1,
+        ]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id,
+            'label' => 'Slug', 'ordering' => 0,
+        ]);
+
+        $entry = anEntry(['title' => 'Alex Doe', 'slug' => 'alex-doe']);
+
+        $other = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'note', 'name' => 'Note', 'plural_name' => 'Notes',
+        ]);
+        $entry->update(['entry_type_id' => $other->id]);
+
+        // The promoted value is still there, on an entry whose type no longer
+        // declares the field.
+        expect($entry->fresh()->slug)->toBe('alex-doe');
+
+        $erased = $entry->redactField('slug');
+
+        expect($erased)->toBeGreaterThan(0)
+            ->and($entry->fresh()->slug)->toBeNull()
+            // And history too, which is the half ADR-020 is explicit about.
+            ->and(EntryRevision::query()->where('entry_id', $entry->getKey())
+                ->whereNotNull('slug')->count())->toBe(0);
+    });
+
+    it('still erases a field the entry does currently have', function (): void {
+        // The widened lookup must not stop answering the ordinary case.
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'slug', 'type' => 'slug',
+            'pii_class' => 'personal', 'cardinality' => 1,
+        ]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id,
+            'label' => 'Slug', 'ordering' => 0,
+        ]);
+
+        $entry = anEntry(['title' => 'Alex Doe', 'slug' => 'alex-two']);
+
+        expect($entry->redactField('slug'))->toBeGreaterThan(0)
+            ->and($entry->fresh()->slug)->toBeNull();
+    });
+});
+
+describe('a removed field does not make a revision unrestorable', function (): void {
+    it('restores a revision naming storage and a target that have both gone', function (): void {
+        /*
+         * ⚠️ `replaceRelations()` discards a snapshot key whose storage no longer
+         * exists — the field is gone as a concept, so there is nothing to restore it
+         * into. `refuseMissingTargets()` did not, so it refused the restore because
+         * the vanished target "no longer exists", even though the rebuild would have
+         * thrown that key away anyway.
+         *
+         * The result was that removing one unrelated field made every revision
+         * written before that point permanently unrestorable — two filters that
+         * must agree, disagreeing.
+         */
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'attachments', 'type' => 'relation',
+            'pii_class' => 'none', 'cardinality' => -1,
+        ]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id,
+            'label' => 'Attachments', 'ordering' => 0,
+        ]);
+
+        $entry = anEntry(['title' => 'Has an attachment']);
+        $target = anEntry(['title' => 'The attachment']);
+
+        $entry->related()->attach($target->getKey(), [
+            'field_storage_id' => $storage->id, 'org_id' => $this->org->id,
+        ]);
+
+        $revision = $entry->revisions()->orderByDesc('id')->firstOrFail();
+        expect($revision->relation_state)->not->toBeNull();
+
+        // Both the target and the field go, in that order.
+        $target->forceDelete();
+        DB::table('field_storage')->where('id', $storage->id)->delete();
+
+        // ⚠️ The restore must SUCCEED: the key is discarded, not enforced.
+        $entry->restoreRevision($revision);
+
+        expect($entry->fresh()->title)->toBe('Has an attachment');
+    });
+
+    it('still refuses when the target is gone and its field is not', function (): void {
+        // The relaxation applies only to storage that has been removed. A missing
+        // target on a LIVE field is still a revision this entry cannot have again.
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'attachments', 'type' => 'relation',
+            'pii_class' => 'none', 'cardinality' => -1,
+        ]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id,
+            'label' => 'Attachments', 'ordering' => 0,
+        ]);
+
+        $entry = anEntry(['title' => 'Has an attachment']);
+        $target = anEntry(['title' => 'The attachment']);
+
+        $entry->related()->attach($target->getKey(), [
+            'field_storage_id' => $storage->id, 'org_id' => $this->org->id,
+        ]);
+
+        $revision = $entry->revisions()->orderByDesc('id')->firstOrFail();
+
+        $target->forceDelete();
+
+        expect(fn () => $entry->restoreRevision($revision))
+            ->toThrow(RuntimeException::class, 'no longer exist');
+    });
+});
+
+describe('erasure survives the history being pruned', function (): void {
+    it('erases a former type\'s field after every revision recording it is gone', function (): void {
+        /*
+         * ⚠️ My previous fix resolved storage through the types the REVISIONS record,
+         * and history is BOUNDED — so it was a durable answer derived from a prunable
+         * source.
+         *
+         * Once an entry accumulates `KEEP_REVISIONS` versions under its new type,
+         * `pruneRevisions()` drops the last revision recording the old one. The type
+         * set then silently forgets type A while A's promoted column is still live on
+         * the row, and `redactField()` falls back to the inline path and returns 0 —
+         * the exact failure the earlier round fixed, reappearing once the history
+         * rolls over.
+         *
+         * The lookup asks the storage rows instead, which are durable.
+         */
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'slug', 'type' => 'slug',
+            'pii_class' => 'personal', 'cardinality' => 1,
+        ]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id,
+            'label' => 'Slug', 'ordering' => 0,
+        ]);
+
+        $entry = anEntry(['title' => 'Alex Doe', 'slug' => 'alex-pruned']);
+
+        $other = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'note', 'name' => 'Note', 'plural_name' => 'Notes',
+        ]);
+        $entry->update(['entry_type_id' => $other->id]);
+
+        // Roll the history over, so nothing recording the old type survives.
+        for ($i = 0; $i <= Entry::KEEP_REVISIONS; $i++) {
+            $entry->update(['title' => 'Edit '.$i]);
+        }
+
+        expect(EntryRevision::query()->where('entry_id', $entry->getKey())
+            ->where('entry_type_id', $this->type->id)->count())->toBe(0)
+            // The promoted value is still there, with nothing left recording its type.
+            ->and($entry->fresh()->slug)->toBe('alex-pruned');
+
+        expect($entry->redactField('slug'))->toBeGreaterThan(0)
+            ->and($entry->fresh()->slug)->toBeNull();
+    });
+
+    it('touches only this entry, whatever storage the widened lookup finds', function (): void {
+        /*
+         * ⚠️ The lookup no longer filters by entry type, so it is worth being exact
+         * about WHAT keeps this from reaching a rival's data — because it is not the
+         * org filter on the query.
+         *
+         * The erasure is ENTRY-scoped: `redactStorage()` clears this row's promoted
+         * column, this row's `values` key, and pivots whose source is this entry. A
+         * storage definition it consults that belongs to someone else has nothing of
+         * this entry's to erase, so it erases nothing. That is what makes
+         * over-approximating safe, and it is the property asserted here.
+         *
+         * The `org_id` filter is still there and still right — consulting another
+         * org's definitions is not this entry's business (ADR-021) — but it is
+         * hygiene, not the boundary. Removing it does not make this test fail, which
+         * is precisely why the test says what it says: a test whose comment claims a
+         * guarantee it does not exercise is worse than no test.
+         */
+        $rival = Org::create(['name' => 'Rival', 'slug' => 'rev-rival-org']);
+        $rivalType = EntryType::create([
+            'org_id' => $rival->id, 'handle' => 'article', 'name' => 'A', 'plural_name' => 'As',
+        ]);
+        $rivalStorage = FieldStorage::create([
+            'org_id' => $rival->id, 'handle' => 'slug', 'type' => 'slug',
+            'pii_class' => 'personal', 'cardinality' => 1,
+        ]);
+        Field::create([
+            'entry_type_id' => $rivalType->id, 'field_storage_id' => $rivalStorage->id,
+            'label' => 'Slug', 'ordering' => 0,
+        ]);
+
+        $theirs = Entry::withoutScopeBecause(
+            'creating another org\'s entry to prove an erasure on ours does not touch it',
+            fn ($query) => $query->create([
+                'entry_type_id' => $rivalType->id, 'org_id' => $rival->id,
+                'site_id' => null, 'type_handle' => 'article',
+                'title' => 'Theirs', 'slug' => 'their-slug',
+            ]),
+        );
+
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'slug', 'type' => 'slug',
+            'pii_class' => 'personal', 'cardinality' => 1,
+        ]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id,
+            'label' => 'Slug', 'ordering' => 0,
+        ]);
+
+        $mine = anEntry(['title' => 'Mine', 'slug' => 'my-slug']);
+
+        expect($mine->redactField('slug'))->toBeGreaterThan(0)
+            ->and($mine->fresh()->slug)->toBeNull();
+
+        $stillTheirs = Entry::withoutScopeBecause(
+            'reading the rival entry back to prove it was not touched',
+            fn ($query) => $query->whereKey($theirs->getKey())->first(),
+        );
+
+        expect($stillTheirs->slug)->toBe('their-slug');
+    });
+});
+
+describe('recording provenance costs nothing when there is none to record', function (): void {
+    it('resolves no schema when a save touches no promoted column', function (): void {
+        /*
+         * ⚠️ THE DIRTY CHECK WAS INSIDE THE LOOP, which is to say there was none.
+         *
+         * `recordPromotedProvenance()` tested `isDirty($column)` per field, so reaching
+         * that test had already paid for the type lookup and a fields query — on every
+         * save of every entry. Retitling an entry cost two schema queries to discover
+         * there was nothing to record, against the 1 vCPU / SQLite floor of ADR-027.
+         *
+         * `title`, `status` and `published_at` are PLATFORM columns (field-types.md §2):
+         * not user-definable, so no field storage projects into them and no provenance
+         * exists for them. The registry knows which columns a type CAN promote into
+         * without a query, so the guard is answerable before any of them.
+         *
+         * ⚠️ Matched on where the statement STARTS rather than what it contains, because
+         * `lockStorageHoldingData()` is a pre-existing `saved` listener whose query
+         * carries `exists (select * from fields ...)` as a SUBQUERY. A `str_contains`
+         * matcher counts that and fails for an unrelated reason.
+         */
+        $entry = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'First']);
+
+        $schemaQueries = 0;
+        DB::listen(function ($query) use (&$schemaQueries): void {
+            $sql = (string) preg_replace('/[`"]/', '', $query->sql);
+
+            if (str_starts_with($sql, 'select * from entry_types')
+                || str_starts_with($sql, 'select * from fields ')) {
+                $schemaQueries++;
+            }
+        });
+
+        $entry->update(['title' => 'Retitled']);
+
+        expect($schemaQueries)->toBe(0);
+    });
+
+    it('still records provenance when a promoted column does change', function (): void {
+        /*
+         * ⚠️ The other half, and the one that stops the guard becoming a way of never
+         * recording provenance at all. `slug` IS promoted — `SlugType::promotedColumn()`
+         * returns it — so this save must pay for the lookup and write the provenance.
+         */
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'permalink', 'type' => 'slug',
+            'pii_class' => 'none', 'cardinality' => 1,
+        ]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id,
+            'label' => 'Permalink', 'ordering' => 1,
+        ]);
+
+        $entry = Entry::create([
+            'entry_type_id' => $this->type->id, 'title' => 'First', 'slug' => 'first',
+        ]);
+
+        expect($entry->fresh()->promoted_by)->toBe(['slug' => $storage->id]);
+    });
+});
+
+describe('a shared promoted column is not erased on another field\'s behalf', function (): void {
+    it('leaves the slug alone when the entry\'s own type owns that column', function (): void {
+        /*
+         * ⚠️ This is where "over-approximating is safe" stopped being true, and I had
+         * written that claim down as though it covered all three strategies.
+         *
+         * A promoted column is named for its TYPE, not its handle:
+         * `SlugType::promotedColumn()` returns `slug`, so two differently handled
+         * slug fields both project to `entries.slug`. The widened lookup found a
+         * storage row the entry had never used, and erasing it cleared the slug
+         * belonging to the field the entry DOES use — real data loss, dressed as a
+         * privacy operation.
+         *
+         * Inline and relational are genuinely safe to over-approximate: the first is
+         * located by handle, the second by a pivot carrying both the storage id and
+         * this entry's id. Only the shared physical column breaks it.
+         */
+        // Another type's slug field, with a different handle, never used by our entry.
+        $otherType = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'note', 'name' => 'Note', 'plural_name' => 'Notes',
+        ]);
+        $strangerStorage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'permalink', 'type' => 'slug',
+            'pii_class' => 'personal', 'cardinality' => 1,
+        ]);
+        Field::create([
+            'entry_type_id' => $otherType->id, 'field_storage_id' => $strangerStorage->id,
+            'label' => 'Permalink', 'ordering' => 0,
+        ]);
+
+        // Our entry's own slug field, on our own type.
+        $ours = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'slug', 'type' => 'slug',
+            'pii_class' => 'personal', 'cardinality' => 1,
+        ]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $ours->id,
+            'label' => 'Slug', 'ordering' => 0,
+        ]);
+
+        $entry = anEntry(['title' => 'Ours', 'slug' => 'ours-intact']);
+
+        // Erasing the STRANGER's handle must not touch our slug: our own type owns
+        // that column, so the value is not the stranger's to erase.
+        expect($entry->redactField('permalink'))->toBe(0)
+            ->and($entry->fresh()->slug)->toBe('ours-intact');
+
+        // And our own handle still erases it, or the guard has gone too far.
+        expect($entry->redactField('slug'))->toBeGreaterThan(0)
+            ->and($entry->fresh()->slug)->toBeNull();
+    });
+
+    it('still erases an ORPHANED promoted value the current type does not own', function (): void {
+        // ⚠️ The other side of the same rule, and the two pull in opposite
+        // directions: when nothing on the entry's current type projects to that
+        // column, the value was left behind by a type the entry has moved off — so
+        // the old handle is exactly what should clear it. Refusing here would
+        // recreate the unreachable-data failure ADR-020 forbids.
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'slug', 'type' => 'slug',
+            'pii_class' => 'personal', 'cardinality' => 1,
+        ]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id,
+            'label' => 'Slug', 'ordering' => 0,
+        ]);
+
+        $entry = anEntry(['title' => 'Moved', 'slug' => 'orphaned-slug']);
+
+        // A type with NO slug field at all.
+        $bare = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'bare', 'name' => 'Bare', 'plural_name' => 'Bares',
+        ]);
+        $entry->update(['entry_type_id' => $bare->id]);
+
+        expect($entry->fresh()->slug)->toBe('orphaned-slug')
+            ->and($entry->redactField('slug'))->toBeGreaterThan(0)
+            ->and($entry->fresh()->slug)->toBeNull();
+    });
+});
+
+describe('an orphaned promoted column belongs to whoever actually wrote it', function (): void {
+    it('refuses to erase it on behalf of a handle that never wrote it', function (): void {
+        /*
+         * ⚠️ The case my orphaned-column exception got wrong, and the reason ownership
+         * is now RECORDED rather than derived.
+         *
+         * The entry starts on a type with a `slug` field, moves to a bare type that
+         * has none, and the org separately has an unrelated type whose `permalink`
+         * storage is also slug-backed. Every slug-typed field projects to
+         * `entries.slug`, so:
+         *
+         *   - the entry's CURRENT type owns nothing, so the column looked orphaned
+         *   - `permalink`'s storage exists in the org, so the widened lookup found it
+         *   - the exception then granted it the column
+         *
+         * and `redactField('permalink')` cleared a value `slug` had written, reporting
+         * a successful erasure of a field this entry never had. Deleting more than was
+         * asked for is a correctness failure in its own right, quite apart from the
+         * data loss.
+         *
+         * Three derived rules each failed differently here — current type, revision
+         * types, any storage with the handle — because none of them records WHO wrote
+         * the column. `entries.promoted_by` does.
+         */
+        $ours = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'slug', 'type' => 'slug',
+            'pii_class' => 'personal', 'cardinality' => 1,
+        ]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $ours->id,
+            'label' => 'Slug', 'ordering' => 0,
+        ]);
+
+        // An unrelated type in the same org, also slug-backed, never used here.
+        $stranger = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'note', 'name' => 'Note', 'plural_name' => 'Notes',
+        ]);
+        $strangerStorage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'permalink', 'type' => 'slug',
+            'pii_class' => 'personal', 'cardinality' => 1,
+        ]);
+        Field::create([
+            'entry_type_id' => $stranger->id, 'field_storage_id' => $strangerStorage->id,
+            'label' => 'Permalink', 'ordering' => 0,
+        ]);
+
+        $entry = anEntry(['title' => 'Alex Doe', 'slug' => 'written-by-slug']);
+
+        // Provenance is recorded when the field writes it, which is the only moment
+        // it is known.
+        expect($entry->fresh()->promoted_by['slug'] ?? null)->toBe($ours->id);
+
+        // Move to a type with no slug field, so the column is orphaned.
+        $bare = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'bare', 'name' => 'Bare', 'plural_name' => 'Bares',
+        ]);
+        $entry->update(['entry_type_id' => $bare->id]);
+
+        expect($entry->fresh()->slug)->toBe('written-by-slug');
+
+        // ⚠️ The stranger's handle must not touch it.
+        expect($entry->redactField('permalink'))->toBe(0)
+            ->and($entry->fresh()->slug)->toBe('written-by-slug');
+
+        // ⚠️ And the handle that DID write it still reaches it, orphaned or not —
+        // otherwise the value is unreachable and ADR-020 is unmet.
+        expect($entry->redactField('slug'))->toBeGreaterThan(0)
+            ->and($entry->fresh()->slug)->toBeNull();
+    });
+
+    it('records provenance per column and does not reassign it on an unrelated save', function (): void {
+        // ⚠️ Only a DIRTY column is attributed. An unrelated save must not hand the
+        // column to whichever field happens to be on the type at the time.
+        $ours = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'slug', 'type' => 'slug',
+            'pii_class' => 'none', 'cardinality' => 1,
+        ]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $ours->id,
+            'label' => 'Slug', 'ordering' => 0,
+        ]);
+
+        $entry = anEntry(['title' => 'First', 'slug' => 'first-slug']);
+
+        expect($entry->fresh()->promoted_by['slug'])->toBe($ours->id);
+
+        $entry->update(['title' => 'Retitled']);
+
+        expect($entry->fresh()->promoted_by['slug'])->toBe($ours->id);
+    });
+
+    it('fails closed for a column nothing is recorded against', function (): void {
+        // ⚠️ An unattributed value is one an erasure cannot prove is its to clear, and
+        // guessing is exactly what the three derived rules did. Provenance is written
+        // whenever a field on the entry's type writes the column, so this is the
+        // case where something set it directly.
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'slug', 'type' => 'slug',
+            'pii_class' => 'none', 'cardinality' => 1,
+        ]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id,
+            'label' => 'Slug', 'ordering' => 0,
+        ]);
+
+        $entry = anEntry(['title' => 'Direct']);
+
+        // Written behind the model, so nothing attributed it.
+        DB::table('entries')->where('id', $entry->getKey())
+            ->update(['slug' => 'set-directly', 'promoted_by' => null]);
+
+        expect($entry->fresh()->redactField('slug'))->toBe(0);
+    });
+});
