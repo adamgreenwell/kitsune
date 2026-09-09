@@ -932,9 +932,10 @@ final class Pattern
      * `(?<name>` counts and `(?:` does not (see `opensNamedGroup()`). Escapes and class
      * context are tracked, so `\(` is not a group and `[(]` is not one either.
      *
-     * "Optional" is the quantifier immediately after the group's own closing paren: `?`,
-     * `*`, or a `{0,…}` bound — the forms that let a group match zero times and leave a
-     * reference to it unset.
+     * "Optional" is anything that lets the group match zero times: the quantifier after
+     * its closing paren (`?`, `*`, or a zero-minimum brace bound, parsed numerically so
+     * `{00}` counts), or the group being a NEGATIVE assertion — whose captures can never
+     * participate when it succeeds, because it succeeds by its body not matching.
      *
      * ⚠️ The method this replaced said a forward reference "is legal in both dialects —
      * measured, `\1(a)` compiles in both". Compiling was the wrong test — the rule this
@@ -995,7 +996,14 @@ final class Pattern
                 $id = count($frames);
                 $frames[$id] = [
                     'parent' => $stack === [] ? null : $stack[count($stack) - 1],
-                    'optional' => false,
+                    // ⚠️ A NEGATIVE assertion's captures can never participate when it
+                    // succeeds — the assertion succeeds precisely because its body did
+                    // not match. `^(?!(a))\1$` fails in PCRE and matches in ECMAScript,
+                    // so the frame starts optional rather than becoming so at its close.
+                    //
+                    // A POSITIVE assertion is different and must stay required:
+                    // `^(?=(a))a\1$` matches in both, because the body did match.
+                    'optional' => preg_match('/^\(\?(?:!|<!)/', mb_substr($pattern, $i, 4)) === 1,
                 ];
                 $stack[] = $id;
 
@@ -1017,8 +1025,13 @@ final class Pattern
             $id = array_pop($stack);
             $after = mb_substr($pattern, $i + 1, 1);
 
-            $frames[$id]['optional'] = $after === '?' || $after === '*'
-                || preg_match('/^\{0[,}]/', mb_substr($pattern, $i + 1, 3)) === 1;
+            // ⚠️ `||`, not `=`. A negative assertion is already marked optional at its
+            // opening, and overwriting that with the quantifier's answer would un-mark
+            // every one that carries no quantifier — which is all of them.
+            $frames[$id]['optional'] = $frames[$id]['optional']
+                || $after === '?'
+                || $after === '*'
+                || self::allowsZeroRepetitions(mb_substr($pattern, $i + 1, 16));
         }
 
         $spans = [];
@@ -1041,6 +1054,22 @@ final class Pattern
         }
 
         return $spans;
+    }
+
+    /**
+     * Whether a brace quantifier at the start of `$text` permits zero repetitions.
+     *
+     * ⚠️ Parsed NUMERICALLY, because the lower bound may be zero-padded. The first
+     * version tested `/^\{0[,}]/`, which sees the zero in `{0}` and `{0,2}` and misses
+     * it in `{00}` and `{00,2}` — both of which the engines accept and disagree about,
+     * `^(a){00}\1$` failing in PCRE and matching in ECMAScript.
+     *
+     * `{01}` and `{1,2}` are NOT zero-minimum and must stay required, which a
+     * character test cannot express and a numeric one states directly.
+     */
+    private static function allowsZeroRepetitions(string $text): bool
+    {
+        return preg_match('/^\{([0-9]+)[,}]/', $text, $bound) === 1 && (int) $bound[1] === 0;
     }
 
     /** The name of the group opening at `$at`, or null when it is unnamed. */

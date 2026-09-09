@@ -1577,6 +1577,31 @@ describe('settings that contradict themselves are refused', function (): void {
             ->and(Pattern::unpublishable('^(?<n>a)\k<n>$'))->toBeNull();
 
         /*
+         * ⚠️ A NEGATIVE assertion's captures can never participate when it succeeds —
+         * the assertion succeeds precisely because its body did not match. Neither form
+         * carries a quantifier, so the frame has to start optional rather than become so
+         * at its close.
+         *
+         * A POSITIVE assertion is the opposite and must stay portable: its body did
+         * match, so the capture participated.
+         */
+        expect(Pattern::unpublishable('^(?!(a))\1$'))->toContain('can go unset')
+            ->and(Pattern::unpublishable('^(?<!(a))\1$'))->toContain('can go unset')
+            ->and(Pattern::unpublishable('^(?=(a))a\1$'))->toBeNull();
+
+        /*
+         * ⚠️ The brace bound is parsed NUMERICALLY, because it may be zero-padded. A
+         * character test sees the zero in `{0}` and `{0,2}` and misses it in `{00}` and
+         * `{00,2}`, which both engines accept and disagree about. `{01}` is not
+         * zero-minimum and must stay required — the case a character test cannot express.
+         */
+        expect(Pattern::unpublishable('^(a){0}\1$'))->toContain('can go unset')
+            ->and(Pattern::unpublishable('^(a){00}\1$'))->toContain('can go unset')
+            ->and(Pattern::unpublishable('^(a){00,2}\1$'))->toContain('can go unset')
+            ->and(Pattern::unpublishable('^(a){01}\1$'))->toBeNull()
+            ->and(Pattern::unpublishable('^(a){1}\1$'))->toBeNull();
+
+        /*
          * ⚠️ A residual gap, asserted so it is not mistaken for coverage: a group inside
          * an ALTERNATION can go unset without being quantified. `^(?:(a)|b)\1$` on 'b'
          * fails in PCRE and matches in ECMAScript, and proving otherwise needs a
