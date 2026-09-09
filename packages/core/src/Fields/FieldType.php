@@ -137,6 +137,23 @@ interface FieldType
      */
     public function validateSettings(array $settings): ?string;
 
+    /**
+     * Whether `toStorage()` loses information a revision should keep.
+     *
+     * ⚠️ Asked of the TYPE rather than decided by the model, for the reason
+     * `validateSettings()` is: a new type that converts lossily declares it here and
+     * the revision recorder needs no change. The alternative — the model testing for
+     * `rich_text` by name — puts a field-type concern in every layer that touches a
+     * value, which is what ADR-002 and ADR-006 separate.
+     *
+     * True for `rich_text`, whose conversion strips markup: field-types.md §6 requires
+     * the pre-sanitization original be kept in the revision record so an author can
+     * see what was removed. False for the types whose conversion is a cast — keeping
+     * `'5'` beside `5` is noise, and noise in a store erasure has to sweep is worse
+     * than noise.
+     */
+    public function retainsOriginal(): bool;
+
     /** A suggested pii_class; the org confirms it, because only they know (ADR-020). */
     public function suggestedPiiClass(): string;
 }

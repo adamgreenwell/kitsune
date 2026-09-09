@@ -221,6 +221,12 @@ abstract class BaseFieldType implements FieldType
      *
      * @param  array<string, mixed>  $settings
      */
+    /** Most conversions are casts, which lose nothing worth keeping. */
+    public function retainsOriginal(): bool
+    {
+        return false;
+    }
+
     public function validateSettings(array $settings): ?string
     {
         return null;

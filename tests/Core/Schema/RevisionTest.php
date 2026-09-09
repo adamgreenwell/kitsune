@@ -394,13 +394,32 @@ describe('a bulk write is still a version', function (): void {
             ->and($entry->revisions()->latest('id')->first()->status)->toBe('published');
     });
 
-    it('records one for a bulk write to `values`', function (): void {
+    it('REFUSES a bulk write to `values`, which no longer has a right answer', function (): void {
+        /*
+         * ⚠️ This test used to assert that a bulk write to `values` recorded a
+         * version. It now asserts the write is refused, and the reason is a change of
+         * fact rather than a change of mind.
+         *
+         * `values` is converted through its field type on save — that is where rich
+         * text is sanitised (issue #42, field-types.md §6). A bulk update cannot do
+         * that conversion, and not merely because it dispatches no events: it sees
+         * ONE set of values and any number of rows, each of which may be a different
+         * entry type with a different field set. There is no single correct
+         * conversion for the statement, so the statement has no right answer.
+         *
+         * That is precisely the criterion `columnsRequiringModelSave()` documents,
+         * and the same reason `type_handle` is refused there. Bulk recording of
+         * versions is not lost — the test above proves it for `status`, and every
+         * unguarded versioned column still records.
+         */
         $entry = anEntry();
 
-        Entry::query()->whereKey($entry->getKey())->update(['values' => json_encode(['body' => 'two'])]);
+        expect(fn () => Entry::query()->whereKey($entry->getKey())
+            ->update(['values' => json_encode(['body' => 'two'])]))
+            ->toThrow(RuntimeException::class, 'cannot be written in bulk');
 
-        expect($entry->revisions()->count())->toBe(2)
-            ->and($entry->revisions()->latest('id')->first()->values['body'])->toBe('two');
+        // Nothing was written and nothing was recorded.
+        expect($entry->revisions()->count())->toBe(1);
     });
 
     it('records NOTHING for a bulk write that changes no version', function (): void {
@@ -1212,19 +1231,25 @@ describe('an arithmetic write is still a version', function (): void {
 });
 
 describe('a JSON-path write is a write to values', function (): void {
-    it('records a version for update([values->key])', function (): void {
-        // ⚠️ Laravel supports the JSON path syntax, and `bareColumn()` returned
-        // `values->body`, which never matched the versioned column `values` — so
-        // an inline field could be rewritten with no version recorded and a later
-        // restore would silently undo it.
+    it('REFUSES update([values->key]) for the same reason as the whole column', function (): void {
+        /*
+         * ⚠️ Laravel supports the JSON path syntax, and `bareColumn()` returned
+         * `values->body` — which matched neither the versioned column `values` nor
+         * the guarded one. `AuditedBuilder` was fixed for the versioning half; the
+         * guard beside it still had the same wrong assumption, so a bulk JSON-path
+         * write skipped the value-conversion pipeline entirely.
+         *
+         * Both root the path at its column now. A JSON-path bulk write is refused
+         * for the same reason the whole-column one is: the conversion depends on the
+         * row's entry type, and one statement covers rows of many types.
+         */
         $entry = anEntry();
 
-        $before = $entry->revisions()->count();
+        expect(fn () => Entry::query()->whereKey($entry->getKey())
+            ->update(['values->body' => 'rewritten']))
+            ->toThrow(RuntimeException::class, 'cannot be written in bulk');
 
-        Entry::query()->whereKey($entry->getKey())->update(['values->body' => 'rewritten']);
-
-        expect($entry->revisions()->count())->toBe($before + 1)
-            ->and($entry->revisions()->latest('id')->first()->values['body'])->toBe('rewritten');
+        expect($entry->revisions()->count())->toBe(1);
     });
 
     it('still records nothing for a JSON path on an unversioned column', function (): void {

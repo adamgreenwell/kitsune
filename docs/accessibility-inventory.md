@@ -135,11 +135,18 @@ Exactly one `dir` in the entire view layer: the root `<html>`. No input, textare
 
 Rich text is ready at the storage layer: `dir` is already in `RichTextType::ALLOWED_ATTRIBUTES`, so per-block direction survives sanitising — verified, `<p dir="rtl">…</p><p dir="ltr">…</p>` round-trips while `style` and `onclick` do not. What cannot be demonstrated yet is per-block direction **rendering**, because nothing renders rich text.
 
-**G4 — `field_storage.translation_scope` is declared and unread.**
+
+**G4 — `field_storage.translation_scope` was declared and unread. ✅ Resolved.**
+
+Default `per_locale`, read by nothing: the column asserted a capability that did not exist. Dropped under issue #40, with ADR-017 amended to record that it arrives with the code that reads it. Not made fail-closed, because unlike `pii_class` there was no consumer to fail closed for — a guard protecting nothing is still a promise.
+
 ```bash
-grep -rn "translation_scope" packages/core/src tests    # no matches
+grep -rl "translation_scope" packages/core/src        # nothing — no reader
+grep -rl "translation_scope" packages/core/database   # the migration, a comment saying why it is absent
+grep -rl "translation_scope" tests                    # EntrySchemaTest, asserting the absence
 ```
-Default `per_locale`, read by nothing. The column asserts a capability that does not exist. Harmless today, and a schema that promises something the code does not do is how a migration debt starts.
+
+⚠️ The three commands are separated **because one command cannot honestly answer this**. The original entry recorded `grep -rn "translation_scope" packages/core/src tests # no matches`, and the regression test added in the same commit made that output false — a recorded result that stops being true is worse than no evidence, and this one was falsified by its own change. Distinguishing *reader* from *reference* is the point: the two matches that exist are a comment explaining the absence and a test defending it, and neither is a consumer.
 
 **G5 — the RTL language list is limited to what was measured.**
 Six languages. A site publishing in Divehi, Pashto, Sindhi, Uyghur or Yiddish renders LTR. This is a deliberate, recorded limitation rather than an oversight (see `Kitsune::RTL_LANGUAGES`), and extending it means adding a translation, not just a string.
