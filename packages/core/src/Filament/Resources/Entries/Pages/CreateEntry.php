@@ -40,10 +40,18 @@ class CreateEntry extends CreateRecord
      * here would be trusting user input a second time, after it has already
      * been validated once.
      *
+     * ⚠️ `mutateEntryDataBeforeCreate`, NOT `mutateFormDataBeforeCreate`, and the rename is
+     * load-bearing. Filament's hook is owned by `SyncsFieldRelations`, which strips relation
+     * state that is not an entry attribute (ADR-015). Declaring Filament's name here
+     * overrode the trait's copy SILENTLY — PHP prefers a class method over a trait method
+     * with no diagnostic — so every create of a type with a relation field died on
+     * `no such column: relations` while edit worked. Found by review; guarded by
+     * `RelationHookOwnershipTest`.
+     *
      * @param  array<string, mixed>  $data
      * @return array<string, mixed>
      */
-    protected function mutateFormDataBeforeCreate(array $data): array
+    protected function mutateEntryDataBeforeCreate(array $data): array
     {
         $type = app()->bound(EntryType::class) ? app(EntryType::class) : null;
 

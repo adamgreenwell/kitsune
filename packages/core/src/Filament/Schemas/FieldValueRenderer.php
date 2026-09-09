@@ -283,7 +283,16 @@ final class FieldValueRenderer
         ));
 
         $search = static function (string $search) use ($targets): array {
-            $query = Entry::query()->where('title', 'like', '%'.$search.'%');
+            /*
+             * ⚠️ `whereLike(..., caseSensitive: false)` RATHER THAN `like`, because `LIKE` is
+             * case-SENSITIVE on PostgreSQL and case-insensitive on SQLite and a default MySQL
+             * collation. A plain `like` meant an author on Postgres could not find
+             * "Course maintenance" by typing `course`, while the same interaction worked on
+             * the other two engines — the driver-divergence class AGENTS.md invariant 5 is
+             * about, found by review. Laravel emits `ILIKE` on Postgres and folds case
+             * elsewhere, so one expression means one thing on all three.
+             */
+            $query = Entry::query()->whereLike('title', '%'.$search.'%', caseSensitive: false);
 
             if ($targets !== []) {
                 $query->whereIn('type_handle', $targets);

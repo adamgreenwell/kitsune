@@ -163,6 +163,57 @@ test.describe('a relation field round-trips through entry_relations', () => {
         await expect(picker(page)).toContainText('Select an option');
     });
 
+    test('a relation survives the CREATE path, not just edit', async ({ page }) => {
+        /*
+         * ⚠️ THE HALF THIS SUITE ORIGINALLY MISSED, and the miss hid a real defect through a
+         * whole review round. `CreateEntry` already declared `mutateFormDataBeforeCreate()`,
+         * and PHP prefers a class method over a trait method SILENTLY — so the trait's
+         * relation cleanup never ran on create, `relations` reached the insert, and every
+         * create of a type with a relation field died on `no such column: relations` while
+         * edit worked perfectly. Three tests covering edit could not see it.
+         *
+         * `RelationHookOwnershipTest` is the cheap structural guard. This is the one that
+         * proves the whole create lifecycle, which is what the guard cannot do.
+         */
+        await page.goto(`/admin/${SITE}/c/article/create`);
+        await expect(picker(page)).toBeVisible();
+
+        await page.getByLabel('Title').first().fill(`Created with a relation ${Date.now()}`);
+        await choose(page, 'week 3', /week 3/);
+        await page.getByRole('button', { name: /^Create$/ }).click();
+
+        /*
+         * ⚠️ Filament lands on the RECORD page after a create — no `/edit`, and no
+         * "Save changes" on it — so the id comes from the URL and the assertion is made where
+         * the form actually lives. A create that dies on `no such column: relations` never
+         * reaches any record page, so arriving here at all is half the assertion.
+         */
+        await page.waitForURL(/\/c\/article\/\d+/, { timeout: 15_000 });
+
+        const id = (page.url().match(/\/c\/article\/(\d+)/) ?? [])[1];
+
+        expect(id, 'the create did not land on a record URL').toBeTruthy();
+
+        await page.goto(`/admin/${SITE}/c/article/${id}/edit`);
+        await expect(picker(page)).toBeVisible();
+        await expect(picker(page)).toContainText('week 3');
+
+        /*
+         * ⚠️ DELETED rather than merely cleared, because this test adds a row the seed did not
+         * have. Every spec here shares one seeded database, and an extra entry changes what an
+         * entry-list assertion or an axe audit sees — the cross-spec coupling that took
+         * `rtl.spec.js` red once already.
+         *
+         * ⚠️ The confirmation is SCOPED TO THE MODAL. A page-wide `/^Delete$/` also matches
+         * every repeater item's remove control — the seeded `keywords` field has four — so an
+         * unscoped `.last()` clicked a keyword's delete button while the modal swallowed the
+         * pointer events. Filament puts the confirmation in `.fi-modal-window`.
+         */
+        await page.getByRole('button', { name: /^Delete$/ }).first().click();
+        await page.locator('.fi-modal-window').getByRole('button', { name: /^Delete$/ }).click();
+        await expect(page).toHaveURL(/\/c\/article(\?|$)/, { timeout: 15_000 });
+    });
+
     test('an Arabic-titled target resolves right-to-left in the picker', async ({ page }) => {
         /*
          * The picker's own direction, on a real value rather than a placeholder — this is the

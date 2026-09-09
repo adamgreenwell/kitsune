@@ -88,7 +88,7 @@ trait SyncsFieldRelations
      */
     protected function mutateFormDataBeforeSave(array $data): array
     {
-        return $this->withoutRelationState($data);
+        return $this->withoutRelationState($this->mutateEntryDataBeforeSave($data));
     }
 
     /**
@@ -97,14 +97,57 @@ trait SyncsFieldRelations
      */
     protected function mutateFormDataBeforeCreate(array $data): array
     {
-        return $this->withoutRelationState($data);
+        return $this->withoutRelationState($this->mutateEntryDataBeforeCreate($data));
+    }
+
+    /**
+     * A page's own payload shaping, before the entry is updated.
+     *
+     * ⚠️ OVERRIDE THIS, NOT FILAMENT'S HOOK, and the distinction is the fix for a defect
+     * review found here — a defect that was completely silent.
+     *
+     * `CreateEntry` already declared `mutateFormDataBeforeCreate()` to stamp `entry_type_id`.
+     * PHP resolves a method defined in the CLASS ahead of one supplied by a trait, with no
+     * error, no warning and no deprecation, so this trait's copy simply never ran. Creating
+     * an entry of any type with a relation field sent `relations` to the insert and died on
+     * `no such column: relations`, while the edit path worked perfectly — and the browser
+     * suite covered edit only, so nothing caught it.
+     *
+     * The trait therefore owns Filament's hooks, and a page shapes its payload here, where it
+     * cannot displace the relation cleanup by accident.
+     *
+     * ⚠️ Only the two WRITE hooks get a delegation pair, because only they can break a save.
+     * `mutateFormDataBeforeFill()`, `afterSave()` and `afterCreate()` remain trait-owned and
+     * remain overridable in the same silent way — `RelationHookOwnershipTest` fails if any
+     * page declares one, and the helpers here are `protected` so an override that genuinely
+     * has to exist can still call them. Two more delegation hooks nobody uses would be
+     * machinery imitating a guarantee; the test is the guarantee.
+     *
+     * @param  array<string, mixed>  $data
+     * @return array<string, mixed>
+     */
+    protected function mutateEntryDataBeforeSave(array $data): array
+    {
+        return $data;
+    }
+
+    /**
+     * A page's own payload shaping, before the entry is created. Override this, not
+     * `mutateFormDataBeforeCreate()` — see `mutateEntryDataBeforeSave()` for why.
+     *
+     * @param  array<string, mixed>  $data
+     * @return array<string, mixed>
+     */
+    protected function mutateEntryDataBeforeCreate(array $data): array
+    {
+        return $data;
     }
 
     /**
      * @param  array<string, mixed>  $data
      * @return array<string, mixed>
      */
-    private function withoutRelationState(array $data): array
+    protected function withoutRelationState(array $data): array
     {
         unset($data[FieldValueRenderer::RELATION_STATE_PREFIX]);
 
@@ -128,7 +171,7 @@ trait SyncsFieldRelations
         $this->syncRelationsFromForm();
     }
 
-    private function syncRelationsFromForm(): void
+    protected function syncRelationsFromForm(): void
     {
         $record = $this->getRecord();
 
