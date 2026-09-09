@@ -146,6 +146,10 @@ final class TextType extends BaseFieldType
             'pattern' => [
                 'type' => 'string',
                 'nullable' => true,
+                // Published because it is enforced — `Pattern::unpublishable()` refuses a
+                // longer one, and invariant 14 is that a constraint which is enforced and
+                // not published is a constraint a consumer gets wrong.
+                'maxLength' => Pattern::MAX_LENGTH,
                 'label' => 'Pattern (regex)',
                 'help' => 'Without delimiters, e.g. ^[A-Z]{2}-[0-9]+$. Must compile, and must mean the '
                     .'same thing in the JSON Schema dialect, because it is published to API '
@@ -164,6 +168,14 @@ final class TextType extends BaseFieldType
 
         if (! is_string($pattern) || $pattern === '') {
             return null;
+        }
+
+        // ⚠️ LENGTH FIRST, because `compiles()` now refuses an over-long pattern too —
+        // `Pattern::delimit()` bounds itself — and "that pattern cannot be compiled" is
+        // the wrong explanation for one that is merely too long. The author needs to be
+        // told the limit, not sent looking for a syntax error that is not there.
+        if (($tooLong = Pattern::lengthRefusal($pattern)) !== null) {
+            return sprintf('That pattern is %s.', $tooLong);
         }
 
         // Unusable server-side: `patternRule()` refuses every value when the

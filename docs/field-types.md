@@ -114,6 +114,9 @@ This bites hardest on `text`'s `pattern`, because the same string is enforced by
 |---|---|---|
 | `\d` `\w` `\h` `\v` | PHP's `u` modifier sets `PCRE2_UCP`, so `\d` is any Unicode digit; ECMAScript's is `[0-9]`. `\h` is horizontal whitespace here and the letter `h` there | `[0-9]`, `[A-Za-z0-9_]`, `[ \t]` |
 | `(?i)` `(?>` `(?P<n>` `(?#` | Group forms ECMAScript has no parse for | `(?:` `(?=` `(?!` `(?<=` `(?<!` `(?<n>` |
+
+A named capture may use a name in **any script** — `(?<é>`, `(?<日本>`, `(?<ключ>` all compile and match identically in both dialects. Nothing narrower is enforced because nothing needs to be: across 23 candidate names, none is PCRE-accepted-and-ECMAScript-rejected, so `compiles()` already answers for the rest.
+
 | `a++` `x{2,3}+` | Possessive quantifiers | greedy or lazy |
 | `(*SKIP)` `(*FAIL)` | Backtracking control verbs | — |
 | `\pL` | The braceless property form | `\p{L}` |
@@ -125,14 +128,64 @@ This bites hardest on `text`'s `pattern`, because the same string is enforced by
 | `\b` `\B` | Defined in terms of `\w`, so the engines give **opposite** answers on non-ASCII text | the ASCII definition as lookarounds (below) |
 | `\a` `\e` | Control characters PCRE spells with a letter | `\x07`, `\x1B` |
 | `\g{1}` `\g<1>` `\g1` | PCRE subroutine and relative-backreference forms | `\1`, or `\k<name>` |
-| `\o{141}` `\101` `\00` | Octal escapes; multi-digit escapes are a syntax error under ECMAScript's `u` flag | `\x61`, `\x41` |
+| `\o{141}` `\00` | Octal escapes; `\00` is a syntax error under ECMAScript's `u` flag | `\x61`, `\x41` |
+| `\101`, `\12` with two groups | A multi-digit escape naming a group that does not exist: PCRE falls back to octal, ECMAScript rejects it. One that **does** name a real group — `\10` with ten groups — is portable and accepted | `\x41`, or add the groups |
+| `\1(a)`, `(a)?\1`, `(a)*\1` | A backreference whose group need not have participated. PCRE **fails the match**; ECMAScript treats the reference as an **empty string** — so the two enforce different rules on the same input | define the group first, and make it required |
+| `(a\1)`, `(a\1)+`, `(?<n>a\k<n>)` | A backreference **inside the group it names**. The group opens before the reference but has not *closed*, so it has not participated — same divergence, reached by a different route. The quantified form diverges too: PCRE does not reset captures between iterations but still fails, and ECMAScript does reset them | move the reference after the group closes |
+| `(a){000000000000000}\1` | A zero lower bound **padded to any width**. The group repeats zero times, so the reference is unset — the padding is only what made it hard to see | `\1` with a required group |
+
+⚠️ Those rows are the ones to read twice, because both engines *compile* every one of them. A backreference is portable exactly when its group **must** participate — existence is not enough, and neither is opening earlier in the pattern.
+
+The same applies to `\k<name>`: a named reference is a backreference. And optionality is **inherited** — `^((a))?\2$` and `^(?:(a))?\1$` both diverge, because the enclosing group carries the quantifier while the capture itself carries none, and the enclosing group need not be a capturing one.
+
+Participation is decided against the group's **own closing parenthesis**, not against nesting. `^((a)\2)$` and `^(a(b))\2$` sit inside an outer group that has not closed and **agree** in both engines, so refusing them would be a false refusal.
+
+Inherited optionality is likewise a question of **position, not just ancestry**. An optional ancestor only leaves the capture unset if it can be skipped while execution still *reaches* the reference — so where the reference sits inside that same ancestor, the two agree and must be allowed:
+
+| Pattern | Reference vs. the optional ancestor | Portable? |
+|---|---|---|
+| `^(?:(a)\1)?$` | inside it — skipping the group skips the reference | ✅ allowed |
+| `^(?!(a)\1)b$` | inside the assertion | ✅ allowed |
+| `^(?:(a))?\1$` | outside it | ❌ diverges |
+| `^(?!(a))\1$` | outside the assertion | ❌ diverges |
+
+⚠️ **A pattern is bounded at `Pattern::MAX_LENGTH` (1,000 characters), enforced in `delimit()` as well as `unpublishable()`, and published in `settingsSchema()`.** `delimit()` is the chokepoint every path shares — `compiles()` uses it, and so does the per-value `patternRule()` — whereas `unpublishable()` is not even the first call `validateSettings()` makes. A bound on one entry point is a bound on one entry point. Screening cost grows faster than length — the scan reads one character at a time with `mb_substr`, which walks from the start of the string each call — so an unbounded pattern is a way to hold a request open rather than a way to describe a value. Measured before the bound: a portable 5 KB pattern took 22.6s. A pattern too long to screen is one whose portability is unknown, and unknown fails closed.
+
+⚠️ **Measure both engines on byte-identical patterns.** An early comparison here escaped the pattern differently for each side — PHP received `\\1` (a literal backslash then `1`) while Node received `\1` (a real backreference) — so the two engines were not being asked the same question. The conclusions happened to survive, which is luck and not method. Put the patterns in a data file both engines read.
+
+A group inside an **alternation** goes unset with no quantifier anywhere, so branch selection is a third way to reach a non-participating capture — and it needs no group at all: `^(a)|b\1$` alternates at the top level. **The reference must sit in the same branch as the capture, in every alternating ancestor:**
+
+| Pattern | Capture vs. reference | Portable? |
+|---|---|---|
+| `^(?:(a)\1\|b)?$` | same branch | ✅ allowed |
+| `^((a)\|b)\1$` | names the group *containing* the alternation, and entering it always captures | ✅ allowed |
+| `^(a)\1\|b$` | same branch at the top level | ✅ allowed |
+| `^(?:(a)\|b\1)?$` | different branch | ❌ diverges |
+| `^(?:(a)\|b)\1$` | reference outside the alternating group | ❌ diverges |
+| `^((a)\|b)\2$` | capture inside one branch | ❌ diverges |
+| `^(a)\|b\1$` | different top-level branch | ❌ diverges |
+
+The three allowed rows are why this is not "refuse any pattern containing a pipe" — the capture's **own** frame is excluded from the walk, because entering a group captures it whatever its internal branches do.
+
+> ⚠️ This was a **recorded residual** here until it wasn't. The note said proving it needed "a reachability analysis this screen does not carry", which was true of the analysis as written and not true of the problem: a branch index is just how many top-level separators precede a position. A documented gap is worth re-reading occasionally rather than treated as settled.
 | `\x{41}` `\x4` | ECMAScript's hex escape is exactly two digits, and its braced form is `\u{...}` — which PCRE rejects | `\x41` |
 | `\k{n}` `\k'n'` | Only `\k<name>` is shared | `\k<name>` |
 | `[\1]` | A digit escape is a backreference outside a class and octal inside one, where ECMAScript rejects it | `\x01` |
 | `\_` `\:` `\!` `\@` `\~` `\ ` | ECMAScript escapes only its syntax characters — `^ $ \ . * + ? ( ) [ ] { } |` — plus `/`. PCRE puts a backslash on anything and reads the character literally; 35 ASCII marks diverge | drop the backslash |
 | `\-` | Portable **inside** a character class only, as a ClassEscape | `-`, or `[\-]` |
 | `\c1` `\c!` | ECMAScript's control escape takes an ASCII letter; PCRE also reads a digit or punctuation there. `\cA` agrees in both | `\cA` |
+| `a{,2}` `a{}` `a{2,4,6}` `a{ 2}` `a{b}` | ECMAScript accepts only `{n}`, `{n,}` and `{n,m}` as a quantifier and treats anything else as a syntax error; PCRE reads some as quantifiers and the rest as literal text | `{0,2}`, or `\{` |
+| `[a\S]` | `\s` splices into a class; a negation cannot | `[^\s]` |
+| `a}` `a]` `}a` `[]]` | A closing delimiter nothing opened: ECMAScript reads a lone quantifier bracket as a syntax error, PCRE as a literal character | `\}`, `\]` |
 | `[a\E]` `[a\Q!\E]` `[a\N{U+41}]` | These stay **active inside a character class** in PCRE, where the anchors are refused outright | drop them |
+
+Two divergences cannot be screened, because they are in the **engine** rather than the pattern. Both had the API *laxer* than the schema it published, which is the worse direction — a value passes the API and then breaks every generated client.
+
+`.` excludes only LF under PCRE, where ECMAScript excludes LF, CR, U+2028 and U+2029. No PCRE newline convention matches: the default misses CR, LS and PS; `(*ANY)` catches those but wrongly excludes VT, FF and NEL; `(*ANYCRLF)` still misses LS and PS. So a modifier cannot fix it, and every bare `.` outside a character class is compiled as `[^\n\r\x{2028}\x{2029}]` instead — measured to agree with ECMAScript's dot on all nine characters tried. `\.` and `[.]` are literals and are left alone.
+
+`\s` and `\S` diverge on three code points, and the table below once claimed they agreed — a claim made after measuring two characters. PHP's `u` modifier sets `PCRE2_UCP`, so `\s` becomes Unicode's `White_Space` property, while ECMAScript's is a fixed list: **U+0085 NEL** and **U+180E** match under PCRE and not under ECMAScript, and **U+FEFF** (the BOM) matches under ECMAScript and not under PCRE. `\s` is compiled as ECMAScript's explicit set, spliced as a class body when it appears inside `[...]`. `\S` becomes the negated class outside a class and is **refused inside one**, because a negation has no body to splice — `[^\s]` is the portable spelling.
+
+And `$`: PCRE lets `$` match before a final newline, while ECMAScript's `$` without `m` matches only at the end of input. A field validated `^[a-z]+$` therefore accepted `"abc\n"` server-side and every generated client rejected it — the API being the *laxer* of the two, which is the worse direction. Refusing `$` would remove the most common anchor there is, so instead every pattern is compiled with PCRE's `D` modifier, which gives `$` the end-of-input meaning the published schema already promises. The published text is unchanged.
 
 Some of those rows are judgement calls rather than compile failures, and the rule that settles them is: **refuse a divergence when a portable equivalent exists, record it when refusing would remove a capability.** `\d` is refused because `[0-9]` says the same thing.
 

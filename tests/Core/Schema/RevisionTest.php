@@ -2074,6 +2074,66 @@ describe('erasure survives the history being pruned', function (): void {
     });
 });
 
+describe('recording provenance costs nothing when there is none to record', function (): void {
+    it('resolves no schema when a save touches no promoted column', function (): void {
+        /*
+         * ⚠️ THE DIRTY CHECK WAS INSIDE THE LOOP, which is to say there was none.
+         *
+         * `recordPromotedProvenance()` tested `isDirty($column)` per field, so reaching
+         * that test had already paid for the type lookup and a fields query — on every
+         * save of every entry. Retitling an entry cost two schema queries to discover
+         * there was nothing to record, against the 1 vCPU / SQLite floor of ADR-027.
+         *
+         * `title`, `status` and `published_at` are PLATFORM columns (field-types.md §2):
+         * not user-definable, so no field storage projects into them and no provenance
+         * exists for them. The registry knows which columns a type CAN promote into
+         * without a query, so the guard is answerable before any of them.
+         *
+         * ⚠️ Matched on where the statement STARTS rather than what it contains, because
+         * `lockStorageHoldingData()` is a pre-existing `saved` listener whose query
+         * carries `exists (select * from fields ...)` as a SUBQUERY. A `str_contains`
+         * matcher counts that and fails for an unrelated reason.
+         */
+        $entry = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'First']);
+
+        $schemaQueries = 0;
+        DB::listen(function ($query) use (&$schemaQueries): void {
+            $sql = (string) preg_replace('/[`"]/', '', $query->sql);
+
+            if (str_starts_with($sql, 'select * from entry_types')
+                || str_starts_with($sql, 'select * from fields ')) {
+                $schemaQueries++;
+            }
+        });
+
+        $entry->update(['title' => 'Retitled']);
+
+        expect($schemaQueries)->toBe(0);
+    });
+
+    it('still records provenance when a promoted column does change', function (): void {
+        /*
+         * ⚠️ The other half, and the one that stops the guard becoming a way of never
+         * recording provenance at all. `slug` IS promoted — `SlugType::promotedColumn()`
+         * returns it — so this save must pay for the lookup and write the provenance.
+         */
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'permalink', 'type' => 'slug',
+            'pii_class' => 'none', 'cardinality' => 1,
+        ]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id,
+            'label' => 'Permalink', 'ordering' => 1,
+        ]);
+
+        $entry = Entry::create([
+            'entry_type_id' => $this->type->id, 'title' => 'First', 'slug' => 'first',
+        ]);
+
+        expect($entry->fresh()->promoted_by)->toBe(['slug' => $storage->id]);
+    });
+});
+
 describe('a shared promoted column is not erased on another field\'s behalf', function (): void {
     it('leaves the slug alone when the entry\'s own type owns that column', function (): void {
         /*
@@ -2152,5 +2212,120 @@ describe('a shared promoted column is not erased on another field\'s behalf', fu
         expect($entry->fresh()->slug)->toBe('orphaned-slug')
             ->and($entry->redactField('slug'))->toBeGreaterThan(0)
             ->and($entry->fresh()->slug)->toBeNull();
+    });
+});
+
+describe('an orphaned promoted column belongs to whoever actually wrote it', function (): void {
+    it('refuses to erase it on behalf of a handle that never wrote it', function (): void {
+        /*
+         * ⚠️ The case my orphaned-column exception got wrong, and the reason ownership
+         * is now RECORDED rather than derived.
+         *
+         * The entry starts on a type with a `slug` field, moves to a bare type that
+         * has none, and the org separately has an unrelated type whose `permalink`
+         * storage is also slug-backed. Every slug-typed field projects to
+         * `entries.slug`, so:
+         *
+         *   - the entry's CURRENT type owns nothing, so the column looked orphaned
+         *   - `permalink`'s storage exists in the org, so the widened lookup found it
+         *   - the exception then granted it the column
+         *
+         * and `redactField('permalink')` cleared a value `slug` had written, reporting
+         * a successful erasure of a field this entry never had. Deleting more than was
+         * asked for is a correctness failure in its own right, quite apart from the
+         * data loss.
+         *
+         * Three derived rules each failed differently here — current type, revision
+         * types, any storage with the handle — because none of them records WHO wrote
+         * the column. `entries.promoted_by` does.
+         */
+        $ours = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'slug', 'type' => 'slug',
+            'pii_class' => 'personal', 'cardinality' => 1,
+        ]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $ours->id,
+            'label' => 'Slug', 'ordering' => 0,
+        ]);
+
+        // An unrelated type in the same org, also slug-backed, never used here.
+        $stranger = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'note', 'name' => 'Note', 'plural_name' => 'Notes',
+        ]);
+        $strangerStorage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'permalink', 'type' => 'slug',
+            'pii_class' => 'personal', 'cardinality' => 1,
+        ]);
+        Field::create([
+            'entry_type_id' => $stranger->id, 'field_storage_id' => $strangerStorage->id,
+            'label' => 'Permalink', 'ordering' => 0,
+        ]);
+
+        $entry = anEntry(['title' => 'Alex Doe', 'slug' => 'written-by-slug']);
+
+        // Provenance is recorded when the field writes it, which is the only moment
+        // it is known.
+        expect($entry->fresh()->promoted_by['slug'] ?? null)->toBe($ours->id);
+
+        // Move to a type with no slug field, so the column is orphaned.
+        $bare = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'bare', 'name' => 'Bare', 'plural_name' => 'Bares',
+        ]);
+        $entry->update(['entry_type_id' => $bare->id]);
+
+        expect($entry->fresh()->slug)->toBe('written-by-slug');
+
+        // ⚠️ The stranger's handle must not touch it.
+        expect($entry->redactField('permalink'))->toBe(0)
+            ->and($entry->fresh()->slug)->toBe('written-by-slug');
+
+        // ⚠️ And the handle that DID write it still reaches it, orphaned or not —
+        // otherwise the value is unreachable and ADR-020 is unmet.
+        expect($entry->redactField('slug'))->toBeGreaterThan(0)
+            ->and($entry->fresh()->slug)->toBeNull();
+    });
+
+    it('records provenance per column and does not reassign it on an unrelated save', function (): void {
+        // ⚠️ Only a DIRTY column is attributed. An unrelated save must not hand the
+        // column to whichever field happens to be on the type at the time.
+        $ours = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'slug', 'type' => 'slug',
+            'pii_class' => 'none', 'cardinality' => 1,
+        ]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $ours->id,
+            'label' => 'Slug', 'ordering' => 0,
+        ]);
+
+        $entry = anEntry(['title' => 'First', 'slug' => 'first-slug']);
+
+        expect($entry->fresh()->promoted_by['slug'])->toBe($ours->id);
+
+        $entry->update(['title' => 'Retitled']);
+
+        expect($entry->fresh()->promoted_by['slug'])->toBe($ours->id);
+    });
+
+    it('fails closed for a column nothing is recorded against', function (): void {
+        // ⚠️ An unattributed value is one an erasure cannot prove is its to clear, and
+        // guessing is exactly what the three derived rules did. Provenance is written
+        // whenever a field on the entry's type writes the column, so this is the
+        // case where something set it directly.
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'slug', 'type' => 'slug',
+            'pii_class' => 'none', 'cardinality' => 1,
+        ]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id,
+            'label' => 'Slug', 'ordering' => 0,
+        ]);
+
+        $entry = anEntry(['title' => 'Direct']);
+
+        // Written behind the model, so nothing attributed it.
+        DB::table('entries')->where('id', $entry->getKey())
+            ->update(['slug' => 'set-directly', 'promoted_by' => null]);
+
+        expect($entry->fresh()->redactField('slug'))->toBe(0);
     });
 });

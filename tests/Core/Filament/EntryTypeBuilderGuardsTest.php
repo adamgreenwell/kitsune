@@ -11,6 +11,7 @@ declare(strict_types=1);
 use Illuminate\Support\Facades\Validator;
 use Kitsune\Core\Fields\Pattern;
 use Kitsune\Core\Fields\Types\NumberType;
+use Kitsune\Core\Fields\Types\TextType;
 use Kitsune\Core\Filament\Icons;
 use Kitsune\Core\Filament\Resources\EntryTypes\EntryTypeResource;
 use Kitsune\Core\Filament\Resources\EntryTypes\Pages\EditEntryType;
@@ -792,9 +793,13 @@ describe('a pattern that cannot compile is refused where it is authored', functi
         expect(Pattern::compiles('^[A-Z]{2}-[0-9]+$'))->toBeTrue()
             ->and(Pattern::compiles('^[A-Z'))->toBeFalse()
             ->and(Pattern::compiles('a/b#c~d%e!f'))->toBeFalse()
-            ->and(Pattern::delimit('^[a-z]+$'))->toBe('/^[a-z]+$/u')
+            // ⚠️ `uD`, not `u`. `D` anchors `$` to the end of input, which is what
+            // ECMAScript's `$` means without `m` — PCRE otherwise lets it match
+            // before a final newline, so the validator accepted a trailing newline
+            // that the published schema forbade.
+            ->and(Pattern::delimit('^[a-z]+$'))->toBe('/^[a-z]+$/uD')
             // The first delimiter the pattern does not itself contain.
-            ->and(Pattern::delimit('a/b'))->toBe('#a/b#u');
+            ->and(Pattern::delimit('a/b'))->toBe('#a/b#uD');
     });
 });
 
@@ -1064,6 +1069,32 @@ describe('settings that contradict themselves are refused', function (): void {
             'org_id' => $this->org->id, 'handle' => 'counter2', 'type' => 'number',
             'pii_class' => 'none', 'cardinality' => 1,
             'settings' => ['format' => 'integer', 'max' => '-1e100'],
+        ]))->toThrow(RuntimeException::class, 'No value this field can store');
+
+        /*
+         * ⚠️ A bound EXACTLY ONE FRACTION PAST THE LIMIT was a 500, not a refusal.
+         *
+         * `1e100` saturates so far past PHP_INT_MAX that it has no fractional part to
+         * round, which is why the cases above never reached the bug. These do:
+         * `(int) '9223372036854775807.1'` lands on PHP_INT_MAX, the fraction asks for
+         * one more quantum away from zero, and `PHP_INT_MAX + 1` promotes to FLOAT —
+         * which `units()`'s `?int` return type rejects with a TypeError. So an authored
+         * setting crashed the request before this very check could produce its message.
+         *
+         * Both signs, because the rounding direction swaps: a minimum rounds away from
+         * zero upward and a maximum downward, so only one of the two exercises each
+         * platform limit.
+         */
+        expect(fn () => FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'counter4', 'type' => 'number',
+            'pii_class' => 'none', 'cardinality' => 1,
+            'settings' => ['format' => 'integer', 'min' => '9223372036854775807.1'],
+        ]))->toThrow(RuntimeException::class, 'No value this field can store');
+
+        expect(fn () => FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'counter5', 'type' => 'number',
+            'pii_class' => 'none', 'cardinality' => 1,
+            'settings' => ['format' => 'integer', 'max' => '-9223372036854775808.1'],
         ]))->toThrow(RuntimeException::class, 'No value this field can store');
 
         // The whole representable range is fine, edges included.
@@ -1469,6 +1500,528 @@ describe('settings that contradict themselves are refused', function (): void {
             ->and(Pattern::unpublishable('^\S+$'))->toBeNull();
     });
 
+    it('recognises a named capture in any script, not only ASCII', function (): void {
+        /*
+         * ⚠️ A FALSE REFUSAL, and the second in three rounds from the same habit:
+         * writing a restriction narrower than the engines because ASCII was convenient.
+         *
+         * Measured on PHP 8.4.25/PCRE 10.48 and Node v22.23.2, all of these compile AND
+         * match identically in both dialects. `[A-Za-z_$]` refused every one.
+         *
+         * ⚠️ It was ALSO two bugs from one mistake: `groupRefusal()` used the check to
+         * tell `(?<name>` from `(?<=`, and `capturingGroups()` to decide what counts
+         * toward the total — so a Unicode name was refused in one place and undercounted
+         * in the other. There is one implementation now.
+         *
+         * Nothing narrower is needed: across 23 candidate names, NO name is
+         * PCRE-accepted-and-ECMAScript-rejected. `1a`, `a-b`, `a b` and `a.b` are
+         * refused by both; `$a`, a combining mark and a zero-width non-joiner are
+         * accepted by ECMAScript and refused by PCRE, so `compiles()` answers first.
+         * This was only ever a false refusal, never a hole.
+         */
+        expect(Pattern::unpublishable('(?<é>x)'))->toBeNull()
+            ->and(Pattern::unpublishable('(?<ñ>x)'))->toBeNull()
+            ->and(Pattern::unpublishable('(?<日本>x)'))->toBeNull()
+            ->and(Pattern::unpublishable('(?<ключ>x)'))->toBeNull()
+            ->and(Pattern::unpublishable('(?<µ>x)'))->toBeNull()
+            ->and(Pattern::unpublishable('(?<ᚠ>x)'))->toBeNull()
+            // ASCII names and underscores still work.
+            ->and(Pattern::unpublishable('^(?<code>[A-Z]{2})$'))->toBeNull()
+            ->and(Pattern::unpublishable('(?<_a>x)'))->toBeNull()
+            // ⚠️ And a lookbehind is still a lookbehind, which is the distinction the
+            // check exists to make.
+            ->and(Pattern::unpublishable('(?<=a)b'))->toBeNull()
+            ->and(Pattern::unpublishable('(?<!a)b'))->toBeNull();
+
+        // ⚠️ The count half: ten uniquely named Unicode captures justify `\10`, which
+        // is the case the finding named and which failed on both sides of the mistake.
+        $unicodeNames = '';
+
+        foreach (['é', 'ñ', 'Ω', '日', 'ключ', 'µ', 'ᚠ', 'á2', 'b3', 'c4'] as $name) {
+            $unicodeNames .= '(?<'.$name.'>x)';
+        }
+
+        expect(Pattern::unpublishable($unicodeNames.'\10'))->toBeNull()
+            // Nine of them do not justify `\10`, so the count is genuinely counting.
+            ->and(Pattern::unpublishable(str_repeat('(?<é>x)', 9).'\10'))
+            ->toContain('capturing groups');
+    });
+
+    it('refuses a backreference whose group need not participate', function (): void {
+        /*
+         * ⚠️ COMPILING IS NOT AGREEING, and I allowed forward references last round on
+         * compile-only evidence — the exact mistake this file settled for `\h`, made
+         * again in the round that added the group count.
+         *
+         * Measured on PHP 8.4.25/PCRE 10.48 and Node v22.23.2, whenever the referenced
+         * group has not participated the two dialects disagree completely: PCRE fails
+         * the match, ECMAScript treats the reference as an empty string.
+         *
+         *   `^\1(a)?$`  on ''    PCRE fails, ECMAScript matches
+         *   `^\1(a)$`   on 'a'   PCRE fails, ECMAScript matches
+         *   `^(a)?\1$`  on ''    PCRE fails, ECMAScript matches
+         *   `^(a)*\1$`  on ''    PCRE fails, ECMAScript matches
+         *   `^(a)\1$`   on 'aa'  both match
+         *
+         * So a backreference is portable exactly when its group MUST participate — not
+         * when the group merely exists, which is what the count alone established.
+         */
+        expect(Pattern::unpublishable('^\1(a)?$'))->toContain('forward reference')
+            ->and(Pattern::unpublishable('^\1(a)$'))->toContain('forward reference')
+            // Optional in each of the three spellings that allow zero matches.
+            ->and(Pattern::unpublishable('^(a)?\1$'))->toContain('can go unset')
+            ->and(Pattern::unpublishable('^(a)*\1$'))->toContain('can go unset')
+            ->and(Pattern::unpublishable('^(a){0,2}\1$'))->toContain('can go unset')
+            // ⚠️ And a group that MUST participate is still portable, or the fix would
+            // have removed backreferences altogether.
+            ->and(Pattern::unpublishable('^(a)\1$'))->toBeNull()
+            ->and(Pattern::unpublishable('^(a)(b)\2$'))->toBeNull()
+            ->and(Pattern::unpublishable('^(?<n>a)\1$'))->toBeNull()
+            ->and(Pattern::unpublishable('^([A-Z]{2})-\1$'))->toBeNull()
+            // A required group quantified with `+` still participates.
+            ->and(Pattern::unpublishable('^(a)+\1$'))->toBeNull();
+
+        /*
+         * ⚠️ ENCLOSING optionality is inherited, which the first version of this analysis
+         * missed: a capture's own quantifier says nothing when an ancestor carries the
+         * one that matters. Both of these diverge, and the second is a NON-capturing
+         * parent — the case the finding did not name.
+         */
+        expect(Pattern::unpublishable('^((a))?\2$'))->toContain('can go unset')
+            ->and(Pattern::unpublishable('^(?:(a))?\1$'))->toContain('can go unset')
+            ->and(Pattern::unpublishable('^((a)?)\2$'))->toContain('can go unset')
+            // A required nest is still portable, or the inheritance would have swallowed
+            // every nested capture.
+            ->and(Pattern::unpublishable('^((a))\2$'))->toBeNull();
+
+        /*
+         * ⚠️ NAMED references go through the same analysis, because `\k<n>` is a
+         * backreference. The first version was reached only from the digit branch, so
+         * every named reference walked past it.
+         */
+        expect(Pattern::unpublishable('^(?<n>a)?\k<n>$'))->toContain('can go unset')
+            ->and(Pattern::unpublishable('^\k<n>(?<n>a)$'))->toContain('forward reference')
+            ->and(Pattern::unpublishable('^(?<n>a)\k<n>$'))->toBeNull();
+
+        /*
+         * ⚠️ A NEGATIVE assertion's captures can never participate when it succeeds —
+         * the assertion succeeds precisely because its body did not match. Neither form
+         * carries a quantifier, so the frame has to start optional rather than become so
+         * at its close.
+         *
+         * A POSITIVE assertion is the opposite and must stay portable: its body did
+         * match, so the capture participated.
+         */
+        expect(Pattern::unpublishable('^(?!(a))\1$'))->toContain('can go unset')
+            ->and(Pattern::unpublishable('^(?<!(a))\1$'))->toContain('can go unset')
+            ->and(Pattern::unpublishable('^(?=(a))a\1$'))->toBeNull();
+
+        /*
+         * ⚠️ The brace bound is parsed NUMERICALLY, because it may be zero-padded. A
+         * character test sees the zero in `{0}` and `{0,2}` and misses it in `{00}` and
+         * `{00,2}`, which both engines accept and disagree about. `{01}` is not
+         * zero-minimum and must stay required — the case a character test cannot express.
+         */
+        expect(Pattern::unpublishable('^(a){0}\1$'))->toContain('can go unset')
+            ->and(Pattern::unpublishable('^(a){00}\1$'))->toContain('can go unset')
+            ->and(Pattern::unpublishable('^(a){00,2}\1$'))->toContain('can go unset')
+            ->and(Pattern::unpublishable('^(a){01}\1$'))->toBeNull()
+            ->and(Pattern::unpublishable('^(a){1}\1$'))->toBeNull();
+
+        /*
+         * ⚠️ And the padding has NO WIDTH LIMIT, which a 16-character window did not
+         * survive. At 15 digits the slice ended before the closing brace, so the numeric
+         * parse found no bound at all and the group read as required — publishing
+         * `^(a){000000000000000}\1$`, which PCRE refuses on '' where ECMAScript accepts
+         * it. Measured on both engines before the window came out.
+         *
+         * Asserted at 15 (the first width the old window missed) and well past it, so a
+         * future window of any constant size fails here rather than shipping.
+         */
+        expect(Pattern::unpublishable('^(a){000000000000000}\1$'))->toContain('can go unset')
+            ->and(Pattern::unpublishable('^(a){'.str_repeat('0', 40).'}\1$'))->toContain('can go unset')
+            ->and(Pattern::unpublishable('^(a){'.str_repeat('0', 40).',2}\1$'))->toContain('can go unset')
+            // Zero-PADDED, not zero: the wide bound must still read as required. A test
+            // that only checked the all-zero case would pass on "any long bound is
+            // optional".
+            ->and(Pattern::unpublishable('^(a){'.str_repeat('0', 40).'1}\1$'))->toBeNull();
+
+        /*
+         * ⚠️ ALTERNATION WAS THE RECORDED RESIDUAL HERE, and it is now closed. This
+         * asserted `->toBeNull()` — the gap stated rather than hidden — because a group
+         * inside a branch goes unset with no quantifier anywhere, and inherited
+         * optionality covers quantifiers rather than branch selection.
+         *
+         * The rule turned out to be statable after all: the reference must sit in the
+         * SAME branch as the capture, in every alternating ancestor. Measured:
+         *
+         *   ^(?:(a)|b)\1$     on 'b'   PCRE no match, ECMAScript match
+         *   ^(?:(a)|b\1)?$    on 'b'   PCRE no match, ECMAScript match
+         *   ^((a)|b)\2$       on 'b'   PCRE no match, ECMAScript match
+         *   ^(a)|b\1$         on 'b'   PCRE no match, ECMAScript match   (no group at all)
+         */
+        expect(Pattern::unpublishable('^(?:(a)|b)\1$'))->toContain('does not share')
+            ->and(Pattern::unpublishable('^(?:(a)|b\1)?$'))->toContain('does not share')
+            ->and(Pattern::unpublishable('^((a)|b)\2$'))->toContain('does not share')
+            // ⚠️ Top-level alternation needs no group, which is why the scan carries a
+            // synthetic root frame. Without it there is nothing to hang the branch
+            // comparison on and this published.
+            ->and(Pattern::unpublishable('^(a)|b\1$'))->toContain('does not share')
+            ->and(Pattern::unpublishable('^(?:(a)|(b))\1$'))->toContain('does not share');
+
+        /*
+         * ⚠️ THE CONTROLS, and they are what stops this becoming "refuse any pattern
+         * containing a pipe" — which would be the fourth false refusal in this file.
+         *
+         *   ^(?:(a)\1|b)?$   capture and reference in the SAME branch      both agree
+         *   ^((a)|b)\1$      names the group AROUND the alternation, and
+         *                    entering that group always captures it        both agree
+         *   ^(a)\1|b$        same branch, at the top level                 both agree
+         */
+        expect(Pattern::unpublishable('^(?:(a)\1|b)?$'))->toBeNull()
+            ->and(Pattern::unpublishable('^((a)|b)\1$'))->toBeNull()
+            ->and(Pattern::unpublishable('^(a)\1|b$'))->toBeNull();
+
+        /*
+         * ⚠️ A `|` IS ONLY A SEPARATOR WHERE IT IS ONE, and a `)` only closes where it
+         * closes. The branch analysis rests on the scan's existing escape and character
+         * class handling, which is an interaction rather than a rule of its own — so it
+         * is measured here rather than assumed. Each of these agrees in both engines and
+         * must not be refused; a scan that counted these would invent branches and
+         * refuse portable patterns.
+         */
+        expect(Pattern::unpublishable('^(a)\|b\1$'))->toBeNull()
+            ->and(Pattern::unpublishable('^(a)[|]\1$'))->toBeNull()
+            ->and(Pattern::unpublishable('^(a)[)]\1$'))->toBeNull()
+            ->and(Pattern::unpublishable('^(a)[|)]b\1$'))->toBeNull();
+
+        /*
+         * ⚠️ AN OPTIONAL ANCESTOR ONLY COUNTS IF SKIPPING IT DOES NOT SKIP THE REFERENCE,
+         * and collapsing inherited optionality into one boolean refused all four of these.
+         * Three of them are portable, so that was a false refusal — the third this screen
+         * has produced, and the reason optionality is now decided against the reference's
+         * POSITION rather than precomputed.
+         *
+         * Measured with both engines reading byte-identical patterns from one file:
+         *
+         *   ^(?:(a)\1)$    ''/'a'/'aa'   agree (no/no/match)
+         *   ^(?:(a)\1)?$   ''/'a'/'aa'   agree (match/no/match)
+         *   ^(?!(a)\1)b$   'b'/'aa'      agree (match/no)
+         *
+         * The reference is inside the optional group in each, so whenever it executes the
+         * capture is set.
+         */
+        expect(Pattern::unpublishable('^(?:(a)\1)$'))->toBeNull()
+            ->and(Pattern::unpublishable('^(?:(a)\1)?$'))->toBeNull()
+            ->and(Pattern::unpublishable('^(?!(a)\1)b$'))->toBeNull();
+
+        /*
+         * ⚠️ THE SAME PATTERNS WITH THE REFERENCE MOVED OUT still diverge and must stay
+         * refused. Without this pair the fix above could have been "stop refusing
+         * anything with an optional ancestor", which would reopen every case the
+         * inheritance walk was added for.
+         *
+         *   ^(?:(a))?\1$   on ''   PCRE no match, ECMAScript match
+         *   ^(?!(a))\1$    on ''   PCRE no match, ECMAScript match
+         */
+        expect(Pattern::unpublishable('^(?:(a))?\1$'))->toContain('can go unset')
+            ->and(Pattern::unpublishable('^(?!(a))\1$'))->toContain('can go unset');
+    });
+
+    it('refuses a backreference that sits inside the group it names', function (): void {
+        /*
+         * ⚠️ OPENING BEFORE THE REFERENCE IS NOT PARTICIPATING, and tracking only the
+         * group's `open` read as though it were. A group participates when it CLOSES, so
+         * a reference nested inside its own group is unset in PCRE and empty in
+         * ECMAScript — the same divergence as a forward reference, reached by a different
+         * route and previously published as portable. Measured on both engines:
+         *
+         *   `^(a\1)$`         on 'a'    PCRE no match, ECMAScript match
+         *   `^((a\1))$`       on 'a'    PCRE no match, ECMAScript match
+         *   `^(?<n>a\k<n>)$`  on 'a'    PCRE no match, ECMAScript match
+         *   `^(a\1)+$`        on 'aa'   PCRE no match, ECMAScript match
+         */
+        expect(Pattern::unpublishable('^(a\1)$'))->toContain('has not closed yet')
+            ->and(Pattern::unpublishable('^((a\1))$'))->toContain('has not closed yet')
+            ->and(Pattern::unpublishable('^(?<n>a\k<n>)$'))->toContain('has not closed yet');
+
+        /*
+         * ⚠️ The QUANTIFIED case is worth its own assertion rather than being folded in,
+         * because it is the one shape where the refusal could have been wrong: PCRE does
+         * not reset captures between iterations, so the second iteration of `(a\1)+`
+         * could plausibly see group 1 set by the first. Measured, PCRE still fails and
+         * ECMAScript still matches — it resets them — so there is no shape where an
+         * enclosed reference agrees, and refusing all of them is not over-broad.
+         */
+        expect(Pattern::unpublishable('^(a\1)+$'))->toContain('has not closed yet');
+
+        /*
+         * ⚠️ THE CONTROLS, and the reason the test is the reference's position against
+         * its OWN group's close rather than "is it nested inside any open group". Both of
+         * these sit inside an outer group that has not closed, and both AGREE in the two
+         * engines — refusing them would be a false refusal of the kind this file has
+         * already shipped twice.
+         *
+         *   `^((a)\2)$`   on 'aa'   both match
+         *   `^(a(b))\2$`  on 'abb'  both match
+         */
+        expect(Pattern::unpublishable('^((a)\2)$'))->toBeNull()
+            ->and(Pattern::unpublishable('^(a(b))\2$'))->toBeNull()
+            // And the plain case stays allowed, so the new check has not swallowed the
+            // whole feature.
+            ->and(Pattern::unpublishable('^(a)\1$'))->toBeNull();
+    });
+
+    it('screens a pattern in time that does not explode with its size', function (): void {
+        /*
+         * ⚠️ A DENIAL OF SERVICE, not a slow test, and it needed two fixes because it
+         * had two causes.
+         *
+         * QUADRATIC IN GROUPS. Every backreference rescanned the whole pattern to
+         * rebuild the capture spans. `str_repeat('(a)\1', 1000)` — a pattern both
+         * engines accept, 5 KB, and small enough to paste into a text input — took
+         * 22.6s. The spans are a pure function of the pattern, so they are computed
+         * once in `unpublishable()` and passed down: 0.044s for the same input.
+         *
+         * QUADRATIC IN LENGTH. The scan reads `mb_substr($pattern, $i, 1)`, which walks
+         * from the start of the string each time, so cost still grew with size after the
+         * hoist — 1.0s at 25 KB, and a field's `pattern` setting had no limit at all.
+         * Hence MAX_LENGTH, checked before the scan rather than after it.
+         *
+         * ⚠️ WHAT THIS TEST DOES AND DOES NOT PROTECT, stated because the obvious
+         * reading is wrong. It protects the BOUND: no pattern the screen accepts can
+         * take meaningful time. It does NOT protect the hoist — measured, restoring the
+         * recomputation costs 0.244s at MAX_LENGTH, which passes this budget
+         * comfortably. Once the length is capped, the hoist is what keeps a legitimate
+         * 1,000-character pattern fast rather than what makes it safe.
+         *
+         * The hoist is therefore verified by measurement (22.6s → 0.044s on the 5 KB
+         * input above) rather than by an assertion here. Tightening the budget until it
+         * caught the difference would mean asserting 3ms against 244ms, and a
+         * millisecond-scale timing assertion is exactly the flaky test a loaded CI
+         * machine punishes — a false failure that teaches people to re-run the suite is
+         * worse than an honest gap.
+         */
+        $groupHeavy = str_repeat('(a)\1', 200);
+
+        expect(mb_strlen($groupHeavy))->toBe(Pattern::MAX_LENGTH)
+            // Portable, so the cost is paid on the full analysis rather than escaped by
+            // an early refusal — which is what made it the worst case.
+            ->and(Pattern::unpublishable($groupHeavy))->toBeNull();
+
+        $started = microtime(true);
+        Pattern::unpublishable($groupHeavy);
+        $elapsed = microtime(true) - $started;
+
+        // Measures ~3ms locally. A second is a budget a hostile input must not reach,
+        // not a performance target.
+        expect($elapsed)->toBeLessThan(1.0);
+    });
+
+    it('refuses a pattern longer than it will screen', function (): void {
+        // ⚠️ Refused rather than truncated or screened anyway: a pattern too long to
+        // screen is one whose portability is unknown, and this file publishes patterns
+        // verbatim. Unknown has to fail closed.
+        expect(Pattern::unpublishable(str_repeat('a', Pattern::MAX_LENGTH + 1)))
+            ->toContain('the limit is '.Pattern::MAX_LENGTH)
+            // The boundary itself is allowed, so the bound is not off by one.
+            ->and(Pattern::unpublishable(str_repeat('a', Pattern::MAX_LENGTH)))->toBeNull();
+    });
+
+    it('bounds every entry point, not just the one that had the limit', function (): void {
+        /*
+         * ⚠️ THE BOUND WAS ON THE PATH NOT TAKEN FIRST.
+         *
+         * `unpublishable()` refused an over-long pattern immediately — but
+         * `validateSettings()` calls `Pattern::compiles()` BEFORE it, and `patternRule()`
+         * calls `delimit()` for every validated value. Both reach the quadratic
+         * `withEcmaScriptDot()` walk. Measured on a 100,000-character non-ASCII pattern:
+         * `unpublishable()` 0.001s, `compiles()` 6.7s. Submitting the settings form was
+         * enough; nothing had to be stored.
+         *
+         * ⚠️ And I had been asked directly whether these were bounded, measured
+         * `delimit()` AT the limit, and answered that they were. Measuring the safe case
+         * cannot demonstrate an unbounded one — the input has to exceed the bound.
+         *
+         * So the assertion is that every public entry point returns promptly on an input
+         * far above the limit, rather than that one of them does.
+         */
+        $huge = str_repeat('é.', 50_000);
+
+        expect(mb_strlen($huge))->toBeGreaterThan(Pattern::MAX_LENGTH * 50);
+
+        $started = microtime(true);
+
+        $refusals = [
+            'unpublishable' => Pattern::unpublishable($huge),
+            'lengthRefusal' => Pattern::lengthRefusal($huge),
+        ];
+        $compiles = Pattern::compiles($huge);
+        $delimited = Pattern::delimit($huge);
+
+        $elapsed = microtime(true) - $started;
+
+        expect($refusals['unpublishable'])->toContain('the limit is '.Pattern::MAX_LENGTH)
+            ->and($refusals['lengthRefusal'])->toContain('the limit is '.Pattern::MAX_LENGTH)
+            // `delimit()` returns null, so `compiles()` is false and `patternRule()`
+            // refuses every value — the runtime path is closed by the same guard.
+            ->and($delimited)->toBeNull()
+            ->and($compiles)->toBeFalse();
+
+        // All four together measure well under a millisecond; 1s is the budget a hostile
+        // input must not reach, and it was 6.7s on one of these before the fix.
+        expect($elapsed)->toBeLessThan(1.0);
+    });
+
+    it('tells the author the pattern is too long, not that it will not compile', function (): void {
+        // ⚠️ `compiles()` is now false for an over-long pattern as well, so without an
+        // explicit length check first the author would be sent looking for a syntax error
+        // that is not there. A misleading message costs someone an afternoon.
+        expect(fn () => FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'code', 'type' => 'text',
+            'pii_class' => 'none', 'cardinality' => 1,
+            'settings' => ['pattern' => str_repeat('a', Pattern::MAX_LENGTH + 1)],
+        ]))->toThrow(RuntimeException::class, 'the limit is '.Pattern::MAX_LENGTH);
+    });
+
+    it('publishes the pattern length limit it enforces', function (): void {
+        // Invariant 14: a constraint that is enforced and not published is one a
+        // generated client gets wrong.
+        expect((new TextType)->settingsSchema()['pattern']['maxLength'])->toBe(Pattern::MAX_LENGTH);
+    });
+
+    it('allows a multi-digit backreference the groups actually justify', function (): void {
+        /*
+         * ⚠️ A FALSE REFUSAL I argued for on purpose. My earlier reply said an author
+         * wanting a backreference beyond 9 should "restructure the pattern to use fewer
+         * groups", treating the lost capability as acceptable. Measured, the dialects
+         * AGREE here, so there was nothing to refuse:
+         *
+         *   ten groups then `\10`      both accept
+         *   eleven groups then `\11`   both accept
+         *   five groups then `\10`     PCRE reads octal, ECMAScript rejects
+         *   ten groups then `\11`      PCRE reads octal, ECMAScript rejects
+         *
+         * The line is whether the number names a group that exists — the count decides,
+         * not how many digits it has. Swept across 77 combinations of group count and
+         * reference, there are now no holes and no false refusals.
+         *
+         * This is the failure mode the allowlists were adopted to avoid, and I wrote it
+         * in anyway.
+         */
+        $groups = fn (int $count): string => str_repeat('()', $count);
+
+        expect(Pattern::unpublishable($groups(10).'\10'))->toBeNull()
+            ->and(Pattern::unpublishable($groups(11).'\11'))->toBeNull()
+            ->and(Pattern::unpublishable($groups(12).'\12'))->toBeNull()
+            // Above the count, the dialects diverge and it stays refused.
+            ->and(Pattern::unpublishable($groups(5).'\10'))->toContain('capturing groups')
+            ->and(Pattern::unpublishable($groups(10).'\11'))->toContain('capturing groups')
+            ->and(Pattern::unpublishable($groups(10).'\101'))->toContain('capturing groups')
+            // ⚠️ `(?<name>` captures and `(?:` does not, which is why the count needs a
+            // scan rather than a substring tally.
+            ->and(Pattern::unpublishable(str_repeat('(?<a>x)', 10).'\10'))->toBeNull()
+            ->and(Pattern::unpublishable(str_repeat('(?:x)', 10).'\10'))->toContain('capturing groups')
+            // ⚠️ This assertion used to read "a FORWARD reference is legal in both
+            // dialects, so the whole pattern is counted" — and it was wrong for the
+            // reason `\h` was: both engines COMPILE it and they do not AGREE. An unset
+            // backreference fails the match in PCRE and matches empty in ECMAScript, so
+            // a forward reference is refused now. Its own test covers the detail.
+            ->and(Pattern::unpublishable('\1(a)'))->toContain('forward reference')
+            // ⚠️ An escaped parenthesis is not a group, and this needs a MULTI-digit
+            // reference to exercise the counter: twenty escaped parens still leave zero
+            // capturing groups, so `\10` names nothing.
+            //
+            // (A single-digit `\1` with no groups is refused by `compiles()` rather
+            // than here — PCRE and ECMAScript both reject a reference to a group that
+            // does not exist, so it never reaches this screen. My first version of this
+            // assertion expected the wrong refusal and asserted against `null`.)
+            ->and(Pattern::unpublishable(str_repeat('\(\)', 10).'\10'))->toContain('capturing groups')
+            ->and(Pattern::compiles('\(\)\1'))->toBeFalse();
+    });
+
+    it('refuses a closing delimiter nothing opened', function (): void {
+        /*
+         * ⚠️ The opposite direction from the brace-form check, and it fell through
+         * because only the OPENING `{` was validated while `]` was recognised solely
+         * when already inside a class.
+         *
+         * Measured, PCRE compiles and ECMAScript rejects all of these: under `u` a
+         * lone quantifier bracket is a syntax error there, while PCRE reads it as an
+         * ordinary character.
+         */
+        expect(Pattern::unpublishable('a}'))->toContain('unmatched')
+            ->and(Pattern::unpublishable('a]'))->toContain('unmatched')
+            ->and(Pattern::unpublishable('}a'))->toContain('unmatched')
+            // A valid quantifier followed by a stray brace: the first is consumed, the
+            // second is not, which is the case a per-construct check has to get right.
+            ->and(Pattern::unpublishable('a{2,4}b}'))->toContain('unmatched')
+            // PCRE reads `[]]` as a class containing `]`; ECMAScript rejects it.
+            ->and(Pattern::unpublishable('[]]'))->toContain('unmatched')
+            // ⚠️ And everything that legitimately closes something must still pass.
+            // By the time the scanner reaches the refusal, a quantifier's brace has
+            // been consumed above, a property's in the escape branch, a class's by the
+            // class handling, and an escaped one as an escape.
+            ->and(Pattern::unpublishable('a{2}'))->toBeNull()
+            ->and(Pattern::unpublishable('^[A-Z]{2,4}$'))->toBeNull()
+            ->and(Pattern::unpublishable('^\p{L}+$'))->toBeNull()
+            ->and(Pattern::unpublishable('^\p{Lu}{1,3}$'))->toBeNull()
+            ->and(Pattern::unpublishable('[a]'))->toBeNull()
+            // A brace inside a class is a literal in both dialects.
+            ->and(Pattern::unpublishable('[}]'))->toBeNull()
+            ->and(Pattern::unpublishable('[a}]'))->toBeNull()
+            ->and(Pattern::unpublishable('a\}'))->toBeNull()
+            ->and(Pattern::unpublishable('a\]'))->toBeNull()
+            ->and(Pattern::unpublishable('^[A-Z]{2}-[0-9]+$'))->toBeNull();
+    });
+
+    it('refuses every brace form ECMAScript will not parse', function (): void {
+        /*
+         * ⚠️ The whole brace form is validated now, not merely checked for a
+         * possessive suffix — which is all it did, so every malformed quantifier PCRE
+         * tolerates went straight through.
+         *
+         * Under `u`, ECMAScript accepts only `{n}`, `{n,}` and `{n,m}`; anything else
+         * is a syntax error. PCRE reads some as quantifiers and the rest as literal
+         * text. Measured, PCRE compiles and ECMAScript rejects all six below — the
+         * finding named one of them.
+         */
+        expect(Pattern::unpublishable('a{,2}'))->toContain('brace form')
+            ->and(Pattern::unpublishable('a{}'))->toContain('brace form')
+            ->and(Pattern::unpublishable('a{,}'))->toContain('brace form')
+            ->and(Pattern::unpublishable('a{2,4,6}'))->toContain('brace form')
+            ->and(Pattern::unpublishable('a{ 2}'))->toContain('brace form')
+            ->and(Pattern::unpublishable('a{2 }'))->toContain('brace form')
+            // A brace that is not a quantifier at all, which PCRE reads literally.
+            ->and(Pattern::unpublishable('a{b}'))->toContain('brace form')
+            // The three forms both dialects share must still travel.
+            ->and(Pattern::unpublishable('a{2}'))->toBeNull()
+            ->and(Pattern::unpublishable('a{2,}'))->toBeNull()
+            ->and(Pattern::unpublishable('^[A-Z]{2,4}$'))->toBeNull()
+            // ⚠️ An ESCAPED brace is literal in both and must not be validated as a
+            // quantifier, and a PROPERTY's braces are consumed before this check —
+            // otherwise every Unicode property in the language would be refused.
+            ->and(Pattern::unpublishable('^\{2\}$'))->toBeNull()
+            ->and(Pattern::unpublishable('^\p{L}{2}$'))->toBeNull()
+            ->and(Pattern::unpublishable('^\p{Lu}{1,3}$'))->toBeNull()
+            ->and(Pattern::unpublishable('^\p{L}+$'))->toBeNull()
+            // And the possessive check still fires on a genuine quantifier.
+            ->and(Pattern::unpublishable('x{2,3}+'))->toContain('possessive');
+    });
+
+    it('refuses \S inside a class, which cannot be translated', function (): void {
+        // ⚠️ `\s` splices its body into the class; a negation has no body to splice —
+        // `[a\S]` is "a or any non-space", which no single class expresses. The three
+        // code points it disagrees on are the same ones, so leaving it alone would
+        // publish a constraint the consumer reads differently.
+        expect(Pattern::unpublishable('[a\S]+'))->toContain('character class')
+            // Outside a class it is translated, not refused.
+            ->and(Pattern::unpublishable('^\S+$'))->toBeNull()
+            // And the portable spelling goes through.
+            ->and(Pattern::unpublishable('^[^\s]+$'))->toBeNull()
+            ->and(Pattern::unpublishable('[a\s]+'))->toBeNull();
+    });
+
     it('refuses punctuation escapes ECMAScript cannot parse', function (): void {
         /*
          * ⚠️ ECMAScript escapes only its SyntaxCharacter set — `^ $ \ . * + ? ( )
@@ -1533,9 +2086,13 @@ describe('settings that contradict themselves are refused', function (): void {
             ->and(Pattern::unpublishable('(?<n>a)\k{n}'))->toContain('\k<name>')
             ->and(Pattern::unpublishable("(?<n>a)\k'n'"))->toContain('\k<name>')
             ->and(Pattern::unpublishable('(?<n>a)[\k<n>]'))->toContain('character class')
-            // Octal and multi-digit escapes.
-            ->and(Pattern::unpublishable('\101'))->toContain('multi-digit')
-            ->and(Pattern::unpublishable('(a)(b)\12'))->toContain('multi-digit')
+            // ⚠️ Octal and multi-digit escapes, refused by GROUP COUNT rather than by
+            // digit count — `\101` with no groups and `\12` with two are both
+            // backreferences to groups that do not exist, which is what PCRE falls
+            // back to octal for and ECMAScript rejects. A multi-digit escape that DOES
+            // name a real group is portable and has its own test.
+            ->and(Pattern::unpublishable('\101'))->toContain('capturing groups')
+            ->and(Pattern::unpublishable('(a)(b)\12'))->toContain('capturing groups')
             ->and(Pattern::unpublishable('\00'))->toContain('multi-digit')
             // ⚠️ And a single digit is portable OUTSIDE a class and not inside one:
             // PCRE reads octal in a class where ECMAScript rejects it, so the same

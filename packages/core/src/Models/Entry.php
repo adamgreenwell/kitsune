@@ -50,6 +50,7 @@ use RuntimeException;
  * @property string|null $title
  * @property string $status
  * @property array<string, mixed>|null $values
+ * @property array<string, int>|null $promoted_by
  */
 #[SiteScoped]
 class Entry extends Model implements RequiresModelSave
@@ -82,11 +83,16 @@ class Entry extends Model implements RequiresModelSave
 
     protected $casts = [
         'values' => 'array',
+        'promoted_by' => 'array',
         'published_at' => 'datetime',
     ];
 
     protected static function booted(): void
     {
+        // ⚠️ Recorded BEFORE any guard reads a promoted column, and recorded rather
+        // than derived. See `recordPromotedProvenance()`.
+        static::saving(fn (self $entry) => $entry->recordPromotedProvenance());
+
         // type_handle is denormalised for routing lookups, so it must never
         // disagree with the type it points at.
         // ⚠️ A SITE change revalidates the relations pointing at this entry.
@@ -789,6 +795,112 @@ class Entry extends Model implements RequiresModelSave
     }
 
     /**
+     * Note which field storage wrote each promoted column on this entry.
+     *
+     * ⚠️ RECORDED, not derived, and three attempts at deriving it each failed in a
+     * different way. A promoted column is named for its TYPE — every slug-typed
+     * field projects to `entries.slug` — so the column itself cannot say whose value
+     * it holds, and erasure has to know: clearing `slug` for a handle that never
+     * wrote it destroys another field's data while reporting success (ADR-020).
+     *
+     *   the entry's CURRENT type      misses a field the entry has moved off
+     *   the types its REVISIONS name  vanish when the bounded history is pruned
+     *   any storage with the handle   grants a shared column to a field that
+     *                                 never touched it
+     *
+     * None of those is a bug in the rule. The information was simply never written
+     * down anywhere durable, and it is known at exactly one moment: when a field on
+     * the entry's own type writes the column.
+     *
+     * Only a DIRTY column is attributed, so an unrelated save does not reassign
+     * provenance, and nothing is recorded when no field on the current type projects
+     * to the column — a value written with no owner has no owner to record, and
+     * claiming one would be worse than admitting none.
+     */
+    /**
+     * The columns some registered field type projects into.
+     *
+     * ⚠️ Derived from the REGISTRY, which answers without touching the database
+     * because `promotedColumn()` is named for the type rather than stored per field.
+     *
+     * @return list<string>
+     */
+    private static function promotableColumns(FieldTypeRegistry $registry): array
+    {
+        $columns = [];
+
+        foreach ($registry->all() as $candidate) {
+            if (($column = $candidate->promotedColumn()) !== null) {
+                $columns[] = $column;
+            }
+        }
+
+        return $columns;
+    }
+
+    /** Whether this write touches any column a field type could have promoted into. */
+    private function touchesPromotedColumn(FieldTypeRegistry $registry): bool
+    {
+        foreach (self::promotableColumns($registry) as $column) {
+            if ($this->isDirty($column)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function recordPromotedProvenance(): void
+    {
+        $registry = app(FieldTypeRegistry::class);
+
+        // ⚠️ THE DIRTY CHECK BELONGS HERE, NOT IN THE LOOP, and putting it in the loop
+        // meant it was not a guard at all.
+        //
+        // `isDirty($column)` runs per field, so reaching it had already cost the type
+        // lookup and a fields query — on every save of every entry, including one that
+        // moved only `title`. Two queries against the 1 vCPU / SQLite floor in ADR-027,
+        // for a column no field storage can write.
+        //
+        // `title`, `status` and `published_at` are PLATFORM columns (field-types.md §2):
+        // they are not user-definable, so nothing projects into them and there is no
+        // provenance to record. Only a column some registered type promotes can have any,
+        // and the registry knows that list without a query.
+        if (! $this->touchesPromotedColumn($registry)) {
+            return;
+        }
+
+        $type = EntryType::query()->whereKey($this->entry_type_id)->first();
+
+        if ($type === null) {
+            return;
+        }
+
+        $provenance = $this->promoted_by ?? [];
+        $before = $provenance;
+
+        foreach ($type->fields()->with('fieldStorage')->get() as $field) {
+            $storage = $field->fieldStorage;
+
+            if ($storage === null || ! $registry->has((string) $storage->type)) {
+                continue;
+            }
+
+            $column = $storage->promotedColumn();
+
+            if ($column === null || ! $this->isDirty($column)) {
+                continue;
+            }
+
+            $provenance[$column] = $storage->getKey();
+        }
+
+        if ($provenance !== $before) {
+            $this->promoted_by = $provenance;
+        }
+    }
+
+    /**
      * Whether a promoted storage's shared column holds THIS entry's data for it.
      *
      * ⚠️ Needed because a promoted column is named for its TYPE, not its handle:
@@ -822,12 +934,13 @@ class Entry extends Model implements RequiresModelSave
             return true;
         }
 
-        $owners = FieldStorage::query()
-            ->whereHas('fields', fn (Builder $query): Builder => $query->where('entry_type_id', $this->entry_type_id))
-            ->get()
-            ->filter(fn (FieldStorage $candidate): bool => $candidate->promotedColumn() === $column);
+        $wroteIt = ($this->promoted_by ?? [])[$column] ?? null;
 
-        return $owners->isEmpty() || $owners->contains(fn (FieldStorage $candidate): bool => $candidate->is($storage));
+        // ⚠️ FAIL CLOSED when nothing recorded it. An unattributed value is one this
+        // erasure cannot prove is its to clear, and guessing is what the three
+        // derived rules did. Every value written through a field on the entry's type
+        // is attributed, so this is the case where somebody set the column directly.
+        return $wroteIt !== null && (int) $wroteIt === (int) $storage->getKey();
     }
 
     /**
@@ -1071,13 +1184,13 @@ class Entry extends Model implements RequiresModelSave
         // The first version put its dirty check after resolving the type and its
         // fields, which is to say it did not have one. On the 1 vCPU / SQLite floor
         // (ADR-027) that was several queries on every write, for nothing.
-        $convertible = ['values'];
-
-        foreach ($registry->all() as $candidate) {
-            if (($column = $candidate->promotedColumn()) !== null) {
-                $convertible[] = $column;
-            }
-        }
+        //
+        // ⚠️ Shares `promotableColumns()` with `recordPromotedProvenance()` rather than
+        // deriving the list again. That listener made the identical mistake — a dirty
+        // check downstream of the queries it should avoid — and it was written on a
+        // different branch, so the lesson did not travel. Two copies of this list would
+        // also drift the moment a type starts promoting a column.
+        $convertible = ['values', ...self::promotableColumns($registry)];
 
         // ⚠️ A TYPE CHANGE is a conversion trigger, because the type decides what the
         // stored bytes MEAN.

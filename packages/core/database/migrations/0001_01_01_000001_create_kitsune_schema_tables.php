@@ -101,6 +101,24 @@ return new class extends Migration
             $table->string('slug')->nullable();
             $table->string('title')->nullable();
             $table->json('values')->nullable();
+            // ⚠️ WHICH field storage last wrote each promoted column, per entry.
+            //
+            // A promoted column is named for its TYPE, not its handle — every
+            // slug-typed field projects to `entries.slug` — so the column cannot say
+            // whose value it holds. Erasure has to know: clearing `slug` on behalf of
+            // a handle that never wrote it destroys another field's data while
+            // reporting a successful erasure.
+            //
+            // Three attempts derived that answer instead of recording it, and each
+            // failed differently: the entry's CURRENT type misses a field the entry
+            // has moved off; the types its REVISIONS record disappear when history is
+            // pruned; and any storage with the handle grants ownership of a shared
+            // column to a field that never touched it. None of them is a bug in the
+            // rule — the information was simply not written down anywhere durable.
+            //
+            // Shaped {column: field_storage_id}. Derived at write time from the
+            // entry's own type, which is exactly when it is known.
+            $table->json('promoted_by')->nullable();
             $table->foreignId('author_id')->nullable();
             $table->timestamp('published_at')->nullable();
             $table->timestamps();

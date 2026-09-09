@@ -336,6 +336,130 @@ it('publishes the text length and pattern it enforces', function (): void {
 });
 
 describe('one pattern string cannot serve two grammars', function (): void {
+    it('gives \s the whitespace set ECMAScript has, not PCRE\'s', function (): void {
+        /*
+         * ⚠️ I claimed these AGREE, in a code comment and in a review reply, after
+         * measuring NBSP and ideographic space. Across 28 code points, three disagree:
+         *
+         *   U+0085 NEL   PCRE matches, ECMAScript does not
+         *   U+180E       PCRE matches, ECMAScript does not
+         *   U+FEFF BOM   ECMAScript matches, PCRE does not
+         *
+         * PHP's `u` sets PCRE2_UCP, so `\s` becomes Unicode's White_Space property;
+         * ECMAScript's is a fixed list including the BOM and excluding NEL. The claim
+         * was not wrong for being unmeasured — the character set was too small, which
+         * is the same mistake the escape sweep's alphabet made four times.
+         *
+         * The terminator is embedded in a longer value because Laravel treats a
+         * whitespace-only string as absent and would skip the rule entirely.
+         */
+        expect(validate('text', ['f' => 'a b'], ['pattern' => '^a\sb$'])->fails())->toBeFalse()
+            // PCRE matched these and ECMAScript does not, so they must now be refused.
+            ->and(validate('text', ['f' => "a\u{0085}b"], ['pattern' => '^a\sb$'])->fails())->toBeTrue()
+            ->and(validate('text', ['f' => "a\u{180E}b"], ['pattern' => '^a\sb$'])->fails())->toBeTrue()
+            // ⚠️ And the BOM, which ECMAScript matches and PCRE did not — the
+            // divergence in the other direction, so it must now be ACCEPTED.
+            ->and(validate('text', ['f' => "a\u{FEFF}b"], ['pattern' => '^a\sb$'])->fails())->toBeFalse()
+            // The ones they always agreed on.
+            ->and(validate('text', ['f' => "a\u{00A0}b"], ['pattern' => '^a\sb$'])->fails())->toBeFalse()
+            ->and(validate('text', ['f' => "a\u{3000}b"], ['pattern' => '^a\sb$'])->fails())->toBeFalse()
+            ->and(validate('text', ['f' => 'axb'], ['pattern' => '^a\sb$'])->fails())->toBeTrue();
+
+        // The published pattern is still the author's own shorthand.
+        $type = app(FieldTypeRegistry::class)->get('text');
+
+        expect($type->apiSchema(configFor('text', ['maxLength' => 40, 'pattern' => '^a\sb$']))['pattern'])
+            ->toBe('^a\sb$');
+    });
+
+    it('gives . the line terminators ECMAScript excludes, not PCRE\'s', function (): void {
+        /*
+         * ⚠️ The same shape as the `$` divergence and the same direction: the API was
+         * LAXER than the schema it published.
+         *
+         * PCRE's `.` excludes only LF by default. ECMAScript's excludes LF, CR, LS
+         * (U+2028) and PS (U+2029). So `^.$` accepted a carriage return and both
+         * Unicode separators server-side, and every generated client rejected them.
+         *
+         * ⚠️ No modifier fixes it, which is why this is a TRANSLATION. Measured, for
+         * what `.` excludes: PCRE's default misses CR, LS and PS; `(*ANY)` catches
+         * those and wrongly excludes VT, FF and NEL; `(*ANYCRLF)` still misses LS and
+         * PS. Every convention disagrees somewhere, so `(*ANY)` would trade three
+         * laxness holes for three strictness ones rather than fix anything.
+         *
+         * `[^\n\r\x{2028}\x{2029}]` agrees with ECMAScript on all nine characters
+         * tried, so that is what gets compiled — while the published pattern keeps
+         * the author's `.`.
+         */
+        /*
+         * ⚠️ The terminator is followed by a `b`, and that is not decoration.
+         *
+         * Laravel treats a whitespace-only string as ABSENT — `validateRequired()`
+         * tests `trim($value) === ''` — so a non-required field skips every
+         * non-implicit rule for a bare "\r", and the closure never runs. My first
+         * version of this test asserted a refusal that Laravel was simply not
+         * reaching, and it would have passed just as happily against the unfixed
+         * dot. Embedding the character in a longer value is what makes the pattern
+         * the thing under test.
+         */
+        expect(validate('text', ['f' => 'ab'], ['pattern' => '^.b$'])->fails())->toBeFalse()
+            // The three PCRE's default dot let through.
+            ->and(validate('text', ['f' => "\rb"], ['pattern' => '^.b$'])->fails())->toBeTrue()
+            ->and(validate('text', ['f' => "\u{2028}b"], ['pattern' => '^.b$'])->fails())->toBeTrue()
+            ->and(validate('text', ['f' => "\u{2029}b"], ['pattern' => '^.b$'])->fails())->toBeTrue()
+            // LF was already excluded, and must stay so.
+            ->and(validate('text', ['f' => "\nb"], ['pattern' => '^.b$'])->fails())->toBeTrue()
+            // ⚠️ And the three `(*ANY)` would have broken: ECMAScript's dot MATCHES
+            // these, so refusing them would be a new divergence, not a fix.
+            ->and(validate('text', ['f' => "\x0Bb"], ['pattern' => '^.b$'])->fails())->toBeFalse()
+            ->and(validate('text', ['f' => "\x0Cb"], ['pattern' => '^.b$'])->fails())->toBeFalse()
+            ->and(validate('text', ['f' => "\u{0085}b"], ['pattern' => '^.b$'])->fails())->toBeFalse();
+    });
+
+    it('translates only a dot that is a dot', function (): void {
+        // ⚠️ `\.` is a literal and `[.]` is a literal inside a class. Translating
+        // either would change what the pattern means — the opposite of the point.
+        expect(validate('text', ['f' => 'a.b'], ['pattern' => '^a\.b$'])->fails())->toBeFalse()
+            ->and(validate('text', ['f' => 'axb'], ['pattern' => '^a\.b$'])->fails())->toBeTrue()
+            ->and(validate('text', ['f' => '.'], ['pattern' => '^[.]$'])->fails())->toBeFalse()
+            ->and(validate('text', ['f' => 'x'], ['pattern' => '^[.]$'])->fails())->toBeTrue();
+
+        // And the published pattern is still the author's text, dot included.
+        $type = app(FieldTypeRegistry::class)->get('text');
+
+        expect($type->apiSchema(configFor('text', ['maxLength' => 40, 'pattern' => '^.$']))['pattern'])
+            ->toBe('^.$');
+    });
+
+    it('anchors $ to the end of input, as the published dialect does', function (): void {
+        /*
+         * ⚠️ A divergence in the VALIDATOR, not in the published text — and the API
+         * was the laxer of the two, which is the worse direction.
+         *
+         * PCRE lets `$` match before a final newline; ECMAScript's `$` without `m`
+         * matches only at the end of input. Measured on PHP 8.4.25/PCRE 10.48 and
+         * Node v22.23.2, `^a$` matches "a\n" server-side and no generated client
+         * accepts the same value. So a field advertising `^[a-z]+$` accepted
+         * something its own schema forbade.
+         *
+         * `delimit()` adds `D` now. It cannot be expressed in the published pattern,
+         * and refusing `$` would remove the most common anchor there is — so making
+         * PCRE behave the way the schema already promises is the only fix that keeps
+         * the constraint.
+         */
+        expect(validate('text', ['f' => 'abc'], ['pattern' => '^[a-z]+$'])->fails())->toBeFalse()
+            // The trailing newline is refused now, matching every consumer.
+            ->and(validate('text', ['f' => "abc\n"], ['pattern' => '^[a-z]+$'])->fails())->toBeTrue()
+            ->and(validate('text', ['f' => "abc\nabc"], ['pattern' => '^[a-z]+$'])->fails())->toBeTrue();
+
+        // And the modifier is not smuggled into what consumers are given: the
+        // published pattern is still the author's own text.
+        $type = app(FieldTypeRegistry::class)->get('text');
+
+        expect($type->apiSchema(configFor('text', ['maxLength' => 40, 'pattern' => '^[a-z]+$']))['pattern'])
+            ->toBe('^[a-z]+$');
+    });
+
     /*
      * ⚠️ JSON Schema wants an UNDELIMITED pattern; `preg_match()` requires
      * delimiters. `^[a-z]+$` — the form the published schema needs, and the

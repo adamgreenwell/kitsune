@@ -24,5 +24,10 @@ Route::get('/', function () {
     return response()->view('welcome', [
         'version' => Kitsune::version(),
         'phase' => 'Phase 0 — foundations',
+        // ⚠️ The page emitted `lang` and no `dir`, so an RTL locale served
+        // RTL text in a left-to-right document. Filament supplies this for
+        // the admin from its own translations; the public side has no panel
+        // and needs Kitsune's own answer (ADR-018).
+        'direction' => Kitsune::textDirection(),
     ]);
 })->name('home');
