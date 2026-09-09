@@ -69,6 +69,19 @@ final class LocaleResolver
      * Arabic site gets a French admin around Arabic content, which is the case
      * ADR-018 rule 2 exists for.
      *
+     * ⚠️ `$requested` COMES FIRST, and leaving it out was routing around a decided
+     * ADR rather than implementing it. ADR-019 settles the binding as "Livewire's
+     * `#[Url]` query-string attribute, falling back to the user's stored preference",
+     * so an explicitly localized admin URL must win over the stored one — that is what
+     * makes such a URL shareable at all. This shipped as persisted-only, which is a
+     * different behaviour wearing the same name (invariant 12).
+     *
+     * ⚠️ It is also the least trusted input here, arriving straight off the URL
+     * (invariant 6) — which costs nothing extra, because `firstUsable()` shape-guards
+     * every candidate rather than trusting any of them. And it is request state only:
+     * nothing writes it back to the viewer's preference, so a shared link cannot change
+     * the recipient's setting.
+     *
      * ⚠️ Read through Laravel's own `HasLocalePreference`, not a Kitsune
      * interface and not a column. Core must not require a particular auth
      * schema — ADR-002 keeps it headless-capable, and the users table belongs to
@@ -76,9 +89,14 @@ final class LocaleResolver
      * preference lives. A user model that does not implement it simply has no
      * preference, which is the correct answer rather than an error.
      */
-    public function forViewer(mixed $viewer, ?Site $site, ?string $default = null): string
-    {
+    public function forViewer(
+        mixed $viewer,
+        ?Site $site,
+        ?string $requested = null,
+        ?string $default = null,
+    ): string {
         return $this->firstUsable([
+            $requested,
             $viewer instanceof HasLocalePreference ? $viewer->preferredLocale() : null,
             $site?->locale,
         ], $default);
