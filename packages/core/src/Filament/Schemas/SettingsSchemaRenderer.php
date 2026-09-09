@@ -23,10 +23,20 @@ use RuntimeException;
  * Turns a field type's `settingsSchema()` data into Filament components.
  *
  * This class is why `settingsSchema()` returns an array instead of Filament
- * components. ADR-002 keeps core headless-capable: a field type that built
- * `TextInput::make(...)` would make `kitsune/core` depend on a panel, and the
- * API and the CLI would have nothing to render. The description is data; the
- * admin is one renderer of it, and a headless client can be another.
+ * components: a field type describes a control and the panel builds it (ADR-029).
+ *
+ * ⚠️ THIS DOCBLOCK USED TO GIVE A REASON THAT WAS FALSE, and it was cited from
+ * seven other places. It said ADR-002 kept core headless-capable so a type
+ * building `TextInput::make(...)` "would make kitsune/core depend on a panel" —
+ * but core hard-requires `filament/filament ^5.4` (ADR-008), so it already does,
+ * and ADR-002 is a five-line delivery decision that says nothing about return
+ * types. The rule was right and had never been decided; ADR-029 decides it.
+ *
+ * The reason that actually holds is EXHAUSTIVENESS. Because every control passes
+ * through this renderer, a cross-cutting presentation concern has exactly one
+ * place to live — and a thirteenth field type cannot omit it, because it never
+ * gets to decide. Twelve types each returning a finished component is twelve
+ * chances to forget, which is the reach failure `dir="auto"` already hit twice.
  *
  * It fails closed on an unknown descriptor. Silently skipping one would
  * produce a settings form missing a control, and the field would then be
@@ -140,9 +150,9 @@ final class SettingsSchemaRenderer
      * key produced an empty list, and since an empty `targetTypes` means
      * unrestricted, the constraint could not be configured at all.
      *
-     * A NAME rather than a closure, because `settingsSchema()` returns data so
-     * that core stays usable headless (ADR-002). A closure would tie the
-     * declaration to Filament.
+     * A NAME rather than a closure, because `settingsSchema()` returns data: a
+     * field type describes, the panel builds (ADR-029). A closure would put a
+     * Filament callable in the description and be callable from nowhere else.
      *
      * @param  array<string, mixed>  $descriptor
      * @return array<string, string>
