@@ -282,7 +282,7 @@ it('still refuses an over-long pattern on the server', function (): void {
         ->toContain('the limit is '.Pattern::MAX_LENGTH);
 });
 
-it('refuses a maxLength on a control that cannot express one', function (): void {
+it('refuses a maxLength on a descriptor that cannot express one', function (): void {
     /*
      * ⚠️ Fails closed, matching this class's posture on an unknown descriptor type.
      * Silently dropping the key is how a published constraint becomes a lie — which is
@@ -313,5 +313,44 @@ it('refuses a maxLength on a control that cannot express one', function (): void
     };
 
     expect(fn () => SettingsSchemaRenderer::for($type))
-        ->toThrow(RuntimeException::class, 'cannot express one');
+        ->toThrow(RuntimeException::class, 'cannot express a string length');
+});
+
+it('refuses a maxLength on a NUMERIC descriptor, which renders the same component as a string', function (): void {
+    /*
+     * ⚠️ THE CASE AN `instanceof` CHECK CANNOT SEE, and the reason this guard asks the
+     * descriptor rather than the component. `integer` and `number` both render a
+     * `TextInput`, exactly as `string` does — so a class check accepts them and applies
+     * `maxLength()` to a numeric control, where a browser ignores the `maxlength` attribute
+     * and numeric validation reads a maximum as a VALUE bound rather than a digit count.
+     *
+     * The form would then impose a DIFFERENT constraint from the published one, which is
+     * worse than imposing none: nothing on screen reveals it and the type that published it
+     * cannot tell either. Found by review on #48.
+     */
+    $type = new class extends BaseFieldType
+    {
+        public static function handle(): string
+        {
+            return 'probe';
+        }
+
+        public static function label(): string
+        {
+            return 'Probe';
+        }
+
+        public function control(): Control
+        {
+            return Control::Line;
+        }
+
+        public function settingsSchema(): array
+        {
+            return ['digits' => ['type' => 'integer', 'default' => 1, 'maxLength' => 4]];
+        }
+    };
+
+    expect(fn () => SettingsSchemaRenderer::for($type))
+        ->toThrow(RuntimeException::class, 'cannot express a string length');
 });
