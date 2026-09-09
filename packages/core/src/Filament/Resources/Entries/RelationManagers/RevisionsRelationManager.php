@@ -39,7 +39,11 @@ class RevisionsRelationManager extends RelationManager
             ->recordTitleAttribute('title')
             ->columns([
                 TextColumn::make('created_at')->label('Saved')->dateTime()->sortable(),
-                TextColumn::make('title'),
+                // Same reasoning as the related-records table: a revision list shows
+                // titles as they were, and those carry whatever script they were written
+                // in. Found by enumerating every `TextColumn::make('title')` rather than
+                // by fixing the one that was reported.
+                TextColumn::make('title')->extraAttributes(['dir' => 'auto']),
                 TextColumn::make('status')->badge(),
                 TextColumn::make('note')->label('Note')->placeholder('—'),
             ])

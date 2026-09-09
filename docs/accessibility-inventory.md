@@ -131,11 +131,20 @@ The per-process consequence above is the part actually closed: resolution happen
 
 ⚠️ **What is not done:** the criterion about *public* requests. There are no site-scoped public routes yet — `skeleton/routes/web.php` holds the Phase 0 placeholder, and site resolution lives only in the panel's `tenantMiddleware`. `SetSiteLocale` is written and tested against `Context`, so it is ready for the public side, but "a public request to a site whose locale is RTL is served RTL" cannot be demonstrated until routing exists (roadmap Phase 6, *Menus, routing, slugs, redirects*).
 
-**G3 — no per-field content direction, and Filament will not supply it.**
+**G3 — no per-field content direction, and Filament will not supply it. ◐ Partly resolved.**
 ```bash
 grep -rn 'dir=' vendor/filament/*/resources/views | wc -l    # 1
 ```
 Exactly one `dir` in the entire view layer: the root `<html>`. No input, textarea or table cell carries `dir="auto"`. So **content always renders in the direction of the chrome.** An Arabic value in an English admin — or an English value in an Arabic one — gets its punctuation, parentheses and numerals laid out the wrong way. This is not hypothetical for Kitsune: ADR-018 rule 2 exists because one org has editors working in different languages, and the seed fixture already models a bilingual org. `dir="auto"` on field inputs and table cells is Kitsune's to add.
+
+**What is done (issue #39):** every entry value the admin renders today carries `dir="auto"` — the title and slug inputs, and **all three** title columns: the entry list, the related-records table and the revisions list — so each resolves on its own first strong directional character rather than on the panel's. A browser test measures the **rendered** direction with `getComputedStyle().direction` rather than asserting the attribute, because `dir="auto"` can be present and resolve the wrong way; that is the mistake the original RTL check made. The seed now carries an Arabic-titled entry in the otherwise-Latin `golfdom` org, because the failure only appears with bidirectional content in one admin and a test without it would pass by asserting about LTR text in an LTR panel, and it is attached to another entry so the related-records page has something bidirectional to render.
+
+⚠️ Review found the first pass short by two. `EntryResource`'s table was fixed and the related-records and revisions tables each define their **own** `TextColumn::make('title')`, so they still inherited the panel's direction — a screen is only as complete as the enumeration behind it. The fix came from grepping every `TextColumn::make('title')` in `packages/core/src`, not from patching the one that was reported.
+
+⚠️ **What is not done, and why it is not merely unfinished:** the per-field UI does not exist yet. `EntryResource` renders `title`, `slug` and `status` directly; `FieldType::formComponent()` and `tableColumn()` are on the contract in `field-types.md` and implemented by nothing, so there is no textarea, rich-text editor, select or relation picker to attach `dir` to. When that UI lands, the attribute has to land with it — attaching it afterwards means auditing every component, which is the argument ADR-018 makes for the no-bare-strings rule.
+
+Rich text is ready at the storage layer: `dir` is already in `RichTextType::ALLOWED_ATTRIBUTES`, so per-block direction survives sanitising — verified, `<p dir="rtl">…</p><p dir="ltr">…</p>` round-trips while `style` and `onclick` do not. What cannot be demonstrated yet is per-block direction **rendering**, because nothing renders rich text.
+
 
 **G4 — `field_storage.translation_scope` was declared and unread. ✅ Resolved.**
 
