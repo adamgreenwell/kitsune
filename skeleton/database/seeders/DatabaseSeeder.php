@@ -115,6 +115,19 @@ class DatabaseSeeder extends Seeder
             ]);
         }
 
+        // ⚠️ An RTL title in an otherwise LTR org, because issue #39's failure only
+        // appears with bidirectional content in ONE admin — which ADR-018 rule 2 says is
+        // the designed case. Without a row like this the direction tests would have
+        // nothing to measure and would pass by asserting about LTR text in an LTR panel.
+        Entry::create([
+            'entry_type_id' => $article->id,
+            'title' => 'صيانة الملاعب في الأسبوع السابع',
+            'slug' => 'course-maintenance-week-7',
+            'status' => 'published',
+            'values' => ['summary' => 'ملاحظات الأسبوع السابع.'],
+            'published_at' => now()->subDays(7),
+        ]);
+
         foreach (['Fairway mower', 'Bunker rake'] as $i => $name) {
             Entry::create([
                 'entry_type_id' => $product->id,
@@ -128,7 +141,15 @@ class DatabaseSeeder extends Seeder
         // Relations through the real table (ADR-015), so the page-based
         // relation manager has something to show.
         $first = Entry::where('slug', 'course-maintenance-week-1')->first();
-        $others = Entry::whereIn('slug', ['course-maintenance-week-2', 'course-maintenance-week-3'])->pluck('id');
+        // ⚠️ The Arabic-titled entry is among them ON PURPOSE. The related-records table
+        // defines its OWN title column, so `dir="auto"` on the entry list did nothing for
+        // it — and without an RTL title attached here there is nothing on that page for a
+        // direction test to measure, so the gap stayed invisible (issue #39).
+        $others = Entry::whereIn('slug', [
+            'course-maintenance-week-2',
+            'course-maintenance-week-3',
+            'course-maintenance-week-7',
+        ])->pluck('id');
         $first?->related()->attach($others->all(), ['org_id' => $orgA->id]);
 
         $context->setSite($rival);

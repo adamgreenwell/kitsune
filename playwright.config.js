@@ -56,7 +56,11 @@ module.exports = defineConfig({
         },
         {
             name: 'admin',
-            testMatch: /(admin|accessibility|entity-type-builder|revisions)\.spec\.js/,
+            // ⚠️ `direction` runs under the LTR admin deliberately. Issue #39's failure
+            // is a value rendering in the direction of the CHROME, so the interesting
+            // case is RTL content in an LTR panel — the RTL project would hide it by
+            // agreeing with the content.
+            testMatch: /(admin|accessibility|direction|entity-type-builder|revisions)\.spec\.js/,
             dependencies: ['setup'],
             use: { ...devices['Desktop Chrome'], storageState: '.playwright/admin-auth.json' },
         },
