@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Fields\Types;
 
+use Kitsune\Core\Fields\Control;
 use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Fields\LogicalType;
 use Kitsune\Core\Fields\Projection;
@@ -29,6 +30,14 @@ final class BooleanType extends BaseFieldType
     public static function icon(): string
     {
         return 'heroicon-o-check-circle';
+    }
+
+    /**
+     * A yes or no, rendered as an icon rather than the words.
+     */
+    public function control(): Control
+    {
+        return Control::Toggle;
     }
 
     public function isIndexable(): bool

@@ -11,6 +11,7 @@ declare(strict_types=1);
 namespace Kitsune\Core\Fields\Types;
 
 use Illuminate\Support\Carbon;
+use Kitsune\Core\Fields\Control;
 use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Fields\LogicalType;
 use Kitsune\Core\Fields\Projection;
@@ -33,6 +34,15 @@ final class DateType extends BaseFieldType
     public static function icon(): string
     {
         return 'heroicon-o-calendar';
+    }
+
+    /**
+     * Rendered from a normalised ISO-8601 string in the site timezone, so the glyphs
+     * are the app's rather than the author's.
+     */
+    public function control(): Control
+    {
+        return Control::Date;
     }
 
     public function isIndexable(): bool

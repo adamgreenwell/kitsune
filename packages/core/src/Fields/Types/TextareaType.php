@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Fields\Types;
 
+use Kitsune\Core\Fields\Control;
 use Kitsune\Core\Fields\FieldConfig;
 
 /**
@@ -31,6 +32,14 @@ final class TextareaType extends BaseFieldType
     public static function icon(): string
     {
         return 'heroicon-o-bars-4';
+    }
+
+    /**
+     * Plain multi-line text.
+     */
+    public function control(): Control
+    {
+        return Control::Paragraph;
     }
 
     protected function castToStorage(mixed $input, FieldConfig $config): mixed

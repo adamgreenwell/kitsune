@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Fields\Types;
 
+use Kitsune\Core\Fields\Control;
 use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Fields\StorageStrategy;
 use Kitsune\Core\Models\Entry;
@@ -36,6 +37,16 @@ final class RelationType extends BaseFieldType
     public static function icon(): string
     {
         return 'heroicon-o-link';
+    }
+
+    /**
+     * ⚠️ Shows entry TITLES, which is exactly the content the seeded Arabic-titled row
+     * exists to test — so `Auto`, and the related-records table was one of the two
+     * places #39 originally missed.
+     */
+    public function control(): Control
+    {
+        return Control::EntryPicker;
     }
 
     public function strategy(): StorageStrategy

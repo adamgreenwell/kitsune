@@ -11,6 +11,7 @@ declare(strict_types=1);
 namespace Kitsune\Core\Fields\Types;
 
 use Closure;
+use Kitsune\Core\Fields\Control;
 use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Fields\Projection;
 use Kitsune\Core\Fields\StorageStrategy;
@@ -37,6 +38,15 @@ final class SlugType extends BaseFieldType
     public static function icon(): string
     {
         return 'heroicon-o-link';
+    }
+
+    /**
+     * A slug is generated from a title and carries its script, so it is authored text
+     * like any other line — not an identifier the app chose.
+     */
+    public function control(): Control
+    {
+        return Control::Line;
     }
 
     public function strategy(): StorageStrategy

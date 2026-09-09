@@ -12,6 +12,7 @@ use Filament\Forms\Components\KeyValue;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Toggle;
+use Kitsune\Core\Fields\Control;
 use Kitsune\Core\Fields\FieldTypeRegistry;
 use Kitsune\Core\Fields\Types\BaseFieldType;
 use Kitsune\Core\Filament\Schemas\SettingsSchemaRenderer;
@@ -49,6 +50,15 @@ it('maps each descriptor to the component that fits it', function (string $descr
             return 'probe';
         }
 
+        // ⚠️ Required because `control()` has no default on `BaseFieldType`,
+        // deliberately: a field type that inherits a control kind inherits a
+        // text direction nobody chose for it (ADR-029). A double is a field
+        // type and answers like one.
+        public function control(): Control
+        {
+            return Control::Line;
+        }
+
         public static function label(): string
         {
             return 'Probe';
@@ -80,6 +90,15 @@ it('fails closed on a descriptor it does not know', function (): void {
         public static function handle(): string
         {
             return 'probe';
+        }
+
+        // ⚠️ Required because `control()` has no default on `BaseFieldType`,
+        // deliberately: a field type that inherits a control kind inherits a
+        // text direction nobody chose for it (ADR-029). A double is a field
+        // type and answers like one.
+        public function control(): Control
+        {
+            return Control::Line;
         }
 
         public static function label(): string
@@ -202,6 +221,15 @@ describe('a descriptor whose choices are not knowable at declaration time', func
             public static function handle(): string
             {
                 return 'bad_source';
+            }
+
+            // ⚠️ Required because `control()` has no default on `BaseFieldType`,
+            // deliberately: a field type that inherits a control kind inherits a
+            // text direction nobody chose for it (ADR-029). A double is a field
+            // type and answers like one.
+            public function control(): Control
+            {
+                return Control::Line;
             }
 
             public static function label(): string
