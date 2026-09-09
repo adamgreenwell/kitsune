@@ -149,6 +149,8 @@ Inherited optionality is likewise a question of **position, not just ancestry**.
 | `^(?:(a))?\1$` | outside it | ❌ diverges |
 | `^(?!(a))\1$` | outside the assertion | ❌ diverges |
 
+⚠️ **A pattern is bounded at `Pattern::MAX_LENGTH` (1,000 characters), and the bound is published in `settingsSchema()`.** Screening cost grows faster than length — the scan reads one character at a time with `mb_substr`, which walks from the start of the string each call — so an unbounded pattern is a way to hold a request open rather than a way to describe a value. Measured before the bound: a portable 5 KB pattern took 22.6s. A pattern too long to screen is one whose portability is unknown, and unknown fails closed.
+
 ⚠️ **Measure both engines on byte-identical patterns.** An early comparison here escaped the pattern differently for each side — PHP received `\\1` (a literal backslash then `1`) while Node received `\1` (a real backreference) — so the two engines were not being asked the same question. The conclusions happened to survive, which is luck and not method. Put the patterns in a data file both engines read.
 
 A group inside an **alternation** goes unset with no quantifier anywhere, so branch selection is a third way to reach a non-participating capture — and it needs no group at all: `^(a)|b\1$` alternates at the top level. **The reference must sit in the same branch as the capture, in every alternating ancestor:**

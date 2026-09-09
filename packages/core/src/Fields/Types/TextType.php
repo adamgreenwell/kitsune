@@ -146,6 +146,10 @@ final class TextType extends BaseFieldType
             'pattern' => [
                 'type' => 'string',
                 'nullable' => true,
+                // Published because it is enforced — `Pattern::unpublishable()` refuses a
+                // longer one, and invariant 14 is that a constraint which is enforced and
+                // not published is a constraint a consumer gets wrong.
+                'maxLength' => Pattern::MAX_LENGTH,
                 'label' => 'Pattern (regex)',
                 'help' => 'Without delimiters, e.g. ^[A-Z]{2}-[0-9]+$. Must compile, and must mean the '
                     .'same thing in the JSON Schema dialect, because it is published to API '

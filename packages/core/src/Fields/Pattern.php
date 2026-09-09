@@ -34,6 +34,23 @@ final class Pattern
      *
      * `/` first because it is what an author who knows regex expects to see.
      */
+    /**
+     * The longest pattern this screen will accept, in characters.
+     *
+     * ⚠️ A RESOURCE BOUND, not a style preference, and it is the second half of the
+     * denial-of-service fix in `unpublishable()`. Hoisting the span computation removed
+     * the quadratic in the number of GROUPS; the scan itself is still quadratic in
+     * LENGTH, because `mb_substr($pattern, $i, 1)` walks from the start of the string to
+     * find character `$i`. Measured after the hoist: 5 KB in 0.044s, 25 KB in 1.0s. A
+     * setting with no length limit therefore still buys a worker's time by the kilobyte.
+     *
+     * 1,000 is far above any pattern a field validation needs — the value being
+     * validated defaults to 255 characters — and puts the worst case near a
+     * millisecond. Rewriting the scan to work on bytes or a pre-split array would lift
+     * the ceiling, but the ceiling is not the problem: an unbounded input is.
+     */
+    public const MAX_LENGTH = 1000;
+
     private const DELIMITERS = ['/', '#', '~', '%', '!'];
 
     /**
@@ -460,7 +477,33 @@ final class Pattern
     public static function unpublishable(string $pattern): ?string
     {
         $length = mb_strlen($pattern);
+
+        // ⚠️ Refused BEFORE the scan, because the scan is what costs. See MAX_LENGTH.
+        if ($length > self::MAX_LENGTH) {
+            return sprintf(
+                'a pattern of %d characters — the limit is %d. Screening cost grows faster than '
+                .'length, so an unbounded pattern is a way to hold a request open rather than a '
+                .'way to describe a value',
+                $length,
+                self::MAX_LENGTH,
+            );
+        }
+
         $inClass = false;
+
+        // ⚠️ ONCE PER PATTERN, not once per backreference, and the difference is a
+        // denial of service rather than a slow test.
+        //
+        // Every reference used to rescan the whole pattern from `escapeFormRefusal()`,
+        // making the screen quadratic in the number of groups. Measured on PHP 8.4:
+        // `str_repeat('(a)\1', 1000)` — a portable pattern both engines accept, and only
+        // 5 KB — took 22.6s, against 0.04s at 100 repetitions. A field's `pattern`
+        // setting has no length limit, so an authoring request could hold a worker for
+        // as long as it liked on a payload that fits in a text input.
+        //
+        // The spans are a pure function of the pattern, so hoisting cannot change an
+        // answer — it is the same value every call site was recomputing.
+        $spans = self::capturingGroupSpans($pattern);
 
         for ($i = 0; $i < $length; $i++) {
             $char = mb_substr($pattern, $i, 1);
@@ -507,7 +550,7 @@ final class Pattern
 
                 // ⚠️ Three families where the LETTER is shared and the form is not,
                 // so a lookup table cannot answer them.
-                if (($reason = self::escapeFormRefusal($pattern, $i, $escaped, $inClass)) !== null) {
+                if (($reason = self::escapeFormRefusal($pattern, $i, $escaped, $inClass, $spans)) !== null) {
                     return $reason;
                 }
 
@@ -726,8 +769,14 @@ final class Pattern
      * PCRE reads it as an octal character while ECMAScript rejects it outright —
      * so the same two characters are portable in one place and not in the other.
      * `\0` is NUL in both, everywhere.
+     *
+     * ⚠️ `$spans` is PASSED IN rather than computed here: this method runs once per
+     * escape, and recomputing them made the screen quadratic in the number of groups.
+     * See `unpublishable()`.
+     *
+     * @param  array<int, array{open: int, close: int|null, optionalAncestors: list<array{open: int, close: int|null}>, alternatingAncestors: list<array{open: int, close: int|null, separators: list<int>, captureBranch: int}>, name: string|null}>  $spans
      */
-    private static function escapeFormRefusal(string $pattern, int $at, string $escaped, bool $inClass): ?string
+    private static function escapeFormRefusal(string $pattern, int $at, string $escaped, bool $inClass, array $spans): ?string
     {
         $next = mb_substr($pattern, $at + 1, 1);
 
@@ -762,8 +811,6 @@ final class Pattern
 
             if ($closes !== false) {
                 $name = mb_substr($pattern, $at + 2, $closes - $at - 2);
-                $spans = self::capturingGroupSpans($pattern);
-
                 foreach ($spans as $index => $span) {
                     if ($span['name'] === $name) {
                         return self::participationRefusal($spans, $index, '\k<'.$name.'>', $at);
@@ -826,8 +873,6 @@ final class Pattern
         // refusal blocks an author" — and I introduced one anyway, in writing.
         $digits = (string) (preg_match('/^[0-9]+/', mb_substr($pattern, $at), $matched) === 1 ? $matched[0] : '');
         $reference = (int) $digits;
-        $spans = self::capturingGroupSpans($pattern);
-
         // Above the group count, PCRE falls back to octal and ECMAScript rejects it.
         if (mb_strlen($digits) > 1 && $reference > count($spans)) {
             return sprintf(

@@ -11,6 +11,7 @@ declare(strict_types=1);
 use Illuminate\Support\Facades\Validator;
 use Kitsune\Core\Fields\Pattern;
 use Kitsune\Core\Fields\Types\NumberType;
+use Kitsune\Core\Fields\Types\TextType;
 use Kitsune\Core\Filament\Icons;
 use Kitsune\Core\Filament\Resources\EntryTypes\EntryTypeResource;
 use Kitsune\Core\Filament\Resources\EntryTypes\Pages\EditEntryType;
@@ -1769,6 +1770,68 @@ describe('settings that contradict themselves are refused', function (): void {
             // And the plain case stays allowed, so the new check has not swallowed the
             // whole feature.
             ->and(Pattern::unpublishable('^(a)\1$'))->toBeNull();
+    });
+
+    it('screens a pattern in time that does not explode with its size', function (): void {
+        /*
+         * ⚠️ A DENIAL OF SERVICE, not a slow test, and it needed two fixes because it
+         * had two causes.
+         *
+         * QUADRATIC IN GROUPS. Every backreference rescanned the whole pattern to
+         * rebuild the capture spans. `str_repeat('(a)\1', 1000)` — a pattern both
+         * engines accept, 5 KB, and small enough to paste into a text input — took
+         * 22.6s. The spans are a pure function of the pattern, so they are computed
+         * once in `unpublishable()` and passed down: 0.044s for the same input.
+         *
+         * QUADRATIC IN LENGTH. The scan reads `mb_substr($pattern, $i, 1)`, which walks
+         * from the start of the string each time, so cost still grew with size after the
+         * hoist — 1.0s at 25 KB, and a field's `pattern` setting had no limit at all.
+         * Hence MAX_LENGTH, checked before the scan rather than after it.
+         *
+         * ⚠️ WHAT THIS TEST DOES AND DOES NOT PROTECT, stated because the obvious
+         * reading is wrong. It protects the BOUND: no pattern the screen accepts can
+         * take meaningful time. It does NOT protect the hoist — measured, restoring the
+         * recomputation costs 0.244s at MAX_LENGTH, which passes this budget
+         * comfortably. Once the length is capped, the hoist is what keeps a legitimate
+         * 1,000-character pattern fast rather than what makes it safe.
+         *
+         * The hoist is therefore verified by measurement (22.6s → 0.044s on the 5 KB
+         * input above) rather than by an assertion here. Tightening the budget until it
+         * caught the difference would mean asserting 3ms against 244ms, and a
+         * millisecond-scale timing assertion is exactly the flaky test a loaded CI
+         * machine punishes — a false failure that teaches people to re-run the suite is
+         * worse than an honest gap.
+         */
+        $groupHeavy = str_repeat('(a)\1', 200);
+
+        expect(mb_strlen($groupHeavy))->toBe(Pattern::MAX_LENGTH)
+            // Portable, so the cost is paid on the full analysis rather than escaped by
+            // an early refusal — which is what made it the worst case.
+            ->and(Pattern::unpublishable($groupHeavy))->toBeNull();
+
+        $started = microtime(true);
+        Pattern::unpublishable($groupHeavy);
+        $elapsed = microtime(true) - $started;
+
+        // Measures ~3ms locally. A second is a budget a hostile input must not reach,
+        // not a performance target.
+        expect($elapsed)->toBeLessThan(1.0);
+    });
+
+    it('refuses a pattern longer than it will screen', function (): void {
+        // ⚠️ Refused rather than truncated or screened anyway: a pattern too long to
+        // screen is one whose portability is unknown, and this file publishes patterns
+        // verbatim. Unknown has to fail closed.
+        expect(Pattern::unpublishable(str_repeat('a', Pattern::MAX_LENGTH + 1)))
+            ->toContain('the limit is '.Pattern::MAX_LENGTH)
+            // The boundary itself is allowed, so the bound is not off by one.
+            ->and(Pattern::unpublishable(str_repeat('a', Pattern::MAX_LENGTH)))->toBeNull();
+    });
+
+    it('publishes the pattern length limit it enforces', function (): void {
+        // Invariant 14: a constraint that is enforced and not published is one a
+        // generated client gets wrong.
+        expect((new TextType)->settingsSchema()['pattern']['maxLength'])->toBe(Pattern::MAX_LENGTH);
     });
 
     it('allows a multi-digit backreference the groups actually justify', function (): void {
