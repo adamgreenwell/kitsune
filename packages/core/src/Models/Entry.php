@@ -18,6 +18,7 @@ use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Audit\AuditedBuilder;
+use Kitsune\Core\Fields\FieldTypeRegistry;
 use Kitsune\Core\Fields\StorageStrategy;
 use Kitsune\Core\Relations\GuardedBelongsToMany;
 use Kitsune\Core\Schema\RevisionWrites;
@@ -48,6 +49,7 @@ use RuntimeException;
  * @property string|null $title
  * @property string $status
  * @property array<string, mixed>|null $values
+ * @property array<string, int>|null $promoted_by
  */
 #[SiteScoped]
 class Entry extends Model implements RequiresModelSave
@@ -80,11 +82,16 @@ class Entry extends Model implements RequiresModelSave
 
     protected $casts = [
         'values' => 'array',
+        'promoted_by' => 'array',
         'published_at' => 'datetime',
     ];
 
     protected static function booted(): void
     {
+        // ⚠️ Recorded BEFORE any guard reads a promoted column, and recorded rather
+        // than derived. See `recordPromotedProvenance()`.
+        static::saving(fn (self $entry) => $entry->recordPromotedProvenance());
+
         // type_handle is denormalised for routing lookups, so it must never
         // disagree with the type it points at.
         // ⚠️ A SITE change revalidates the relations pointing at this entry.
@@ -761,6 +768,62 @@ class Entry extends Model implements RequiresModelSave
     }
 
     /**
+     * Note which field storage wrote each promoted column on this entry.
+     *
+     * ⚠️ RECORDED, not derived, and three attempts at deriving it each failed in a
+     * different way. A promoted column is named for its TYPE — every slug-typed
+     * field projects to `entries.slug` — so the column itself cannot say whose value
+     * it holds, and erasure has to know: clearing `slug` for a handle that never
+     * wrote it destroys another field's data while reporting success (ADR-020).
+     *
+     *   the entry's CURRENT type      misses a field the entry has moved off
+     *   the types its REVISIONS name  vanish when the bounded history is pruned
+     *   any storage with the handle   grants a shared column to a field that
+     *                                 never touched it
+     *
+     * None of those is a bug in the rule. The information was simply never written
+     * down anywhere durable, and it is known at exactly one moment: when a field on
+     * the entry's own type writes the column.
+     *
+     * Only a DIRTY column is attributed, so an unrelated save does not reassign
+     * provenance, and nothing is recorded when no field on the current type projects
+     * to the column — a value written with no owner has no owner to record, and
+     * claiming one would be worse than admitting none.
+     */
+    private function recordPromotedProvenance(): void
+    {
+        $type = EntryType::query()->whereKey($this->entry_type_id)->first();
+
+        if ($type === null) {
+            return;
+        }
+
+        $registry = app(FieldTypeRegistry::class);
+        $provenance = $this->promoted_by ?? [];
+        $before = $provenance;
+
+        foreach ($type->fields()->with('fieldStorage')->get() as $field) {
+            $storage = $field->fieldStorage;
+
+            if ($storage === null || ! $registry->has((string) $storage->type)) {
+                continue;
+            }
+
+            $column = $storage->promotedColumn();
+
+            if ($column === null || ! $this->isDirty($column)) {
+                continue;
+            }
+
+            $provenance[$column] = $storage->getKey();
+        }
+
+        if ($provenance !== $before) {
+            $this->promoted_by = $provenance;
+        }
+    }
+
+    /**
      * Whether a promoted storage's shared column holds THIS entry's data for it.
      *
      * ⚠️ Needed because a promoted column is named for its TYPE, not its handle:
@@ -794,12 +857,13 @@ class Entry extends Model implements RequiresModelSave
             return true;
         }
 
-        $owners = FieldStorage::query()
-            ->whereHas('fields', fn (Builder $query): Builder => $query->where('entry_type_id', $this->entry_type_id))
-            ->get()
-            ->filter(fn (FieldStorage $candidate): bool => $candidate->promotedColumn() === $column);
+        $wroteIt = ($this->promoted_by ?? [])[$column] ?? null;
 
-        return $owners->isEmpty() || $owners->contains(fn (FieldStorage $candidate): bool => $candidate->is($storage));
+        // ⚠️ FAIL CLOSED when nothing recorded it. An unattributed value is one this
+        // erasure cannot prove is its to clear, and guessing is what the three
+        // derived rules did. Every value written through a field on the entry's type
+        // is attributed, so this is the case where somebody set the column directly.
+        return $wroteIt !== null && (int) $wroteIt === (int) $storage->getKey();
     }
 
     /**
