@@ -135,6 +135,69 @@ describe('the viewer decides the UI locale', function (): void {
     });
 });
 
+describe('an explicit locale in the URL wins, per ADR-019', function (): void {
+    /*
+     * ⚠️ ADR-019 settles this: "UI locale binds via Livewire's `#[Url]` query-string
+     * attribute, falling back to the user's stored preference." The first version of
+     * this middleware read only the stored preference, which is a different decision
+     * wearing the same name — invariant 12 says amend the ADR or implement it, not ship
+     * a third thing quietly.
+     *
+     * What it buys is a shareable localized admin URL: a French editor can send a
+     * colleague a link that opens in French regardless of that colleague's setting.
+     */
+    it('prefers the requested locale over the stored preference and the site', function (): void {
+        expect($this->resolver->forViewer(new ViewerWithPreference('de'), $this->arabic, requested: 'fr'))
+            ->toBe('fr');
+    });
+
+    it('falls back to the stored preference when no locale is requested', function (): void {
+        // Both the null and empty-string cases, because a query parameter present but
+        // blank — `?locale=` — is what a form submits for an unset select, and it must
+        // mean "no opinion" rather than "no locale".
+        expect($this->resolver->forViewer(new ViewerWithPreference('de'), $this->arabic, requested: null))
+            ->toBe('de')
+            ->and($this->resolver->forViewer(new ViewerWithPreference('de'), $this->arabic, requested: ''))
+            ->toBe('de');
+    });
+
+    it('does not trust the URL any more than the database', function (): void {
+        // ⚠️ This is the LEAST trusted input in the chain — straight off the URL,
+        // invariant 6 — and it reaches `setLocale()`, which Laravel treats as a path
+        // segment when loading translations. A rejected value falls through to the
+        // stored preference rather than throwing.
+        foreach (['../../../etc/passwd', 'en/../..', 'en;id', str_repeat('x', 40)] as $hostile) {
+            expect($this->resolver->forViewer(new ViewerWithPreference('de'), $this->arabic, requested: $hostile))
+                ->toBe('de', "[{$hostile}] was accepted from the URL");
+        }
+    });
+
+    it('reads the query string and not the request body', function (): void {
+        /*
+         * ⚠️ `query()` rather than `input()`, because `input()` also reads the BODY. A
+         * POST field named `locale` is an ordinary thing for a form to contain —
+         * including the form that edits this very preference — and it would otherwise
+         * redirect the chrome mid-submit. The URL is the channel ADR-019 names.
+         */
+        app()->setLocale('en');
+        app(Context::class)->setSite($this->english);
+
+        $body = Request::create('/admin', 'POST', ['locale' => 'ar']);
+        $body->setUserResolver(fn () => new ViewerWithPreference('de'));
+
+        (new SetUiLocale(new LocaleResolver))->handle($body, fn () => response('ok'));
+
+        expect(app()->getLocale())->toBe('de');
+
+        $url = Request::create('/admin?locale=ar');
+        $url->setUserResolver(fn () => new ViewerWithPreference('de'));
+
+        (new SetUiLocale(new LocaleResolver))->handle($url, fn () => response('ok'));
+
+        expect(app()->getLocale())->toBe('ar');
+    });
+});
+
 describe('a stored locale is not trusted', function (): void {
     /*
      * ⚠️ A locale reaches `setLocale()` from stored data, and Laravel resolves
