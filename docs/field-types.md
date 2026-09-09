@@ -129,6 +129,8 @@ This bites hardest on `text`'s `pattern`, because the same string is enforced by
 | `\x{41}` `\x4` | ECMAScript's hex escape is exactly two digits, and its braced form is `\u{...}` — which PCRE rejects | `\x41` |
 | `\k{n}` `\k'n'` | Only `\k<name>` is shared | `\k<name>` |
 | `[\1]` | A digit escape is a backreference outside a class and octal inside one, where ECMAScript rejects it | `\x01` |
+| `\_` `\:` `\!` `\@` `\~` `\ ` | ECMAScript escapes only its syntax characters — `^ $ \ . * + ? ( ) [ ] { } |` — plus `/`. PCRE puts a backslash on anything and reads the character literally; 35 ASCII marks diverge | drop the backslash |
+| `\-` | Portable **inside** a character class only, as a ClassEscape | `-`, or `[\-]` |
 
 Some of those rows are judgement calls rather than compile failures, and the rule that settles them is: **refuse a divergence when a portable equivalent exists, record it when refusing would remove a capability.** `\d` is refused because `[0-9]` says the same thing.
 
@@ -136,7 +138,9 @@ Some of those rows are judgement calls rather than compile failures, and the rul
 
 `\p{L}` remains the case for the other half of the rule: refusing it would remove the ability to express a Unicode-letter constraint at all, so the construct is accepted and only its property name is screened.
 
-The escape rows above were found by **sweeping the whole escape alphabet** on both engines — every letter and digit, inside a character class and outside one — rather than by collecting reports. That is what turned up `\a` beside a reported `\e`, and `\00` after a first fix had exempted `\0`. The sweep is kept as a test, so the surface stays closed as either engine moves.
+The escape rows above were found by **sweeping the whole escape alphabet** on both engines — every letter, digit and punctuation mark, inside a character class and outside one — rather than by collecting reports. That is what turned up `\a` beside a reported `\e`, and `\00` after a first fix had exempted `\0`. The sweep is kept as a test, so the surface stays closed as either engine moves.
+
+⚠️ It did not always cover punctuation, and that gap let `\_`, `\:` and `\!` through a screen whose whole purpose was to catch them. **An alphabet with a hole in it is a list of known offenders wearing a sweep's clothes** — the lesson being that the sweep's *coverage* needs asserting as much as its result does.
 
 What is *portable* is allowlisted, not what is broken. There are ~170 Unicode scripts and a list naming them to refuse them would go stale on every Unicode release — publishing a schema no consumer can compile. A list of what travels goes stale in the other direction: an author is refused, with a message naming what is allowed, and a maintainer adds the name.
 
@@ -153,7 +157,7 @@ Twelve types. Deliberately small — every one added before the API freeze is a 
 | `text` | Inline | ✅ | ✅ | Single line. `maxLength`, optional pattern |
 | `textarea` | Inline | ❌ | ✅ | Plain multi-line |
 | `rich_text` | Inline | ❌ | ❌ | Sanitized HTML — see §6 |
-| `number` | Inline | ✅ | ✅ | `integer` \| `decimal`, precision, min/max, step |
+| `number` | Inline | ✅ | ✅ | `integer` \| `decimal`, precision, min/max, step. Bounded by its projection: `integer` by signed BIGINT, `decimal` by `10^precision` |
 | `boolean` | Inline | ✅ | ❌ | |
 | `date` | Inline | ✅ | ✅ | Date only |
 | `datetime` | Inline | ✅ | ✅ | Stored UTC, displayed in the site's timezone |
