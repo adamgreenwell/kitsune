@@ -40,7 +40,12 @@ class ManageEntryRelations extends ManageRelatedRecords
     {
         return $table
             ->columns([
-                TextColumn::make('title')->searchable(),
+                // ⚠️ Its OWN `dir="auto"`, because this is its own column definition.
+                // Adding it to EntryResource's table did nothing for this page — a
+                // related Arabic-titled record still inherited the panel's direction.
+                // A screen is only as complete as the enumeration behind it.
+                TextColumn::make('title')->searchable()
+                    ->extraAttributes(['dir' => 'auto']),
                 TextColumn::make('type_handle')->badge()->label('Type'),
             ])
             ->headerActions([AttachAction::make()])

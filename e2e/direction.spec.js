@@ -86,6 +86,24 @@ test.describe('a field value carries its own direction', () => {
         expect(await resolvedDirection(slug)).toBe('ltr');
     });
 
+    test('a related record resolves its own direction too', async ({ page }) => {
+        /*
+         * ⚠️ ITS OWN COLUMN, so its own attribute. `ManageEntryRelations::table()` defines
+         * a separate `TextColumn::make('title')`, and adding `dir="auto"` to the entry
+         * list did nothing here — an attached Arabic-titled record still inherited the
+         * panel's direction. Found in review, and the enumeration was short by two: the
+         * revisions relation manager defines a third title column.
+         *
+         * A screen is only as complete as the enumeration behind it.
+         */
+        await page.goto(`/admin/${SITE}/c/article/1/related`);
+
+        const value = valueElement(page, ARABIC_TITLE);
+        await expect(value).toBeVisible();
+
+        expect(await resolvedDirection(value)).toBe('rtl');
+    });
+
     test('typing RTL text into an empty field flips it live', async ({ page }) => {
         // `dir="auto"` is evaluated by the browser as the value changes, so a new entry
         // gets the same behaviour without the server knowing anything about direction.

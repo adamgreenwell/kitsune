@@ -121,7 +121,15 @@ class DatabaseSeeder extends Seeder
         // Relations through the real table (ADR-015), so the page-based
         // relation manager has something to show.
         $first = Entry::where('slug', 'course-maintenance-week-1')->first();
-        $others = Entry::whereIn('slug', ['course-maintenance-week-2', 'course-maintenance-week-3'])->pluck('id');
+        // ⚠️ The Arabic-titled entry is among them ON PURPOSE. The related-records table
+        // defines its OWN title column, so `dir="auto"` on the entry list did nothing for
+        // it — and without an RTL title attached here there is nothing on that page for a
+        // direction test to measure, so the gap stayed invisible (issue #39).
+        $others = Entry::whereIn('slug', [
+            'course-maintenance-week-2',
+            'course-maintenance-week-3',
+            'course-maintenance-week-7',
+        ])->pluck('id');
         $first?->related()->attach($others->all(), ['org_id' => $orgA->id]);
 
         $context->setSite($rival);
