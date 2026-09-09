@@ -13,9 +13,20 @@ const AxeBuilder = require('@axe-core/playwright').default;
  *
  * The claimed blocker was that a render check "needs the locale switcher that
  * does not exist yet". That was wrong, and one command disproved it: Filament
- * renders `dir` from `__('filament-panels::layout.direction')`, so APP_LOCALE
- * alone decides it. `playwright.config.js` runs a second server with
- * `APP_LOCALE=ar` and points this project at it. No product feature required.
+ * renders `dir` from `__('filament-panels::layout.direction')`, so the app
+ * locale decides it.
+ *
+ * ⚠️ HOW THAT LOCALE IS REACHED HAS CHANGED, and this file changed with it.
+ * It used to run a second `php artisan serve` with `APP_LOCALE=ar`, because the
+ * direction was a property of the PROCESS. Issue #38 made the UI locale resolve
+ * per request from the viewer's own preference (ADR-018 rule 2), so the fixture
+ * is now two editors on ONE server: `alpha@kitsune.test` with no preference, and
+ * `alpha-rtl@kitsune.test` with `locale = 'ar'`.
+ *
+ * That is not a tidier fixture, it is a different assertion. The old one would
+ * still pass if per-request resolution broke completely — an environment
+ * variable would carry it — so it could not fail for the reason that now
+ * matters.
  *
  * The load-bearing test here is the MIRROR one. Asserting `dir="rtl"` proves
  * an attribute; asserting that the sidebar moved to the other side of the
@@ -28,14 +39,14 @@ const SITE = 'golfdom';
 const TAGS = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'];
 
 /*
- * The LTR server, addressed absolutely.
+ * The LTR editor's saved session.
  *
- * This project's baseURL is the RTL one, and the mirror test needs both in a
- * single test: the assertion is a RELATION between the two renders, so
- * measuring them in separate tests would mean carrying geometry across test
- * boundaries in module state.
+ * The mirror test needs both renders in a SINGLE test, because the assertion is a
+ * relation between them — measuring them in separate tests would mean carrying
+ * geometry across test boundaries in module state. Both now come from the same
+ * URL on the same server, so what differs is the signed-in viewer.
  */
-const LTR_BASE_URL = process.env.KITSUNE_BASE_URL || 'http://127.0.0.1:8125';
+const LTR_STORAGE = '.playwright/admin-auth.json';
 
 const PAGES = [
     ['dashboard', `/admin/${SITE}`],
@@ -134,9 +145,16 @@ test.describe('the admin renders right-to-left (ADR-018)', () => {
      * sub-pixel rounding, not for slack.
      */
     for (const [name, url] of PAGES.slice(0, 3)) {
-        test(`${name} is laid out as the mirror of its LTR render`, async ({ page }) => {
-            await page.goto(LTR_BASE_URL + url);
-            const ltr = await page.evaluate(geometry, LANDMARKS);
+        test(`${name} is laid out as the mirror of its LTR render`, async ({ page, browser }) => {
+            // ⚠️ A second CONTEXT, not a second server or a second URL. The same page,
+            // requested by an editor with no locale preference, must come back LTR — which
+            // is the per-request resolution under test rather than a property of the host.
+            const ltrContext = await browser.newContext({ storageState: LTR_STORAGE });
+            const ltrPage = await ltrContext.newPage();
+            await ltrPage.setViewportSize(page.viewportSize());
+            await ltrPage.goto(url);
+            const ltr = await ltrPage.evaluate(geometry, LANDMARKS);
+            await ltrContext.close();
 
             await page.goto(url);
             const rtl = await page.evaluate(geometry, LANDMARKS);
@@ -214,19 +232,22 @@ test.describe('the admin renders right-to-left (ADR-018)', () => {
     });
 });
 
-test.describe('Kitsune\'s own output carries a direction', () => {
-    test('the public page is served RTL, not just in Arabic', async ({ page }) => {
-        // ⚠️ The gap this spike found in OUR code rather than Filament's.
-        //
-        // The skeleton's page emitted `lang` from the app locale and no `dir`
-        // at all, so an Arabic locale served Arabic text in a left-to-right
-        // document. Filament supplies `dir` for the admin from its own
-        // translations; the public side has no panel and never got one
-        // (ADR-002 keeps core headless-capable), so nothing was going to
-        // supply it. `Kitsune::textDirection()` does.
-        await page.goto('/');
-
-        await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
-        await expect(page.locator('html')).toHaveAttribute('lang', 'ar');
-    });
-});
+/*
+ * ⚠️ THE PUBLIC-PAGE CHECK MOVED, and it moved because this project no longer runs a
+ * server with an Arabic app locale.
+ *
+ * It asserted that `/` carries `dir="rtl"` and `lang="ar"` — gap G1, Kitsune's own
+ * output having no direction at all. That was reachable only through `APP_LOCALE=ar`
+ * on a dedicated server, because the public side has NO site-scoped routes and
+ * therefore nothing that resolves a locale per request (roadmap Phase 6, and recorded
+ * against issue #38). Keeping a whole second web server for one assertion about a
+ * Blade template would be paying a lot to test very little.
+ *
+ * It is now `tests/Core/PublicDirectionTest.php`, which sets the app locale and
+ * renders the view directly. Nothing about that assertion needs a browser: there is no
+ * JavaScript in it, and the claim is simply that the template emits what
+ * `Kitsune::textDirection()` returns.
+ *
+ * When public routing lands, the browser-level version comes back — and then it will be
+ * testing site-based resolution rather than an environment variable.
+ */

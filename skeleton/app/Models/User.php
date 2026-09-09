@@ -13,6 +13,7 @@ namespace App\Models;
 use Filament\Models\Contracts\FilamentUser;
 use Filament\Models\Contracts\HasTenants;
 use Filament\Panel;
+use Illuminate\Contracts\Translation\HasLocalePreference;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Foundation\Auth\User as Authenticatable;
@@ -50,7 +51,7 @@ use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
  * incident (issue #21).
  */
 #[OrgScopedThroughPivot(table: 'org_user', foreignKey: 'user_id')]
-class User extends Authenticatable implements FilamentUser, HasTenants
+class User extends Authenticatable implements FilamentUser, HasLocalePreference, HasTenants
 {
     // ⚠️ Without this the attribute above is documentation, not enforcement.
     // `User` declared `#[Unscoped]` for greppability and applied no trait, so
@@ -67,6 +68,24 @@ class User extends Authenticatable implements FilamentUser, HasTenants
     protected function casts(): array
     {
         return ['email_verified_at' => 'datetime', 'password' => 'hashed'];
+    }
+
+    /**
+     * The locale this user reads the admin in, or null for no preference.
+     *
+     * ⚠️ Laravel's OWN contract (`HasLocalePreference`), not a Kitsune interface.
+     * Core must not require a particular auth schema — ADR-002 keeps it
+     * headless-capable and the users table belongs to the application — so it asks
+     * this and never learns that the answer is a column. An application that keeps
+     * the preference in a settings blob, an identity provider claim, or nowhere at
+     * all satisfies the same contract.
+     *
+     * Null is a real answer and a different one from any locale: it means fall
+     * through to the site's, which is what `LocaleResolver` does.
+     */
+    public function preferredLocale(): ?string
+    {
+        return $this->locale;
     }
 
     /** @return BelongsToMany<Site, $this> */

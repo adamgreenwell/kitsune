@@ -54,6 +54,26 @@ class DatabaseSeeder extends Seeder
         $user->sites()->attach([$en->id, $fr->id]);
         $user->orgs()->attach($orgA->id);
 
+        /*
+         * ⚠️ A SECOND admin of the SAME org and sites, differing only in UI locale.
+         *
+         * ADR-018 rule 2: the UI locale is a viewer preference, not a site setting,
+         * because one org has editors working in different languages. This row is that
+         * claim made testable — the browser suite signs in as both and asserts the same
+         * pages render in opposite directions, on one server, from one database.
+         *
+         * It replaces a second web server started with `APP_LOCALE=ar`. That fixture was
+         * honest when the locale was fixed for the life of a process; issue #38 made the
+         * locale per-request, so proving RTL through an environment variable would now be
+         * proving something Kitsune no longer does.
+         */
+        $rtlUser = User::create([
+            'name' => 'مستخدم ألفا', 'email' => 'alpha-rtl@kitsune.test',
+            'password' => Hash::make('password'), 'locale' => 'ar',
+        ]);
+        $rtlUser->sites()->attach([$en->id, $fr->id]);
+        $rtlUser->orgs()->attach($orgA->id);
+
         // A user of the OTHER org, which the admin must never be able to
         // enumerate. Nothing lists users yet; this row is here so the
         // boundary has something to fail against the moment something does

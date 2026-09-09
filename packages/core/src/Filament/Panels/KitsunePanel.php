@@ -20,6 +20,7 @@ use Kitsune\Core\Filament\Resources\Entries\EntryResource;
 use Kitsune\Core\Filament\Resources\EntryTypes\EntryTypeResource;
 use Kitsune\Core\Http\Middleware\IdentifyEntryType;
 use Kitsune\Core\Http\Middleware\SetKitsuneContext;
+use Kitsune\Core\Http\Middleware\SetUiLocale;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
@@ -45,7 +46,15 @@ final class KitsunePanel
             // a table renders a record link.
             // SetKitsuneContext runs first: the scopes need something to
             // enforce before IdentifyEntryType queries entry types.
-            ->tenantMiddleware([SetKitsuneContext::class, IdentifyEntryType::class], isPersistent: true)
+            // SetUiLocale runs AFTER SetKitsuneContext, because it falls back to
+            // the site's locale and needs a site in Context to fall back to.
+            // Before IdentifyEntryType only because nothing there depends on it —
+            // the ordering that matters is the one against SetKitsuneContext.
+            ->tenantMiddleware([
+                SetKitsuneContext::class,
+                SetUiLocale::class,
+                IdentifyEntryType::class,
+            ], isPersistent: true)
             ->resources([EntryResource::class, EntryTypeResource::class])
             ->pages([Dashboard::class])
             ->navigation(self::navigation(...));
