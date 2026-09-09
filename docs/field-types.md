@@ -140,6 +140,17 @@ The same applies to `\k<name>`: a named reference is a backreference. And option
 
 Participation is decided against the group's **own closing parenthesis**, not against nesting. `^((a)\2)$` and `^(a(b))\2$` sit inside an outer group that has not closed and **agree** in both engines, so refusing them would be a false refusal.
 
+Inherited optionality is likewise a question of **position, not just ancestry**. An optional ancestor only leaves the capture unset if it can be skipped while execution still *reaches* the reference — so where the reference sits inside that same ancestor, the two agree and must be allowed:
+
+| Pattern | Reference vs. the optional ancestor | Portable? |
+|---|---|---|
+| `^(?:(a)\1)?$` | inside it — skipping the group skips the reference | ✅ allowed |
+| `^(?!(a)\1)b$` | inside the assertion | ✅ allowed |
+| `^(?:(a))?\1$` | outside it | ❌ diverges |
+| `^(?!(a))\1$` | outside the assertion | ❌ diverges |
+
+⚠️ **Measure both engines on byte-identical patterns.** An early comparison here escaped the pattern differently for each side — PHP received `\\1` (a literal backslash then `1`) while Node received `\1` (a real backreference) — so the two engines were not being asked the same question. The conclusions happened to survive, which is luck and not method. Put the patterns in a data file both engines read.
+
 A group inside an **alternation** can still go unset without any quantifier (`^(?:(a)|b)\1$`). Inherited optionality covers quantifiers, not branch selection, so that one is a recorded residual rather than a covered case.
 | `\x{41}` `\x4` | ECMAScript's hex escape is exactly two digits, and its braced form is `\u{...}` — which PCRE rejects | `\x41` |
 | `\k{n}` `\k'n'` | Only `\k<name>` is shared | `\k<name>` |

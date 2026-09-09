@@ -851,7 +851,7 @@ final class Pattern
      * analysis was reached only from the digit branch, so every named reference walked
      * past it.
      *
-     * @param  array<int, array{open: int, close: int|null, optional: bool, name: string|null}>  $spans
+     * @param  array<int, array{open: int, close: int|null, optionalAncestors: list<array{open: int, close: int|null}>, name: string|null}>  $spans
      */
     private static function participationRefusal(array $spans, int $index, string $written, int $at): ?string
     {
@@ -915,15 +915,49 @@ final class Pattern
             );
         }
 
-        return $spans[$index]['optional']
-            ? sprintf(
+        // ⚠️ AN OPTIONAL ANCESTOR ONLY COUNTS IF IT CAN BE SKIPPED WITHOUT SKIPPING THE
+        // REFERENCE, and collapsing this to one boolean was a false refusal.
+        //
+        // `^(?:(a)\1)?$` puts the reference INSIDE the optional group. Skipping the group
+        // skips the reference too, so whenever the reference executes the capture is set
+        // — measured, both engines match '' and 'aa' and reject 'a'. It was refused
+        // anyway, which is the third false refusal this screen has produced and the
+        // reason `capturingGroupSpans()` now records spans instead of a flag.
+        //
+        // The distinction is entirely about position:
+        //
+        //   `^(?:(a)\1)?$`   reference INSIDE  the optional group   both agree, allowed
+        //   `^(?!(a)\1)b$`   reference INSIDE  the assertion        both agree, allowed
+        //   `^(?:(a))?\1$`   reference OUTSIDE the optional group   diverges, refused
+        //   `^(?!(a))\1$`    reference OUTSIDE the assertion        diverges, refused
+        foreach ($spans[$index]['optionalAncestors'] as $ancestor) {
+            if (self::spanEncloses($ancestor, $at)) {
+                continue;
+            }
+
+            return sprintf(
                 '%s — group %d can go unset, through its own quantifier or an enclosing one: PCRE '
                 .'then fails the match while ECMAScript treats the reference as an empty string. Make '
                 .'it required, or match the alternatives separately',
                 $written,
                 $index,
-            )
-            : null;
+            );
+        }
+
+        return null;
+    }
+
+    /**
+     * Whether `$at` falls inside the span, so skipping the span skips `$at` too.
+     *
+     * A null close means the group never closes, so everything after its opening is
+     * inside it — the pattern does not compile, and `patternRule()` refuses it anyway.
+     *
+     * @param  array{open: int, close: int|null}  $span
+     */
+    private static function spanEncloses(array $span, int $at): bool
+    {
+        return $span['open'] < $at && ($span['close'] === null || $at < $span['close']);
     }
 
     /**
@@ -991,8 +1025,8 @@ final class Pattern
      * nothing about a reference sitting inside the group it names — see
      * `participationRefusal()` for the measurements.
      *
-     * @return array<int, array{open: int, close: int|null, optional: bool, name: string|null}> keyed by
-     *                                                                                          1-based ordinal
+     * @return array<int, array{open: int, close: int|null, optionalAncestors: list<array{open: int, close: int|null}>, name: string|null}>
+     *                                                                                                                                      keyed by 1-based ordinal
      */
     private static function capturingGroupSpans(string $pattern): array
     {
@@ -1032,6 +1066,10 @@ final class Pattern
                 $id = count($frames);
                 $frames[$id] = [
                     'parent' => $stack === [] ? null : $stack[count($stack) - 1],
+                    // Recorded so an optional frame's SPAN is known, not just that it is
+                    // optional: whether it encloses a given reference is what decides
+                    // whether it can leave the capture unset.
+                    'open' => $i,
                     // ⚠️ A NEGATIVE assertion's captures can never participate when it
                     // succeeds — the assertion succeeds precisely because its body did
                     // not match. `^(?!(a))\1$` fails in PCRE and matches in ECMAScript,
@@ -1081,16 +1119,24 @@ final class Pattern
         $spans = [];
 
         foreach ($groups as $index => $group) {
-            // ⚠️ Optionality is INHERITED. Walking the enclosing frames is what
-            // catches `^((a))?\2$` and `^(?:(a))?\1$`, where the capture's own
-            // quantifier says nothing and an ancestor's says everything.
-            $optional = false;
+            // ⚠️ Optionality is INHERITED, and it cannot be reduced to a BOOLEAN here.
+            //
+            // This collected the enclosing frames into a single `optional` flag, which
+            // catches `^((a))?\2$` and `^(?:(a))?\1$` — and refused `^(?:(a)\1)?$`,
+            // which both engines accept. An optional ancestor only leaves the capture
+            // unset if it can be skipped while execution still REACHES the reference;
+            // when the reference is inside that same ancestor, skipping it skips the
+            // reference too. Deciding that needs the reference's position, which belongs
+            // to the caller and not to this scan, so the SPANS are recorded and
+            // `participationRefusal()` does the comparison.
+            $optionalAncestors = [];
 
             for ($frame = $group['frame']; $frame !== null; $frame = $frames[$frame]['parent']) {
                 if ($frames[$frame]['optional']) {
-                    $optional = true;
-
-                    break;
+                    $optionalAncestors[] = [
+                        'open' => $frames[$frame]['open'],
+                        'close' => $closedAt[$frame] ?? null,
+                    ];
                 }
             }
 
@@ -1100,7 +1146,7 @@ final class Pattern
                 // compile — `patternRule()` refuses those outright. Treated as "has not
                 // closed" below, which is the fail-closed reading.
                 'close' => $closedAt[$group['frame']] ?? null,
-                'optional' => $optional,
+                'optionalAncestors' => $optionalAncestors,
                 'name' => $group['name'],
             ];
         }

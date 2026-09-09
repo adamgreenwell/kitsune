@@ -1070,6 +1070,32 @@ describe('settings that contradict themselves are refused', function (): void {
             'settings' => ['format' => 'integer', 'max' => '-1e100'],
         ]))->toThrow(RuntimeException::class, 'No value this field can store');
 
+        /*
+         * ⚠️ A bound EXACTLY ONE FRACTION PAST THE LIMIT was a 500, not a refusal.
+         *
+         * `1e100` saturates so far past PHP_INT_MAX that it has no fractional part to
+         * round, which is why the cases above never reached the bug. These do:
+         * `(int) '9223372036854775807.1'` lands on PHP_INT_MAX, the fraction asks for
+         * one more quantum away from zero, and `PHP_INT_MAX + 1` promotes to FLOAT —
+         * which `units()`'s `?int` return type rejects with a TypeError. So an authored
+         * setting crashed the request before this very check could produce its message.
+         *
+         * Both signs, because the rounding direction swaps: a minimum rounds away from
+         * zero upward and a maximum downward, so only one of the two exercises each
+         * platform limit.
+         */
+        expect(fn () => FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'counter4', 'type' => 'number',
+            'pii_class' => 'none', 'cardinality' => 1,
+            'settings' => ['format' => 'integer', 'min' => '9223372036854775807.1'],
+        ]))->toThrow(RuntimeException::class, 'No value this field can store');
+
+        expect(fn () => FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'counter5', 'type' => 'number',
+            'pii_class' => 'none', 'cardinality' => 1,
+            'settings' => ['format' => 'integer', 'max' => '-9223372036854775808.1'],
+        ]))->toThrow(RuntimeException::class, 'No value this field can store');
+
         // The whole representable range is fine, edges included.
         $whole = FieldStorage::create([
             'org_id' => $this->org->id, 'handle' => 'counter3', 'type' => 'number',
@@ -1627,6 +1653,38 @@ describe('settings that contradict themselves are refused', function (): void {
          * covers quantifiers, not branch selection.
          */
         expect(Pattern::unpublishable('^(?:(a)|b)\1$'))->toBeNull();
+
+        /*
+         * ⚠️ AN OPTIONAL ANCESTOR ONLY COUNTS IF SKIPPING IT DOES NOT SKIP THE REFERENCE,
+         * and collapsing inherited optionality into one boolean refused all four of these.
+         * Three of them are portable, so that was a false refusal — the third this screen
+         * has produced, and the reason optionality is now decided against the reference's
+         * POSITION rather than precomputed.
+         *
+         * Measured with both engines reading byte-identical patterns from one file:
+         *
+         *   ^(?:(a)\1)$    ''/'a'/'aa'   agree (no/no/match)
+         *   ^(?:(a)\1)?$   ''/'a'/'aa'   agree (match/no/match)
+         *   ^(?!(a)\1)b$   'b'/'aa'      agree (match/no)
+         *
+         * The reference is inside the optional group in each, so whenever it executes the
+         * capture is set.
+         */
+        expect(Pattern::unpublishable('^(?:(a)\1)$'))->toBeNull()
+            ->and(Pattern::unpublishable('^(?:(a)\1)?$'))->toBeNull()
+            ->and(Pattern::unpublishable('^(?!(a)\1)b$'))->toBeNull();
+
+        /*
+         * ⚠️ THE SAME PATTERNS WITH THE REFERENCE MOVED OUT still diverge and must stay
+         * refused. Without this pair the fix above could have been "stop refusing
+         * anything with an optional ancestor", which would reopen every case the
+         * inheritance walk was added for.
+         *
+         *   ^(?:(a))?\1$   on ''   PCRE no match, ECMAScript match
+         *   ^(?!(a))\1$    on ''   PCRE no match, ECMAScript match
+         */
+        expect(Pattern::unpublishable('^(?:(a))?\1$'))->toContain('can go unset')
+            ->and(Pattern::unpublishable('^(?!(a))\1$'))->toContain('can go unset');
     });
 
     it('refuses a backreference that sits inside the group it names', function (): void {

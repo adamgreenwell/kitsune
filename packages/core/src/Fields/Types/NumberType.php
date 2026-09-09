@@ -464,9 +464,32 @@ final class NumberType extends BaseFieldType
         $awayFromZero = $negative ? ! $up : $up;
 
         if ($below && $awayFromZero) {
-            // Away from zero is DOWN for a negative value, and `$units` already
-            // carries the sign now.
-            $units += $negative ? -1 : 1;
+            // ⚠️ NOT PAST THE PLATFORM LIMIT, and stepping past it was a 500.
+            //
+            // `(int)` has already saturated at PHP_INT_MAX / PHP_INT_MIN for a
+            // magnitude that does not fit, and incrementing either one promotes the
+            // result to FLOAT — which this method's `?int` return type rejects with a
+            // TypeError. So an authored `min = 9223372036854775807.1` crashed the
+            // request before `uninhabitedReason()` could say what was wrong with it,
+            // turning a validation message into a 500.
+            //
+            // Clamping is the right answer and not merely the safe one. It applies
+            // equally when the cast did NOT saturate — 9223372036854775807.1 rounds
+            // away from zero to 9223372036854775808, which no signed BIGINT holds — so
+            // in both cases the true quantum count is outside what the field can
+            // represent, and the caller refuses the setting from the DECIMAL TEXT
+            // rather than from these units. Losing a distinction between "at the limit"
+            // and "past it" costs nothing, because neither is storable.
+            //
+            // Guarded HERE rather than at the caller that reported it, because every
+            // path into rounding arrives through this method — `unitsAtLeast()`,
+            // `unitsAtMost()`, `isOnGrid()`, and the step and offset conversions. A
+            // guard on one caller is a guard on one path.
+            if ($units !== PHP_INT_MAX && $units !== PHP_INT_MIN) {
+                // Away from zero is DOWN for a negative value, and `$units` already
+                // carries the sign now.
+                $units += $negative ? -1 : 1;
+            }
         }
 
         return $units;
