@@ -1473,6 +1473,53 @@ describe('settings that contradict themselves are refused', function (): void {
             ->and(Pattern::unpublishable('^\S+$'))->toBeNull();
     });
 
+    it('allows a multi-digit backreference the groups actually justify', function (): void {
+        /*
+         * ⚠️ A FALSE REFUSAL I argued for on purpose. My earlier reply said an author
+         * wanting a backreference beyond 9 should "restructure the pattern to use fewer
+         * groups", treating the lost capability as acceptable. Measured, the dialects
+         * AGREE here, so there was nothing to refuse:
+         *
+         *   ten groups then `\10`      both accept
+         *   eleven groups then `\11`   both accept
+         *   five groups then `\10`     PCRE reads octal, ECMAScript rejects
+         *   ten groups then `\11`      PCRE reads octal, ECMAScript rejects
+         *
+         * The line is whether the number names a group that exists — the count decides,
+         * not how many digits it has. Swept across 77 combinations of group count and
+         * reference, there are now no holes and no false refusals.
+         *
+         * This is the failure mode the allowlists were adopted to avoid, and I wrote it
+         * in anyway.
+         */
+        $groups = fn (int $count): string => str_repeat('()', $count);
+
+        expect(Pattern::unpublishable($groups(10).'\10'))->toBeNull()
+            ->and(Pattern::unpublishable($groups(11).'\11'))->toBeNull()
+            ->and(Pattern::unpublishable($groups(12).'\12'))->toBeNull()
+            // Above the count, the dialects diverge and it stays refused.
+            ->and(Pattern::unpublishable($groups(5).'\10'))->toContain('capturing groups')
+            ->and(Pattern::unpublishable($groups(10).'\11'))->toContain('capturing groups')
+            ->and(Pattern::unpublishable($groups(10).'\101'))->toContain('capturing groups')
+            // ⚠️ `(?<name>` captures and `(?:` does not, which is why the count needs a
+            // scan rather than a substring tally.
+            ->and(Pattern::unpublishable(str_repeat('(?<a>x)', 10).'\10'))->toBeNull()
+            ->and(Pattern::unpublishable(str_repeat('(?:x)', 10).'\10'))->toContain('capturing groups')
+            // ⚠️ A FORWARD reference is legal in both dialects, so the whole pattern is
+            // counted rather than the part before the reference.
+            ->and(Pattern::unpublishable('\1(a)'))->toBeNull()
+            // ⚠️ An escaped parenthesis is not a group, and this needs a MULTI-digit
+            // reference to exercise the counter: twenty escaped parens still leave zero
+            // capturing groups, so `\10` names nothing.
+            //
+            // (A single-digit `\1` with no groups is refused by `compiles()` rather
+            // than here — PCRE and ECMAScript both reject a reference to a group that
+            // does not exist, so it never reaches this screen. My first version of this
+            // assertion expected the wrong refusal and asserted against `null`.)
+            ->and(Pattern::unpublishable(str_repeat('\(\)', 10).'\10'))->toContain('capturing groups')
+            ->and(Pattern::compiles('\(\)\1'))->toBeFalse();
+    });
+
     it('refuses a closing delimiter nothing opened', function (): void {
         /*
          * ⚠️ The opposite direction from the brace-form check, and it fell through
@@ -1619,9 +1666,13 @@ describe('settings that contradict themselves are refused', function (): void {
             ->and(Pattern::unpublishable('(?<n>a)\k{n}'))->toContain('\k<name>')
             ->and(Pattern::unpublishable("(?<n>a)\k'n'"))->toContain('\k<name>')
             ->and(Pattern::unpublishable('(?<n>a)[\k<n>]'))->toContain('character class')
-            // Octal and multi-digit escapes.
-            ->and(Pattern::unpublishable('\101'))->toContain('multi-digit')
-            ->and(Pattern::unpublishable('(a)(b)\12'))->toContain('multi-digit')
+            // ⚠️ Octal and multi-digit escapes, refused by GROUP COUNT rather than by
+            // digit count — `\101` with no groups and `\12` with two are both
+            // backreferences to groups that do not exist, which is what PCRE falls
+            // back to octal for and ECMAScript rejects. A multi-digit escape that DOES
+            // name a real group is portable and has its own test.
+            ->and(Pattern::unpublishable('\101'))->toContain('capturing groups')
+            ->and(Pattern::unpublishable('(a)(b)\12'))->toContain('capturing groups')
             ->and(Pattern::unpublishable('\00'))->toContain('multi-digit')
             // ⚠️ And a single digit is portable OUTSIDE a class and not inside one:
             // PCRE reads octal in a class where ECMAScript rejects it, so the same

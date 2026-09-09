@@ -785,17 +785,99 @@ final class Pattern
             );
         }
 
-        // Outside a class a single digit is a backreference both dialects have.
-        // More than one is octal to PCRE and a syntax error to ECMAScript.
-        return preg_match('/^[0-9]$/', mb_substr($pattern, $at + 1, 1)) === 1
-            ? sprintf(
-                '\%s%s — a multi-digit escape is octal to PCRE and rejected by ECMAScript. For a '
-                .'character use the hex form, e.g. \x41; for a backreference beyond 9, restructure '
-                .'the pattern to use fewer groups',
-                $escaped,
-                $next,
-            )
-            : null;
+        // ⚠️ A multi-digit escape is a REAL BACKREFERENCE when the groups exist, and
+        // refusing it unconditionally was a false refusal I argued for on purpose.
+        //
+        // My earlier reply said an author wanting a backreference beyond 9 should
+        // "restructure the pattern to use fewer groups" — treating the capability loss
+        // as acceptable. Measured, it is not acceptable, because the dialects AGREE
+        // here:
+        //
+        //   ten groups then `\10`      PCRE and ECMAScript both accept
+        //   eleven groups then `\11`   both accept
+        //   five groups then `\10`     PCRE reads octal, ECMAScript rejects
+        //   ten groups then `\11`      PCRE reads octal, ECMAScript rejects
+        //   ten groups then `\101`     PCRE reads octal, ECMAScript rejects
+        //
+        // The line is exactly whether the number names a group that exists: at or
+        // below the count both read a backreference, above it PCRE falls back to octal
+        // and ECMAScript errors. So the count decides, not the digit count.
+        //
+        // This is the failure mode the allowlists were adopted to avoid — "a false
+        // refusal blocks an author" — and I introduced one anyway, in writing.
+        $digits = (string) (preg_match('/^[0-9]+/', mb_substr($pattern, $at), $matched) === 1 ? $matched[0] : '');
+
+        if (mb_strlen($digits) < 2) {
+            return null;
+        }
+
+        return (int) $digits <= self::capturingGroups($pattern)
+            ? null
+            : sprintf(
+                '\%s — there are only %d capturing groups, so PCRE reads this as an octal character '
+                .'while ECMAScript rejects it as a backreference to a group that does not exist. For '
+                .'a character use the hex form, e.g. \x41',
+                $digits,
+                self::capturingGroups($pattern),
+            );
+    }
+
+    /**
+     * How many capturing groups the pattern has.
+     *
+     * ⚠️ `(?<name>` COUNTS and `(?:` does not, which is the distinction that makes
+     * this worth a scan rather than a `substr_count`. A named group is capturing in
+     * both dialects — measured, `(?<n>a)\1` compiles in both — while the other `(?`
+     * forms are not, and `(?:a)\1` compiles in neither.
+     *
+     * Escapes and class context are tracked for the reason they are everywhere else
+     * in this file: `\(` is a literal parenthesis and `[(]` is one inside a class,
+     * and counting either as a group would let a genuinely invalid backreference
+     * through.
+     *
+     * The whole pattern is counted rather than the part before the reference, because
+     * a FORWARD reference is legal in both dialects — measured, `\1(a)` compiles in
+     * both — so a group defined later still makes the reference valid.
+     */
+    private static function capturingGroups(string $pattern): int
+    {
+        $length = mb_strlen($pattern);
+        $inClass = false;
+        $groups = 0;
+
+        for ($i = 0; $i < $length; $i++) {
+            $char = mb_substr($pattern, $i, 1);
+
+            if ($char === '\\') {
+                $i++;
+
+                continue;
+            }
+
+            if ($inClass) {
+                $inClass = $char !== ']';
+
+                continue;
+            }
+
+            if ($char === '[') {
+                $inClass = true;
+
+                continue;
+            }
+
+            if ($char !== '(') {
+                continue;
+            }
+
+            // `(?<name>` captures; every other `(?` form does not.
+            $groups += mb_substr($pattern, $i + 1, 1) !== '?'
+                || preg_match('/^\(\?<[A-Za-z_$]/', mb_substr($pattern, $i, 4)) === 1
+                    ? 1
+                    : 0;
+        }
+
+        return $groups;
     }
 
     /**

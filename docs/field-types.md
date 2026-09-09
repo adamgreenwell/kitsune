@@ -125,7 +125,8 @@ This bites hardest on `text`'s `pattern`, because the same string is enforced by
 | `\b` `\B` | Defined in terms of `\w`, so the engines give **opposite** answers on non-ASCII text | the ASCII definition as lookarounds (below) |
 | `\a` `\e` | Control characters PCRE spells with a letter | `\x07`, `\x1B` |
 | `\g{1}` `\g<1>` `\g1` | PCRE subroutine and relative-backreference forms | `\1`, or `\k<name>` |
-| `\o{141}` `\101` `\00` | Octal escapes; multi-digit escapes are a syntax error under ECMAScript's `u` flag | `\x61`, `\x41` |
+| `\o{141}` `\00` | Octal escapes; `\00` is a syntax error under ECMAScript's `u` flag | `\x61`, `\x41` |
+| `\101`, `\12` with two groups | A multi-digit escape naming a group that does not exist: PCRE falls back to octal, ECMAScript rejects it. One that **does** name a real group — `\10` with ten groups — is portable and accepted | `\x41`, or add the groups |
 | `\x{41}` `\x4` | ECMAScript's hex escape is exactly two digits, and its braced form is `\u{...}` — which PCRE rejects | `\x41` |
 | `\k{n}` `\k'n'` | Only `\k<name>` is shared | `\k<name>` |
 | `[\1]` | A digit escape is a backreference outside a class and octal inside one, where ECMAScript rejects it | `\x01` |
