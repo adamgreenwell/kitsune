@@ -993,6 +993,69 @@ describe('settings that contradict themselves are refused', function (): void {
         expect($narrow->exists)->toBeTrue();
     });
 
+    it('does not lose the digits that decide whether a range is inhabited', function (): void {
+        /*
+         * ⚠️ THE THIRD ROUND on the same conversion, and each fix moved the
+         * imprecision rather than removing it.
+         *
+         * First a float multiply: `0.29 * 100` is `28.999999999999996`, so ceil()
+         * gave 29, floor() gave 28, and a singleton range at 0.29 was refused.
+         * Then integer comparisons, which fixed the comparing and left the
+         * CONVERTING in floats. Then `sprintf('%.4F', ...)` — two guard digits past
+         * the scale — which renders `0.2900001` as `0.2900`, so the check saw
+         * nothing below the quantum when there were five digits of it.
+         *
+         * `min = max = 0.2900001` at scale 2 therefore read as the inhabited
+         * singleton 29 quanta. No value on the 0.01 grid equals 0.2900001, so the
+         * range holds nothing and the field could never be written to — the exact
+         * condition this guard exists to refuse, waved through by the guard.
+         *
+         * Two guard digits answer the question for numbers with at most two digits
+         * below the grid, which is not the question. The number decides how many
+         * digits it has, so the text has to carry all of them.
+         */
+        expect(fn () => FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'sliver', 'type' => 'number',
+            'pii_class' => 'none', 'cardinality' => 1,
+            'settings' => ['format' => 'decimal', 'precision' => 12, 'scale' => 2,
+                'min' => 0.2900001, 'max' => 0.2900001],
+        ]))->toThrow(RuntimeException::class, 'No value this field can represent');
+    });
+
+    it('reads a numeric setting submitted as text, which is how it arrives', function (): void {
+        // ⚠️ Filament submits numeric inputs as STRINGS, so this is the ordinary
+        // path rather than an edge case — and the author's own text is the more
+        // faithful record: `0.1` as text is exactly one tenth, as a float it is not.
+        expect(fn () => FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'sliver2', 'type' => 'number',
+            'pii_class' => 'none', 'cardinality' => 1,
+            'settings' => ['format' => 'decimal', 'precision' => 12, 'scale' => 2,
+                'min' => '0.2900001', 'max' => '0.2900001'],
+        ]))->toThrow(RuntimeException::class, 'No value this field can represent');
+
+        // And a range that IS inhabited still goes through when given as text.
+        $ok = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'rate3', 'type' => 'number',
+            'pii_class' => 'none', 'cardinality' => 1,
+            'settings' => ['format' => 'decimal', 'precision' => 12, 'scale' => 2,
+                'min' => '0.29', 'max' => '0.31'],
+        ]);
+
+        expect($ok->exists)->toBeTrue();
+    });
+
+    it('keeps its precision on a value only exponent notation can write', function (): void {
+        // `1.0E-15` has no decimal point to shift, so the digits are expanded out
+        // of the exponent first. A scale-2 field cannot represent it, and the
+        // refusal has to say so rather than reading it as zero and accepting.
+        expect(fn () => FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'tiny2', 'type' => 'number',
+            'pii_class' => 'none', 'cardinality' => 1,
+            'settings' => ['format' => 'decimal', 'precision' => 12, 'scale' => 2,
+                'min' => 1.0E-15, 'max' => 5.0E-15],
+        ]))->toThrow(RuntimeException::class, 'multiples of 0.01');
+    });
+
     it('refuses a pattern PCRE understands and JSON Schema does not', function (): void {
         /*
          * ⚠️ The pattern is PUBLISHED as well as enforced.
@@ -1098,8 +1161,10 @@ describe('settings that contradict themselves are refused', function (): void {
          * one the API applies — worse than a pattern that fails loudly.
          *
          * All four have trivial portable equivalents, so refusing them redirects
-         * the author rather than removing a capability. `\p{...}` is the case
-         * where that is not true, and it is accepted with the reasoning recorded.
+         * the author rather than removing a capability. `\p{...}` is the case where
+         * that is not true, so the CONSTRUCT is accepted — while its property NAME
+         * is screened separately, because an unknown name is a compile failure
+         * rather than a difference of meaning.
          */
         expect(Pattern::unpublishable('^\h+$'))->toContain('horizontal whitespace')
             ->and(Pattern::unpublishable('^\H$'))->toContain('non-horizontal')
@@ -1162,6 +1227,246 @@ describe('settings that contradict themselves are refused', function (): void {
             ->and(Pattern::unpublishable('^\s+$'))->toBeNull()
             ->and(Pattern::unpublishable('^\S+$'))->toBeNull();
     });
+
+    it('refuses word boundaries, which agree only on ASCII', function (): void {
+        /*
+         * ⚠️ I argued for RECORDING these rather than refusing them — a word
+         * boundary has no portable spelling, so refusing it would remove a
+         * capability rather than redirect it, which is the trade this file settled.
+         *
+         * MEASURING it is what showed the argument up. The ASCII definition written
+         * out as lookarounds agrees with ECMAScript's `\b` on both engines across
+         * all 108 pattern/input combinations tried, so a portable equivalent does
+         * exist and the settled rule says refuse. The last assertion here is the
+         * one that makes the refusal honest: the replacement the message names has
+         * to pass this same screen, or the author is sent to a second dead end.
+         *
+         * The divergence is the worst in the file — the engines give OPPOSITE
+         * answers, because `\b` is defined in terms of `\w` and PHP's `u` modifier
+         * sets PCRE2_UCP:
+         *
+         *   ^\b.*\b$ on Cyrillic аб   PCRE matches, ECMAScript does not
+         *   ^\B.*\B$ on the same      ECMAScript matches, PCRE does not
+         */
+        expect(Pattern::unpublishable('^\b[A-Za-z]+\b$'))->toContain('Unicode word boundary')
+            ->and(Pattern::unpublishable('^\B$'))->toContain('negation of a boundary')
+            // ⚠️ INSIDE a class `\b` is the backspace character in both engines —
+            // measured, identical — so screening it there would refuse a valid
+            // class, which is the mistake the `\A` exemption exists to avoid.
+            ->and(Pattern::unpublishable('^[\b]$'))->toBeNull()
+            ->and(Pattern::unpublishable('^[A-Za-z\b]+$'))->toBeNull()
+            // And the spelling the refusal points at must itself go through.
+            ->and(Pattern::unpublishable(
+                '^(?:(?<![A-Za-z0-9_])(?=[A-Za-z0-9_])|(?<=[A-Za-z0-9_])(?![A-Za-z0-9_]))[A-Za-z]+$'
+            ))->toBeNull();
+    });
+
+    it('screens the property NAME, not only the \p{} syntax', function (): void {
+        /*
+         * ⚠️ `\p{...}` was accepted whole, and the name inside it was never read.
+         *
+         * MEASURED on PHP 8.4.25/PCRE 10.48 and Node v22.23.2: PCRE compiles and
+         * ECMAScript REJECTS every form asserted below. The first draft of this
+         * screen was a denylist of six PCRE inventions, and it was wrong in the
+         * way that matters — `\p{Arabic}`, `\p{Han}` and `\p{Hebrew}` went
+         * straight through, and a bare script name is exactly what an author
+         * reaching for a Unicode property in a product that ships RTL from the
+         * start (ADR-018) writes first.
+         *
+         * So the portable set is allowlisted instead, as the group prefixes are.
+         * ~170 script names cannot be enumerated to refuse them, and a list that
+         * tried would go stale on every Unicode release; enumerating what is
+         * PORTABLE goes stale in the direction that refuses rather than the
+         * direction that publishes a schema no consumer can compile.
+         */
+        expect(Pattern::unpublishable('^\p{Arabic}+$'))->toContain('bare script name')
+            ->and(Pattern::unpublishable('^\p{Han}+$'))->toContain('bare script name')
+            // A script CODE is the same mistake in four letters.
+            ->and(Pattern::unpublishable('^\p{Latn}+$'))->toContain('bare script name')
+            // The five PCRE inventions and the category-with-ampersand form.
+            ->and(Pattern::unpublishable('^\p{Xan}+$'))->toContain('does not')
+            ->and(Pattern::unpublishable('^\p{Xwd}+$'))->toContain('does not')
+            // Not a mis-spelled name but a PCRE construct, and told apart so the
+            // refusal does not send its author looking at letter case.
+            ->and(Pattern::unpublishable('^\p{L&}$'))->toContain('letters, digits')
+            // ⚠️ A property CLASS PCRE has and ECMAScript does not — and the one
+            // an author constraining Arabic text would reach for first.
+            ->and(Pattern::unpublishable('^\p{bc=AL}+$'))->toContain('Script=')
+            ->and(Pattern::unpublishable('^\p{Bidi_Class=L}$'))->toContain('Script=')
+            // PCRE's internal negation, which ECMAScript spells with \P.
+            ->and(Pattern::unpublishable('^\p{^L}+$'))->toContain('no internal negation')
+            // PCRE matches names loosely; ECMAScript is exact.
+            ->and(Pattern::unpublishable('^\p{lu}+$'))->toContain('loosely')
+            ->and(Pattern::unpublishable('^\p{LATIN}$'))->toContain('loosely')
+            ->and(Pattern::unpublishable('^\p{Script=latin}$'))->toContain('loosely')
+            ->and(Pattern::unpublishable('^\p{Script=Old-Italic}$'))->toContain('loosely')
+            ->and(Pattern::unpublishable('^\p{Script = Latin}$'))->toContain('loosely')
+            // ⚠️ And the braceless shorthand, which is not shorthand ECMAScript
+            // shares: it throws `Invalid property name` there.
+            ->and(Pattern::unpublishable('^\pL+$'))->toContain('without braces')
+            ->and(Pattern::unpublishable('^\PL+$'))->toContain('without braces');
+    });
+
+    it('keeps every property form both dialects do share', function (): void {
+        // The other half, and the half a denylist gets right by accident: a screen
+        // that refused the portable spellings would remove the capability this
+        // whole trade-off was protecting.
+        expect(Pattern::unpublishable('^\p{L}+$'))->toBeNull()
+            ->and(Pattern::unpublishable('^\p{Lu}{2}$'))->toBeNull()
+            ->and(Pattern::unpublishable('^\P{Nd}+$'))->toBeNull()
+            ->and(Pattern::unpublishable('^\p{Script=Arabic}+$'))->toBeNull()
+            ->and(Pattern::unpublishable('^\p{sc=Latn}+$'))->toBeNull()
+            ->and(Pattern::unpublishable('^\p{scx=Hebr}+$'))->toBeNull()
+            ->and(Pattern::unpublishable('^\p{Script_Extensions=Greek}$'))->toBeNull()
+            // Multi-word and internal-capital script names, which the shape test
+            // has to keep accepting.
+            ->and(Pattern::unpublishable('^\p{Script=Old_Italic}$'))->toBeNull()
+            ->and(Pattern::unpublishable('^\p{Script=SignWriting}$'))->toBeNull()
+            ->and(Pattern::unpublishable('^\p{Script=Nyiakeng_Puachue_Hmong}$'))->toBeNull()
+            // Binary properties, spelled as Unicode spells them.
+            ->and(Pattern::unpublishable('^\p{Alphabetic}+$'))->toBeNull()
+            ->and(Pattern::unpublishable('^\p{White_Space}$'))->toBeNull()
+            ->and(Pattern::unpublishable('^\p{ASCII}+$'))->toBeNull()
+            // Inside a character class the answer is the same, because the
+            // construct means the same thing in both engines there.
+            ->and(Pattern::unpublishable('[\p{L}\p{Nd}]+'))->toBeNull()
+            ->and(Pattern::unpublishable('[\p{Arabic}]+'))->toContain('bare script name');
+    });
+
+    it('names the spelling that works rather than only refusing', function (): void {
+        // ⚠️ A refusal that hands the author a second broken pattern is worse than
+        // one that says less. `\p{LATIN}` was answered with "use `\p{Script=LATIN}`"
+        // until the shape test learned that consecutive capitals are never a
+        // canonical script value — so the suggestion is only made where it holds.
+        expect(Pattern::unpublishable('^\p{Arabic}$'))->toContain('`\p{Script=Arabic}`')
+            ->and(Pattern::unpublishable('^\p{^Nd}$'))->toContain('`\P{Nd}`')
+            ->and(Pattern::unpublishable('^\P{^Nd}$'))->toContain('`\p{Nd}`')
+            ->and(Pattern::unpublishable('^\p{LATIN}$'))->not->toContain('Script=LATIN');
+    });
+
+    it('agrees with ECMAScript about every name it allows', function (): void {
+        /*
+         * ⚠️ The allowlists were DERIVED by measurement, so they are guarded by
+         * measurement — invariant 15. Reasoning about the two dialects' property
+         * tables is what produced the wrong answer twice: `Assigned` is in
+         * ECMAScript and PCRE rejects it, `Greek` is in PCRE and ECMAScript
+         * rejects it, and neither is guessable from the specifications.
+         *
+         * This asserts the whole set in both directions at once, so a typo, a
+         * PCRE release dropping a name, or a V8 release tightening one fails here
+         * rather than in a consumer's generated client.
+         *
+         * Skipped rather than failed without Node, because the default suite has
+         * to run on a bare clone (invariant 11). CI has it — Playwright needs it.
+         */
+        $pattern = new ReflectionClass(Pattern::class);
+
+        /** @var list<string> $names */
+        $names = [
+            ...$pattern->getConstant('PORTABLE_CATEGORIES'),
+            ...$pattern->getConstant('PORTABLE_PROPERTIES'),
+        ];
+
+        // Every prefix, against a value both engines certainly know.
+        foreach ($pattern->getConstant('PORTABLE_PROPERTY_PREFIXES') as $prefix) {
+            $names[] = $prefix.'=Latin';
+        }
+
+        // PCRE first, in the same `u` mode `delimit()` adds.
+        $pcreRefuses = array_values(array_filter(
+            $names,
+            fn (string $name): bool => @preg_match('/\p{'.$name.'}/u', '') === false,
+        ));
+
+        expect($pcreRefuses)->toBe([]);
+
+        // Then the strict engine, which is the one the schema is published to.
+        $script = 'const names = JSON.parse(process.argv[1]);'
+            .'console.log(JSON.stringify(names.filter(n => {'
+            .'  try { new RegExp("\\\\p{" + n + "}", "u"); return false } catch { return true }'
+            .'})));';
+
+        exec(
+            'node -e '.escapeshellarg($script).' '.escapeshellarg((string) json_encode($names)).' 2>/dev/null',
+            $output,
+            $status,
+        );
+
+        expect($status)->toBe(0)
+            ->and(json_decode(implode('', $output), true))->toBe([]);
+
+        // And the screen itself accepts what both engines accepted, which is the
+        // property the two lists exist to provide.
+        foreach ($names as $name) {
+            expect(Pattern::unpublishable('^\p{'.$name.'}+$'))->toBeNull();
+        }
+
+        /*
+         * ⚠️ THE OTHER DIRECTION, which the assertions above cannot see.
+         *
+         * Everything so far asks "is what we allow portable?" — and a name MISSING
+         * from the lists passes that trivially. `LC`, the Cased_Letter group,
+         * compiles on both engines and was absent, so `\p{LC}` was refused for no
+         * reason. That is the cost this allowlist knowingly trades for, and it is
+         * only a defensible trade if something notices.
+         *
+         * So: over a corpus that deliberately includes names NOT in the lists, any
+         * name both engines accept must be one the screen accepts too. It is not
+         * every property name in Unicode — nothing here could be — but it covers
+         * the group categories, the long forms, and the aliases an author reaches
+         * for, which is where an omission actually costs someone.
+         */
+        $corpus = [
+            // Category groups and the two-letter group, the LC omission's family.
+            'C', 'L', 'LC', 'M', 'N', 'P', 'S', 'Z',
+            // Long forms, which PCRE rejects — so both-accept is false and the
+            // screen is free to refuse them.
+            'Letter', 'Cased_Letter', 'Uppercase_Letter', 'Decimal_Number', 'Punctuation',
+            // Binary properties in and out of the list.
+            'Alphabetic', 'ASCII', 'White_Space', 'Assigned', 'Changes_When_NFKC_Casefolded',
+            'Emoji', 'Math', 'Any', 'Bidi_Mirrored', 'Grapheme_Base',
+            // Prefixed forms, including the prefixes ECMAScript lacks.
+            'Script=Latin', 'sc=Latn', 'scx=Hebr', 'Script_Extensions=Greek',
+            'General_Category=Lu', 'gc=Lu', 'bc=AL', 'Block=Greek',
+            // And the PCRE-only spellings, which must stay refused.
+            'Xan', 'Xwd', 'L&', 'Arabic', 'lu',
+        ];
+
+        $pcreTakes = array_values(array_filter(
+            $corpus,
+            fn (string $name): bool => @preg_match('/\p{'.$name.'}/u', '') !== false,
+        ));
+
+        $script = 'const names = JSON.parse(process.argv[1]);'
+            .'console.log(JSON.stringify(names.filter(n => {'
+            .'  try { new RegExp("\\\\p{" + n + "}", "u"); return true } catch { return false }'
+            .'})));';
+
+        exec(
+            'node -e '.escapeshellarg($script).' '.escapeshellarg((string) json_encode($pcreTakes)).' 2>/dev/null',
+            $bothTake,
+            $bothStatus,
+        );
+
+        expect($bothStatus)->toBe(0);
+
+        /** @var list<string> $portable */
+        $portable = json_decode(implode('', $bothTake), true);
+
+        // Non-empty, or the assertion below would pass by testing nothing.
+        expect($portable)->not->toBe([]);
+
+        $falselyRefused = array_values(array_filter(
+            $portable,
+            fn (string $name): bool => Pattern::unpublishable('^\p{'.$name.'}+$') !== null,
+        ));
+
+        expect($falselyRefused)->toBe([]);
+    })->skip(function (): bool {
+        exec('command -v node', $found, $status);
+
+        return $status !== 0;
+    }, 'node is not installed, so ECMAScript cannot be measured');
 
     it('allowlists group prefixes rather than listing offenders', function (): void {
         // The point of the allowlist: a construct nobody anticipated is refused

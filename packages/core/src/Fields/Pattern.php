@@ -51,13 +51,18 @@ final class Pattern
     /**
      * Escapes PCRE understands that the published dialect does not.
      *
-     * ⚠️ `\v` and `\h` are deliberately absent. Both exist in ECMAScript with
-     * DIFFERENT meanings (`\v` is a vertical tab, `\h` an identity escape for
-     * the letter h) rather than being rejected, so refusing them would block a
-     * pattern that compiles for every consumer. This screens what a consumer
-     * cannot COMPILE, not everything that might mean something subtly different —
-     * that set is unbounded, and the docblock below says so rather than pretending
-     * otherwise.
+     * ⚠️ `\v` and `\h` are absent from THIS list and refused by the next one, and
+     * the note here used to argue they should not be refused at all: both exist in
+     * ECMAScript with different meanings rather than being rejected, so screening
+     * only what a consumer cannot COMPILE would let them through.
+     *
+     * That argument was wrong, and is recorded rather than deleted because the
+     * conclusion it reached is the one this file now rejects. The constraint being
+     * enforced is not "the consumer can compile something", it is "the consumer
+     * enforces the SAME constraint" — a pattern that compiles into a different
+     * rule is the more dangerous of the two failures, because nothing reports it.
+     * The rule that settles it: refuse a divergence when a portable equivalent
+     * exists, record it when refusing would remove a capability.
      *
      * @var array<string, string>
      */
@@ -118,6 +123,115 @@ final class Pattern
     ];
 
     /**
+     * Escapes that diverge OUTSIDE a character class and agree inside one.
+     *
+     * ⚠️ A third list, and the two existing ones would each have been wrong. `\b`
+     * is not PCRE-only — both dialects have it — so it does not belong with the
+     * anchors. And it does not diverge ANYWHERE: inside a character class `[\b]`
+     * is the backspace character in both engines, measured and identical, so
+     * screening it there would refuse a valid class the way the `\A` case did.
+     *
+     * ⚠️ I argued for RECORDING these rather than refusing them, on the grounds
+     * that a word boundary has no portable spelling. That was wrong, and measuring
+     * it is what showed the argument up: the ASCII definition written out as
+     * lookarounds agrees with ECMAScript's `\b` on both engines in all 108
+     * pattern/input combinations tried, so a portable equivalent does exist and
+     * the rule this file settled on says to refuse.
+     *
+     * The divergence itself is the worst in the file — the two engines give
+     * OPPOSITE answers, because `\b` is defined in terms of `\w` and PHP's `u`
+     * modifier sets PCRE2_UCP:
+     *
+     *   `^\b.*\b$` on Cyrillic `аб`   PCRE matches, ECMAScript does not
+     *   `^\B.*\B$` on the same        ECMAScript matches, PCRE does not
+     *
+     * @var array<string, string>
+     */
+    private const DIVERGENT_OUTSIDE_CLASS = [
+        'b' => '\b — PCRE reads a Unicode word boundary here and ECMAScript an ASCII one, so the two '
+            .'give opposite answers on non-ASCII text. Spell the ASCII meaning out: '
+            .'(?:(?<![A-Za-z0-9_])(?=[A-Za-z0-9_])|(?<=[A-Za-z0-9_])(?![A-Za-z0-9_]))',
+        'B' => '\B — the negation of a boundary that differs. Spell the ASCII meaning out: '
+            .'(?:(?<=[A-Za-z0-9_])(?=[A-Za-z0-9_])|(?<![A-Za-z0-9_])(?![A-Za-z0-9_]))',
+    ];
+
+    /**
+     * General_Category short forms, which both dialects accept in this spelling.
+     *
+     * A closed set of 38 — the seven groups, `LC`, and the thirty specific
+     * categories. Fixed by Unicode's own stability policy, so unlike the
+     * properties below this list cannot go stale by a release adding to it.
+     *
+     * ⚠️ The LONG forms (`Letter`, `Uppercase_Letter`) are deliberately absent —
+     * PCRE rejects them, so `compiles()` refuses the pattern server-side before it
+     * can ever be published. Listing them here would advertise a spelling the
+     * validator then refuses, which is the validator/guard disagreement invariant
+     * 14 exists to prevent.
+     *
+     * @var list<string>
+     */
+    private const PORTABLE_CATEGORIES = [
+        'C', 'Cc', 'Cf', 'Cn', 'Co', 'Cs',
+        // ⚠️ `LC` is the Cased_Letter GROUP (Ll|Lt|Lu), and leaving it out was a
+        // false refusal of a category both dialects have — the exact cost this
+        // allowlist trades for, caught by asking both engines rather than by
+        // trusting the list. `Cased_Letter`, its long form, is absent for the
+        // reason the other long forms are: PCRE rejects it.
+        'L', 'LC', 'Ll', 'Lm', 'Lo', 'Lt', 'Lu',
+        'M', 'Mc', 'Me', 'Mn',
+        'N', 'Nd', 'Nl', 'No',
+        'P', 'Pc', 'Pd', 'Pe', 'Pf', 'Pi', 'Po', 'Ps',
+        'S', 'Sc', 'Sk', 'Sm', 'So',
+        'Z', 'Zl', 'Zp', 'Zs',
+    ];
+
+    /**
+     * Binary properties both dialects accept, in the one spelling both accept.
+     *
+     * ⚠️ DERIVED BY MEASUREMENT, not from the ECMAScript table: every name in the
+     * spec's binary-property list was compiled on PHP 8.4.25/PCRE 10.48 and Node
+     * v22.23.2, and only the 51 that both engines took are here. The measurement
+     * earned its keep immediately — `Assigned` and `Changes_When_NFKC_Casefolded`
+     * are in ECMAScript and PCRE rejects both, so they are absent for the same
+     * reason the long category names are.
+     *
+     * ⚠️ This list CAN go stale, and that is the safe direction. A future Unicode
+     * release adding a property both engines support would be refused here until
+     * someone adds it — an author blocked with a message naming what is allowed.
+     * The alternative, allowing any name PCRE happens to accept, publishes a
+     * schema the consumer cannot compile and reports nothing.
+     *
+     * @var list<string>
+     */
+    private const PORTABLE_PROPERTIES = [
+        'ASCII', 'ASCII_Hex_Digit', 'Alphabetic', 'Any', 'Bidi_Control', 'Bidi_Mirrored',
+        'Case_Ignorable', 'Cased', 'Changes_When_Casefolded', 'Changes_When_Casemapped',
+        'Changes_When_Lowercased', 'Changes_When_Titlecased', 'Changes_When_Uppercased',
+        'Dash', 'Default_Ignorable_Code_Point', 'Deprecated', 'Diacritic', 'Emoji',
+        'Emoji_Component', 'Emoji_Modifier', 'Emoji_Modifier_Base', 'Emoji_Presentation',
+        'Extended_Pictographic', 'Extender', 'Grapheme_Base', 'Grapheme_Extend', 'Hex_Digit',
+        'IDS_Binary_Operator', 'IDS_Trinary_Operator', 'ID_Continue', 'ID_Start', 'Ideographic',
+        'Join_Control', 'Logical_Order_Exception', 'Lowercase', 'Math', 'Noncharacter_Code_Point',
+        'Pattern_Syntax', 'Pattern_White_Space', 'Quotation_Mark', 'Radical', 'Regional_Indicator',
+        'Sentence_Terminal', 'Soft_Dotted', 'Terminal_Punctuation', 'Unified_Ideograph', 'Uppercase',
+        'Variation_Selector', 'White_Space', 'XID_Continue', 'XID_Start',
+    ];
+
+    /**
+     * Property prefixes both dialects accept, in the case both accept.
+     *
+     * ⚠️ `bc=` and `Bidi_Class=` are absent BECAUSE PCRE HAS THEM: it compiles
+     * `\p{bc=AL}` and ECMAScript rejects the name, so an author writing the
+     * obvious constraint for Arabic text would have published a schema that throws
+     * in every generated client. Nothing else PCRE accepts survived the sweep —
+     * `Block=`, `Age=`, `Line_Break=` and the rest are refused by both engines and
+     * so are already `compiles()`'s business.
+     *
+     * @var list<string>
+     */
+    private const PORTABLE_PROPERTY_PREFIXES = ['Script', 'sc', 'Script_Extensions', 'scx'];
+
+    /**
      * The first construct that will not travel to a JSON Schema consumer, or
      * null when none is found.
      *
@@ -138,7 +252,8 @@ final class Pattern
      * sanitiser allowlists tags.
      *
      * Still not a dialect parser, and it does not claim to be: it screens what a
-     * consumer cannot compile, not every construct whose MEANING differs.
+     * consumer cannot compile or would read differently, not every construct whose
+     * meaning could conceivably drift.
      */
     public static function unpublishable(string $pattern): ?string
     {
@@ -162,6 +277,27 @@ final class Pattern
                 // Inside a class these are literals, not anchors.
                 if (! $inClass && isset(self::PCRE_ONLY_ESCAPES[$escaped])) {
                     return self::PCRE_ONLY_ESCAPES[$escaped];
+                }
+
+                // And inside a class `\b` is a backspace in both engines, which
+                // is why it is screened here rather than with the escapes that
+                // diverge wherever they appear.
+                if (! $inClass && isset(self::DIVERGENT_OUTSIDE_CLASS[$escaped])) {
+                    return self::DIVERGENT_OUTSIDE_CLASS[$escaped];
+                }
+
+                // ⚠️ `\p{...}` compiles in both dialects and its PROPERTY NAME
+                // still has to be one both dialects know. The escape branch
+                // consumed `\p` and never looked inside the braces, so every
+                // divergence in there was published unchecked.
+                //
+                // Class context is NOT consulted: `[\p{Arabic}]` means what
+                // `\p{Arabic}` means in both engines, so the portability question
+                // is identical and the exemption above does not apply.
+                if ($escaped === 'p' || $escaped === 'P') {
+                    if (($reason = self::propertyRefusal($pattern, $i, $escaped)) !== null) {
+                        return $reason;
+                    }
                 }
 
                 continue;
@@ -232,6 +368,190 @@ final class Pattern
         }
 
         return null;
+    }
+
+    /**
+     * Whether the property named just past `\p` at `$at` is portable.
+     *
+     * ⚠️ ALLOWLISTED, for the reason the group prefixes are: the divergences here
+     * are not a list of known offenders, they are most of the surface. Measured
+     * against PHP 8.4.25/PCRE 10.48 and Node v22.23.2, PCRE compiles and
+     * ECMAScript rejects ALL of these:
+     *
+     *   \pL              the braceless form ECMAScript has no parse for at all
+     *   \p{Arabic}       a bare script name — ECMAScript needs Script=Arabic
+     *   \p{Latn}         a script code, likewise
+     *   \p{Xan}          five PCRE inventions (Xan Xps Xsp Xuc Xwd) plus L&
+     *   \p{bc=AL}        a property class ECMAScript does not have
+     *   \p{^L}           PCRE's internal negation — ECMAScript spells it \P{L}
+     *   \p{lu}           PCRE matches names loosely; ECMAScript is exact
+     *   \p{Script=latin} the same laxity in the value
+     *   \p{Script = Latin}, \p{Old-Italic}   loose matching ignores space and dash
+     *
+     * A denylist was written first and was wrong in the way that matters: it named
+     * the six inventions and let `\p{Arabic}`, `\p{Han}` and `\p{Hebrew}` through
+     * — the bare script names, which are exactly what an author reaching for a
+     * Unicode property in a product that ships RTL from the start (ADR-018) would
+     * write. Enumerating ~170 script names to refuse them would go stale on every
+     * Unicode release; enumerating what is PORTABLE goes stale in the direction
+     * that refuses rather than the direction that publishes.
+     *
+     * ⚠️ A residual gap, stated rather than hidden: an alternating spelling like
+     * `Script=LaTiN` still passes, because establishing that `Latin` is the
+     * canonical casing needs the UCD's own tables and PCRE matches names
+     * case-insensitively, so it cannot be asked. Every realistic mistake is
+     * caught — `latin`, `arabic`, `ascii`, `LATIN`, `Old-Italic` — and what
+     * remains is input no author produces by accident.
+     */
+    private static function propertyRefusal(string $pattern, int $at, string $letter): ?string
+    {
+        // ⚠️ `\pL` is not shorthand ECMAScript shares: it throws `Invalid
+        // property name`, because the braces are required there.
+        if (mb_substr($pattern, $at + 1, 1) !== '{') {
+            return sprintf(
+                '`\%s` without braces — ECMAScript requires `\%s{...}`, so write `\%s{L}` rather than `\%sL`',
+                $letter, $letter, $letter, $letter,
+            );
+        }
+
+        $closes = mb_strpos($pattern, '}', $at);
+
+        if ($closes === false) {
+            // Unterminated, so PCRE will not compile it either. Reporting it here
+            // would mask the clearer "cannot be compiled" refusal.
+            return null;
+        }
+
+        $name = mb_substr($pattern, $at + 2, $closes - $at - 2);
+
+        // ⚠️ Named before the shape check, which would otherwise report a caret as
+        // a casing mistake. `\p{^L}` is PCRE's internal negation and ECMAScript
+        // spells it with the other letter, so this one has an exact translation.
+        if (str_starts_with($name, '^')) {
+            return sprintf(
+                'the negated property `\%s{%s}` — ECMAScript has no internal negation. Write it as '
+                .'`\%s{%s}`',
+                $letter, $name, $letter === 'p' ? 'P' : 'p', mb_substr($name, 1),
+            );
+        }
+
+        if (str_contains($name, '=')) {
+            return self::prefixedPropertyRefusal($name);
+        }
+
+        if (in_array($name, self::PORTABLE_CATEGORIES, true) || in_array($name, self::PORTABLE_PROPERTIES, true)) {
+            return null;
+        }
+
+        // ⚠️ Separated from the casing check below so each refusal names its own
+        // defect. `L&` is a PCRE construct, not a mis-spelled name, and telling
+        // its author about letter case would send them looking in the wrong place.
+        if (preg_match('/^[A-Za-z0-9_]+$/', $name) !== 1) {
+            return sprintf(
+                'the property name `%s` in `\%s{%s}` — an ECMAScript property name is letters, digits '
+                .'and underscores. PCRE has forms of its own, `L&` and `Xan` among them, which the '
+                .'published schema cannot carry',
+                $name, $letter, $name,
+            );
+        }
+
+        // Checked BEFORE the script probe so the message names the actual defect:
+        // `\p{arabic}` is a casing mistake, and telling the author to write
+        // `Script=arabic` would hand them a second pattern that does not travel.
+        if (! self::canonicalShape($name)) {
+            return sprintf(
+                'the property name `%s` in `\%s{%s}` — PCRE matches names loosely, ignoring case, '
+                .'spaces and dashes, while ECMAScript requires the exact Unicode spelling',
+                $name, $letter, $name,
+            );
+        }
+
+        // PCRE can be ASKED whether a name is a script, which saves enumerating
+        // every script: if the prefixed form compiles, the bare form was a script
+        // and the prefixed form is the portable spelling to point the author at.
+        //
+        // ⚠️ The name is interpolated into a pattern, so its shape is established
+        // first. `canonicalShape()` admits only `[A-Za-z0-9_]`, which cannot close
+        // the probe's delimiter or add a construct to it — a pattern setting comes
+        // from an authenticated author, but it arrives over HTTP, and invariant 6
+        // makes no exception for that.
+        if (@preg_match('/\p{Script='.$name.'}/u', '') !== false) {
+            return sprintf(
+                'the bare script name `\%s{%s}` — ECMAScript accepts a script only in its prefixed '
+                .'form. Use `\%s{Script=%s}`',
+                $letter, $name, $letter, $name,
+            );
+        }
+
+        return sprintf(
+            'the Unicode property `\%s{%s}` — ECMAScript matches property names exactly and does not '
+            .'have this one. It accepts the General_Category short forms (L, Lu, Nd, …), the binary '
+            .'properties spelled as Unicode spells them (Alphabetic, White_Space, …), and Script=',
+            $letter, $name,
+        );
+    }
+
+    /** Whether a `prefix=value` property names something both dialects have. */
+    private static function prefixedPropertyRefusal(string $name): ?string
+    {
+        [$prefix, $value] = explode('=', $name, 2);
+
+        if (! in_array($prefix, self::PORTABLE_PROPERTY_PREFIXES, true)) {
+            // ⚠️ A portable prefix spelled loosely is a different fault from one
+            // ECMAScript does not have, and `\p{Script = Latin}` is the first
+            // kind: PCRE ignores the spaces and the case, ECMAScript ignores
+            // neither. Reported as the spelling problem it is.
+            foreach (self::PORTABLE_PROPERTY_PREFIXES as $portable) {
+                if (strcasecmp(trim($prefix), $portable) === 0) {
+                    return sprintf(
+                        'the property prefix `%s` in `\p{%s}` — PCRE matches prefixes loosely, '
+                        .'ignoring case and spaces, while ECMAScript requires exactly `%s=`',
+                        $prefix, $name, $portable,
+                    );
+                }
+            }
+
+            return sprintf(
+                'the property `\p{%s}` — ECMAScript has only Script=, sc=, Script_Extensions= and '
+                .'scx=, and matches the prefix case-sensitively',
+                $name,
+            );
+        }
+
+        if (! self::canonicalShape($value)) {
+            return sprintf(
+                'the property value `%s` in `\p{%s}` — PCRE matches values loosely, ignoring case, '
+                .'spaces and dashes, while ECMAScript requires the exact Unicode spelling. Write it '
+                .'as Unicode writes it, e.g. `Script=Old_Italic`',
+                $value, $name,
+            );
+        }
+
+        return null;
+    }
+
+    /**
+     * Whether a value is spelled the way Unicode spells its own values.
+     *
+     * Title case, underscore-separated, letters and digits only, and no two
+     * capitals in a row. Every name that reaches here is a SCRIPT value — the
+     * allowlists have already answered for the categories and binary properties,
+     * and `Script=`/`scx=` take nothing else — so the no-consecutive-capitals rule
+     * holds: script names are Title_Case words and script codes are `Xxxx`.
+     *
+     * ⚠️ MEASURED against the strict engine rather than reasoned about: all 57
+     * script names and codes tried, `SignWriting`, `Nyiakeng_Puachue_Hmong`,
+     * `Khitan_Small_Script`, `Zyyy` and `Cpmn` among them, are accepted by both
+     * this test and Node v22.23.2. It rejects `latin`, `LATIN`, `Old-Italic` and
+     * `Old Italic` — the forms PCRE's loose matching takes and ECMAScript does not.
+     *
+     * The capitals rule is what keeps the refusal message honest as well: without
+     * it, `\p{LATIN}` was answered with "use `\p{Script=LATIN}`", which does not
+     * compile either.
+     */
+    private static function canonicalShape(string $value): bool
+    {
+        return preg_match('/^(?![A-Za-z0-9_]*[A-Z]{2})[A-Z][A-Za-z0-9]*(?:_[A-Z][A-Za-z0-9]*)*$/', $value) === 1;
     }
 
     /**

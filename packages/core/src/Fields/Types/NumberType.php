@@ -385,26 +385,35 @@ final class NumberType extends BaseFieldType
      * The value in whole quanta, rounded up or down, without a float multiply.
      *
      * ⚠️ Parsed from the DECIMAL TEXT, because `0.29 * 100` is
-     * `28.999999999999996` — so the previous version took `ceil()` to 29 and
+     * `28.999999999999996` — so the first version took `ceil()` to 29 and
      * `floor()` to 28 for the same number, decided 29 > 28, and refused a
      * singleton range at 0.29 that the runtime rules plainly accept. Moving to
      * integer arithmetic fixed the comparisons and left the CONVERSION in floats,
      * which is where the imprecision actually was.
      *
-     * `%F` is used rather than a cast because `(string) 5.0E-15` is exponent
-     * notation, and this needs a fixed-point representation to shift a decimal
-     * point in. Two guard digits past the scale are enough to see whether
-     * anything remains below the quantum, which is the only question here.
+     * ⚠️ And the fix after that one still truncated. `sprintf('%.4F', ...)` at
+     * scale 2 renders `0.2900001` as `0.2900`, so two guard digits decided there
+     * was nothing below the quantum when there were five digits of it: `min = max
+     * = 0.2900001` read as the inhabited singleton 29 units, when no value on the
+     * scale-2 grid equals it and the range is in fact empty. Two guard digits
+     * answer the question for numbers with at most two digits below the grid,
+     * which is not the question — the number decides how many digits it has, so
+     * the text has to carry all of them.
      */
     private static function units(mixed $value, int $scale, bool $up): ?int
     {
-        if (! is_numeric($value)) {
+        $text = self::decimalText($value);
+
+        if ($text === null) {
             return null;
         }
 
-        $text = sprintf('%.'.($scale + 2).'F', (float) $value);
         $negative = str_starts_with($text, '-');
-        [$whole, $fraction] = explode('.', ltrim($text, '-').'.');
+        [$whole, $fraction] = explode('.', ltrim($text, '+-').'.');
+
+        // Padded so the grid digits are always present: `29` at scale 2 is 2900
+        // quanta, and without this it would read as 29.
+        $fraction = str_pad($fraction, $scale, '0');
 
         // The digits that land ON the grid, and whatever is left below it.
         $units = (int) ($whole.substr($fraction, 0, $scale));
@@ -419,6 +428,69 @@ final class NumberType extends BaseFieldType
         }
 
         return $negative ? -$units : $units;
+    }
+
+    /**
+     * A numeric setting as fixed-point decimal text, carrying every digit it has.
+     *
+     * ⚠️ `json_encode()` rather than a string cast for a float, because a cast
+     * uses `precision` (14 significant digits) while `json_encode()` uses
+     * `serialize_precision`, which defaults to -1 and means "the shortest decimal
+     * that round-trips". `(string) 0.1` and `json_encode(0.1)` agree; on a value
+     * carrying more digits than `precision` shows, the cast is the one that loses
+     * them, which is the defect this method exists to remove.
+     *
+     * ⚠️ A STRING setting is used as authored. Filament submits numeric inputs as
+     * strings, so this is the ordinary path, and the author's own text is a more
+     * faithful record of what they meant than any float built from it: `0.1` as
+     * text is exactly one tenth, and as a float it is not.
+     */
+    private static function decimalText(mixed $value): ?string
+    {
+        if (! is_numeric($value)) {
+            return null;
+        }
+
+        if (is_int($value)) {
+            return (string) $value;
+        }
+
+        if (is_float($value)) {
+            // NAN and INF are numeric and have no decimal expansion. Treated as
+            // absent rather than as a bound, which is what `null` means here.
+            return is_finite($value) ? self::withoutExponent((string) json_encode($value)) : null;
+        }
+
+        return self::withoutExponent(trim((string) $value));
+    }
+
+    /**
+     * Exponent notation expanded to a plain decimal.
+     *
+     * Needed because this is all done by shifting a decimal point through a digit
+     * string, and `1.0e-15` has no decimal point to shift. Both a small float and
+     * an author who typed `1e-9` arrive here.
+     */
+    private static function withoutExponent(string $text): string
+    {
+        if (preg_match('/^([+-]?)([0-9]*)(?:\.([0-9]*))?[eE]([+-]?[0-9]+)$/', $text, $matches) !== 1) {
+            return $text;
+        }
+
+        // Not `?? ''`: the exponent group always participates, so PHP pads the
+        // fraction group to an empty string rather than leaving it unset.
+        $digits = $matches[2].$matches[3];
+
+        // Where the point lands in the digit string once the exponent moves it.
+        $point = mb_strlen($matches[2]) + (int) $matches[4];
+
+        $expanded = match (true) {
+            $point <= 0 => '0.'.str_repeat('0', -$point).$digits,
+            $point >= mb_strlen($digits) => $digits.str_repeat('0', $point - mb_strlen($digits)),
+            default => mb_substr($digits, 0, $point).'.'.mb_substr($digits, $point),
+        };
+
+        return $matches[1].$expanded;
     }
 
     /** @param  array<string, mixed>  $settings */
