@@ -1520,6 +1520,49 @@ describe('settings that contradict themselves are refused', function (): void {
             ->toContain('capturing groups');
     });
 
+    it('refuses a backreference whose group need not participate', function (): void {
+        /*
+         * ⚠️ COMPILING IS NOT AGREEING, and I allowed forward references last round on
+         * compile-only evidence — the exact mistake this file settled for `\h`, made
+         * again in the round that added the group count.
+         *
+         * Measured on PHP 8.4.25/PCRE 10.48 and Node v22.23.2, whenever the referenced
+         * group has not participated the two dialects disagree completely: PCRE fails
+         * the match, ECMAScript treats the reference as an empty string.
+         *
+         *   `^\1(a)?$`  on ''    PCRE fails, ECMAScript matches
+         *   `^\1(a)$`   on 'a'   PCRE fails, ECMAScript matches
+         *   `^(a)?\1$`  on ''    PCRE fails, ECMAScript matches
+         *   `^(a)*\1$`  on ''    PCRE fails, ECMAScript matches
+         *   `^(a)\1$`   on 'aa'  both match
+         *
+         * So a backreference is portable exactly when its group MUST participate — not
+         * when the group merely exists, which is what the count alone established.
+         */
+        expect(Pattern::unpublishable('^\1(a)?$'))->toContain('forward reference')
+            ->and(Pattern::unpublishable('^\1(a)$'))->toContain('forward reference')
+            // Optional in each of the three spellings that allow zero matches.
+            ->and(Pattern::unpublishable('^(a)?\1$'))->toContain('optional')
+            ->and(Pattern::unpublishable('^(a)*\1$'))->toContain('optional')
+            ->and(Pattern::unpublishable('^(a){0,2}\1$'))->toContain('optional')
+            // ⚠️ And a group that MUST participate is still portable, or the fix would
+            // have removed backreferences altogether.
+            ->and(Pattern::unpublishable('^(a)\1$'))->toBeNull()
+            ->and(Pattern::unpublishable('^(a)(b)\2$'))->toBeNull()
+            ->and(Pattern::unpublishable('^(?<n>a)\1$'))->toBeNull()
+            ->and(Pattern::unpublishable('^([A-Z]{2})-\1$'))->toBeNull()
+            // A required group quantified with `+` still participates.
+            ->and(Pattern::unpublishable('^(a)+\1$'))->toBeNull();
+
+        /*
+         * ⚠️ A residual gap, asserted so it is not mistaken for coverage: a group inside
+         * an ALTERNATION can go unset without being quantified. `^(?:(a)|b)\1$` on 'b'
+         * fails in PCRE and matches in ECMAScript, and proving otherwise needs a nesting
+         * analysis this screen does not carry. Recorded in `capturingGroupSpans()`.
+         */
+        expect(Pattern::unpublishable('^(?:(a)|b)\1$'))->toBeNull();
+    });
+
     it('allows a multi-digit backreference the groups actually justify', function (): void {
         /*
          * ⚠️ A FALSE REFUSAL I argued for on purpose. My earlier reply said an author
@@ -1552,9 +1595,12 @@ describe('settings that contradict themselves are refused', function (): void {
             // scan rather than a substring tally.
             ->and(Pattern::unpublishable(str_repeat('(?<a>x)', 10).'\10'))->toBeNull()
             ->and(Pattern::unpublishable(str_repeat('(?:x)', 10).'\10'))->toContain('capturing groups')
-            // ⚠️ A FORWARD reference is legal in both dialects, so the whole pattern is
-            // counted rather than the part before the reference.
-            ->and(Pattern::unpublishable('\1(a)'))->toBeNull()
+            // ⚠️ This assertion used to read "a FORWARD reference is legal in both
+            // dialects, so the whole pattern is counted" — and it was wrong for the
+            // reason `\h` was: both engines COMPILE it and they do not AGREE. An unset
+            // backreference fails the match in PCRE and matches empty in ECMAScript, so
+            // a forward reference is refused now. Its own test covers the detail.
+            ->and(Pattern::unpublishable('\1(a)'))->toContain('forward reference')
             // ⚠️ An escaped parenthesis is not a group, and this needs a MULTI-digit
             // reference to exercise the counter: twenty escaped parens still leave zero
             // capturing groups, so `\10` names nothing.

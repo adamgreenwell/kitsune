@@ -130,6 +130,9 @@ A named capture may use a name in **any script** — `(?<é>`, `(?<日本>`, `(?
 | `\g{1}` `\g<1>` `\g1` | PCRE subroutine and relative-backreference forms | `\1`, or `\k<name>` |
 | `\o{141}` `\00` | Octal escapes; `\00` is a syntax error under ECMAScript's `u` flag | `\x61`, `\x41` |
 | `\101`, `\12` with two groups | A multi-digit escape naming a group that does not exist: PCRE falls back to octal, ECMAScript rejects it. One that **does** name a real group — `\10` with ten groups — is portable and accepted | `\x41`, or add the groups |
+| `\1(a)`, `(a)?\1`, `(a)*\1` | A backreference whose group need not have participated. PCRE **fails the match**; ECMAScript treats the reference as an **empty string** — so the two enforce different rules on the same input | define the group first, and make it required |
+
+⚠️ That last row is the one to read twice, because both engines *compile* it. A backreference is portable exactly when its group **must** participate — existence is not enough. A group inside an alternation can also go unset (`^(?:(a)|b)\1$`), and detecting that needs a nesting analysis this screen does not carry; it is a recorded residual rather than a covered case.
 | `\x{41}` `\x4` | ECMAScript's hex escape is exactly two digits, and its braced form is `\u{...}` — which PCRE rejects | `\x41` |
 | `\k{n}` `\k'n'` | Only `\k<name>` is shared | `\k<name>` |
 | `[\1]` | A digit escape is a backreference outside a class and octal inside one, where ECMAScript rejects it | `\x01` |

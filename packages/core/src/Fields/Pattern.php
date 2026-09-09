@@ -806,20 +806,61 @@ final class Pattern
         // This is the failure mode the allowlists were adopted to avoid — "a false
         // refusal blocks an author" — and I introduced one anyway, in writing.
         $digits = (string) (preg_match('/^[0-9]+/', mb_substr($pattern, $at), $matched) === 1 ? $matched[0] : '');
+        $reference = (int) $digits;
+        $spans = self::capturingGroupSpans($pattern);
 
-        if (mb_strlen($digits) < 2) {
-            return null;
-        }
-
-        return (int) $digits <= self::capturingGroups($pattern)
-            ? null
-            : sprintf(
+        // Above the group count, PCRE falls back to octal and ECMAScript rejects it.
+        if (mb_strlen($digits) > 1 && $reference > count($spans)) {
+            return sprintf(
                 '\%s — there are only %d capturing groups, so PCRE reads this as an octal character '
                 .'while ECMAScript rejects it as a backreference to a group that does not exist. For '
                 .'a character use the hex form, e.g. \x41',
                 $digits,
-                self::capturingGroups($pattern),
+                count($spans),
             );
+        }
+
+        if (! isset($spans[$reference])) {
+            // Both dialects reject a reference to a group that is not there, so
+            // `compiles()` reports that more clearly than this could.
+            return null;
+        }
+
+        // ⚠️ EXISTING IS NOT ENOUGH, and treating it as enough was my mistake.
+        //
+        // I allowed a forward reference last round because `\1(a)` COMPILES in both
+        // dialects — and this file settled long ago that compiling is not the test,
+        // enforcing the same constraint is. Measured, whenever the referenced group has
+        // not participated the two disagree completely: PCRE fails the match, and
+        // ECMAScript treats the reference as an empty string.
+        //
+        //   `^\1(a)?$`  on ''    PCRE fails, ECMAScript matches
+        //   `^\1(a)$`   on 'a'   PCRE fails, ECMAScript matches
+        //   `^(a)?\1$`  on ''    PCRE fails, ECMAScript matches
+        //   `^(a)*\1$`  on ''    PCRE fails, ECMAScript matches
+        //   `^(a)\1$`   on 'aa'  both match — participation is what matters
+        //
+        // So a backreference is portable exactly when its group MUST participate, and
+        // the two cases provable by scanning are refused here.
+        if ($spans[$reference]['open'] > $at) {
+            return sprintf(
+                '\%s — a forward reference. Group %d opens after it, so it has not participated when '
+                .'the reference is tried: PCRE fails the match and ECMAScript treats it as an empty '
+                .'string. Define the group before referring to it',
+                $digits,
+                $reference,
+            );
+        }
+
+        return $spans[$reference]['optional']
+            ? sprintf(
+                '\%s — group %d is optional, so it can go unset: PCRE then fails the match while '
+                .'ECMAScript treats the reference as an empty string. Make the group required, or '
+                .'match the alternatives separately',
+                $digits,
+                $reference,
+            )
+            : null;
     }
 
     /**
@@ -849,27 +890,38 @@ final class Pattern
     }
 
     /**
-     * How many capturing groups the pattern has.
+     * Every capturing group's opening position and whether it can go unset.
      *
-     * ⚠️ `(?<name>` COUNTS and `(?:` does not, which is the distinction that makes
-     * this worth a scan rather than a `substr_count`. A named group is capturing in
-     * both dialects — measured, `(?<n>a)\1` compiles in both — while the other `(?`
-     * forms are not, and `(?:a)\1` compiles in neither.
+     * ⚠️ Spans rather than a count, because a backreference's portability depends on
+     * WHERE its group is and whether it must participate — not merely on whether it
+     * exists.
      *
-     * Escapes and class context are tracked for the reason they are everywhere else
-     * in this file: `\(` is a literal parenthesis and `[(]` is one inside a class,
-     * and counting either as a group would let a genuinely invalid backreference
-     * through.
+     * `(?<name>` counts and `(?:` does not (see `opensNamedGroup()`). Escapes and class
+     * context are tracked, so `\(` is not a group and `[(]` is not one either.
      *
-     * The whole pattern is counted rather than the part before the reference, because
-     * a FORWARD reference is legal in both dialects — measured, `\1(a)` compiles in
-     * both — so a group defined later still makes the reference valid.
+     * "Optional" is the quantifier immediately after the group's own closing paren: `?`,
+     * `*`, or a `{0,…}` bound — the forms that let a group match zero times and leave a
+     * reference to it unset.
+     *
+     * ⚠️ The method this replaced said a forward reference "is legal in both dialects —
+     * measured, `\1(a)` compiles in both". Compiling was the wrong test — the rule this
+     * file settled for `\h` — because an unset backreference fails the match in PCRE and
+     * matches empty in ECMAScript. `open` exists to catch that.
+     *
+     * ⚠️ A residual gap, stated rather than hidden: a group inside an ALTERNATION can go
+     * unset without being quantified — `^(?:(a)|b)\1$` on `'b'` fails in PCRE and matches
+     * in ECMAScript — and proving otherwise needs a nesting analysis this screen does not
+     * carry. The two statically provable cases are refused; that one is recorded.
+     *
+     * @return array<int, array{open: int, optional: bool}> keyed by 1-based ordinal
      */
-    private static function capturingGroups(string $pattern): int
+    private static function capturingGroupSpans(string $pattern): array
     {
         $length = mb_strlen($pattern);
         $inClass = false;
-        $groups = 0;
+        $stack = [];
+        $spans = [];
+        $ordinal = 0;
 
         for ($i = 0; $i < $length; $i++) {
             $char = mb_substr($pattern, $i, 1);
@@ -892,17 +944,33 @@ final class Pattern
                 continue;
             }
 
-            if ($char !== '(') {
+            if ($char === '(') {
+                $capturing = mb_substr($pattern, $i + 1, 1) !== '?' || self::opensNamedGroup($pattern, $i);
+                $stack[] = ['open' => $i, 'ordinal' => $capturing ? ++$ordinal : null];
+
                 continue;
             }
 
-            // `(?<name>` captures; every other `(?` form does not.
-            $groups += mb_substr($pattern, $i + 1, 1) !== '?' || self::opensNamedGroup($pattern, $i)
-                ? 1
-                : 0;
+            if ($char !== ')' || $stack === []) {
+                continue;
+            }
+
+            $frame = array_pop($stack);
+
+            if ($frame['ordinal'] === null) {
+                continue;
+            }
+
+            $after = mb_substr($pattern, $i + 1, 1);
+
+            $spans[$frame['ordinal']] = [
+                'open' => $frame['open'],
+                'optional' => $after === '?' || $after === '*'
+                    || preg_match('/^\{0[,}]/', mb_substr($pattern, $i + 1, 3)) === 1,
+            ];
         }
 
-        return $groups;
+        return $spans;
     }
 
     /**
