@@ -159,58 +159,69 @@ class Field extends Model implements RefusesCascadingDeletes, RequiresModelSave
                     // A correlated subquery rather than materialising every id:
                     // a type can hold a hundred thousand entries, and this runs
                     // on the delete path.
-                    StorageStrategy::Relational => $query->whereExists(
-                        fn (Builder $sub) => $sub->from('entry_relations')
-                            ->whereColumn('entry_relations.source_entry_id', 'entries.id')
-                            ->where('entry_relations.field_storage_id', $storage->getKey()),
-                    )->count(),
-                    // ⚠️ The LIVE column only, and adding a revision check here
-                    // was wrong: `entry_revisions` holds `values` and revision
-                    // metadata, and no promoted columns at all — so querying
-                    // `entry_revisions.slug` was a missing-column error that made
-                    // even an UNUSED promoted field unremovable.
-                    //
-                    // `Entry::redactStorage()` documents the same thing from the
-                    // erasure side. If the revision table ever snapshots promoted
-                    // columns, this check gains the same `orWhereHas` the inline
-                    // branch has, and not before.
+                    StorageStrategy::Relational => $query
+                        ->whereExists(
+                            fn (Builder $sub) => $sub->from('entry_relations')
+                                ->whereColumn('entry_relations.source_entry_id', 'entries.id')
+                                ->where('entry_relations.field_storage_id', $storage->getKey()),
+                        )
+                        ->count(),
+                    // The live promoted column. History is counted separately,
+                    // below, for the reason stated there.
                     StorageStrategy::Promoted => $query
                         ->whereNotNull((string) $storage->promotedColumn())
                         ->count(),
-                    // ⚠️ REVISIONS too, and checking the live row alone was a
-                    // hole big enough to lose personal data through.
-                    //
-                    // Clearing a value and then removing the field left the old
-                    // value in every `entry_revisions.values` snapshot — and
-                    // removing the field removes the schema metadata needed to
-                    // FIND it, so only a caller who already knew the deleted
-                    // handle could ever reach it again. ADR-020 requires erasure
-                    // to reach revisions; this is the same requirement seen from
-                    // the deletion side.
+                    // The live JSON key. History is counted separately, below.
                     StorageStrategy::Inline => $query
-                        ->where(fn ($entries) => $entries
-                            ->whereNotNull('values->'.$storage->handle)
-                            ->orWhereHas('revisions', fn ($revisions) => $revisions
-                                ->whereNotNull('values->'.$storage->handle)))
+                        ->whereNotNull('values->'.$storage->handle)
                         ->count(),
                 };
             },
         );
 
-        if ($holding === 0) {
+        // ⚠️ HISTORY is counted on its own terms, not through the entry's CURRENT
+        // type — and nesting it under that predicate was a hole.
+        //
+        // `entries.entry_type_id` is mutable. An entry moved from type A to type B
+        // keeps its A-era revisions, and those revisions are the only remaining
+        // record of the A field's values. Asking "does any entry of type A have a
+        // revision holding this?" finds none of them, because no entry is type A
+        // any more — so deleting A's field was permitted, and `redactField()` then
+        // resolves storage through the entry's current B schema and cannot see the
+        // field at all. The historical values are stranded and uneraseable, which
+        // is the precise failure ADR-020 exists to prevent.
+        //
+        // `entry_revisions.entry_type_id` records the schema each snapshot was
+        // written against, so it answers the question directly and needs no join
+        // to `entries` at all.
+        $recorded = EntryRevision::query()
+            ->where('entry_type_id', $type->getKey())
+            ->where(match ($storage->strategy()) {
+                StorageStrategy::Relational => fn ($revisions) => $revisions
+                    ->whereNotNull('relation_state->'.$storage->getKey()),
+                StorageStrategy::Promoted => fn ($revisions) => $revisions
+                    ->whereNotNull((string) $storage->promotedColumn()),
+                StorageStrategy::Inline => fn ($revisions) => $revisions
+                    ->whereNotNull('values->'.$storage->handle),
+            })
+            ->count();
+
+        if ($holding === 0 && $recorded === 0) {
             return;
         }
 
         throw new RuntimeException(sprintf(
-            'Field [%s] cannot be removed from [%s] while %d entr%s still hold data for it. The '
-            .'values would survive against the shared storage row and become unreachable — '
-            .'`redactField()` resolves storage through this type\'s fields, so an erasure request '
-            .'would report success having found nothing (ADR-020). Erase the field first, which is '
-            .'audited, then remove it.',
+            'Field [%s] cannot be removed from [%s] while %d entr%s and %d revision%s still hold '
+            .'data for it. The values would survive against the shared storage row and become '
+            .'unreachable — `redactField()` resolves storage through this type\'s fields, so an '
+            .'erasure request would report success having found nothing (ADR-020). Erase the field '
+            .'first, which is audited, then remove it.',
             $storage->handle,
             $type->handle,
             $holding,
             $holding === 1 ? 'y' : 'ies',
+            $recorded,
+            $recorded === 1 ? '' : 's',
         ));
     }
 

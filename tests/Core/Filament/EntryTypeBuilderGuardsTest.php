@@ -2674,6 +2674,9 @@ describe('a field whose data survives only in history cannot be deleted', functi
         // it here is the point: the guard has to hold whatever put the row there.
         EntryRevision::create([
             'entry_id' => $entry->getKey(),
+            // The discriminator is NOT NULL: a revision recording values without
+            // the schema they were written against cannot be restored safely.
+            'entry_type_id' => $entry->entry_type_id,
             'values' => ['old_note' => 'Jane Doe, 12 Elm St'],
         ]);
 
@@ -2705,6 +2708,7 @@ describe('a field whose data survives only in history cannot be deleted', functi
         ]);
         EntryRevision::create([
             'entry_id' => $entry->getKey(),
+            'entry_type_id' => $entry->entry_type_id,
             'values' => ['gone_note' => 'Jane Doe'],
         ]);
 

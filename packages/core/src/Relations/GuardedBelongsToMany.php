@@ -13,6 +13,7 @@ namespace Kitsune\Core\Relations;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\Pivot;
 use Illuminate\Support\Facades\DB;
+use Kitsune\Core\Models\Entry;
 
 /**
  * `attach()` and `updateExistingPivot()`, made atomic.
@@ -45,6 +46,8 @@ use Illuminate\Support\Facades\DB;
  */
 class GuardedBelongsToMany extends BelongsToMany
 {
+    use RecordsRelationRevisions;
+
     /**
      * The pivot column naming the entry a cardinality is counted against.
      *
@@ -57,13 +60,191 @@ class GuardedBelongsToMany extends BelongsToMany
     /** @param  array<string, mixed>  $attributes */
     public function attach($id, array $attributes = [], $touch = true)
     {
-        $this->serialised($id, $attributes, fn () => parent::attach($id, $attributes, $touch));
+        $this->versioned(
+            fn (): array => $this->sourceKeys($id, $attributes),
+            fn () => $this->serialised($id, $attributes, fn () => parent::attach($id, $attributes, $touch)),
+        );
     }
 
     /** @param  array<string, mixed>  $attributes */
     public function updateExistingPivot($id, array $attributes, $touch = true)
     {
-        return $this->serialised($id, $attributes, fn () => parent::updateExistingPivot($id, $attributes, $touch));
+        return $this->versioned(
+            fn (): array => $this->sourceKeys($id, $attributes),
+            fn () => $this->serialised($id, $attributes, fn () => parent::updateExistingPivot($id, $attributes, $touch)),
+        );
+    }
+
+    /**
+     * ⚠️ Overridden ONLY to own the version, and it has to be.
+     *
+     * `sync()` calls `detach()` and then `attach()` on this same instance. Both
+     * are overridden, so without this each filed its own revision and one sync
+     * produced two or three versions — measured, before this existed. Opening
+     * the depth here makes the inner calls pass through and the single
+     * comparison at the end decide.
+     *
+     * @param  mixed  $ids
+     * @param  bool  $detaching
+     * @return array<string, list<mixed>>
+     */
+    public function sync($ids, $detaching = true)
+    {
+        return $this->versioned(
+            // Both directions: a sync attaches and detaches, so the sources it
+            // could touch are the union of what each would.
+            fn (): array => array_values(array_unique([...$this->detachSourceKeys(null), ...$this->sourceKeys($ids, [])])),
+            fn () => parent::sync($ids, $detaching),
+        );
+    }
+
+    /**
+     * ⚠️ `toggle()` owns its version too, for the reason `sync()` does.
+     *
+     * Laravel's implementation reaches the overridden `attach()` and `detach()`
+     * directly, so without an outer frame it recorded the intermediate detached
+     * state and then the attached one — two or more versions for one API call,
+     * and one of them a state the entry never meaningfully had. `sync()` was
+     * wrapped for exactly this and `toggle()` was missed beside it.
+     *
+     * @param  mixed  $ids
+     * @param  bool  $touch
+     * @return array<string, list<mixed>>
+     */
+    public function toggle($ids, $touch = true)
+    {
+        return $this->versioned(
+            // Both directions: toggling attaches and detaches, so the sources it
+            // could touch are the union of what each would.
+            fn (): array => array_values(array_unique([
+                ...$this->detachSourceKeys(null),
+                ...$this->sourceKeys($ids, []),
+            ])),
+            fn () => parent::toggle($ids, $touch),
+        );
+    }
+
+    /**
+     * ⚠️ Overridden for VERSIONING, not for locking.
+     *
+     * Detaching cannot exceed a cardinality, so it never needed the serialising
+     * lock — but it very much changes the entry, and a revision that misses a
+     * removed relation is as wrong as one that misses an added one.
+     *
+     * @param  mixed  $ids
+     * @param  bool  $touch
+     * @return int
+     */
+    public function detach($ids = null, $touch = true)
+    {
+        // ⚠️ The pivot pin belongs to THIS delete, and leaving it on the relation
+        // made a retained object progressively unable to detach anything.
+        //
+        // `freezingIncomingPivots()` adds `id IN (...)` through `wherePivotIn()`,
+        // which appends to the relation's own `$pivotWhereIns`. A caller that keeps
+        // a `referencedBy()` object and detaches twice therefore accumulated two
+        // disjoint id sets, ANDed together — so the second detach matched nothing
+        // and silently left the row it was asked to remove.
+        //
+        // Snapshotted and restored unconditionally: it costs an array copy, and it
+        // means no future constraint added inside the freeze can leak either.
+        $pins = $this->pivotWhereIns;
+
+        try {
+            return $this->versioned(
+                fn (): array => $this->detachSourceKeys($ids),
+                fn () => parent::detach($ids, $touch),
+            );
+        } finally {
+            $this->pivotWhereIns = $pins;
+        }
+    }
+
+    /**
+     * Every source entry a detach could touch.
+     *
+     * Over-approximates on purpose. The comparison in `versioned()` decides
+     * whether anything actually changed, so naming an extra entry costs a query
+     * and never files a spurious version — whereas missing one loses history.
+     *
+     * @return list<mixed>
+     */
+    private function detachSourceKeys(mixed $ids): array
+    {
+        // Outgoing: the parent IS the source, whatever is being detached.
+        if ($this->getForeignPivotKeyName() === self::SOURCE_COLUMN) {
+            return [$this->getParent()->getKey()];
+        }
+
+        // Incoming, with no ids: every entry currently pointing at the parent.
+        if ($ids === null) {
+            return $this->freezingIncomingPivots();
+        }
+
+        return $this->sourceKeys($ids, []);
+    }
+
+    /**
+     * Lock the pivots an unqualified incoming detach will remove, and constrain the
+     * detach to exactly those rows.
+     *
+     * ⚠️ A SNAPSHOT was not enough, and this is the third time this project has
+     * found the shape.
+     *
+     * `referencedBy()->detach()` named its sources with an unlocked `pluck()`, and
+     * the inherited `detach()` then reran its own predicate — every pivot pointing
+     * at the parent, evaluated when the DELETE ran. An attach from a NEW source
+     * committing between those two statements was deleted by the detach, while that
+     * source was never locked, never in `$before`, and never in a revision. Its
+     * newest version claimed a relation the database no longer had.
+     *
+     * So the rows are frozen and the delete is pinned to the frozen ids. Anything
+     * that arrives afterwards is simply not this statement's business — which is
+     * the same contract `GuardedRelationBuilder::freezingRows()` provides, and the
+     * reason that one pins `whereKey()` rather than trusting its predicate twice.
+     *
+     * ⚠️ Entries first and pivots second, in that order, because
+     * `freezingRows()` does. The two paths reach the same rows, and if one took
+     * pivots before entries they would deadlock against each other rather than
+     * queue — which is the failure the previous lock-order fix was for.
+     *
+     * @return list<mixed>
+     */
+    private function freezingIncomingPivots(): array
+    {
+        $pivots = $this->getRelated()->getConnection()
+            ->table($this->getTable())
+            ->where($this->getForeignPivotKeyName(), $this->getParent()->getKey());
+
+        // Unlocked discovery, then the entry locks in a deterministic order.
+        $sources = (clone $pivots)->distinct()
+            ->pluck(self::SOURCE_COLUMN)
+            ->filter()
+            ->unique()
+            ->sort()
+            ->values()
+            ->all();
+
+        if ($sources !== []) {
+            Entry::withoutScopeBecause(
+                'locking the source entries of an incoming detach before their pivots, so every '
+                .'relation path takes the locks in one order',
+                fn ($query) => $query->whereKey($sources)->lockForUpdate()->get(),
+            );
+        }
+
+        // Now the pivots, under the entry locks just taken.
+        $frozen = $pivots->lockForUpdate()->get(['id', self::SOURCE_COLUMN]);
+
+        // ⚠️ Pin the delete to the frozen ids. `wherePivotIn` reaches
+        // `newPivotQuery()`, which is what the inherited `detach()` builds from —
+        // so the set frozen and the set deleted are the same set.
+        //
+        // An empty freeze still has to constrain: without this the inherited
+        // predicate would run unpinned and delete whatever had arrived since.
+        $this->wherePivotIn('id', $frozen->pluck('id')->all());
+
+        return $frozen->pluck(self::SOURCE_COLUMN)->unique()->filter()->values()->all();
     }
 
     /**
