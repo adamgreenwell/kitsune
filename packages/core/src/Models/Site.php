@@ -140,7 +140,90 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
     {
         static::saving(function (self $site): void {
             [$site->canonical_host, $site->path_prefix] = self::deriveUrlParts($site->base_url, $site->url_strategy);
+
+            self::refuseOverlappingClaim($site);
         });
+    }
+
+    /**
+     * Refuses a public URL that OVERLAPS one another org already holds.
+     *
+     * ⚠️ THE UNIQUE INDEX IS NOT ENOUGH, AND SAYING IT WAS WAS WRONG. It compares the pair
+     * exactly, so two orgs cannot hold the same `(canonical_host, path_prefix)` — and can still
+     * hold overlapping ones. Demonstrated: org A owning `https://example.test` and org B
+     * claiming `https://example.test/news` both satisfy the index, and because the resolver
+     * prefers the LONGEST matching prefix, every request to `example.test/news…` on org A's own
+     * hostname is served by org B. That is the cross-org URL theft ADR-021 says has no framework
+     * safety net, and it was reachable through the front door.
+     *
+     * ⚠️ WHY THIS CANNOT BE AN INDEX. "One prefix is a path-prefix of the other" is not an
+     * equality, so no unique constraint expresses it. The check therefore lives here, and the
+     * uniqueness index stays as the exact-match backstop it always was — the two are not
+     * alternatives.
+     *
+     * ⚠️ UNSCOPED ON PURPOSE, and for the same reason the resolver is: the question is whether
+     * ANOTHER org holds a conflicting claim, so a query constrained to the current org cannot
+     * ask it. Compared in PHP rather than SQL because prefix containment differs across the
+     * three drivers and the row count for one hostname is small by construction.
+     *
+     * ⚠️ A host-less claim (`canonical_host = ''`) is compared only against other host-less
+     * claims. `''` means "whatever host serves this installation", which no org can own
+     * exclusively — and the resolver already prefers a host-specific claim, so a specific claim
+     * shadowing a promiscuous one is the intended precedence rather than theft.
+     *
+     * @throws RuntimeException when another org already holds an overlapping claim
+     */
+    private static function refuseOverlappingClaim(self $site): void
+    {
+        if ($site->canonical_host === null || $site->path_prefix === null) {
+            // No public URL at all, so nothing is claimed.
+            return;
+        }
+
+        $rivals = self::withoutScopeBecause(
+            'cross-org URL claims: the question is whether ANOTHER org holds an overlapping '
+            .'claim, which a query scoped to the current org cannot ask',
+            fn ($query) => $query
+                ->where('canonical_host', $site->canonical_host)
+                ->when($site->exists, fn ($q) => $q->whereKeyNot($site->getKey()))
+                ->get(['id', 'org_id', 'base_url', 'path_prefix']),
+        );
+
+        foreach ($rivals as $rival) {
+            if ((int) $rival->org_id === (int) $site->org_id) {
+                // One org may arrange its own sites however it likes.
+                continue;
+            }
+
+            if (! self::prefixesOverlap((string) $site->path_prefix, (string) $rival->path_prefix)) {
+                continue;
+            }
+
+            throw new RuntimeException(sprintf(
+                'Refusing [%s]: another org already holds [%s] on the same host, and the two '
+                .'overlap. Site resolution prefers the longest matching prefix, so one of them '
+                .'would silently serve requests addressed to the other (ADR-021). A public URL '
+                .'is claimed once across every org.',
+                (string) $site->base_url,
+                (string) $rival->base_url,
+            ));
+        }
+    }
+
+    /**
+     * Whether either prefix contains the other, at a segment boundary.
+     *
+     * `''` contains everything: it is the host root, so it overlaps every prefix on that host.
+     * `/news` and `/news/fr` overlap; `/news` and `/newsletter` do NOT — the boundary check is
+     * what separates them, and a naive `str_starts_with` would refuse the second pair.
+     */
+    private static function prefixesOverlap(string $a, string $b): bool
+    {
+        if ($a === $b || $a === '' || $b === '') {
+            return true;
+        }
+
+        return str_starts_with($a, $b.'/') || str_starts_with($b, $a.'/');
     }
 
     /**

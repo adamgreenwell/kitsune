@@ -349,6 +349,72 @@ describe('base_url derives the host and prefix a site claims', function (): void
         expect(Site::deriveUrlParts($atLimit, 'path'))->toBe(['', $atLimit]);
     });
 
+    it('refuses a public URL that OVERLAPS one another org already holds', function (): void {
+        /*
+         * ⚠️ THE UNIQUE INDEX WAS NOT ENOUGH, and the amendment above briefly claimed it was.
+         * It compares the pair exactly, so two orgs cannot hold the SAME
+         * `(canonical_host, path_prefix)` — and could still hold overlapping ones.
+         *
+         * Demonstrated before the fix: org A owned `https://example.test`, org B was allowed to
+         * claim `https://example.test/news`, and a request to `example.test/news/article-1` on
+         * org A's own hostname was served by ORG B — because the resolver prefers the longest
+         * matching prefix. That is the cross-org URL theft ADR-021 says has no framework safety
+         * net, reached through the front door. Found by review.
+         */
+        $rival = Org::create(['name' => 'Rival', 'slug' => 'rival']);
+
+        app(Context::class)->setOrg($this->org);
+        Site::create([
+            'org_id' => $this->org->id, 'handle' => 'held', 'slug' => 'admin-held',
+            'name' => 'Held', 'locale' => 'en', 'url_strategy' => 'domain',
+            'base_url' => 'https://claimed.example.test/news',
+        ]);
+
+        // The same org may arrange its own sites however it likes, including nesting.
+        Site::create([
+            'org_id' => $this->org->id, 'handle' => 'nested', 'slug' => 'admin-nested',
+            'name' => 'Nested', 'locale' => 'fr', 'url_strategy' => 'path',
+            'base_url' => 'https://claimed.example.test/news/fr',
+        ]);
+
+        app(Context::class)->setOrg($rival);
+
+        foreach ([
+            'a deeper path under it' => 'https://claimed.example.test/news/de',
+            'the host root above it' => 'https://claimed.example.test',
+            'the identical claim' => 'https://claimed.example.test/news',
+        ] as $what => $url) {
+            $claimed = false;
+
+            try {
+                Site::create([
+                    'org_id' => $rival->id, 'handle' => 'steal'.md5($url), 'slug' => 'steal'.md5($url),
+                    'name' => 'Steal', 'locale' => 'de', 'url_strategy' => 'path', 'base_url' => $url,
+                ]);
+                $claimed = true;
+            } catch (Throwable) {
+                // Refused, which is the point.
+            }
+
+            expect($claimed)->toBeFalse("a rival org claimed {$what} [{$url}]");
+        }
+
+        /*
+         * ⚠️ AND THE BOUNDARY, on the SAME host, because a naive `str_starts_with` would refuse
+         * this too. `/newsletter` is not a path under `/news` — it is a sibling whose name merely
+         * begins with the same letters, and refusing it would take expressiveness for nothing.
+         */
+        $sibling = Site::create([
+            'org_id' => $rival->id, 'handle' => 'sibling', 'slug' => 'admin-sibling',
+            'name' => 'Sibling', 'locale' => 'de', 'url_strategy' => 'path',
+            'base_url' => 'https://claimed.example.test/newsletter',
+        ]);
+
+        expect($sibling->exists)->toBeTrue('a sibling prefix that is not a path prefix was refused');
+
+        app(Context::class)->forget();
+    });
+
     it('refuses a BULK write to the columns the derived pair comes from', function (): void {
         /*
          * ⚠️ THE `saving` HOOK IS NOT ENOUGH ON ITS OWN, which review found here.

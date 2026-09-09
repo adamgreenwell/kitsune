@@ -756,6 +756,8 @@ entries
 >
 > ⚠️ The unique index deliberately does **not** lead with `org_id`, which is the carve-out added to AGENTS.md invariant 4 — a global uniqueness claim rather than a lookup index, consumed by a bootstrap that runs before scope exists. Leading with the scope key would permit the very thing the constraint forbids. The migration states both conditions beside the index.
 >
+> ⚠️ **The index is the exact-match backstop, not the whole guarantee.** It cannot see OVERLAPPING claims — org A holding `https://example.test` and org B holding `https://example.test/news` both satisfy it, and longest-prefix resolution then serves org A's hostname from org B. Prefix containment is not an equality, so `Site::refuseOverlappingClaim()` enforces it on save, unscoped, because the question is whether ANOTHER org holds a conflicting claim. Found by review of the implementation.
+>
 > NULL in both columns keeps admin-only sites out of the unique index, because NULLs compare distinct on every engine. An empty string is a real value: `canonical_host = ''` is any host, `path_prefix = ''` is the site root.
 >
 > ⚠️ **Amended again 2026-09-09 — a bare `base_url` needs the strategy, and a prefix has a depth bound.** Both found by review of the implementation.
