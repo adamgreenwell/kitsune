@@ -694,9 +694,34 @@ class Entry extends Model implements RequiresModelSave
             // (`IdentifyEntryType`, `EntryType::visibleFor()`). Precedence is
             // wrong here: erasure has to reach the data, and the shadowed row
             // holds data too. So every match is erased and the counts are summed.
+            // ⚠️ Every type this entry HAS BEEN, not only the one it is now.
+            //
+            // `entries.entry_type_id` is mutable, and erasure has to reach history
+            // (ADR-020). After a move from type A to type B, this lookup found no
+            // A-era field storage at all — so `redactStorage()` fell through to the
+            // inline path, returned 0, and left both the live promoted column or
+            // relation AND every historical snapshot untouched, while reporting
+            // success. An erasure request was answerable only by changing the
+            // entry's type back first, which is not a thing a data subject can ask
+            // for.
+            //
+            // The revisions record the schema each snapshot was written against, so
+            // they name exactly the types whose fields could be holding this
+            // entry's data. The deletion guard keeps that metadata alive, which is
+            // what makes resolving through it possible.
+            $types = EntryRevision::query()
+                ->where('entry_id', $this->getKey())
+                ->distinct()
+                ->pluck('entry_type_id')
+                ->push($this->entry_type_id)
+                ->filter()
+                ->unique()
+                ->values()
+                ->all();
+
             $storages = FieldStorage::query()
                 ->where('handle', $handle)
-                ->whereHas('fields', fn (Builder $query): Builder => $query->where('entry_type_id', $this->entry_type_id))
+                ->whereHas('fields', fn (Builder $query): Builder => $query->whereIn('entry_type_id', $types))
                 ->get();
 
             if ($storages->count() > 1) {
@@ -1057,6 +1082,35 @@ class Entry extends Model implements RequiresModelSave
     }
 
     /**
+     * A relation snapshot with the keys whose field storage has since gone removed.
+     *
+     * ⚠️ ONE implementation, called by the validation and by the rebuild, because
+     * the two disagreeing is precisely the defect this exists to fix. A key
+     * discarded by one and enforced by the other makes a revision unrestorable for
+     * a reason neither half intends.
+     *
+     * Discarded rather than refused: deleting the storage row already nulled those
+     * pivots (`nullOnDelete`), so the relation is gone as a concept — there is no
+     * field left to restore it into, and no version of this entry that could have
+     * it back. Refusing would make every revision written before that field was
+     * removed permanently unrestorable. It is the same rule `relationState()`
+     * applies when it skips a null `field_storage_id`.
+     *
+     * @param  array<array-key, mixed>  $state
+     * @return array<array-key, mixed>
+     */
+    private static function withLiveStorageOnly(array $state): array
+    {
+        $live = FieldStorage::query()
+            ->whereKey(array_map('intval', array_keys($state)))
+            ->pluck('id')
+            ->map(fn (mixed $id): string => (string) $id)
+            ->all();
+
+        return array_intersect_key($state, array_flip($live));
+    }
+
+    /**
      * Refuse a restore whose recorded targets are no longer there.
      *
      * ⚠️ Separate from the rebuild, and run BEFORE any write, because the
@@ -1075,7 +1129,17 @@ class Entry extends Model implements RequiresModelSave
         // whose history was erased, and casting it to an int produced target 0 —
         // refusing every restore of a redacted revision because "entry 0 no
         // longer exists".
-        $targets = collect($state)
+        // ⚠️ Filtered to LIVE storage first, so this agrees with the rebuild.
+        //
+        // `replaceRelations()` discards a key whose storage no longer exists — the
+        // field is gone as a concept, so there is nothing to restore it into. This
+        // check did not, so a revision naming a relation whose storage AND target
+        // had both been deleted was refused for the missing target, even though the
+        // rebuild would have thrown that key away regardless. An unrelated removed
+        // field made the revision permanently unrestorable.
+        //
+        // Two filters that must agree, so there is one of them.
+        $targets = collect(self::withLiveStorageOnly($state))
             ->filter(fn (mixed $ids): bool => $ids !== null)
             ->flatten()
             ->map(fn (mixed $id): int => (int) $id)
@@ -1150,13 +1214,7 @@ class Entry extends Model implements RequiresModelSave
         // would make every revision written before that field was removed
         // permanently unrestorable. It is the same rule `relationState()` applies
         // when it skips a null `field_storage_id`.
-        $live = FieldStorage::query()
-            ->whereKey(array_map('intval', array_keys($state)))
-            ->pluck('id')
-            ->map(fn (mixed $id): string => (string) $id)
-            ->all();
-
-        foreach (array_intersect_key($state, array_flip($live)) as $storageId => $ids) {
+        foreach (self::withLiveStorageOnly($state) as $storageId => $ids) {
             // Unknown: nothing was deleted above and nothing is rebuilt here.
             if ($ids === null) {
                 continue;

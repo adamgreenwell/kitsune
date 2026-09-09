@@ -1806,3 +1806,136 @@ describe('the detach pin does not outlive its delete', function (): void {
         expect(DB::table('entry_relations')->where('target_entry_id', $target->getKey())->count())->toBe(0);
     });
 });
+
+describe('erasure reaches a field the entry no longer has', function (): void {
+    it('erases a PROMOTED field through the type its history records', function (): void {
+        /*
+         * ⚠️ The storage lookup used the entry's CURRENT type, so after a move from
+         * A to B there was no A-era field storage to find — `redactStorage()` fell
+         * through to the inline path, returned 0, and left the live promoted column
+         * AND every historical snapshot untouched while reporting success.
+         *
+         * An erasure request was answerable only by changing the entry's type back
+         * first, which is not something a data subject can ask for (ADR-020).
+         *
+         * The revisions record the schema each snapshot was written against, so they
+         * name exactly the types whose fields could hold this entry's data — and the
+         * deletion guard keeps that metadata alive, which is what makes resolving
+         * through it possible at all.
+         */
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'slug', 'type' => 'slug',
+            'pii_class' => 'personal', 'cardinality' => 1,
+        ]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id,
+            'label' => 'Slug', 'ordering' => 0,
+        ]);
+
+        $entry = anEntry(['title' => 'Alex Doe', 'slug' => 'alex-doe']);
+
+        $other = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'note', 'name' => 'Note', 'plural_name' => 'Notes',
+        ]);
+        $entry->update(['entry_type_id' => $other->id]);
+
+        // The promoted value is still there, on an entry whose type no longer
+        // declares the field.
+        expect($entry->fresh()->slug)->toBe('alex-doe');
+
+        $erased = $entry->redactField('slug');
+
+        expect($erased)->toBeGreaterThan(0)
+            ->and($entry->fresh()->slug)->toBeNull()
+            // And history too, which is the half ADR-020 is explicit about.
+            ->and(EntryRevision::query()->where('entry_id', $entry->getKey())
+                ->whereNotNull('slug')->count())->toBe(0);
+    });
+
+    it('still erases a field the entry does currently have', function (): void {
+        // The widened lookup must not stop answering the ordinary case.
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'slug', 'type' => 'slug',
+            'pii_class' => 'personal', 'cardinality' => 1,
+        ]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id,
+            'label' => 'Slug', 'ordering' => 0,
+        ]);
+
+        $entry = anEntry(['title' => 'Alex Doe', 'slug' => 'alex-two']);
+
+        expect($entry->redactField('slug'))->toBeGreaterThan(0)
+            ->and($entry->fresh()->slug)->toBeNull();
+    });
+});
+
+describe('a removed field does not make a revision unrestorable', function (): void {
+    it('restores a revision naming storage and a target that have both gone', function (): void {
+        /*
+         * ⚠️ `replaceRelations()` discards a snapshot key whose storage no longer
+         * exists — the field is gone as a concept, so there is nothing to restore it
+         * into. `refuseMissingTargets()` did not, so it refused the restore because
+         * the vanished target "no longer exists", even though the rebuild would have
+         * thrown that key away anyway.
+         *
+         * The result was that removing one unrelated field made every revision
+         * written before that point permanently unrestorable — two filters that
+         * must agree, disagreeing.
+         */
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'attachments', 'type' => 'relation',
+            'pii_class' => 'none', 'cardinality' => -1,
+        ]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id,
+            'label' => 'Attachments', 'ordering' => 0,
+        ]);
+
+        $entry = anEntry(['title' => 'Has an attachment']);
+        $target = anEntry(['title' => 'The attachment']);
+
+        $entry->related()->attach($target->getKey(), [
+            'field_storage_id' => $storage->id, 'org_id' => $this->org->id,
+        ]);
+
+        $revision = $entry->revisions()->orderByDesc('id')->firstOrFail();
+        expect($revision->relation_state)->not->toBeNull();
+
+        // Both the target and the field go, in that order.
+        $target->forceDelete();
+        DB::table('field_storage')->where('id', $storage->id)->delete();
+
+        // ⚠️ The restore must SUCCEED: the key is discarded, not enforced.
+        $entry->restoreRevision($revision);
+
+        expect($entry->fresh()->title)->toBe('Has an attachment');
+    });
+
+    it('still refuses when the target is gone and its field is not', function (): void {
+        // The relaxation applies only to storage that has been removed. A missing
+        // target on a LIVE field is still a revision this entry cannot have again.
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'attachments', 'type' => 'relation',
+            'pii_class' => 'none', 'cardinality' => -1,
+        ]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id,
+            'label' => 'Attachments', 'ordering' => 0,
+        ]);
+
+        $entry = anEntry(['title' => 'Has an attachment']);
+        $target = anEntry(['title' => 'The attachment']);
+
+        $entry->related()->attach($target->getKey(), [
+            'field_storage_id' => $storage->id, 'org_id' => $this->org->id,
+        ]);
+
+        $revision = $entry->revisions()->orderByDesc('id')->firstOrFail();
+
+        $target->forceDelete();
+
+        expect(fn () => $entry->restoreRevision($revision))
+            ->toThrow(RuntimeException::class, 'no longer exist');
+    });
+});
