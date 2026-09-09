@@ -625,7 +625,32 @@ final class Pattern
                     return 'the possessive quantifier `}+` — ECMAScript has no possessive form';
                 }
 
+                // ⚠️ CONSUMED, so a `}` the loop meets later is one nothing opened.
+                // Leaving it for the loop is what made a stray `}` invisible: it fell
+                // through as an ordinary character.
+                $i = $closes;
+
                 continue;
+            }
+
+            // ⚠️ A closing delimiter nothing opened. Measured, PCRE compiles and
+            // ECMAScript rejects `a}`, `a]`, `}a`, `a{2,4}b}` and `[]]` — under `u` a
+            // lone quantifier bracket is a syntax error there, while PCRE reads it as
+            // a literal character.
+            //
+            // Only the OPENING `{` was validated, and `]` was recognised solely while
+            // already inside a class, so both closing forms fell straight through. By
+            // the time the scanner reaches here every legitimate one has been
+            // consumed: a quantifier's brace above, a property's in the escape branch,
+            // a class's by the `$inClass` handling, and an escaped one as an escape.
+            if ($char === '}' || $char === ']') {
+                return sprintf(
+                    'the unmatched `%s` — nothing here opens it, and ECMAScript reads a lone '
+                    .'quantifier bracket as a syntax error where PCRE takes it literally. Escape it '
+                    .'as `\%s` if you meant the character',
+                    $char,
+                    $char,
+                );
             }
 
             if (in_array($char, ['*', '+', '?'], true) && mb_substr($pattern, $i + 1, 1) === '+') {

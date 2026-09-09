@@ -1473,6 +1473,41 @@ describe('settings that contradict themselves are refused', function (): void {
             ->and(Pattern::unpublishable('^\S+$'))->toBeNull();
     });
 
+    it('refuses a closing delimiter nothing opened', function (): void {
+        /*
+         * ⚠️ The opposite direction from the brace-form check, and it fell through
+         * because only the OPENING `{` was validated while `]` was recognised solely
+         * when already inside a class.
+         *
+         * Measured, PCRE compiles and ECMAScript rejects all of these: under `u` a
+         * lone quantifier bracket is a syntax error there, while PCRE reads it as an
+         * ordinary character.
+         */
+        expect(Pattern::unpublishable('a}'))->toContain('unmatched')
+            ->and(Pattern::unpublishable('a]'))->toContain('unmatched')
+            ->and(Pattern::unpublishable('}a'))->toContain('unmatched')
+            // A valid quantifier followed by a stray brace: the first is consumed, the
+            // second is not, which is the case a per-construct check has to get right.
+            ->and(Pattern::unpublishable('a{2,4}b}'))->toContain('unmatched')
+            // PCRE reads `[]]` as a class containing `]`; ECMAScript rejects it.
+            ->and(Pattern::unpublishable('[]]'))->toContain('unmatched')
+            // ⚠️ And everything that legitimately closes something must still pass.
+            // By the time the scanner reaches the refusal, a quantifier's brace has
+            // been consumed above, a property's in the escape branch, a class's by the
+            // class handling, and an escaped one as an escape.
+            ->and(Pattern::unpublishable('a{2}'))->toBeNull()
+            ->and(Pattern::unpublishable('^[A-Z]{2,4}$'))->toBeNull()
+            ->and(Pattern::unpublishable('^\p{L}+$'))->toBeNull()
+            ->and(Pattern::unpublishable('^\p{Lu}{1,3}$'))->toBeNull()
+            ->and(Pattern::unpublishable('[a]'))->toBeNull()
+            // A brace inside a class is a literal in both dialects.
+            ->and(Pattern::unpublishable('[}]'))->toBeNull()
+            ->and(Pattern::unpublishable('[a}]'))->toBeNull()
+            ->and(Pattern::unpublishable('a\}'))->toBeNull()
+            ->and(Pattern::unpublishable('a\]'))->toBeNull()
+            ->and(Pattern::unpublishable('^[A-Z]{2}-[0-9]+$'))->toBeNull();
+    });
+
     it('refuses every brace form ECMAScript will not parse', function (): void {
         /*
          * ⚠️ The whole brace form is validated now, not merely checked for a

@@ -134,6 +134,7 @@ This bites hardest on `text`'s `pattern`, because the same string is enforced by
 | `\c1` `\c!` | ECMAScript's control escape takes an ASCII letter; PCRE also reads a digit or punctuation there. `\cA` agrees in both | `\cA` |
 | `a{,2}` `a{}` `a{2,4,6}` `a{ 2}` `a{b}` | ECMAScript accepts only `{n}`, `{n,}` and `{n,m}` as a quantifier and treats anything else as a syntax error; PCRE reads some as quantifiers and the rest as literal text | `{0,2}`, or `\{` |
 | `[a\S]` | `\s` splices into a class; a negation cannot | `[^\s]` |
+| `a}` `a]` `}a` `[]]` | A closing delimiter nothing opened: ECMAScript reads a lone quantifier bracket as a syntax error, PCRE as a literal character | `\}`, `\]` |
 | `[a\E]` `[a\Q!\E]` `[a\N{U+41}]` | These stay **active inside a character class** in PCRE, where the anchors are refused outright | drop them |
 
 Two divergences cannot be screened, because they are in the **engine** rather than the pattern. Both had the API *laxer* than the schema it published, which is the worse direction — a value passes the API and then breaks every generated client.
