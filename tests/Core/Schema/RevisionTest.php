@@ -2048,3 +2048,84 @@ describe('erasure survives the history being pruned', function (): void {
         expect($stillTheirs->slug)->toBe('their-slug');
     });
 });
+
+describe('a shared promoted column is not erased on another field\'s behalf', function (): void {
+    it('leaves the slug alone when the entry\'s own type owns that column', function (): void {
+        /*
+         * ⚠️ This is where "over-approximating is safe" stopped being true, and I had
+         * written that claim down as though it covered all three strategies.
+         *
+         * A promoted column is named for its TYPE, not its handle:
+         * `SlugType::promotedColumn()` returns `slug`, so two differently handled
+         * slug fields both project to `entries.slug`. The widened lookup found a
+         * storage row the entry had never used, and erasing it cleared the slug
+         * belonging to the field the entry DOES use — real data loss, dressed as a
+         * privacy operation.
+         *
+         * Inline and relational are genuinely safe to over-approximate: the first is
+         * located by handle, the second by a pivot carrying both the storage id and
+         * this entry's id. Only the shared physical column breaks it.
+         */
+        // Another type's slug field, with a different handle, never used by our entry.
+        $otherType = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'note', 'name' => 'Note', 'plural_name' => 'Notes',
+        ]);
+        $strangerStorage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'permalink', 'type' => 'slug',
+            'pii_class' => 'personal', 'cardinality' => 1,
+        ]);
+        Field::create([
+            'entry_type_id' => $otherType->id, 'field_storage_id' => $strangerStorage->id,
+            'label' => 'Permalink', 'ordering' => 0,
+        ]);
+
+        // Our entry's own slug field, on our own type.
+        $ours = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'slug', 'type' => 'slug',
+            'pii_class' => 'personal', 'cardinality' => 1,
+        ]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $ours->id,
+            'label' => 'Slug', 'ordering' => 0,
+        ]);
+
+        $entry = anEntry(['title' => 'Ours', 'slug' => 'ours-intact']);
+
+        // Erasing the STRANGER's handle must not touch our slug: our own type owns
+        // that column, so the value is not the stranger's to erase.
+        expect($entry->redactField('permalink'))->toBe(0)
+            ->and($entry->fresh()->slug)->toBe('ours-intact');
+
+        // And our own handle still erases it, or the guard has gone too far.
+        expect($entry->redactField('slug'))->toBeGreaterThan(0)
+            ->and($entry->fresh()->slug)->toBeNull();
+    });
+
+    it('still erases an ORPHANED promoted value the current type does not own', function (): void {
+        // ⚠️ The other side of the same rule, and the two pull in opposite
+        // directions: when nothing on the entry's current type projects to that
+        // column, the value was left behind by a type the entry has moved off — so
+        // the old handle is exactly what should clear it. Refusing here would
+        // recreate the unreachable-data failure ADR-020 forbids.
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'slug', 'type' => 'slug',
+            'pii_class' => 'personal', 'cardinality' => 1,
+        ]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id,
+            'label' => 'Slug', 'ordering' => 0,
+        ]);
+
+        $entry = anEntry(['title' => 'Moved', 'slug' => 'orphaned-slug']);
+
+        // A type with NO slug field at all.
+        $bare = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'bare', 'name' => 'Bare', 'plural_name' => 'Bares',
+        ]);
+        $entry->update(['entry_type_id' => $bare->id]);
+
+        expect($entry->fresh()->slug)->toBe('orphaned-slug')
+            ->and($entry->redactField('slug'))->toBeGreaterThan(0)
+            ->and($entry->fresh()->slug)->toBeNull();
+    });
+});

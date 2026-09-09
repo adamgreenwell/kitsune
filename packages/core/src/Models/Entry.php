@@ -717,11 +717,20 @@ class Entry extends Model implements RequiresModelSave
             // erase, so it costs a query and erases nothing. Under-approximating
             // leaves personal data behind and reports success.
             //
-            // ⚠️ What makes the over-approximation safe is that the ERASURE is
-            // entry-scoped, not that this query is narrow: `redactStorage()` clears
-            // this row's promoted column, this row's `values` key, and pivots whose
-            // source is this entry. A definition belonging to someone else has
-            // nothing of this entry's in it.
+            // ⚠️ The over-approximation is safe for TWO of the three strategies,
+            // and I claimed it was safe for all three. It is not.
+            //
+            // Inline data lives at `values->{handle}`, so every row with this handle
+            // names the same JSON key — the handle alone decides the location.
+            // Relational data lives in pivots carrying that storage's id and this
+            // entry's, so a storage the entry never used has no such rows.
+            //
+            // A PROMOTED column is shared across handles. `SlugType::promotedColumn()`
+            // returns `slug` for the type, not for the handle, so two differently
+            // handled slug fields both project to `entries.slug`. Erasing a storage
+            // this entry never used would then clear the slug that belongs to the
+            // field it DOES use — real data loss, dressed as a privacy operation.
+            // Hence `ownsPromotedColumn()`.
             //
             // The `org_id` filter is hygiene on top of that — consulting another
             // org's definitions is not this entry's business (ADR-021), and a global
@@ -734,7 +743,12 @@ class Entry extends Model implements RequiresModelSave
                 ->where(fn (Builder $query): Builder => $query
                     ->whereNull('org_id')
                     ->orWhere('org_id', $this->org_id))
-                ->get();
+                ->get()
+                // ⚠️ And PROMOTED storage is filtered again, because for that one
+                // strategy over-approximating is NOT safe. See below.
+                ->filter(fn (FieldStorage $candidate): bool => $candidate->strategy() !== StorageStrategy::Promoted
+                    || $this->ownsPromotedColumn($candidate))
+                ->values();
 
             if ($storages->count() > 1) {
                 return (int) $storages->sum(
@@ -744,6 +758,48 @@ class Entry extends Model implements RequiresModelSave
 
             return $this->redactStorage($handle, $storages->first(), $replacement);
         });
+    }
+
+    /**
+     * Whether a promoted storage's shared column holds THIS entry's data for it.
+     *
+     * ⚠️ Needed because a promoted column is named for its TYPE, not its handle:
+     * every slug-typed storage projects to `entries.slug`, whatever it is called. So
+     * "which storage does this entry's slug belong to?" is not answerable from the
+     * column, and erasing the wrong one destroys a live value.
+     *
+     * The rule is ownership by the entry's CURRENT type, with one deliberate
+     * exception: if nothing on the current type projects to that column, the value
+     * is ORPHANED — left behind by a type the entry has since moved off — and the
+     * storage being erased is the only thing that could have written it. Erasing it
+     * then is correct, and refusing to would recreate the unreachable-data failure
+     * that ADR-020 forbids.
+     *
+     * Both cases matter, and they pull in opposite directions:
+     *
+     *   moved to a type WITH its own slug field    the new field owns the column,
+     *                                             so the old handle must not touch it
+     *   moved to a type WITHOUT one                nobody owns it, so the old handle
+     *                                             is exactly what should clear it
+     *
+     * ⚠️ No new schema, and no reliance on revisions. The entry's current type and
+     * the field storage rows are both durable, which is what the previous two
+     * attempts at this lookup each got wrong in turn.
+     */
+    private function ownsPromotedColumn(FieldStorage $storage): bool
+    {
+        $column = $storage->promotedColumn();
+
+        if ($column === null) {
+            return true;
+        }
+
+        $owners = FieldStorage::query()
+            ->whereHas('fields', fn (Builder $query): Builder => $query->where('entry_type_id', $this->entry_type_id))
+            ->get()
+            ->filter(fn (FieldStorage $candidate): bool => $candidate->promotedColumn() === $column);
+
+        return $owners->isEmpty() || $owners->contains(fn (FieldStorage $candidate): bool => $candidate->is($storage));
     }
 
     /**
