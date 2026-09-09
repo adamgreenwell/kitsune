@@ -69,9 +69,27 @@ class EntryResource extends Resource
     public static function form(Schema $schema): Schema
     {
         return $schema->components([
-            TextInput::make('title')->required()->maxLength(255),
+            // ⚠️ `dir="auto"` on the INPUT, not the page. Filament sets `dir` once, on
+            // the root `<html>`, from the panel locale — so every field value renders in
+            // the direction of the CHROME rather than its own. Arabic in an English
+            // admin puts punctuation, parentheses and mixed-direction numerals on the
+            // wrong side; English in an Arabic admin does the mirror.
+            //
+            // The result is legible-ish and wrong, which is the worst kind of broken:
+            // nobody files a bug, editors just work around it. ADR-018 rule 2 exists
+            // because one org has editors working in different languages, and the seed
+            // fixture models exactly that — so bidirectional content in one admin is the
+            // designed case, not an edge one (issue #39).
+            //
+            // `auto` rather than a computed direction: the browser reads the first strong
+            // directional character in the VALUE, per field, per row. It costs nothing
+            // when the content and the chrome agree.
+            TextInput::make('title')->required()->maxLength(255)
+                ->extraInputAttributes(['dir' => 'auto']),
             TextInput::make('slug')
                 ->maxLength(255)
+                // A slug is generated from the title and carries its script.
+                ->extraInputAttributes(['dir' => 'auto'])
                 ->helperText('Left empty for org-shared entries, which are not publicly addressable.')
                 // scopedUnique, never Laravel's unique: that rule does not go
                 // through Eloquent, so it ignores global scopes and would tell
@@ -107,7 +125,11 @@ class EntryResource extends Resource
     {
         return $table
             ->columns([
-                TextColumn::make('title')->searchable()->sortable(),
+                // The same reasoning as the form input: a list of entry titles in one
+                // org can hold several scripts, and the cell has to resolve each on its
+                // own content rather than on the panel's direction.
+                TextColumn::make('title')->searchable()->sortable()
+                    ->extraAttributes(['dir' => 'auto']),
                 TextColumn::make('type_handle')->badge()->label('Type'),
                 TextColumn::make('status')->badge()->sortable(),
                 TextColumn::make('updated_at')->dateTime()->sortable()->toggleable(isToggledHiddenByDefault: true),

@@ -95,6 +95,19 @@ class DatabaseSeeder extends Seeder
             ]);
         }
 
+        // ⚠️ An RTL title in an otherwise LTR org, because issue #39's failure only
+        // appears with bidirectional content in ONE admin — which ADR-018 rule 2 says is
+        // the designed case. Without a row like this the direction tests would have
+        // nothing to measure and would pass by asserting about LTR text in an LTR panel.
+        Entry::create([
+            'entry_type_id' => $article->id,
+            'title' => 'صيانة الملاعب في الأسبوع السابع',
+            'slug' => 'course-maintenance-week-7',
+            'status' => 'published',
+            'values' => ['summary' => 'ملاحظات الأسبوع السابع.'],
+            'published_at' => now()->subDays(7),
+        ]);
+
         foreach (['Fairway mower', 'Bunker rake'] as $i => $name) {
             Entry::create([
                 'entry_type_id' => $product->id,

@@ -123,11 +123,17 @@ grep -rn "setLocale" packages/core/src skeleton/app    # no matches
 ```
 The column is there with a default, and `golfdom-fr` is seeded with one, but no middleware maps a site's locale onto `app()->setLocale()`. Two consequences: an operator cannot reach RTL at all without editing `APP_LOCALE`, and because direction is resolved per *process*, **a multi-site install cannot serve one site RTL and another LTR concurrently**. That is the accurate version of the "locale switcher" claim — a narrower and more actionable statement than the blocker it was written as. Note ADR-018 rule 2: the **UI** locale is a user preference, not a site setting, so this is two mappings and not one, and they can disagree.
 
-**G3 — no per-field content direction, and Filament will not supply it.**
+**G3 — no per-field content direction, and Filament will not supply it. ◐ Partly resolved.**
 ```bash
 grep -rn 'dir=' vendor/filament/*/resources/views | wc -l    # 1
 ```
 Exactly one `dir` in the entire view layer: the root `<html>`. No input, textarea or table cell carries `dir="auto"`. So **content always renders in the direction of the chrome.** An Arabic value in an English admin — or an English value in an Arabic one — gets its punctuation, parentheses and numerals laid out the wrong way. This is not hypothetical for Kitsune: ADR-018 rule 2 exists because one org has editors working in different languages, and the seed fixture already models a bilingual org. `dir="auto"` on field inputs and table cells is Kitsune's to add.
+
+**What is done (issue #39):** every entry value the admin renders today carries `dir="auto"` — the title and slug inputs, and the title column — so each resolves on its own first strong directional character rather than on the panel's. A browser test measures the **rendered** direction with `getComputedStyle().direction` rather than asserting the attribute, because `dir="auto"` can be present and resolve the wrong way; that is the mistake the original RTL check made. The seed now carries an Arabic-titled entry in the otherwise-Latin `golfdom` org, because the failure only appears with bidirectional content in one admin and a test without it would pass by asserting about LTR text in an LTR panel.
+
+⚠️ **What is not done, and why it is not merely unfinished:** the per-field UI does not exist yet. `EntryResource` renders `title`, `slug` and `status` directly; `FieldType::formComponent()` and `tableColumn()` are on the contract in `field-types.md` and implemented by nothing, so there is no textarea, rich-text editor, select or relation picker to attach `dir` to. When that UI lands, the attribute has to land with it — attaching it afterwards means auditing every component, which is the argument ADR-018 makes for the no-bare-strings rule.
+
+Rich text is ready at the storage layer: `dir` is already in `RichTextType::ALLOWED_ATTRIBUTES`, so per-block direction survives sanitising — verified, `<p dir="rtl">…</p><p dir="ltr">…</p>` round-trips while `style` and `onclick` do not. What cannot be demonstrated yet is per-block direction **rendering**, because nothing renders rich text.
 
 **G4 — `field_storage.translation_scope` is declared and unread.**
 ```bash
