@@ -18,6 +18,8 @@ use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Audit\AuditedBuilder;
+use Kitsune\Core\Fields\FieldConfig;
+use Kitsune\Core\Fields\FieldTypeRegistry;
 use Kitsune\Core\Fields\StorageStrategy;
 use Kitsune\Core\Relations\GuardedBelongsToMany;
 use Kitsune\Core\Schema\RevisionWrites;
@@ -85,6 +87,20 @@ class Entry extends Model implements RequiresModelSave
 
     protected static function booted(): void
     {
+        // ⚠️ CONVERSION FIRST, before any guard reads a value.
+        //
+        // `FieldType::toStorage()` is declared on the contract, implemented by all
+        // twelve types, and until now had no caller on any save path — so whatever
+        // a caller put in `values` was what got stored. For `rich_text` that means
+        // the sanitiser never ran: field-types.md §6 calls it the only XSS vector in
+        // v1 and requires it be sanitized on write, and that requirement was simply
+        // unmet (issue #42).
+        //
+        // Registered first so every later guard, and every projection, sees the
+        // value in its STORED form rather than the submitted one. A guard that
+        // inspects a value the pipeline is about to rewrite is inspecting a draft.
+        static::saving(fn (self $entry) => $entry->convertValuesForStorage());
+
         // type_handle is denormalised for routing lookups, so it must never
         // disagree with the type it points at.
         // ⚠️ A SITE change revalidates the relations pointing at this entry.
@@ -277,6 +293,20 @@ class Entry extends Model implements RequiresModelSave
     {
         return [
             'type_handle' => 'it is derived from entry_type_id, and a bulk write skips the restamp that keeps them agreeing.',
+            // ⚠️ `values` because the value-conversion pipeline runs in `saving`.
+            //
+            // `FieldType::toStorage()` is what sanitises rich text, and a bulk write
+            // dispatches nothing — so it would store exactly the bytes it was given,
+            // `<script>` included (issue #42, field-types.md §6). The model is fully
+            // mass assignable, so the only mechanism that holds is refusing the shape
+            // that skips the conversion.
+            //
+            // This does not touch the writes that legitimately set `values` directly:
+            // erasure and restore go through an instance save, which runs the
+            // pipeline, and `ScopeWrites::suspended()` covers the internal paths.
+            'values' => 'every value is converted through its field type on save, and rich text is '
+                .'sanitized there — a bulk write dispatches nothing, so it would store what it was '
+                .'handed.',
         ];
     }
 
@@ -974,6 +1004,85 @@ class Entry extends Model implements RequiresModelSave
      * Diffs remain the better fix and would raise this number, not remove it.
      */
     public const KEEP_REVISIONS = 50;
+
+    /**
+     * Put every submitted value through its field type's `toStorage()`.
+     *
+     * ⚠️ This is the value-conversion pipeline, and its absence was a security
+     * requirement going unmet rather than an untidiness. `RichTextType::toStorage()`
+     * sanitises; nothing called it; so `<p>Hello</p><script>alert(1)</script>` was
+     * stored verbatim (issue #42, field-types.md §6).
+     *
+     * ⚠️ THE GUARD IS WHERE THE WRITE IS. The model is fully mass assignable, so
+     * "callers should convert first" is not a mechanism — it is a hope. Every path
+     * that stores an entry ends at a model save, so the conversion lives here and
+     * `columnsRequiringModelSave()` refuses the one shape that would skip it.
+     *
+     * ⚠️ Only when the value actually changed. This resolves the type's fields,
+     * which is a query, and an entry is saved for many reasons that touch no field
+     * value at all — a slug restamp, a site move, an erasure of a different field.
+     * Converting unconditionally would put that query on all of them.
+     *
+     * Relational fields are deliberately not handled here: their data is rows in
+     * `entry_relations`, written through the relation API and its guarded builder,
+     * not through any attribute on this model. There is no submitted value on the
+     * entry for `toStorage()` to convert.
+     */
+    private function convertValuesForStorage(): void
+    {
+        $type = EntryType::query()->whereKey($this->entry_type_id)->first();
+
+        if ($type === null) {
+            // The foreign key's job to report, not this one's.
+            return;
+        }
+
+        $registry = app(FieldTypeRegistry::class);
+        $values = $this->values ?? [];
+        $converted = $values;
+
+        foreach ($type->fields()->with('fieldStorage')->get() as $field) {
+            $storage = $field->fieldStorage;
+
+            if ($storage === null || ! $registry->has((string) $storage->type)) {
+                continue;
+            }
+
+            $fieldType = $registry->get((string) $storage->type);
+            $config = new FieldConfig($storage, $field, $this);
+            $handle = (string) $storage->handle;
+
+            if ($storage->strategy() === StorageStrategy::Inline) {
+                // Absent is not the same as null: a key the caller did not send must
+                // stay unsent, or every save would write a null over every field the
+                // form did not include.
+                if (array_key_exists($handle, $values)) {
+                    $converted[$handle] = $fieldType->toStorage($values[$handle], $config);
+                }
+
+                continue;
+            }
+
+            if ($storage->strategy() !== StorageStrategy::Promoted) {
+                continue;
+            }
+
+            $column = $storage->promotedColumn();
+
+            // ⚠️ Only a DIRTY promoted column. The column is shared across handles
+            // (see `ownsPromotedColumn()`), so converting one that was not submitted
+            // would run another field's value through this field's type.
+            if ($column === null || ! $this->isDirty($column)) {
+                continue;
+            }
+
+            $this->setAttribute($column, $fieldType->toStorage($this->getAttribute($column), $config));
+        }
+
+        if ($converted !== $values) {
+            $this->values = $converted;
+        }
+    }
 
     /**
      * Every saved version, newest first.
