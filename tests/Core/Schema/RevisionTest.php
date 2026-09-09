@@ -1939,3 +1939,112 @@ describe('a removed field does not make a revision unrestorable', function (): v
             ->toThrow(RuntimeException::class, 'no longer exist');
     });
 });
+
+describe('erasure survives the history being pruned', function (): void {
+    it('erases a former type\'s field after every revision recording it is gone', function (): void {
+        /*
+         * ⚠️ My previous fix resolved storage through the types the REVISIONS record,
+         * and history is BOUNDED — so it was a durable answer derived from a prunable
+         * source.
+         *
+         * Once an entry accumulates `KEEP_REVISIONS` versions under its new type,
+         * `pruneRevisions()` drops the last revision recording the old one. The type
+         * set then silently forgets type A while A's promoted column is still live on
+         * the row, and `redactField()` falls back to the inline path and returns 0 —
+         * the exact failure the earlier round fixed, reappearing once the history
+         * rolls over.
+         *
+         * The lookup asks the storage rows instead, which are durable.
+         */
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'slug', 'type' => 'slug',
+            'pii_class' => 'personal', 'cardinality' => 1,
+        ]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id,
+            'label' => 'Slug', 'ordering' => 0,
+        ]);
+
+        $entry = anEntry(['title' => 'Alex Doe', 'slug' => 'alex-pruned']);
+
+        $other = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'note', 'name' => 'Note', 'plural_name' => 'Notes',
+        ]);
+        $entry->update(['entry_type_id' => $other->id]);
+
+        // Roll the history over, so nothing recording the old type survives.
+        for ($i = 0; $i <= Entry::KEEP_REVISIONS; $i++) {
+            $entry->update(['title' => 'Edit '.$i]);
+        }
+
+        expect(EntryRevision::query()->where('entry_id', $entry->getKey())
+            ->where('entry_type_id', $this->type->id)->count())->toBe(0)
+            // The promoted value is still there, with nothing left recording its type.
+            ->and($entry->fresh()->slug)->toBe('alex-pruned');
+
+        expect($entry->redactField('slug'))->toBeGreaterThan(0)
+            ->and($entry->fresh()->slug)->toBeNull();
+    });
+
+    it('touches only this entry, whatever storage the widened lookup finds', function (): void {
+        /*
+         * ⚠️ The lookup no longer filters by entry type, so it is worth being exact
+         * about WHAT keeps this from reaching a rival's data — because it is not the
+         * org filter on the query.
+         *
+         * The erasure is ENTRY-scoped: `redactStorage()` clears this row's promoted
+         * column, this row's `values` key, and pivots whose source is this entry. A
+         * storage definition it consults that belongs to someone else has nothing of
+         * this entry's to erase, so it erases nothing. That is what makes
+         * over-approximating safe, and it is the property asserted here.
+         *
+         * The `org_id` filter is still there and still right — consulting another
+         * org's definitions is not this entry's business (ADR-021) — but it is
+         * hygiene, not the boundary. Removing it does not make this test fail, which
+         * is precisely why the test says what it says: a test whose comment claims a
+         * guarantee it does not exercise is worse than no test.
+         */
+        $rival = Org::create(['name' => 'Rival', 'slug' => 'rev-rival-org']);
+        $rivalType = EntryType::create([
+            'org_id' => $rival->id, 'handle' => 'article', 'name' => 'A', 'plural_name' => 'As',
+        ]);
+        $rivalStorage = FieldStorage::create([
+            'org_id' => $rival->id, 'handle' => 'slug', 'type' => 'slug',
+            'pii_class' => 'personal', 'cardinality' => 1,
+        ]);
+        Field::create([
+            'entry_type_id' => $rivalType->id, 'field_storage_id' => $rivalStorage->id,
+            'label' => 'Slug', 'ordering' => 0,
+        ]);
+
+        $theirs = Entry::withoutScopeBecause(
+            'creating another org\'s entry to prove an erasure on ours does not touch it',
+            fn ($query) => $query->create([
+                'entry_type_id' => $rivalType->id, 'org_id' => $rival->id,
+                'site_id' => null, 'type_handle' => 'article',
+                'title' => 'Theirs', 'slug' => 'their-slug',
+            ]),
+        );
+
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'slug', 'type' => 'slug',
+            'pii_class' => 'personal', 'cardinality' => 1,
+        ]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id,
+            'label' => 'Slug', 'ordering' => 0,
+        ]);
+
+        $mine = anEntry(['title' => 'Mine', 'slug' => 'my-slug']);
+
+        expect($mine->redactField('slug'))->toBeGreaterThan(0)
+            ->and($mine->fresh()->slug)->toBeNull();
+
+        $stillTheirs = Entry::withoutScopeBecause(
+            'reading the rival entry back to prove it was not touched',
+            fn ($query) => $query->whereKey($theirs->getKey())->first(),
+        );
+
+        expect($stillTheirs->slug)->toBe('their-slug');
+    });
+});

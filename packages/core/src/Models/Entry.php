@@ -694,34 +694,46 @@ class Entry extends Model implements RequiresModelSave
             // (`IdentifyEntryType`, `EntryType::visibleFor()`). Precedence is
             // wrong here: erasure has to reach the data, and the shadowed row
             // holds data too. So every match is erased and the counts are summed.
-            // ⚠️ Every type this entry HAS BEEN, not only the one it is now.
+            // ⚠️ NOT filtered by entry type at all, and the two narrower versions of
+            // this lookup were both wrong.
             //
             // `entries.entry_type_id` is mutable, and erasure has to reach history
-            // (ADR-020). After a move from type A to type B, this lookup found no
-            // A-era field storage at all — so `redactStorage()` fell through to the
-            // inline path, returned 0, and left both the live promoted column or
-            // relation AND every historical snapshot untouched, while reporting
-            // success. An erasure request was answerable only by changing the
-            // entry's type back first, which is not a thing a data subject can ask
-            // for.
+            // (ADR-020). Filtering on the CURRENT type found no A-era field storage
+            // after a move from A to B, so `redactStorage()` fell through to the
+            // inline path, returned 0, and left the live promoted column or relation
+            // AND every historical snapshot untouched while reporting success.
             //
-            // The revisions record the schema each snapshot was written against, so
-            // they name exactly the types whose fields could be holding this
-            // entry's data. The deletion guard keeps that metadata alive, which is
-            // what makes resolving through it possible.
-            $types = EntryRevision::query()
-                ->where('entry_id', $this->getKey())
-                ->distinct()
-                ->pluck('entry_type_id')
-                ->push($this->entry_type_id)
-                ->filter()
-                ->unique()
-                ->values()
-                ->all();
-
+            // ⚠️ Filtering on the types the REVISIONS record was the second attempt
+            // and it fails for a subtler reason: history is bounded. Once an entry
+            // accumulates `KEEP_REVISIONS` B-era versions, `pruneRevisions()` drops
+            // the last A-era revision — and the type set silently forgets A while
+            // A's promoted column or relation is still live on the row. A prunable
+            // store cannot be the durable record of every former type.
+            //
+            // So the question is asked of the storage rows themselves, which ARE
+            // durable: any row with this handle that this org could have used. That
+            // over-approximates, and over-approximating is the safe direction here —
+            // a storage row this entry never used has nothing of this entry's to
+            // erase, so it costs a query and erases nothing. Under-approximating
+            // leaves personal data behind and reports success.
+            //
+            // ⚠️ What makes the over-approximation safe is that the ERASURE is
+            // entry-scoped, not that this query is narrow: `redactStorage()` clears
+            // this row's promoted column, this row's `values` key, and pivots whose
+            // source is this entry. A definition belonging to someone else has
+            // nothing of this entry's in it.
+            //
+            // The `org_id` filter is hygiene on top of that — consulting another
+            // org's definitions is not this entry's business (ADR-021), and a global
+            // row (`org_id` null) genuinely is shared by every org. It is stated
+            // that way rather than as "the boundary", because removing it does not
+            // let an erasure reach another org's data and claiming otherwise would
+            // misdirect whoever audits this next.
             $storages = FieldStorage::query()
                 ->where('handle', $handle)
-                ->whereHas('fields', fn (Builder $query): Builder => $query->whereIn('entry_type_id', $types))
+                ->where(fn (Builder $query): Builder => $query
+                    ->whereNull('org_id')
+                    ->orWhere('org_id', $this->org_id))
                 ->get();
 
             if ($storages->count() > 1) {
