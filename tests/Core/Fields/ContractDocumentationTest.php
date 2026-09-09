@@ -73,7 +73,7 @@ $signaturesFromDocumentation = function (): array {
     }
 
     preg_match_all(
-        '/public\s+(?:static\s+)?function\s+(\w+)\s*\(([^)]*)\)\s*:\s*([^;]+);/',
+        '/public\s+(static\s+)?function\s+(\w+)\s*\(([^)]*)\)\s*:\s*([^;]+);/',
         $section,
         $matches,
         PREG_SET_ORDER,
@@ -82,12 +82,44 @@ $signaturesFromDocumentation = function (): array {
     $signatures = [];
 
     foreach ($matches as $match) {
-        $parameters = trim($match[2]) === '' ? 0 : count(explode(',', $match[2]));
-        $signatures[$match[1]] = ['parameters' => $parameters, 'returns' => trim($match[3])];
+        $signatures[$match[2]] = [
+            // ⚠️ Parameter TYPES, not just a count, and the count alone was the gap. A
+            // method changing from `projection(FieldConfig $config)` to
+            // `projection(SomethingElse $x)` kept an identical representation, so the
+            // document could hold an incompatible signature while all four tests passed —
+            // recreating exactly the drift this file exists to catch.
+            'parameters' => documentedParameters($match[3]),
+            'returns' => trim($match[4]),
+            // ⚠️ And staticness. `handle()`, `label()` and `icon()` are static; a switch
+            // either way is a breaking change to every implementation and was invisible
+            // here.
+            'static' => trim($match[1]) !== '',
+        ];
     }
 
     return $signatures;
 };
+
+/**
+ * The parameter types a documented signature declares, in order.
+ *
+ * Types only — a rename is a documentation improvement, not drift, and comparing names
+ * would make this test fail for edits that improve the document.
+ *
+ * @return list<string>
+ */
+function documentedParameters(string $inside): array
+{
+    if (trim($inside) === '') {
+        return [];
+    }
+
+    return array_map(
+        // `mixed $input` -> `mixed`; a promoted or defaulted parameter keeps its type.
+        static fn (string $parameter): string => (string) (preg_split('/\s+/', trim($parameter))[0] ?? ''),
+        explode(',', $inside),
+    );
+}
 
 $spell = function (?ReflectionType $type): string {
     if (! $type instanceof ReflectionNamedType) {
@@ -103,7 +135,11 @@ $signaturesFromInterface = function () use ($spell): array {
 
     foreach ((new ReflectionClass(FieldType::class))->getMethods() as $method) {
         $signatures[$method->getName()] = [
-            'parameters' => $method->getNumberOfParameters(),
+            'parameters' => array_map(
+                static fn (ReflectionParameter $parameter): string => $spell($parameter->getType()),
+                $method->getParameters(),
+            ),
+            'static' => $method->isStatic(),
             // ⚠️ Built from getName(), not from casting the type. `(string) $type`
             // ALREADY carries the `?`, so prepending one produced `??string` and the
             // first run failed on `promotedColumn()` for a difference that did not
@@ -156,9 +192,11 @@ it('agrees with the interface on parameter count and return type', function () u
 
     foreach (array_intersect_key($declared, $documented) as $name => $actual) {
         expect($documented[$name]['parameters'])
-            ->toBe($actual['parameters'], "docs/field-types.md §3 gives {$name}() the wrong parameter count")
+            ->toBe($actual['parameters'], "docs/field-types.md §3 gives {$name}() the wrong parameter types")
             ->and($documented[$name]['returns'])
-            ->toBe($actual['returns'], "docs/field-types.md §3 gives {$name}() the wrong return type");
+            ->toBe($actual['returns'], "docs/field-types.md §3 gives {$name}() the wrong return type")
+            ->and($documented[$name]['static'])
+            ->toBe($actual['static'], "docs/field-types.md §3 disagrees on whether {$name}() is static");
     }
 });
 

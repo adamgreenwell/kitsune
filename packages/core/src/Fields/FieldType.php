@@ -14,12 +14,19 @@ namespace Kitsune\Core\Fields;
  * The contract every field type answers.
  *
  * Most of the schema engine's difficulty is not the engine — it is that every
- * field type has to be right in FOUR places at once: storage, form, table and
- * API. Get the contract right and adding a type is filling in a form; get it
- * wrong and the engine becomes twelve special cases wearing a trenchcoat.
+ * field type has to be right in several places at once: storage, UI, API and
+ * validation. Get the contract right and adding a type is filling in a form; get
+ * it wrong and the engine becomes twelve special cases wearing a trenchcoat.
  *
- * A type that answers three of the four is not shippable. The most common
- * failure is one that edits beautifully and cannot be queried.
+ * ⚠️ This used to say "a type that answers three of the four is not shippable"
+ * while all twelve shipped types answered exactly three — there was no UI method
+ * at all until `control()`. An aspiration phrased as an invariant is worse than
+ * either, because it makes a real gap look like a rule already held. The UI face
+ * is now one method returning a KIND of control, never a component (ADR-029).
+ *
+ * The failure it warned about is real in its accurate form: one that edits
+ * beautifully and cannot be queried, because storage is the face with no visible
+ * symptom when it is wrong.
  */
 interface FieldType
 {
