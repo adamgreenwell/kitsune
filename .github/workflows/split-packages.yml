@@ -5,11 +5,30 @@ name: Split packages
 # this monorepo; the split repositories are mirrors and take no pull requests.
 #
 # SETUP REQUIRED before this can run:
-#   1. Create the target repository (adamgreenwell/core) as an empty public repo
-#   2. Add a repository secret ACCESS_TOKEN — a PAT with `repo` scope on it
-#   3. Register kitsune/core on Packagist, pointed at the mirror
+#   1. Create the `kitsune-cms` GitHub organisation, then an EMPTY PUBLIC repo
+#      `kitsune-cms/core` inside it. Empty means no README, licence or
+#      .gitignore: the split action force-pushes a synthesised history and
+#      would overwrite them.
+#   2. On THIS repository, add a secret ACCESS_TOKEN. Prefer a fine-grained PAT
+#      scoped to `kitsune-cms/core` alone with Contents: read and write — a
+#      classic `repo`-scope token grants write access to every repository the
+#      owner has, and this needs exactly one. Fine-grained tokens must be
+#      permitted in the org's settings; otherwise a classic PAT is the fallback.
+#   3. Register `kitsune/core` on Packagist pointed at the MIRROR, not at this
+#      monorepo, and add Packagist's webhook so it updates on push.
 #
 # Until then this workflow is inert: it only fires on tags, and none exist.
+#
+# ⚠️ The mirror lives in an ORGANISATION rather than a personal namespace, and
+# the name is deliberate. `adamgreenwell/core` said nothing about the project and
+# would not have scaled — a second split package would have been another
+# unqualified name with no association to the first. GOVERNANCE.md also commits
+# to sharing repository and Packagist access at the second maintainer, which is a
+# permissions change in an org and a repo transfer without one.
+#
+# The Composer name stays `kitsune/core`: the vendor is unclaimed on Packagist,
+# it is already what the skeleton depends on and what the roadmap names, and a
+# Composer vendor need not match a GitHub org.
 on:
   push:
     tags:
@@ -44,7 +63,7 @@ jobs:
         with:
           tag: ${{ github.ref_name }}
           package_directory: packages/${{ matrix.package }}
-          repository_organization: adamgreenwell
+          repository_organization: kitsune-cms
           repository_name: ${{ matrix.repository }}
           user_name: 'github-actions[bot]'
           user_email: '41898282+github-actions[bot]@users.noreply.github.com'

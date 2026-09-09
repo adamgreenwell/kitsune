@@ -23,10 +23,20 @@ use RuntimeException;
  * Turns a field type's `settingsSchema()` data into Filament components.
  *
  * This class is why `settingsSchema()` returns an array instead of Filament
- * components. ADR-002 keeps core headless-capable: a field type that built
- * `TextInput::make(...)` would make `kitsune/core` depend on a panel, and the
- * API and the CLI would have nothing to render. The description is data; the
- * admin is one renderer of it, and a headless client can be another.
+ * components: a field type describes a control and the panel builds it (ADR-029).
+ *
+ * ⚠️ THIS DOCBLOCK USED TO GIVE A REASON THAT WAS FALSE, and it was cited from
+ * seven other places. It said ADR-002 kept core headless-capable so a type
+ * building `TextInput::make(...)` "would make kitsune/core depend on a panel" —
+ * but core hard-requires `filament/filament ^5.4` (ADR-008), so it already does,
+ * and ADR-002 is a five-line delivery decision that says nothing about return
+ * types. The rule was right and had never been decided; ADR-029 decides it.
+ *
+ * The reason that actually holds is EXHAUSTIVENESS. Because every control passes
+ * through this renderer, a cross-cutting presentation concern has exactly one
+ * place to live — and a thirteenth field type cannot omit it, because it never
+ * gets to decide. Twelve types each returning a finished component is twelve
+ * chances to forget, which is the reach failure `dir="auto"` already hit twice.
  *
  * It fails closed on an unknown descriptor. Silently skipping one would
  * produce a settings form missing a control, and the field would then be
@@ -47,6 +57,66 @@ final class SettingsSchemaRenderer
         }
 
         return $components;
+    }
+
+    /**
+     * Applies a descriptor's `maxLength`, and refuses to drop one it cannot apply.
+     *
+     * ⚠️ IT WAS THE ONE PUBLISHED KEY THIS RENDERER IGNORED (issue #48). `TextType`
+     * declares `maxLength => Pattern::MAX_LENGTH` on its `pattern` descriptor with the
+     * comment "published because it is enforced", and the form imposed no limit at all —
+     * so an author discovered the bound only when the save was refused.
+     *
+     * ⚠️ Established by ENUMERATION, not by fixing what was reported. Every key the twelve
+     * types publish was compared against every key this method consumes: `default`, `help`,
+     * `label`, `nullable`, `options`, `optionsFrom` and `type` are all read, and `maxLength`
+     * was the only one that was not. The issue also asked about `min`, `max` and `step` on
+     * `number` — those are descriptor NAMES rather than descriptor keys, so there is no
+     * second instance.
+     *
+     * ⚠️ AND IT IS NOT THE ENFORCEMENT. The server refuses an over-long pattern —
+     * `Pattern::lengthRefusal()`, consulted by `unpublishable()`, `delimit()` and
+     * `validateSettings()` — and a `maxlength` attribute is something a client can ignore
+     * (invariant 6). This is a courtesy to the author, and the test asserts both halves so
+     * nobody later "simplifies" by keeping only one.
+     *
+     * ⚠️ FAILS CLOSED on a descriptor that cannot express a length, matching this class's
+     * existing posture on an unknown descriptor type: silently dropping the key is how a
+     * published constraint becomes a lie, which is the defect being fixed.
+     *
+     * ⚠️ GATED ON THE DECLARED TYPE, NOT ON THE COMPONENT CLASS, and the difference is not
+     * cosmetic. `integer` and `number` descriptors also render a `TextInput`, so an
+     * `instanceof` check accepted them and applied `maxLength()` to a numeric control —
+     * where a browser ignores the `maxlength` attribute outright and numeric validation
+     * reads a maximum as a VALUE bound rather than a digit count. The form then imposed a
+     * DIFFERENT constraint from the one published, which is a worse failure than imposing
+     * none: the author cannot see it, and neither can the type that published it.
+     *
+     * `string` is required positively rather than numeric types being excluded, so a
+     * descriptor type added later cannot inherit a length silently by not being on a
+     * denylist.
+     *
+     * @param  array<string, mixed>  $descriptor
+     */
+    private static function withLength(mixed $component, string $key, array $descriptor): mixed
+    {
+        if (! isset($descriptor['maxLength'])) {
+            return $component;
+        }
+
+        if (($descriptor['type'] ?? null) !== 'string' || ! $component instanceof TextInput) {
+            throw new RuntimeException(sprintf(
+                'Setting [%s] declares maxLength on a [%s] descriptor, which cannot express a '
+                .'string length. The renderer fails closed rather than dropping it or applying '
+                .'something else: a published constraint the form does not apply is a constraint '
+                .'the author only meets by accident, and one the form applies DIFFERENTLY is one '
+                .'nobody can see is wrong.',
+                $key,
+                is_string($descriptor['type'] ?? null) ? $descriptor['type'] : get_debug_type($descriptor['type'] ?? null),
+            ));
+        }
+
+        return $component->maxLength((int) $descriptor['maxLength']);
     }
 
     /**
@@ -95,7 +165,7 @@ final class SettingsSchemaRenderer
             $component = $component->helperText($descriptor['help']);
         }
 
-        return $component;
+        return self::withLength($component, $key, $descriptor);
     }
 
     /**
@@ -140,9 +210,9 @@ final class SettingsSchemaRenderer
      * key produced an empty list, and since an empty `targetTypes` means
      * unrestricted, the constraint could not be configured at all.
      *
-     * A NAME rather than a closure, because `settingsSchema()` returns data so
-     * that core stays usable headless (ADR-002). A closure would tie the
-     * declaration to Filament.
+     * A NAME rather than a closure, because `settingsSchema()` returns data: a
+     * field type describes, the panel builds (ADR-029). A closure would put a
+     * Filament callable in the description and be callable from nowhere else.
      *
      * @param  array<string, mixed>  $descriptor
      * @return array<string, string>

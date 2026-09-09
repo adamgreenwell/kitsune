@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use Kitsune\Core\Fields\Control;
 use Kitsune\Core\Fields\FieldTypeRegistry;
 use Kitsune\Core\Fields\LogicalType;
 use Kitsune\Core\Fields\Types\BaseFieldType;
@@ -668,6 +669,15 @@ it('refuses a second implementation behind one handle', function (): void {
         public static function handle(): string
         {
             return 'text';
+        }
+
+        // ⚠️ Required because `control()` has no default on `BaseFieldType`,
+        // deliberately: a field type that inherits a control kind inherits a
+        // text direction nobody chose for it (ADR-029). A double is a field
+        // type and answers like one.
+        public function control(): Control
+        {
+            return Control::Line;
         }
 
         public static function label(): string

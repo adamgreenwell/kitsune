@@ -653,7 +653,7 @@ class FieldStorage extends Model
      *
      * ⚠️ GENERIC on purpose: the model asks the TYPE rather than knowing about
      * patterns or numeric bounds. `validateSettings()` takes data and returns a
-     * reason (ADR-002 keeps core headless-capable), so a new type declaring a
+     * reason rather than a rendered control (ADR-029), so a new type declaring a
      * constraint is enforced here with no change to this method — and the
      * alternative, a `pattern` or `min`/`max` special case in the model, is how a
      * field-type concern leaks into every layer that touches it.

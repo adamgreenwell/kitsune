@@ -11,6 +11,7 @@ declare(strict_types=1);
 namespace Kitsune\Core\Fields\Types;
 
 use Closure;
+use Kitsune\Core\Fields\Control;
 use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Fields\LogicalType;
 use Kitsune\Core\Fields\Pattern;
@@ -31,6 +32,15 @@ final class TextType extends BaseFieldType
     public static function icon(): string
     {
         return 'heroicon-o-bars-3-bottom-left';
+    }
+
+    /**
+     * One line of text. `slug` answers the same, and both are `Auto`: a title or a
+     * handle is authored text and may be in any script.
+     */
+    public function control(): Control
+    {
+        return Control::Line;
     }
 
     public function isIndexable(): bool

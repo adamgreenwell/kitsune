@@ -11,6 +11,7 @@ declare(strict_types=1);
 namespace Kitsune\Core\Fields\Types;
 
 use Closure;
+use Kitsune\Core\Fields\Control;
 use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Fields\LogicalType;
 use Kitsune\Core\Fields\Projection;
@@ -30,6 +31,14 @@ final class NumberType extends BaseFieldType
     public static function icon(): string
     {
         return 'heroicon-o-hashtag';
+    }
+
+    /**
+     * Digits the app formats, so `Neutral`: there is no authored script to resolve.
+     */
+    public function control(): Control
+    {
+        return Control::Number;
     }
 
     public function isIndexable(): bool

@@ -11,6 +11,7 @@ declare(strict_types=1);
 namespace Kitsune\Core\Fields\Types;
 
 use Illuminate\Validation\Rule as LaravelRule;
+use Kitsune\Core\Fields\Control;
 use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Fields\LogicalType;
 use Kitsune\Core\Fields\Projection;
@@ -30,6 +31,16 @@ final class SelectType extends BaseFieldType
     public static function icon(): string
     {
         return 'heroicon-o-chevron-up-down';
+    }
+
+    /**
+     * ⚠️ `Auto`, not `Neutral`, and this is the one that looks like chrome and is not.
+     * A select shows option LABELS, and an org may label its statuses in Arabic as
+     * readily as in English.
+     */
+    public function control(): Control
+    {
+        return Control::Choice;
     }
 
     public function isIndexable(): bool

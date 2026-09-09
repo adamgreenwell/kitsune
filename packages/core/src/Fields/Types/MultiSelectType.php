@@ -11,6 +11,7 @@ declare(strict_types=1);
 namespace Kitsune\Core\Fields\Types;
 
 use Illuminate\Validation\Rule;
+use Kitsune\Core\Fields\Control;
 use Kitsune\Core\Fields\FieldConfig;
 
 /**
@@ -36,6 +37,14 @@ final class MultiSelectType extends BaseFieldType
     public static function icon(): string
     {
         return 'heroicon-o-list-bullet';
+    }
+
+    /**
+     * Same reasoning as `select`: the labels are authored text.
+     */
+    public function control(): Control
+    {
+        return Control::Choices;
     }
 
     public function supportsCardinality(): bool

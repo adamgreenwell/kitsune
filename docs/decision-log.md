@@ -1247,6 +1247,50 @@ From prior-art analysis of Drupal, October, Winter, Statamic, Directus, Strapi, 
 
 ---
 
+## ADR-029 — Core describes a control; the panel builds it
+
+**Status:** Decided · 2026-09-09
+
+Found while starting the per-field admin UI (issue #39), and recorded because the rule was already being enforced across eight docblocks without ever having been decided.
+
+`SettingsSchemaRenderer` turns a field type's `settingsSchema()` **data** into Filament components, and its docblock explains why the method returns an array:
+
+> ADR-002 keeps core headless-capable: a field type that built `TextInput::make(...)` would make `kitsune/core` depend on a panel, and the API and the CLI would have nothing to render.
+
+**Both halves of that justification are wrong, and the rule is still right.**
+
+- **The dependency claim is factually stale.** `packages/core/composer.json` hard-requires `filament/filament ^5.4`, which is ADR-008 (*"Kitsune's admin is a Filament v5 panel … Pin `^5.4`"*). Core already depends on a panel. Nothing a field type returns can change that.
+- **ADR-002 does not contain the rule.** It is five lines — a title, a status marked deferred to v1.1, and a two-row rejected table — about *delivery*: ship a headless surface **and** a Blade theme layer rather than only one. It says nothing about what a core class may return. Eight places cited it for a constraint it never stated.
+- **The second clause is not stale but is currently vacuous.** There is no CLI consumer of `settingsSchema()` and no API consumer: `Console` holds three benchmark and schema-sync commands, `Http` holds four middleware, there are no controllers and no resources, and ADR-011 defers the REST API to v1.1. "The API and the CLI would have nothing to render" describes no consumer that exists.
+
+### Decision
+
+**A field type describes a control. The panel builds it.** The description is a value object over a closed vocabulary; construction of Filament objects happens only in `Kitsune\Core\Filament`.
+
+This is ADR-028's ruling generalised. That amendment replaced `generatedColumnType(SchemaDriver)` with `projection(FieldConfig): ?Projection` and gave the reason in one line: **"handing it one was the wrong seam."** A driver is a rendering concern for storage; a Filament component is a rendering concern for the UI. Same seam, same answer, and `Projection` is the precedent for the shape — a description, not the rendered thing.
+
+**The load-bearing reason is exhaustiveness, not portability.** A closed vocabulary gives the renderer a single place through which every control passes, and that is the only structure in which a cross-cutting presentation concern can be made unforgettable rather than merely documented. `dir="auto"` is the case in hand: issue #39 has already shipped that attribute three times and been short of complete twice, both times because the reach of a correct rule depended on somebody enumerating call sites. A field type that returned a finished `TextInput` would put the decision back in twelve places, and a thirteenth type could omit it silently.
+
+So the test of this ADR is not "can a non-panel consumer render it" — there is no such consumer yet. It is: **can a new field type be added without text direction, and is that expressible at all?** Under this seam the answer is no, because direction is derived by the renderer from the control's kind and is not a property a field type can decline to set.
+
+### What this ADR does not claim
+
+- It does not forbid `Kitsune\Core\Filament` from constructing Filament objects. That namespace exists to do exactly that, and it is inside core.
+- It does not rest on a future REST API. If the API arrives and can consume these descriptions, that is a benefit rather than the justification.
+- It does not make the description a public contract. It may change with the panel it serves until the API freeze (ADR-011, v1.2).
+
+### Consequence
+
+`docs/field-types.md` §3 declared `formComponent(FieldConfig): Component` and `tableColumn(FieldConfig): Column`, returning Filament objects from core. That is the rejected side of this decision, and it also described an interface that does not exist — those methods were never on `FieldType`, along with `generatedColumnType()`, which this log had already replaced. The document is corrected, and a test now reflects over the interface and fails when the document drifts from it: this ADR is a decision about a seam, and a decision recorded only in prose drifts from the code it governs. Eight docblock citations of ADR-002 are repointed here.
+
+| Rejected | Why it lost |
+|---|---|
+| `formComponent(): Component` on the field type, as the doc described | Puts a cross-cutting presentation decision in twelve places and makes a thirteenth able to omit it silently — the exact reach failure #39 shipped twice. Core already depends on Filament, so the *dependency* objection is void; the *seam* objection is what holds. |
+| Keep the rule, keep citing ADR-002 | Invariant 12: amend the decision rather than route around it. Eight docblocks asserting a rule no ADR contains is the same drift as a stale comment, at scale. |
+| Drop the rule, return components, delete the renderer | Cheapest to write and the panel converged against it: it is the one option where a field type can be added with no direction support at all. |
+
+---
+
 ## Open questions
 
 - Storage benchmark at 10k / 100k / 1M entries

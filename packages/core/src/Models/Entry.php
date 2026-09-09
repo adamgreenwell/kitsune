@@ -1106,6 +1106,82 @@ class Entry extends Model implements RequiresModelSave
     }
 
     /**
+     * The entries this one relates to through one field, in the author's order.
+     *
+     * ⚠️ ORDERED, which `relatedIdsFor()` above is not. That one answers "is anything
+     * still attached" for the erasure and cardinality guards, where order is irrelevant.
+     * A relation PICKER is different: an author arranges related entries and the
+     * arrangement is the content — `entry_relations.ordering` exists for it, and reading
+     * without it hands back a set that reshuffles on every page load.
+     *
+     * ⚠️ Public because a form needs it. The admin cannot hydrate a relation control from
+     * a private method, and the alternative — a second query written in the panel — is a
+     * second place for the field-storage constraint to be forgotten.
+     *
+     * @return list<int>
+     */
+    public function relatedIdsForField(FieldStorage $storage): array
+    {
+        return $this->related()
+            ->wherePivot('field_storage_id', $storage->getKey())
+            ->orderBy('entry_relations.ordering')
+            // `id` as the tiebreaker, so two rows sharing an ordering do not swap places
+            // between reads. Every row defaults to ordering 0, so this is the common case
+            // rather than a corner of it.
+            ->orderBy('entry_relations.id')
+            ->pluck('entries.id')
+            ->map(fn (int|string $id): int => (int) $id)
+            ->all();
+    }
+
+    /**
+     * Replaces the entries related through one field, keeping the given order.
+     *
+     * ⚠️ SCOPED TO ONE FIELD STORAGE, and this is the property the whole method rests on.
+     * An entry relates through several fields at once — `authors` and `tags` both live in
+     * `entry_relations` — so a sync that ignored `field_storage_id` would silently detach
+     * every other field's relations while appearing to save one. Measured before relying
+     * on it: `related()->wherePivot('field_storage_id', X)->sync(...)` leaves rows carrying
+     * a different storage id untouched.
+     *
+     * ⚠️ `ordering` is the POSITION IN THE GIVEN ARRAY, not a column the caller supplies.
+     * The author's arrangement is what the control returns, so deriving it here is the only
+     * way it cannot disagree with what they saw.
+     *
+     * ⚠️ It goes through `related()` rather than the pivot table, which is what gets the
+     * org stamp, the serialised write, the cardinality check and the relation revision —
+     * all of which `GuardedBelongsToMany` supplies and a raw insert would skip.
+     *
+     * @param  list<int|string>  $ids
+     */
+    public function syncFieldRelations(FieldStorage $storage, array $ids): void
+    {
+        $payload = [];
+        $position = 0;
+
+        foreach ($ids as $id) {
+            $id = (int) $id;
+
+            // ⚠️ Duplicates collapse rather than throwing. A select can hand back the same
+            // entry twice, and two rows pointing at one target is a state nothing else in
+            // the schema expects — while refusing the save would lose the author's other
+            // edits over a mistake the UI let them make.
+            if ($id <= 0 || isset($payload[$id])) {
+                continue;
+            }
+
+            $payload[$id] = [
+                'field_storage_id' => $storage->getKey(),
+                'ordering' => $position++,
+            ];
+        }
+
+        $this->related()
+            ->wherePivot('field_storage_id', $storage->getKey())
+            ->sync($payload);
+    }
+
+    /**
      * How many revisions an entry keeps.
      *
      * The decision log lists "revision storage growth — full-JSON snapshots

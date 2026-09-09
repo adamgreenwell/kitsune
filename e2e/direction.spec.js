@@ -104,6 +104,86 @@ test.describe('a field value carries its own direction', () => {
         expect(await resolvedDirection(value)).toBe('rtl');
     });
 
+    test('every rendered field control resolves its own direction', async ({ page }) => {
+        /*
+         * ⚠️ THE CONTROLS #39 NAMED AND COULD NOT TEST. Until the seeder defined real
+         * fields there was nothing on this page but `title`, `slug` and `status`, so a
+         * textarea or a select laying out backwards was not a failing test — it was an
+         * unobservable one.
+         *
+         * Measured by `getComputedStyle`, not by reading `dir`: the attribute can be
+         * present and resolve the wrong way, which is the mistake the original RTL check
+         * made.
+         */
+        await page.goto(`/admin/${SITE}/c/article/create`);
+
+        const summary = page.getByLabel('Summary');
+        await expect(summary).toBeVisible();
+
+        // Empty, an LTR value, then an RTL value — the same input, three answers.
+        await summary.fill('Week seven notes');
+        expect(await resolvedDirection(summary)).toBe('ltr');
+
+        await summary.fill('ملاحظات الأسبوع السابع');
+        expect(await resolvedDirection(summary)).toBe('rtl');
+    });
+
+    test('a number input stays neutral rather than following its digits', async ({ page }) => {
+        /*
+         * ⚠️ THE OTHER HALF, and the reason this suite is not "everything is auto". A
+         * `Neutral` control must NOT carry `dir="auto"` — the value's glyphs are the app's
+         * rather than the author's. Without this test, a renderer that set `dir` on
+         * everything would pass every other direction test in the file while being wrong
+         * about rich text specifically.
+         */
+        await page.goto(`/admin/${SITE}/c/article/create`);
+
+        const minutes = page.getByLabel('Reading minutes');
+        await expect(minutes).toBeVisible();
+
+        expect(await minutes.getAttribute('dir')).toBeNull();
+    });
+
+    test("a select carries dir=auto, which its placeholder currently defeats", async ({ page }) => {
+        /*
+         * ⚠️ THIS TEST PINS A LIMITATION, NOT A FEATURE, and it is written that way on
+         * purpose so it fails when the limitation goes away.
+         *
+         * Measured three times, wrongly twice. `dir="auto"` DOES work on a `<select>` — an
+         * isolated `<select dir="auto"><option>الحواجز الرملية</option></select>` computes
+         * `rtl`. What defeats it here is Filament's own placeholder: the first option is
+         * "Select an option", so the first strong directional character in the element is
+         * the `S`, and the select resolves LTR however Arabic its real options are. The
+         * seeded `Origin` field has ALL-Arabic labels and still computes `ltr` for exactly
+         * that reason.
+         *
+         * So the renderer is right — the attribute is applied, `Control::Choice` is
+         * correctly `Auto`, and a select whose first option were authored text would resolve
+         * on it. The gap is in the platform, and it is recorded in
+         * `docs/accessibility-inventory.md` rather than hidden behind a passing assertion.
+         *
+         * Asserting the ATTRIBUTE rather than the computed direction is the exception here,
+         * and only because the computed value is known-wrong for a reason outside Kitsune.
+         * Everywhere else in this file the computed direction is what is measured.
+         */
+        await page.goto(`/admin/${SITE}/c/article/create`);
+
+        const arabicOptions = page.getByLabel('Origin');
+        await expect(arabicOptions).toBeVisible();
+
+        expect(await arabicOptions.getAttribute('dir')).toBe('auto');
+
+        // ⚠️ The limitation itself, asserted so it cannot quietly change. If Filament stops
+        // emitting a Latin placeholder first, this flips to `rtl` and this test fails —
+        // which is the notification that the residual can be removed.
+        expect(await resolvedDirection(arabicOptions)).toBe('ltr');
+
+        // And the platform `status` select, which is hand-written above the renderer and
+        // deliberately carries no direction: its options are app-chosen, not authored.
+        const status = page.getByLabel('Status');
+        expect(await status.getAttribute('dir')).toBeNull();
+    });
+
     test('typing RTL text into an empty field flips it live', async ({ page }) => {
         // `dir="auto"` is evaluated by the browser as the value changes, so a new entry
         // gets the same behaviour without the server knowing anything about direction.

@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Fields\Types;
 
+use Kitsune\Core\Fields\Control;
 use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Fields\StorageStrategy;
 use Kitsune\Core\Models\Entry;
@@ -36,6 +37,16 @@ final class RelationType extends BaseFieldType
     public static function icon(): string
     {
         return 'heroicon-o-link';
+    }
+
+    /**
+     * ⚠️ Shows entry TITLES, which is exactly the content the seeded Arabic-titled row
+     * exists to test — so `Auto`, and the related-records table was one of the two
+     * places #39 originally missed.
+     */
+    public function control(): Control
+    {
+        return Control::EntryPicker;
     }
 
     public function strategy(): StorageStrategy
@@ -147,8 +158,8 @@ final class RelationType extends BaseFieldType
             // silently could not be narrowed at all.
             //
             // A named source rather than a closure, because `settingsSchema()`
-            // returns DATA so core stays headless-capable (ADR-002): a closure
-            // here would only be callable from Filament.
+            // returns DATA and the panel builds from it (ADR-029): a closure here
+            // would only be callable from Filament.
             'targetTypes' => [
                 'type' => 'multiSelect',
                 'label' => 'Allowed entry types',
