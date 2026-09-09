@@ -444,6 +444,16 @@ entries
 
 `field_storage.translation_scope` is an **enum, not a boolean** — `shared | per_locale`, with room for `per_language` so `fr-CA` and `fr-FR` can share while `en` differs. Every composite index gains `locale`: `(tenant_id, locale, idx_price)`.
 
+> **Amended 2026-09-09 (issue #40): the column is not created until content translation is built.**
+>
+> `translation_scope` shipped in the schema with a default of `per_locale` and was read by nothing. A column with a default does not merely sit there — it **asserts a behaviour**: every row in every install claimed its field was translated per locale, and no code honoured that claim. A later reader, human or agent, would reasonably conclude translation existed because the schema said so.
+>
+> Dropped rather than made fail-closed. `pii_class` fails closed because an answer is required *now* and getting it wrong is a privacy defect (ADR-020); `translation_scope` has no consumer to fail closed *for*, so refusing writes would add a guard protecting nothing. And re-adding a column while installs are pre-alpha is free, whereas a schema that promises what the code does not do is how migration debt starts.
+>
+> This does not revise the decision above. Entry-level rows with per-field scope is still the design, and this column is still how the scope is recorded — it arrives with the code that reads it.
+>
+> ⚠️ The schema sketch above is **stale in two ways** and is left as written because it documents what was decided rather than what exists: `tenant_id` became `org_id`/`site_id` and `entries.locale` was deleted, both under ADR-021, which the status line records. Anyone implementing this should read ADR-021 first.
+
 **Why field-level is not merely worse but disqualified.** Field-level means a locale map inside the JSON — `{"title": {"en": "Hello", "fr": "Bonjour"}}`. A stored generated column cannot project that to a scalar, so indexing would need **one generated column per indexed field per locale**: 20 indexed fields × 10 locales = 200 columns on the shared `entries` table, and adding a locale becomes an `ALTER TABLE` that locks that table **for every tenant on the box**. ADR-006 and ADR-015 chose generated-column indexing specifically to avoid Drupal's join explosion; field-level translation collides with it head-on.
 
 **Prior art agrees, from both directions.** Craft stores content per site and translates field-by-field via a per-field Translation Method, with untranslated fields sharing values across sites. Statamic does entry-per-site with an **origin** — *"A localized entry should define where it originated, and will inherit any undefined values from its origin"* — and `localizable: false` makes a field read-only in localizations.

@@ -9,6 +9,7 @@
 declare(strict_types=1);
 
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryRevision;
 use Kitsune\Core\Models\EntryType;
@@ -217,5 +218,30 @@ describe('global system types', function (): void {
         $handles = EntryType::availableToCurrentOrg()->pluck('handle')->all();
 
         expect($handles)->toContain('image')->not->toContain('article');
+    });
+});
+
+describe('a column that asserts a behaviour nothing honours (issue #40)', function (): void {
+    it('does not declare translation_scope until something reads it', function (): void {
+        /*
+         * ⚠️ Asserting an ABSENCE, deliberately, because the column's problem was that
+         * it existed.
+         *
+         * `field_storage.translation_scope` shipped with a default of `per_locale` and
+         * was read by nothing — so every row in every install claimed its field was
+         * translated per locale, and no code honoured the claim. A column with a
+         * default does not sit inertly; it asserts a behaviour, and a later reader
+         * would reasonably conclude translation existed because the schema said so.
+         *
+         * ADR-017 is amended to say the column arrives with the code that reads it.
+         * This test exists so re-adding it silently fails rather than quietly
+         * reinstating the promise — which is the only way an absence can be defended.
+         *
+         * It is NOT made fail-closed like `pii_class`: that column has a consumer that
+         * needs an answer now, and this one had none, so a guard would have protected
+         * nothing.
+         */
+        expect(Schema::hasTable('field_storage'))->toBeTrue()
+            ->and(Schema::hasColumn('field_storage', 'translation_scope'))->toBeFalse();
     });
 });
