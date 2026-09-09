@@ -1502,6 +1502,17 @@ describe('settings that contradict themselves are refused', function (): void {
             // two characters travel in one place and not the other.
             ->and(Pattern::unpublishable('(a)(b)\2'))->toBeNull()
             ->and(Pattern::unpublishable('(a)(b)[\1]'))->toContain('character class')
+            // ⚠️ The control escape, whose divergence is in its SUFFIX. `\c` alone
+            // does not compile in PCRE and `\cA` compiles in both, so enumerating
+            // the character after the backslash could never have found this —
+            // which is why the sweep now pairs every family letter with every
+            // character in the alphabet.
+            ->and(Pattern::unpublishable('a\c1'))->toContain('ASCII letter')
+            ->and(Pattern::unpublishable('a\c!'))->toContain('ASCII letter')
+            ->and(Pattern::unpublishable('[a\c1]'))->toContain('ASCII letter')
+            ->and(Pattern::unpublishable('a\cA'))->toBeNull()
+            ->and(Pattern::unpublishable('a\cz'))->toBeNull()
+            ->and(Pattern::unpublishable('[a\cA]'))->toBeNull()
             // The forms both dialects take, which must all still go through.
             ->and(Pattern::unpublishable('\x41'))->toBeNull()
             ->and(Pattern::unpublishable('[\x41]'))->toBeNull()
@@ -1528,6 +1539,12 @@ describe('settings that contradict themselves are refused', function (): void {
          *
          * This is what caught `\a` beside the reported `\e`, and `\00` after the
          * first fix. Skipped without Node so a bare clone still runs (invariant 11).
+         *
+         * ⚠️ Its own COVERAGE has been the recurring defect, not its logic: it has
+         * been extended three times, for punctuation and then for the two-character
+         * families, each time because something it never asked about got through. A
+         * sweep is only as exhaustive as its alphabet, and the alphabet is the part
+         * worth reviewing.
          */
         $cases = [];
 
@@ -1548,6 +1565,27 @@ describe('settings that contradict themselves are refused', function (): void {
             // Two groups, so a single-digit backreference is valid in both.
             $cases[] = '(a)(b)\\'.$character;
             $cases[] = '(a)(b)[\\'.$character.']';
+        }
+
+        /*
+         * ⚠️ And the SUFFIXES of the multi-character families, which is the third
+         * gap this sweep has had.
+         *
+         * Enumerating the first character after the backslash answers `\a` and
+         * `\e`; it cannot answer `\c1`, because `\c` on its own does not compile in
+         * PCRE and `\cA` compiles in both — the divergence lives one character
+         * further along. `\x`, `\k` and `\p` are the same shape, and each was found
+         * separately rather than by construction.
+         *
+         * So every family letter is paired with every character in the alphabet.
+         * That is what makes the sweep exhaustive over two-character escapes rather
+         * than exhaustive over the first character only.
+         */
+        foreach (['c', 'x', 'k', 'p', 'P', 'g', 'o', 'u', 'N', 'Q'] as $family) {
+            foreach ($alphabet as $character) {
+                $cases[] = '(a)(b)\\'.$family.$character;
+                $cases[] = '(a)(b)[\\'.$family.$character.']';
+            }
         }
 
         foreach (['\x41', '\x{41}', '\x4', '\o{141}', '(a)\g{1}', '(a)\g<1>', '(a)\g1',

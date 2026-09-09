@@ -459,6 +459,7 @@ final class Pattern
      * Measured on PHP 8.4.25/PCRE 10.48 and Node v22.23.2:
      *
      *   `\x41`     both        `\x{41}` and `\x4`   PCRE only
+     *   `\cA`      both        `\c1` and `\c!`      PCRE only
      *   `\k<n>`    both        `\k{n}` and `\k'n'`  PCRE only
      *   `\0`       both        `\00` and `\101`     PCRE only
      *   `(a)(b)\2` both        `[\1]`               PCRE only
@@ -480,6 +481,19 @@ final class Pattern
                 ? '\x{...} — PCRE\'s braced hex escape; ECMAScript spells a code point \u{...}, which '
                     .'PCRE in turn rejects. For a value below 256 use the two-digit form, e.g. \x61'
                 : '\x followed by fewer than two hex digits — ECMAScript requires exactly two, as in \x0A';
+        }
+
+        // ⚠️ ECMAScript's control escape is `\c` plus an ASCII LETTER. PCRE also
+        // takes a digit and any punctuation, reading them by its own rules, and
+        // rejects neither — so `\c1` and `\c!` compiled here and were published to
+        // a consumer that cannot parse them. Both dialects agree on `\cA`, in a
+        // character class as well as outside one, so only the suffix is refused.
+        if ($escaped === 'c' && preg_match('/^[A-Za-z]$/', $next) !== 1) {
+            return sprintf(
+                '`\c%s` — ECMAScript\'s control escape is \c followed by an ASCII letter, as in \cA. '
+                .'PCRE reads a digit or punctuation there by its own rules',
+                $next,
+            );
         }
 
         // ECMAScript has only `\k<name>`, and only outside a character class.

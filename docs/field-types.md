@@ -131,6 +131,7 @@ This bites hardest on `text`'s `pattern`, because the same string is enforced by
 | `[\1]` | A digit escape is a backreference outside a class and octal inside one, where ECMAScript rejects it | `\x01` |
 | `\_` `\:` `\!` `\@` `\~` `\ ` | ECMAScript escapes only its syntax characters — `^ $ \ . * + ? ( ) [ ] { } |` — plus `/`. PCRE puts a backslash on anything and reads the character literally; 35 ASCII marks diverge | drop the backslash |
 | `\-` | Portable **inside** a character class only, as a ClassEscape | `-`, or `[\-]` |
+| `\c1` `\c!` | ECMAScript's control escape takes an ASCII letter; PCRE also reads a digit or punctuation there. `\cA` agrees in both | `\cA` |
 
 Some of those rows are judgement calls rather than compile failures, and the rule that settles them is: **refuse a divergence when a portable equivalent exists, record it when refusing would remove a capability.** `\d` is refused because `[0-9]` says the same thing.
 
@@ -140,7 +141,7 @@ Some of those rows are judgement calls rather than compile failures, and the rul
 
 The escape rows above were found by **sweeping the whole escape alphabet** on both engines — every letter, digit and punctuation mark, inside a character class and outside one — rather than by collecting reports. That is what turned up `\a` beside a reported `\e`, and `\00` after a first fix had exempted `\0`. The sweep is kept as a test, so the surface stays closed as either engine moves.
 
-⚠️ It did not always cover punctuation, and that gap let `\_`, `\:` and `\!` through a screen whose whole purpose was to catch them. **An alphabet with a hole in it is a list of known offenders wearing a sweep's clothes** — the lesson being that the sweep's *coverage* needs asserting as much as its result does.
+⚠️ Its *coverage* has been the recurring defect, not its logic. It missed punctuation, which let `\_`, `\:` and `\!` through a screen built to catch exactly them; and it enumerated only the first character after the backslash, which could never find `\c1` — because `\c` alone does not compile in PCRE and `\cA` compiles in both, so that divergence lives one character further along. It now pairs every multi-character family (`\c`, `\x`, `\k`, `\p`, `\g`, `\o`) with every character in the alphabet. **An alphabet with a hole in it is a list of known offenders wearing a sweep's clothes** — so the alphabet is the part worth reviewing.
 
 What is *portable* is allowlisted, not what is broken. There are ~170 Unicode scripts and a list naming them to refuse them would go stale on every Unicode release — publishing a schema no consumer can compile. A list of what travels goes stale in the other direction: an author is refused, with a message naming what is allowed, and a maintainer adds the name.
 
