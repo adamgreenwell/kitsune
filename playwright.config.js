@@ -51,7 +51,7 @@ module.exports = defineConfig({
         { name: 'setup-rtl', testMatch: /auth-rtl\.setup\.js/ },
         {
             name: 'skeleton',
-            testMatch: /skeleton\.spec\.js/,
+            testMatch: /(skeleton|public-site-locale)\.spec\.js/,
             use: { ...devices['Desktop Chrome'] },
         },
         {

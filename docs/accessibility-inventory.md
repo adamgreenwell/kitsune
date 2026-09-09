@@ -117,7 +117,7 @@ Logical inset properties, so the browser does the mirroring. Consistent with the
 **G1 — Kitsune's own output had no direction. FIXED in this spike.**
 `skeleton/resources/views/welcome.blade.php` emitted `lang` from the app locale and no `dir` at all, so an Arabic locale served Arabic text in a left-to-right document. Filament supplies `dir` for the admin from its own translations; the public side has no panel and must not depend on one (ADR-002 keeps core headless-capable), so nothing was going to supply it. `Kitsune::textDirection()` now does.
 
-**G2 — `sites.locale` exists and is applied by nothing. ◐ Partly resolved.**
+**G2 — `sites.locale` exists and is applied by nothing. ✅ Resolved.**
 ```bash
 grep -rn "setLocale" packages/core/src skeleton/app    # no matches, when this was written
 ```
@@ -129,7 +129,14 @@ The per-process consequence above is the part actually closed: resolution happen
 
 ⚠️ A locale is **not trusted**. Laravel resolves translation files by treating the locale as a path segment, and both sources are editable — the UI locale by the user themselves, the site locale by an operator — so a candidate that is not shaped like a language tag is skipped rather than applied. It falls through to the next locale in the chain rather than throwing: a stored preference that stops matching should not take the admin down for that user.
 
-⚠️ **What is not done:** the criterion about *public* requests. There are no site-scoped public routes yet — `skeleton/routes/web.php` holds the Phase 0 placeholder, and site resolution lives only in the panel's `tenantMiddleware`. `SetSiteLocale` is written and tested against `Context`, so it is ready for the public side, but "a public request to a site whose locale is RTL is served RTL" cannot be demonstrated until routing exists (roadmap Phase 6, *Menus, routing, slugs, redirects*).
+**And the public half is closed too.** `ResolveSiteFromRequest` identifies the site a public request addresses — by host for a `domain` site, by first path segment for a `path` one — and the skeleton attaches it with `SetSiteLocale` to a site-scoped route. A seeded `golfdom-ar` site gives the public side something to serve right-to-left, and a browser test asserts the **computed** direction across `golfdom-ar` → `golfdom` → `golfdom-ar` in one process, on the ordinary server, with no `APP_LOCALE` involved.
+
+⚠️ Three things that are easy to get wrong here, each with a test:
+- The site lookup must **bypass org scope**. `Site` is `#[OrgScoped]` and a public request has no org yet — the org is derived *from* the site — so a scoped query matches nothing and every public request silently falls back to the default. Same bootstrap `User::getTenants()` documents for the admin.
+- A site is reachable **one way only**, decided by its own `url_strategy`. Matching host and then falling back to path would put the same content at two URLs.
+- `base_url` is operator-entered, so its host is **parsed** rather than string-compared: `https://x.test/`, `http://x.test` and a bare `x.test` all name the same host, and a raw `===` fails all three.
+
+⚠️ **This is not the front end.** Phase 6 still owns menus, routing, slugs and redirects; the route renders the Phase 0 placeholder. What it proves is the locale boundary, which is what G2 was about.
 
 **G3 — no per-field content direction, and Filament will not supply it. ◐ Partly resolved.**
 ```bash

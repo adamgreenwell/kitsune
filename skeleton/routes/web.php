@@ -9,7 +9,10 @@
 declare(strict_types=1);
 
 use Illuminate\Support\Facades\Route;
+use Kitsune\Core\Http\Middleware\ResolveSiteFromRequest;
+use Kitsune\Core\Http\Middleware\SetSiteLocale;
 use Kitsune\Core\Kitsune;
+use Kitsune\Core\Tenancy\Context;
 
 /*
  * Placeholder front end. Kitsune has no admin panel yet - that arrives with
@@ -31,3 +34,42 @@ Route::get('/', function () {
         'direction' => Kitsune::textDirection(),
     ]);
 })->name('home');
+
+/*
+ * A SITE-SCOPED public route, which is what `sites.locale` needed in order to mean
+ * anything (issue #38, gap G2).
+ *
+ * ⚠️ The middleware lives in kitsune/core and the ROUTE lives here, on purpose. Core
+ * registers no routes at all — a host application's URL space is its own, and a package
+ * that claimed `/{site}` would collide with whatever the application already serves
+ * there. So core supplies the mechanism and the application says where it applies, which
+ * is the same division the panel uses for `SetKitsuneContext`.
+ *
+ * ⚠️ REGISTERED LAST, because `{site}` matches one segment of anything. Laravel resolves
+ * in declaration order, so `/` above and every route Filament registers for `/admin` are
+ * already claimed by the time this is reached. Declaring it earlier would swallow the
+ * admin.
+ *
+ * ⚠️ This is NOT the front end. Phase 6 owns menus, routing, slugs and redirects; this
+ * route renders the same placeholder as `/` and exists to prove one thing that could not
+ * be proved before — that a public request resolves a Site and is served in that site's
+ * locale, per request, without touching APP_LOCALE.
+ */
+Route::middleware([ResolveSiteFromRequest::class, SetSiteLocale::class])
+    ->get('/{site}', function (string $site) {
+        // ⚠️ 404 HERE rather than in the middleware. The middleware resolves identity and
+        // reports absence by leaving Context empty, because most public routes are not
+        // site-scoped and it must be attachable to them. A route that REQUIRES a site is
+        // the thing entitled to refuse.
+        abort_if(app(Context::class)->site() === null, 404);
+
+        return response()->view('welcome', [
+            'version' => Kitsune::version(),
+            'phase' => 'Phase 0 — foundations',
+            // Resolved from the SITE's locale by the middleware above, so two sites with
+            // different locales are served correctly from one process.
+            'direction' => Kitsune::textDirection(),
+        ]);
+    })
+    ->where('site', '[a-z0-9-]+')
+    ->name('site.home');

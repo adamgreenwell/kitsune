@@ -50,8 +50,19 @@ class DatabaseSeeder extends Seeder
         // the whole browser suite is the regression test for it.
         $rival = Site::create(['org_id' => $orgB->id, 'handle' => 'golfdom', 'slug' => 'rival-golfdom', 'name' => 'Rival Golfdom', 'locale' => 'en']);
 
+        // ⚠️ An RTL site, so the PUBLIC side has something to serve right-to-left without
+        // anyone editing APP_LOCALE (issue #38). `golfdom` is `en` and `golfdom-fr` is
+        // French — both LTR — so before this row there was no public URL that could
+        // demonstrate a site's locale reaching the document at all.
+        $context->setOrg($orgA);
+        $ar = Site::create([
+            'org_id' => $orgA->id, 'site_group_id' => $group->id, 'handle' => 'golfdom-ar',
+            'slug' => 'golfdom-ar', 'name' => 'Golfdom AR', 'locale' => 'ar',
+        ]);
+        $context->setOrg($orgB);
+
         $user = User::create(['name' => 'Alpha User', 'email' => 'alpha@kitsune.test', 'password' => Hash::make('password')]);
-        $user->sites()->attach([$en->id, $fr->id]);
+        $user->sites()->attach([$en->id, $fr->id, $ar->id]);
         $user->orgs()->attach($orgA->id);
 
         /*
@@ -71,7 +82,7 @@ class DatabaseSeeder extends Seeder
             'name' => 'مستخدم ألفا', 'email' => 'alpha-rtl@kitsune.test',
             'password' => Hash::make('password'), 'locale' => 'ar',
         ]);
-        $rtlUser->sites()->attach([$en->id, $fr->id]);
+        $rtlUser->sites()->attach([$en->id, $fr->id, $ar->id]);
         $rtlUser->orgs()->attach($orgA->id);
 
         // A user of the OTHER org, which the admin must never be able to
