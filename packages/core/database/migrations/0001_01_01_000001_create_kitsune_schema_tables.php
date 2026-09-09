@@ -101,6 +101,24 @@ return new class extends Migration
             $table->string('slug')->nullable();
             $table->string('title')->nullable();
             $table->json('values')->nullable();
+            // ⚠️ WHICH field storage last wrote each promoted column, per entry.
+            //
+            // A promoted column is named for its TYPE, not its handle — every
+            // slug-typed field projects to `entries.slug` — so the column cannot say
+            // whose value it holds. Erasure has to know: clearing `slug` on behalf of
+            // a handle that never wrote it destroys another field's data while
+            // reporting a successful erasure.
+            //
+            // Three attempts derived that answer instead of recording it, and each
+            // failed differently: the entry's CURRENT type misses a field the entry
+            // has moved off; the types its REVISIONS record disappear when history is
+            // pruned; and any storage with the handle grants ownership of a shared
+            // column to a field that never touched it. None of them is a bug in the
+            // rule — the information was simply not written down anywhere durable.
+            //
+            // Shaped {column: field_storage_id}. Derived at write time from the
+            // entry's own type, which is exactly when it is known.
+            $table->json('promoted_by')->nullable();
             $table->foreignId('author_id')->nullable();
             $table->timestamp('published_at')->nullable();
             $table->timestamps();
@@ -129,16 +147,90 @@ return new class extends Migration
             $table->index('target_entry_id');
         });
 
+        // ADR-020: field-level redactable, never an immutable blob. Erasure
+        // has to reach revision history, because revision 4 still holds the
+        // name just erased.
+        //
+        // The promoted columns are snapshotted alongside `values` so a
+        // restore is faithful — a revision holding only `values` restores an
+        // entry with no title, which is a worse outcome than no revisions at
+        // all. It also means erasure has to sweep them, and it does.
         Schema::create('entry_revisions', function (Blueprint $table): void {
             $table->id();
             $table->foreignId('entry_id')->constrained()->cascadeOnDelete();
+            // ⚠️ The type DISCRIMINATOR is part of the version.
+            //
+            // `entries.entry_type_id` is mutable and the model supports changing
+            // it — restamping `type_handle` and rechecking inbound relations. A
+            // revision that does not record it describes `values` without
+            // recording which schema they were authored against, so restoring an
+            // older version onto a retyped entry would write those values back to
+            // be read by the wrong field set. Nullable because a revision may
+            // outlive nothing here, but the FK cascade matches `entry_id`.
+            //
+            // ⚠️ NOT NULL, deliberately. Nullable first, and that put a
+            // restore-time constraint violation one row away: `snapshot()`
+            // includes this column, `restoreRevision()` fills the entry from the
+            // snapshot, and `entries.entry_type_id` is NOT NULL — so a revision
+            // with no discriminator ended the History restore in a database
+            // error. Every revision is written by `recordRevision()` from an
+            // entry whose own column is NOT NULL, so the value is always there;
+            // the schema now says that rather than leaving a hole to handle.
+            //
+            // ⚠️ CASCADE, and the protection lives in the guard rather than here.
+            //
+            // The hazard is real: `entries.entry_type_id` is MUTABLE, so moving
+            // every entry of type A to type B leaves `EntryType::guardCascade()`
+            // counting zero A entries while every one of those entries still has
+            // A-era revisions. Deleting A then took that history out through this
+            // key, for entries that still exist, in a system whose revision UI
+            // deliberately offers no way to delete a revision.
+            //
+            // ⚠️ RESTRICT was the first answer and it was wrong, because the
+            // database cannot tell the two cases apart. Deleting an ORG legitimately
+            // removes its types and their history, and it reaches `entry_types` by
+            // cascade — so a restrict here made `delete from orgs` fail with a
+            // foreign key violation. At the database level "delete a type because
+            // its org is going" and "delete a type on its own" are the same
+            // statement; only the caller knows which it is.
+            //
+            // So the distinction lives where the intent is known:
+            // `EntryType::guardCascade()` refuses the second case and now counts
+            // revisions as well as entries, and `RefusesCascadingDeletes` makes the
+            // bulk paths run the same rule. The cascade stays for the first case,
+            // where taking the history along is correct.
+            $table->foreignId('entry_type_id')->constrained()->cascadeOnDelete();
             $table->json('values')->nullable();
+            // ⚠️ Relations are the THIRD storage strategy and a revision that
+            // omits them is not a version of the entry.
+            //
+            // A relational field's data is rows in `entry_relations`, not a key
+            // in `values` and not a promoted column — so snapshotting only the
+            // other two meant restoring a revision left every relation at its
+            // CURRENT value while telling the author the entry now matched the
+            // version they picked. Shaped as {field_storage_id: [target ids in
+            // order]}, which is what a restore needs to rebuild them.
+            //
+            // ⚠️ NOT called `relations`, and that is not a style preference.
+            // `Model::$relations` is a PROTECTED property holding an Eloquent
+            // model's loaded relationships. A column of that name is shadowed by
+            // it for any code reading the attribute from inside another model:
+            // PHP resolves a protected member declared in a common ancestor
+            // directly, so `$revision->relations` never reaches `__get()` and
+            // returns the loaded-relationships array instead — `[]`. Restoring
+            // silently did nothing, and the same read from outside a class
+            // returned the column correctly, which is what made it confusing.
+            $table->json('relation_state')->nullable();
             $table->string('status')->default('draft');
+            $table->string('title')->nullable();
+            $table->string('slug')->nullable();
+            $table->timestamp('published_at')->nullable();
             $table->foreignId('author_id')->nullable();
             $table->string('note')->nullable();
             $table->timestamps();
 
             $table->index(['entry_id', 'created_at']);
+            $table->index(['entry_id', 'id']);
         });
 
         // ADR-022: per-site entry types on the same sparse inheritance.

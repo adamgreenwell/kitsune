@@ -214,6 +214,18 @@ abstract class BaseFieldType implements FieldType
         return [];
     }
 
+    /**
+     * Nothing to say by default: a type with no settings cannot contradict
+     * itself, and one with independent settings has nothing cross-cutting to
+     * check.
+     *
+     * @param  array<string, mixed>  $settings
+     */
+    public function validateSettings(array $settings): ?string
+    {
+        return null;
+    }
+
     public function suggestedPiiClass(): string
     {
         return 'none';

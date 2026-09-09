@@ -15,6 +15,7 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Kitsune\Core\Models\Entry;
+use Kitsune\Core\Schema\RevisionWrites;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tenancy\ScopedBuilder;
 use RuntimeException;
@@ -104,8 +105,48 @@ class AuditedBuilder extends ScopedBuilder
 
             app(Auditor::class)->recordOrFail(Str::snake(class_basename($model)).'.created', $target);
 
+            $this->recordInitialRevision($id);
+
             return $id;
         });
+    }
+
+    /**
+     * File the initial revision when no `created` listener will.
+     *
+     * ⚠️ The creation half of the quiet-save gap. `createQuietly()` and anything
+     * inside `withoutEvents()` suppress the `created` listener, so an entry
+     * arrived with NO initial revision at all — while a quiet UPDATE is now
+     * treated as a version, which made the two halves disagree about what a
+     * quiet write means.
+     *
+     * Same discriminator as the update path, and for the same reason:
+     * `withoutEvents()` swaps in a `NullDispatcher` rather than unsetting one, so
+     * a real dispatcher means the listener will record this and a null one means
+     * nobody will. Recording in both would file two revisions for one insert.
+     *
+     * The row is re-read rather than recorded from `$this->model`: at this point
+     * `Model::performInsert()` has not yet set the key on the instance, and
+     * setting it here to suit the recorder would be reaching into the caller's
+     * object to make our own bookkeeping work.
+     */
+    private function recordInitialRevision(mixed $id): void
+    {
+        // ⚠️ EVERY creation, not only the quiet kind — the `NullDispatcher` test
+        // that used to stand here deferred an ordinary create to the `created`
+        // listener, and that listener fires after this transaction has committed.
+        // A concurrent updater can commit and record version B in that window,
+        // leaving the initial version A newest while the live entry is B. Same
+        // race as the update path, and the same answer: record under the lock
+        // that made the write atomic.
+        if (RevisionWrites::suspended()) {
+            return;
+        }
+
+        $entry = $this->getModel()->newQueryWithoutScopes()->find($id);
+
+        // An empty before-state, because the row did not exist a moment ago.
+        $entry?->recordRevisionForEventlessWrite([], $this->rawVersionedRows([$id])[$id] ?? []);
     }
 
     /**
@@ -289,7 +330,7 @@ class AuditedBuilder extends ScopedBuilder
     {
         $this->guardScopeKeys($values);
 
-        return $this->auditing($this->actionFor($values), fn () => parent::update($values));
+        return $this->auditing($this->actionFor($values), fn () => parent::update($values), $values);
     }
 
     // delete() is deliberately NOT overridden. Entry soft-deletes, so both
@@ -308,6 +349,14 @@ class AuditedBuilder extends ScopedBuilder
      * trail. Audited rather than refused — unlike the insert paths, the rows
      * already exist and have keys to name.
      *
+     * ⚠️ And the written columns are passed to `auditing()`, which they were not.
+     * Laravel's arithmetic methods take an `$extra` map of ordinary assignments,
+     * so `increment('ordering', 1, ['status' => 'published'])` moves a VERSIONED
+     * column — it was audited and filed no revision, leaving the newest revision
+     * stale and a later restore silently reverting the publication. The
+     * incremented column is included too: it is a written column like any other,
+     * and a versioned counter would need a version.
+     *
      * @param  string|Expression  $column
      * @param  array<string, mixed>  $extra
      */
@@ -315,7 +364,11 @@ class AuditedBuilder extends ScopedBuilder
     {
         $this->refuseScopeArithmetic([(string) $column => $amount, ...$extra]);
 
-        return $this->auditing('updated', fn () => parent::increment($column, $amount, $extra));
+        return $this->auditing(
+            'updated',
+            fn () => parent::increment($column, $amount, $extra),
+            [(string) $column => $amount, ...$extra],
+        );
     }
 
     /**
@@ -326,7 +379,11 @@ class AuditedBuilder extends ScopedBuilder
     {
         $this->refuseScopeArithmetic([(string) $column => $amount, ...$extra]);
 
-        return $this->auditing('updated', fn () => parent::decrement($column, $amount, $extra));
+        return $this->auditing(
+            'updated',
+            fn () => parent::decrement($column, $amount, $extra),
+            [(string) $column => $amount, ...$extra],
+        );
     }
 
     /**
@@ -342,7 +399,11 @@ class AuditedBuilder extends ScopedBuilder
     {
         $this->refuseScopeArithmetic([...$columns, ...$extra]);
 
-        return $this->auditing('updated', fn () => parent::incrementEach($columns, $extra));
+        return $this->auditing(
+            'updated',
+            fn () => parent::incrementEach($columns, $extra),
+            [...$columns, ...$extra],
+        );
     }
 
     /**
@@ -353,7 +414,11 @@ class AuditedBuilder extends ScopedBuilder
     {
         $this->refuseScopeArithmetic([...$columns, ...$extra]);
 
-        return $this->auditing('updated', fn () => parent::decrementEach($columns, $extra));
+        return $this->auditing(
+            'updated',
+            fn () => parent::decrementEach($columns, $extra),
+            [...$columns, ...$extra],
+        );
     }
 
     /**
@@ -404,12 +469,13 @@ class AuditedBuilder extends ScopedBuilder
      * it a deleted row has no id to look up.
      *
      * @param  callable(): mixed  $write
+     * @param  array<string, mixed>  $written
      */
-    private function auditing(string $action, callable $write): mixed
+    private function auditing(string $action, callable $write, array $written = []): mixed
     {
         $model = $this->getModel();
 
-        return DB::transaction(function () use ($action, $write, $model): mixed {
+        return DB::transaction(function () use ($action, $write, $model, $written): mixed {
             // ⚠️ DEDUPLICATED. A bulk write over a join — say `entries`
             // joined to `entry_relations`, where several rows point at one
             // entry — yields that entry's key once per matching row. The
@@ -438,7 +504,14 @@ class AuditedBuilder extends ScopedBuilder
             $base->offset = null;
             $base->limit = null;
 
+            // Raw pre-write state, for the revision comparison below. Read
+            // inside the same transaction and after the same lock, so it
+            // describes exactly the rows the write is about to change.
+            $before = $this->versionedStateOf($keys, $written);
+
             $result = $write();
+
+            $this->recordRevisions($before);
 
             if ($keys === []) {
                 return $result;
@@ -459,5 +532,143 @@ class AuditedBuilder extends ScopedBuilder
 
             return $result;
         });
+    }
+
+    /**
+     * Raw versioned columns for the rows a write is about to change.
+     *
+     * Empty — and therefore free — unless the write actually assigns something
+     * versioned, so an ordinary `touch()` or soft delete costs nothing.
+     *
+     * ⚠️ Skipped entirely for an INSTANCE save. `Model::performUpdate()` writes
+     * through this builder, so recording here as well as in the `updated` event
+     * would file two revisions for one save. That is not hypothetical: adding
+     * the audit builder alongside the audit listeners double-recorded every
+     * entry write, and no test caught it because they asserted a row EXISTS and
+     * two satisfy that. A loaded model is the discriminator Laravel itself uses
+     * for `setKeysForSaveQuery()`, and the same one `refusePerRowColumns()` uses.
+     *
+     * @param  array<int, mixed>  $keys
+     * @param  array<string, mixed>  $written
+     * @return array<int|string, array<string, mixed>>
+     */
+    private function versionedStateOf(array $keys, array $written): array
+    {
+        $model = $this->getModel();
+
+        if ($keys === [] || RevisionWrites::suspended()) {
+            return [];
+        }
+
+        // ⚠️ EVERY update records here, instance saves included — and an earlier
+        // version deferred those to the `updated` listener to avoid doing the
+        // extra reads on the hot path.
+        //
+        // That was wrong for a reason cost cannot answer. The listener fires
+        // AFTER this builder's transaction has committed and released its row
+        // lock, so two writers interleave: T1 commits A, T2 commits and records
+        // B, then T1 records A — leaving revision A newest while the live entry
+        // is B. A relation write in the same window can contaminate A's
+        // `relation_state` too. A version has to be recorded under the lock that
+        // made the write atomic, which means recording where the write is.
+        //
+        // So there is one recorder for updates and the listener no longer files
+        // them. Quiet saves fall out for free: they suppressed the listener while
+        // still writing through here, which was a second bug with the same cause.
+
+        $touched = false;
+
+        foreach (array_keys($written) as $column) {
+            // ⚠️ The JSON PATH's root counts. Laravel supports
+            // `update(['values->body' => '...'])`, and `bareColumn()` returns
+            // `values->body`, which never matched the versioned column `values` —
+            // so an inline field could be rewritten with no version recorded, and
+            // a later restore would silently undo it.
+            $bare = explode('->', $this->bareColumn((string) $column))[0];
+
+            if (in_array($bare, Entry::VERSIONED_COLUMNS, true)) {
+                $touched = true;
+
+                break;
+            }
+        }
+
+        if (! $touched) {
+            return [];
+        }
+
+        return $this->rawVersionedRows($keys);
+    }
+
+    /**
+     * Read the versioned columns for these keys, by key alone.
+     *
+     * Unscoped deliberately: the keys came from this builder's own scoped
+     * predicate a moment ago, so re-applying the scope adds nothing, and a soft
+     * delete or restore in the same statement would otherwise change which rows
+     * are visible between the two reads.
+     *
+     * @param  array<int, mixed>  $keys
+     * @return array<int|string, array<string, mixed>>
+     */
+    private function rawVersionedRows(array $keys): array
+    {
+        $model = $this->getModel();
+        $key = $model->getKeyName();
+
+        $rows = $model->newQueryWithoutScopes()->toBase()
+            ->whereIn($model->getQualifiedKeyName(), $keys)
+            ->get([$key, ...Entry::VERSIONED_COLUMNS]);
+
+        $state = [];
+
+        foreach ($rows as $row) {
+            $row = (array) $row;
+            $state[$row[$key]] = $row;
+        }
+
+        return $state;
+    }
+
+    /**
+     * File a revision for every row the write actually changed.
+     *
+     * ⚠️ CHANGED, not merely matched. `update(['status' => 'published'])` over a
+     * set already published matches every row and alters none, and a revision
+     * per matched row would fill the history with versions identical to their
+     * predecessor. Raw-to-raw comparison, so a `values` array is never compared
+     * against its own JSON encoding — which differs on every write.
+     *
+     * @param  array<int|string, array<string, mixed>>  $before
+     */
+    private function recordRevisions(array $before): void
+    {
+        if ($before === []) {
+            return;
+        }
+
+        $after = $this->rawVersionedRows(array_keys($before));
+
+        // One query for the models, then the model's own snapshot logic — so
+        // the bulk path cannot drift from what an ordinary save records, and
+        // pruning still bounds the history.
+        $changed = [];
+
+        foreach ($before as $key => $row) {
+            if (isset($after[$key]) && $after[$key] !== $row) {
+                $changed[] = $key;
+            }
+        }
+
+        if ($changed === []) {
+            return;
+        }
+
+        foreach ($this->getModel()->newQueryWithoutScopes()->whereKey($changed)->get() as $entry) {
+            $entry->recordRevisionForEventlessWrite(
+                $before[$entry->getKey()],
+                $after[$entry->getKey()],
+            );
+        }
     }
 }

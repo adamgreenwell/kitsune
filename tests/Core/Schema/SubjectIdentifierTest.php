@@ -151,6 +151,7 @@ describe('erasure reaches revision history (ADR-020)', function (): void {
         foreach (['a@example.test', 'a@example.test', 'a@example.test'] as $i => $email) {
             EntryRevision::create([
                 'entry_id' => $this->entry->id,
+                'entry_type_id' => $this->entry->entry_type_id,
                 'values' => ['email' => $email, 'notes' => "draft {$i}"],
                 'status' => 'draft',
             ]);
@@ -160,9 +161,12 @@ describe('erasure reaches revision history (ADR-020)', function (): void {
     it('erases the field from the entry AND every revision', function (): void {
         // Article revision 4 still holds the name just erased — the exact
         // reason immutable revisions were rejected.
+        //
+        // Four revisions, not three: creating the entry records one
+        // automatically, and that one holds the email too.
         $rewritten = $this->entry->redactField('email');
 
-        expect($rewritten)->toBe(4)
+        expect($rewritten)->toBe(5)
             ->and($this->entry->fresh()->values['email'])->toBeNull()
             ->and(EntryRevision::where('entry_id', $this->entry->id)->get()
                 ->every(fn (EntryRevision $r): bool => $r->values['email'] === null))->toBeTrue();
@@ -171,14 +175,18 @@ describe('erasure reaches revision history (ADR-020)', function (): void {
     it('keeps the revision rows, so the history of WHAT CHANGED survives', function (): void {
         $this->entry->redactField('email');
 
-        expect(EntryRevision::where('entry_id', $this->entry->id)->count())->toBe(3);
+        // Three authored plus the one the create recorded. Erasure replaces
+        // in place and adds none of its own — filing the redacted state as a
+        // new version would add a row to the history it is clearing.
+        expect(EntryRevision::where('entry_id', $this->entry->id)->count())->toBe(4);
     });
 
     it('leaves other fields alone', function (): void {
         $this->entry->redactField('email');
 
         expect($this->entry->fresh()->values['notes'])->toBe('keep me')
-            ->and(EntryRevision::where('entry_id', $this->entry->id)->first()->values['notes'])->toBe('draft 0');
+            ->and(EntryRevision::where('entry_id', $this->entry->id)->where('note', null)
+                ->orderBy('id')->skip(1)->first()->values['notes'])->toBe('draft 0');
     });
 
     it('accepts a replacement rather than only a null', function (): void {
@@ -316,7 +324,12 @@ describe('a relational subject lives in entry_relations, not in values', functio
         // There is nothing to replace in place, so erasure IS the detach —
         // and the array-key path found nothing and returned 0 while every
         // pivot row survived.
-        expect($this->record->redactField('person'))->toBe(1)
+        //
+        // TWO rows reached: the live pivot, and the revision that recorded it.
+        // A relation change files a version, and `relation_state` holds the
+        // target ids — so leaving history alone would let a restore recreate the
+        // erased link (ADR-020).
+        expect($this->record->redactField('person'))->toBe(2)
             ->and($this->record->fresh()->subjectValue())->toBe([]);
     });
 
@@ -369,7 +382,8 @@ describe('erasure resolves the field through this entry\'s type', function (): v
         // Resolved by handle alone this found the rival's `text` row, took
         // the inline branch, found no key in `values`, and returned 0 with
         // every link still attached.
-        expect($this->record->redactField('contact'))->toBe(1)
+        // Two: the live pivot and the revision holding its target id.
+        expect($this->record->redactField('contact'))->toBe(2)
             ->and($this->record->related()->count())->toBe(0);
     });
 });
@@ -409,8 +423,12 @@ describe('a promoted subject lives in its own column', function (): void {
     });
 
     it('erases the column rather than a JSON key that never held it', function (): void {
-        expect($this->entry->redactField('slug'))->toBe(1)
-            ->and($this->entry->fresh()->slug)->toBeNull();
+        // Two: the entry's own column, and the revision the create recorded —
+        // revisions snapshot the promoted columns too, so erasure has to
+        // reach them there as well.
+        expect($this->entry->redactField('slug'))->toBe(2)
+            ->and($this->entry->fresh()->slug)->toBeNull()
+            ->and(EntryRevision::where('entry_id', $this->entry->id)->value('slug'))->toBeNull();
     });
 
     it('reports reaching nothing when it is already erased', function (): void {
@@ -458,9 +476,15 @@ describe('a promoted field writes to its own column, not one named after it', fu
         expect(Entry::whereSubjectIs($this->type, 'a-patient')->pluck('title')->all())->toBe(['A. Patient']);
     });
 
-    it('erases that column', function (): void {
-        expect($this->entry->redactField('public_slug'))->toBe(1)
-            ->and($this->entry->fresh()->slug)->toBeNull();
+    it('erases that column, and the revisions that snapshot it', function (): void {
+        // ⚠️ TWO rewrites, not one, and the second is the point of ADR-020
+        // primitive 3: creating the entry filed a revision that snapshots the
+        // promoted columns, so erasing only the live row would leave the value
+        // sitting in history. The count went from 1 to 2 the moment revisions
+        // existed — the correct answer changing, not a regression.
+        expect($this->entry->redactField('public_slug'))->toBe(2)
+            ->and($this->entry->fresh()->slug)->toBeNull()
+            ->and($this->entry->revisions()->pluck('slug')->filter()->all())->toBe([]);
     });
 });
 
@@ -1434,7 +1458,8 @@ describe('the pivot guards hold on the bulk path, which had none', function (): 
         // Removing a relation can only relax a bound, never violate one, and
         // redactField() deletes through this builder because erasure has to
         // reach a row whatever org stamped it.
-        expect($this->src->redactField('subject'))->toBe(1)
+        // Two: the live pivot and the revision holding its target id.
+        expect($this->src->redactField('subject'))->toBe(2)
             ->and(EntryRelation::query()->where('source_entry_id', $this->src->id)->count())->toBe(0);
     });
 

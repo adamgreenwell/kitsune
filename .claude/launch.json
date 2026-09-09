@@ -1,0 +1,12 @@
+{
+    "version": "0.0.1",
+    "configurations": [
+        {
+            "name": "skeleton",
+            "runtimeExecutable": "php",
+            "runtimeArgs": ["skeleton/artisan", "serve", "--port=8125", "--no-interaction"],
+            "port": 8125,
+            "url": "http://127.0.0.1:8125"
+        }
+    ]
+}

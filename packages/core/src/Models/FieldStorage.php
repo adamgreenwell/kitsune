@@ -168,6 +168,12 @@ class FieldStorage extends Model
         }
 
         $this->guardHandle();
+        // ⚠️ A setting the field type declared a FORMAT for has to satisfy it,
+        // whatever wrote the row. The builder validates it in the form, and a
+        // form is one door — a seeder, an importer or a direct save reaches this
+        // instead, and an uncompilable pattern makes the field unusable rather
+        // than merely misconfigured.
+        $this->guardSettingsAreUsable();
         // Nomination first: when both apply — a nominated field given a
         // cardinality its type cannot hold — the more specific refusal is the
         // one the caller reads.
@@ -640,6 +646,37 @@ class FieldStorage extends Model
             $this->handle,
             $cardinality,
         ));
+    }
+
+    /**
+     * Refuse settings the field type says are unusable.
+     *
+     * ⚠️ GENERIC on purpose: the model asks the TYPE rather than knowing about
+     * patterns or numeric bounds. `validateSettings()` takes data and returns a
+     * reason (ADR-002 keeps core headless-capable), so a new type declaring a
+     * constraint is enforced here with no change to this method — and the
+     * alternative, a `pattern` or `min`/`max` special case in the model, is how a
+     * field-type concern leaks into every layer that touches it.
+     *
+     * Silent when the type is unknown: `pii_class` and the registry lookup have
+     * their own refusals, and duplicating them here would report the wrong reason
+     * first.
+     */
+    private function guardSettingsAreUsable(): void
+    {
+        $registry = app(FieldTypeRegistry::class);
+
+        if (! $registry->has((string) $this->type)) {
+            return;
+        }
+
+        $reason = $registry->get((string) $this->type)->validateSettings($this->settings ?? []);
+
+        if ($reason === null) {
+            return;
+        }
+
+        throw new RuntimeException(sprintf('Field [%s] cannot be configured that way. %s', $this->handle, $reason));
     }
 
     private function guardHandle(): void
