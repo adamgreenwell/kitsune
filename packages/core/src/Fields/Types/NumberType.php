@@ -330,8 +330,6 @@ final class NumberType extends BaseFieldType
             return null;
         }
 
-        $stepUnits = (float) $step * (10 ** $scale);
-
         // ⚠️ A step finer than the quantum is left alone deliberately. Whether any
         // of its candidates lands on the grid depends on the step's own fraction —
         // 0.005 on a two-decimal field hits every second candidate — and deciding
@@ -339,11 +337,23 @@ final class NumberType extends BaseFieldType
         // fails OPEN rather than refusing a configuration that may well work: a
         // false refusal blocks an author, a miss leaves an unusual field that the
         // value rules still police.
-        if (abs($stepUnits - round($stepUnits)) > 0.0) {
+        //
+        // ⚠️ Asked through `isOnGrid()`, and the float multiply this replaces was
+        // the SAME defect the endpoint conversion had — left behind here while that
+        // one was fixed, which is the more useful half of the lesson. `0.29 * 100`
+        // is `28.999999999999996`, so an integral step read as sub-quantum and took
+        // the fail-open path: with precision 3, scale 2, max -9.9 and step 0.29 the
+        // neighbouring multiples are -10.15 and -9.86, neither inside the projection
+        // interval, so the field admitted nothing and was accepted anyway.
+        //
+        // Failing open is only defensible for a step that is GENUINELY sub-quantum.
+        // Float noise deciding which steps those are turns a deliberate gap into an
+        // arbitrary one.
+        if (! self::isOnGrid($step, $scale)) {
             return null;
         }
 
-        $stepUnits = (int) round($stepUnits);
+        $stepUnits = (int) self::unitsAtLeast($step, $scale);
 
         // ⚠️ The offset has to be ON the grid, and converting it with `ceil()`
         // hid that. `scale 2` with `min = 0.001` offers 0.001, 0.011, 0.021 … and
@@ -465,6 +475,27 @@ final class NumberType extends BaseFieldType
     }
 
     /**
+     * The widest decimal this expansion will materialise.
+     *
+     * ⚠️ A BOUND ON THE ALLOCATION, not a judgement about the number. `1e1000000000`
+     * is nine bytes of request body and asked this method for a billion characters
+     * — `is_numeric()` accepts the short input, and the expansion happened before
+     * any guard could refuse the settings, so one crafted field-configuration
+     * request could exhaust the worker's memory. That is amplification rather than
+     * a large input, which is what makes it worth a limit: a literal 10MB number
+     * costs 10MB and is already bounded by the request size.
+     *
+     * 64 is far past anything this type can represent — `MAX_PRECISION` is 15, so
+     * the projection cannot hold more than 15 significant digits — and the values
+     * that hit the cap SATURATE rather than truncate, which is what keeps the
+     * verdict right. A number too large to represent becomes a number that is
+     * still too large to represent; one too small to reach the quantum stays
+     * nonzero and below it. Both are refused for the reasons they should be, and
+     * neither allocates.
+     */
+    private const MAX_EXPANDED_DIGITS = 64;
+
+    /**
      * Exponent notation expanded to a plain decimal.
      *
      * Needed because this is all done by shifting a decimal point through a digit
@@ -483,6 +514,17 @@ final class NumberType extends BaseFieldType
 
         // Where the point lands in the digit string once the exponent moves it.
         $point = mb_strlen($matches[2]) + (int) $matches[4];
+
+        // ⚠️ Checked BEFORE either `str_repeat()` below, which is the whole point:
+        // the arms are what allocate, so a guard after them guards nothing.
+        if ($point > self::MAX_EXPANDED_DIGITS || $point < -self::MAX_EXPANDED_DIGITS) {
+            return $matches[1].($point > 0
+                // Too large for the projection, and saturating keeps it so.
+                ? str_repeat('9', self::MAX_EXPANDED_DIGITS)
+                // Too small to reach any quantum, and still not zero — which is the
+                // property the grid check reads, so it has to survive the clamp.
+                : '0.'.str_repeat('0', self::MAX_EXPANDED_DIGITS - 1).'1');
+        }
 
         $expanded = match (true) {
             $point <= 0 => '0.'.str_repeat('0', -$point).$digits,

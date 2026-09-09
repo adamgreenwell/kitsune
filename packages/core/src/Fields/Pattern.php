@@ -120,6 +120,22 @@ final class Pattern
         'H' => '\\H — PCRE non-horizontal-whitespace; ECMAScript reads it as the letter H',
         'v' => '\\v — PCRE vertical whitespace; ECMAScript reads a single vertical tab',
         'V' => '\\V — PCRE non-vertical-whitespace; ECMAScript reads it as the letter V',
+        // ⚠️ Found by sweeping the whole escape alphabet on both engines rather
+        // than by extending a list of reported cases — which is how `\a` turned up
+        // alongside the `\e` that was reported. Both are control characters PCRE
+        // spells with a letter and ECMAScript has no escape for at all, inside a
+        // character class as well as outside one.
+        'a' => '\\a — PCRE\'s alarm/BEL escape; ECMAScript has no \\a. Use \\x07',
+        'e' => '\\e — PCRE\'s escape character; ECMAScript has no \\e. Use \\x1B',
+        // Every `\g` form is PCRE\'s: `\g{1}`, `\g<1>`, `\g1` and the relative and
+        // subroutine variants. ECMAScript has none of them, and `[\g]` is a literal
+        // g in PCRE while ECMAScript rejects it, so the class exemption cannot
+        // apply either. A plain numbered backreference `\1` still works in both.
+        'g' => '\\g — PCRE subroutine and relative-backreference forms; ECMAScript has none. '
+            .'Use a plain numbered backreference like \\1, or a named one like \\k<name>',
+        // `\o{141}` is PCRE octal. ECMAScript has no `\o`, and inside a class it
+        // diverges the same way.
+        'o' => '\\o — PCRE\'s octal escape; ECMAScript has no \\o. Use the hex form, e.g. \\x61',
     ];
 
     /**
@@ -286,6 +302,12 @@ final class Pattern
                     return self::DIVERGENT_OUTSIDE_CLASS[$escaped];
                 }
 
+                // ⚠️ Three families where the LETTER is shared and the form is not,
+                // so a lookup table cannot answer them.
+                if (($reason = self::escapeFormRefusal($pattern, $i, $escaped, $inClass)) !== null) {
+                    return $reason;
+                }
+
                 // ⚠️ `\p{...}` compiles in both dialects and its PROPERTY NAME
                 // still has to be one both dialects know. The escape branch
                 // consumed `\p` and never looked inside the braces, so every
@@ -368,6 +390,83 @@ final class Pattern
         }
 
         return null;
+    }
+
+    /**
+     * Whether an escape whose LETTER is shared is written in a form both dialects
+     * accept.
+     *
+     * ⚠️ These cannot go in the tables above, because the letter alone does not
+     * decide it — the form does, and for the digits the CONTEXT does as well.
+     * Measured on PHP 8.4.25/PCRE 10.48 and Node v22.23.2:
+     *
+     *   `\x41`     both        `\x{41}` and `\x4`   PCRE only
+     *   `\k<n>`    both        `\k{n}` and `\k'n'`  PCRE only
+     *   `\0`       both        `\00` and `\101`     PCRE only
+     *   `(a)(b)\2` both        `[\1]`               PCRE only
+     *
+     * The last row is the reason `$inClass` is a parameter. A single-digit escape
+     * outside a class is an ordinary backreference in both dialects; INSIDE one,
+     * PCRE reads it as an octal character while ECMAScript rejects it outright —
+     * so the same two characters are portable in one place and not in the other.
+     * `\0` is NUL in both, everywhere.
+     */
+    private static function escapeFormRefusal(string $pattern, int $at, string $escaped, bool $inClass): ?string
+    {
+        $next = mb_substr($pattern, $at + 1, 1);
+
+        // ECMAScript's hex escape is exactly two digits. PCRE also takes one
+        // (`\xA`) and a braced code point (`\x{1F600}`), and rejects neither.
+        if ($escaped === 'x' && preg_match('/^[0-9A-Fa-f]{2}/', mb_substr($pattern, $at + 1, 2)) !== 1) {
+            return $next === '{'
+                ? '\x{...} — PCRE\'s braced hex escape; ECMAScript spells a code point \u{...}, which '
+                    .'PCRE in turn rejects. For a value below 256 use the two-digit form, e.g. \x61'
+                : '\x followed by fewer than two hex digits — ECMAScript requires exactly two, as in \x0A';
+        }
+
+        // ECMAScript has only `\k<name>`, and only outside a character class.
+        if ($escaped === 'k' && ($inClass || $next !== '<')) {
+            return $inClass
+                ? '\k inside a character class — a backreference cannot appear in a class in '
+                    .'ECMAScript, and PCRE reads the letter k there instead'
+                : '\k'.$next.' — ECMAScript spells a named backreference \k<name>; the braced and '
+                    .'quoted forms are PCRE\'s';
+        }
+
+        if (preg_match('/^[0-9]$/', $escaped) !== 1) {
+            return null;
+        }
+
+        // ⚠️ `\0` is NUL in both dialects, in a class and out of one — but only
+        // ALONE. `\00` is octal to PCRE and rejected by ECMAScript, and exempting
+        // the whole digit on the strength of the single-character case left that
+        // as the one hole the re-sweep still found.
+        if ($escaped === '0') {
+            return preg_match('/^[0-9]$/', $next) === 1
+                ? '\00 — a multi-digit escape is octal to PCRE and rejected by ECMAScript. \0 alone '
+                    .'is NUL in both; for any other character use the hex form, e.g. \x01'
+                : null;
+        }
+
+        if ($inClass) {
+            return sprintf(
+                '\%s inside a character class — PCRE reads an octal character there and ECMAScript '
+                .'rejects it. For the character itself use the hex form, e.g. \x01',
+                $escaped,
+            );
+        }
+
+        // Outside a class a single digit is a backreference both dialects have.
+        // More than one is octal to PCRE and a syntax error to ECMAScript.
+        return preg_match('/^[0-9]$/', mb_substr($pattern, $at + 1, 1)) === 1
+            ? sprintf(
+                '\%s%s — a multi-digit escape is octal to PCRE and rejected by ECMAScript. For a '
+                .'character use the hex form, e.g. \x41; for a backreference beyond 9, restructure '
+                .'the pattern to use fewer groups',
+                $escaped,
+                $next,
+            )
+            : null;
     }
 
     /**
