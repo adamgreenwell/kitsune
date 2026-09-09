@@ -367,7 +367,20 @@ describe('base_url derives the host and prefix a site claims', function (): void
             'name' => 'Bulk', 'locale' => 'en', 'base_url' => 'https://bulk.example.test',
         ]);
 
-        foreach (['base_url' => 'https://moved.example.test', 'url_strategy' => 'domain'] as $column => $value) {
+        /*
+         * ⚠️ THE DERIVED COLUMNS TOO, not only their sources, and omitting them was a hole review
+         * found. `update(['canonical_host' => 'stolen.example.test'])` was ALLOWED and wrote a
+         * hostname the model never declared — measured. The site then answers on a URL its own
+         * `base_url` does not name, and the global uniqueness index guards that stolen value,
+         * which is the cross-org URL theft ADR-021 says has no framework safety net reached
+         * through the back door.
+         */
+        foreach ([
+            'base_url' => 'https://moved.example.test',
+            'url_strategy' => 'domain',
+            'canonical_host' => 'stolen.example.test',
+            'path_prefix' => '/stolen',
+        ] as $column => $value) {
             expect(fn () => Site::query()->whereKey($site->id)->update([$column => $value]))
                 ->toThrow(RuntimeException::class, 'cannot be written in bulk');
         }

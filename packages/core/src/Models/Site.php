@@ -120,6 +120,19 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
             'url_strategy' => 'it decides whether a bare base_url names a host or a path prefix, '
                 .'so changing it in bulk re-points the site without recomputing the columns that '
                 .'actually resolve it.',
+            /*
+             * ⚠️ THE DERIVED COLUMNS THEMSELVES, not only their source, and omitting them was a
+             * hole review found: `update(['canonical_host' => 'stolen.example.test'])` was
+             * ALLOWED and wrote a hostname the model never declared. Measured. The site then
+             * answers on a URL its own `base_url` does not name, and the global uniqueness index
+             * guards that stolen value — which is the cross-org URL theft ADR-021 says has no
+             * framework safety net, reached through the back door rather than the front.
+             */
+            'canonical_host' => 'it is derived, never authored. Writing it directly makes the site '
+                .'claim a host its base_url does not name, and the unique index then guards that '
+                .'value. Set base_url and save the model.',
+            'path_prefix' => 'it is derived, never authored. Writing it directly moves the site to '
+                .'a path its base_url does not name. Set base_url and save the model.',
         ];
     }
 
