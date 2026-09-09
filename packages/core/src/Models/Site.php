@@ -17,6 +17,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Kitsune\Core\Tenancy\Attributes\OrgScoped;
 use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
 use Kitsune\Core\Tenancy\Contracts\RefusesCascadingDeletes;
+use Kitsune\Core\Tenancy\Contracts\RequiresModelSave;
 use RuntimeException;
 
 /**
@@ -43,7 +44,7 @@ use RuntimeException;
  * @property array<string, mixed>|null $settings
  */
 #[OrgScoped]
-class Site extends Model implements RefusesCascadingDeletes
+class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
 {
     use EnforcesScope;
 
@@ -94,6 +95,34 @@ class Site extends Model implements RefusesCascadingDeletes
      * ⚠️ It sets them even when `base_url` is null, so CLEARING a base URL withdraws
      * the site's public address rather than leaving the last one behind.
      */
+    /**
+     * The columns a bulk write must not touch, with the reason.
+     *
+     * ⚠️ THE `saving` HOOK BELOW IS NOT ENOUGH ON ITS OWN, and review found that gap here.
+     * `Site::query()->update(['base_url' => ...])` dispatches no model events, so the derived
+     * pair keeps the OLD address: the site stays reachable at a URL it no longer declares and
+     * cannot be reached at the one it now stores. Worse than a failed write, because nothing
+     * reports it.
+     *
+     * This is the seventh instance of the same defect in this project, which is precisely why
+     * `RequiresModelSave` exists — see its docblock. `ScopedBuilder::update()` consults this
+     * list and refuses, making the model event the only door rather than the first one.
+     * `upsert()` is already refused outright for every scoped model, so it needs nothing here.
+     *
+     * @return array<string, string>
+     */
+    public static function columnsRequiringModelSave(): array
+    {
+        return [
+            'base_url' => 'canonical_host and path_prefix are derived from it on save, and a bulk '
+                .'write skips that derivation — leaving the site answering on its previous '
+                .'address and unreachable at its new one.',
+            'url_strategy' => 'it decides whether a bare base_url names a host or a path prefix, '
+                .'so changing it in bulk re-points the site without recomputing the columns that '
+                .'actually resolve it.',
+        ];
+    }
+
     protected static function booted(): void
     {
         static::saving(function (self $site): void {

@@ -348,6 +348,43 @@ describe('base_url derives the host and prefix a site claims', function (): void
 
         expect(Site::deriveUrlParts($atLimit, 'path'))->toBe(['', $atLimit]);
     });
+
+    it('refuses a BULK write to the columns the derived pair comes from', function (): void {
+        /*
+         * ⚠️ THE `saving` HOOK IS NOT ENOUGH ON ITS OWN, which review found here.
+         * `Site::query()->update(...)` dispatches no model events, so the derivation is skipped
+         * and `canonical_host` keeps the OLD address: the site answers on a URL it no longer
+         * declares and cannot be reached at the one it now stores. Nothing reports that.
+         *
+         * `RequiresModelSave` exists for exactly this — its docblock says the same defect had
+         * already been found on six guards — so the fix is to name the columns rather than to
+         * invent a second mechanism.
+         */
+        app(Context::class)->setOrg($this->org);
+
+        $site = Site::create([
+            'org_id' => $this->org->id, 'handle' => 'bulk', 'slug' => 'admin-bulk',
+            'name' => 'Bulk', 'locale' => 'en', 'base_url' => 'https://bulk.example.test',
+        ]);
+
+        foreach (['base_url' => 'https://moved.example.test', 'url_strategy' => 'domain'] as $column => $value) {
+            expect(fn () => Site::query()->whereKey($site->id)->update([$column => $value]))
+                ->toThrow(RuntimeException::class, 'cannot be written in bulk');
+        }
+
+        // ⚠️ Asserted on the ROW, not only on the exception: a guard that throws after writing
+        // would satisfy the expectation above and still have moved the site.
+        expect($site->fresh()->canonical_host)->toBe('bulk.example.test');
+
+        // And the path that IS supported still derives, so this refuses a shape rather than
+        // the operation.
+        $site->base_url = 'https://moved.example.test';
+        $site->save();
+
+        expect($site->fresh()->canonical_host)->toBe('moved.example.test');
+
+        app(Context::class)->forget();
+    });
 });
 
 describe('resolution does not scale with the number of sites', function (): void {
