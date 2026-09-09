@@ -140,6 +140,24 @@ final class Pattern
      */
     public static function delimit(string $pattern): ?string
     {
+        // ⚠️ THE BOUND LIVES HERE, not only in `unpublishable()`, because this is the
+        // chokepoint every path shares and that one was not on the first path taken.
+        //
+        // `TextType::validateSettings()` calls `compiles()` BEFORE `unpublishable()`, and
+        // `patternRule()` calls `delimit()` for every validated value — so an over-long
+        // pattern reached the quadratic `withEcmaScriptDot()` walk before the limit was
+        // ever consulted. Measured on a 100,000-character non-ASCII pattern:
+        // `unpublishable()` refused it in 0.001s while `compiles()` spent 6.7s reaching
+        // the same conclusion. Submitting the settings form was enough; nothing had to be
+        // stored.
+        //
+        // ⚠️ I had already been asked whether these methods were bounded and answered
+        // that they were, having measured `delimit()` at the limit rather than above it.
+        // Measuring the safe case cannot show an unbounded one.
+        if (self::lengthRefusal($pattern) !== null) {
+            return null;
+        }
+
         $compilable = self::withEcmaScriptDot($pattern);
 
         foreach (self::DELIMITERS as $delimiter) {
@@ -152,6 +170,32 @@ final class Pattern
         }
 
         return null;
+    }
+
+    /**
+     * Why this pattern is too long to handle at all, or null when it is not.
+     *
+     * ⚠️ ONE implementation, consulted by `unpublishable()`, by `delimit()` and by
+     * `TextType::validateSettings()`. Three call sites each testing the length
+     * themselves is three chances for one of them to be added without it — which is
+     * exactly how `compiles()` came to be the unbounded path while `unpublishable()`
+     * was bounded.
+     */
+    public static function lengthRefusal(string $pattern): ?string
+    {
+        $length = mb_strlen($pattern);
+
+        if ($length <= self::MAX_LENGTH) {
+            return null;
+        }
+
+        return sprintf(
+            'a pattern of %d characters — the limit is %d. Screening cost grows faster than '
+            .'length, so an unbounded pattern is a way to hold a request open rather than a '
+            .'way to describe a value',
+            $length,
+            self::MAX_LENGTH,
+        );
     }
 
     /**
@@ -479,14 +523,8 @@ final class Pattern
         $length = mb_strlen($pattern);
 
         // ⚠️ Refused BEFORE the scan, because the scan is what costs. See MAX_LENGTH.
-        if ($length > self::MAX_LENGTH) {
-            return sprintf(
-                'a pattern of %d characters — the limit is %d. Screening cost grows faster than '
-                .'length, so an unbounded pattern is a way to hold a request open rather than a '
-                .'way to describe a value',
-                $length,
-                self::MAX_LENGTH,
-            );
+        if (($tooLong = self::lengthRefusal($pattern)) !== null) {
+            return $tooLong;
         }
 
         $inClass = false;

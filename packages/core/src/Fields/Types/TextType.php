@@ -170,6 +170,14 @@ final class TextType extends BaseFieldType
             return null;
         }
 
+        // ⚠️ LENGTH FIRST, because `compiles()` now refuses an over-long pattern too —
+        // `Pattern::delimit()` bounds itself — and "that pattern cannot be compiled" is
+        // the wrong explanation for one that is merely too long. The author needs to be
+        // told the limit, not sent looking for a syntax error that is not there.
+        if (($tooLong = Pattern::lengthRefusal($pattern)) !== null) {
+            return sprintf('That pattern is %s.', $tooLong);
+        }
+
         // Unusable server-side: `patternRule()` refuses every value when the
         // pattern will not compile, so accepting it leaves a field nothing can
         // be stored in.

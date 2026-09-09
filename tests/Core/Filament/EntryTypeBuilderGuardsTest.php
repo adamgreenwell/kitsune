@@ -1828,6 +1828,62 @@ describe('settings that contradict themselves are refused', function (): void {
             ->and(Pattern::unpublishable(str_repeat('a', Pattern::MAX_LENGTH)))->toBeNull();
     });
 
+    it('bounds every entry point, not just the one that had the limit', function (): void {
+        /*
+         * ⚠️ THE BOUND WAS ON THE PATH NOT TAKEN FIRST.
+         *
+         * `unpublishable()` refused an over-long pattern immediately — but
+         * `validateSettings()` calls `Pattern::compiles()` BEFORE it, and `patternRule()`
+         * calls `delimit()` for every validated value. Both reach the quadratic
+         * `withEcmaScriptDot()` walk. Measured on a 100,000-character non-ASCII pattern:
+         * `unpublishable()` 0.001s, `compiles()` 6.7s. Submitting the settings form was
+         * enough; nothing had to be stored.
+         *
+         * ⚠️ And I had been asked directly whether these were bounded, measured
+         * `delimit()` AT the limit, and answered that they were. Measuring the safe case
+         * cannot demonstrate an unbounded one — the input has to exceed the bound.
+         *
+         * So the assertion is that every public entry point returns promptly on an input
+         * far above the limit, rather than that one of them does.
+         */
+        $huge = str_repeat('é.', 50_000);
+
+        expect(mb_strlen($huge))->toBeGreaterThan(Pattern::MAX_LENGTH * 50);
+
+        $started = microtime(true);
+
+        $refusals = [
+            'unpublishable' => Pattern::unpublishable($huge),
+            'lengthRefusal' => Pattern::lengthRefusal($huge),
+        ];
+        $compiles = Pattern::compiles($huge);
+        $delimited = Pattern::delimit($huge);
+
+        $elapsed = microtime(true) - $started;
+
+        expect($refusals['unpublishable'])->toContain('the limit is '.Pattern::MAX_LENGTH)
+            ->and($refusals['lengthRefusal'])->toContain('the limit is '.Pattern::MAX_LENGTH)
+            // `delimit()` returns null, so `compiles()` is false and `patternRule()`
+            // refuses every value — the runtime path is closed by the same guard.
+            ->and($delimited)->toBeNull()
+            ->and($compiles)->toBeFalse();
+
+        // All four together measure well under a millisecond; 1s is the budget a hostile
+        // input must not reach, and it was 6.7s on one of these before the fix.
+        expect($elapsed)->toBeLessThan(1.0);
+    });
+
+    it('tells the author the pattern is too long, not that it will not compile', function (): void {
+        // ⚠️ `compiles()` is now false for an over-long pattern as well, so without an
+        // explicit length check first the author would be sent looking for a syntax error
+        // that is not there. A misleading message costs someone an afternoon.
+        expect(fn () => FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'code', 'type' => 'text',
+            'pii_class' => 'none', 'cardinality' => 1,
+            'settings' => ['pattern' => str_repeat('a', Pattern::MAX_LENGTH + 1)],
+        ]))->toThrow(RuntimeException::class, 'the limit is '.Pattern::MAX_LENGTH);
+    });
+
     it('publishes the pattern length limit it enforces', function (): void {
         // Invariant 14: a constraint that is enforced and not published is one a
         // generated client gets wrong.
