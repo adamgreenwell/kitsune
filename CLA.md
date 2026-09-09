@@ -98,4 +98,33 @@ Until then, external pull requests are not being accepted, so there is nothing t
 
 ---
 
+## Before this goes into force
+
+`.github/workflows/cla.yml` points at this checklist as its enablement condition, so it has to
+be completable rather than aspirational. Review found it referenced and absent — it had been
+written into a draft of this file that was reverted, which is exactly the kind of dangling
+promise the workflow's gate exists to prevent.
+
+- [ ] **Counsel has read the agreement above**, and has decided whether Kitsune should adopt the
+      canonical Apache ICLA verbatim instead of maintaining this adaptation
+- [ ] **The grantee is named correctly.** The text says "the Project", which is not a legal
+      person. Whether the grant runs to an individual, a company, or a future foundation is the
+      one decision here that outlasts the file, and `GOVERNANCE.md`'s succession provisions have
+      to agree with whatever it says
+- [ ] **Governing law and jurisdiction settled**, or a deliberate decision recorded to state
+      none. This draft states none, because guessing is worse than omitting
+- [ ] **The corporate variant reviewed**, including how the list of authorised employees is
+      maintained — a roster in a public repository is personal data the project does not need,
+      and the section above is deliberately thin on the mechanism
+- [ ] **The signature record re-verified against the pinned action SHA**, and the seven-field
+      table above confirmed still accurate. The workflow pins a commit rather than a tag so this
+      cannot change underneath the disclosure
+- [ ] **`CLA_ENABLED` set to `true`** and `PERSONAL_ACCESS_TOKEN` added — the last step, not the
+      first
+
+⚠️ Nothing here is a legal opinion, including the shape of this list. It exists so that the
+questions counsel needs to answer are written down rather than remembered.
+
+---
+
 *Derived from the Apache Software Foundation Individual Contributor License Agreement v2.0, which is offered for reuse. Adapted for Kitsune. Not reviewed by counsel.*

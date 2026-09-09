@@ -12,7 +12,7 @@ name: CLA
 # record that looks like consent and may not be.
 #
 # SETUP REQUIRED before enabling:
-#   1. Complete CLA.md's checklist, including the grantee question
+#   1. Complete the checklist at the end of CLA.md, including the grantee question
 #   2. Add a secret PERSONAL_ACCESS_TOKEN — a fine-grained PAT scoped to THIS repository
 #      with Contents: read and write, so the action can append to the signatures file.
 #      Not the classic `repo` scope: this needs one repository, not all of them.
@@ -48,7 +48,16 @@ jobs:
     steps:
       - name: Check or record the agreement
         if: (github.event.comment.body == 'I have read the CLA Document and I hereby sign the CLA') || github.event_name == 'pull_request_target'
-        uses: contributor-assistant/github-action@v2.6.1
+        # ⚠️ PINNED TO A COMMIT, NOT A TAG, and the difference is load-bearing here. This step
+        # receives a repository-scoped write PAT and a write-enabled GITHUB_TOKEN, so if the
+        # upstream tag moved it would silently run different code with those credentials — and
+        # the seven-field disclosure in CLA.md could change with no pin change to prompt a
+        # re-read. A tag is a pointer; a SHA is the code. Review caught that the note below
+        # asked for a re-read "if the version pin moves", which a moved tag does not do.
+        #
+        # ca4a40a is v2.6.1. Updating this SHA REQUIRES re-reading the signature record in the
+        # new dist and updating CLA.md's table, because that table is a promise to contributors.
+        uses: contributor-assistant/github-action@ca4a40a7d1004f18d9960b404b97e5f30a505a08 # v2.6.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Writes the signatures file. See SETUP REQUIRED above for its scope.
@@ -59,12 +68,12 @@ jobs:
           branch: cla-signatures
           path-to-signatures: signatures/version1/cla.json
           path-to-document: https://github.com/adamgreenwell/kitsune/blob/main/CLA.md
-          # ⚠️ The action decides what it stores, not this file, and v2.6.1 records SEVEN
-          # fields: `name` (login), `id` (numeric user id), `comment_id`, `body` (the signing
-          # sentence, lowercased), `created_at`, `repoId` and `pullRequestNo`. Read out of the
-          # pinned dist rather than its docs. CLA.md discloses that table to contributors;
-          # if this version pin moves, re-read the source and update that table, because the
-          # promise made there is the thing that has to stay true.
+          # ⚠️ The action decides what it stores, not this file, and the pinned commit records
+          # SEVEN fields: `name` (login), `id` (numeric user id), `comment_id`, `body` (the
+          # signing sentence, lowercased), `created_at`, `repoId` and `pullRequestNo`. Read out
+          # of the pinned dist rather than its docs. CLA.md discloses that table to
+          # contributors; changing the SHA above means re-reading the source and updating that
+          # table, because the promise made there is the thing that has to stay true.
           #
           # No email address, postal address or employer: the reasoning `pii_class` applies to
           # an org's fields (ADR-020) applies to the project's own records too.
