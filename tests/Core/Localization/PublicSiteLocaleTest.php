@@ -349,6 +349,66 @@ describe('base_url derives the host and prefix a site claims', function (): void
         expect(Site::deriveUrlParts($atLimit, 'path'))->toBe(['', $atLimit]);
     });
 
+    it('stores an internationalised host in the ASCII form a browser actually sends', function (): void {
+        /*
+         * ⚠️ TWO SPELLINGS OF ONE DOMAIN, and review found them counted as two claims. One org
+         * configuring `https://bücher.example` and another claiming
+         * `https://xn--bcher-kva.example` stored different `canonical_host` values, so neither
+         * the unique index nor the overlap check saw a collision — and because a browser sends
+         * the A-label in `Host`, the Unicode-configured site was unreachable at its own address
+         * while the other org answered for its domain.
+         *
+         * ⚠️ ASSERTED BOTH WAYS ON PURPOSE. `ext-intl` is NOT a declared requirement of this
+         * package and CI does not install it, so a test that simply asserted the conversion
+         * would fail there. Where the extension exists the conversion is asserted; where it does
+         * not, the REFUSAL is — because the alternative, storing the U-label, is the defect
+         * above, and failing closed is what keeps the claim honest either way.
+         */
+        $unicode = 'bücher.example';
+        $ascii = 'xn--bcher-kva.example';
+
+        if (! function_exists('idn_to_ascii')) {
+            expect(fn () => Site::deriveUrlParts('https://'.$unicode, 'domain'))
+                ->toThrow(RuntimeException::class, 'intl extension');
+
+            // And an ASCII host is untouched, so the guard costs nothing in the common case.
+            expect(Site::deriveUrlParts('https://'.$ascii, 'domain'))->toBe([$ascii, '']);
+
+            return;
+        }
+
+        expect(Site::deriveUrlParts('https://'.$unicode, 'domain'))->toBe([$ascii, ''])
+            ->and(Site::deriveUrlParts('https://'.$ascii, 'domain'))->toBe([$ascii, '']);
+
+        // The two spellings are therefore ONE claim, which is the whole point.
+        app(Context::class)->setOrg($this->org);
+        Site::create([
+            'org_id' => $this->org->id, 'handle' => 'idn', 'slug' => 'admin-idn',
+            'name' => 'IDN', 'locale' => 'de', 'url_strategy' => 'domain',
+            'base_url' => 'https://'.$unicode,
+        ]);
+
+        $rival = Org::create(['name' => 'Rival IDN', 'slug' => 'rival-idn']);
+        app(Context::class)->setOrg($rival);
+
+        $claimed = false;
+
+        try {
+            Site::create([
+                'org_id' => $rival->id, 'handle' => 'punycode', 'slug' => 'admin-punycode',
+                'name' => 'Punycode', 'locale' => 'en', 'url_strategy' => 'domain',
+                'base_url' => 'https://'.$ascii,
+            ]);
+            $claimed = true;
+        } catch (Throwable) {
+            // Refused, which is the point.
+        }
+
+        expect($claimed)->toBeFalse('a rival org claimed the same domain in its other spelling');
+
+        app(Context::class)->forget();
+    });
+
     it('refuses a public URL that OVERLAPS one another org already holds', function (): void {
         /*
          * ⚠️ THE UNIQUE INDEX WAS NOT ENOUGH, and the amendment above briefly claimed it was.

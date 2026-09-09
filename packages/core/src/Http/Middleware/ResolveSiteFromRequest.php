@@ -144,7 +144,16 @@ final class ResolveSiteFromRequest
      */
     private function canonicalHost(string $host): string
     {
-        return rtrim(mb_strtolower(trim($host)), '.');
+        /*
+         * ⚠️ DELEGATED, NOT REIMPLEMENTED. These were two copies of the same three operations,
+         * and review found them diverging on the case that matters: an internationalised host
+         * has to be compared in its ASCII form, because that is the only form a browser sends.
+         * A second copy is a second thing to forget, and this one had already been forgotten.
+         *
+         * A request host is normally ASCII already, so this is usually the same trim and
+         * lowercase it always was.
+         */
+        return Site::canonicalHost($host);
     }
 
     /**

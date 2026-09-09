@@ -171,6 +171,20 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
      * exclusively — and the resolver already prefers a host-specific claim, so a specific claim
      * shadowing a promiscuous one is the intended precedence rather than theft.
      *
+     * ⚠️ NOT SERIALIZED, AND THAT IS A KNOWN GAP RATHER THAN AN OVERSIGHT — issue #61. This
+     * reads before the row is written, so two orgs creating `example.test/` and
+     * `example.test/news` CONCURRENTLY can both pass it: the derived index keys differ, so the
+     * unique constraint accepts both, and the theft above is recreated. Closing it needs a
+     * durable per-host claim row to lock plus a transactional save, because there is no existing
+     * row to lock when both claims are new — a schema change and a decision, not a patch.
+     *
+     * What this does close is the case where a rival claim ALREADY EXISTS, which is every
+     * sequential path including the one review demonstrated. The exact-match unique index still
+     * prevents identical pairs at the database level regardless of timing. A `lockForUpdate()`
+     * here would look like serialization without being it: a lock taken in a `saving` hook is
+     * only meaningful if the caller wrapped the save in a transaction, and a hook cannot make
+     * that true.
+     *
      * @throws RuntimeException when another org already holds an overlapping claim
      */
     private static function refuseOverlappingClaim(self $site): void
@@ -314,9 +328,54 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
      * The PORT is deliberately dropped: a site is not a different site on :8443, and
      * keeping it would make a development address fail to match its own configuration.
      */
-    private static function canonicalHost(string $host): string
+    public static function canonicalHost(string $host): string
     {
-        return rtrim(mb_strtolower(trim($host)), '.');
+        $host = rtrim(mb_strtolower(trim($host)), '.');
+
+        /*
+         * ⚠️ AN INTERNATIONALISED HOST IS STORED IN ITS ASCII (A-LABEL) FORM, because that is
+         * the only form a request ever arrives in. Review found the gap: one org configuring
+         * `https://bücher.example` and another claiming `https://xn--bcher-kva.example` produced
+         * two different `canonical_host` values, so neither the unique index nor the overlap
+         * check saw one claim — and since browsers send the A-label in `Host`, the
+         * Unicode-configured site was unreachable while the other org answered for its domain.
+         *
+         * Normalising here means the request side gets it too: `ResolveSiteFromRequest` calls
+         * this same method rather than keeping its own copy, which is what let the two spellings
+         * diverge in the first place.
+         */
+        if (mb_check_encoding($host, 'ASCII')) {
+            return $host;
+        }
+
+        /*
+         * ⚠️ FAILS CLOSED WITHOUT `ext-intl`, rather than storing the Unicode form. `intl` is
+         * NOT a declared requirement of this package and CI does not install it, so
+         * `idn_to_ascii()` cannot be assumed. Storing the U-label would produce exactly the
+         * defect above — a site unreachable at its own address, and a claim the index cannot
+         * compare — so an internationalised `base_url` is refused with the reason instead.
+         */
+        if (! function_exists('idn_to_ascii')) {
+            throw new RuntimeException(sprintf(
+                'Refusing the internationalised host [%s]: it must be stored in its ASCII form, '
+                .'because that is the only form a browser sends, and converting it needs the '
+                .'intl extension which is not installed. Install ext-intl, or enter the host in '
+                .'its punycode form.',
+                $host,
+            ));
+        }
+
+        $ascii = idn_to_ascii($host, IDNA_NONTRANSITIONAL_TO_ASCII, INTL_IDNA_VARIANT_UTS46);
+
+        if (! is_string($ascii) || $ascii === '') {
+            throw new RuntimeException(sprintf(
+                'Refusing the host [%s]: it is not ASCII and cannot be converted to an ASCII '
+                .'form, so no request could ever match it.',
+                $host,
+            ));
+        }
+
+        return rtrim(mb_strtolower($ascii), '.');
     }
 
     /**
