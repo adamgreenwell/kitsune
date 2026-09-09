@@ -752,9 +752,17 @@ entries
 >
 > - **Resolution must be indexed.** Scanning every site in PHP makes every public request O(total sites) in time and memory, unbounded as an installation grows, against ADR-027's 1 vCPU / 1 GB floor.
 > - **Two orgs must not claim one URL.** `base_url` accepts equivalent spellings — scheme, port, trailing slash, letter case, a trailing dot — so a uniqueness constraint on it directly would let two orgs each hold a distinct-looking value and both answer on one hostname, with row order deciding which. Canonicalising first makes the constraint mean something, and cross-org URL theft is the class ADR-021 says has no framework safety net.
-> - **The winner must be deterministic.** Ranked by specificity — host+prefix, host, prefix, root — not by whichever row the database returned, so deleting an unrelated site cannot silently change which org a URL serves.
+> - **The winner must be deterministic.** Ranked by specificity — this host with the longest matching prefix, down to this host at its root, then any host with the longest prefix, down to any host at its root — not by whichever row the database returned, so deleting an unrelated site cannot silently change which org a URL serves.
+>
+> ⚠️ The unique index deliberately does **not** lead with `org_id`, which is the carve-out added to AGENTS.md invariant 4 — a global uniqueness claim rather than a lookup index, consumed by a bootstrap that runs before scope exists. Leading with the scope key would permit the very thing the constraint forbids. The migration states both conditions beside the index.
 >
 > NULL in both columns keeps admin-only sites out of the unique index, because NULLs compare distinct on every engine. An empty string is a real value: `canonical_host = ''` is any host, `path_prefix = ''` is the site root.
+>
+> ⚠️ **Amended again 2026-09-09 — a bare `base_url` needs the strategy, and a prefix has a depth bound.** Both found by review of the implementation.
+>
+> **A bare value is ambiguous.** `x.test` and `fr` are the same shape, so `deriveUrlParts()` judged on the string alone had to guess, and guessed "prefix": a `domain` site written as a bare `x.test` was stored as host `''` with prefix `/x.test`, unreachable at `https://x.test/` and claiming `http://any-host/x.test` instead. It now takes `url_strategy` — required, not defaulted, because a default is how the same guess returns — and an explicit scheme still outranks the column. `url_strategy` is also defaulted **on the model**, because a column default applies at INSERT and the value is read while deriving, before the row exists.
+>
+> **A path prefix is bounded at `Site::MAX_PREFIX_SEGMENTS`.** Resolution turns a request path into candidate prefixes asked for in one query, so an unbounded depth would let a URL a stranger chooses decide how much work the database does. The derivation **refuses** a deeper prefix rather than storing one, so the bound can never be why a saved site is unreachable — which is exactly what the first resolver did, matching only the FIRST segment and leaving a `/news/fr` site configured, indexed and reachable by nothing.
 >
 > ⚠️ **The slug is not a public address.** The first implementation matched a `path` site against its admin `slug`, which exposed every site at `/{slug}` on every host while leaving a site with a real `base_url` unreachable at its own URL — and dropped `subdomain` into an unhandled branch so those sites resolved to nothing. Under `base_url` there is no third case: a subdomain is just a host, which is what "one mechanism, no special cases" above already promised.
 

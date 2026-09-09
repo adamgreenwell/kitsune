@@ -42,6 +42,20 @@ They do not go through Eloquent, so they ignore global scopes and leak across bo
 
 `site_id` for `#[SiteScoped]`, `org_id` for `#[OrgScoped]`. Leading with `site_id` covers org isolation transitively — a site is globally unique and belongs to exactly one org.
 
+⚠️ **Amended 2026-09-09 — one carve-out: a global uniqueness claim.** Found by review while implementing public site resolution (issue #38), where `sites.unique(['canonical_host', 'path_prefix'])` cannot lead with `org_id` without destroying the thing it exists for.
+
+The rule above is about **lookup** indexes: a scoped read should be able to use the index, and leading with the scope key is what makes that true. A `unique` constraint whose entire purpose is to be **global** is a different object, and prepending the scope key inverts its meaning. `['org_id', 'canonical_host', 'path_prefix']` permits precisely what the constraint forbids — two orgs each claiming `golfdom.test`, with row order deciding which one answers. ADR-021 says cross-org URL theft has no framework safety net; this index *is* the safety net.
+
+It is also not reachable by a scoped query. Public site resolution runs *before* any org context exists, because the org is derived **from** the site it returns — so at the moment the index is used there is no scope key to lead with.
+
+The carve-out is exactly this narrow, and all three must hold:
+
+- the index is `unique`, and what it claims is a **globally scarce name** rather than a row an org owns;
+- the query that uses it is a **bootstrap** that runs before scope exists, and says so through `withoutScopeBecause()`;
+- the **migration states both**, beside the index.
+
+Anything merely convenient to look up unscoped is not this, and still leads with the scope key. If you are reaching for this carve-out to make a read faster, you want a second index, not an exemption.
+
 ## 5. Never raw SQL in a field type — and there are three drivers
 
 Postgres, MySQL **and SQLite**. All three differ on generated columns, and SQLite differs structurally: it cannot `ALTER TABLE ADD COLUMN` a STORED generated column at all, taking a VIRTUAL one indexed as an expression index. Go through the driver abstraction; `generatedColumnType()` takes the driver for exactly this reason.

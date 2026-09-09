@@ -50,6 +50,39 @@ class Site extends Model implements RefusesCascadingDeletes
     protected $guarded = [];
 
     /**
+     * ⚠️ `url_strategy` IS DEFAULTED ON THE MODEL, NOT ONLY IN THE MIGRATION, because it is
+     * read in PHP before the row exists. A column default applies at INSERT, so the
+     * attribute is still null while the `saving` hook is deriving the URL columns from it —
+     * which made every save of a site that did not name a strategy explicitly fail.
+     *
+     * It must stay equal to the migration's default. Duplicated deliberately: the
+     * alternative is reading the schema at runtime to answer a question about a new model.
+     *
+     * @var array<string, mixed>
+     */
+    protected $attributes = [
+        'url_strategy' => 'path',
+    ];
+
+    /**
+     * How many path segments a `base_url` prefix may claim.
+     *
+     * ⚠️ ONE NUMBER FOR TWO PLACES, and that is the point. `ResolveSiteFromRequest` turns a
+     * request path into candidate prefixes and asks for them in ONE query, so an unbounded
+     * depth would make the query's size a function of a URL a stranger chooses — untrusted
+     * input (invariant 6) spending the 1 vCPU / 1 GB floor of ADR-027.
+     *
+     * A cap on the resolver alone would silently make a deeper configured site unreachable,
+     * which is the defect review found in the single-segment version. So the derivation
+     * REFUSES a deeper prefix instead: the cap can never be the reason a site that saved
+     * successfully cannot be found.
+     */
+    public const MAX_PREFIX_SEGMENTS = 4;
+
+    /** The URL strategies ADR-021 defines. Anything else is a typo, not a fourth strategy. */
+    private const STRATEGIES = ['path', 'subdomain', 'domain'];
+
+    /**
      * Keeps the derived URL columns in step with `base_url`.
      *
      * ⚠️ ON `saving`, NOT IN A SETTER OR THE CALLER, because the whole point is that
@@ -64,7 +97,7 @@ class Site extends Model implements RefusesCascadingDeletes
     protected static function booted(): void
     {
         static::saving(function (self $site): void {
-            [$site->canonical_host, $site->path_prefix] = self::deriveUrlParts($site->base_url);
+            [$site->canonical_host, $site->path_prefix] = self::deriveUrlParts($site->base_url, $site->url_strategy);
         });
     }
 
@@ -77,11 +110,38 @@ class Site extends Model implements RefusesCascadingDeletes
      * which is what a single-domain multi-language install actually wants and the only
      * form that survives being served from a different address in development.
      *
+     * ⚠️ A BARE VALUE IS AMBIGUOUS, AND ONLY `url_strategy` RESOLVES IT — which is why this
+     * takes the strategy rather than defaulting it. `x.test` and `fr` are the same shape, so
+     * a parser looking only at the string has to guess. It guessed "prefix", and a
+     * `domain` site configured as a bare `x.test` was stored as `canonical_host = ''` with
+     * `path_prefix = '/x.test'`: unreachable at `https://x.test/`, and claiming
+     * `http://any-host/x.test` instead. That also contradicted this project's own written
+     * promise that `https://x.test/`, `http://x.test` and a bare `x.test` all name one host.
+     *
+     * The strategy is REQUIRED rather than defaulted, because a default is how the same
+     * guess comes back: a caller that forgets it would silently get the `path` reading.
+     *
+     * An explicit scheme still wins over the strategy. An operator who wrote
+     * `https://example.com/fr` has said where the host ends, whatever the column says.
+     *
      * @return array{0: string|null, 1: string|null} host then prefix; null both when
      *                                               the site has no public URL at all
+     *
+     * @throws RuntimeException on an unknown strategy, or a prefix deeper than
+     *                          MAX_PREFIX_SEGMENTS
      */
-    public static function deriveUrlParts(?string $baseUrl): array
+    public static function deriveUrlParts(?string $baseUrl, string $strategy): array
     {
+        if (! in_array($strategy, self::STRATEGIES, true)) {
+            throw new RuntimeException(sprintf(
+                'Unknown url_strategy [%s]. Expected one of: %s. Refused rather than read as a '
+                .'path prefix: a typo would otherwise store a host as a prefix and leave the '
+                .'site unreachable at its own address.',
+                $strategy,
+                implode(', ', self::STRATEGIES),
+            ));
+        }
+
         if ($baseUrl === null || trim($baseUrl) === '') {
             // No public URL. Both null, and NULLs compare distinct in the unique index,
             // so every admin-only site coexists.
@@ -90,20 +150,28 @@ class Site extends Model implements RefusesCascadingDeletes
 
         $baseUrl = trim($baseUrl);
 
-        // A leading `//` would be a protocol-relative URL; a bare `/fr` is host-less.
-        $hasHost = str_contains($baseUrl, '://') || str_starts_with($baseUrl, '//');
+        // A leading `//` would be a protocol-relative URL.
+        $explicit = str_contains($baseUrl, '://') || str_starts_with($baseUrl, '//');
+
+        // A `domain` or `subdomain` site names a host even when written bare; a `path` site
+        // never does.
+        $namesHost = $explicit || $strategy === 'domain' || $strategy === 'subdomain';
 
         // ⚠️ A host-less value is forced to start with `/` before the placeholder host is
         // prepended. Without it, `fr` concatenated to `kitsune://placeholder` parses as the
         // HOST `placeholderfr` with an empty path — so a prefix written without its leading
         // slash silently became "any host, site root", which is the broadest match there is.
-        $parsed = parse_url($hasHost ? $baseUrl : 'kitsune://placeholder/'.ltrim($baseUrl, '/'));
+        $parsed = parse_url(match (true) {
+            $explicit => $baseUrl,
+            $namesHost => 'kitsune://'.ltrim($baseUrl, '/'),
+            default => 'kitsune://placeholder/'.ltrim($baseUrl, '/'),
+        });
 
         if ($parsed === false) {
             return [null, null];
         }
 
-        $host = $hasHost && is_string($parsed['host'] ?? null) ? $parsed['host'] : '';
+        $host = $namesHost && is_string($parsed['host'] ?? null) ? $parsed['host'] : '';
         $path = is_string($parsed['path'] ?? null) ? $parsed['path'] : '';
 
         return [self::canonicalHost($host), self::canonicalPrefix($path)];
@@ -127,17 +195,43 @@ class Site extends Model implements RefusesCascadingDeletes
     }
 
     /**
-     * A path prefix reduced to one spelling: empty, or `/segment`.
+     * A path prefix reduced to one spelling: empty, or `/segment` (up to
+     * MAX_PREFIX_SEGMENTS of them).
      *
      * `/fr`, `fr`, `/fr/` and `//fr` all name the same prefix. Empty string means the
      * site root, which is a real value rather than an absent one — it is what a
      * domain-addressed site has.
+     *
+     * ⚠️ Empty segments are DROPPED rather than preserved, so `news//fr` and `news/fr` are
+     * one prefix. A stored prefix carrying an empty segment could never be matched: the
+     * resolver rebuilds candidates from a request's own segments, and a browser does not
+     * send an empty one.
+     *
+     * ⚠️ REFUSES a deeper prefix, loudly, rather than storing something unreachable. See
+     * MAX_PREFIX_SEGMENTS: the resolver is bounded by the same constant, so accepting a
+     * deeper value here would save a site that no request could ever reach.
      */
     private static function canonicalPrefix(string $path): string
     {
-        $trimmed = trim($path, '/');
+        $segments = array_values(array_filter(explode('/', $path), static fn (string $s): bool => $s !== ''));
 
-        return $trimmed === '' ? '' : '/'.mb_strtolower($trimmed);
+        if ($segments === []) {
+            return '';
+        }
+
+        if (count($segments) > self::MAX_PREFIX_SEGMENTS) {
+            throw new RuntimeException(sprintf(
+                'A base_url path prefix may claim at most %d segments, and [%s] claims %d. '
+                .'Refused rather than stored: site resolution builds candidate prefixes from '
+                .'the request path and is bounded by the same number, so a deeper prefix would '
+                .'save a site that no request could reach.',
+                self::MAX_PREFIX_SEGMENTS,
+                $path,
+                count($segments),
+            ));
+        }
+
+        return '/'.mb_strtolower(implode('/', $segments));
     }
 
     protected $casts = [

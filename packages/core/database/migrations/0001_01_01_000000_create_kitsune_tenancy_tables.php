@@ -89,7 +89,21 @@ return new class extends Migration
             $table->timestamps();
 
             $table->unique(['org_id', 'handle']);
-            // The public URL is claimed once, across every org. See the columns above.
+            /*
+             * The public URL is claimed once, across every org. See the columns above.
+             *
+             * ⚠️ DELIBERATELY DOES NOT LEAD WITH `org_id`, which is the carve-out added to
+             * AGENTS.md invariant 4 rather than an oversight. Both conditions it requires
+             * hold here, and are stated because the invariant says to state them:
+             *
+             * 1. What this claims is a GLOBALLY SCARCE NAME, not a row an org owns. Leading
+             *    with `org_id` would permit exactly what the constraint forbids — two orgs
+             *    each holding `golfdom.test`, with row order deciding which answers.
+             * 2. Its consumer is a BOOTSTRAP. `ResolveSiteFromRequest` runs before any org
+             *    context exists, because the org is derived FROM the site it returns, and
+             *    says so through `withoutScopeBecause()`. There is no scope key to lead
+             *    with at the moment this index is used.
+             */
             $table->unique(['canonical_host', 'path_prefix']);
             $table->index(['org_id', 'site_group_id']);
         });

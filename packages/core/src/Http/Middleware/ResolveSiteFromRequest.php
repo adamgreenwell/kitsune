@@ -75,24 +75,28 @@ final class ResolveSiteFromRequest
     private function resolve(Request $request): ?Site
     {
         $host = $this->canonicalHost($request->getHost());
-        $segment = $this->firstSegment($request);
-        $prefix = $segment === null ? '' : '/'.mb_strtolower($segment);
+        $prefixes = $this->pathPrefixes($request);
 
         /*
          * ⚠️ ORDERED BY SPECIFICITY, and the order is the whole guarantee. A request for
-         * `https://golfdom.test/fr` could legitimately match four configurations, and
-         * without a stated precedence the winner is whichever row the database returned —
-         * so deleting an unrelated site could silently change which org a URL served.
+         * `https://golfdom.test/news/fr` could legitimately match several configurations,
+         * and without a stated precedence the winner is whichever row the database returned
+         * — so deleting an unrelated site could silently change which org a URL served.
          *
-         * Most specific first: this host AND this prefix, then this host at its root, then
-         * any host at this prefix, then any host at its root.
+         * Most specific first: this host with the longest prefix, down to this host at its
+         * root, then any host with the longest prefix, down to any host at its root. A named
+         * host always beats a host-less claim, and a longer prefix always beats a shorter
+         * one.
          */
-        $candidates = [
-            [$host, $prefix],
-            [$host, ''],
-            ['', $prefix],
-            ['', ''],
-        ];
+        $candidates = [];
+
+        foreach ($prefixes as $prefix) {
+            $candidates[] = [$host, $prefix];
+        }
+
+        foreach ($prefixes as $prefix) {
+            $candidates[] = ['', $prefix];
+        }
 
         /*
          * ⚠️ UNSCOPED, and this is the bootstrap case rather than a shortcut.
@@ -144,20 +148,44 @@ final class ResolveSiteFromRequest
     }
 
     /**
-     * The first path segment, or null when the request addresses the root.
+     * Every path prefix this request could be claiming, longest first, ending with the root.
      *
-     * ⚠️ Read from the path rather than from a route parameter, so this works
-     * whether or not the application declared one. A route with `{site}` gets
-     * the same answer; a group with a literal prefix still resolves.
+     * ⚠️ NOT JUST THE FIRST SEGMENT, and that version was broken. A `base_url` of
+     * `https://example.test/news/fr` stores `path_prefix = '/news/fr'`, while a resolver
+     * that only ever built `/news` could never match it — not for `/news/fr/article`, and
+     * not even for `/news/fr` itself. The site was configured, saved, indexed and
+     * unreachable. Found by review.
+     *
+     * ⚠️ BOUNDED BY `Site::MAX_PREFIX_SEGMENTS`, because these become candidate pairs in one
+     * query and the path is chosen by whoever sends the request (invariant 6): unbounded, a
+     * long URL would decide how much work the database does, on the 1 vCPU floor of ADR-027.
+     * The same constant makes `Site::canonicalPrefix()` REFUSE a deeper prefix, so this
+     * bound can never be the reason a saved site cannot be found.
+     *
+     * ⚠️ Read from the path rather than from a route parameter, so this works whether or not
+     * the application declared one. A route with `{site}` gets the same answer; a group with
+     * a literal prefix still resolves.
+     *
+     * @return array<int, string> prefixes, longest first, always including `''`
      */
-    private function firstSegment(Request $request): ?string
+    private function pathPrefixes(Request $request): array
     {
-        $path = trim($request->path(), '/');
+        $segments = array_values(array_filter(
+            explode('/', trim($request->path(), '/')),
+            static fn (string $segment): bool => $segment !== '',
+        ));
 
-        if ($path === '' || $path === '/') {
-            return null;
+        $segments = array_slice($segments, 0, Site::MAX_PREFIX_SEGMENTS);
+
+        $prefixes = [];
+
+        for ($depth = count($segments); $depth >= 1; $depth--) {
+            $prefixes[] = '/'.mb_strtolower(implode('/', array_slice($segments, 0, $depth)));
         }
 
-        return explode('/', $path)[0];
+        // The site root, which is a real claim rather than an absent one.
+        $prefixes[] = '';
+
+        return $prefixes;
     }
 }

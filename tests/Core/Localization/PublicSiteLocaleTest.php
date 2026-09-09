@@ -193,6 +193,34 @@ describe('base_url is the only address, and the slug is not one', function (): v
         expect(serve('https://specific.example.test/shared'))->toBe('it')
             ->and(serve('http://localhost/shared'))->toBe('de');
     });
+
+    it('resolves a NESTED path prefix, and prefers it over a shorter one', function (): void {
+        /*
+         * ⚠️ A CONFIGURED SITE THAT NO REQUEST COULD REACH. The resolver built candidates
+         * from the request's FIRST segment only, so a `base_url` of `/news/fr` stored
+         * `path_prefix = '/news/fr'` and was matched by nothing — not by `/news/fr/article`,
+         * and not even by `/news/fr` itself. Saved, indexed, unreachable. Found by review.
+         *
+         * The shorter sibling is here on purpose: it proves candidates are ordered longest
+         * first rather than merely that a nested prefix matches at all. Without the ordering,
+         * `/news/fr` would be served by whichever of the two the database happened to return.
+         */
+        app(Context::class)->setOrg($this->org);
+        Site::create([
+            'org_id' => $this->org->id, 'handle' => 'news', 'slug' => 'admin-news',
+            'name' => 'News', 'locale' => 'de', 'base_url' => '/news',
+        ]);
+        Site::create([
+            'org_id' => $this->org->id, 'handle' => 'newsfr', 'slug' => 'admin-newsfr',
+            'name' => 'News FR', 'locale' => 'fr', 'base_url' => '/news/fr',
+        ]);
+        app(Context::class)->forget();
+
+        expect(serve('http://localhost/news/fr'))->toBe('fr')
+            ->and(serve('http://localhost/news/fr/article-1'))->toBe('fr')
+            ->and(serve('http://localhost/news'))->toBe('de')
+            ->and(serve('http://localhost/news/de'))->toBe('de');
+    });
 });
 
 describe('an equivalent host cannot be claimed twice', function (): void {
@@ -215,15 +243,29 @@ describe('an equivalent host cannot be claimed twice', function (): void {
          * argument as the EXPECTED MESSAGE — passing `''` there asserts an empty message and
          * fails against a real exception. That is how the first version of this test failed
          * while the constraint was working perfectly.
+         *
+         * ⚠️ EACH ATTEMPT GETS ITS OWN SAVEPOINT, and on PostgreSQL the test is broken
+         * without one. A statement that fails inside a Postgres transaction aborts the WHOLE
+         * transaction: every later statement returns `25P02 current transaction is aborted`
+         * until a rollback, so the second spelling onwards stopped testing the constraint and
+         * the poisoned connection surfaced later as an unrelated failure in
+         * `RefreshDatabase`'s own migration check. SQLite and MySQL tolerate the pattern,
+         * which is exactly why it survived: three of four engines agreed it was fine.
+         *
+         * A nested `DB::transaction()` inside `RefreshDatabase`'s transaction issues a
+         * SAVEPOINT and rolls back to it, so a refused INSERT leaves the outer transaction
+         * usable and every spelling is genuinely tested on every engine.
          */
         foreach (['http://hosted.example.test', 'https://HOSTED.example.test/', 'https://hosted.example.test.', 'https://hosted.example.test:8443'] as $spelling) {
             $claimed = false;
 
             try {
-                Site::create([
-                    'org_id' => $rival->id, 'handle' => 'steal', 'slug' => 'steal-'.md5($spelling),
-                    'name' => 'Steal', 'locale' => 'en', 'base_url' => $spelling,
-                ]);
+                DB::transaction(function () use ($rival, $spelling): void {
+                    Site::create([
+                        'org_id' => $rival->id, 'handle' => 'steal', 'slug' => 'steal-'.md5($spelling),
+                        'name' => 'Steal', 'locale' => 'en', 'base_url' => $spelling,
+                    ]);
+                });
                 $claimed = true;
             } catch (Throwable) {
                 // The database refused it, which is the point.
@@ -246,13 +288,65 @@ describe('an equivalent host cannot be claimed twice', function (): void {
             'fr' => ['', '/fr'],
             '/' => ['', ''],
         ] as $written => $expected) {
-            expect(Site::deriveUrlParts($written))->toBe($expected, "[{$written}]");
+            expect(Site::deriveUrlParts($written, 'path'))->toBe($expected, "[{$written}]");
         }
 
         // And no public URL at all stays null in both, which is what keeps admin-only
         // sites out of the unique index.
-        expect(Site::deriveUrlParts(null))->toBe([null, null])
-            ->and(Site::deriveUrlParts('  '))->toBe([null, null]);
+        expect(Site::deriveUrlParts(null, 'path'))->toBe([null, null])
+            ->and(Site::deriveUrlParts('  ', 'path'))->toBe([null, null]);
+    });
+
+});
+
+describe('base_url derives the host and prefix a site claims', function (): void {
+    it('reads a BARE value as a host when the strategy says the site is addressed by one', function (): void {
+        /*
+         * ⚠️ THE AMBIGUITY ONLY `url_strategy` CAN SETTLE, and reading it wrong was silent.
+         * `x.test` and `fr` are the same shape. Judged on the string alone, a `domain` site
+         * written bare was stored as host `''` with prefix `/x.test` — unreachable at
+         * `https://x.test/`, and claiming `http://any-host/x.test` instead, which also
+         * contradicted this project's own written promise that all three spellings of
+         * `x.test` name one host. Found by review.
+         */
+        foreach ([
+            ['x.test', 'domain', ['x.test', '']],
+            ['X.Test.', 'domain', ['x.test', '']],
+            ['news.x.test', 'subdomain', ['news.x.test', '']],
+            ['x.test/fr', 'domain', ['x.test', '/fr']],
+            // The same string under `path` is a prefix, which is the whole point.
+            ['x.test', 'path', ['', '/x.test']],
+            // An explicit scheme outranks the column: the operator has said where the host
+            // ends, so a `path` site written as a full URL keeps its host.
+            ['https://x.test/fr', 'path', ['x.test', '/fr']],
+        ] as [$written, $strategy, $expected]) {
+            expect(Site::deriveUrlParts($written, $strategy))->toBe($expected, "[{$written}] as {$strategy}");
+        }
+    });
+
+    it('refuses an unknown strategy rather than reading it as a path', function (): void {
+        // Fail closed and loud: a typo would otherwise store a host as a prefix and leave
+        // the site unreachable at its own address, with nothing on screen to say so.
+        expect(fn () => Site::deriveUrlParts('x.test', 'doamin'))
+            ->toThrow(RuntimeException::class, 'Unknown url_strategy');
+    });
+
+    it('refuses a path prefix deeper than the resolver can ask for', function (): void {
+        /*
+         * ⚠️ The two halves share `Site::MAX_PREFIX_SEGMENTS` on purpose. The resolver builds
+         * candidate prefixes from the request path and is bounded, so accepting a deeper
+         * prefix here would save a site that no request could ever reach — the failure mode
+         * the single-segment resolver had, moved one layer down.
+         */
+        $deep = '/'.implode('/', array_fill(0, Site::MAX_PREFIX_SEGMENTS + 1, 'x'));
+
+        expect(fn () => Site::deriveUrlParts($deep, 'path'))
+            ->toThrow(RuntimeException::class, 'at most');
+
+        // And the deepest ALLOWED prefix still derives, so the bound is off-by-one correct.
+        $atLimit = '/'.implode('/', array_fill(0, Site::MAX_PREFIX_SEGMENTS, 'x'));
+
+        expect(Site::deriveUrlParts($atLimit, 'path'))->toBe(['', $atLimit]);
     });
 });
 
