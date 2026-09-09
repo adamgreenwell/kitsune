@@ -10,6 +10,8 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Tests;
 
+use BladeUI\Heroicons\BladeHeroiconsServiceProvider;
+use BladeUI\Icons\BladeIconsServiceProvider;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Kitsune\Core\KitsuneServiceProvider;
 use Orchestra\Testbench\TestCase as Orchestra;
@@ -34,7 +36,21 @@ abstract class TestCase extends Orchestra
      */
     protected function getPackageProviders($app): array
     {
-        return [KitsuneServiceProvider::class];
+        // ⚠️ Blade Icons is registered explicitly, because Testbench boots only
+        // what it is told to. Without it the icon factory is unresolvable, which
+        // made `Icons::judge()` return "cannot tell" for every name and quietly
+        // stood the icon guard down in the one place that tests it. No service
+        // is involved — it is a package provider, so invariant 11 is untouched.
+        return [
+            BladeIconsServiceProvider::class,
+            // ⚠️ And the SET provider, not just the factory. Blade Icons
+            // resolves nothing on its own — `blade-heroicons` is what registers
+            // the `heroicon` set, so with only the factory booted every name was
+            // unjudgeable and the icon guard stood itself down in the one place
+            // that tests it.
+            BladeHeroiconsServiceProvider::class,
+            KitsuneServiceProvider::class,
+        ];
     }
 
     /**

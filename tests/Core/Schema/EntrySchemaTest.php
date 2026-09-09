@@ -193,10 +193,14 @@ describe('revisions are redactable, not immutable (ADR-020)', function (): void 
         $entry = Entry::create(['entry_type_id' => $this->article->id, 'title' => 'Profile']);
         $revision = EntryRevision::create([
             'entry_id' => $entry->id,
+            // The discriminator is NOT NULL: a revision recording values without
+            // the schema they were written against cannot be restored safely,
+            // and the column says so rather than leaving a hole to handle.
+            'entry_type_id' => $entry->entry_type_id,
             'values' => ['name' => 'Alex Doe', 'city' => 'Berlin'],
         ]);
 
-        $revision->redact('name');
+        $revision->redactValue('name');
 
         // Compared order-insensitively on purpose: MySQL does not preserve
         // JSON object key order, while PostgreSQL and SQLite do. Nothing in

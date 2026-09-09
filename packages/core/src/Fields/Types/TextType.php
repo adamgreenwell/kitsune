@@ -13,6 +13,7 @@ namespace Kitsune\Core\Fields\Types;
 use Closure;
 use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Fields\LogicalType;
+use Kitsune\Core\Fields\Pattern;
 use Kitsune\Core\Fields\Projection;
 
 final class TextType extends BaseFieldType
@@ -53,7 +54,6 @@ final class TextType extends BaseFieldType
         return $input === null ? null : (string) $input;
     }
 
-    /** @return array<int, mixed> */
     /**
      * ⚠️ The constraints are PUBLISHED, not only enforced.
      *
@@ -103,12 +103,12 @@ final class TextType extends BaseFieldType
                 return;
             }
 
-            $delimited = $this->delimited($pattern);
+            $delimited = Pattern::delimit($pattern);
 
             // An uncompilable pattern is a refusal, not a pass. It means the
             // constraint cannot be checked, and letting the value through
             // would silently drop a rule the schema still advertises.
-            if ($delimited === null || @preg_match($delimited, '') === false) {
+            if ($delimited === null || ! Pattern::compiles($pattern)) {
                 $fail("The {$attribute} field is constrained by a pattern that cannot be compiled.");
 
                 return;
@@ -120,22 +120,7 @@ final class TextType extends BaseFieldType
         };
     }
 
-    /**
-     * Wrap a JSON Schema pattern for PCRE, choosing a delimiter it does not
-     * contain rather than escaping — escaping is where the already-escaped
-     * cases go wrong.
-     */
-    private function delimited(string $pattern): ?string
-    {
-        foreach (['/', '#', '~', '%', '!'] as $delimiter) {
-            if (! str_contains($pattern, $delimiter)) {
-                return $delimiter.$pattern.$delimiter.'u';
-            }
-        }
-
-        return null;
-    }
-
+    /** @return array<int, mixed> */
     protected function scalarValidationRules(FieldConfig $config): array
     {
         $rules = [];
@@ -154,8 +139,64 @@ final class TextType extends BaseFieldType
     {
         return [
             'maxLength' => ['type' => 'integer', 'default' => 255, 'label' => 'Maximum length'],
-            'pattern' => ['type' => 'string', 'nullable' => true, 'label' => 'Pattern (regex)'],
+            // The constraint on this setting lives in `validateSettings()`
+            // rather than in a descriptor key: it has to reject a pattern that
+            // cannot compile AND one that cannot be published, and a per-setting
+            // `format` marker could express neither well. See there.
+            'pattern' => [
+                'type' => 'string',
+                'nullable' => true,
+                // Published because it is enforced — `Pattern::unpublishable()` refuses a
+                // longer one, and invariant 14 is that a constraint which is enforced and
+                // not published is a constraint a consumer gets wrong.
+                'maxLength' => Pattern::MAX_LENGTH,
+                'label' => 'Pattern (regex)',
+                'help' => 'Without delimiters, e.g. ^[A-Z]{2}-[0-9]+$. Must compile, and must mean the '
+                    .'same thing in the JSON Schema dialect, because it is published to API '
+                    .'consumers verbatim — so [0-9] rather than \\d, and \\p{Script=Arabic} rather '
+                    .'than \\p{Arabic}.',
+            ],
         ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $settings
+     */
+    public function validateSettings(array $settings): ?string
+    {
+        $pattern = $settings['pattern'] ?? null;
+
+        if (! is_string($pattern) || $pattern === '') {
+            return null;
+        }
+
+        // ⚠️ LENGTH FIRST, because `compiles()` now refuses an over-long pattern too —
+        // `Pattern::delimit()` bounds itself — and "that pattern cannot be compiled" is
+        // the wrong explanation for one that is merely too long. The author needs to be
+        // told the limit, not sent looking for a syntax error that is not there.
+        if (($tooLong = Pattern::lengthRefusal($pattern)) !== null) {
+            return sprintf('That pattern is %s.', $tooLong);
+        }
+
+        // Unusable server-side: `patternRule()` refuses every value when the
+        // pattern will not compile, so accepting it leaves a field nothing can
+        // be stored in.
+        if (! Pattern::compiles($pattern)) {
+            return 'That pattern cannot be compiled, so every value for this field would be refused.';
+        }
+
+        // Unusable for a CONSUMER: the same string is published verbatim as a
+        // JSON Schema pattern, and JSON Schema's dialect is ECMAScript.
+        if (($unpublishable = Pattern::unpublishable($pattern)) !== null) {
+            return sprintf(
+                'That pattern uses %s, which PCRE understands and the JSON Schema dialect does not. '
+                .'This field publishes its pattern to API consumers verbatim, so they would be '
+                .'handed a constraint they cannot compile. Rewrite it without that construct.',
+                $unpublishable,
+            );
+        }
+
+        return null;
     }
 
     private function length(FieldConfig $config): int

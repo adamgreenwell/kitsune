@@ -19,6 +19,7 @@ use Kitsune\Core\Exceptions\ReservedHandleException;
 use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Fields\FieldTypeRegistry;
 use Kitsune\Core\Fields\StorageStrategy;
+use Kitsune\Core\Filament\Icons;
 use Kitsune\Core\Tenancy\Attributes\Unscoped;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tenancy\Contracts\RefusesCascadingDeletes;
@@ -32,6 +33,7 @@ use RuntimeException;
  * @property string $handle
  * @property string $name
  * @property string $plural_name
+ * @property string|null $icon
  * @property bool $is_system
  * @property int|null $subject_field_id
  * @property array<string, mixed>|null $settings
@@ -138,10 +140,33 @@ class EntryType extends Model implements RefusesCascadingDeletes, RequiresModelS
      */
     private function guardSubjectShape(Field $field): void
     {
+        $refusal = $this->subjectShapeRefusal($field);
+
+        if ($refusal !== null) {
+            throw new RuntimeException($refusal);
+        }
+    }
+
+    /**
+     * Why this field cannot identify a data subject, or null if it can.
+     *
+     * ⚠️ ONE implementation, because there are two callers with opposite jobs:
+     * the model guard refuses a bad nomination, and the admin's selector has to
+     * avoid offering one. Written as a second predicate, those two drift — the
+     * builder review found that exact failure four times in one PR, where a
+     * field type's validation and its published schema were maintained
+     * separately. The selector offered every field, and choosing a multi-valued
+     * one produced a save that threw: an option presented as valid that cannot
+     * be saved.
+     *
+     * Returns the message rather than a bool so the reason survives to the UI.
+     */
+    public function subjectShapeRefusal(Field $field): ?string
+    {
         $storage = $field->fieldStorage;
 
         if ($storage === null) {
-            return;
+            return null;
         }
 
         // ⚠️ Storage ownership, checked HERE because `Field::create()` skips
@@ -158,14 +183,14 @@ class EntryType extends Model implements RefusesCascadingDeletes, RequiresModelS
         // of them — a wider blast radius than the cross-org case, not a
         // narrower one.
         if ($storage->org_id !== $this->org_id && $storage->org_id !== null) {
-            throw new RuntimeException(sprintf(
+            return sprintf(
                 'Field [%s] is backed by %s and cannot identify a data subject on %s. '
                 .'Subject-access requests would be answered against a definition this entry type '
                 .'does not control (ADR-020, ADR-021).',
                 $storage->handle,
                 "another organisation's storage",
                 $this->org_id === null ? 'a global entry type' : 'this entry type',
-            ));
+            );
         }
 
         $config = new FieldConfig($storage, $field);
@@ -178,25 +203,22 @@ class EntryType extends Model implements RefusesCascadingDeletes, RequiresModelS
         // subject to both of them.
         if ($storage->strategy() === StorageStrategy::Relational) {
             if ($config->isMultiValue()) {
-                throw new RuntimeException(
-                    "Field [{$storage->handle}] can point to several entries and cannot identify a data "
+                return "Field [{$storage->handle}] can point to several entries and cannot identify a data "
                     .'subject: a request about one person would return records belonging to another '
-                    .'(ADR-020). Nominate a relation limited to one target.'
-                );
+                    .'(ADR-020). Nominate a relation limited to one target.';
             }
 
-            return;
+            return null;
         }
 
         if ($config->isMultiValue() || $this->publishesAnArray($storage, $config)) {
-            throw new RuntimeException(
-                "Field [{$storage->handle}] holds many values and cannot identify a data subject. "
+            return "Field [{$storage->handle}] holds many values and cannot identify a data subject. "
                 .'A subject identifier names one person; `whereSubjectIs()` would match nothing at '
                 .'all, which looks exactly like a type with no subject nominated (ADR-020). Nominate '
-                .'a single-valued field, or a relation if the subject is another entry.'
-            );
+                .'a single-valued field, or a relation if the subject is another entry.';
         }
 
+        return null;
     }
 
     private function publishesAnArray(FieldStorage $storage, FieldConfig $config): bool
@@ -303,6 +325,20 @@ class EntryType extends Model implements RefusesCascadingDeletes, RequiresModelS
      */
     public function scopeAvailableToCurrentOrg(Builder $query): Builder
     {
+        return self::constrainToCurrentOrg($query);
+    }
+
+    /**
+     * The same constraint, callable on a builder whose model is not statically
+     * known — which is what Filament's `getEloquentQuery()` hands back.
+     *
+     * @template TModel of Model
+     *
+     * @param  Builder<TModel>  $query
+     * @return Builder<TModel>
+     */
+    public static function constrainToCurrentOrg(Builder $query): Builder
+    {
         $orgId = app(Context::class)->orgId();
 
         return $query->where(function (Builder $inner) use ($orgId): void {
@@ -325,6 +361,26 @@ class EntryType extends Model implements RefusesCascadingDeletes, RequiresModelS
      *
      * Global storage travels freely, matching how global types work.
      */
+    private function guardIcon(): void
+    {
+        $icon = $this->icon;
+
+        // ⚠️ A definite NO only. `Icons::judge()` returns null where the icon
+        // factory is not booted — a console context, or a bare install — and
+        // refusing a save there would block a write for a reason that has
+        // nothing to do with the data.
+        if ($icon === null || $icon === '' || Icons::judge($icon) !== false) {
+            return;
+        }
+
+        throw new RuntimeException(sprintf(
+            'Icon [%s] is not an icon any installed set provides, and it would be rendered into '
+            .'the navigation on every admin page. Use one of the names the entry type form offers, '
+            .'or leave it empty for the default.',
+            $icon,
+        ));
+    }
+
     private function guardOrgMove(): void
     {
         if (! $this->exists || ! $this->isDirty('org_id')) {
@@ -390,17 +446,45 @@ class EntryType extends Model implements RefusesCascadingDeletes, RequiresModelS
             fn ($query) => $query->withTrashed()->where('entry_type_id', $this->getKey())->count(),
         );
 
-        if ($entries === 0) {
+        if ($entries > 0) {
+            throw new RuntimeException(sprintf(
+                'Entry type [%s] still has %d entr%s, and the database would delete them by cascade — '
+                .'permanently, with nothing in the audit trail saying they existed (ADR-020). Delete '
+                .'the entries first, which is audited.',
+                $this->handle,
+                $entries,
+                $entries === 1 ? 'y' : 'ies',
+            ));
+        }
+
+        // ⚠️ REVISIONS as well, and counting entries alone was not the same
+        // question.
+        //
+        // `entries.entry_type_id` is mutable. Move every entry of type A to type B
+        // and the count above is zero — while every one of those entries still has
+        // A-era revisions recording the schema their values were authored against.
+        // Permitting the delete then took that history out through the foreign key,
+        // for entries that still exist, in a system whose revision UI deliberately
+        // offers no way to delete a revision.
+        //
+        // The foreign key restricts now, so the database would refuse anyway. This
+        // is here to refuse FIRST, with a reason a person can act on — a constraint
+        // violation names a column, not a decision.
+        $revisions = EntryRevision::query()->where('entry_type_id', $this->getKey())->count();
+
+        if ($revisions === 0) {
             return;
         }
 
         throw new RuntimeException(sprintf(
-            'Entry type [%s] still has %d entr%s, and the database would delete them by cascade — '
-            .'permanently, with nothing in the audit trail saying they existed (ADR-020). Delete '
-            .'the entries first, which is audited.',
+            'Entry type [%s] has no entries left, but %d revision%s still record it as the schema '
+            .'their values were written against — belonging to entries that have since moved to '
+            .'another type. Deleting it would remove that history for entries that still exist, and '
+            .'nothing in Kitsune deletes a revision (ADR-020). Erase those entries\' history first '
+            .'if it genuinely has to go.',
             $this->handle,
-            $entries,
-            $entries === 1 ? 'y' : 'ies',
+            $revisions,
+            $revisions === 1 ? '' : 's',
         ));
     }
 
@@ -442,6 +526,20 @@ class EntryType extends Model implements RefusesCascadingDeletes, RequiresModelS
         // exact state `Field::saving()` refuses to create, reached by moving
         // the other side of the relationship instead.
         static::saving(fn (self $type) => $type->guardOrgMove());
+
+        // ⚠️ An icon nobody can resolve used to brick the whole admin.
+        //
+        // The column is rendered into the navigation on every admin page and
+        // Blade Icons throws `SvgNotFound`, so one typo returned 500 from every
+        // page in that org's admin — including the entry types page, the only
+        // one that could have corrected it.
+        //
+        // `Icons::orFallback()` at the render boundary is what prevents the
+        // outage, and it holds whatever the source. This exists so a bad write
+        // is REPORTED: silently rendering a different icon than the author asked
+        // for is the quiet kind of wrong, and the author would go looking in the
+        // stylesheet.
+        static::saving(fn (self $type) => $type->guardIcon());
 
         static::saving(function (self $type): void {
             if ($type->subject_field_id === null) {

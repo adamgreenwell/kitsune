@@ -111,10 +111,27 @@ class ScopedBuilder extends Builder
         }
 
         return DB::transaction(function () use ($model, $delete) {
-            foreach ($this->toBase()->lockForUpdate()->pluck($model->getQualifiedKeyName()) as $key) {
-                $model->newInstance([], true)
-                    ->forceFill([$model->getKeyName() => $key])
-                    ->guardCascade();
+            // ⚠️ The ROWS, not their keys — and keys was a silent hole.
+            //
+            // A guard was handed `newInstance([], true)` carrying nothing but the
+            // primary key, which worked for `EntryType::guardCascade()` only
+            // because it counts entries BY that key. `Field::guardCascade()` has
+            // to read `field_storage_id` and `entry_type_id` to know what data to
+            // look for, found both null on a key-only instance, and returned
+            // early — so the bulk and quiet delete paths passed a guard that
+            // never ran. A guard cannot judge a row it has not been given.
+            // ⚠️ The COMPLETE row, because `get()` inherits the caller's
+            // projection. `Field::query()->select('id')->delete()` handed the
+            // guard a model with no `field_storage_id` again — and the DELETE
+            // ignores a SELECT list, so the row went and its data stranded. The
+            // projection is reset rather than trusted.
+            foreach ((clone $this)->select($model->getTable().'.*')->lockForUpdate()->get() as $row) {
+                // Narrowed per row: this builder is generic over its model, so
+                // the contract check above constrains the prototype rather than
+                // what the query returns.
+                if ($row instanceof RefusesCascadingDeletes) {
+                    $row->guardCascade();
+                }
             }
 
             return $delete();
