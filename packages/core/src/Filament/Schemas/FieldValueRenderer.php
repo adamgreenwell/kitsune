@@ -24,10 +24,12 @@ use Filament\Schemas\Components\Component;
 use Filament\Tables\Columns\Column;
 use Filament\Tables\Columns\IconColumn;
 use Filament\Tables\Columns\TextColumn;
+use Illuminate\Database\Eloquent\Builder;
 use Kitsune\Core\Fields\Cell;
 use Kitsune\Core\Fields\Control;
 use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Fields\FieldTypeRegistry;
+use Kitsune\Core\Models\Entry;
 
 /**
  * Builds the control that edits a field value, and the cell that lists it.
@@ -53,6 +55,14 @@ use Kitsune\Core\Fields\FieldTypeRegistry;
 final class FieldValueRenderer
 {
     /**
+     * Where relation state lives in form data, outside the model's attributes.
+     *
+     * A constant because the renderer writes it and the pages read it, and a literal in two
+     * files is one rename away from a form that silently stops saving relations.
+     */
+    public const RELATION_STATE_PREFIX = 'relations';
+
+    /**
      * The form control for one field.
      *
      * ⚠️ Multi-value handling wraps the control AFTER direction is applied to it, and
@@ -65,7 +75,20 @@ final class FieldValueRenderer
         $control = self::controlFor($config);
         $inner = self::withDirection(self::buildControl($control, $config), $control);
 
-        if (! $config->isMultiValue()) {
+        /*
+         * ⚠️ A RELATION PICKER IS NEVER REPEATER-WRAPPED, and getting this wrong was a 500.
+         *
+         * `Select::multiple()` already carries a relation's multiplicity, and the picker's
+         * state deliberately lives outside the model's attributes. Wrapping it made the
+         * REPEATER the outer component — and the repeater is not `dehydrated(false)`, so the
+         * whole `relations` key reached the entry as an attribute and the save died on
+         * `no such column: relations`.
+         *
+         * Found by the browser suite: three revision tests started failing because the save
+         * they depend on had stopped working. No unit test on the renderer could have seen
+         * it, because the defect is in what the SAVE does with the component tree.
+         */
+        if ($control === Control::EntryPicker || ! $config->isMultiValue()) {
             return self::describe($inner, $config);
         }
 
@@ -160,12 +183,26 @@ final class FieldValueRenderer
      * the outcome instead: for every control, the attribute lands where the vocabulary
      * says it should.
      *
-     * ⚠️ `extraAttributes()` is the weaker fallback, and it is weaker in a specific way:
+     * ⚠️ `extraAttributes()` is the weaker attachment, and it is weaker in a specific way:
      * `dir` inherits down the DOM, so a wrapper resolves ONCE from the first strong
      * directional character inside it. A `KeyValue` editor holding an Arabic row and a
-     * Latin row renders the second in the first's direction. Used only where there is no
-     * input hook, so the alternative is no direction at all — recorded as a residual in
+     * Latin row renders the second in the first's direction. Used where there is no input
+     * hook, so the alternative is no direction at all — recorded as a residual in
      * `docs/accessibility-inventory.md` rather than left to be discovered.
+     *
+     * ⚠️ A SELECT TAKES BOTH, because Filament renders two different controls under one
+     * component. A plain select is a native `<select>` and honours the input attribute; a
+     * `searchable()` or `multiple()` one is a combobox BUILT IN JAVASCRIPT
+     * (`forms/dist/components/select.js`) whose button never sees a PHP attribute bag.
+     * Measured on v5.7.8: the relation picker carried no `dir` ANYWHERE in its field while
+     * every other value on the same form carried one, so an Arabic entry title laid out
+     * left-to-right. The wrapper is server-rendered and `dir` inherits, so the combobox
+     * resolves from it.
+     *
+     * Both are applied rather than branching on `isSearchable()` / `isMultiple()`: those are
+     * runtime state that a later builder call can still change after this one runs, and a
+     * branch that guesses wrong fails SILENTLY by omitting direction — the failure mode this
+     * whole seam exists to make impossible.
      */
     private static function withDirection(FormField $component, Control $control): FormField
     {
@@ -173,12 +210,17 @@ final class FieldValueRenderer
             return $component;
         }
 
+        if ($component instanceof Select) {
+            return $component
+                ->extraInputAttributes(['dir' => 'auto'])
+                ->extraAttributes(['dir' => 'auto']);
+        }
+
         if ($component instanceof TextInput
             || $component instanceof Textarea
             || $component instanceof RichEditor
             || $component instanceof DatePicker
-            || $component instanceof DateTimePicker
-            || $component instanceof Select) {
+            || $component instanceof DateTimePicker) {
             return $component->extraInputAttributes(['dir' => 'auto']);
         }
 
@@ -203,12 +245,130 @@ final class FieldValueRenderer
             Control::Choices => Select::make($path ?? 'value')
                 ->multiple()
                 ->options(self::options($config)),
-            // ⚠️ Searchable rather than a plain list: a relation targets entries, and an
-            // org's entry table is not a dropdown. The option source is deferred with the
-            // rest of the relational leg — see the class docblock on EntryResource.
-            Control::EntryPicker => Select::make($path ?? 'value')->searchable(),
+            Control::EntryPicker => self::entryPicker($path ?? 'value', $config),
             Control::KeyValue => KeyValue::make($path ?? 'value'),
         };
+    }
+
+    /**
+     * A searchable picker over the entries this relation may target.
+     *
+     * ⚠️ SEARCH RESULTS, NOT A PRELOADED LIST. An org's entry table is not a dropdown —
+     * preloading it makes opening a form O(total entries) in time and memory, which is the
+     * same defect the public site lookup had and the same 1 vCPU / 1 GB floor (ADR-027) it
+     * would spend. Filament asks for matches as the author types.
+     *
+     * ⚠️ IT NEVER REACHES THE MODEL, and that is the load-bearing part. Every other control
+     * writes to `values.{handle}`; a relation must not, because the value-conversion
+     * pipeline would then store an array of entry IDs in the JSON column — which is
+     * precisely what ADR-015 forbids and the reason `entry_relations` exists: JSON cannot
+     * answer "what points at me?" without a full scan, and cascade-on-delete becomes
+     * application code that is eventually wrong.
+     *
+     * So the state lives under `relations.{handle}` and is `dehydrated(false)`. The pages
+     * hydrate it from `Entry::relatedIdsForField()` and write it with
+     * `syncFieldRelations()` after the entry itself is saved — a relation needs the source
+     * entry to exist, so it cannot be part of the same attribute write.
+     *
+     * ⚠️ The target constraint MIRRORS the validation rule rather than restating it.
+     * `RelationType::elementValidationRules()` already narrows to `type_handle IN
+     * (targetTypes)` through `scopedExists`, with an empty list meaning "any type". A picker
+     * that offered a different set would let an author choose something the save then
+     * refuses.
+     */
+    private static function entryPicker(string $path, FieldConfig $config): Select
+    {
+        $targets = array_values(array_filter(
+            (array) ($config->setting('targetTypes', []) ?: []),
+            static fn (mixed $handle): bool => is_string($handle) && $handle !== '',
+        ));
+
+        /*
+         * ⚠️ ONE PREDICATE, THREE CALLBACKS. Review found the target constraint applied to the
+         * search only, so the label resolvers happily named an entry of a forbidden type — and
+         * Filament uses `getOptionLabelsUsing()` to VALIDATE a multiple select's submitted
+         * options. A forged id, or a selection whose entry type changed while the form was
+         * open, therefore passed form validation and was refused later by
+         * `EntryRelation::guardTargetType()`: an exception after the entry had saved, rather
+         * than a validation message the author could act on.
+         *
+         * Defined once and applied everywhere, because three copies of a constraint is two
+         * places for it to be forgotten — which is what happened.
+         */
+        $constrain = static function (Builder $query) use ($targets): Builder {
+            if ($targets !== []) {
+                $query->whereIn('type_handle', $targets);
+            }
+
+            return $query;
+        };
+
+        $search = static function (string $search) use ($constrain): array {
+            /*
+             * ⚠️ `whereLike(..., caseSensitive: false)` RATHER THAN `like`, because `LIKE` is
+             * case-SENSITIVE on PostgreSQL and case-insensitive on SQLite and a default MySQL
+             * collation. A plain `like` meant an author on Postgres could not find
+             * "Course maintenance" by typing `course`, while the same interaction worked on
+             * the other two engines — the driver-divergence class AGENTS.md invariant 5 is
+             * about, found by review. Laravel emits `ILIKE` on Postgres and folds case
+             * elsewhere, so one expression means one thing on all three.
+             */
+            $query = $constrain(Entry::query())->whereLike('title', '%'.$search.'%', caseSensitive: false);
+
+            // Bounded, because a search for "a" otherwise returns the whole table. The
+            // author narrows; the control does not try to show everything.
+            return $query->orderBy('title')->limit(50)->pluck('title', 'id')->all();
+        };
+
+        $picker = Select::make($path)
+            ->searchable()
+            ->getSearchResultsUsing($search)
+            // ⚠️ Needed as well as the search, or a SAVED value renders as its bare id: the
+            // options list is empty until the author types, so Filament has nothing to
+            // resolve the current selection against.
+            ->getOptionLabelUsing(static fn (mixed $value): ?string => $constrain(Entry::query())->whereKey($value)->value('title'))
+            ->dehydrated(false);
+
+        if (! $config->isMultiValue()) {
+            // Cardinality 1 is one target.
+            return $picker;
+        }
+
+        /*
+         * ⚠️ `getOptionLabelsUsing` — PLURAL — as well as the singular one, and the singular
+         * alone is a 500. Filament validates a `multiple()` select's selected options and
+         * refuses outright without it: "failed to validate the field's selected options
+         * because it did not have an [options()] or [getOptionLabelsUsing()] configuration".
+         * The singular hook is what renders a saved value; the plural one is what lets a
+         * multi-select save at all.
+         */
+        $picker = $picker
+            ->multiple()
+            ->getOptionLabelsUsing(static fn (array $values): array => $constrain(Entry::query())
+                ->whereKey($values)
+                ->pluck('title', 'id')
+                ->all());
+
+        /*
+         * ⚠️ A FINITE CARDINALITY IS A BOUND THE FORM MUST STATE, and omitting it turned a
+         * validation message into a stack trace. `multiple()` on its own is unbounded, so a
+         * relation declared with cardinality 2 let an author pick a third target; the save
+         * then reached `EntryRelation::guardCardinality()`, which throws. The author saw a
+         * 500 rather than "you may select at most 2", and the bound was enforced only after
+         * they had done the work.
+         *
+         * The repeater path above already does this, which is the tell — one control kind
+         * honoured the bound and the other did not. Found by review, and it went unnoticed
+         * because the seeded relation field is unlimited (-1), so nothing exercised a finite
+         * one.
+         *
+         * -1 means unbounded, so only a positive bound is applied.
+         */
+        if (($max = $config->cardinality()) > 1) {
+            $picker = $picker->maxItems($max);
+        }
+
+        return $picker;
     }
 
     /** The table column for a cell kind, before label or direction. */
@@ -237,6 +397,13 @@ final class FieldValueRenderer
      */
     private static function statePath(FieldConfig $config): string
     {
+        // ⚠️ A relation lives in `entry_relations`, not in `values` and not in a column, so
+        // its state path is deliberately outside both. Writing it to `values.{handle}` would
+        // have the conversion pipeline store an ID array in JSON — what ADR-015 forbids.
+        if (self::controlFor($config) === Control::EntryPicker) {
+            return self::RELATION_STATE_PREFIX.'.'.$config->handle();
+        }
+
         return $config->storage->promotedColumn() ?? 'values.'.$config->handle();
     }
 

@@ -122,6 +122,10 @@ class DatabaseSeeder extends Seeder
             // Auto, and MULTI-VALUE: direction belongs on the inner control, not the
             // repeater wrapper.
             ['keywords', 'text', 'Keywords', 4],
+            // ⚠️ A RELATION, which is the one control whose value is not an attribute. It
+            // lives in `entry_relations` (ADR-015), so nothing about it can be tested
+            // without a real field to drive the save lifecycle through.
+            ['related_articles', 'relation', 'Related articles', -1],
         ];
 
         foreach ($articleFields as $index => [$handle, $type, $label, $cardinality]) {
@@ -140,6 +144,9 @@ class DatabaseSeeder extends Seeder
                     // working: a <select> with `dir="auto"` resolves from its option list as
                     // a whole, so this one computes RTL while `section` computes LTR.
                     'origin' => ['options' => ['sand' => 'رمل', 'clay' => 'طين']],
+                    // Constrained to articles, so the picker offers what the validation
+                    // rule would actually accept rather than a wider set.
+                    'related_articles' => ['targetTypes' => ['article']],
                     default => null,
                 },
             ]);
