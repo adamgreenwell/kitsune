@@ -91,6 +91,17 @@ it('offers only the entry types the field targets', function (): void {
     /*
      * The picker mirrors `RelationType::elementValidationRules()` rather than restating it: a
      * picker offering a wider set would let an author choose something the save then refuses.
+     *
+     * ⚠️ THIS COVERS THE SEARCH ONLY, and the label resolvers are a VALIDATION path too —
+     * Filament uses `getOptionLabelsUsing()` to validate a multiple select's submitted options,
+     * so an unconstrained resolver let a forged id pass form validation and fail later inside
+     * `EntryRelation::guardTargetType()`, as an exception after the entry had saved. Review
+     * found that, and the predicate is now defined ONCE and applied to all three callbacks.
+     *
+     * It is not asserted here because `getOptionLabel()` and `getOptionLabels()` resolve the
+     * component's own STATE, which needs a form container rather than a bare component — unlike
+     * `getSearchResults()`, which takes its argument. Stated rather than silently skipped: what
+     * protects the label path today is that it shares this predicate, not a test.
      */
     $constrained = array_values(picker($this->org, ['targetTypes' => ['article']])->getSearchResults('course'));
 
@@ -104,11 +115,33 @@ it('offers only the entry types the field targets', function (): void {
         ->and($unconstrained)->toContain('Course notes, private');
 });
 
+it('does not offer an entry on a SIBLING SITE of the same org', function (): void {
+    /*
+     * ⚠️ THE BOUNDARY THAT ACTUALLY APPLIES, and the cross-org test below does not prove it.
+     * `Entry` is `#[SiteScoped]`, so site is the scope the picker inherits — and a test that
+     * changes the org AND the site at once passes even against a merely org-scoped query.
+     * Review found exactly that: the attacker-side assertion for the boundary under test was
+     * missing, which AGENTS.md requires for every scope boundary.
+     *
+     * Same org, second site, searched from the first.
+     */
+    $sibling = Site::create(['org_id' => $this->org->id, 'handle' => 'sib', 'slug' => 'sib', 'name' => 'Sib']);
+    app(Context::class)->setSite($sibling);
+    Entry::create(['entry_type_id' => $this->article->id, 'title' => 'Course notes on the sibling site']);
+
+    // Back to the original site, which is where the picker is being used.
+    app(Context::class)->setSite($this->site);
+
+    $found = array_values(picker($this->org)->getSearchResults('course'));
+
+    expect($found)->toContain('Course maintenance in week 3')
+        ->and($found)->not->toContain('Course notes on the sibling site');
+});
+
 it('does not offer another org\'s entries', function (): void {
     /*
-     * `Entry` is `#[SiteScoped]`, so the search inherits the scope rather than re-deriving it.
-     * Asserted anyway: ADR-021 says cross-org leakage has no framework safety net, and a
-     * picker is a search box pointed at a table.
+     * The wider boundary, kept as well as the sibling-site one above: ADR-021 says cross-org
+     * leakage has no framework safety net, and a picker is a search box pointed at a table.
      */
     $rival = Org::create(['name' => 'Rival', 'slug' => 'rival']);
     app(Context::class)->setOrg($rival);

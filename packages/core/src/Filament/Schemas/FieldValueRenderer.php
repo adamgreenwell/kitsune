@@ -24,6 +24,7 @@ use Filament\Schemas\Components\Component;
 use Filament\Tables\Columns\Column;
 use Filament\Tables\Columns\IconColumn;
 use Filament\Tables\Columns\TextColumn;
+use Illuminate\Database\Eloquent\Builder;
 use Kitsune\Core\Fields\Cell;
 use Kitsune\Core\Fields\Control;
 use Kitsune\Core\Fields\FieldConfig;
@@ -282,7 +283,27 @@ final class FieldValueRenderer
             static fn (mixed $handle): bool => is_string($handle) && $handle !== '',
         ));
 
-        $search = static function (string $search) use ($targets): array {
+        /*
+         * ⚠️ ONE PREDICATE, THREE CALLBACKS. Review found the target constraint applied to the
+         * search only, so the label resolvers happily named an entry of a forbidden type — and
+         * Filament uses `getOptionLabelsUsing()` to VALIDATE a multiple select's submitted
+         * options. A forged id, or a selection whose entry type changed while the form was
+         * open, therefore passed form validation and was refused later by
+         * `EntryRelation::guardTargetType()`: an exception after the entry had saved, rather
+         * than a validation message the author could act on.
+         *
+         * Defined once and applied everywhere, because three copies of a constraint is two
+         * places for it to be forgotten — which is what happened.
+         */
+        $constrain = static function (Builder $query) use ($targets): Builder {
+            if ($targets !== []) {
+                $query->whereIn('type_handle', $targets);
+            }
+
+            return $query;
+        };
+
+        $search = static function (string $search) use ($constrain): array {
             /*
              * ⚠️ `whereLike(..., caseSensitive: false)` RATHER THAN `like`, because `LIKE` is
              * case-SENSITIVE on PostgreSQL and case-insensitive on SQLite and a default MySQL
@@ -292,11 +313,7 @@ final class FieldValueRenderer
              * about, found by review. Laravel emits `ILIKE` on Postgres and folds case
              * elsewhere, so one expression means one thing on all three.
              */
-            $query = Entry::query()->whereLike('title', '%'.$search.'%', caseSensitive: false);
-
-            if ($targets !== []) {
-                $query->whereIn('type_handle', $targets);
-            }
+            $query = $constrain(Entry::query())->whereLike('title', '%'.$search.'%', caseSensitive: false);
 
             // Bounded, because a search for "a" otherwise returns the whole table. The
             // author narrows; the control does not try to show everything.
@@ -309,7 +326,7 @@ final class FieldValueRenderer
             // ⚠️ Needed as well as the search, or a SAVED value renders as its bare id: the
             // options list is empty until the author types, so Filament has nothing to
             // resolve the current selection against.
-            ->getOptionLabelUsing(static fn (mixed $value): ?string => Entry::query()->whereKey($value)->value('title'))
+            ->getOptionLabelUsing(static fn (mixed $value): ?string => $constrain(Entry::query())->whereKey($value)->value('title'))
             ->dehydrated(false);
 
         if (! $config->isMultiValue()) {
@@ -327,7 +344,7 @@ final class FieldValueRenderer
          */
         $picker = $picker
             ->multiple()
-            ->getOptionLabelsUsing(static fn (array $values): array => Entry::query()
+            ->getOptionLabelsUsing(static fn (array $values): array => $constrain(Entry::query())
                 ->whereKey($values)
                 ->pluck('title', 'id')
                 ->all());
