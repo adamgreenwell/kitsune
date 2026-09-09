@@ -11,6 +11,7 @@ declare(strict_types=1);
 namespace Kitsune\Core\Fields\Types;
 
 use Closure;
+use Kitsune\Core\Fields\Control;
 use Kitsune\Core\Fields\FieldConfig;
 use RuntimeException;
 use stdClass;
@@ -41,6 +42,15 @@ final class JsonType extends BaseFieldType
     public static function icon(): string
     {
         return 'heroicon-o-code-bracket';
+    }
+
+    /**
+     * ⚠️ `Auto` on BOTH halves. An escape hatch holds whatever an author put in it, and
+     * a key is as likely to be non-Latin as a value.
+     */
+    public function control(): Control
+    {
+        return Control::KeyValue;
     }
 
     public function supportsCardinality(): bool

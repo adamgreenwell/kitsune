@@ -21,8 +21,8 @@ Every field type must answer four questions, and they are not independent:
 | Face | Question | State |
 |---|---|---|
 | **Storage** | How does a value live in the database, and can it be indexed? | Shipped |
-| **Form** | What kind of control edits it? | Not built — issue #39 |
-| **Table** | What kind of cell lists it? | Not built — issue #39 |
+| **Form** | What kind of control edits it? | `control(): Control` — the vocabulary; the renderer is #39 |
+| **Table** | What kind of cell lists it? | Derived: `Control::cell()` |
 | **API** | How does it serialize out, deserialize in, and describe itself in a schema? | Shipped |
 
 ⚠️ **The Form and Table columns used to read "What Filament form component edits it?"** They do not, and the difference is the subject of ADR-029: a field type names a **kind** of control from a closed vocabulary, and `Kitsune\Core\Filament` decides which Filament class that is. Asking the type for the component puts a cross-cutting presentation concern — `dir="auto"` above all — into twelve independent answers, where a thirteenth type can omit it and nothing notices.
@@ -100,6 +100,11 @@ interface FieldType
     public function toStorage(mixed $input, FieldConfig $config): mixed;
     public function fromStorage(mixed $stored, FieldConfig $config): mixed;
 
+    // ── UI ─────────────────────────────────────────────────────────────
+
+    /** What KIND of control edits it. Not a component — see below. */
+    public function control(): Control;
+
     // ── API ────────────────────────────────────────────────────────────
     public function toApi(mixed $stored, FieldConfig $config): mixed;
     public function fromApi(mixed $input, FieldConfig $config): mixed;
@@ -121,12 +126,40 @@ interface FieldType
 }
 ```
 
-**There is no UI method on this interface, and that is a decision rather than an
-omission.** A field type describes a control and the panel builds it — ADR-029, which
+**The UI face is one method returning a `Control`, and that is the whole of it.** A field
+type describes a *kind* of control and the panel builds the component — ADR-029, which
 generalises ADR-028's *"handing it one was the wrong seam"* from storage drivers to
-Filament components. The description is data over a closed vocabulary, so the renderer is
-the single place every control passes through, which is what makes a cross-cutting
-concern like `dir="auto"` unforgettable instead of a note in twelve files.
+Filament components.
+
+⚠️ **A field type cannot express an opinion about text direction, and that is the point.**
+`Control::direction()` derives it and `Kitsune\Core\Filament` applies it, so there is no
+parameter to omit and no default to inherit. Issue #39 shipped `dir="auto"` three times and
+was short of complete twice — the second time missing two of three table columns — because
+the reach of a correct rule depended on somebody enumerating call sites. Twelve types each
+returning a finished `TextInput` is twelve chances to forget; a closed vocabulary is none.
+
+| Control | Direction | Cell | Why |
+|---|---|---|---|
+| `Line`, `Paragraph` | `Auto` | `Text` | Text a person typed |
+| `Choice`, `Choices` | `Auto` | `Badge` | Option **labels** are authored — an org may label statuses in Arabic |
+| `EntryPicker` | `Auto` | `Text` | Entry **titles**, which is what the related-records table missed |
+| `KeyValue` | `Auto` | `None` | An escape hatch holds anything, keys included |
+| `RichText` | `PerBlock` | `None` | One `dir` would impose the first block's direction on the rest |
+| `Number`, `Toggle`, `Date`, `DateTime` | `Neutral` | `Numeric` / `Boolean` / `Timestamp` | Glyphs the app chose, not the author |
+
+⚠️ **Adding a case to `Control` is a compile-time obligation.** `direction()` and `cell()` are
+`match` with no `default`, so PHPStan reports *"Match expression does not handle remaining
+value"* on both until the new kind's direction and cell are decided — verified by adding a
+thirteenth case, which produced exactly two errors. The runtime backstop is an
+`UnhandledMatchError`. This is the same guarantee `LogicalType` gives the three storage
+drivers, and it was added there because `integer` and `boolean` were silently unindexable on
+MySQL.
+
+⚠️ `control()` takes **no `FieldConfig`**, unlike `projection()`. A projection genuinely
+changes with configuration — a `number` with `format: integer` must project to BIGINT — and a
+control kind does not. What varies with configuration (precision, options, target types,
+cardinality) the renderer reads from the config it already holds; a parameter nothing uses
+invites a type to branch on the wrong thing.
 
 ### Three rules that are not negotiable
 

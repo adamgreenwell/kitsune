@@ -200,12 +200,25 @@ it('agrees with the interface on parameter count and return type', function () u
     }
 });
 
-it('finds the contract block at all', function () use ($signaturesFromDocumentation): void {
+it('finds the contract block at all', function () use ($signaturesFromDocumentation, $signaturesFromInterface): void {
     /*
      * ⚠️ The guard on the guard. Every assertion above passes vacuously if the section
      * heading is renamed or the fence is reformatted — `array_diff` of two empty lists is
      * empty. A parser that silently finds nothing is the failure mode a documentation
      * test is most likely to have, and the least likely to be noticed.
+     *
+     * ⚠️ Compared against the INTERFACE's count rather than a literal, which the first
+     * version hard-coded at 19. That version failed the moment `control()` was added —
+     * correctly reporting a mismatch, but for the wrong reason and in a way that makes
+     * every future interface change look like a broken test. A hard-coded count is a
+     * second place to remember, which is the class of defect this whole file exists to
+     * remove.
+     *
+     * It is still not vacuous: the interface count is asserted non-zero, so two empty
+     * lists cannot agree their way past it.
      */
-    expect($signaturesFromDocumentation())->toHaveCount(19);
+    $declared = count($signaturesFromInterface());
+
+    expect($declared)->toBeGreaterThan(0, 'reflection over FieldType found no methods at all')
+        ->and($signaturesFromDocumentation())->toHaveCount($declared);
 });

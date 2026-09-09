@@ -18,22 +18,27 @@ use Filament\Actions\ViewAction;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
 use Filament\Resources\Resource;
+use Filament\Schemas\Components\Component;
 use Filament\Schemas\Schema;
 use Filament\Support\Icons\Heroicon;
 
 use function Filament\Support\original_request;
 
+use Filament\Tables\Columns\Column;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
+use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Filament\Resources\Entries\Pages\CreateEntry;
 use Kitsune\Core\Filament\Resources\Entries\Pages\EditEntry;
 use Kitsune\Core\Filament\Resources\Entries\Pages\ListEntries;
 use Kitsune\Core\Filament\Resources\Entries\Pages\ManageEntryRelations;
 use Kitsune\Core\Filament\Resources\Entries\Pages\ViewEntry;
+use Kitsune\Core\Filament\Schemas\FieldValueRenderer;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
+use Kitsune\Core\Models\Field;
 use Kitsune\Core\Validation\Rule;
 
 /**
@@ -118,7 +123,66 @@ class EntryResource extends Resource
                 ->options(['draft' => 'Draft', 'published' => 'Published', 'archived' => 'Archived'])
                 ->default('draft')
                 ->required(),
+            ...self::fieldControls(),
         ]);
+    }
+
+    /**
+     * The controls for whatever fields the current entry type defines.
+     *
+     * ⚠️ `title`, `slug` and `status` above are PLATFORM columns and stay hand-written:
+     * they are not user-definable (field-types.md §2), every entry type has them, and
+     * `slug` carries a `scopedUnique` rule that no field descriptor expresses. Everything
+     * an operator added comes from here.
+     *
+     * ⚠️ Direction is NOT set here, and that is the point. `FieldValueRenderer` is the
+     * only place that decides it (ADR-029), so this method cannot forget — there is
+     * nothing here to forget. That is the difference from the three hand-written columns,
+     * which each had to be fixed separately and two of which were missed.
+     *
+     * @return array<int, Component>
+     */
+    private static function fieldControls(): array
+    {
+        return array_map(
+            static fn (Field $field): Component => FieldValueRenderer::formComponent(
+                new FieldConfig($field->fieldStorage, $field),
+            ),
+            self::currentFields(),
+        );
+    }
+
+    /**
+     * The current entry type's fields, in the order an operator arranged them.
+     *
+     * ⚠️ Empty when no type is bound, which is not a defect: a Resource is constructed
+     * for pages outside `/c/{type}` too, and `IdentifyEntryType` has bound nothing there.
+     * Reaching for `app(EntryType::class)` unguarded is what 500s the dashboard — the
+     * same failure `$shouldRegisterNavigation = false` above exists to avoid.
+     *
+     * ⚠️ Eager-loads `fieldStorage`, because a control is built per field and each one
+     * asks its storage for the type. Without it a ten-field entry type renders eleven
+     * queries to draw one form, against the 1 vCPU / SQLite floor of ADR-027.
+     *
+     * @return array<int, Field>
+     */
+    private static function currentFields(): array
+    {
+        if (! app()->bound(EntryType::class)) {
+            return [];
+        }
+
+        return app(EntryType::class)
+            ->fields()
+            ->with('fieldStorage')
+            ->orderBy('ordering')
+            ->get()
+            // A field whose storage has been deleted would build a control against null.
+            // Cannot happen through the admin — the relation cascades — but a direct
+            // database edit is not the model's to trust.
+            ->filter(fn (Field $field): bool => $field->fieldStorage !== null)
+            ->values()
+            ->all();
     }
 
     public static function table(Table $table): Table
@@ -133,11 +197,40 @@ class EntryResource extends Resource
                 TextColumn::make('type_handle')->badge()->label('Type'),
                 TextColumn::make('status')->badge()->sortable(),
                 TextColumn::make('updated_at')->dateTime()->sortable()->toggleable(isToggledHiddenByDefault: true),
+                ...self::fieldColumns(),
             ])
             // Record links are exactly what 500s without isPersistent: true.
             ->recordActions([ViewAction::make(), EditAction::make()])
             ->toolbarActions([BulkActionGroup::make([DeleteBulkAction::make()])])
             ->defaultSort('updated_at', 'desc');
+    }
+
+    /**
+     * List columns for the current entry type's fields.
+     *
+     * ⚠️ Hidden by default, all of them. An operator may define twenty fields, and a
+     * twenty-column table is unreadable and expensive — `toggleable` lets a reader add the
+     * one they want. The three platform columns above stay visible because every entry has
+     * them and they are what a list is scanned by.
+     *
+     * ⚠️ A `Cell::None` field yields null from the renderer and is dropped here, so rich
+     * text and JSON contribute no column rather than a truncated one.
+     *
+     * @return array<int, Column>
+     */
+    private static function fieldColumns(): array
+    {
+        $columns = [];
+
+        foreach (self::currentFields() as $field) {
+            $column = FieldValueRenderer::tableColumn(new FieldConfig($field->fieldStorage, $field));
+
+            if ($column !== null) {
+                $columns[] = $column->toggleable(isToggledHiddenByDefault: true);
+            }
+        }
+
+        return $columns;
     }
 
     /** @return Builder<Entry|Model> */

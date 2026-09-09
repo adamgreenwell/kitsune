@@ -15,6 +15,7 @@ use DOMDocument;
 use DOMElement;
 use DOMNode;
 use DOMProcessingInstruction;
+use Kitsune\Core\Fields\Control;
 use Kitsune\Core\Fields\FieldConfig;
 
 /**
@@ -78,6 +79,17 @@ final class RichTextType extends BaseFieldType
     public static function icon(): string
     {
         return 'heroicon-o-document-text';
+    }
+
+    /**
+     * The only `PerBlock` control. A single `dir` on the editor would impose one
+     * direction on a document that may legitimately hold an Arabic paragraph and an
+     * English one — worse than none, because it looks handled. `dir` is already in
+     * ALLOWED_ATTRIBUTES, so per-block direction survives sanitising.
+     */
+    public function control(): Control
+    {
+        return Control::RichText;
     }
 
     /** Free-text bodies are not projectable to a scalar worth indexing. */

@@ -79,6 +79,29 @@ interface FieldType
 
     public function fromStorage(mixed $stored, FieldConfig $config): mixed;
 
+    /**
+     * What KIND of control edits this value, and by derivation how it lists and which
+     * way its text runs.
+     *
+     * ⚠️ A KIND, NOT A COMPONENT (ADR-029). Returning `TextInput::make(...)` would put
+     * a cross-cutting presentation decision — text direction above all — into twelve
+     * independent answers, and let a thirteenth type omit it silently. That is not
+     * hypothetical: `dir="auto"` was correct in `EntryResource` and absent from two
+     * other table definitions, because reach depended on somebody enumerating the
+     * places it applied (issue #39).
+     *
+     * ⚠️ Direction is NOT a parameter and NOT returnable here. `Control::direction()`
+     * derives it, and `Kitsune\Core\Filament` applies it. A field type has no way to
+     * express an opinion about it, which is the point — the only way to add a control
+     * kind is to add a `Control` case, and PHPStan then fails every unhandled `match`
+     * until its direction, its cell and its rendering are all decided.
+     *
+     * ⚠️ Takes no `FieldConfig`, unlike `projection()`. A projection genuinely changes
+     * with configuration; a control KIND does not. What varies — precision, options,
+     * target types, cardinality — the renderer reads from the config it already holds.
+     */
+    public function control(): Control;
+
     // ── API ───────────────────────────────────────────────────────────────
 
     public function toApi(mixed $stored, FieldConfig $config): mixed;

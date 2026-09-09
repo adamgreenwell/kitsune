@@ -70,7 +70,11 @@ test.describe('entity type builder', () => {
     test('opens an entry type for editing', async ({ page }) => {
         await editType(page, 'Article');
 
-        await expect(page.getByText('Subject identifier')).toBeVisible();
+        // ⚠️ `exact` because this became ambiguous the moment the Article type had fields:
+        // the subject-identifier select then renders its help text, which also contains the
+        // phrase, and Playwright's strict mode refuses two matches. The looser locator was
+        // only ever unambiguous because the seed defined no fields (issue #39).
+        await expect(page.getByText('Subject identifier', { exact: true })).toBeVisible();
         await expect(page.getByRole('button', { name: 'New field' })).toBeVisible();
     });
 

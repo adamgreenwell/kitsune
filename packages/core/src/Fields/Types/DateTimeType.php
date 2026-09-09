@@ -11,6 +11,7 @@ declare(strict_types=1);
 namespace Kitsune\Core\Fields\Types;
 
 use Illuminate\Support\Carbon;
+use Kitsune\Core\Fields\Control;
 use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Fields\LogicalType;
 use Kitsune\Core\Fields\Projection;
@@ -37,6 +38,14 @@ final class DateTimeType extends BaseFieldType
     public static function icon(): string
     {
         return 'heroicon-o-clock';
+    }
+
+    /**
+     * Stored UTC, displayed in the site timezone — see DateType for why `Neutral`.
+     */
+    public function control(): Control
+    {
+        return Control::DateTime;
     }
 
     public function isIndexable(): bool
