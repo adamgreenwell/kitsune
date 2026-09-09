@@ -336,6 +336,65 @@ it('publishes the text length and pattern it enforces', function (): void {
 });
 
 describe('one pattern string cannot serve two grammars', function (): void {
+    it('gives . the line terminators ECMAScript excludes, not PCRE\'s', function (): void {
+        /*
+         * ⚠️ The same shape as the `$` divergence and the same direction: the API was
+         * LAXER than the schema it published.
+         *
+         * PCRE's `.` excludes only LF by default. ECMAScript's excludes LF, CR, LS
+         * (U+2028) and PS (U+2029). So `^.$` accepted a carriage return and both
+         * Unicode separators server-side, and every generated client rejected them.
+         *
+         * ⚠️ No modifier fixes it, which is why this is a TRANSLATION. Measured, for
+         * what `.` excludes: PCRE's default misses CR, LS and PS; `(*ANY)` catches
+         * those and wrongly excludes VT, FF and NEL; `(*ANYCRLF)` still misses LS and
+         * PS. Every convention disagrees somewhere, so `(*ANY)` would trade three
+         * laxness holes for three strictness ones rather than fix anything.
+         *
+         * `[^\n\r\x{2028}\x{2029}]` agrees with ECMAScript on all nine characters
+         * tried, so that is what gets compiled — while the published pattern keeps
+         * the author's `.`.
+         */
+        /*
+         * ⚠️ The terminator is followed by a `b`, and that is not decoration.
+         *
+         * Laravel treats a whitespace-only string as ABSENT — `validateRequired()`
+         * tests `trim($value) === ''` — so a non-required field skips every
+         * non-implicit rule for a bare "\r", and the closure never runs. My first
+         * version of this test asserted a refusal that Laravel was simply not
+         * reaching, and it would have passed just as happily against the unfixed
+         * dot. Embedding the character in a longer value is what makes the pattern
+         * the thing under test.
+         */
+        expect(validate('text', ['f' => 'ab'], ['pattern' => '^.b$'])->fails())->toBeFalse()
+            // The three PCRE's default dot let through.
+            ->and(validate('text', ['f' => "\rb"], ['pattern' => '^.b$'])->fails())->toBeTrue()
+            ->and(validate('text', ['f' => "\u{2028}b"], ['pattern' => '^.b$'])->fails())->toBeTrue()
+            ->and(validate('text', ['f' => "\u{2029}b"], ['pattern' => '^.b$'])->fails())->toBeTrue()
+            // LF was already excluded, and must stay so.
+            ->and(validate('text', ['f' => "\nb"], ['pattern' => '^.b$'])->fails())->toBeTrue()
+            // ⚠️ And the three `(*ANY)` would have broken: ECMAScript's dot MATCHES
+            // these, so refusing them would be a new divergence, not a fix.
+            ->and(validate('text', ['f' => "\x0Bb"], ['pattern' => '^.b$'])->fails())->toBeFalse()
+            ->and(validate('text', ['f' => "\x0Cb"], ['pattern' => '^.b$'])->fails())->toBeFalse()
+            ->and(validate('text', ['f' => "\u{0085}b"], ['pattern' => '^.b$'])->fails())->toBeFalse();
+    });
+
+    it('translates only a dot that is a dot', function (): void {
+        // ⚠️ `\.` is a literal and `[.]` is a literal inside a class. Translating
+        // either would change what the pattern means — the opposite of the point.
+        expect(validate('text', ['f' => 'a.b'], ['pattern' => '^a\.b$'])->fails())->toBeFalse()
+            ->and(validate('text', ['f' => 'axb'], ['pattern' => '^a\.b$'])->fails())->toBeTrue()
+            ->and(validate('text', ['f' => '.'], ['pattern' => '^[.]$'])->fails())->toBeFalse()
+            ->and(validate('text', ['f' => 'x'], ['pattern' => '^[.]$'])->fails())->toBeTrue();
+
+        // And the published pattern is still the author's text, dot included.
+        $type = app(FieldTypeRegistry::class)->get('text');
+
+        expect($type->apiSchema(configFor('text', ['maxLength' => 40, 'pattern' => '^.$']))['pattern'])
+            ->toBe('^.$');
+    });
+
     it('anchors $ to the end of input, as the published dialect does', function (): void {
         /*
          * ⚠️ A divergence in the VALIDATOR, not in the published text — and the API

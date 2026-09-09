@@ -134,7 +134,11 @@ This bites hardest on `text`'s `pattern`, because the same string is enforced by
 | `\c1` `\c!` | ECMAScript's control escape takes an ASCII letter; PCRE also reads a digit or punctuation there. `\cA` agrees in both | `\cA` |
 | `[a\E]` `[a\Q!\E]` `[a\N{U+41}]` | These stay **active inside a character class** in PCRE, where the anchors are refused outright | drop them |
 
-One divergence cannot be screened, because it is in the **engine** rather than the pattern: PCRE lets `$` match before a final newline, while ECMAScript's `$` without `m` matches only at the end of input. A field validated `^[a-z]+$` therefore accepted `"abc\n"` server-side and every generated client rejected it — the API being the *laxer* of the two, which is the worse direction. Refusing `$` would remove the most common anchor there is, so instead every pattern is compiled with PCRE's `D` modifier, which gives `$` the end-of-input meaning the published schema already promises. The published text is unchanged.
+Two divergences cannot be screened, because they are in the **engine** rather than the pattern. Both had the API *laxer* than the schema it published, which is the worse direction — a value passes the API and then breaks every generated client.
+
+`.` excludes only LF under PCRE, where ECMAScript excludes LF, CR, U+2028 and U+2029. No PCRE newline convention matches: the default misses CR, LS and PS; `(*ANY)` catches those but wrongly excludes VT, FF and NEL; `(*ANYCRLF)` still misses LS and PS. So a modifier cannot fix it, and every bare `.` outside a character class is compiled as `[^\n\r\x{2028}\x{2029}]` instead — measured to agree with ECMAScript's dot on all nine characters tried. `\.` and `[.]` are literals and are left alone.
+
+And `$`: PCRE lets `$` match before a final newline, while ECMAScript's `$` without `m` matches only at the end of input. A field validated `^[a-z]+$` therefore accepted `"abc\n"` server-side and every generated client rejected it — the API being the *laxer* of the two, which is the worse direction. Refusing `$` would remove the most common anchor there is, so instead every pattern is compiled with PCRE's `D` modifier, which gives `$` the end-of-input meaning the published schema already promises. The published text is unchanged.
 
 Some of those rows are judgement calls rather than compile failures, and the rule that settles them is: **refuse a divergence when a portable equivalent exists, record it when refusing would remove a capability.** `\d` is refused because `[0-9]` says the same thing.
 

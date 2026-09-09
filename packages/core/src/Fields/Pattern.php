@@ -62,16 +62,98 @@ final class Pattern
      */
     private const MODIFIERS = 'uD';
 
-    /** The pattern wrapped in a delimiter it does not itself contain, or null. */
+    /**
+     * ECMAScript's `.`, written out.
+     *
+     * ⚠️ A TRANSLATION rather than a modifier, because no PCRE newline convention
+     * matches. Measured on PHP 8.4.25/PCRE 10.48 and Node v22.23.2, for what `.`
+     * excludes:
+     *
+     *                LF   CR   LS   PS   VT   FF   NEL
+     *   PCRE default  no   YES  YES  YES  yes  yes  yes
+     *   PCRE (*ANY)   no   no   no   no   NO   NO   NO
+     *   (*ANYCRLF)    no   no   YES  YES  yes  yes  yes
+     *   ECMAScript    no   no   no   no   yes  yes  yes
+     *
+     * (Capitals mark disagreement with ECMAScript.) The default is too lax on CR,
+     * LS and PS — a field validated `^.$` accepted all three and every generated
+     * client rejected them. `(*ANY)` fixes those and breaks VT, FF and NEL the other
+     * way, which is trading three laxness holes for three strictness ones rather
+     * than fixing anything.
+     *
+     * This class is exact: it agrees with ECMAScript's `.` on all nine characters
+     * tried, including an ordinary letter and a non-ASCII one.
+     */
+    private const ECMASCRIPT_DOT = '[^\n\r\x{2028}\x{2029}]';
+
+    /**
+     * The pattern wrapped in a delimiter it does not itself contain, or null.
+     *
+     * ⚠️ What is compiled is not byte-for-byte what is published, and that is the
+     * point. The published pattern carries the author's own text; this produces the
+     * form that makes PCRE enforce what that text MEANS in the dialect it is
+     * published in. `D` for `$` and the dot translation are both that.
+     */
     public static function delimit(string $pattern): ?string
     {
+        $compilable = self::withEcmaScriptDot($pattern);
+
         foreach (self::DELIMITERS as $delimiter) {
-            if (! str_contains($pattern, $delimiter)) {
-                return $delimiter.$pattern.$delimiter.self::MODIFIERS;
+            // ⚠️ Chosen against the TRANSLATED text. The class inserted above
+            // contains no candidate delimiter today, and picking against the original
+            // would silently produce an unescaped delimiter if that ever changed.
+            if (! str_contains($compilable, $delimiter)) {
+                return $delimiter.$compilable.$delimiter.self::MODIFIERS;
             }
         }
 
         return null;
+    }
+
+    /**
+     * Every bare `.` replaced with the class ECMAScript's `.` actually means.
+     *
+     * ⚠️ Escape and class context are tracked, for the same reasons
+     * `unpublishable()` tracks them: `\.` is a literal dot and must not be
+     * translated, and `[.]` is a literal dot inside a class where the translation
+     * would be both wrong and nonsensical. The two walks share that discipline and
+     * the tests pin it on both sides.
+     */
+    private static function withEcmaScriptDot(string $pattern): string
+    {
+        $length = mb_strlen($pattern);
+        $inClass = false;
+        $out = '';
+
+        for ($i = 0; $i < $length; $i++) {
+            $char = mb_substr($pattern, $i, 1);
+
+            if ($char === '\\') {
+                // The escaped character travels with its backslash, untouched.
+                $out .= $char.mb_substr($pattern, $i + 1, 1);
+                $i++;
+
+                continue;
+            }
+
+            if ($inClass) {
+                $inClass = $char !== ']';
+                $out .= $char;
+
+                continue;
+            }
+
+            if ($char === '[') {
+                $inClass = true;
+                $out .= $char;
+
+                continue;
+            }
+
+            $out .= $char === '.' ? self::ECMASCRIPT_DOT : $char;
+        }
+
+        return $out;
     }
 
     /**
