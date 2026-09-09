@@ -18,14 +18,18 @@ Get this contract right and adding a field type is filling in a form. Get it wro
 
 Every field type must answer four questions, and they are not independent:
 
-| Face | Question |
-|---|---|
-| **Storage** | How does a value live in the database, and can it be indexed? |
-| **Form** | What Filament form component edits it? |
-| **Table** | What Filament table column displays it in a list? |
-| **API** | How does it serialize out, deserialize in, and describe itself in a schema? |
+| Face | Question | State |
+|---|---|---|
+| **Storage** | How does a value live in the database, and can it be indexed? | Shipped |
+| **Form** | What kind of control edits it? | Not built — issue #39 |
+| **Table** | What kind of cell lists it? | Not built — issue #39 |
+| **API** | How does it serialize out, deserialize in, and describe itself in a schema? | Shipped |
 
-A type that answers three of four is not shippable. The most common failure is a type that edits beautifully and cannot be queried.
+⚠️ **The Form and Table columns used to read "What Filament form component edits it?"** They do not, and the difference is the subject of ADR-029: a field type names a **kind** of control from a closed vocabulary, and `Kitsune\Core\Filament` decides which Filament class that is. Asking the type for the component puts a cross-cutting presentation concern — `dir="auto"` above all — into twelve independent answers, where a thirteenth type can omit it and nothing notices.
+
+⚠️ **And this section used to claim "a type that answers three of four is not shippable"** while all twelve shipped types answered exactly three. The statement was aspirational and read as a rule, which is worse than either: it made a real gap look like an invariant already held. The two UI faces are genuinely missing and tracked as #39; the sentence they contradicted is gone.
+
+The failure it warned about is still real, though, and worth keeping in the accurate form: **a type that edits beautifully and cannot be queried is the common one**, because storage is the face with no visible symptom when it is wrong.
 
 ---
 
@@ -66,45 +70,71 @@ The reason is in [`architecture.md`](architecture.md) §3, and it's worth repeat
 
 ## 3. The contract
 
+⚠️ **Reproduced from `packages/core/src/Fields/FieldType.php`, and pinned to it by a test.**
+`tests/Core/Fields/ContractDocumentationTest.php` reflects over the interface and fails
+when this block and the code disagree. It exists because they did: this section declared
+`formComponent()`, `tableColumn()` and `generatedColumnType()` — **none of which the
+interface has ever had** — while omitting six methods it does. A contract described in
+prose drifts from the code it governs, and a reader trusting the prose implements against
+an interface that does not exist.
+
 ```php
 interface FieldType
 {
-    // ---- Identity ----
+    // ── Identity ───────────────────────────────────────────────────────
     public static function handle(): string;          // 'text', 'number', 'relation'
     public static function label(): string;
     public static function icon(): string;
 
-    // ---- Storage ----
+    // ── Storage ────────────────────────────────────────────────────────
     public function strategy(): StorageStrategy;      // Promoted | Inline | Relational
     public function isIndexable(): bool;
     public function supportsCardinality(): bool;
 
-    /** SQL type for the stored generated column, or null if not indexable. */
-    public function generatedColumnType(SchemaDriver $driver): ?string;
+    /** What this field projects to for indexing, or null if it is not indexable. */
+    public function projection(FieldConfig $config): ?Projection;
+
+    /** The `entries` column this type owns, or null for everything else. */
+    public function promotedColumn(): ?string;
 
     public function toStorage(mixed $input, FieldConfig $config): mixed;
     public function fromStorage(mixed $stored, FieldConfig $config): mixed;
 
-    // ---- UI ----
-    public function formComponent(FieldConfig $config): Component;
-    public function tableColumn(FieldConfig $config): Column;
-
-    // ---- API ----
+    // ── API ────────────────────────────────────────────────────────────
     public function toApi(mixed $stored, FieldConfig $config): mixed;
     public function fromApi(mixed $input, FieldConfig $config): mixed;
     public function apiSchema(FieldConfig $config): array;   // JSON Schema fragment
 
-    // ---- Validation & configuration ----
+    // ── Validation & configuration ─────────────────────────────────────
     public function validationRules(FieldConfig $config): array;
+
+    /** Rules for ONE element of a multi-value field, not for the array. */
+    public function elementValidationRules(FieldConfig $config): array;
+
     public function settingsSchema(): array;          // the "configure this field" form
+    public function validateSettings(array $settings): ?string;
+
+    /** Whether a revision must keep the pre-sanitization original. */
+    public function retainsOriginal(): bool;
+
+    public function suggestedPiiClass(): string;      // ADR-020 fails closed
 }
 ```
+
+**There is no UI method on this interface, and that is a decision rather than an
+omission.** A field type describes a control and the panel builds it — ADR-029, which
+generalises ADR-028's *"handing it one was the wrong seam"* from storage drivers to
+Filament components. The description is data over a closed vocabulary, so the renderer is
+the single place every control passes through, which is what makes a cross-cutting
+concern like `dir="auto"` unforgettable instead of a note in twelve files.
 
 ### Three rules that are not negotiable
 
 **1. `validationRules()` never returns Laravel's `unique` or `exists`.** Those rules don't go through Eloquent, so they ignore global scopes and leak across sites and orgs. Return `scopedUnique()` / `scopedExists()`. This is enforced by the plugin validation CLI (roadmap v1.2), and it fails the build.
 
-**2. `generatedColumnType()` takes the driver and returns driver-specific SQL.** There are **three** drivers, and all three differ: Postgres and MySQL diverge on generated-column syntax *and* JSON path operators, and SQLite cannot add a STORED generated column via `ALTER TABLE` at all — it needs a VIRTUAL one, indexed as an expression index ([`architecture.md`](architecture.md) §1). No field type ever writes raw SQL directly — it asks the driver.
+**2. `projection()` describes what a value projects to; it never writes SQL and never sees a driver.** There are **three** drivers and all three differ: Postgres and MySQL diverge on generated-column syntax *and* JSON path operators, and SQLite cannot add a STORED generated column via `ALTER TABLE` at all — it needs a VIRTUAL one, indexed as an expression index ([`architecture.md`](architecture.md) §1).
+
+> ⚠️ This rule previously read *"`generatedColumnType()` takes the driver and returns driver-specific SQL"*. ADR-028's first amendment replaced that method with `projection(FieldConfig)` and gave the reason in one line — **"handing it one was the wrong seam"** — because a type handed a driver still had to know that a rendered type serves two grammars, and it left the driver nowhere to put the guard. The projection also depends on **configuration**, not just the type: a `number` with `format: integer` must project to BIGINT, and a `text` with `maxLength: 400` must project at that width or be silently truncated in the index.
 
 **3. `apiSchema()` may only publish a constraint the consumer can enforce.** A constraint the consumer cannot read is not published, and one it reads *differently* is worse — it advertises a rule the API does not apply, and nothing reports the disagreement.
 
@@ -399,9 +429,9 @@ Because this should be mechanical:
 
 1. Implement `FieldType`
 2. Pick a strategy — `Promoted` is closed, so realistically `Inline` or `Relational`
-3. If indexable, implement `generatedColumnType()` for **all three** drivers — Postgres, MySQL and SQLite
-4. Map `formComponent()` and `tableColumn()` to Filament components
-5. `toApi()` / `fromApi()` / `apiSchema()` — round-tripping must be lossless
+3. If indexable, return a `Projection` from `projection()` — **describing** the logical type and width, never SQL and never per-driver. The driver renders it, and `LogicalType` is an enum so PHPStan fails an unhandled match: a new logical type cannot silently leave one engine behind
+4. *(Not yet applicable — issue #39.)* Name the **kind** of control and cell from the published vocabulary. You will not write a Filament class here and you will not decide text direction: the renderer derives it, which is what stops a new type shipping without it (ADR-029)
+5. `toApi()` / `fromApi()` / `apiSchema()` — round-tripping must be lossless, and `apiSchema()` may only publish a constraint that is actually enforced
 6. `validationRules()` — `scopedUnique()` / `scopedExists()` only
 7. `settingsSchema()` — the field's own configuration form
 8. Register in the field type registry

@@ -147,8 +147,8 @@ final class RelationType extends BaseFieldType
             // silently could not be narrowed at all.
             //
             // A named source rather than a closure, because `settingsSchema()`
-            // returns DATA so core stays headless-capable (ADR-002): a closure
-            // here would only be callable from Filament.
+            // returns DATA and the panel builds from it (ADR-029): a closure here
+            // would only be callable from Filament.
             'targetTypes' => [
                 'type' => 'multiSelect',
                 'label' => 'Allowed entry types',

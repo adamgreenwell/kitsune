@@ -240,7 +240,7 @@ class FieldsRelationManager extends RelationManager
                 // Cascades to every rendered setting, which is why the whole
                 // section carries it rather than each component the renderer
                 // produced — the renderer returns data and knows nothing about
-                // ownership (ADR-002).
+                // ownership (ADR-029: it describes, this builds).
                 ->disabled(fn (?Field $record): bool => $this->editsSharedStorage($record))
                 ->columns(2),
         ]);
