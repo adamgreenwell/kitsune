@@ -249,7 +249,11 @@ final class NumberType extends BaseFieldType
             return null;
         }
 
-        if (is_numeric($min) && is_numeric($max) && (float) $min > (float) $max) {
+        // ⚠️ Exactly, not in floats. `min = -9223372036854775807` with
+        // `max = -9223372036854775808` is a reversed range between two legitimate
+        // signed BIGINT bounds, and neither float nor int conversion can tell the
+        // endpoints apart — the float rounds them together and the int saturates.
+        if (self::compareDecimals($min, $max) === 1) {
             return sprintf(
                 'The minimum (%s) is above the maximum (%s), so no value could ever be stored in '
                 .'this field. Swap them, or clear one.',
@@ -301,22 +305,40 @@ final class NumberType extends BaseFieldType
         // is validated `lt:10^(precision-scale)`, so precision 2 / scale 1 admits
         // nothing at or above 10 — and min = max = 10 was accepted because that
         // constraint was not part of the interval being tested.
-        if (! $integer) {
+        if ($integer) {
+            // ⚠️ An integer field HAS a projection bound, and the note here used to
+            // say it did not. The indexed projection is a signed BIGINT and
+            // Laravel's `integer` rule is limited to platform integers, so the
+            // interval is [PHP_INT_MIN, PHP_INT_MAX] — asymmetric, because two's
+            // complement is.
+            //
+            // ⚠️ Tested on the TEXT and before the clamp, because clamping destroys
+            // exactly the information the test needs: `min = 1e100` saturates to
+            // PHP_INT_MAX, which is a value a field CAN store, so a clamped
+            // comparison would call an unsatisfiable field satisfiable.
+            if (self::compareDecimals($settings['min'] ?? null, PHP_INT_MAX) === 1
+                || self::compareDecimals($settings['max'] ?? null, PHP_INT_MIN) === -1) {
+                return $this->outsideIntegerProjectionReason($settings);
+            }
+
+            $max ??= PHP_INT_MAX;
+            $min ??= PHP_INT_MIN;
+        } else {
             $bound = 10 ** $precision - 1;
             $max = $max === null ? $bound : min($max, $bound);
             $min = $min === null ? -$bound : max($min, -$bound);
         }
 
-        // ⚠️ A ONE-SIDED range can be empty, and returning early when either
-        // bound was absent missed it. A decimal field is validated
+        // ⚠️ A ONE-SIDED range can be empty, and this used to return early when
+        // either bound was absent — missing it. A decimal field is validated
         // `lt:10^(precision-scale)`, so precision 2 / scale 1 with `min = 10` and
-        // no maximum admits nothing — the projection supplies the other side, and
-        // the block above has already applied it. Only an integer field, which has
-        // no projection bound, is genuinely open.
-        if ($min === null || $max === null) {
-            return null;
-        }
-
+        // no maximum admits nothing; the projection supplies the other side.
+        //
+        // There is no early return left, because BOTH sides are now always
+        // supplied: the decimal branch above substitutes its projection bound and
+        // the integer branch substitutes the BIGINT limits. An absent bound is a
+        // bound at the edge of what the field can hold, which is what makes the
+        // interval below answerable in every case.
         if ($min > $max) {
             return $this->emptyRangeReason($settings, $scale, $min, $max);
         }
@@ -425,8 +447,16 @@ final class NumberType extends BaseFieldType
         // quanta, and without this it would read as 29.
         $fraction = str_pad($fraction, $scale, '0');
 
-        // The digits that land ON the grid, and whatever is left below it.
-        $units = (int) ($whole.substr($fraction, 0, $scale));
+        // ⚠️ The SIGN goes into the cast, rather than being applied after it.
+        //
+        // `(int) '9223372036854775808'` saturates to `PHP_INT_MAX` and negating
+        // that gives `-9223372036854775807` — one short of `PHP_INT_MIN`, which is
+        // a legitimate signed BIGINT bound. `(int) '-9223372036854775808'` is
+        // exact, so the same digits convert correctly when the cast can see they
+        // are negative. The asymmetry of two's complement is the whole reason: the
+        // negative range is one wider than the positive one, so a magnitude that
+        // overflows on the way out can still be representable on the way in.
+        $units = (int) (($negative ? '-' : '').$whole.substr($fraction, 0, $scale));
         $below = rtrim(substr($fraction, $scale), '0') !== '';
 
         // Rounding away from zero happens on the MAGNITUDE, so the direction
@@ -434,10 +464,94 @@ final class NumberType extends BaseFieldType
         $awayFromZero = $negative ? ! $up : $up;
 
         if ($below && $awayFromZero) {
-            $units++;
+            // Away from zero is DOWN for a negative value, and `$units` already
+            // carries the sign now.
+            $units += $negative ? -1 : 1;
         }
 
-        return $negative ? -$units : $units;
+        return $units;
+    }
+
+    /**
+     * Compare two numeric settings exactly, or null when either is not a number.
+     *
+     * ⚠️ On the DECIMAL TEXT, because both floats and ints lose the answer here.
+     * `(float) '-9223372036854775807' > (float) '-9223372036854775808'` is false —
+     * neither endpoint survives the conversion distinctly — so a reversed range
+     * between two legitimate signed BIGINT bounds compared equal and was accepted.
+     * Casting to int cannot help either: that is what saturates.
+     *
+     * Returns -1, 0 or 1. No arbitrary-precision arithmetic is needed for a
+     * comparison — digits and a sign are enough, which is why this does not reach
+     * for bcmath (not guaranteed present) or float (not exact).
+     */
+    private static function compareDecimals(mixed $left, mixed $right): ?int
+    {
+        $a = self::decimalText($left);
+        $b = self::decimalText($right);
+
+        if ($a === null || $b === null) {
+            return null;
+        }
+
+        [$aNegative, $aWhole, $aFraction] = self::decimalParts($a);
+        [$bNegative, $bWhole, $bFraction] = self::decimalParts($b);
+
+        // ⚠️ Before the signs are compared: -0 and 0 are the same number, and
+        // treating the sign as decisive would order them.
+        $aZero = $aWhole === '0' && $aFraction === '';
+        $bZero = $bWhole === '0' && $bFraction === '';
+
+        if ($aZero && $bZero) {
+            return 0;
+        }
+
+        if ($aNegative !== $bNegative) {
+            return $aNegative ? -1 : 1;
+        }
+
+        $magnitude = self::compareMagnitudes($aWhole, $aFraction, $bWhole, $bFraction);
+
+        // Further from zero is SMALLER when both are negative.
+        return $aNegative ? -$magnitude : $magnitude;
+    }
+
+    /**
+     * A fixed-point decimal split into sign, normalised whole part and fraction.
+     *
+     * @return array{bool, string, string}
+     */
+    private static function decimalParts(string $text): array
+    {
+        $negative = str_starts_with($text, '-');
+        [$whole, $fraction] = explode('.', ltrim($text, '+-').'.');
+
+        // Leading zeros carry no value and would break a length comparison;
+        // trailing ones in the fraction would break equality.
+        $whole = ltrim($whole, '0');
+
+        return [$negative, $whole === '' ? '0' : $whole, rtrim($fraction, '0')];
+    }
+
+    /** Compare two unsigned decimals given as whole and fractional digits. */
+    private static function compareMagnitudes(string $aWhole, string $aFraction, string $bWhole, string $bFraction): int
+    {
+        // More integer digits is a larger number, once leading zeros are gone.
+        if (mb_strlen($aWhole) !== mb_strlen($bWhole)) {
+            return mb_strlen($aWhole) < mb_strlen($bWhole) ? -1 : 1;
+        }
+
+        if ($aWhole !== $bWhole) {
+            return strcmp($aWhole, $bWhole) < 0 ? -1 : 1;
+        }
+
+        // Same integer part: pad the fractions so position means the same thing in
+        // both, which is what makes a plain string comparison correct.
+        $width = max(mb_strlen($aFraction), mb_strlen($bFraction));
+        $aFraction = str_pad($aFraction, $width, '0');
+        $bFraction = str_pad($bFraction, $width, '0');
+
+        return $aFraction === $bFraction ? 0 : (strcmp($aFraction, $bFraction) < 0 ? -1 : 1);
     }
 
     /**
@@ -515,6 +629,17 @@ final class NumberType extends BaseFieldType
         // Where the point lands in the digit string once the exponent moves it.
         $point = mb_strlen($matches[2]) + (int) $matches[4];
 
+        // ⚠️ ZERO first, because saturating it changed its VALUE.
+        //
+        // `0e1000000000` is a perfectly ordinary zero written with a large
+        // exponent, and the clamp below turned it into 64 nines — so a field with
+        // `min = 0` spelled that way was refused as being outside its projection.
+        // Saturation is only sound when it preserves the answer, and no exponent
+        // moves zero anywhere: an all-zero coefficient is zero at every scale.
+        if (rtrim($digits, '0') === '') {
+            return $matches[1].'0';
+        }
+
         // ⚠️ Checked BEFORE either `str_repeat()` below, which is the whole point:
         // the arms are what allocate, so a guard after them guards nothing.
         if ($point > self::MAX_EXPANDED_DIGITS || $point < -self::MAX_EXPANDED_DIGITS) {
@@ -533,6 +658,25 @@ final class NumberType extends BaseFieldType
         };
 
         return $matches[1].$expanded;
+    }
+
+    /**
+     * Why an integer field's bounds fall outside what it can store.
+     *
+     * @param  array<string, mixed>  $settings
+     */
+    private function outsideIntegerProjectionReason(array $settings): string
+    {
+        return sprintf(
+            'No value this field can store falls between %s and %s. An integer field is projected '
+            .'as a signed BIGINT and validated with Laravel\'s integer rule, so it holds values '
+            .'from %s to %s — and the range asked for lies outside that entirely. Bring the bounds '
+            .'inside it, or use a decimal field with the precision you need.',
+            (string) ($settings['min'] ?? '-∞'),
+            (string) ($settings['max'] ?? '∞'),
+            (string) PHP_INT_MIN,
+            (string) PHP_INT_MAX,
+        );
     }
 
     /** @param  array<string, mixed>  $settings */

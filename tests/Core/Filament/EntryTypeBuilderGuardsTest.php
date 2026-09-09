@@ -1041,6 +1041,104 @@ describe('settings that contradict themselves are refused', function (): void {
         expect($subQuantum->exists)->toBeTrue();
     });
 
+    it('bounds an integer field by the BIGINT it projects to', function (): void {
+        /*
+         * ⚠️ The comment here used to say an integer field had no projection bound.
+         * It does: the indexed projection is a signed BIGINT and Laravel's `integer`
+         * rule is limited to platform integers, so the interval is
+         * [PHP_INT_MIN, PHP_INT_MAX] — asymmetric, because two's complement is.
+         *
+         * ⚠️ And the test has to be made on the TEXT, before the clamp. `min = 1e100`
+         * saturates to PHP_INT_MAX, which is a value the field CAN store, so a
+         * comparison made after clamping would call an unsatisfiable field
+         * satisfiable — the clamp destroys exactly the information being tested.
+         */
+        expect(fn () => FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'counter', 'type' => 'number',
+            'pii_class' => 'none', 'cardinality' => 1,
+            'settings' => ['format' => 'integer', 'min' => '1e100'],
+        ]))->toThrow(RuntimeException::class, 'No value this field can store');
+
+        // The other side, with only a maximum, which the one-sided case needs too.
+        expect(fn () => FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'counter2', 'type' => 'number',
+            'pii_class' => 'none', 'cardinality' => 1,
+            'settings' => ['format' => 'integer', 'max' => '-1e100'],
+        ]))->toThrow(RuntimeException::class, 'No value this field can store');
+
+        // The whole representable range is fine, edges included.
+        $whole = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'counter3', 'type' => 'number',
+            'pii_class' => 'none', 'cardinality' => 1,
+            'settings' => ['format' => 'integer', 'min' => PHP_INT_MIN, 'max' => PHP_INT_MAX],
+        ]);
+
+        expect($whole->exists)->toBeTrue();
+    });
+
+    it('tells the BIGINT endpoints apart, which no float or int cast can', function (): void {
+        /*
+         * ⚠️ `min = -9223372036854775807`, `max = -9223372036854775808`: a reversed
+         * range between two legitimate signed BIGINT bounds.
+         *
+         * Neither conversion could see it. `(float)` rounds both endpoints to the
+         * same double, so the comparison said they were equal. And `(int)` of the
+         * unsigned magnitude `9223372036854775808` saturates to PHP_INT_MAX, which
+         * negated is `-9223372036854775807` — one short of PHP_INT_MIN — so both
+         * endpoints converted to the same integer as well.
+         *
+         * The comparison is made on the decimal text now, and the cast takes the
+         * SIGN with it: `(int) '-9223372036854775808'` is exact, because the
+         * negative range is one wider than the positive one.
+         */
+        expect(fn () => FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'edge', 'type' => 'number',
+            'pii_class' => 'none', 'cardinality' => 1,
+            'settings' => ['format' => 'integer',
+                'min' => '-9223372036854775807', 'max' => '-9223372036854775808'],
+        ]))->toThrow(RuntimeException::class, 'is above the maximum');
+
+        // ⚠️ And the same two bounds the right way round must be ACCEPTED, or a
+        // stricter comparison could pass by refusing both orderings.
+        $ordered = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'edge2', 'type' => 'number',
+            'pii_class' => 'none', 'cardinality' => 1,
+            'settings' => ['format' => 'integer',
+                'min' => '-9223372036854775808', 'max' => '-9223372036854775807'],
+        ]);
+
+        expect($ordered->exists)->toBeTrue();
+    });
+
+    it('keeps zero at zero however its exponent is written', function (): void {
+        /*
+         * ⚠️ My own regression from the allocation cap. `0e1000000000` is an
+         * ordinary zero written with a large exponent, and the saturation branch
+         * replaced its all-zero coefficient with 64 nines — so a field with
+         * `min = 0` spelled that way was refused as outside its own projection.
+         *
+         * Saturation is only sound while it preserves the ANSWER. No exponent moves
+         * zero anywhere, so an all-zero coefficient has to be recognised before the
+         * clamp rather than after it.
+         */
+        $zero = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'zeroed', 'type' => 'number',
+            'pii_class' => 'none', 'cardinality' => 1,
+            'settings' => ['format' => 'decimal', 'precision' => 12, 'scale' => 2,
+                'min' => '0e1000000000', 'max' => 10],
+        ]);
+
+        expect($zero->exists)->toBeTrue();
+
+        $expand = new ReflectionMethod(NumberType::class, 'withoutExponent');
+
+        expect($expand->invoke(null, '0e1000000000'))->toBe('0')
+            ->and($expand->invoke(null, '-0.000e1000000000'))->toBe('-0')
+            // And a non-zero coefficient still saturates, which is the behaviour
+            // the cap exists for.
+            ->and(mb_strlen($expand->invoke(null, '1e1000000000')))->toBeLessThan(80);
+    });
+
     it('will not expand a nine-byte bound into a gigabyte', function (): void {
         /*
          * ⚠️ A DoS I introduced with the exact-decimal parsing, and the shape is
@@ -1331,6 +1429,43 @@ describe('settings that contradict themselves are refused', function (): void {
             ->and(Pattern::unpublishable('^\S+$'))->toBeNull();
     });
 
+    it('refuses punctuation escapes ECMAScript cannot parse', function (): void {
+        /*
+         * ⚠️ ECMAScript escapes only its SyntaxCharacter set — `^ $ \ . * + ? ( )
+         * [ ] { } |` — plus `/`, and `-` inside a character class. PCRE puts a
+         * backslash on anything and reads the character literally, so an identity
+         * escape of ordinary punctuation compiles here and is a syntax error there.
+         *
+         * Measured across every ASCII punctuation mark: PCRE takes all of them,
+         * ECMAScript rejects 35 under the `u` modifier. Every refusal has the same
+         * trivial portable form — drop the backslash — so refusing redirects the
+         * author rather than removing anything.
+         */
+        expect(Pattern::unpublishable('a\_b'))->toContain('syntax characters')
+            ->and(Pattern::unpublishable('a\:b'))->toContain('syntax characters')
+            ->and(Pattern::unpublishable('a\!b'))->toContain('syntax characters')
+            ->and(Pattern::unpublishable('a\@b'))->toContain('syntax characters')
+            ->and(Pattern::unpublishable('a\~b'))->toContain('syntax characters')
+            // An escaped space, which is easy to type by accident and hard to see.
+            ->and(Pattern::unpublishable('a\ b'))->toContain('syntax characters')
+            // ⚠️ `-` is portable INSIDE a class and not outside one — the same
+            // positional split the digit escapes have.
+            ->and(Pattern::unpublishable('a\-b'))->toContain('syntax characters')
+            ->and(Pattern::unpublishable('[a\-z]'))->toBeNull()
+            // The syntax characters themselves must all still travel.
+            ->and(Pattern::unpublishable('a\.b'))->toBeNull()
+            ->and(Pattern::unpublishable('a\$'))->toBeNull()
+            ->and(Pattern::unpublishable('a\*b'))->toBeNull()
+            ->and(Pattern::unpublishable('a\(b\)'))->toBeNull()
+            ->and(Pattern::unpublishable('a\[b\]'))->toBeNull()
+            ->and(Pattern::unpublishable('a\{2\}'))->toBeNull()
+            ->and(Pattern::unpublishable('a\|b'))->toBeNull()
+            ->and(Pattern::unpublishable('a\/b'))->toBeNull()
+            ->and(Pattern::unpublishable('a\\\\b'))->toBeNull()
+            // And the ordinary anchored pattern this all exists to protect.
+            ->and(Pattern::unpublishable('^[A-Z]{2}-[0-9]+$'))->toBeNull();
+    });
+
     it('refuses the PCRE-only escape forms, found by sweeping not by listing', function (): void {
         /*
          * ⚠️ Three were reported — `\g{1}`, `\o{141}`, `\e`. Sweeping the whole
@@ -1396,7 +1531,20 @@ describe('settings that contradict themselves are refused', function (): void {
          */
         $cases = [];
 
-        foreach ([...range('a', 'z'), ...range('A', 'Z'), ...range('0', '9')] as $character) {
+        // ⚠️ PUNCTUATION as well as letters and digits, which is the gap that let
+        // `\_`, `\:` and `\!` through: the first version of this sweep walked
+        // `a-z`, `A-Z` and `0-9` and stopped there, so a whole class of identity
+        // escape was never asked about. A sweep with a hole in its alphabet is a
+        // list of known offenders wearing a sweep's clothes.
+        $alphabet = [
+            ...range('a', 'z'),
+            ...range('A', 'Z'),
+            ...range('0', '9'),
+            ...str_split('!"#$%&\'()*+,-./:;<=>?@[]^_`{|}~ '),
+            '\\',
+        ];
+
+        foreach ($alphabet as $character) {
             // Two groups, so a single-digit backreference is valid in both.
             $cases[] = '(a)(b)\\'.$character;
             $cases[] = '(a)(b)[\\'.$character.']';

@@ -172,6 +172,28 @@ final class Pattern
     ];
 
     /**
+     * Punctuation ECMAScript lets a backslash escape.
+     *
+     * ⚠️ An ALLOWLIST, and the sweep that produced the escape screen missed this
+     * surface entirely: it walked `a-z`, `A-Z` and `0-9` and never tried
+     * punctuation. Measured across every ASCII punctuation mark, PCRE compiles all
+     * of them and ECMAScript rejects 35 under the `u` modifier — `\!`, `\:`, `\_`,
+     * `\-`, `\@`, `\~` and an escaped space among them.
+     *
+     * ECMAScript's rule is exactly its SyntaxCharacter set plus `/`: an identity
+     * escape of anything else is a syntax error in Unicode mode, where PCRE treats
+     * it as the literal character. So every refusal here has the same trivial
+     * portable form — drop the backslash.
+     *
+     * @var array<string, true>
+     */
+    private const PORTABLE_ESCAPED_PUNCTUATION = [
+        '^' => true, '$' => true, '\\' => true, '.' => true, '*' => true, '+' => true,
+        '?' => true, '(' => true, ')' => true, '[' => true, ']' => true, '{' => true,
+        '}' => true, '|' => true, '/' => true,
+    ];
+
+    /**
      * General_Category short forms, which both dialects accept in this spelling.
      *
      * A closed set of 38 — the seven groups, `LC`, and the thirty specific
@@ -308,6 +330,15 @@ final class Pattern
                     return $reason;
                 }
 
+                // ⚠️ And PUNCTUATION, which the letter-and-digit sweep never
+                // reached. Handled last because the letters and digits above have
+                // already been answered, so anything still here is punctuation or
+                // a non-ASCII character — and ECMAScript escapes neither unless it
+                // is a syntax character.
+                if (($reason = self::punctuationRefusal($escaped, $inClass)) !== null) {
+                    return $reason;
+                }
+
                 // ⚠️ `\p{...}` compiles in both dialects and its PROPERTY NAME
                 // still has to be one both dialects know. The escape branch
                 // consumed `\p` and never looked inside the braces, so every
@@ -390,6 +421,33 @@ final class Pattern
         }
 
         return null;
+    }
+
+    /**
+     * Whether an escaped non-alphanumeric character is one ECMAScript escapes.
+     *
+     * ⚠️ `-` is portable INSIDE a character class and not outside one, which is
+     * the same positional split the digit escapes have: ECMAScript allows `\-`
+     * only as a ClassEscape, and PCRE takes it anywhere. Measured, not assumed.
+     */
+    private static function punctuationRefusal(string $escaped, bool $inClass): ?string
+    {
+        if ($escaped === '' || preg_match('/^[A-Za-z0-9]$/', $escaped) === 1) {
+            return null;
+        }
+
+        if (isset(self::PORTABLE_ESCAPED_PUNCTUATION[$escaped]) || ($inClass && $escaped === '-')) {
+            return null;
+        }
+
+        return sprintf(
+            'the escape `\%s` — ECMAScript escapes only its syntax characters '
+            .'(^ $ \ . * + ? ( ) [ ] { } |), a forward slash, and `-` inside a character class. '
+            .'PCRE takes the backslash on anything and reads the character literally, so write '
+            .'`%s` on its own',
+            $escaped,
+            $escaped,
+        );
     }
 
     /**
