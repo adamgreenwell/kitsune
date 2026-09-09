@@ -132,11 +132,15 @@ This bites hardest on `text`'s `pattern`, because the same string is enforced by
 | `\_` `\:` `\!` `\@` `\~` `\ ` | ECMAScript escapes only its syntax characters — `^ $ \ . * + ? ( ) [ ] { } |` — plus `/`. PCRE puts a backslash on anything and reads the character literally; 35 ASCII marks diverge | drop the backslash |
 | `\-` | Portable **inside** a character class only, as a ClassEscape | `-`, or `[\-]` |
 | `\c1` `\c!` | ECMAScript's control escape takes an ASCII letter; PCRE also reads a digit or punctuation there. `\cA` agrees in both | `\cA` |
+| `a{,2}` `a{}` `a{2,4,6}` `a{ 2}` `a{b}` | ECMAScript accepts only `{n}`, `{n,}` and `{n,m}` as a quantifier and treats anything else as a syntax error; PCRE reads some as quantifiers and the rest as literal text | `{0,2}`, or `\{` |
+| `[a\S]` | `\s` splices into a class; a negation cannot | `[^\s]` |
 | `[a\E]` `[a\Q!\E]` `[a\N{U+41}]` | These stay **active inside a character class** in PCRE, where the anchors are refused outright | drop them |
 
 Two divergences cannot be screened, because they are in the **engine** rather than the pattern. Both had the API *laxer* than the schema it published, which is the worse direction — a value passes the API and then breaks every generated client.
 
 `.` excludes only LF under PCRE, where ECMAScript excludes LF, CR, U+2028 and U+2029. No PCRE newline convention matches: the default misses CR, LS and PS; `(*ANY)` catches those but wrongly excludes VT, FF and NEL; `(*ANYCRLF)` still misses LS and PS. So a modifier cannot fix it, and every bare `.` outside a character class is compiled as `[^\n\r\x{2028}\x{2029}]` instead — measured to agree with ECMAScript's dot on all nine characters tried. `\.` and `[.]` are literals and are left alone.
+
+`\s` and `\S` diverge on three code points, and the table below once claimed they agreed — a claim made after measuring two characters. PHP's `u` modifier sets `PCRE2_UCP`, so `\s` becomes Unicode's `White_Space` property, while ECMAScript's is a fixed list: **U+0085 NEL** and **U+180E** match under PCRE and not under ECMAScript, and **U+FEFF** (the BOM) matches under ECMAScript and not under PCRE. `\s` is compiled as ECMAScript's explicit set, spliced as a class body when it appears inside `[...]`. `\S` becomes the negated class outside a class and is **refused inside one**, because a negation has no body to splice — `[^\s]` is the portable spelling.
 
 And `$`: PCRE lets `$` match before a final newline, while ECMAScript's `$` without `m` matches only at the end of input. A field validated `^[a-z]+$` therefore accepted `"abc\n"` server-side and every generated client rejected it — the API being the *laxer* of the two, which is the worse direction. Refusing `$` would remove the most common anchor there is, so instead every pattern is compiled with PCRE's `D` modifier, which gives `$` the end-of-input meaning the published schema already promises. The published text is unchanged.
 

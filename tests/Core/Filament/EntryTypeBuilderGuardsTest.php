@@ -1473,6 +1473,53 @@ describe('settings that contradict themselves are refused', function (): void {
             ->and(Pattern::unpublishable('^\S+$'))->toBeNull();
     });
 
+    it('refuses every brace form ECMAScript will not parse', function (): void {
+        /*
+         * ⚠️ The whole brace form is validated now, not merely checked for a
+         * possessive suffix — which is all it did, so every malformed quantifier PCRE
+         * tolerates went straight through.
+         *
+         * Under `u`, ECMAScript accepts only `{n}`, `{n,}` and `{n,m}`; anything else
+         * is a syntax error. PCRE reads some as quantifiers and the rest as literal
+         * text. Measured, PCRE compiles and ECMAScript rejects all six below — the
+         * finding named one of them.
+         */
+        expect(Pattern::unpublishable('a{,2}'))->toContain('brace form')
+            ->and(Pattern::unpublishable('a{}'))->toContain('brace form')
+            ->and(Pattern::unpublishable('a{,}'))->toContain('brace form')
+            ->and(Pattern::unpublishable('a{2,4,6}'))->toContain('brace form')
+            ->and(Pattern::unpublishable('a{ 2}'))->toContain('brace form')
+            ->and(Pattern::unpublishable('a{2 }'))->toContain('brace form')
+            // A brace that is not a quantifier at all, which PCRE reads literally.
+            ->and(Pattern::unpublishable('a{b}'))->toContain('brace form')
+            // The three forms both dialects share must still travel.
+            ->and(Pattern::unpublishable('a{2}'))->toBeNull()
+            ->and(Pattern::unpublishable('a{2,}'))->toBeNull()
+            ->and(Pattern::unpublishable('^[A-Z]{2,4}$'))->toBeNull()
+            // ⚠️ An ESCAPED brace is literal in both and must not be validated as a
+            // quantifier, and a PROPERTY's braces are consumed before this check —
+            // otherwise every Unicode property in the language would be refused.
+            ->and(Pattern::unpublishable('^\{2\}$'))->toBeNull()
+            ->and(Pattern::unpublishable('^\p{L}{2}$'))->toBeNull()
+            ->and(Pattern::unpublishable('^\p{Lu}{1,3}$'))->toBeNull()
+            ->and(Pattern::unpublishable('^\p{L}+$'))->toBeNull()
+            // And the possessive check still fires on a genuine quantifier.
+            ->and(Pattern::unpublishable('x{2,3}+'))->toContain('possessive');
+    });
+
+    it('refuses \S inside a class, which cannot be translated', function (): void {
+        // ⚠️ `\s` splices its body into the class; a negation has no body to splice —
+        // `[a\S]` is "a or any non-space", which no single class expresses. The three
+        // code points it disagrees on are the same ones, so leaving it alone would
+        // publish a constraint the consumer reads differently.
+        expect(Pattern::unpublishable('[a\S]+'))->toContain('character class')
+            // Outside a class it is translated, not refused.
+            ->and(Pattern::unpublishable('^\S+$'))->toBeNull()
+            // And the portable spelling goes through.
+            ->and(Pattern::unpublishable('^[^\s]+$'))->toBeNull()
+            ->and(Pattern::unpublishable('[a\s]+'))->toBeNull();
+    });
+
     it('refuses punctuation escapes ECMAScript cannot parse', function (): void {
         /*
          * ⚠️ ECMAScript escapes only its SyntaxCharacter set — `^ $ \ . * + ? ( )

@@ -336,6 +336,42 @@ it('publishes the text length and pattern it enforces', function (): void {
 });
 
 describe('one pattern string cannot serve two grammars', function (): void {
+    it('gives \s the whitespace set ECMAScript has, not PCRE\'s', function (): void {
+        /*
+         * ⚠️ I claimed these AGREE, in a code comment and in a review reply, after
+         * measuring NBSP and ideographic space. Across 28 code points, three disagree:
+         *
+         *   U+0085 NEL   PCRE matches, ECMAScript does not
+         *   U+180E       PCRE matches, ECMAScript does not
+         *   U+FEFF BOM   ECMAScript matches, PCRE does not
+         *
+         * PHP's `u` sets PCRE2_UCP, so `\s` becomes Unicode's White_Space property;
+         * ECMAScript's is a fixed list including the BOM and excluding NEL. The claim
+         * was not wrong for being unmeasured — the character set was too small, which
+         * is the same mistake the escape sweep's alphabet made four times.
+         *
+         * The terminator is embedded in a longer value because Laravel treats a
+         * whitespace-only string as absent and would skip the rule entirely.
+         */
+        expect(validate('text', ['f' => 'a b'], ['pattern' => '^a\sb$'])->fails())->toBeFalse()
+            // PCRE matched these and ECMAScript does not, so they must now be refused.
+            ->and(validate('text', ['f' => "a\u{0085}b"], ['pattern' => '^a\sb$'])->fails())->toBeTrue()
+            ->and(validate('text', ['f' => "a\u{180E}b"], ['pattern' => '^a\sb$'])->fails())->toBeTrue()
+            // ⚠️ And the BOM, which ECMAScript matches and PCRE did not — the
+            // divergence in the other direction, so it must now be ACCEPTED.
+            ->and(validate('text', ['f' => "a\u{FEFF}b"], ['pattern' => '^a\sb$'])->fails())->toBeFalse()
+            // The ones they always agreed on.
+            ->and(validate('text', ['f' => "a\u{00A0}b"], ['pattern' => '^a\sb$'])->fails())->toBeFalse()
+            ->and(validate('text', ['f' => "a\u{3000}b"], ['pattern' => '^a\sb$'])->fails())->toBeFalse()
+            ->and(validate('text', ['f' => 'axb'], ['pattern' => '^a\sb$'])->fails())->toBeTrue();
+
+        // The published pattern is still the author's own shorthand.
+        $type = app(FieldTypeRegistry::class)->get('text');
+
+        expect($type->apiSchema(configFor('text', ['maxLength' => 40, 'pattern' => '^a\sb$']))['pattern'])
+            ->toBe('^a\sb$');
+    });
+
     it('gives . the line terminators ECMAScript excludes, not PCRE\'s', function (): void {
         /*
          * ⚠️ The same shape as the `$` divergence and the same direction: the API was

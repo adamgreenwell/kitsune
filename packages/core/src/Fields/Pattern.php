@@ -87,6 +87,33 @@ final class Pattern
     private const ECMASCRIPT_DOT = '[^\n\r\x{2028}\x{2029}]';
 
     /**
+     * The characters ECMAScript's `\s` matches, as a class BODY.
+     *
+     * ⚠️ I claimed `\s` and `\S` AGREE between the dialects — in a code comment and
+     * in a review reply — on the strength of measuring NBSP and ideographic space.
+     * They do not. Measured across 28 whitespace and near-whitespace code points,
+     * three disagree:
+     *
+     *   U+0085 NEL                        PCRE matches, ECMAScript does not
+     *   U+180E MONGOLIAN VOWEL SEPARATOR  PCRE matches, ECMAScript does not
+     *   U+FEFF BYTE ORDER MARK            ECMAScript matches, PCRE does not
+     *
+     * PHP's `u` modifier sets PCRE2_UCP, so `\s` becomes Unicode's White_Space
+     * property; ECMAScript's is a fixed list that includes the BOM and excludes NEL.
+     *
+     * The claim was not wrong for being unmeasured. It was wrong because the
+     * character set it was measured against was too small — the same mistake the
+     * escape sweep's alphabet made four times, and the reason a measurement now has
+     * to state what it covered.
+     *
+     * A class BODY rather than a full class, so it can be spliced inside `[...]` as
+     * well as wrapped outside one. Verified to agree with ECMAScript's `\s` on all
+     * 22 code points retried after the change, the three divergences included.
+     */
+    private const ECMASCRIPT_SPACE = '\t\n\x0B\f\r \x{A0}\x{1680}\x{2000}-\x{200A}'
+        .'\x{2028}\x{2029}\x{202F}\x{205F}\x{3000}\x{FEFF}';
+
+    /**
      * The pattern wrapped in a delimiter it does not itself contain, or null.
      *
      * ⚠️ What is compiled is not byte-for-byte what is published, and that is the
@@ -129,9 +156,33 @@ final class Pattern
             $char = mb_substr($pattern, $i, 1);
 
             if ($char === '\\') {
-                // The escaped character travels with its backslash, untouched.
-                $out .= $char.mb_substr($pattern, $i + 1, 1);
+                $escaped = mb_substr($pattern, $i + 1, 1);
                 $i++;
+
+                // ⚠️ `\s` is translated for the same reason the dot is: the dialects
+                // disagree about three code points, the disagreement is in the ENGINE
+                // rather than in the text, and there is therefore nothing for
+                // `unpublishable()` to screen. See `ECMASCRIPT_SPACE`.
+                if ($escaped === 's') {
+                    // Inside a class the BODY is spliced: `[[...]x]` is not a class
+                    // containing a class, it is a bracket.
+                    $out .= $inClass ? self::ECMASCRIPT_SPACE : '['.self::ECMASCRIPT_SPACE.']';
+
+                    continue;
+                }
+
+                // ⚠️ `\S` outside a class becomes the negated class. INSIDE one it
+                // cannot: `[a\S]` is "a or any non-space", and a negation has no
+                // spliceable body — so that form is refused by `unpublishable()`
+                // instead, with `[^\s]` as the portable spelling.
+                if ($escaped === 'S' && ! $inClass) {
+                    $out .= '[^'.self::ECMASCRIPT_SPACE.']';
+
+                    continue;
+                }
+
+                // The escaped character travels with its backslash, untouched.
+                $out .= $char.$escaped;
 
                 continue;
             }
@@ -460,6 +511,20 @@ final class Pattern
                     return $reason;
                 }
 
+                // ⚠️ `\S` inside a character class cannot be TRANSLATED, so it is
+                // refused here instead.
+                //
+                // `\s` splices its body into the class; a negation has no body to
+                // splice — `[a\S]` means "a or any non-space", which no single class
+                // expresses. The three code points it disagrees on are the same ones,
+                // so leaving it alone would publish a constraint the consumer reads
+                // differently. `[^\s]` says it portably.
+                if ($escaped === 'S' && $inClass) {
+                    return '\S inside a character class — PCRE and ECMAScript disagree about which '
+                        .'characters are whitespace (U+0085, U+180E and U+FEFF), and a negated class '
+                        .'cannot be spliced into another one. Write [^\s] instead';
+                }
+
                 // ⚠️ And PUNCTUATION, which the letter-and-digit sweep never
                 // reached. Handled last because the letters and digits above have
                 // already been answered, so anything still here is punctuation or
@@ -480,6 +545,19 @@ final class Pattern
                 if ($escaped === 'p' || $escaped === 'P') {
                     if (($reason = self::propertyRefusal($pattern, $i, $escaped)) !== null) {
                         return $reason;
+                    }
+
+                    // ⚠️ Consume the property's own braces, so the quantifier check
+                    // below only ever sees a brace in a QUANTIFIER position.
+                    // `\p{L}{2}` has two brace groups meaning different things, and
+                    // validating the property's as a quantifier would refuse every
+                    // Unicode property there is.
+                    if (mb_substr($pattern, $i + 1, 1) === '{') {
+                        $closes = mb_strpos($pattern, '}', $i);
+
+                        if ($closes !== false) {
+                            $i = $closes;
+                        }
                     }
                 }
 
@@ -516,10 +594,34 @@ final class Pattern
             // along.
             if ($char === '{') {
                 $closes = mb_strpos($pattern, '}', $i);
+                $brace = $closes === false ? mb_substr($pattern, $i) : mb_substr($pattern, $i, $closes - $i + 1);
                 $isQuantifier = $closes !== false
-                    && preg_match('/^\{[0-9]+(,[0-9]*)?\}$/', mb_substr($pattern, $i, $closes - $i + 1)) === 1;
+                    && preg_match('/^\{[0-9]+(,[0-9]*)?\}$/', $brace) === 1;
 
-                if ($isQuantifier && mb_substr($pattern, $closes + 1, 1) === '+') {
+                // ⚠️ The WHOLE brace form is validated, not only checked for a
+                // possessive suffix — which is all this did, so every malformed
+                // quantifier PCRE tolerates went straight through.
+                //
+                // Under `u`, ECMAScript accepts only `{n}`, `{n,}` and `{n,m}`: a lone
+                // or malformed brace is a syntax error there. PCRE reads several of
+                // them as quantifiers and the rest as literal text. Measured, PCRE
+                // compiles and ECMAScript rejects all of these:
+                //
+                //   a{,2}   a{}   a{,}   a{2,4,6}   a{ 2}   a{2 }   a{b}
+                //
+                // An escaped brace never arrives here — `^\{2\}$` is consumed above
+                // and travels fine — and a property's braces are consumed with it, so
+                // this only sees a brace in a quantifier position.
+                if (! $isQuantifier) {
+                    return sprintf(
+                        'the brace form `%s` — ECMAScript accepts only {n}, {n,} and {n,m} as a '
+                        .'quantifier and reads anything else as a syntax error, while PCRE tolerates '
+                        .'it. Write the bound out, as in {0,2}, or escape the brace as \{',
+                        mb_strlen($brace) > 12 ? mb_substr($brace, 0, 12).'…' : $brace,
+                    );
+                }
+
+                if (mb_substr($pattern, $closes + 1, 1) === '+') {
                     return 'the possessive quantifier `}+` — ECMAScript has no possessive form';
                 }
 
