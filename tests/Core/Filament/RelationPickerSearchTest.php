@@ -51,14 +51,14 @@ beforeEach(function (): void {
 afterEach(fn () => app(Context::class)->forget());
 
 /** The picker for a relation field, built the way the admin builds it. */
-function picker(Org $org, array $settings = []): Select
+function picker(Org $org, array $settings = [], int $cardinality = -1): Select
 {
     $storage = FieldStorage::create([
         'org_id' => $org->id,
         'handle' => 'related_'.bin2hex(random_bytes(4)),
         'type' => 'relation',
         'pii_class' => 'none',
-        'cardinality' => -1,
+        'cardinality' => $cardinality,
         'settings' => $settings,
     ]);
 
@@ -127,4 +127,29 @@ it('does not offer another org\'s entries', function (): void {
 
     expect($found)->toContain('Course maintenance in week 3')
         ->and($found)->not->toContain('Course secrets of a rival');
+});
+
+it('states a finite cardinality as a bound on the control', function (): void {
+    /*
+     * ⚠️ WITHOUT THIS THE BOUND WAS ENFORCED ONLY AFTER THE AUTHOR HAD DONE THE WORK.
+     * `multiple()` is unbounded, so a relation declared with cardinality 2 let an author pick
+     * a third target; the save then reached `EntryRelation::guardCardinality()`, which THROWS.
+     * They saw a 500 instead of "you may select at most 2".
+     *
+     * The repeater path already applied `maxItems()`, so one control kind honoured the
+     * declared bound and the other did not. Found by review — and missed here because the
+     * seeded relation field is unlimited, so no fixture exercised a finite one.
+     */
+    expect(picker($this->org, [], 2)->getMaxItems())->toBe(2);
+
+    // -1 is the explicit unlimited, and must not become a bound of any kind.
+    expect(picker($this->org, [], -1)->getMaxItems())->toBeNull();
+});
+
+it('is not a multi-select at all when cardinality is 1', function (): void {
+    // The other end of the same question: one target is a scalar control, not a bounded list.
+    $single = picker($this->org, [], 1);
+
+    expect($single->isMultiple())->toBeFalse()
+        ->and($single->getMaxItems())->toBeNull();
 });

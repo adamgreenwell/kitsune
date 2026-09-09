@@ -325,12 +325,33 @@ final class FieldValueRenderer
          * The singular hook is what renders a saved value; the plural one is what lets a
          * multi-select save at all.
          */
-        return $picker
+        $picker = $picker
             ->multiple()
             ->getOptionLabelsUsing(static fn (array $values): array => Entry::query()
                 ->whereKey($values)
                 ->pluck('title', 'id')
                 ->all());
+
+        /*
+         * ⚠️ A FINITE CARDINALITY IS A BOUND THE FORM MUST STATE, and omitting it turned a
+         * validation message into a stack trace. `multiple()` on its own is unbounded, so a
+         * relation declared with cardinality 2 let an author pick a third target; the save
+         * then reached `EntryRelation::guardCardinality()`, which throws. The author saw a
+         * 500 rather than "you may select at most 2", and the bound was enforced only after
+         * they had done the work.
+         *
+         * The repeater path above already does this, which is the tell — one control kind
+         * honoured the bound and the other did not. Found by review, and it went unnoticed
+         * because the seeded relation field is unlimited (-1), so nothing exercised a finite
+         * one.
+         *
+         * -1 means unbounded, so only a positive bound is applied.
+         */
+        if (($max = $config->cardinality()) > 1) {
+            $picker = $picker->maxItems($max);
+        }
+
+        return $picker;
     }
 
     /** The table column for a cell kind, before label or direction. */
