@@ -1682,6 +1682,19 @@ describe('settings that contradict themselves are refused', function (): void {
             ->and(Pattern::unpublishable('^(a)\1|b$'))->toBeNull();
 
         /*
+         * ⚠️ A `|` IS ONLY A SEPARATOR WHERE IT IS ONE, and a `)` only closes where it
+         * closes. The branch analysis rests on the scan's existing escape and character
+         * class handling, which is an interaction rather than a rule of its own — so it
+         * is measured here rather than assumed. Each of these agrees in both engines and
+         * must not be refused; a scan that counted these would invent branches and
+         * refuse portable patterns.
+         */
+        expect(Pattern::unpublishable('^(a)\|b\1$'))->toBeNull()
+            ->and(Pattern::unpublishable('^(a)[|]\1$'))->toBeNull()
+            ->and(Pattern::unpublishable('^(a)[)]\1$'))->toBeNull()
+            ->and(Pattern::unpublishable('^(a)[|)]b\1$'))->toBeNull();
+
+        /*
          * ⚠️ AN OPTIONAL ANCESTOR ONLY COUNTS IF SKIPPING IT DOES NOT SKIP THE REFERENCE,
          * and collapsing inherited optionality into one boolean refused all four of these.
          * Three of them are portable, so that was a false refusal — the third this screen
