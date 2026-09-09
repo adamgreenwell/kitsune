@@ -151,7 +151,21 @@ Inherited optionality is likewise a question of **position, not just ancestry**.
 
 ⚠️ **Measure both engines on byte-identical patterns.** An early comparison here escaped the pattern differently for each side — PHP received `\\1` (a literal backslash then `1`) while Node received `\1` (a real backreference) — so the two engines were not being asked the same question. The conclusions happened to survive, which is luck and not method. Put the patterns in a data file both engines read.
 
-A group inside an **alternation** can still go unset without any quantifier (`^(?:(a)|b)\1$`). Inherited optionality covers quantifiers, not branch selection, so that one is a recorded residual rather than a covered case.
+A group inside an **alternation** goes unset with no quantifier anywhere, so branch selection is a third way to reach a non-participating capture — and it needs no group at all: `^(a)|b\1$` alternates at the top level. **The reference must sit in the same branch as the capture, in every alternating ancestor:**
+
+| Pattern | Capture vs. reference | Portable? |
+|---|---|---|
+| `^(?:(a)\1\|b)?$` | same branch | ✅ allowed |
+| `^((a)\|b)\1$` | names the group *containing* the alternation, and entering it always captures | ✅ allowed |
+| `^(a)\1\|b$` | same branch at the top level | ✅ allowed |
+| `^(?:(a)\|b\1)?$` | different branch | ❌ diverges |
+| `^(?:(a)\|b)\1$` | reference outside the alternating group | ❌ diverges |
+| `^((a)\|b)\2$` | capture inside one branch | ❌ diverges |
+| `^(a)\|b\1$` | different top-level branch | ❌ diverges |
+
+The three allowed rows are why this is not "refuse any pattern containing a pipe" — the capture's **own** frame is excluded from the walk, because entering a group captures it whatever its internal branches do.
+
+> ⚠️ This was a **recorded residual** here until it wasn't. The note said proving it needed "a reachability analysis this screen does not carry", which was true of the analysis as written and not true of the problem: a branch index is just how many top-level separators precede a position. A documented gap is worth re-reading occasionally rather than treated as settled.
 | `\x{41}` `\x4` | ECMAScript's hex escape is exactly two digits, and its braced form is `\u{...}` — which PCRE rejects | `\x41` |
 | `\k{n}` `\k'n'` | Only `\k<name>` is shared | `\k<name>` |
 | `[\1]` | A digit escape is a backreference outside a class and octal inside one, where ECMAScript rejects it | `\x01` |

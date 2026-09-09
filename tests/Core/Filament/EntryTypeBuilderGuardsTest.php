@@ -1646,13 +1646,40 @@ describe('settings that contradict themselves are refused', function (): void {
             ->and(Pattern::unpublishable('^(a){'.str_repeat('0', 40).'1}\1$'))->toBeNull();
 
         /*
-         * ⚠️ A residual gap, asserted so it is not mistaken for coverage: a group inside
-         * an ALTERNATION can go unset without being quantified. `^(?:(a)|b)\1$` on 'b'
-         * fails in PCRE and matches in ECMAScript, and proving otherwise needs a
-         * reachability analysis this screen does not carry — inherited optionality
-         * covers quantifiers, not branch selection.
+         * ⚠️ ALTERNATION WAS THE RECORDED RESIDUAL HERE, and it is now closed. This
+         * asserted `->toBeNull()` — the gap stated rather than hidden — because a group
+         * inside a branch goes unset with no quantifier anywhere, and inherited
+         * optionality covers quantifiers rather than branch selection.
+         *
+         * The rule turned out to be statable after all: the reference must sit in the
+         * SAME branch as the capture, in every alternating ancestor. Measured:
+         *
+         *   ^(?:(a)|b)\1$     on 'b'   PCRE no match, ECMAScript match
+         *   ^(?:(a)|b\1)?$    on 'b'   PCRE no match, ECMAScript match
+         *   ^((a)|b)\2$       on 'b'   PCRE no match, ECMAScript match
+         *   ^(a)|b\1$         on 'b'   PCRE no match, ECMAScript match   (no group at all)
          */
-        expect(Pattern::unpublishable('^(?:(a)|b)\1$'))->toBeNull();
+        expect(Pattern::unpublishable('^(?:(a)|b)\1$'))->toContain('does not share')
+            ->and(Pattern::unpublishable('^(?:(a)|b\1)?$'))->toContain('does not share')
+            ->and(Pattern::unpublishable('^((a)|b)\2$'))->toContain('does not share')
+            // ⚠️ Top-level alternation needs no group, which is why the scan carries a
+            // synthetic root frame. Without it there is nothing to hang the branch
+            // comparison on and this published.
+            ->and(Pattern::unpublishable('^(a)|b\1$'))->toContain('does not share')
+            ->and(Pattern::unpublishable('^(?:(a)|(b))\1$'))->toContain('does not share');
+
+        /*
+         * ⚠️ THE CONTROLS, and they are what stops this becoming "refuse any pattern
+         * containing a pipe" — which would be the fourth false refusal in this file.
+         *
+         *   ^(?:(a)\1|b)?$   capture and reference in the SAME branch      both agree
+         *   ^((a)|b)\1$      names the group AROUND the alternation, and
+         *                    entering that group always captures it        both agree
+         *   ^(a)\1|b$        same branch, at the top level                 both agree
+         */
+        expect(Pattern::unpublishable('^(?:(a)\1|b)?$'))->toBeNull()
+            ->and(Pattern::unpublishable('^((a)|b)\1$'))->toBeNull()
+            ->and(Pattern::unpublishable('^(a)\1|b$'))->toBeNull();
 
         /*
          * ⚠️ AN OPTIONAL ANCESTOR ONLY COUNTS IF SKIPPING IT DOES NOT SKIP THE REFERENCE,

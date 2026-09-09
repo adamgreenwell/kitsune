@@ -851,7 +851,7 @@ final class Pattern
      * analysis was reached only from the digit branch, so every named reference walked
      * past it.
      *
-     * @param  array<int, array{open: int, close: int|null, optionalAncestors: list<array{open: int, close: int|null}>, name: string|null}>  $spans
+     * @param  array<int, array{open: int, close: int|null, optionalAncestors: list<array{open: int, close: int|null}>, alternatingAncestors: list<array{open: int, close: int|null, separators: list<int>, captureBranch: int}>, name: string|null}>  $spans
      */
     private static function participationRefusal(array $spans, int $index, string $written, int $at): ?string
     {
@@ -930,6 +930,38 @@ final class Pattern
         //   `^(?!(a)\1)b$`   reference INSIDE  the assertion        both agree, allowed
         //   `^(?:(a))?\1$`   reference OUTSIDE the optional group   diverges, refused
         //   `^(?!(a))\1$`    reference OUTSIDE the assertion        diverges, refused
+        // ⚠️ ALTERNATION, which needs no quantifier and was a recorded residual until
+        // now. A capture inside one branch is unset whenever another branch is taken, so
+        // the reference must sit in the SAME branch of every alternating ancestor:
+        //
+        //   ^(?:(a)|b\1)?$    on 'b'    PCRE no match, ECMAScript match   refused
+        //   ^(?:(a)|b)\1$     on 'b'    PCRE no match, ECMAScript match   refused
+        //   ^((a)|b)\2$       on 'b'    PCRE no match, ECMAScript match   refused
+        //   ^(a)|b\1$         on 'b'    PCRE no match, ECMAScript match   refused
+        //
+        //   ^(?:(a)\1|b)?$    same branch                    both agree   allowed
+        //   ^((a)|b)\1$       names the group AROUND the |    both agree   allowed
+        //   ^(a)\1|b$         same branch at top level       both agree   allowed
+        //
+        // The last two are why this is not "refuse anything with a `|`". `^((a)|b)\1$`
+        // refers to the group that CONTAINS the alternation, and entering that group
+        // always captures it — which is why the walk skips the capture's own frame.
+        foreach ($spans[$index]['alternatingAncestors'] as $ancestor) {
+            if (self::spanEncloses($ancestor, $at)
+                && self::branchAt($ancestor['separators'], $at) === $ancestor['captureBranch']) {
+                continue;
+            }
+
+            return sprintf(
+                '%s — group %d sits in one branch of an alternation that the reference does not '
+                .'share, so the branch taken can leave it unset: PCRE then fails the match while '
+                .'ECMAScript treats the reference as an empty string. Repeat the reference inside '
+                .'the same branch, or match the alternatives as separate patterns',
+                $written,
+                $index,
+            );
+        }
+
         foreach ($spans[$index]['optionalAncestors'] as $ancestor) {
             if (self::spanEncloses($ancestor, $at)) {
                 continue;
@@ -945,6 +977,27 @@ final class Pattern
         }
 
         return null;
+    }
+
+    /**
+     * Which alternation branch of a frame a position sits in.
+     *
+     * Just how many of the frame's own top-level separators precede it, so two positions
+     * are in the same branch exactly when this returns the same number for both.
+     *
+     * @param  list<int>  $separators
+     */
+    private static function branchAt(array $separators, int $position): int
+    {
+        $branch = 0;
+
+        foreach ($separators as $separator) {
+            if ($separator < $position) {
+                $branch++;
+            }
+        }
+
+        return $branch;
     }
 
     /**
@@ -1006,10 +1059,12 @@ final class Pattern
      * file settled for `\h` — because an unset backreference fails the match in PCRE and
      * matches empty in ECMAScript. `open` exists to catch that.
      *
-     * ⚠️ A residual gap, stated rather than hidden: a group inside an ALTERNATION can go
-     * unset without being quantified — `^(?:(a)|b)\1$` on `'b'` fails in PCRE and matches
-     * in ECMAScript — and proving otherwise needs a nesting analysis this screen does not
-     * carry. The two statically provable cases are refused; that one is recorded.
+     * ⚠️ ALTERNATION is the third way, and it needs no quantifier — nor even a group,
+     * since `^(a)|b\1$` alternates at the top level. `separators` records each frame's own
+     * top-level `|` positions, and a branch index is just how many of them precede a
+     * position, so the capture and the reference must agree on it. This was a recorded
+     * residual claiming the analysis was out of reach; it was the analysis as written that
+     * was, not the problem.
      *
      * ⚠️ Optionality is INHERITED from enclosing frames, and every group gets a frame
      * whether it captures or not. Checking only a capture's own quantifier missed
@@ -1025,16 +1080,22 @@ final class Pattern
      * nothing about a reference sitting inside the group it names — see
      * `participationRefusal()` for the measurements.
      *
-     * @return array<int, array{open: int, close: int|null, optionalAncestors: list<array{open: int, close: int|null}>, name: string|null}>
-     *                                                                                                                                      keyed by 1-based ordinal
+     * @return array<int, array{open: int, close: int|null, optionalAncestors: list<array{open: int, close: int|null}>, alternatingAncestors: list<array{open: int, close: int|null, separators: list<int>, captureBranch: int}>, name: string|null}>
+     *                                                                                                                                                                                                                                                keyed by 1-based ordinal
      */
     private static function capturingGroupSpans(string $pattern): array
     {
         $length = mb_strlen($pattern);
         $inClass = false;
-        $stack = [];
-        $frames = [];
-        $closedAt = [];
+
+        // ⚠️ A synthetic ROOT frame, because alternation does not need a group.
+        // `^(a)|b\1$` puts the capture in one top-level branch and the reference in the
+        // other, and it diverges exactly as the parenthesised forms do — with nothing to
+        // hang the analysis on unless the whole pattern is itself a frame. Opening at -1
+        // and closing past the end makes every position strictly inside it.
+        $frames = [0 => ['parent' => null, 'open' => -1, 'optional' => false, 'separators' => []]];
+        $closedAt = [0 => $length];
+        $stack = [0];
         $groups = [];
         $ordinal = 0;
 
@@ -1065,7 +1126,8 @@ final class Pattern
                 // `^(?:(a))?\1$` leaves group 1 unset and diverges.
                 $id = count($frames);
                 $frames[$id] = [
-                    'parent' => $stack === [] ? null : $stack[count($stack) - 1],
+                    'parent' => $stack[count($stack) - 1],
+                    'separators' => [],
                     // Recorded so an optional frame's SPAN is known, not just that it is
                     // optional: whether it encloses a given reference is what decides
                     // whether it can leave the capture unset.
@@ -1092,7 +1154,17 @@ final class Pattern
                 continue;
             }
 
-            if ($char !== ')' || $stack === []) {
+            if ($char === '|') {
+                // A top-level separator of whichever frame is currently innermost. The
+                // branch a position sits in is just how many of these precede it.
+                $frames[$stack[count($stack) - 1]]['separators'][] = $i;
+
+                continue;
+            }
+
+            // count > 1, not "not empty": the root frame is always on the stack and an
+            // unbalanced `)` must not pop it.
+            if ($char !== ')' || count($stack) <= 1) {
                 continue;
             }
 
@@ -1140,6 +1212,27 @@ final class Pattern
                 }
             }
 
+            // ⚠️ ALTERNATION IS THE OTHER WAY A CAPTURE GOES UNSET, and it needs no
+            // quantifier at all. Walked over STRICT ancestors — the capture's own frame
+            // is excluded on purpose, because entering a group always captures it
+            // whatever its internal branch does: `^((a)|b)\1$` on 'bb' matches in both
+            // and refusing it would be a false refusal, while `^((a)|b)\2$` on 'b'
+            // diverges because group 2 lives inside one branch.
+            $alternatingAncestors = [];
+
+            for ($frame = $frames[$group['frame']]['parent']; $frame !== null; $frame = $frames[$frame]['parent']) {
+                if ($frames[$frame]['separators'] === []) {
+                    continue;
+                }
+
+                $alternatingAncestors[] = [
+                    'open' => $frames[$frame]['open'],
+                    'close' => $closedAt[$frame] ?? null,
+                    'separators' => $frames[$frame]['separators'],
+                    'captureBranch' => self::branchAt($frames[$frame]['separators'], $group['open']),
+                ];
+            }
+
             $spans[$index] = [
                 'open' => $group['open'],
                 // Null when the group never closes, which means the pattern does not
@@ -1147,6 +1240,7 @@ final class Pattern
                 // closed" below, which is the fail-closed reading.
                 'close' => $closedAt[$group['frame']] ?? null,
                 'optionalAncestors' => $optionalAncestors,
+                'alternatingAncestors' => $alternatingAncestors,
                 'name' => $group['name'],
             ];
         }
