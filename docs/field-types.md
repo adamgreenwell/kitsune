@@ -100,11 +100,39 @@ interface FieldType
 }
 ```
 
-### Two rules that are not negotiable
+### Three rules that are not negotiable
 
 **1. `validationRules()` never returns Laravel's `unique` or `exists`.** Those rules don't go through Eloquent, so they ignore global scopes and leak across sites and orgs. Return `scopedUnique()` / `scopedExists()`. This is enforced by the plugin validation CLI (roadmap v1.2), and it fails the build.
 
 **2. `generatedColumnType()` takes the driver and returns driver-specific SQL.** There are **three** drivers, and all three differ: Postgres and MySQL diverge on generated-column syntax *and* JSON path operators, and SQLite cannot add a STORED generated column via `ALTER TABLE` at all — it needs a VIRTUAL one, indexed as an expression index ([`architecture.md`](architecture.md) §1). No field type ever writes raw SQL directly — it asks the driver.
+
+**3. `apiSchema()` may only publish a constraint the consumer can enforce.** A constraint the consumer cannot read is not published, and one it reads *differently* is worse — it advertises a rule the API does not apply, and nothing reports the disagreement.
+
+This bites hardest on `text`'s `pattern`, because the same string is enforced by PCRE server-side and published as a JSON Schema `pattern`, whose dialect is ECMAScript. The two are not the same language, so `validateSettings()` refuses a pattern that cannot travel. Measured on PHP 8.4/PCRE 10.48 and Node 22, PCRE compiles and ECMAScript rejects or reinterprets all of these:
+
+| Written | Problem | Portable form |
+|---|---|---|
+| `\d` `\w` `\h` `\v` | PHP's `u` modifier sets `PCRE2_UCP`, so `\d` is any Unicode digit; ECMAScript's is `[0-9]`. `\h` is horizontal whitespace here and the letter `h` there | `[0-9]`, `[A-Za-z0-9_]`, `[ \t]` |
+| `(?i)` `(?>` `(?P<n>` `(?#` | Group forms ECMAScript has no parse for | `(?:` `(?=` `(?!` `(?<=` `(?<!` `(?<n>` |
+| `a++` `x{2,3}+` | Possessive quantifiers | greedy or lazy |
+| `(*SKIP)` `(*FAIL)` | Backtracking control verbs | — |
+| `\pL` | The braceless property form | `\p{L}` |
+| `\p{Arabic}` `\p{Latn}` | A bare script name or code | `\p{Script=Arabic}` |
+| `\p{Xan}` `\p{L&}` | PCRE's own property inventions | `\p{Alphabetic}` etc. |
+| `\p{bc=AL}` | A property class ECMAScript lacks | — |
+| `\p{^L}` | PCRE's internal negation | `\P{L}` |
+| `\p{lu}` `\p{Script=latin}` | PCRE matches names loosely — ignoring case, spaces and dashes — where ECMAScript is exact | `\p{Lu}`, `\p{Script=Latin}` |
+| `\b` `\B` | Defined in terms of `\w`, so the engines give **opposite** answers on non-ASCII text | the ASCII definition as lookarounds (below) |
+
+Some of those rows are judgement calls rather than compile failures, and the rule that settles them is: **refuse a divergence when a portable equivalent exists, record it when refusing would remove a capability.** `\d` is refused because `[0-9]` says the same thing.
+
+`\b` is where that rule earned its keep, by overruling the first answer. It looked like the case for recording — a word boundary has no shorthand to redirect an author to, and on ASCII content the engines agree. But the ASCII *definition* is portable when written out, and measuring it settled the question: across all 108 pattern/input combinations tried, `(?:(?<![A-Za-z0-9_])(?=[A-Za-z0-9_])|(?<=[A-Za-z0-9_])(?![A-Za-z0-9_]))` agrees with ECMAScript's `\b` on both engines. So a portable equivalent exists, and `\b` is refused with that spelling named. Inside a character class it is left alone, because `[\b]` is the backspace character in both dialects.
+
+`\p{L}` remains the case for the other half of the rule: refusing it would remove the ability to express a Unicode-letter constraint at all, so the construct is accepted and only its property name is screened.
+
+What is *portable* is allowlisted, not what is broken. There are ~170 Unicode scripts and a list naming them to refuse them would go stale on every Unicode release — publishing a schema no consumer can compile. A list of what travels goes stale in the other direction: an author is refused, with a message naming what is allowed, and a maintainer adds the name.
+
+That cost is real and it landed immediately — the first list omitted `LC`, the Cased_Letter group, which both engines accept, so `\p{LC}` was refused for nothing. So the test in `tests/Core/Filament/EntryTypeBuilderGuardsTest.php` runs **both** directions against the two engines: every name the allowlist permits must compile in both, and every name in a candidate corpus that both engines accept must be one the screen permits. The first direction catches a PCRE or V8 release that moves the boundary; the second catches the omission a list of permitted things is prone to. Neither can be caught by reading the specifications, which is why they are measured.
 
 ---
 
