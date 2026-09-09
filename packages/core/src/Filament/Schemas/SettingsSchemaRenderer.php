@@ -60,6 +60,52 @@ final class SettingsSchemaRenderer
     }
 
     /**
+     * Applies a descriptor's `maxLength`, and refuses to drop one it cannot apply.
+     *
+     * ⚠️ IT WAS THE ONE PUBLISHED KEY THIS RENDERER IGNORED (issue #48). `TextType`
+     * declares `maxLength => Pattern::MAX_LENGTH` on its `pattern` descriptor with the
+     * comment "published because it is enforced", and the form imposed no limit at all —
+     * so an author discovered the bound only when the save was refused.
+     *
+     * ⚠️ Established by ENUMERATION, not by fixing what was reported. Every key the twelve
+     * types publish was compared against every key this method consumes: `default`, `help`,
+     * `label`, `nullable`, `options`, `optionsFrom` and `type` are all read, and `maxLength`
+     * was the only one that was not. The issue also asked about `min`, `max` and `step` on
+     * `number` — those are descriptor NAMES rather than descriptor keys, so there is no
+     * second instance.
+     *
+     * ⚠️ AND IT IS NOT THE ENFORCEMENT. The server refuses an over-long pattern —
+     * `Pattern::lengthRefusal()`, consulted by `unpublishable()`, `delimit()` and
+     * `validateSettings()` — and a `maxlength` attribute is something a client can ignore
+     * (invariant 6). This is a courtesy to the author, and the test asserts both halves so
+     * nobody later "simplifies" by keeping only one.
+     *
+     * ⚠️ FAILS CLOSED on a control that cannot express a length, matching this class's
+     * existing posture on an unknown descriptor type: silently dropping the key is how a
+     * published constraint becomes a lie, which is the defect being fixed.
+     *
+     * @param  array<string, mixed>  $descriptor
+     */
+    private static function withLength(mixed $component, string $key, array $descriptor): mixed
+    {
+        if (! isset($descriptor['maxLength'])) {
+            return $component;
+        }
+
+        if (! $component instanceof TextInput) {
+            throw new RuntimeException(sprintf(
+                'Setting [%s] declares maxLength on a [%s] control, which cannot express one. '
+                .'The renderer fails closed rather than dropping it: a published constraint the '
+                .'form does not apply is a constraint the author only meets by accident.',
+                $key,
+                is_string($descriptor['type'] ?? null) ? $descriptor['type'] : get_debug_type($descriptor['type'] ?? null),
+            ));
+        }
+
+        return $component->maxLength((int) $descriptor['maxLength']);
+    }
+
+    /**
      * @param  array<string, mixed>  $descriptor
      */
     private static function component(string $path, string $key, array $descriptor): mixed
@@ -105,7 +151,7 @@ final class SettingsSchemaRenderer
             $component = $component->helperText($descriptor['help']);
         }
 
-        return $component;
+        return self::withLength($component, $key, $descriptor);
     }
 
     /**

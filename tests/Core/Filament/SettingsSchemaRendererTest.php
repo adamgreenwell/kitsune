@@ -14,7 +14,9 @@ use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Toggle;
 use Kitsune\Core\Fields\Control;
 use Kitsune\Core\Fields\FieldTypeRegistry;
+use Kitsune\Core\Fields\Pattern;
 use Kitsune\Core\Fields\Types\BaseFieldType;
+use Kitsune\Core\Fields\Types\TextType;
 use Kitsune\Core\Filament\Schemas\SettingsSchemaRenderer;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Org;
@@ -246,4 +248,70 @@ describe('a descriptor whose choices are not knowable at declaration time', func
         expect(fn () => SettingsSchemaRenderer::for($type, 'storage_settings'))
             ->toThrow(RuntimeException::class, 'Unknown options source');
     });
+});
+
+it('applies a published maxLength to the rendered input', function (): void {
+    /*
+     * ⚠️ THE ONE PUBLISHED KEY THIS RENDERER IGNORED (issue #48). `TextType` declares
+     * `maxLength => Pattern::MAX_LENGTH` on its `pattern` descriptor with the comment
+     * "published because it is enforced", and the form imposed no limit — so an author
+     * discovered the bound only when the save was refused.
+     */
+    $components = SettingsSchemaRenderer::for(new TextType);
+    $pattern = null;
+
+    foreach ($components as $component) {
+        if (str_ends_with((string) $component->getName(), 'pattern')) {
+            $pattern = $component;
+        }
+    }
+
+    expect($pattern)->not->toBeNull('the pattern descriptor rendered no component')
+        ->and($pattern->getMaxLength())->toBe(Pattern::MAX_LENGTH);
+});
+
+it('still refuses an over-long pattern on the server', function (): void {
+    /*
+     * ⚠️ THE HALF THAT MATTERS, asserted alongside the attribute so nobody later
+     * "simplifies" by keeping only one. `maxlength` is an HTML attribute a client can
+     * ignore (invariant 6), so it is a courtesy to the author and never the enforcement.
+     * The server refuses through `Pattern::lengthRefusal()`, consulted by
+     * `unpublishable()`, `delimit()` and `validateSettings()`.
+     */
+    expect((new TextType)->validateSettings(['pattern' => str_repeat('a', Pattern::MAX_LENGTH + 1)]))
+        ->toContain('the limit is '.Pattern::MAX_LENGTH);
+});
+
+it('refuses a maxLength on a control that cannot express one', function (): void {
+    /*
+     * ⚠️ Fails closed, matching this class's posture on an unknown descriptor type.
+     * Silently dropping the key is how a published constraint becomes a lie — which is
+     * the defect this whole change fixes, so accepting it here would reintroduce it one
+     * level down.
+     */
+    $type = new class extends BaseFieldType
+    {
+        public static function handle(): string
+        {
+            return 'probe';
+        }
+
+        public static function label(): string
+        {
+            return 'Probe';
+        }
+
+        public function control(): Control
+        {
+            return Control::Line;
+        }
+
+        public function settingsSchema(): array
+        {
+            return ['enabled' => ['type' => 'boolean', 'default' => false, 'maxLength' => 10]];
+        }
+    };
+
+    expect(fn () => SettingsSchemaRenderer::for($type))
+        ->toThrow(RuntimeException::class, 'cannot express one');
 });
