@@ -1385,19 +1385,59 @@ describe('settings that contradict themselves are refused', function (): void {
          * ⚠️ The class exemption was right for anchors and wrong for these, and
          * lumping them into one list was wrong in one direction or the other.
          *
-         * `\A` inside `[...]` is a literal A in PCRE, so screening it there would
-         * refuse a valid class. `\h` inside a class is STILL horizontal whitespace
-         * in PCRE while ECMAScript still reads the letter h — so `[\h]+` published
-         * a materially different constraint and the exemption let it through. The
-         * difference is whether the escape means anything inside a class at all.
+         * `\h` inside a class is STILL horizontal whitespace in PCRE while
+         * ECMAScript reads the letter h, so `[\h]+` published a materially different
+         * constraint and an exemption let it through.
+         *
+         * ⚠️ The exemption's other half was justified by "`\A` inside `[...]` is a
+         * literal A in PCRE", and that was simply false — PCRE rejects `[\A]`
+         * outright. So the anchors never needed exempting, and the exemption was
+         * meanwhile hiding `[a\E]`, `[a\Q!\E]` and `[a\N{U+41}]`, which stay ACTIVE
+         * in a class. What the class context genuinely decides is asserted here:
+         * `\b` is a backspace in both dialects, and `\-` and a literal range are
+         * ordinary class content.
          */
         expect(Pattern::unpublishable('[\h]+'))->toContain('horizontal whitespace')
             ->and(Pattern::unpublishable('[\v]'))->toContain('vertical whitespace')
             ->and(Pattern::unpublishable('[\H\V]'))->not->toBeNull()
-            // A literal inside a class, and it must stay allowed.
-            ->and(Pattern::unpublishable('[\A]'))->toBeNull()
+            // Genuine literals inside a class, which must stay allowed.
             ->and(Pattern::unpublishable('[0-9\-]+'))->toBeNull()
-            ->and(Pattern::unpublishable('[ \t]+'))->toBeNull();
+            ->and(Pattern::unpublishable('[ \t]+'))->toBeNull()
+            ->and(Pattern::unpublishable('[\b]'))->toBeNull();
+    });
+
+    it('screens escapes that stay ACTIVE inside a character class', function (): void {
+        /*
+         * ⚠️ The class exemption rested on a false premise and hid three holes.
+         *
+         * It was justified by "`\A` inside `[...]` is a literal A in PCRE". PCRE
+         * REJECTS `[\A]`, `[\z]`, `[\K]` and the rest — "not allowed in a character
+         * class" — so the exemption never protected a publishable pattern. What it
+         * did protect were the forms that remain active in a class:
+         *
+         *   `[a\E]`        PCRE takes it, a stray \E being a no-op; ES rejects
+         *   `[a\Q!\E]`     PCRE quotes inside the class; ES rejects
+         *   `[a\N{U+41}]`  PCRE reads a code point; ES rejects
+         *
+         * `[\E]` alone does NOT compile in PCRE, because the class ends up empty —
+         * which is exactly why the hole needed a class with other content in it to
+         * become visible, and why a one-character probe missed it.
+         */
+        expect(Pattern::unpublishable('[a\E]'))->toContain('literal quoting')
+            ->and(Pattern::unpublishable('[a\Q!\E]'))->toContain('literal quoting')
+            ->and(Pattern::unpublishable('[a\N{U+41}]'))->toContain('\N')
+            // Outside a class these were already refused, and must stay so.
+            ->and(Pattern::unpublishable('\Q!\E'))->toContain('literal quoting')
+            ->and(Pattern::unpublishable('\N{U+41}'))->toContain('\N')
+            // ⚠️ And screening the anchors in a class costs nothing, because a
+            // pattern PCRE will not compile never reaches this screen —
+            // `validateSettings()` asks `compiles()` first.
+            ->and(Pattern::compiles('[a\A]'))->toBeFalse()
+            ->and(Pattern::compiles('[a\z]'))->toBeFalse()
+            // Ordinary class content is untouched.
+            ->and(Pattern::unpublishable('[0-9\-]+'))->toBeNull()
+            ->and(Pattern::unpublishable('[\b]'))->toBeNull()
+            ->and(Pattern::unpublishable('^[A-Z]{2}-[0-9]+$'))->toBeNull();
     });
 
     it('refuses the Unicode shorthands, measured on both engines', function (): void {
@@ -1588,10 +1628,19 @@ describe('settings that contradict themselves are refused', function (): void {
             }
         }
 
-        foreach (['\x41', '\x{41}', '\x4', '\o{141}', '(a)\g{1}', '(a)\g<1>', '(a)\g1',
+        // ⚠️ Each multi-character form is tried INSIDE a character class as well.
+        // `[a\Q!\E]` and `[a\N{U+41}]` stay active in a class and were published
+        // unchecked, and no amount of enumerating single characters or two-character
+        // pairs could have reached them — the form is longer than either.
+        $forms = ['\x41', '\x{41}', '\x4', '\o{141}', '(a)\g{1}', '(a)\g<1>', '(a)\g1',
             '(?<n>a)\k{n}', "(?<n>a)\k'n'", '(?<n>a)\k<n>', '\101', '(a)(b)\12', '\0', '\00',
-            '[\x41]', '[\x{41}]', '[\0]', '(?<n>a)[\k<n>]', '\x1B\x07'] as $form) {
+            '\x1B\x07', '\N{U+41}', '\Q!\E', '\Qab\E', '\cA', '\c1'];
+
+        foreach ($forms as $form) {
             $cases[] = $form;
+            // A class with other content in it: `[\E]` alone leaves the class empty
+            // and PCRE refuses it, which is what hid `[a\E]` from a narrower probe.
+            $cases[] = '[a'.$form.']';
         }
 
         // Only what PCRE accepts can be published at all — the rest never gets

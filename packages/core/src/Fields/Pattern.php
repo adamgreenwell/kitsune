@@ -67,6 +67,10 @@ final class Pattern
      * @var array<string, string>
      */
     private const PCRE_ONLY_ESCAPES = [
+        // ⚠️ Screened in a character class as well as outside one. `\E`, `\Q` and
+        // `\N` stay ACTIVE inside a class in PCRE — `[a\Q!\E]` and `[a\N{U+41}]`
+        // both compile and ECMAScript rejects both — and the anchors PCRE refuses
+        // in a class outright, so there is nothing an exemption would protect.
         'A' => 'the \A anchor — ECMAScript has ^',
         'z' => 'the \z anchor — ECMAScript has $',
         'Z' => 'the \Z anchor',
@@ -86,12 +90,13 @@ final class Pattern
      * ⚠️ Separate from the list above, and lumping them together was wrong in one
      * direction or the other.
      *
-     * `\A` inside `[...]` is a literal A in PCRE, so screening it there would
-     * refuse a valid class — which is why class context is skipped for those. But
-     * `\h` inside a class is STILL horizontal whitespace in PCRE while ECMAScript
-     * still reads the letter h, so `[\h]+` published a materially different
-     * constraint and the class exemption let it through. The difference is whether
-     * the escape means anything inside a class at all.
+     * The distinction was originally drawn as "anchors are literals inside a class,
+     * these are not" — and the first half of that was simply wrong. PCRE REJECTS
+     * `[\A]` and `[\z]`, so those never needed an exemption; what they needed was
+     * for `compiles()` to answer first, which it does. `\h` inside a class is still
+     * horizontal whitespace in PCRE while ECMAScript reads the letter h, so `[\h]+`
+     * published a materially different constraint — that part held, and it is why
+     * this list exists separately from the anchors at all.
      *
      * @var array<string, string>
      */
@@ -312,8 +317,25 @@ final class Pattern
                     return self::DIVERGENT_ANYWHERE[$escaped];
                 }
 
-                // Inside a class these are literals, not anchors.
-                if (! $inClass && isset(self::PCRE_ONLY_ESCAPES[$escaped])) {
+                // ⚠️ No class exemption, and the one that used to be here rested on
+                // a premise that measurement contradicts.
+                //
+                // The claim was that `\A` inside `[...]` is a literal A in PCRE, so
+                // screening it there would refuse a valid class. PCRE REJECTS
+                // `[\A]`, `[\z]`, `[\K]` and the rest outright — "not allowed in a
+                // character class" — so the exemption never protected a pattern that
+                // could be published, while it did let through the two forms that
+                // stay ACTIVE in a class:
+                //
+                //   `[a\E]`        PCRE takes it (a stray \E is a no-op), ES rejects
+                //   `[a\Q!\E]`     PCRE quotes inside the class, ES rejects
+                //   `[a\N{U+41}]`  PCRE reads a code point, ES rejects
+                //
+                // Screening everywhere costs nothing for the anchors — a pattern
+                // PCRE will not compile never reaches this, because
+                // `validateSettings()` asks `compiles()` first — and closes those
+                // three.
+                if (isset(self::PCRE_ONLY_ESCAPES[$escaped])) {
                     return self::PCRE_ONLY_ESCAPES[$escaped];
                 }
 
