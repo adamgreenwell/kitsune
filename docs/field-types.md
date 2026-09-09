@@ -114,6 +114,9 @@ This bites hardest on `text`'s `pattern`, because the same string is enforced by
 |---|---|---|
 | `\d` `\w` `\h` `\v` | PHP's `u` modifier sets `PCRE2_UCP`, so `\d` is any Unicode digit; ECMAScript's is `[0-9]`. `\h` is horizontal whitespace here and the letter `h` there | `[0-9]`, `[A-Za-z0-9_]`, `[ \t]` |
 | `(?i)` `(?>` `(?P<n>` `(?#` | Group forms ECMAScript has no parse for | `(?:` `(?=` `(?!` `(?<=` `(?<!` `(?<n>` |
+
+A named capture may use a name in **any script** — `(?<é>`, `(?<日本>`, `(?<ключ>` all compile and match identically in both dialects. Nothing narrower is enforced because nothing needs to be: across 23 candidate names, none is PCRE-accepted-and-ECMAScript-rejected, so `compiles()` already answers for the rest.
+
 | `a++` `x{2,3}+` | Possessive quantifiers | greedy or lazy |
 | `(*SKIP)` `(*FAIL)` | Backtracking control verbs | — |
 | `\pL` | The braceless property form | `\p{L}` |

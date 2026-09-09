@@ -823,6 +823,32 @@ final class Pattern
     }
 
     /**
+     * Whether the group opening at `$at` is a NAMED capture.
+     *
+     * ⚠️ ONE implementation for the two callers, because they were two copies of the
+     * same rule and both carried the same bug. `groupRefusal()` used it to tell
+     * `(?<name>` from `(?<=`, and `capturingGroups()` to decide what counts toward the
+     * total — so an ASCII-only test refused `(?<é>x)` in one place and undercounted it
+     * in the other, which is two symptoms of one mistake.
+     *
+     * ⚠️ UNICODE, measured on both engines rather than assumed. `(?<é>x)`, `(?<日本>x)`,
+     * `(?<ключ>x)`, `(?<𝔞>x)`, `(?<ᚠ>x)` and `(?<µ>x)` all compile AND match
+     * identically under PHP 8.4.25/PCRE 10.48 and Node v22.23.2. My `[A-Za-z_$]` check
+     * refused every one of them.
+     *
+     * A letter or underscore, and not `=` or `!` which open a lookbehind. Nothing
+     * narrower is needed: measured across 23 candidate names, NO name is
+     * PCRE-accepted-and-ECMAScript-rejected — `1a`, `a-b`, `a b` and `a.b` are refused
+     * by both, and `$a`, a combining mark and a zero-width non-joiner are accepted by
+     * ECMAScript and refused by PCRE, so `compiles()` answers first. There is no hole
+     * here to screen, only a false refusal to stop making.
+     */
+    private static function opensNamedGroup(string $pattern, int $at): bool
+    {
+        return preg_match('/^\(\?<[\p{L}_]/u', mb_substr($pattern, $at, 4)) === 1;
+    }
+
+    /**
      * How many capturing groups the pattern has.
      *
      * ⚠️ `(?<name>` COUNTS and `(?:` does not, which is the distinction that makes
@@ -871,10 +897,9 @@ final class Pattern
             }
 
             // `(?<name>` captures; every other `(?` form does not.
-            $groups += mb_substr($pattern, $i + 1, 1) !== '?'
-                || preg_match('/^\(\?<[A-Za-z_$]/', mb_substr($pattern, $i, 4)) === 1
-                    ? 1
-                    : 0;
+            $groups += mb_substr($pattern, $i + 1, 1) !== '?' || self::opensNamedGroup($pattern, $i)
+                ? 1
+                : 0;
         }
 
         return $groups;
@@ -1083,9 +1108,10 @@ final class Pattern
         if ($after === '<') {
             $third = mb_substr($pattern, $at + 3, 1);
 
-            // Lookbehind, or a named group — a name starts with a letter or
-            // underscore, which is what separates `(?<name>` from `(?<=`.
-            if ($third === '=' || $third === '!' || preg_match('/^[A-Za-z_$]$/', $third) === 1) {
+            // Lookbehind, or a named group. A name starts with a letter — of ANY
+            // script — or an underscore, which is what separates `(?<name>` from
+            // `(?<=`. See `opensNamedGroup()` for why ASCII was the wrong test.
+            if ($third === '=' || $third === '!' || self::opensNamedGroup($pattern, $at)) {
                 return null;
             }
         }

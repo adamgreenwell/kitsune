@@ -1473,6 +1473,53 @@ describe('settings that contradict themselves are refused', function (): void {
             ->and(Pattern::unpublishable('^\S+$'))->toBeNull();
     });
 
+    it('recognises a named capture in any script, not only ASCII', function (): void {
+        /*
+         * ⚠️ A FALSE REFUSAL, and the second in three rounds from the same habit:
+         * writing a restriction narrower than the engines because ASCII was convenient.
+         *
+         * Measured on PHP 8.4.25/PCRE 10.48 and Node v22.23.2, all of these compile AND
+         * match identically in both dialects. `[A-Za-z_$]` refused every one.
+         *
+         * ⚠️ It was ALSO two bugs from one mistake: `groupRefusal()` used the check to
+         * tell `(?<name>` from `(?<=`, and `capturingGroups()` to decide what counts
+         * toward the total — so a Unicode name was refused in one place and undercounted
+         * in the other. There is one implementation now.
+         *
+         * Nothing narrower is needed: across 23 candidate names, NO name is
+         * PCRE-accepted-and-ECMAScript-rejected. `1a`, `a-b`, `a b` and `a.b` are
+         * refused by both; `$a`, a combining mark and a zero-width non-joiner are
+         * accepted by ECMAScript and refused by PCRE, so `compiles()` answers first.
+         * This was only ever a false refusal, never a hole.
+         */
+        expect(Pattern::unpublishable('(?<é>x)'))->toBeNull()
+            ->and(Pattern::unpublishable('(?<ñ>x)'))->toBeNull()
+            ->and(Pattern::unpublishable('(?<日本>x)'))->toBeNull()
+            ->and(Pattern::unpublishable('(?<ключ>x)'))->toBeNull()
+            ->and(Pattern::unpublishable('(?<µ>x)'))->toBeNull()
+            ->and(Pattern::unpublishable('(?<ᚠ>x)'))->toBeNull()
+            // ASCII names and underscores still work.
+            ->and(Pattern::unpublishable('^(?<code>[A-Z]{2})$'))->toBeNull()
+            ->and(Pattern::unpublishable('(?<_a>x)'))->toBeNull()
+            // ⚠️ And a lookbehind is still a lookbehind, which is the distinction the
+            // check exists to make.
+            ->and(Pattern::unpublishable('(?<=a)b'))->toBeNull()
+            ->and(Pattern::unpublishable('(?<!a)b'))->toBeNull();
+
+        // ⚠️ The count half: ten uniquely named Unicode captures justify `\10`, which
+        // is the case the finding named and which failed on both sides of the mistake.
+        $unicodeNames = '';
+
+        foreach (['é', 'ñ', 'Ω', '日', 'ключ', 'µ', 'ᚠ', 'á2', 'b3', 'c4'] as $name) {
+            $unicodeNames .= '(?<'.$name.'>x)';
+        }
+
+        expect(Pattern::unpublishable($unicodeNames.'\10'))->toBeNull()
+            // Nine of them do not justify `\10`, so the count is genuinely counting.
+            ->and(Pattern::unpublishable(str_repeat('(?<é>x)', 9).'\10'))
+            ->toContain('capturing groups');
+    });
+
     it('allows a multi-digit backreference the groups actually justify', function (): void {
         /*
          * ⚠️ A FALSE REFUSAL I argued for on purpose. My earlier reply said an author
