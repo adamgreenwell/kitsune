@@ -753,6 +753,25 @@ final class Pattern
             );
         }
 
+        // ⚠️ A NAMED reference goes through the participation analysis too. It is a
+        // backreference, and the first version of that analysis was reached only from
+        // the digit branch — so `^(?<n>a)?\k<n>$` published a pattern the two engines
+        // enforce differently.
+        if ($escaped === 'k' && ! $inClass && $next === '<') {
+            $closes = mb_strpos($pattern, '>', $at);
+
+            if ($closes !== false) {
+                $name = mb_substr($pattern, $at + 2, $closes - $at - 2);
+                $spans = self::capturingGroupSpans($pattern);
+
+                foreach ($spans as $index => $span) {
+                    if ($span['name'] === $name) {
+                        return self::participationRefusal($spans, $index, '\k<'.$name.'>', $at);
+                    }
+                }
+            }
+        }
+
         // ECMAScript has only `\k<name>`, and only outside a character class.
         if ($escaped === 'k' && ($inClass || $next !== '<')) {
             return $inClass
@@ -820,9 +839,23 @@ final class Pattern
             );
         }
 
-        if (! isset($spans[$reference])) {
-            // Both dialects reject a reference to a group that is not there, so
-            // `compiles()` reports that more clearly than this could.
+        return self::participationRefusal($spans, $reference, '\\'.$digits, $at);
+    }
+
+    /**
+     * Whether a reference to group `$index` names something that must participate.
+     *
+     * ⚠️ Shared by the numeric and NAMED reference paths, because `\k<n>` is a
+     * backreference and diverges identically — `^(?<n>a)?\k<n>$` fails in PCRE and
+     * matches in ECMAScript, exactly as `^(a)?\1$` does. The first version of this
+     * analysis was reached only from the digit branch, so every named reference walked
+     * past it.
+     *
+     * @param  array<int, array{open: int, optional: bool, name: string|null}>  $spans
+     */
+    private static function participationRefusal(array $spans, int $index, string $written, int $at): ?string
+    {
+        if (! isset($spans[$index])) {
             return null;
         }
 
@@ -842,23 +875,23 @@ final class Pattern
         //
         // So a backreference is portable exactly when its group MUST participate, and
         // the two cases provable by scanning are refused here.
-        if ($spans[$reference]['open'] > $at) {
+        if ($spans[$index]['open'] > $at) {
             return sprintf(
-                '\%s — a forward reference. Group %d opens after it, so it has not participated when '
+                '%s — a forward reference. Group %d opens after it, so it has not participated when '
                 .'the reference is tried: PCRE fails the match and ECMAScript treats it as an empty '
                 .'string. Define the group before referring to it',
-                $digits,
-                $reference,
+                $written,
+                $index,
             );
         }
 
-        return $spans[$reference]['optional']
+        return $spans[$index]['optional']
             ? sprintf(
-                '\%s — group %d is optional, so it can go unset: PCRE then fails the match while '
-                .'ECMAScript treats the reference as an empty string. Make the group required, or '
-                .'match the alternatives separately',
-                $digits,
-                $reference,
+                '%s — group %d can go unset, through its own quantifier or an enclosing one: PCRE '
+                .'then fails the match while ECMAScript treats the reference as an empty string. Make '
+                .'it required, or match the alternatives separately',
+                $written,
+                $index,
             )
             : null;
     }
@@ -913,14 +946,25 @@ final class Pattern
      * in ECMAScript — and proving otherwise needs a nesting analysis this screen does not
      * carry. The two statically provable cases are refused; that one is recorded.
      *
-     * @return array<int, array{open: int, optional: bool}> keyed by 1-based ordinal
+     * ⚠️ Optionality is INHERITED from enclosing frames, and every group gets a frame
+     * whether it captures or not. Checking only a capture's own quantifier missed
+     * `^((a))?\2$` and `^(?:(a))?\1$`, where the capture carries no quantifier and an
+     * ancestor carries the one that matters — both diverge.
+     *
+     * The name is recorded so `\k<name>` can be put through the same analysis: a named
+     * reference is a backreference, and `^(?<n>a)?\k<n>$` diverges exactly as `^(a)?\1$`
+     * does.
+     *
+     * @return array<int, array{open: int, optional: bool, name: string|null}> keyed by
+     *                                                                         1-based ordinal
      */
     private static function capturingGroupSpans(string $pattern): array
     {
         $length = mb_strlen($pattern);
         $inClass = false;
         $stack = [];
-        $spans = [];
+        $frames = [];
+        $groups = [];
         $ordinal = 0;
 
         for ($i = 0; $i < $length; $i++) {
@@ -945,8 +989,23 @@ final class Pattern
             }
 
             if ($char === '(') {
-                $capturing = mb_substr($pattern, $i + 1, 1) !== '?' || self::opensNamedGroup($pattern, $i);
-                $stack[] = ['open' => $i, 'ordinal' => $capturing ? ++$ordinal : null];
+                // ⚠️ EVERY group gets a frame, capturing or not, because a
+                // non-capturing one can be the thing that is optional:
+                // `^(?:(a))?\1$` leaves group 1 unset and diverges.
+                $id = count($frames);
+                $frames[$id] = [
+                    'parent' => $stack === [] ? null : $stack[count($stack) - 1],
+                    'optional' => false,
+                ];
+                $stack[] = $id;
+
+                if (mb_substr($pattern, $i + 1, 1) !== '?' || self::opensNamedGroup($pattern, $i)) {
+                    $groups[++$ordinal] = [
+                        'open' => $i,
+                        'frame' => $id,
+                        'name' => self::groupNameAt($pattern, $i),
+                    ];
+                }
 
                 continue;
             }
@@ -955,22 +1014,45 @@ final class Pattern
                 continue;
             }
 
-            $frame = array_pop($stack);
-
-            if ($frame['ordinal'] === null) {
-                continue;
-            }
-
+            $id = array_pop($stack);
             $after = mb_substr($pattern, $i + 1, 1);
 
-            $spans[$frame['ordinal']] = [
-                'open' => $frame['open'],
-                'optional' => $after === '?' || $after === '*'
-                    || preg_match('/^\{0[,}]/', mb_substr($pattern, $i + 1, 3)) === 1,
-            ];
+            $frames[$id]['optional'] = $after === '?' || $after === '*'
+                || preg_match('/^\{0[,}]/', mb_substr($pattern, $i + 1, 3)) === 1;
+        }
+
+        $spans = [];
+
+        foreach ($groups as $index => $group) {
+            // ⚠️ Optionality is INHERITED. Walking the enclosing frames is what
+            // catches `^((a))?\2$` and `^(?:(a))?\1$`, where the capture's own
+            // quantifier says nothing and an ancestor's says everything.
+            $optional = false;
+
+            for ($frame = $group['frame']; $frame !== null; $frame = $frames[$frame]['parent']) {
+                if ($frames[$frame]['optional']) {
+                    $optional = true;
+
+                    break;
+                }
+            }
+
+            $spans[$index] = ['open' => $group['open'], 'optional' => $optional, 'name' => $group['name']];
         }
 
         return $spans;
+    }
+
+    /** The name of the group opening at `$at`, or null when it is unnamed. */
+    private static function groupNameAt(string $pattern, int $at): ?string
+    {
+        if (! self::opensNamedGroup($pattern, $at)) {
+            return null;
+        }
+
+        $closes = mb_strpos($pattern, '>', $at);
+
+        return $closes === false ? null : mb_substr($pattern, $at + 3, $closes - $at - 3);
     }
 
     /**

@@ -1542,9 +1542,9 @@ describe('settings that contradict themselves are refused', function (): void {
         expect(Pattern::unpublishable('^\1(a)?$'))->toContain('forward reference')
             ->and(Pattern::unpublishable('^\1(a)$'))->toContain('forward reference')
             // Optional in each of the three spellings that allow zero matches.
-            ->and(Pattern::unpublishable('^(a)?\1$'))->toContain('optional')
-            ->and(Pattern::unpublishable('^(a)*\1$'))->toContain('optional')
-            ->and(Pattern::unpublishable('^(a){0,2}\1$'))->toContain('optional')
+            ->and(Pattern::unpublishable('^(a)?\1$'))->toContain('can go unset')
+            ->and(Pattern::unpublishable('^(a)*\1$'))->toContain('can go unset')
+            ->and(Pattern::unpublishable('^(a){0,2}\1$'))->toContain('can go unset')
             // ⚠️ And a group that MUST participate is still portable, or the fix would
             // have removed backreferences altogether.
             ->and(Pattern::unpublishable('^(a)\1$'))->toBeNull()
@@ -1555,10 +1555,33 @@ describe('settings that contradict themselves are refused', function (): void {
             ->and(Pattern::unpublishable('^(a)+\1$'))->toBeNull();
 
         /*
+         * ⚠️ ENCLOSING optionality is inherited, which the first version of this analysis
+         * missed: a capture's own quantifier says nothing when an ancestor carries the
+         * one that matters. Both of these diverge, and the second is a NON-capturing
+         * parent — the case the finding did not name.
+         */
+        expect(Pattern::unpublishable('^((a))?\2$'))->toContain('can go unset')
+            ->and(Pattern::unpublishable('^(?:(a))?\1$'))->toContain('can go unset')
+            ->and(Pattern::unpublishable('^((a)?)\2$'))->toContain('can go unset')
+            // A required nest is still portable, or the inheritance would have swallowed
+            // every nested capture.
+            ->and(Pattern::unpublishable('^((a))\2$'))->toBeNull();
+
+        /*
+         * ⚠️ NAMED references go through the same analysis, because `\k<n>` is a
+         * backreference. The first version was reached only from the digit branch, so
+         * every named reference walked past it.
+         */
+        expect(Pattern::unpublishable('^(?<n>a)?\k<n>$'))->toContain('can go unset')
+            ->and(Pattern::unpublishable('^\k<n>(?<n>a)$'))->toContain('forward reference')
+            ->and(Pattern::unpublishable('^(?<n>a)\k<n>$'))->toBeNull();
+
+        /*
          * ⚠️ A residual gap, asserted so it is not mistaken for coverage: a group inside
          * an ALTERNATION can go unset without being quantified. `^(?:(a)|b)\1$` on 'b'
-         * fails in PCRE and matches in ECMAScript, and proving otherwise needs a nesting
-         * analysis this screen does not carry. Recorded in `capturingGroupSpans()`.
+         * fails in PCRE and matches in ECMAScript, and proving otherwise needs a
+         * reachability analysis this screen does not carry — inherited optionality
+         * covers quantifiers, not branch selection.
          */
         expect(Pattern::unpublishable('^(?:(a)|b)\1$'))->toBeNull();
     });
