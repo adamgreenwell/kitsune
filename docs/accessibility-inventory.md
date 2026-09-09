@@ -129,11 +129,17 @@ grep -rn 'dir=' vendor/filament/*/resources/views | wc -l    # 1
 ```
 Exactly one `dir` in the entire view layer: the root `<html>`. No input, textarea or table cell carries `dir="auto"`. So **content always renders in the direction of the chrome.** An Arabic value in an English admin — or an English value in an Arabic one — gets its punctuation, parentheses and numerals laid out the wrong way. This is not hypothetical for Kitsune: ADR-018 rule 2 exists because one org has editors working in different languages, and the seed fixture already models a bilingual org. `dir="auto"` on field inputs and table cells is Kitsune's to add.
 
-**G4 — `field_storage.translation_scope` is declared and unread.**
+**G4 — `field_storage.translation_scope` was declared and unread. ✅ Resolved.**
+
+Default `per_locale`, read by nothing: the column asserted a capability that did not exist. Dropped under issue #40, with ADR-017 amended to record that it arrives with the code that reads it. Not made fail-closed, because unlike `pii_class` there was no consumer to fail closed for — a guard protecting nothing is still a promise.
+
 ```bash
-grep -rn "translation_scope" packages/core/src tests    # no matches
+grep -rl "translation_scope" packages/core/src        # nothing — no reader
+grep -rl "translation_scope" packages/core/database   # the migration, a comment saying why it is absent
+grep -rl "translation_scope" tests                    # EntrySchemaTest, asserting the absence
 ```
-Default `per_locale`, read by nothing. The column asserts a capability that does not exist. Harmless today, and a schema that promises something the code does not do is how a migration debt starts.
+
+⚠️ The three commands are separated **because one command cannot honestly answer this**. The original entry recorded `grep -rn "translation_scope" packages/core/src tests # no matches`, and the regression test added in the same commit made that output false — a recorded result that stops being true is worse than no evidence, and this one was falsified by its own change. Distinguishing *reader* from *reference* is the point: the two matches that exist are a comment explaining the absence and a test defending it, and neither is a consumer.
 
 **G5 — the RTL language list is limited to what was measured.**
 Six languages. A site publishing in Divehi, Pashto, Sindhi, Uyghur or Yiddish renders LTR. This is a deliberate, recorded limitation rather than an oversight (see `Kitsune::RTL_LANGUAGES`), and extending it means adding a translation, not just a string.

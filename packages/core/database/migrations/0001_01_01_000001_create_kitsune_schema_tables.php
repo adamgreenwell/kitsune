@@ -44,7 +44,11 @@ return new class extends Migration
             $table->integer('cardinality')->default(1);
             $table->boolean('is_indexed')->default(false);
             $table->boolean('is_locked')->default(false);
-            $table->string('translation_scope')->default('per_locale');
+            // ⚠️ `translation_scope` is deliberately NOT here yet, and ADR-017
+            // specifies it. See the amendment recorded there: a column with a default
+            // asserts a behaviour, every row would have claimed its field is
+            // translated per locale, and nothing honours that claim. Content i18n is
+            // Phase 6+, and re-adding a column to a pre-alpha schema is free.
             // ADR-020: fail closed. An unclassified field does not save, so
             // this is deliberately nullable in storage and enforced in code —
             // a NOT NULL default would silently classify everything as none.
