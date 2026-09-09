@@ -851,7 +851,7 @@ final class Pattern
      * analysis was reached only from the digit branch, so every named reference walked
      * past it.
      *
-     * @param  array<int, array{open: int, optional: bool, name: string|null}>  $spans
+     * @param  array<int, array{open: int, close: int|null, optional: bool, name: string|null}>  $spans
      */
     private static function participationRefusal(array $spans, int $index, string $written, int $at): ?string
     {
@@ -880,6 +880,36 @@ final class Pattern
                 '%s — a forward reference. Group %d opens after it, so it has not participated when '
                 .'the reference is tried: PCRE fails the match and ECMAScript treats it as an empty '
                 .'string. Define the group before referring to it',
+                $written,
+                $index,
+            );
+        }
+
+        // ⚠️ OPENING BEFORE THE REFERENCE IS NOT THE SAME AS HAVING PARTICIPATED, and
+        // `open` alone read as though it were. A group participates when it CLOSES, so a
+        // reference sitting inside the group it names is unset in PCRE and empty in
+        // ECMAScript, exactly like a forward reference:
+        //
+        //   `^(a\1)$`         on 'a'    PCRE fails, ECMAScript matches
+        //   `^((a\1))$`       on 'a'    PCRE fails, ECMAScript matches
+        //   `^(?<n>a\k<n>)$`  on 'a'    PCRE fails, ECMAScript matches
+        //   `^(a\1)+$`        on 'aa'   PCRE fails, ECMAScript matches
+        //
+        // The repeated case is the one worth stating: PCRE does not reset captures
+        // between iterations, so a second iteration could plausibly see group 1 set from
+        // the first — measured, it does not, and ECMAScript resets them anyway. So there
+        // is no shape where an enclosed reference agrees.
+        //
+        // These still agree and must NOT be refused, which is what `close` buys over
+        // "refuse any reference to an enclosing group": `^((a)\2)$` on 'aa',
+        // `^(a(b))\2$` on 'abb'. Both references sit AFTER their group's close, inside
+        // an outer group that has not closed — the reference's position against its own
+        // group's close is the test, not nesting.
+        if ($spans[$index]['close'] === null || $spans[$index]['close'] > $at) {
+            return sprintf(
+                '%s — the reference sits inside group %d, which has not closed yet, so the group has '
+                .'not participated when the reference is tried: PCRE fails the match and ECMAScript '
+                .'treats it as an empty string. Move the reference after the group closes',
                 $written,
                 $index,
             );
@@ -956,8 +986,13 @@ final class Pattern
      * reference is a backreference, and `^(?<n>a)?\k<n>$` diverges exactly as `^(a)?\1$`
      * does.
      *
-     * @return array<int, array{open: int, optional: bool, name: string|null}> keyed by
-     *                                                                         1-based ordinal
+     * ⚠️ `close` is recorded as well as `open`, because a group has not participated
+     * until it CLOSES. `open` alone answered "is this a forward reference" and said
+     * nothing about a reference sitting inside the group it names — see
+     * `participationRefusal()` for the measurements.
+     *
+     * @return array<int, array{open: int, close: int|null, optional: bool, name: string|null}> keyed by
+     *                                                                                          1-based ordinal
      */
     private static function capturingGroupSpans(string $pattern): array
     {
@@ -965,6 +1000,7 @@ final class Pattern
         $inClass = false;
         $stack = [];
         $frames = [];
+        $closedAt = [];
         $groups = [];
         $ordinal = 0;
 
@@ -1023,6 +1059,7 @@ final class Pattern
             }
 
             $id = array_pop($stack);
+            $closedAt[$id] = $i;
             $after = mb_substr($pattern, $i + 1, 1);
 
             // ⚠️ `||`, not `=`. A negative assertion is already marked optional at its
@@ -1031,7 +1068,14 @@ final class Pattern
             $frames[$id]['optional'] = $frames[$id]['optional']
                 || $after === '?'
                 || $after === '*'
-                || self::allowsZeroRepetitions(mb_substr($pattern, $i + 1, 16));
+                // ⚠️ The REST of the pattern, not a window. This read `, 16)`, and a
+                // lower bound may be zero-padded to any width: at 15 digits the window
+                // ended before the closing brace, the numeric parse failed to match, and
+                // `^(a){000000000000000}\1$` was published as portable — PCRE refusing
+                // the empty string where ECMAScript accepts it. A constant window cannot
+                // bound a variable-length construct, which is the same mistake in a
+                // different place as the 16-character slice it replaces.
+                || self::allowsZeroRepetitions(mb_substr($pattern, $i + 1));
         }
 
         $spans = [];
@@ -1050,7 +1094,15 @@ final class Pattern
                 }
             }
 
-            $spans[$index] = ['open' => $group['open'], 'optional' => $optional, 'name' => $group['name']];
+            $spans[$index] = [
+                'open' => $group['open'],
+                // Null when the group never closes, which means the pattern does not
+                // compile — `patternRule()` refuses those outright. Treated as "has not
+                // closed" below, which is the fail-closed reading.
+                'close' => $closedAt[$group['frame']] ?? null,
+                'optional' => $optional,
+                'name' => $group['name'],
+            ];
         }
 
         return $spans;
@@ -1066,6 +1118,15 @@ final class Pattern
      *
      * `{01}` and `{1,2}` are NOT zero-minimum and must stay required, which a
      * character test cannot express and a numeric one states directly.
+     *
+     * ⚠️ `$text` must run to the END of the pattern, not a fixed window. The padding has
+     * no width limit, so any constant slice can end mid-bound, and a bound that does not
+     * match reads as "not zero-minimum" — a silent publish rather than a refusal. The
+     * anchored `^` means the extra text costs nothing.
+     *
+     * The zero test survives arbitrary width: a string of only zeros casts to 0 however
+     * long it is, and one with any non-zero digit casts to something non-zero — a value
+     * past `PHP_INT_MAX` saturates rather than wrapping to 0.
      */
     private static function allowsZeroRepetitions(string $text): bool
     {

@@ -1602,6 +1602,24 @@ describe('settings that contradict themselves are refused', function (): void {
             ->and(Pattern::unpublishable('^(a){1}\1$'))->toBeNull();
 
         /*
+         * ⚠️ And the padding has NO WIDTH LIMIT, which a 16-character window did not
+         * survive. At 15 digits the slice ended before the closing brace, so the numeric
+         * parse found no bound at all and the group read as required — publishing
+         * `^(a){000000000000000}\1$`, which PCRE refuses on '' where ECMAScript accepts
+         * it. Measured on both engines before the window came out.
+         *
+         * Asserted at 15 (the first width the old window missed) and well past it, so a
+         * future window of any constant size fails here rather than shipping.
+         */
+        expect(Pattern::unpublishable('^(a){000000000000000}\1$'))->toContain('can go unset')
+            ->and(Pattern::unpublishable('^(a){'.str_repeat('0', 40).'}\1$'))->toContain('can go unset')
+            ->and(Pattern::unpublishable('^(a){'.str_repeat('0', 40).',2}\1$'))->toContain('can go unset')
+            // Zero-PADDED, not zero: the wide bound must still read as required. A test
+            // that only checked the all-zero case would pass on "any long bound is
+            // optional".
+            ->and(Pattern::unpublishable('^(a){'.str_repeat('0', 40).'1}\1$'))->toBeNull();
+
+        /*
          * ⚠️ A residual gap, asserted so it is not mistaken for coverage: a group inside
          * an ALTERNATION can go unset without being quantified. `^(?:(a)|b)\1$` on 'b'
          * fails in PCRE and matches in ECMAScript, and proving otherwise needs a
@@ -1609,6 +1627,50 @@ describe('settings that contradict themselves are refused', function (): void {
          * covers quantifiers, not branch selection.
          */
         expect(Pattern::unpublishable('^(?:(a)|b)\1$'))->toBeNull();
+    });
+
+    it('refuses a backreference that sits inside the group it names', function (): void {
+        /*
+         * ⚠️ OPENING BEFORE THE REFERENCE IS NOT PARTICIPATING, and tracking only the
+         * group's `open` read as though it were. A group participates when it CLOSES, so
+         * a reference nested inside its own group is unset in PCRE and empty in
+         * ECMAScript — the same divergence as a forward reference, reached by a different
+         * route and previously published as portable. Measured on both engines:
+         *
+         *   `^(a\1)$`         on 'a'    PCRE no match, ECMAScript match
+         *   `^((a\1))$`       on 'a'    PCRE no match, ECMAScript match
+         *   `^(?<n>a\k<n>)$`  on 'a'    PCRE no match, ECMAScript match
+         *   `^(a\1)+$`        on 'aa'   PCRE no match, ECMAScript match
+         */
+        expect(Pattern::unpublishable('^(a\1)$'))->toContain('has not closed yet')
+            ->and(Pattern::unpublishable('^((a\1))$'))->toContain('has not closed yet')
+            ->and(Pattern::unpublishable('^(?<n>a\k<n>)$'))->toContain('has not closed yet');
+
+        /*
+         * ⚠️ The QUANTIFIED case is worth its own assertion rather than being folded in,
+         * because it is the one shape where the refusal could have been wrong: PCRE does
+         * not reset captures between iterations, so the second iteration of `(a\1)+`
+         * could plausibly see group 1 set by the first. Measured, PCRE still fails and
+         * ECMAScript still matches — it resets them — so there is no shape where an
+         * enclosed reference agrees, and refusing all of them is not over-broad.
+         */
+        expect(Pattern::unpublishable('^(a\1)+$'))->toContain('has not closed yet');
+
+        /*
+         * ⚠️ THE CONTROLS, and the reason the test is the reference's position against
+         * its OWN group's close rather than "is it nested inside any open group". Both of
+         * these sit inside an outer group that has not closed, and both AGREE in the two
+         * engines — refusing them would be a false refusal of the kind this file has
+         * already shipped twice.
+         *
+         *   `^((a)\2)$`   on 'aa'   both match
+         *   `^(a(b))\2$`  on 'abb'  both match
+         */
+        expect(Pattern::unpublishable('^((a)\2)$'))->toBeNull()
+            ->and(Pattern::unpublishable('^(a(b))\2$'))->toBeNull()
+            // And the plain case stays allowed, so the new check has not swallowed the
+            // whole feature.
+            ->and(Pattern::unpublishable('^(a)\1$'))->toBeNull();
     });
 
     it('allows a multi-digit backreference the groups actually justify', function (): void {

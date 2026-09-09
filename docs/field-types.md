@@ -131,10 +131,14 @@ A named capture may use a name in **any script** — `(?<é>`, `(?<日本>`, `(?
 | `\o{141}` `\00` | Octal escapes; `\00` is a syntax error under ECMAScript's `u` flag | `\x61`, `\x41` |
 | `\101`, `\12` with two groups | A multi-digit escape naming a group that does not exist: PCRE falls back to octal, ECMAScript rejects it. One that **does** name a real group — `\10` with ten groups — is portable and accepted | `\x41`, or add the groups |
 | `\1(a)`, `(a)?\1`, `(a)*\1` | A backreference whose group need not have participated. PCRE **fails the match**; ECMAScript treats the reference as an **empty string** — so the two enforce different rules on the same input | define the group first, and make it required |
+| `(a\1)`, `(a\1)+`, `(?<n>a\k<n>)` | A backreference **inside the group it names**. The group opens before the reference but has not *closed*, so it has not participated — same divergence, reached by a different route. The quantified form diverges too: PCRE does not reset captures between iterations but still fails, and ECMAScript does reset them | move the reference after the group closes |
+| `(a){000000000000000}\1` | A zero lower bound **padded to any width**. The group repeats zero times, so the reference is unset — the padding is only what made it hard to see | `\1` with a required group |
 
-⚠️ That last row is the one to read twice, because both engines *compile* it. A backreference is portable exactly when its group **must** participate — existence is not enough.
+⚠️ Those rows are the ones to read twice, because both engines *compile* every one of them. A backreference is portable exactly when its group **must** participate — existence is not enough, and neither is opening earlier in the pattern.
 
 The same applies to `\k<name>`: a named reference is a backreference. And optionality is **inherited** — `^((a))?\2$` and `^(?:(a))?\1$` both diverge, because the enclosing group carries the quantifier while the capture itself carries none, and the enclosing group need not be a capturing one.
+
+Participation is decided against the group's **own closing parenthesis**, not against nesting. `^((a)\2)$` and `^(a(b))\2$` sit inside an outer group that has not closed and **agree** in both engines, so refusing them would be a false refusal.
 
 A group inside an **alternation** can still go unset without any quantifier (`^(?:(a)|b)\1$`). Inherited optionality covers quantifiers, not branch selection, so that one is a recorded residual rather than a covered case.
 | `\x{41}` `\x4` | ECMAScript's hex escape is exactly two digits, and its braced form is `\u{...}` — which PCRE rejects | `\x41` |
