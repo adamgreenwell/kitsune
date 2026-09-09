@@ -145,6 +145,12 @@ class AuditedBuilder extends ScopedBuilder
 
         $entry = $this->getModel()->newQueryWithoutScopes()->find($id);
 
+        // ⚠️ The reload is a DIFFERENT object from the one that converted the values,
+        // and the pre-sanitization originals live on that one. Reloading is right —
+        // the snapshot should be the persisted state — but it means the originals have
+        // to be handed across explicitly or the revision records none.
+        $this->carryRetainedOriginals($entry);
+
         // An empty before-state, because the row did not exist a moment ago.
         $entry?->recordRevisionForEventlessWrite([], $this->rawVersionedRows([$id])[$id] ?? []);
     }
@@ -665,10 +671,39 @@ class AuditedBuilder extends ScopedBuilder
         }
 
         foreach ($this->getModel()->newQueryWithoutScopes()->whereKey($changed)->get() as $entry) {
+            // Same hand-off as the insert path, for the same reason.
+            $this->carryRetainedOriginals($entry);
+
             $entry->recordRevisionForEventlessWrite(
                 $before[$entry->getKey()],
                 $after[$entry->getKey()],
             );
         }
+    }
+
+    /**
+     * Move the saving instance's pending originals onto the instance that records.
+     *
+     * ⚠️ Only when they are the same ROW. A bulk update reloads many entries and the
+     * builder's model is one of them at most — attaching one row's originals to
+     * another would be a false record of what its author wrote.
+     */
+    private function carryRetainedOriginals(?Entry $target): void
+    {
+        if ($target === null) {
+            return;
+        }
+
+        $source = $this->getModel();
+
+        // ⚠️ Only when they are the same ROW — except on insert, where the model has
+        // no key yet and the row being inserted is by definition the builder's own.
+        // `performInsert()` assigns the key after `insertGetId()` returns, so a null
+        // key here IS the insert path rather than a case needing its own flag.
+        if ($source->getKey() !== null && ! $source->is($target)) {
+            return;
+        }
+
+        $target->carryRetainedOriginalsFrom($source);
     }
 }

@@ -502,8 +502,20 @@ class Entry extends Model implements RequiresModelSave
             // entry from that list — a stray key there would try to write a
             // column that does not exist.
             'relation_state' => $this->relationState(),
+            // ⚠️ The pre-sanitization originals, also OUT of the snapshot list and for
+            // a sharper reason than `relation_state`: `restoreRevision()` fills the
+            // entry from that list, so an original reachable through it would put
+            // unsanitized HTML back into `entries.values` — the one thing
+            // field-types.md §6 forbids. Its own column is a place a restore does not
+            // read, and that is why it is one.
+            'unsanitized_values' => $this->retainedOriginals === [] ? null : $this->retainedOriginals,
             'author_id' => $this->author_id,
         ]);
+
+        // Cleared HERE rather than left to expire. Carrying them forward would attach
+        // this save's originals to a later revision — a false record of what an author
+        // wrote, which is worse than no record.
+        $this->retainedOriginals = [];
 
         $this->pruneRevisions();
     }
@@ -1028,8 +1040,41 @@ class Entry extends Model implements RequiresModelSave
      * not through any attribute on this model. There is no submitted value on the
      * entry for `toStorage()` to convert.
      */
+    /**
+     * Pre-conversion values awaiting the revision that will record them.
+     *
+     * ⚠️ Transient, and cleared by the recorder rather than left to expire. A
+     * surviving entry here would attach one save's originals to a later, unrelated
+     * revision — which is worse than losing them, because it would be a false record
+     * of what an author wrote.
+     *
+     * @var array<string, mixed>
+     */
+    private array $retainedOriginals = [];
+
+    /**
+     * Take over another instance's pending originals.
+     *
+     * ⚠️ Needed because the instance that CONVERTS is not the instance that RECORDS.
+     * `AuditedBuilder` records inside the write transaction, and it reloads the row
+     * to do so — deliberately, so the snapshot is the persisted state rather than
+     * whatever the caller happened to leave in memory. That reload is a different
+     * object, and the originals live on the one that ran the conversion.
+     *
+     * The source is cleared, so a hand-off cannot record the same originals twice.
+     */
+    public function carryRetainedOriginalsFrom(self $source): void
+    {
+        $this->retainedOriginals = $source->retainedOriginals;
+        $source->retainedOriginals = [];
+    }
+
     private function convertValuesForStorage(): void
     {
+        // A fresh save decides its own originals; anything left from a previous one
+        // was already recorded or already irrelevant.
+        $this->retainedOriginals = [];
+
         $type = EntryType::query()->whereKey($this->entry_type_id)->first();
 
         if ($type === null) {
@@ -1058,6 +1103,15 @@ class Entry extends Model implements RequiresModelSave
                 // form did not include.
                 if (array_key_exists($handle, $values)) {
                     $converted[$handle] = $fieldType->toStorage($values[$handle], $config);
+
+                    // ⚠️ Kept only when the TYPE says its conversion is lossy and the
+                    // conversion actually took something. A rich-text value that
+                    // survived sanitising unchanged has no original worth storing, and
+                    // storing one anyway would put a redundant copy of every value in
+                    // a column erasure has to sweep.
+                    if ($fieldType->retainsOriginal() && $converted[$handle] !== $values[$handle]) {
+                        $this->retainedOriginals[$handle] = $values[$handle];
+                    }
                 }
 
                 continue;

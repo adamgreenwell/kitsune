@@ -225,13 +225,13 @@ User-supplied HTML rendered on public pages. **The only field type in v1 that is
 - Allowlist tags and attributes; never a denylist
 - Sanitizer config lives in core, not in `field_storage.settings` — an org must not be able to widen its own allowlist
 - `<script>`, `<style>`, `<iframe>`, event handler attributes and `javascript:` URLs are never permitted, regardless of settings
-- Store sanitized. Store the pre-sanitization original **only** in the revision record, never in `entries.values`
+- Store sanitized. Store the pre-sanitization original **only** in the revision record, never in `entries.values` — implemented as `entry_revisions.unsanitized_values`, a column `snapshot()` does not expose, so a restore cannot reach it. Erasure sweeps it alongside `values`, because it holds the author's original bytes and is personal data like any other value
 
 > **Status, measured 2026-09-09: the write half is implemented.** `Entry::saving` runs every submitted value through its field type's `toStorage()`, so `rich_text` is sanitized on the way in — a test asserts the bytes in the column, not the sanitizer's return value. `values` is in `columnsRequiringModelSave()`, so the one write shape that would skip the pipeline is refused rather than trusted.
 >
 > A bulk write to `values` is refused rather than converted, and that is deliberate: one statement covers rows of many entry types with different field sets, so there is no single correct conversion for it. The conversion is per row because the schema is per row.
 >
-> **And the last bullet has a trap in it that the implementation must not walk into.** `Entry::restoreRevision()` writes a revision's `values` back onto the entry. If the revision holds the pre-sanitization original *inside* `values`, restoring it puts unsanitized HTML into `entries.values` — which is the one thing this bullet forbids. So the original has to live somewhere a restore does not read: its own column on `entry_revisions`, not a key in the snapshot. Whoever implements the pipeline should read this bullet as "the original is kept beside the revision", not "inside it".
+> **The trap in that bullet, recorded because the implementation had to avoid it.** `Entry::restoreRevision()` writes a revision's `values` back onto the entry. If the revision holds the pre-sanitization original *inside* `values`, restoring it puts unsanitized HTML into `entries.values` — which is the one thing this bullet forbids. So the original has to live somewhere a restore does not read: its own column on `entry_revisions`, not a key in the snapshot. Whoever implements the pipeline should read this bullet as "the original is kept beside the revision", not "inside it".
 
 ### `json`
 

@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Models\Entry;
+use Kitsune\Core\Models\EntryRevision;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Field;
 use Kitsune\Core\Models\FieldStorage;
@@ -149,5 +150,149 @@ describe('the conversion cannot be skipped', function (): void {
 
         expect($entry->redactField('body'))->toBeGreaterThan(0)
             ->and(storedValues($entry->fresh())['body'])->toBeNull();
+    });
+});
+
+describe('the pre-sanitization original is kept beside the revision', function (): void {
+    it('records what the sanitizer removed', function (): void {
+        // field-types.md §6: the original is kept so an author can see what went. It
+        // is the revision's, not the entry's.
+        $entry = Entry::create([
+            'entry_type_id' => $this->type->id, 'title' => 'Hello',
+            'values' => ['body' => '<p>Hello</p><script>alert(1)</script>'],
+        ]);
+
+        $revision = $entry->revisions()->latest('id')->firstOrFail();
+
+        expect($revision->unsanitized_values['body'])->toBe('<p>Hello</p><script>alert(1)</script>')
+            ->and($revision->values['body'])->toBe('<p>Hello</p>')
+            // ⚠️ And NOT on the entry. That is the requirement, not a preference.
+            ->and(storedValues($entry))->not->toHaveKey('body_original')
+            ->and(json_encode(storedValues($entry)))->not->toContain('script');
+    });
+
+    it('keeps nothing when the conversion took nothing', function (): void {
+        // ⚠️ A value that survived sanitising unchanged has no original worth
+        // storing, and storing one would put a redundant copy of every value into a
+        // column erasure has to sweep.
+        $entry = Entry::create([
+            'entry_type_id' => $this->type->id, 'title' => 'Hello',
+            'values' => ['body' => '<p>Clean</p>'],
+        ]);
+
+        expect($entry->revisions()->latest('id')->firstOrFail()->unsanitized_values)->toBeNull();
+    });
+
+    it('keeps nothing for a type whose conversion is a cast', function (): void {
+        // The seam is asked of the type: only `rich_text` declares its conversion
+        // lossy, so a number does not leave `'5'` lying beside `5`.
+        $number = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'count', 'type' => 'number',
+            'pii_class' => 'none', 'cardinality' => 1,
+            'settings' => ['format' => 'integer'],
+        ]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $number->id,
+            'label' => 'Count', 'ordering' => 1,
+        ]);
+
+        $entry = Entry::create([
+            'entry_type_id' => $this->type->id, 'title' => 'Hello',
+            'values' => ['count' => '5'],
+        ]);
+
+        expect(storedValues($entry)['count'])->toBe(5)
+            ->and($entry->revisions()->latest('id')->firstOrFail()->unsanitized_values)->toBeNull();
+    });
+
+    it('does not attach one save\'s original to a later revision', function (): void {
+        // ⚠️ The originals are transient and cleared by the recorder. Carrying them
+        // forward would be a FALSE record of what an author wrote, which is worse
+        // than no record at all.
+        $entry = Entry::create([
+            'entry_type_id' => $this->type->id, 'title' => 'Hello',
+            'values' => ['body' => '<p>One</p><script>x</script>'],
+        ]);
+
+        $entry->update(['title' => 'Retitled']);
+
+        $latest = $entry->revisions()->latest('id')->firstOrFail();
+
+        expect($latest->title)->toBe('Retitled')
+            ->and($latest->unsanitized_values)->toBeNull();
+    });
+
+    it('is never reachable by a restore, because a restore cannot read it', function (): void {
+        /*
+         * ⚠️ THE TRAP field-types.md §6 warns about — and asserting it needed care,
+         * because the obvious test proves nothing.
+         *
+         * `restoreRevision()` fills the entry from `snapshot()`. An original stored as
+         * a key inside `values` would be written straight back, putting unsanitized
+         * HTML into `entries.values`. So the requirement is about WHERE the original
+         * lives, and the assertions below are about that:
+         *
+         *   - the revision's `values` holds the SANITIZED form, not the original
+         *   - `snapshot()` — everything a restore reads — carries no original
+         *   - `SNAPSHOT_ATTRIBUTES` does not name the column, structurally
+         *
+         * ⚠️ My first version asserted only that the entry held sanitized bytes after
+         * a restore, and it passed even with the original deliberately injected into
+         * the revision's `values`. The reason is worth keeping: the conversion pipeline
+         * runs on the restore's save too, so it re-sanitises on the way back in. That
+         * is a genuine second line of defence and it is why the outcome assertion
+         * cannot distinguish a correct layout from a broken one. It is kept at the end,
+         * labelled as the belt rather than the braces.
+         */
+        $entry = Entry::create([
+            'entry_type_id' => $this->type->id, 'title' => 'First',
+            'values' => ['body' => '<p>First</p><script>alert(1)</script>'],
+        ]);
+
+        $original = $entry->revisions()->latest('id')->firstOrFail();
+
+        // The original is kept, and kept OUT of the snapshot surface.
+        expect($original->unsanitized_values['body'])->toContain('script')
+            ->and($original->values['body'])->toBe('<p>First</p>')
+            ->and(json_encode($original->snapshot()))->not->toContain('script')
+            ->and(EntryRevision::SNAPSHOT_ATTRIBUTES)->not->toContain('unsanitized_values')
+            ->and(array_keys($original->snapshot()))->not->toContain('unsanitized_values');
+
+        $entry->update(['values' => ['body' => '<p>Second</p>']]);
+        $entry->restoreRevision($original);
+
+        // And the outcome, which the layout above is what actually guarantees.
+        expect(storedValues($entry->fresh())['body'])->toBe('<p>First</p>')
+            ->and(json_encode(storedValues($entry->fresh())))->not->toContain('script');
+    });
+
+    it('is reached by erasure, being personal data like any other value', function (): void {
+        // ⚠️ Keeping an original gave personal data a SECOND home. A home erasure does
+        // not know about is the defect this project has hit repeatedly — here it would
+        // mean an erasure reporting success while the author's original text sat beside
+        // the value it cleared (ADR-020).
+        $personal = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'bio', 'type' => 'rich_text',
+            'pii_class' => 'personal', 'cardinality' => 1,
+        ]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $personal->id,
+            'label' => 'Bio', 'ordering' => 2,
+        ]);
+
+        $entry = Entry::create([
+            'entry_type_id' => $this->type->id, 'title' => 'Profile',
+            'values' => ['bio' => '<p>Alex Doe</p><script>track()</script>'],
+        ]);
+
+        expect($entry->revisions()->latest('id')->firstOrFail()->unsanitized_values['bio'])
+            ->toContain('Alex Doe');
+
+        $entry->redactField('bio');
+
+        foreach ($entry->revisions()->get() as $revision) {
+            expect($revision->unsanitized_values['bio'] ?? null)->toBeNull()
+                ->and(json_encode($revision->unsanitized_values))->not->toContain('Alex Doe');
+        }
     });
 });

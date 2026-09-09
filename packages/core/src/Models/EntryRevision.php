@@ -75,6 +75,9 @@ class EntryRevision extends Model
     protected $casts = [
         'values' => 'array',
         'relation_state' => 'array',
+        // ⚠️ Deliberately absent from SNAPSHOT_ATTRIBUTES, so `snapshot()` never
+        // offers it to `restoreRevision()`. See the column's own note.
+        'unsanitized_values' => 'array',
         'published_at' => 'datetime',
     ];
 
@@ -146,13 +149,37 @@ class EntryRevision extends Model
     public function redactValue(string $key, mixed $replacement = null): bool
     {
         $values = $this->values ?? [];
+        $originals = $this->unsanitized_values ?? [];
 
-        if (! array_key_exists($key, $values)) {
+        $inValues = array_key_exists($key, $values);
+        // ⚠️ The RETAINED ORIGINAL is erased too, and it is the copy that still
+        // holds the author's unsanitized bytes.
+        //
+        // Keeping a pre-sanitization original gave personal data a second home, and
+        // a home erasure did not know about is the "handled two of the three" defect
+        // this project has hit repeatedly — here it would mean an erasure that
+        // reported success while the original text sat beside the value it cleared
+        // (ADR-020).
+        $inOriginals = array_key_exists($key, $originals);
+
+        if (! $inValues && ! $inOriginals) {
             return false;
         }
 
-        $values[$key] = $replacement;
-        $this->values = $values;
+        if ($inValues) {
+            $values[$key] = $replacement;
+            $this->values = $values;
+        }
+
+        if ($inOriginals) {
+            // Removed rather than replaced: the original exists to show what the
+            // sanitiser took out, and a redacted original shows nothing. Leaving the
+            // key with a null would claim there was an original and that it was
+            // blank, which is a different and untrue statement.
+            unset($originals[$key]);
+            $this->unsanitized_values = $originals === [] ? null : $originals;
+        }
+
         $this->save();
 
         return true;

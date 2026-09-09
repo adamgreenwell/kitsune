@@ -203,6 +203,20 @@ return new class extends Migration
             // silently did nothing, and the same read from outside a class
             // returned the column correctly, which is what made it confusing.
             $table->json('relation_state')->nullable();
+            // ⚠️ The pre-sanitization original, and it lives BESIDE the snapshot
+            // rather than inside it.
+            //
+            // field-types.md §6 requires the original be kept in the revision record
+            // and never in `entries.values`. `restoreRevision()` fills the entry from
+            // `snapshot()`, so an original stored as a key in `values` would be
+            // written straight back onto the entry — putting unsanitized HTML exactly
+            // where the requirement forbids it. Its own column is a place a restore
+            // does not read, which is the whole reason it is one.
+            //
+            // ⚠️ It holds the author's original bytes, so it is personal data like any
+            // other value and erasure has to reach it (ADR-020). `redactValue()`
+            // sweeps it alongside `values`.
+            $table->json('unsanitized_values')->nullable();
             $table->string('status')->default('draft');
             $table->string('title')->nullable();
             $table->string('slug')->nullable();

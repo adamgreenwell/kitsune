@@ -91,6 +91,19 @@ final class RichTextType extends BaseFieldType
         return false;
     }
 
+    /**
+     * ⚠️ The one type whose conversion is LOSSY, so the original is kept.
+     *
+     * Sanitizing removes markup, and an author who pasted something that lost half
+     * its formatting has no way to see what went. field-types.md §6 requires the
+     * pre-sanitization original in the revision record — and, explicitly, NOT in
+     * `entries.values`, so a restore can never put unsanitized HTML back.
+     */
+    public function retainsOriginal(): bool
+    {
+        return true;
+    }
+
     protected function castToStorage(mixed $input, FieldConfig $config): mixed
     {
         return $input === null ? null : $this->sanitize((string) $input);
