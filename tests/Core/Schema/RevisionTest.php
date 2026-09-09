@@ -2049,6 +2049,66 @@ describe('erasure survives the history being pruned', function (): void {
     });
 });
 
+describe('recording provenance costs nothing when there is none to record', function (): void {
+    it('resolves no schema when a save touches no promoted column', function (): void {
+        /*
+         * ⚠️ THE DIRTY CHECK WAS INSIDE THE LOOP, which is to say there was none.
+         *
+         * `recordPromotedProvenance()` tested `isDirty($column)` per field, so reaching
+         * that test had already paid for the type lookup and a fields query — on every
+         * save of every entry. Retitling an entry cost two schema queries to discover
+         * there was nothing to record, against the 1 vCPU / SQLite floor of ADR-027.
+         *
+         * `title`, `status` and `published_at` are PLATFORM columns (field-types.md §2):
+         * not user-definable, so no field storage projects into them and no provenance
+         * exists for them. The registry knows which columns a type CAN promote into
+         * without a query, so the guard is answerable before any of them.
+         *
+         * ⚠️ Matched on where the statement STARTS rather than what it contains, because
+         * `lockStorageHoldingData()` is a pre-existing `saved` listener whose query
+         * carries `exists (select * from fields ...)` as a SUBQUERY. A `str_contains`
+         * matcher counts that and fails for an unrelated reason.
+         */
+        $entry = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'First']);
+
+        $schemaQueries = 0;
+        DB::listen(function ($query) use (&$schemaQueries): void {
+            $sql = (string) preg_replace('/[`"]/', '', $query->sql);
+
+            if (str_starts_with($sql, 'select * from entry_types')
+                || str_starts_with($sql, 'select * from fields ')) {
+                $schemaQueries++;
+            }
+        });
+
+        $entry->update(['title' => 'Retitled']);
+
+        expect($schemaQueries)->toBe(0);
+    });
+
+    it('still records provenance when a promoted column does change', function (): void {
+        /*
+         * ⚠️ The other half, and the one that stops the guard becoming a way of never
+         * recording provenance at all. `slug` IS promoted — `SlugType::promotedColumn()`
+         * returns it — so this save must pay for the lookup and write the provenance.
+         */
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'permalink', 'type' => 'slug',
+            'pii_class' => 'none', 'cardinality' => 1,
+        ]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id,
+            'label' => 'Permalink', 'ordering' => 1,
+        ]);
+
+        $entry = Entry::create([
+            'entry_type_id' => $this->type->id, 'title' => 'First', 'slug' => 'first',
+        ]);
+
+        expect($entry->fresh()->promoted_by)->toBe(['slug' => $storage->id]);
+    });
+});
+
 describe('a shared promoted column is not erased on another field\'s behalf', function (): void {
     it('leaves the slug alone when the entry\'s own type owns that column', function (): void {
         /*

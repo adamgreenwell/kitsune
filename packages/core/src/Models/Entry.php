@@ -790,15 +790,65 @@ class Entry extends Model implements RequiresModelSave
      * to the column — a value written with no owner has no owner to record, and
      * claiming one would be worse than admitting none.
      */
+    /**
+     * The columns some registered field type projects into.
+     *
+     * ⚠️ Derived from the REGISTRY, which answers without touching the database
+     * because `promotedColumn()` is named for the type rather than stored per field.
+     *
+     * @return list<string>
+     */
+    private static function promotableColumns(FieldTypeRegistry $registry): array
+    {
+        $columns = [];
+
+        foreach ($registry->all() as $candidate) {
+            if (($column = $candidate->promotedColumn()) !== null) {
+                $columns[] = $column;
+            }
+        }
+
+        return $columns;
+    }
+
+    /** Whether this write touches any column a field type could have promoted into. */
+    private function touchesPromotedColumn(FieldTypeRegistry $registry): bool
+    {
+        foreach (self::promotableColumns($registry) as $column) {
+            if ($this->isDirty($column)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private function recordPromotedProvenance(): void
     {
+        $registry = app(FieldTypeRegistry::class);
+
+        // ⚠️ THE DIRTY CHECK BELONGS HERE, NOT IN THE LOOP, and putting it in the loop
+        // meant it was not a guard at all.
+        //
+        // `isDirty($column)` runs per field, so reaching it had already cost the type
+        // lookup and a fields query — on every save of every entry, including one that
+        // moved only `title`. Two queries against the 1 vCPU / SQLite floor in ADR-027,
+        // for a column no field storage can write.
+        //
+        // `title`, `status` and `published_at` are PLATFORM columns (field-types.md §2):
+        // they are not user-definable, so nothing projects into them and there is no
+        // provenance to record. Only a column some registered type promotes can have any,
+        // and the registry knows that list without a query.
+        if (! $this->touchesPromotedColumn($registry)) {
+            return;
+        }
+
         $type = EntryType::query()->whereKey($this->entry_type_id)->first();
 
         if ($type === null) {
             return;
         }
 
-        $registry = app(FieldTypeRegistry::class);
         $provenance = $this->promoted_by ?? [];
         $before = $provenance;
 
