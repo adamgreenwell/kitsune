@@ -38,8 +38,12 @@ class DatabaseSeeder extends Seeder
 
         $context->setOrg($orgA);
         $group = SiteGroup::create(['org_id' => $orgA->id, 'handle' => 'golfdom', 'name' => 'Golfdom', 'settings' => ['logo' => 'golfdom.svg']]);
-        $en = Site::create(['org_id' => $orgA->id, 'site_group_id' => $group->id, 'handle' => 'golfdom', 'slug' => 'golfdom', 'name' => 'Golfdom', 'locale' => 'en', 'is_primary' => true]);
-        $fr = Site::create(['org_id' => $orgA->id, 'site_group_id' => $group->id, 'handle' => 'golfdom-fr', 'slug' => 'golfdom-fr', 'name' => 'Golfdom FR', 'locale' => 'fr']);
+        $en = Site::create(['org_id' => $orgA->id, 'site_group_id' => $group->id, 'handle' => 'golfdom', 'slug' => 'golfdom', 'name' => 'Golfdom', 'locale' => 'en', 'is_primary' => true,
+            // ⚠️ HOST-LESS, so it resolves wherever the installation is served — APP_URL is
+            // http://localhost while the browser suite serves 127.0.0.1:8125, and a
+            // fully-qualified base_url could never match both (ADR-021 amendment).
+            'base_url' => '/golfdom']);
+        $fr = Site::create(['org_id' => $orgA->id, 'site_group_id' => $group->id, 'handle' => 'golfdom-fr', 'slug' => 'golfdom-fr', 'name' => 'Golfdom FR', 'locale' => 'fr', 'base_url' => '/golfdom-fr']);
 
         $context->setOrg($orgB);
         // Deliberately the SAME handle as Golfdom's site. UNIQUE is
@@ -58,6 +62,7 @@ class DatabaseSeeder extends Seeder
         $ar = Site::create([
             'org_id' => $orgA->id, 'site_group_id' => $group->id, 'handle' => 'golfdom-ar',
             'slug' => 'golfdom-ar', 'name' => 'Golfdom AR', 'locale' => 'ar',
+            'base_url' => '/golfdom-ar',
         ]);
         $context->setOrg($orgB);
 

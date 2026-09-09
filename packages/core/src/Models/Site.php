@@ -37,6 +37,8 @@ use RuntimeException;
  * @property string $locale
  * @property string $url_strategy
  * @property string|null $base_url
+ * @property string|null $canonical_host
+ * @property string|null $path_prefix
  * @property bool $is_primary
  * @property array<string, mixed>|null $settings
  */
@@ -46,6 +48,97 @@ class Site extends Model implements RefusesCascadingDeletes
     use EnforcesScope;
 
     protected $guarded = [];
+
+    /**
+     * Keeps the derived URL columns in step with `base_url`.
+     *
+     * ⚠️ ON `saving`, NOT IN A SETTER OR THE CALLER, because the whole point is that
+     * they cannot disagree. A caller that set `base_url` and forgot the derived pair
+     * would make the site publicly unreachable — or worse, leave it answering on a
+     * hostname it no longer claims. Derived where the write happens is the only place
+     * a mass assignment, a seeder and an admin form all pass through.
+     *
+     * ⚠️ It sets them even when `base_url` is null, so CLEARING a base URL withdraws
+     * the site's public address rather than leaving the last one behind.
+     */
+    protected static function booted(): void
+    {
+        static::saving(function (self $site): void {
+            [$site->canonical_host, $site->path_prefix] = self::deriveUrlParts($site->base_url);
+        });
+    }
+
+    /**
+     * The canonical host and path prefix a base URL claims.
+     *
+     * ⚠️ `base_url` HAS A HOST-LESS FORM, and that is what a `path` site is. ADR-021
+     * gives `https://example.com/fr` as a path-prefix example, which pins the prefix to
+     * one host; `/fr` means the same prefix on whatever host serves the installation,
+     * which is what a single-domain multi-language install actually wants and the only
+     * form that survives being served from a different address in development.
+     *
+     * @return array{0: string|null, 1: string|null} host then prefix; null both when
+     *                                               the site has no public URL at all
+     */
+    public static function deriveUrlParts(?string $baseUrl): array
+    {
+        if ($baseUrl === null || trim($baseUrl) === '') {
+            // No public URL. Both null, and NULLs compare distinct in the unique index,
+            // so every admin-only site coexists.
+            return [null, null];
+        }
+
+        $baseUrl = trim($baseUrl);
+
+        // A leading `//` would be a protocol-relative URL; a bare `/fr` is host-less.
+        $hasHost = str_contains($baseUrl, '://') || str_starts_with($baseUrl, '//');
+
+        // ⚠️ A host-less value is forced to start with `/` before the placeholder host is
+        // prepended. Without it, `fr` concatenated to `kitsune://placeholder` parses as the
+        // HOST `placeholderfr` with an empty path — so a prefix written without its leading
+        // slash silently became "any host, site root", which is the broadest match there is.
+        $parsed = parse_url($hasHost ? $baseUrl : 'kitsune://placeholder/'.ltrim($baseUrl, '/'));
+
+        if ($parsed === false) {
+            return [null, null];
+        }
+
+        $host = $hasHost && is_string($parsed['host'] ?? null) ? $parsed['host'] : '';
+        $path = is_string($parsed['path'] ?? null) ? $parsed['path'] : '';
+
+        return [self::canonicalHost($host), self::canonicalPrefix($path)];
+    }
+
+    /**
+     * A hostname reduced to one spelling.
+     *
+     * ⚠️ Lowercased and stripped of a trailing dot, because `EXAMPLE.TEST`,
+     * `example.test` and `example.test.` are the same host and a unique index cannot
+     * know that. Without this, two orgs could each hold what looks like a distinct
+     * `base_url` and both answer on one hostname, with row order deciding which — the
+     * cross-org failure ADR-021 says has no framework safety net.
+     *
+     * The PORT is deliberately dropped: a site is not a different site on :8443, and
+     * keeping it would make a development address fail to match its own configuration.
+     */
+    private static function canonicalHost(string $host): string
+    {
+        return rtrim(mb_strtolower(trim($host)), '.');
+    }
+
+    /**
+     * A path prefix reduced to one spelling: empty, or `/segment`.
+     *
+     * `/fr`, `fr`, `/fr/` and `//fr` all name the same prefix. Empty string means the
+     * site root, which is a real value rather than an absent one — it is what a
+     * domain-addressed site has.
+     */
+    private static function canonicalPrefix(string $path): string
+    {
+        $trimmed = trim($path, '/');
+
+        return $trimmed === '' ? '' : '/'.mb_strtolower($trimmed);
+    }
 
     protected $casts = [
         'settings' => 'array',

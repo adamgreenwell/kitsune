@@ -744,6 +744,20 @@ entries
 
 **Site carries locale.** `golfdom.com` (en) and `golfdom.fr` (fr) are two sites in one group. This is not a new assumption — **ADR-019 already put content locale in the public path**, and a different base URL is precisely what a site *is*. One mechanism expresses all three URL strategies with no special cases, including path prefixes, where `base_url` is simply `https://example.com/fr`.
 
+> ⚠️ **Amended 2026-09-09 — `base_url` gains a host-less form, and two derived columns.** Found while implementing public site resolution (issue #38).
+>
+> **The host-less form.** `https://example.com/fr` pins a path prefix to one host. `/fr` means the same prefix on **whatever host serves the installation**, which is what a single-domain multi-language install actually wants — and the only form that survives being served from a different address in development, where `APP_URL` is `http://localhost` and the browser suite answers on `127.0.0.1:8125`. A null `base_url` means the site has no public URL and is reachable only through the admin.
+>
+> **`canonical_host` and `path_prefix`** are derived from `base_url` on save, stored, and **unique together**. Three reasons, none solvable by parsing `base_url` per request:
+>
+> - **Resolution must be indexed.** Scanning every site in PHP makes every public request O(total sites) in time and memory, unbounded as an installation grows, against ADR-027's 1 vCPU / 1 GB floor.
+> - **Two orgs must not claim one URL.** `base_url` accepts equivalent spellings — scheme, port, trailing slash, letter case, a trailing dot — so a uniqueness constraint on it directly would let two orgs each hold a distinct-looking value and both answer on one hostname, with row order deciding which. Canonicalising first makes the constraint mean something, and cross-org URL theft is the class ADR-021 says has no framework safety net.
+> - **The winner must be deterministic.** Ranked by specificity — host+prefix, host, prefix, root — not by whichever row the database returned, so deleting an unrelated site cannot silently change which org a URL serves.
+>
+> NULL in both columns keeps admin-only sites out of the unique index, because NULLs compare distinct on every engine. An empty string is a real value: `canonical_host = ''` is any host, `path_prefix = ''` is the site root.
+>
+> ⚠️ **The slug is not a public address.** The first implementation matched a `path` site against its admin `slug`, which exposed every site at `/{slug}` on every host while leaving a site with a real `base_url` unreachable at its own URL — and dropped `subdomain` into an unhandled branch so those sites resolved to nothing. Under `base_url` there is no third case: a subdomain is just a host, which is what "one mechanism, no special cases" above already promised.
+
 **`entries.locale` is deleted.** Locale is derived from `sites.locale`. Queries filter by site, not by locale, so no denormalisation is needed.
 
 **Translation grouping does not move.** `entries.translation_group` still links siblings per-entry (ADR-017). Site groups handle brand and settings inheritance; translation groups handle translation. Independent concerns, no overlap.

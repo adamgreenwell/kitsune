@@ -50,13 +50,19 @@ Route::get('/', function () {
  * already claimed by the time this is reached. Declaring it earlier would swallow the
  * admin.
  *
+ * ⚠️ The `{site}` segment is a PLACEHOLDER, not the lookup key. `ResolveSiteFromRequest`
+ * matches on the canonical host and path prefix a site's `base_url` declares (ADR-021), so
+ * this parameter exists only to let one route shape accept a one-segment prefix. Using it
+ * as the key is what the first version did, and it exposed every site at `/{slug}` on every
+ * host while leaving a properly configured site unreachable.
+ *
  * ⚠️ This is NOT the front end. Phase 6 owns menus, routing, slugs and redirects; this
  * route renders the same placeholder as `/` and exists to prove one thing that could not
  * be proved before — that a public request resolves a Site and is served in that site's
  * locale, per request, without touching APP_LOCALE.
  */
 Route::middleware([ResolveSiteFromRequest::class, SetSiteLocale::class])
-    ->get('/{site}', function (string $site) {
+    ->get('/{site}', function () {
         // ⚠️ 404 HERE rather than in the middleware. The middleware resolves identity and
         // reports absence by leaving Context empty, because most public routes are not
         // site-scoped and it must be attachable to them. A route that REQUIRES a site is
