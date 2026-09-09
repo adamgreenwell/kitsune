@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 use Illuminate\Support\Facades\Validator;
 use Kitsune\Core\Fields\Pattern;
+use Kitsune\Core\Fields\Types\NumberType;
 use Kitsune\Core\Filament\Icons;
 use Kitsune\Core\Filament\Resources\EntryTypes\EntryTypeResource;
 use Kitsune\Core\Filament\Resources\EntryTypes\Pages\EditEntryType;
@@ -993,6 +994,206 @@ describe('settings that contradict themselves are refused', function (): void {
         expect($narrow->exists)->toBeTrue();
     });
 
+    it('decides the step grid in integers too, not only the endpoints', function (): void {
+        /*
+         * ⚠️ The SAME float defect as the endpoint conversion, left behind in the
+         * step path while that one was fixed — which is the more useful half of the
+         * lesson: the fix was applied where the bug was reported rather than
+         * everywhere the pattern occurred.
+         *
+         * `0.29 * 100` is `28.999999999999996`, so an integral step read as
+         * sub-quantum and took the deliberate fail-open path. With precision 3,
+         * scale 2, max -9.9 and no minimum, the projection interval is (-10, -9.9]
+         * and the neighbouring step multiples are -10.15 and -9.86 — neither inside
+         * it. The field admitted nothing and was accepted anyway.
+         *
+         * Failing open is defensible for a step that is GENUINELY finer than the
+         * quantum. Float noise deciding which steps those are turns a deliberate
+         * gap into an arbitrary one.
+         */
+        expect(fn () => FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'stepped', 'type' => 'number',
+            'pii_class' => 'none', 'cardinality' => 1,
+            'settings' => ['format' => 'decimal', 'precision' => 3, 'scale' => 2,
+                'max' => -9.9, 'step' => 0.29],
+        ]))->toThrow(RuntimeException::class, 'never lands on a value this field can store');
+
+        // The same step where it DOES work must still go through.
+        $works = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'stepped2', 'type' => 'number',
+            'pii_class' => 'none', 'cardinality' => 1,
+            'settings' => ['format' => 'decimal', 'precision' => 12, 'scale' => 2,
+                'min' => 0, 'max' => 10, 'step' => 0.29],
+        ]);
+
+        expect($works->exists)->toBeTrue();
+
+        // And a genuinely sub-quantum step still fails OPEN, as documented — 0.005
+        // on a two-decimal field hits every second candidate, which this check does
+        // not carry the arithmetic to decide.
+        $subQuantum = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'stepped3', 'type' => 'number',
+            'pii_class' => 'none', 'cardinality' => 1,
+            'settings' => ['format' => 'decimal', 'precision' => 12, 'scale' => 2,
+                'min' => 0, 'max' => 10, 'step' => 0.005],
+        ]);
+
+        expect($subQuantum->exists)->toBeTrue();
+    });
+
+    it('bounds an integer field by the BIGINT it projects to', function (): void {
+        /*
+         * ⚠️ The comment here used to say an integer field had no projection bound.
+         * It does: the indexed projection is a signed BIGINT and Laravel's `integer`
+         * rule is limited to platform integers, so the interval is
+         * [PHP_INT_MIN, PHP_INT_MAX] — asymmetric, because two's complement is.
+         *
+         * ⚠️ And the test has to be made on the TEXT, before the clamp. `min = 1e100`
+         * saturates to PHP_INT_MAX, which is a value the field CAN store, so a
+         * comparison made after clamping would call an unsatisfiable field
+         * satisfiable — the clamp destroys exactly the information being tested.
+         */
+        expect(fn () => FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'counter', 'type' => 'number',
+            'pii_class' => 'none', 'cardinality' => 1,
+            'settings' => ['format' => 'integer', 'min' => '1e100'],
+        ]))->toThrow(RuntimeException::class, 'No value this field can store');
+
+        // The other side, with only a maximum, which the one-sided case needs too.
+        expect(fn () => FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'counter2', 'type' => 'number',
+            'pii_class' => 'none', 'cardinality' => 1,
+            'settings' => ['format' => 'integer', 'max' => '-1e100'],
+        ]))->toThrow(RuntimeException::class, 'No value this field can store');
+
+        // The whole representable range is fine, edges included.
+        $whole = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'counter3', 'type' => 'number',
+            'pii_class' => 'none', 'cardinality' => 1,
+            'settings' => ['format' => 'integer', 'min' => PHP_INT_MIN, 'max' => PHP_INT_MAX],
+        ]);
+
+        expect($whole->exists)->toBeTrue();
+    });
+
+    it('tells the BIGINT endpoints apart, which no float or int cast can', function (): void {
+        /*
+         * ⚠️ `min = -9223372036854775807`, `max = -9223372036854775808`: a reversed
+         * range between two legitimate signed BIGINT bounds.
+         *
+         * Neither conversion could see it. `(float)` rounds both endpoints to the
+         * same double, so the comparison said they were equal. And `(int)` of the
+         * unsigned magnitude `9223372036854775808` saturates to PHP_INT_MAX, which
+         * negated is `-9223372036854775807` — one short of PHP_INT_MIN — so both
+         * endpoints converted to the same integer as well.
+         *
+         * The comparison is made on the decimal text now, and the cast takes the
+         * SIGN with it: `(int) '-9223372036854775808'` is exact, because the
+         * negative range is one wider than the positive one.
+         */
+        expect(fn () => FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'edge', 'type' => 'number',
+            'pii_class' => 'none', 'cardinality' => 1,
+            'settings' => ['format' => 'integer',
+                'min' => '-9223372036854775807', 'max' => '-9223372036854775808'],
+        ]))->toThrow(RuntimeException::class, 'is above the maximum');
+
+        // ⚠️ And the same two bounds the right way round must be ACCEPTED, or a
+        // stricter comparison could pass by refusing both orderings.
+        $ordered = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'edge2', 'type' => 'number',
+            'pii_class' => 'none', 'cardinality' => 1,
+            'settings' => ['format' => 'integer',
+                'min' => '-9223372036854775808', 'max' => '-9223372036854775807'],
+        ]);
+
+        expect($ordered->exists)->toBeTrue();
+    });
+
+    it('keeps zero at zero however its exponent is written', function (): void {
+        /*
+         * ⚠️ My own regression from the allocation cap. `0e1000000000` is an
+         * ordinary zero written with a large exponent, and the saturation branch
+         * replaced its all-zero coefficient with 64 nines — so a field with
+         * `min = 0` spelled that way was refused as outside its own projection.
+         *
+         * Saturation is only sound while it preserves the ANSWER. No exponent moves
+         * zero anywhere, so an all-zero coefficient has to be recognised before the
+         * clamp rather than after it.
+         */
+        $zero = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'zeroed', 'type' => 'number',
+            'pii_class' => 'none', 'cardinality' => 1,
+            'settings' => ['format' => 'decimal', 'precision' => 12, 'scale' => 2,
+                'min' => '0e1000000000', 'max' => 10],
+        ]);
+
+        expect($zero->exists)->toBeTrue();
+
+        $expand = new ReflectionMethod(NumberType::class, 'withoutExponent');
+
+        expect($expand->invoke(null, '0e1000000000'))->toBe('0')
+            ->and($expand->invoke(null, '-0.000e1000000000'))->toBe('-0')
+            // And a non-zero coefficient still saturates, which is the behaviour
+            // the cap exists for.
+            ->and(mb_strlen($expand->invoke(null, '1e1000000000')))->toBeLessThan(80);
+    });
+
+    it('will not expand a nine-byte bound into a gigabyte', function (): void {
+        /*
+         * ⚠️ A DoS I introduced with the exact-decimal parsing, and the shape is
+         * amplification rather than size: `1e1000000000` is nine bytes of request
+         * body, `is_numeric()` accepts it, and the expansion asked for a billion
+         * characters before any guard could refuse the settings. One crafted
+         * field-configuration request could exhaust the worker.
+         *
+         * The cap SATURATES rather than truncating, which is what keeps the verdict
+         * right rather than merely fast: a number too large to represent becomes one
+         * that is still too large, and one below the quantum stays nonzero and below
+         * it. So the assertions here are about the ANSWERS, with the bound on the
+         * text checked directly — if the allocation came back, this test would not
+         * fail, it would take the worker down with it.
+         */
+        $expand = new ReflectionMethod(NumberType::class, 'withoutExponent');
+
+        expect(mb_strlen($expand->invoke(null, '1e1000000000')))->toBeLessThan(80)
+            ->and(mb_strlen($expand->invoke(null, '1e-1000000000')))->toBeLessThan(80)
+            // An exponent past PHP_INT_MAX is clamped by the same bound.
+            ->and(mb_strlen($expand->invoke(null, '1e999999999999999999999')))->toBeLessThan(80)
+            // And an ordinary exponent is still expanded exactly.
+            ->and($expand->invoke(null, '1.5e-7'))->toBe('0.00000015')
+            ->and($expand->invoke(null, '1e3'))->toBe('1000');
+
+        // An unreachable MINIMUM is refused, because nothing satisfies it.
+        expect(fn () => FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'huge', 'type' => 'number',
+            'pii_class' => 'none', 'cardinality' => 1,
+            'settings' => ['format' => 'decimal', 'precision' => 12, 'scale' => 2,
+                'min' => '1e1000000000'],
+        ]))->toThrow(RuntimeException::class, 'No value this field can represent');
+
+        // ⚠️ An absurd MAXIMUM is accepted, and that is the correct answer rather
+        // than an oversight: it does not make the field uninhabitable, and the
+        // projection bound the rules emit still caps what can be stored. Asserted
+        // so the saturation is not mistaken for a blanket refusal of big numbers.
+        $wideOpen = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'huge2', 'type' => 'number',
+            'pii_class' => 'none', 'cardinality' => 1,
+            'settings' => ['format' => 'decimal', 'precision' => 12, 'scale' => 2,
+                'min' => 0, 'max' => '1e1000000000'],
+        ]);
+
+        expect($wideOpen->exists)->toBeTrue();
+
+        // A range that lies entirely below the quantum holds nothing.
+        expect(fn () => FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'tiny3', 'type' => 'number',
+            'pii_class' => 'none', 'cardinality' => 1,
+            'settings' => ['format' => 'decimal', 'precision' => 12, 'scale' => 2,
+                'min' => '1e-1000000000', 'max' => '1e-999999999'],
+        ]))->toThrow(RuntimeException::class, 'No value this field can represent');
+    });
+
     it('does not lose the digits that decide whether a range is inhabited', function (): void {
         /*
          * ⚠️ THE THIRD ROUND on the same conversion, and each fix moved the
@@ -1184,19 +1385,59 @@ describe('settings that contradict themselves are refused', function (): void {
          * ⚠️ The class exemption was right for anchors and wrong for these, and
          * lumping them into one list was wrong in one direction or the other.
          *
-         * `\A` inside `[...]` is a literal A in PCRE, so screening it there would
-         * refuse a valid class. `\h` inside a class is STILL horizontal whitespace
-         * in PCRE while ECMAScript still reads the letter h — so `[\h]+` published
-         * a materially different constraint and the exemption let it through. The
-         * difference is whether the escape means anything inside a class at all.
+         * `\h` inside a class is STILL horizontal whitespace in PCRE while
+         * ECMAScript reads the letter h, so `[\h]+` published a materially different
+         * constraint and an exemption let it through.
+         *
+         * ⚠️ The exemption's other half was justified by "`\A` inside `[...]` is a
+         * literal A in PCRE", and that was simply false — PCRE rejects `[\A]`
+         * outright. So the anchors never needed exempting, and the exemption was
+         * meanwhile hiding `[a\E]`, `[a\Q!\E]` and `[a\N{U+41}]`, which stay ACTIVE
+         * in a class. What the class context genuinely decides is asserted here:
+         * `\b` is a backspace in both dialects, and `\-` and a literal range are
+         * ordinary class content.
          */
         expect(Pattern::unpublishable('[\h]+'))->toContain('horizontal whitespace')
             ->and(Pattern::unpublishable('[\v]'))->toContain('vertical whitespace')
             ->and(Pattern::unpublishable('[\H\V]'))->not->toBeNull()
-            // A literal inside a class, and it must stay allowed.
-            ->and(Pattern::unpublishable('[\A]'))->toBeNull()
+            // Genuine literals inside a class, which must stay allowed.
             ->and(Pattern::unpublishable('[0-9\-]+'))->toBeNull()
-            ->and(Pattern::unpublishable('[ \t]+'))->toBeNull();
+            ->and(Pattern::unpublishable('[ \t]+'))->toBeNull()
+            ->and(Pattern::unpublishable('[\b]'))->toBeNull();
+    });
+
+    it('screens escapes that stay ACTIVE inside a character class', function (): void {
+        /*
+         * ⚠️ The class exemption rested on a false premise and hid three holes.
+         *
+         * It was justified by "`\A` inside `[...]` is a literal A in PCRE". PCRE
+         * REJECTS `[\A]`, `[\z]`, `[\K]` and the rest — "not allowed in a character
+         * class" — so the exemption never protected a publishable pattern. What it
+         * did protect were the forms that remain active in a class:
+         *
+         *   `[a\E]`        PCRE takes it, a stray \E being a no-op; ES rejects
+         *   `[a\Q!\E]`     PCRE quotes inside the class; ES rejects
+         *   `[a\N{U+41}]`  PCRE reads a code point; ES rejects
+         *
+         * `[\E]` alone does NOT compile in PCRE, because the class ends up empty —
+         * which is exactly why the hole needed a class with other content in it to
+         * become visible, and why a one-character probe missed it.
+         */
+        expect(Pattern::unpublishable('[a\E]'))->toContain('literal quoting')
+            ->and(Pattern::unpublishable('[a\Q!\E]'))->toContain('literal quoting')
+            ->and(Pattern::unpublishable('[a\N{U+41}]'))->toContain('\N')
+            // Outside a class these were already refused, and must stay so.
+            ->and(Pattern::unpublishable('\Q!\E'))->toContain('literal quoting')
+            ->and(Pattern::unpublishable('\N{U+41}'))->toContain('\N')
+            // ⚠️ And screening the anchors in a class costs nothing, because a
+            // pattern PCRE will not compile never reaches this screen —
+            // `validateSettings()` asks `compiles()` first.
+            ->and(Pattern::compiles('[a\A]'))->toBeFalse()
+            ->and(Pattern::compiles('[a\z]'))->toBeFalse()
+            // Ordinary class content is untouched.
+            ->and(Pattern::unpublishable('[0-9\-]+'))->toBeNull()
+            ->and(Pattern::unpublishable('[\b]'))->toBeNull()
+            ->and(Pattern::unpublishable('^[A-Z]{2}-[0-9]+$'))->toBeNull();
     });
 
     it('refuses the Unicode shorthands, measured on both engines', function (): void {
@@ -1227,6 +1468,215 @@ describe('settings that contradict themselves are refused', function (): void {
             ->and(Pattern::unpublishable('^\s+$'))->toBeNull()
             ->and(Pattern::unpublishable('^\S+$'))->toBeNull();
     });
+
+    it('refuses punctuation escapes ECMAScript cannot parse', function (): void {
+        /*
+         * ⚠️ ECMAScript escapes only its SyntaxCharacter set — `^ $ \ . * + ? ( )
+         * [ ] { } |` — plus `/`, and `-` inside a character class. PCRE puts a
+         * backslash on anything and reads the character literally, so an identity
+         * escape of ordinary punctuation compiles here and is a syntax error there.
+         *
+         * Measured across every ASCII punctuation mark: PCRE takes all of them,
+         * ECMAScript rejects 35 under the `u` modifier. Every refusal has the same
+         * trivial portable form — drop the backslash — so refusing redirects the
+         * author rather than removing anything.
+         */
+        expect(Pattern::unpublishable('a\_b'))->toContain('syntax characters')
+            ->and(Pattern::unpublishable('a\:b'))->toContain('syntax characters')
+            ->and(Pattern::unpublishable('a\!b'))->toContain('syntax characters')
+            ->and(Pattern::unpublishable('a\@b'))->toContain('syntax characters')
+            ->and(Pattern::unpublishable('a\~b'))->toContain('syntax characters')
+            // An escaped space, which is easy to type by accident and hard to see.
+            ->and(Pattern::unpublishable('a\ b'))->toContain('syntax characters')
+            // ⚠️ `-` is portable INSIDE a class and not outside one — the same
+            // positional split the digit escapes have.
+            ->and(Pattern::unpublishable('a\-b'))->toContain('syntax characters')
+            ->and(Pattern::unpublishable('[a\-z]'))->toBeNull()
+            // The syntax characters themselves must all still travel.
+            ->and(Pattern::unpublishable('a\.b'))->toBeNull()
+            ->and(Pattern::unpublishable('a\$'))->toBeNull()
+            ->and(Pattern::unpublishable('a\*b'))->toBeNull()
+            ->and(Pattern::unpublishable('a\(b\)'))->toBeNull()
+            ->and(Pattern::unpublishable('a\[b\]'))->toBeNull()
+            ->and(Pattern::unpublishable('a\{2\}'))->toBeNull()
+            ->and(Pattern::unpublishable('a\|b'))->toBeNull()
+            ->and(Pattern::unpublishable('a\/b'))->toBeNull()
+            ->and(Pattern::unpublishable('a\\\\b'))->toBeNull()
+            // And the ordinary anchored pattern this all exists to protect.
+            ->and(Pattern::unpublishable('^[A-Z]{2}-[0-9]+$'))->toBeNull();
+    });
+
+    it('refuses the PCRE-only escape forms, found by sweeping not by listing', function (): void {
+        /*
+         * ⚠️ Three were reported — `\g{1}`, `\o{141}`, `\e`. Sweeping the whole
+         * escape alphabet on both engines found more, which is the argument for
+         * sweeping: `\a` sits right beside the reported `\e`, and `\00` was still
+         * open after the first fix because exempting `\0` exempted the whole digit.
+         *
+         * Every case below compiles under PCRE 10.48 and is rejected by Node
+         * v22.23.2 under the `u` modifier `delimit()` adds.
+         */
+        expect(Pattern::unpublishable('(a)\g{1}'))->toContain('subroutine')
+            ->and(Pattern::unpublishable('(a)\g<1>'))->toContain('subroutine')
+            ->and(Pattern::unpublishable('(a)\g1'))->toContain('subroutine')
+            ->and(Pattern::unpublishable('\o{141}'))->toContain('octal')
+            ->and(Pattern::unpublishable('\e'))->toContain('escape character')
+            // Found by the sweep rather than reported.
+            ->and(Pattern::unpublishable('\a'))->toContain('alarm')
+            ->and(Pattern::unpublishable('[\a\e]'))->toContain('alarm')
+            // Braced hex: ECMAScript spells a code point `\u{...}`, which PCRE
+            // then rejects — so below 256 the two-digit form is the shared one.
+            ->and(Pattern::unpublishable('\x{41}'))->toContain('braced hex')
+            ->and(Pattern::unpublishable('[\x{41}]'))->toContain('braced hex')
+            ->and(Pattern::unpublishable('\x4'))->toContain('fewer than two hex digits')
+            // Named backreferences: only `\k<name>` is shared.
+            ->and(Pattern::unpublishable('(?<n>a)\k{n}'))->toContain('\k<name>')
+            ->and(Pattern::unpublishable("(?<n>a)\k'n'"))->toContain('\k<name>')
+            ->and(Pattern::unpublishable('(?<n>a)[\k<n>]'))->toContain('character class')
+            // Octal and multi-digit escapes.
+            ->and(Pattern::unpublishable('\101'))->toContain('multi-digit')
+            ->and(Pattern::unpublishable('(a)(b)\12'))->toContain('multi-digit')
+            ->and(Pattern::unpublishable('\00'))->toContain('multi-digit')
+            // ⚠️ And a single digit is portable OUTSIDE a class and not inside one:
+            // PCRE reads octal in a class where ECMAScript rejects it, so the same
+            // two characters travel in one place and not the other.
+            ->and(Pattern::unpublishable('(a)(b)\2'))->toBeNull()
+            ->and(Pattern::unpublishable('(a)(b)[\1]'))->toContain('character class')
+            // ⚠️ The control escape, whose divergence is in its SUFFIX. `\c` alone
+            // does not compile in PCRE and `\cA` compiles in both, so enumerating
+            // the character after the backslash could never have found this —
+            // which is why the sweep now pairs every family letter with every
+            // character in the alphabet.
+            ->and(Pattern::unpublishable('a\c1'))->toContain('ASCII letter')
+            ->and(Pattern::unpublishable('a\c!'))->toContain('ASCII letter')
+            ->and(Pattern::unpublishable('[a\c1]'))->toContain('ASCII letter')
+            ->and(Pattern::unpublishable('a\cA'))->toBeNull()
+            ->and(Pattern::unpublishable('a\cz'))->toBeNull()
+            ->and(Pattern::unpublishable('[a\cA]'))->toBeNull()
+            // The forms both dialects take, which must all still go through.
+            ->and(Pattern::unpublishable('\x41'))->toBeNull()
+            ->and(Pattern::unpublishable('[\x41]'))->toBeNull()
+            ->and(Pattern::unpublishable('\x1B\x07'))->toBeNull()
+            ->and(Pattern::unpublishable('\0'))->toBeNull()
+            ->and(Pattern::unpublishable('[\0]'))->toBeNull()
+            ->and(Pattern::unpublishable('(?<n>a)\k<n>'))->toBeNull()
+            ->and(Pattern::unpublishable('\cA'))->toBeNull();
+    });
+
+    it('leaves no escape a consumer could not compile', function (): void {
+        /*
+         * ⚠️ THE SWEEP ITSELF, kept as a test rather than run once and written up.
+         *
+         * Every single-character escape in the alphabet, in and out of a character
+         * class, plus the multi-character families — asked of both engines. Any
+         * case PCRE compiles, ECMAScript rejects, and this screen lets through is a
+         * pattern that would be published and could not be compiled by a consumer.
+         *
+         * Only that ONE direction is asserted. The reverse — both engines compile
+         * it, so the screen must accept — is false by design here: `\d`, `\w`, `\b`
+         * and their negations compile in both and are refused for what they MEAN.
+         * The property-name test asserts the reverse direction where it does hold.
+         *
+         * This is what caught `\a` beside the reported `\e`, and `\00` after the
+         * first fix. Skipped without Node so a bare clone still runs (invariant 11).
+         *
+         * ⚠️ Its own COVERAGE has been the recurring defect, not its logic: it has
+         * been extended three times, for punctuation and then for the two-character
+         * families, each time because something it never asked about got through. A
+         * sweep is only as exhaustive as its alphabet, and the alphabet is the part
+         * worth reviewing.
+         */
+        $cases = [];
+
+        // ⚠️ PUNCTUATION as well as letters and digits, which is the gap that let
+        // `\_`, `\:` and `\!` through: the first version of this sweep walked
+        // `a-z`, `A-Z` and `0-9` and stopped there, so a whole class of identity
+        // escape was never asked about. A sweep with a hole in its alphabet is a
+        // list of known offenders wearing a sweep's clothes.
+        $alphabet = [
+            ...range('a', 'z'),
+            ...range('A', 'Z'),
+            ...range('0', '9'),
+            ...str_split('!"#$%&\'()*+,-./:;<=>?@[]^_`{|}~ '),
+            '\\',
+        ];
+
+        foreach ($alphabet as $character) {
+            // Two groups, so a single-digit backreference is valid in both.
+            $cases[] = '(a)(b)\\'.$character;
+            $cases[] = '(a)(b)[\\'.$character.']';
+        }
+
+        /*
+         * ⚠️ And the SUFFIXES of the multi-character families, which is the third
+         * gap this sweep has had.
+         *
+         * Enumerating the first character after the backslash answers `\a` and
+         * `\e`; it cannot answer `\c1`, because `\c` on its own does not compile in
+         * PCRE and `\cA` compiles in both — the divergence lives one character
+         * further along. `\x`, `\k` and `\p` are the same shape, and each was found
+         * separately rather than by construction.
+         *
+         * So every family letter is paired with every character in the alphabet.
+         * That is what makes the sweep exhaustive over two-character escapes rather
+         * than exhaustive over the first character only.
+         */
+        foreach (['c', 'x', 'k', 'p', 'P', 'g', 'o', 'u', 'N', 'Q'] as $family) {
+            foreach ($alphabet as $character) {
+                $cases[] = '(a)(b)\\'.$family.$character;
+                $cases[] = '(a)(b)[\\'.$family.$character.']';
+            }
+        }
+
+        // ⚠️ Each multi-character form is tried INSIDE a character class as well.
+        // `[a\Q!\E]` and `[a\N{U+41}]` stay active in a class and were published
+        // unchecked, and no amount of enumerating single characters or two-character
+        // pairs could have reached them — the form is longer than either.
+        $forms = ['\x41', '\x{41}', '\x4', '\o{141}', '(a)\g{1}', '(a)\g<1>', '(a)\g1',
+            '(?<n>a)\k{n}', "(?<n>a)\k'n'", '(?<n>a)\k<n>', '\101', '(a)(b)\12', '\0', '\00',
+            '\x1B\x07', '\N{U+41}', '\Q!\E', '\Qab\E', '\cA', '\c1'];
+
+        foreach ($forms as $form) {
+            $cases[] = $form;
+            // A class with other content in it: `[\E]` alone leaves the class empty
+            // and PCRE refuses it, which is what hid `[a\E]` from a narrower probe.
+            $cases[] = '[a'.$form.']';
+        }
+
+        // Only what PCRE accepts can be published at all — the rest never gets
+        // past `compiles()`, so it is not this screen's question.
+        $compilable = array_values(array_filter($cases, fn (string $c): bool => Pattern::compiles($c)));
+
+        $script = 'const cases = JSON.parse(process.argv[1]);'
+            .'console.log(JSON.stringify(cases.filter(c => {'
+            .'  try { new RegExp(c, "u"); return false } catch { return true }'
+            .'})));';
+
+        exec(
+            'node -e '.escapeshellarg($script).' '.escapeshellarg((string) json_encode($compilable)).' 2>/dev/null',
+            $output,
+            $status,
+        );
+
+        expect($status)->toBe(0);
+
+        /** @var list<string> $ecmaScriptRefuses */
+        $ecmaScriptRefuses = json_decode(implode('', $output), true);
+
+        // Non-empty, or the assertion below would be testing nothing at all.
+        expect($ecmaScriptRefuses)->not->toBe([]);
+
+        $published = array_values(array_filter(
+            $ecmaScriptRefuses,
+            fn (string $c): bool => Pattern::unpublishable($c) === null,
+        ));
+
+        expect($published)->toBe([]);
+    })->skip(function (): bool {
+        exec('command -v node', $found, $status);
+
+        return $status !== 0;
+    }, 'node is not installed, so ECMAScript cannot be measured');
 
     it('refuses word boundaries, which agree only on ASCII', function (): void {
         /*

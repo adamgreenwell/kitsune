@@ -67,6 +67,10 @@ final class Pattern
      * @var array<string, string>
      */
     private const PCRE_ONLY_ESCAPES = [
+        // ⚠️ Screened in a character class as well as outside one. `\E`, `\Q` and
+        // `\N` stay ACTIVE inside a class in PCRE — `[a\Q!\E]` and `[a\N{U+41}]`
+        // both compile and ECMAScript rejects both — and the anchors PCRE refuses
+        // in a class outright, so there is nothing an exemption would protect.
         'A' => 'the \A anchor — ECMAScript has ^',
         'z' => 'the \z anchor — ECMAScript has $',
         'Z' => 'the \Z anchor',
@@ -86,12 +90,13 @@ final class Pattern
      * ⚠️ Separate from the list above, and lumping them together was wrong in one
      * direction or the other.
      *
-     * `\A` inside `[...]` is a literal A in PCRE, so screening it there would
-     * refuse a valid class — which is why class context is skipped for those. But
-     * `\h` inside a class is STILL horizontal whitespace in PCRE while ECMAScript
-     * still reads the letter h, so `[\h]+` published a materially different
-     * constraint and the class exemption let it through. The difference is whether
-     * the escape means anything inside a class at all.
+     * The distinction was originally drawn as "anchors are literals inside a class,
+     * these are not" — and the first half of that was simply wrong. PCRE REJECTS
+     * `[\A]` and `[\z]`, so those never needed an exemption; what they needed was
+     * for `compiles()` to answer first, which it does. `\h` inside a class is still
+     * horizontal whitespace in PCRE while ECMAScript reads the letter h, so `[\h]+`
+     * published a materially different constraint — that part held, and it is why
+     * this list exists separately from the anchors at all.
      *
      * @var array<string, string>
      */
@@ -120,6 +125,22 @@ final class Pattern
         'H' => '\\H — PCRE non-horizontal-whitespace; ECMAScript reads it as the letter H',
         'v' => '\\v — PCRE vertical whitespace; ECMAScript reads a single vertical tab',
         'V' => '\\V — PCRE non-vertical-whitespace; ECMAScript reads it as the letter V',
+        // ⚠️ Found by sweeping the whole escape alphabet on both engines rather
+        // than by extending a list of reported cases — which is how `\a` turned up
+        // alongside the `\e` that was reported. Both are control characters PCRE
+        // spells with a letter and ECMAScript has no escape for at all, inside a
+        // character class as well as outside one.
+        'a' => '\\a — PCRE\'s alarm/BEL escape; ECMAScript has no \\a. Use \\x07',
+        'e' => '\\e — PCRE\'s escape character; ECMAScript has no \\e. Use \\x1B',
+        // Every `\g` form is PCRE\'s: `\g{1}`, `\g<1>`, `\g1` and the relative and
+        // subroutine variants. ECMAScript has none of them, and `[\g]` is a literal
+        // g in PCRE while ECMAScript rejects it, so the class exemption cannot
+        // apply either. A plain numbered backreference `\1` still works in both.
+        'g' => '\\g — PCRE subroutine and relative-backreference forms; ECMAScript has none. '
+            .'Use a plain numbered backreference like \\1, or a named one like \\k<name>',
+        // `\o{141}` is PCRE octal. ECMAScript has no `\o`, and inside a class it
+        // diverges the same way.
+        'o' => '\\o — PCRE\'s octal escape; ECMAScript has no \\o. Use the hex form, e.g. \\x61',
     ];
 
     /**
@@ -153,6 +174,28 @@ final class Pattern
             .'(?:(?<![A-Za-z0-9_])(?=[A-Za-z0-9_])|(?<=[A-Za-z0-9_])(?![A-Za-z0-9_]))',
         'B' => '\B — the negation of a boundary that differs. Spell the ASCII meaning out: '
             .'(?:(?<=[A-Za-z0-9_])(?=[A-Za-z0-9_])|(?<![A-Za-z0-9_])(?![A-Za-z0-9_]))',
+    ];
+
+    /**
+     * Punctuation ECMAScript lets a backslash escape.
+     *
+     * ⚠️ An ALLOWLIST, and the sweep that produced the escape screen missed this
+     * surface entirely: it walked `a-z`, `A-Z` and `0-9` and never tried
+     * punctuation. Measured across every ASCII punctuation mark, PCRE compiles all
+     * of them and ECMAScript rejects 35 under the `u` modifier — `\!`, `\:`, `\_`,
+     * `\-`, `\@`, `\~` and an escaped space among them.
+     *
+     * ECMAScript's rule is exactly its SyntaxCharacter set plus `/`: an identity
+     * escape of anything else is a syntax error in Unicode mode, where PCRE treats
+     * it as the literal character. So every refusal here has the same trivial
+     * portable form — drop the backslash.
+     *
+     * @var array<string, true>
+     */
+    private const PORTABLE_ESCAPED_PUNCTUATION = [
+        '^' => true, '$' => true, '\\' => true, '.' => true, '*' => true, '+' => true,
+        '?' => true, '(' => true, ')' => true, '[' => true, ']' => true, '{' => true,
+        '}' => true, '|' => true, '/' => true,
     ];
 
     /**
@@ -274,8 +317,25 @@ final class Pattern
                     return self::DIVERGENT_ANYWHERE[$escaped];
                 }
 
-                // Inside a class these are literals, not anchors.
-                if (! $inClass && isset(self::PCRE_ONLY_ESCAPES[$escaped])) {
+                // ⚠️ No class exemption, and the one that used to be here rested on
+                // a premise that measurement contradicts.
+                //
+                // The claim was that `\A` inside `[...]` is a literal A in PCRE, so
+                // screening it there would refuse a valid class. PCRE REJECTS
+                // `[\A]`, `[\z]`, `[\K]` and the rest outright — "not allowed in a
+                // character class" — so the exemption never protected a pattern that
+                // could be published, while it did let through the two forms that
+                // stay ACTIVE in a class:
+                //
+                //   `[a\E]`        PCRE takes it (a stray \E is a no-op), ES rejects
+                //   `[a\Q!\E]`     PCRE quotes inside the class, ES rejects
+                //   `[a\N{U+41}]`  PCRE reads a code point, ES rejects
+                //
+                // Screening everywhere costs nothing for the anchors — a pattern
+                // PCRE will not compile never reaches this, because
+                // `validateSettings()` asks `compiles()` first — and closes those
+                // three.
+                if (isset(self::PCRE_ONLY_ESCAPES[$escaped])) {
                     return self::PCRE_ONLY_ESCAPES[$escaped];
                 }
 
@@ -284,6 +344,21 @@ final class Pattern
                 // diverge wherever they appear.
                 if (! $inClass && isset(self::DIVERGENT_OUTSIDE_CLASS[$escaped])) {
                     return self::DIVERGENT_OUTSIDE_CLASS[$escaped];
+                }
+
+                // ⚠️ Three families where the LETTER is shared and the form is not,
+                // so a lookup table cannot answer them.
+                if (($reason = self::escapeFormRefusal($pattern, $i, $escaped, $inClass)) !== null) {
+                    return $reason;
+                }
+
+                // ⚠️ And PUNCTUATION, which the letter-and-digit sweep never
+                // reached. Handled last because the letters and digits above have
+                // already been answered, so anything still here is punctuation or
+                // a non-ASCII character — and ECMAScript escapes neither unless it
+                // is a syntax character.
+                if (($reason = self::punctuationRefusal($escaped, $inClass)) !== null) {
+                    return $reason;
                 }
 
                 // ⚠️ `\p{...}` compiles in both dialects and its PROPERTY NAME
@@ -368,6 +443,124 @@ final class Pattern
         }
 
         return null;
+    }
+
+    /**
+     * Whether an escaped non-alphanumeric character is one ECMAScript escapes.
+     *
+     * ⚠️ `-` is portable INSIDE a character class and not outside one, which is
+     * the same positional split the digit escapes have: ECMAScript allows `\-`
+     * only as a ClassEscape, and PCRE takes it anywhere. Measured, not assumed.
+     */
+    private static function punctuationRefusal(string $escaped, bool $inClass): ?string
+    {
+        if ($escaped === '' || preg_match('/^[A-Za-z0-9]$/', $escaped) === 1) {
+            return null;
+        }
+
+        if (isset(self::PORTABLE_ESCAPED_PUNCTUATION[$escaped]) || ($inClass && $escaped === '-')) {
+            return null;
+        }
+
+        return sprintf(
+            'the escape `\%s` — ECMAScript escapes only its syntax characters '
+            .'(^ $ \ . * + ? ( ) [ ] { } |), a forward slash, and `-` inside a character class. '
+            .'PCRE takes the backslash on anything and reads the character literally, so write '
+            .'`%s` on its own',
+            $escaped,
+            $escaped,
+        );
+    }
+
+    /**
+     * Whether an escape whose LETTER is shared is written in a form both dialects
+     * accept.
+     *
+     * ⚠️ These cannot go in the tables above, because the letter alone does not
+     * decide it — the form does, and for the digits the CONTEXT does as well.
+     * Measured on PHP 8.4.25/PCRE 10.48 and Node v22.23.2:
+     *
+     *   `\x41`     both        `\x{41}` and `\x4`   PCRE only
+     *   `\cA`      both        `\c1` and `\c!`      PCRE only
+     *   `\k<n>`    both        `\k{n}` and `\k'n'`  PCRE only
+     *   `\0`       both        `\00` and `\101`     PCRE only
+     *   `(a)(b)\2` both        `[\1]`               PCRE only
+     *
+     * The last row is the reason `$inClass` is a parameter. A single-digit escape
+     * outside a class is an ordinary backreference in both dialects; INSIDE one,
+     * PCRE reads it as an octal character while ECMAScript rejects it outright —
+     * so the same two characters are portable in one place and not in the other.
+     * `\0` is NUL in both, everywhere.
+     */
+    private static function escapeFormRefusal(string $pattern, int $at, string $escaped, bool $inClass): ?string
+    {
+        $next = mb_substr($pattern, $at + 1, 1);
+
+        // ECMAScript's hex escape is exactly two digits. PCRE also takes one
+        // (`\xA`) and a braced code point (`\x{1F600}`), and rejects neither.
+        if ($escaped === 'x' && preg_match('/^[0-9A-Fa-f]{2}/', mb_substr($pattern, $at + 1, 2)) !== 1) {
+            return $next === '{'
+                ? '\x{...} — PCRE\'s braced hex escape; ECMAScript spells a code point \u{...}, which '
+                    .'PCRE in turn rejects. For a value below 256 use the two-digit form, e.g. \x61'
+                : '\x followed by fewer than two hex digits — ECMAScript requires exactly two, as in \x0A';
+        }
+
+        // ⚠️ ECMAScript's control escape is `\c` plus an ASCII LETTER. PCRE also
+        // takes a digit and any punctuation, reading them by its own rules, and
+        // rejects neither — so `\c1` and `\c!` compiled here and were published to
+        // a consumer that cannot parse them. Both dialects agree on `\cA`, in a
+        // character class as well as outside one, so only the suffix is refused.
+        if ($escaped === 'c' && preg_match('/^[A-Za-z]$/', $next) !== 1) {
+            return sprintf(
+                '`\c%s` — ECMAScript\'s control escape is \c followed by an ASCII letter, as in \cA. '
+                .'PCRE reads a digit or punctuation there by its own rules',
+                $next,
+            );
+        }
+
+        // ECMAScript has only `\k<name>`, and only outside a character class.
+        if ($escaped === 'k' && ($inClass || $next !== '<')) {
+            return $inClass
+                ? '\k inside a character class — a backreference cannot appear in a class in '
+                    .'ECMAScript, and PCRE reads the letter k there instead'
+                : '\k'.$next.' — ECMAScript spells a named backreference \k<name>; the braced and '
+                    .'quoted forms are PCRE\'s';
+        }
+
+        if (preg_match('/^[0-9]$/', $escaped) !== 1) {
+            return null;
+        }
+
+        // ⚠️ `\0` is NUL in both dialects, in a class and out of one — but only
+        // ALONE. `\00` is octal to PCRE and rejected by ECMAScript, and exempting
+        // the whole digit on the strength of the single-character case left that
+        // as the one hole the re-sweep still found.
+        if ($escaped === '0') {
+            return preg_match('/^[0-9]$/', $next) === 1
+                ? '\00 — a multi-digit escape is octal to PCRE and rejected by ECMAScript. \0 alone '
+                    .'is NUL in both; for any other character use the hex form, e.g. \x01'
+                : null;
+        }
+
+        if ($inClass) {
+            return sprintf(
+                '\%s inside a character class — PCRE reads an octal character there and ECMAScript '
+                .'rejects it. For the character itself use the hex form, e.g. \x01',
+                $escaped,
+            );
+        }
+
+        // Outside a class a single digit is a backreference both dialects have.
+        // More than one is octal to PCRE and a syntax error to ECMAScript.
+        return preg_match('/^[0-9]$/', mb_substr($pattern, $at + 1, 1)) === 1
+            ? sprintf(
+                '\%s%s — a multi-digit escape is octal to PCRE and rejected by ECMAScript. For a '
+                .'character use the hex form, e.g. \x41; for a backreference beyond 9, restructure '
+                .'the pattern to use fewer groups',
+                $escaped,
+                $next,
+            )
+            : null;
     }
 
     /**
