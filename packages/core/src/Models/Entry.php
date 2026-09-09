@@ -18,6 +18,7 @@ use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Audit\AuditedBuilder;
+use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Fields\FieldTypeRegistry;
 use Kitsune\Core\Fields\StorageStrategy;
 use Kitsune\Core\Relations\GuardedBelongsToMany;
@@ -284,6 +285,20 @@ class Entry extends Model implements RequiresModelSave
     {
         return [
             'type_handle' => 'it is derived from entry_type_id, and a bulk write skips the restamp that keeps them agreeing.',
+            // ⚠️ `values` because the value-conversion pipeline runs in `saving`.
+            //
+            // `FieldType::toStorage()` is what sanitises rich text, and a bulk write
+            // dispatches nothing — so it would store exactly the bytes it was given,
+            // `<script>` included (issue #42, field-types.md §6). The model is fully
+            // mass assignable, so the only mechanism that holds is refusing the shape
+            // that skips the conversion.
+            //
+            // This does not touch the writes that legitimately set `values` directly:
+            // erasure and restore go through an instance save, which runs the
+            // pipeline, and `ScopeWrites::suspended()` covers the internal paths.
+            'values' => 'every value is converted through its field type on save, and rich text is '
+                .'sanitized there — a bulk write dispatches nothing, so it would store what it was '
+                .'handed.',
         ];
     }
 
@@ -479,8 +494,20 @@ class Entry extends Model implements RequiresModelSave
             // entry from that list — a stray key there would try to write a
             // column that does not exist.
             'relation_state' => $this->relationState(),
+            // ⚠️ The pre-sanitization originals, also OUT of the snapshot list and for
+            // a sharper reason than `relation_state`: `restoreRevision()` fills the
+            // entry from that list, so an original reachable through it would put
+            // unsanitized HTML back into `entries.values` — the one thing
+            // field-types.md §6 forbids. Its own column is a place a restore does not
+            // read, and that is why it is one.
+            'unsanitized_values' => $this->retainedOriginals === [] ? null : $this->retainedOriginals,
             'author_id' => $this->author_id,
         ]);
+
+        // Cleared HERE rather than left to expire. Carrying them forward would attach
+        // this save's originals to a later revision — a false record of what an author
+        // wrote, which is worse than no record.
+        $this->retainedOriginals = [];
 
         $this->pruneRevisions();
     }
@@ -1088,6 +1115,195 @@ class Entry extends Model implements RequiresModelSave
      * Diffs remain the better fix and would raise this number, not remove it.
      */
     public const KEEP_REVISIONS = 50;
+
+    /**
+     * Pre-conversion values awaiting the revision that will record them.
+     *
+     * ⚠️ Transient, and cleared by the recorder rather than left to expire. A
+     * surviving entry here would attach one write's originals to a later, unrelated
+     * revision — a false record of what an author wrote, which is worse than none.
+     *
+     * @var array<string, mixed>
+     */
+    private array $retainedOriginals = [];
+
+    /**
+     * Take over another instance's pending originals.
+     *
+     * ⚠️ Needed because the instance whose values were CONVERTED is not always the
+     * instance that RECORDS. `AuditedBuilder` records inside the write transaction
+     * and reloads the row to do it — deliberately, so the snapshot is persisted state
+     * — and that reload is a different object.
+     *
+     * The source is cleared, so a hand-off cannot record the same originals twice.
+     */
+    public function carryRetainedOriginalsFrom(self $source): void
+    {
+        $this->retainedOriginals = $source->retainedOriginals;
+        $source->retainedOriginals = [];
+    }
+
+    /**
+     * Every value being written, put through its field type's `toStorage()`.
+     *
+     * ⚠️ Called from the BUILDER, not from a `saving` listener, and that was the
+     * defect in the first version of this pipeline.
+     *
+     * `saveQuietly()`, `createQuietly()`, `updateQuietly()` and anything inside
+     * `withoutEvents()` suppress model events while still reaching the builder — so
+     * a `rich_text` payload containing a `<script>` tag went in unchanged and was
+     * recorded unsanitized in the revision as well. My own commit message said "the
+     * guard is where the write is" while the guard sat in an event, which is not
+     * where the write is. This project has now found that shape ten times, and this
+     * is the first time I have been the one to add it.
+     *
+     * ⚠️ The short-circuit is structural rather than a check: only columns actually
+     * present in `$values` are converted, so a save that moves `title` or `site_id`
+     * resolves no schema at all. The first version claimed that optimisation in a
+     * comment and did not implement it — it queried the type and its fields on every
+     * save, which on the 1 vCPU / SQLite floor (ADR-027) is several queries added to
+     * every write for nothing.
+     *
+     * @param  array<string, mixed>  $values  Raw column values, as the builder has them.
+     * @return array<string, mixed>
+     */
+    public function convertFieldValuesForWrite(array $values): array
+    {
+        $this->retainedOriginals = [];
+
+        $registry = app(FieldTypeRegistry::class);
+
+        // ⚠️ THE SHORT-CIRCUIT, before any query, and it has to come first to be one.
+        //
+        // The convertible columns are `values` plus whatever the registered types
+        // promote to — which the REGISTRY knows without touching the database, because
+        // `promotedColumn()` is named for the type. So a write carrying neither can be
+        // dismissed here, and a save that moves only `title`, `status` or `site_id`
+        // resolves no schema at all.
+        //
+        // The first version put its dirty check after resolving the type and its
+        // fields, which is to say it did not have one. On the 1 vCPU / SQLite floor
+        // (ADR-027) that was several queries on every write, for nothing.
+        //
+        // ⚠️ Shares `promotableColumns()` with `recordPromotedProvenance()` rather than
+        // deriving the list again. That listener made the identical mistake — a dirty
+        // check downstream of the queries it should avoid — and it was written on a
+        // different branch, so the lesson did not travel. Two copies of this list would
+        // also drift the moment a type starts promoting a column.
+        $convertible = ['values', ...self::promotableColumns($registry)];
+
+        // ⚠️ A TYPE CHANGE is a conversion trigger, because the type decides what the
+        // stored bytes MEAN.
+        //
+        // `values` is keyed by handle and unknown keys pass through untouched, so an
+        // entry can hold `<script>` under a key its current type does not declare —
+        // nothing converts it, because no field claims it. Move the entry to a type
+        // where that key IS `rich_text` and the value becomes rich text having never
+        // met the sanitiser. `entry_type_id` is explicitly mutable (ADR-010), so this
+        // is a supported operation and not an edge case.
+        $convertible[] = 'entry_type_id';
+
+        if (array_intersect(array_keys($values), $convertible) === []) {
+            return $values;
+        }
+
+        $typeId = $values['entry_type_id'] ?? $this->entry_type_id;
+
+        // ⚠️ Falsy rather than `=== null`: the docblock types this column non-null, so
+        // a strict null check is dead code to static analysis — but a fresh instance
+        // may genuinely not have set it yet, and an id of 0 is not a type either.
+        if (! $typeId) {
+            return $values;
+        }
+
+        $type = EntryType::query()->whereKey($typeId)->first();
+
+        if ($type === null) {
+            // The foreign key's job to report, not this one's.
+            return $values;
+        }
+
+        // ⚠️ `values` reaches the builder ALREADY ENCODED on an instance save: the
+        // array cast runs in `setAttribute()`, long before this. Decoding and
+        // re-encoding in the shape it arrived is what keeps this from double-encoding
+        // — the same trap the guarded builders hit with `newModelInstance()`.
+        $encoded = array_key_exists('values', $values) && is_string($values['values']);
+        $inline = match (true) {
+            ! array_key_exists('values', $values) => null,
+            is_string($values['values']) => json_decode($values['values'], true),
+            is_array($values['values']) => $values['values'],
+            default => null,
+        };
+
+        // ⚠️ On a type change that carries no `values` of its own, the STORED values
+        // are converted against the destination type. Without this the trigger above
+        // would resolve the new schema and then find nothing to apply it to.
+        //
+        // Only for a row that exists: on an insert there is nothing stored yet, and
+        // seeding from the instance would write a key the caller never sent.
+        $retyping = $this->exists
+            && array_key_exists('entry_type_id', $values)
+            && (int) $values['entry_type_id'] !== (int) $this->getRawOriginal('entry_type_id');
+
+        if ($inline === null && $retyping) {
+            $inline = $this->values ?? [];
+            // Written back in the encoded shape, because that is what the column takes
+            // and nothing else in this write is carrying it.
+            $encoded = true;
+        }
+
+        foreach ($type->fields()->with('fieldStorage')->get() as $field) {
+            $storage = $field->fieldStorage;
+
+            if ($storage === null || ! $registry->has((string) $storage->type)) {
+                continue;
+            }
+
+            $fieldType = $registry->get((string) $storage->type);
+            $config = new FieldConfig($storage, $field, $this);
+            $handle = (string) $storage->handle;
+
+            if ($storage->strategy() === StorageStrategy::Inline) {
+                // Absent is not null: a key the write does not carry must stay as it
+                // is, not be overwritten with a converted null.
+                if (is_array($inline) && array_key_exists($handle, $inline)) {
+                    $submitted = $inline[$handle];
+                    $inline[$handle] = $fieldType->toStorage($submitted, $config);
+
+                    // Kept only when the type says its conversion is lossy AND the
+                    // conversion took something — a value that survived unchanged has
+                    // no original worth storing in a column erasure has to sweep.
+                    if ($fieldType->retainsOriginal() && $inline[$handle] !== $submitted) {
+                        $this->retainedOriginals[$handle] = $submitted;
+                    }
+                }
+
+                continue;
+            }
+
+            if ($storage->strategy() !== StorageStrategy::Promoted) {
+                continue;
+            }
+
+            $column = $storage->promotedColumn();
+
+            // ⚠️ Only a column this write carries. The column is shared across handles
+            // (`SlugType::promotedColumn()` is named for the type), so converting one
+            // the write never touched would run another field's value through this
+            // field's type.
+            if ($column === null || ! array_key_exists($column, $values)) {
+                continue;
+            }
+
+            $values[$column] = $fieldType->toStorage($values[$column], $config);
+        }
+
+        if ($inline !== null) {
+            $values['values'] = $encoded ? json_encode($inline) : $inline;
+        }
+
+        return $values;
+    }
 
     /**
      * Every saved version, newest first.

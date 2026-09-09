@@ -278,15 +278,15 @@ User-supplied HTML rendered on public pages. **The only field type in v1 that is
 - Allowlist tags and attributes; never a denylist
 - Sanitizer config lives in core, not in `field_storage.settings` — an org must not be able to widen its own allowlist
 - `<script>`, `<style>`, `<iframe>`, event handler attributes and `javascript:` URLs are never permitted, regardless of settings
-- Store sanitized. Store the pre-sanitization original **only** in the revision record, never in `entries.values`
+- Store sanitized. Store the pre-sanitization original **only** in the revision record, never in `entries.values` — implemented as `entry_revisions.unsanitized_values`, a column `snapshot()` does not expose, so a restore cannot reach it. Erasure sweeps it alongside `values`, because it holds the author's original bytes and is personal data like any other value
 
-> ⚠️ **Status, measured 2026-09-08: the write half is NOT implemented, and this section previously read as though it were.**
+> **Status, measured 2026-09-09: the write half is implemented.** `AuditedBuilder`'s insert and update paths run every value being written through its field type's `toStorage()`, so `rich_text` is sanitized on the way in — a test asserts the bytes in the column, not the sanitizer's return value. `values` is in `columnsRequiringModelSave()`, so the one write shape that would skip the pipeline is refused rather than trusted.
 >
-> `RichTextType::toStorage()` sanitizes, and **nothing calls it on a save.** There is no value-conversion pipeline between a submitted value and `entries.values` yet, so a `rich_text` field stores exactly what it was given — a probe confirms `<p>Hello</p><script>alert(1)</script>` is stored verbatim while the sanitizer would have returned `<p>Hello</p>`.
+> ⚠️ In the **builder**, not in a `saving` listener. `saveQuietly()`, `createQuietly()`, `updateQuietly()` and `withoutEvents()` suppress model events while still reaching the builder, so a listener would have left every quiet write unsanitized — in `entries.values` and in the revision snapshot alike. A guard has to sit where the write is, and an event is not where the write is.
 >
-> Not currently exploitable: there is no public rendering route for an entry, so nothing renders those bytes. It becomes live the moment one exists, which is Phase 5/6 — so it is tracked rather than left to be discovered, and the tracking issue is labelled `security`.
+> A bulk write to `values` is refused rather than converted, and that is deliberate: one statement covers rows of many entry types with different field sets, so there is no single correct conversion for it. The conversion is per row because the schema is per row.
 >
-> **And the last bullet has a trap in it that the implementation must not walk into.** `Entry::restoreRevision()` writes a revision's `values` back onto the entry. If the revision holds the pre-sanitization original *inside* `values`, restoring it puts unsanitized HTML into `entries.values` — which is the one thing this bullet forbids. So the original has to live somewhere a restore does not read: its own column on `entry_revisions`, not a key in the snapshot. Whoever implements the pipeline should read this bullet as "the original is kept beside the revision", not "inside it".
+> **The trap in that bullet, recorded because the implementation had to avoid it.** `Entry::restoreRevision()` writes a revision's `values` back onto the entry. If the revision holds the pre-sanitization original *inside* `values`, restoring it puts unsanitized HTML into `entries.values` — which is the one thing this bullet forbids. So the original has to live somewhere a restore does not read: its own column on `entry_revisions`, not a key in the snapshot. Whoever implements the pipeline should read this bullet as "the original is kept beside the revision", not "inside it".
 
 ### `json`
 

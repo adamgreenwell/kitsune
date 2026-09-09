@@ -323,6 +323,19 @@ class ScopedBuilder extends Builder
             ? substr($column, (int) strrpos($column, '.') + 1)
             : $column;
 
+        // ⚠️ And the JSON PATH is rooted at its column, which this did not do.
+        //
+        // Laravel accepts `update(['values->body' => ...])`. That returned
+        // `values->body`, which never matched the guarded key `values` — so a bulk
+        // JSON-path write skipped the per-row refusal entirely, and with it the
+        // value-conversion pipeline that sanitises rich text (issue #42).
+        //
+        // `AuditedBuilder` had exactly this defect for exactly this reason and was
+        // fixed; the same wrong assumption was sitting in the guard beside it. Two
+        // places that must agree about what a column is, and only one of them had
+        // been told.
+        $bare = explode('->', $bare)[0];
+
         return trim($bare, '`"[]');
     }
 

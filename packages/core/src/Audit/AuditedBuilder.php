@@ -95,6 +95,10 @@ class AuditedBuilder extends ScopedBuilder
     {
         $model = $this->getModel();
 
+        // ⚠️ Conversion happens HERE, not in a `saving` listener, because this is the
+        // path a quiet save cannot skip. See `Entry::convertFieldValuesForWrite()`.
+        $values = $model->convertFieldValuesForWrite($values);
+
         $this->guardScopeKeys($values);
 
         return DB::transaction(function () use ($values, $sequence, $model) {
@@ -144,6 +148,12 @@ class AuditedBuilder extends ScopedBuilder
         }
 
         $entry = $this->getModel()->newQueryWithoutScopes()->find($id);
+
+        // ⚠️ The reload is a DIFFERENT object from the one that converted the values,
+        // and the pre-sanitization originals live on that one. Reloading is right —
+        // the snapshot should be the persisted state — but it means the originals have
+        // to be handed across explicitly or the revision records none.
+        $this->carryRetainedOriginals($entry);
 
         // An empty before-state, because the row did not exist a moment ago.
         $entry?->recordRevisionForEventlessWrite([], $this->rawVersionedRows([$id])[$id] ?? []);
@@ -328,6 +338,9 @@ class AuditedBuilder extends ScopedBuilder
     /** @param  array<string, mixed>  $values */
     public function update(array $values)
     {
+        // Same conversion as the insert path, at the same place: the write.
+        $values = $this->getModel()->convertFieldValuesForWrite($values);
+
         $this->guardScopeKeys($values);
 
         return $this->auditing($this->actionFor($values), fn () => parent::update($values), $values);
@@ -363,6 +376,7 @@ class AuditedBuilder extends ScopedBuilder
     public function increment($column, $amount = 1, array $extra = [])
     {
         $this->refuseScopeArithmetic([(string) $column => $amount, ...$extra]);
+        $this->refusePerRowExtras($extra);
 
         return $this->auditing(
             'updated',
@@ -378,6 +392,7 @@ class AuditedBuilder extends ScopedBuilder
     public function decrement($column, $amount = 1, array $extra = [])
     {
         $this->refuseScopeArithmetic([(string) $column => $amount, ...$extra]);
+        $this->refusePerRowExtras($extra);
 
         return $this->auditing(
             'updated',
@@ -398,6 +413,7 @@ class AuditedBuilder extends ScopedBuilder
     public function incrementEach(array $columns, array $extra = [])
     {
         $this->refuseScopeArithmetic([...$columns, ...$extra]);
+        $this->refusePerRowExtras($extra);
 
         return $this->auditing(
             'updated',
@@ -413,6 +429,7 @@ class AuditedBuilder extends ScopedBuilder
     public function decrementEach(array $columns, array $extra = [])
     {
         $this->refuseScopeArithmetic([...$columns, ...$extra]);
+        $this->refusePerRowExtras($extra);
 
         return $this->auditing(
             'updated',
@@ -665,10 +682,64 @@ class AuditedBuilder extends ScopedBuilder
         }
 
         foreach ($this->getModel()->newQueryWithoutScopes()->whereKey($changed)->get() as $entry) {
+            // Same hand-off as the insert path, for the same reason.
+            $this->carryRetainedOriginals($entry);
+
             $entry->recordRevisionForEventlessWrite(
                 $before[$entry->getKey()],
                 $after[$entry->getKey()],
             );
         }
+    }
+
+    /**
+     * Refuse a per-row column smuggled in as an arithmetic assignment.
+     *
+     * ⚠️ Laravel's arithmetic methods take an `$extra` map of ORDINARY assignments,
+     * and they forward straight to the query builder — so they reach neither
+     * `update()` nor `ScopedBuilder::refusePerRowColumns()`.
+     *
+     * `increment('ordering', 0, ['values' => '{"body":"<script>…"}'])` therefore put
+     * raw bytes into `entries.values` with no conversion, and the revision snapshotted
+     * them unsanitized. The same route already had to be closed once for auditing and
+     * once for versioning; this is the third thing it was skipping.
+     *
+     * REFUSED rather than converted, for the reason a bulk update is: an arithmetic
+     * statement can match any number of rows of any number of types, so there is no
+     * single correct conversion for the values it carries.
+     *
+     * @param  array<string, mixed>  $extra
+     */
+    private function refusePerRowExtras(array $extra): void
+    {
+        if ($extra !== []) {
+            $this->refusePerRowColumns($extra);
+        }
+    }
+
+    /**
+     * Move the saving instance's pending originals onto the instance that records.
+     *
+     * ⚠️ Only when they are the same ROW. A bulk update reloads many entries and the
+     * builder's model is one of them at most — attaching one row's originals to
+     * another would be a false record of what its author wrote.
+     */
+    private function carryRetainedOriginals(?Entry $target): void
+    {
+        if ($target === null) {
+            return;
+        }
+
+        $source = $this->getModel();
+
+        // ⚠️ Only when they are the same ROW — except on insert, where the model has
+        // no key yet and the row being inserted is by definition the builder's own.
+        // `performInsert()` assigns the key after `insertGetId()` returns, so a null
+        // key here IS the insert path rather than a case needing its own flag.
+        if ($source->getKey() !== null && ! $source->is($target)) {
+            return;
+        }
+
+        $target->carryRetainedOriginalsFrom($source);
     }
 }
