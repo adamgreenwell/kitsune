@@ -23,6 +23,20 @@ return new class extends Migration
             $table->string('email')->unique();
             $table->timestamp('email_verified_at')->nullable();
             $table->string('password');
+            // ⚠️ The UI locale is a USER preference, not a site setting (ADR-018 rule 2):
+            // a Swiss agency has German, French and Italian editors on one org, so the
+            // language of the chrome belongs to whoever is looking rather than to what
+            // they are looking at.
+            //
+            // ⚠️ It lives HERE, in the application, and not in kitsune/core. Core stays
+            // headless-capable (ADR-002) and must not require a particular auth schema,
+            // so it reads Laravel's own `HasLocalePreference` contract and never learns
+            // which column the answer came from.
+            //
+            // Nullable, because "no preference" is a real answer and a different one from
+            // any particular locale: it means fall through to the site's, which is what
+            // `LocaleResolver` does.
+            $table->string('locale')->nullable();
             $table->rememberToken();
             $table->timestamps();
         });
