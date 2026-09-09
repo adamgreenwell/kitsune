@@ -77,8 +77,18 @@ final class FieldValueRenderer
          * measured, and the reason the inner control is rebuilt nameless here rather
          * than reusing the one above.
          */
+        /*
+         * ⚠️ `hiddenLabel()` on the inner control, or every row of the repeater is
+         * labelled `Value` and the field's own label disappears — measured in the browser,
+         * where `Keywords` was absent from the form and `Value` was present. `simple()`
+         * promotes the inner control to the row, so the label that belongs to the FIELD
+         * has to stay on the repeater.
+         */
         $repeater = Repeater::make(self::statePath($config))
-            ->simple(self::withDirection(self::buildControl($control, $config, named: false), $control));
+            ->simple(
+                self::withDirection(self::buildControl($control, $config, named: false), $control)
+                    ->hiddenLabel(),
+            );
 
         if (($max = $config->cardinality()) > 1) {
             // Cardinality -1 means unbounded, so only a positive bound is applied.
