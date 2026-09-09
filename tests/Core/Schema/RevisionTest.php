@@ -1386,3 +1386,227 @@ describe('one API call takes one history slot', function (): void {
             ->and($entry->related()->pluck('entries.id')->all())->toBe([$bob->id]);
     });
 });
+
+describe('a restore checks OWNERSHIP under the lock, not before it', function (): void {
+    it('refuses a revision reassigned after the caller loaded it', function (): void {
+        /*
+         * ⚠️ The ownership check ran on the caller's instance, outside any lock,
+         * and was never repeated on the locked row — so the same lesson that had
+         * been applied to `entry_type_id` was missed for `entry_id`.
+         *
+         * `EntryRevision` is #[Unscoped] and writable, so the column can be
+         * reassigned between the caller's load and the restore. The stale instance
+         * still said "mine", the outer check agreed, and the snapshot was applied.
+         * When both entries share a type the type guard agreed too — so the values
+         * of an entry in ANOTHER ORG could be written onto this one (ADR-021).
+         *
+         * Reassigning the row behind a loaded instance is exactly what the race
+         * produces, and it needs no second connection to reproduce.
+         */
+        $mine = anEntry(['title' => 'Mine']);
+        $mine->update(['title' => 'Mine, edited']);
+
+        $rival = Org::create(['name' => 'Rival', 'slug' => 'rev-rival']);
+        $rivalType = EntryType::create([
+            'org_id' => $rival->id, 'handle' => 'article', 'name' => 'Article', 'plural_name' => 'Articles',
+        ]);
+        $theirs = Entry::withoutScopeBecause(
+            'creating another org\'s entry to prove a reassigned revision cannot cross the boundary',
+            fn ($query) => $query->create([
+                'entry_type_id' => $rivalType->id, 'org_id' => $rival->id,
+                'site_id' => null, 'type_handle' => 'article', 'title' => 'Theirs',
+            ]),
+        );
+
+        $revision = $theirs->revisionHistory()->firstOrFail();
+
+        // The caller holds it while it still belongs to the other entry...
+        expect($revision->entry_id)->toBe($theirs->getKey());
+
+        // ...and it is reassigned onto ours behind that instance, then back, so the
+        // instance in hand is stale in precisely the way the race leaves it.
+        DB::table('entry_revisions')->where('id', $revision->getKey())
+            ->update(['entry_id' => $mine->getKey()]);
+        DB::table('entry_revisions')->where('id', $revision->getKey())
+            ->update(['entry_id' => $theirs->getKey()]);
+
+        $stale = $revision->replicate(); // keeps the in-memory entry_id
+        $stale->id = $revision->getKey();
+        $stale->entry_id = $mine->getKey();
+        $stale->exists = true;
+
+        expect(fn () => $mine->restoreRevision($stale))
+            ->toThrow(RuntimeException::class, 'belongs to another entry');
+
+        // And nothing was written: the refusal happens before the snapshot lands.
+        expect($mine->fresh()->title)->toBe('Mine, edited');
+    });
+
+    it('still restores a revision that genuinely belongs to the entry', function (): void {
+        // The check runs twice now, so the ordinary path has to be asserted or a
+        // stricter guard could pass by refusing everything.
+        $entry = anEntry(['title' => 'First']);
+        $entry->update(['title' => 'Second']);
+
+        // ⚠️ `revisions()`, not `revisionHistory()` — that one is newest-first by
+        // definition, so adding `orderBy('id')` only appends a secondary sort and
+        // still hands back the newest.
+        $first = $entry->revisions()->orderBy('id')->firstOrFail();
+        $entry->restoreRevision($first);
+
+        expect($entry->fresh()->title)->toBe('First');
+    });
+});
+
+describe('lock ORDER is one order for every relation path', function (): void {
+    it('locks a move destination with the sources, before any pivot', function (): void {
+        /*
+         * ⚠️ A lock SET without a lock ORDER is what deadlocks, and the previous
+         * fix supplied only the set.
+         *
+         * `freezingRows()` locks the source entries and then the pivots, and the
+         * destination was appended for `versioned()` to lock AFTERWARDS. So a move
+         * A→B held A and its pivot before asking for B, while the reciprocal move
+         * B→A held B and its pivot before asking for A — a deterministic deadlock
+         * between two ordinary requests.
+         *
+         * Asserted structurally, because a deadlock needs two connections to
+         * observe and the ORDER is the property that prevents it: the entry lock
+         * that names both endpoints must be issued before any pivot lock.
+         */
+        $a = anEntry(['title' => 'A']);
+        $b = anEntry(['title' => 'B']);
+        $target = anEntry(['title' => 'Target']);
+
+        $a->related()->attach($target->getKey());
+        $relation = EntryRelation::query()->firstOrFail();
+
+        /*
+         * ⚠️ Matched on statement SHAPE, not on the word "for update".
+         *
+         * SQLite compiles `lockForUpdate()` to nothing at all, so a matcher keyed
+         * on the lock clause finds no statements there and the test would pass on
+         * the default engine by asserting about an empty list. And the quoting
+         * differs — MySQL uses backticks where the others use double quotes — so
+         * the identifiers are unquoted before matching. Laravel also inlines an
+         * array of integer ids into the SQL rather than binding them, which is why
+         * the endpoints are looked for in the statement rather than the bindings.
+         */
+        $unquote = fn (string $sql): string => (string) preg_replace('/[`"]/', '', $sql);
+
+        $locks = [];
+        DB::listen(function ($query) use (&$locks, $unquote): void {
+            $sql = $unquote($query->sql);
+
+            if (str_starts_with($sql, 'select id, source_entry_id from entry_relations')) {
+                $locks[] = 'pivot';
+            } elseif (str_starts_with($sql, 'select * from entries where entries.id in (')) {
+                $locks[] = 'entries:'.$sql;
+            }
+        });
+
+        $relation->source_entry_id = $b->getKey();
+        $relation->save();
+
+        $firstEntryLock = null;
+        $firstPivotLock = null;
+
+        foreach ($locks as $index => $lock) {
+            if ($firstEntryLock === null && str_starts_with($lock, 'entries:')) {
+                $firstEntryLock = $index;
+            }
+
+            if ($firstPivotLock === null && $lock === 'pivot') {
+                $firstPivotLock = $index;
+            }
+        }
+
+        expect($firstEntryLock)->not->toBeNull()
+            ->and($firstPivotLock)->not->toBeNull()
+            // The entries come first...
+            ->and($firstEntryLock)->toBeLessThan($firstPivotLock);
+
+        // ...and that first entry lock names BOTH endpoints, which is the half the
+        // earlier fix missed: it is not enough for the destination to be locked
+        // eventually, it has to be in the same ordered statement as the source.
+        $bindings = $locks[$firstEntryLock];
+
+        expect($bindings)->toContain((string) $a->getKey())
+            ->and($bindings)->toContain((string) $b->getKey());
+    });
+});
+
+describe('an incoming detach removes the rows it froze', function (): void {
+    it('leaves a relation that arrived after the freeze alone', function (): void {
+        /*
+         * ⚠️ `referencedBy()->detach()` named its sources with an unlocked pluck
+         * and then let the inherited detach rerun its own target-based predicate.
+         * A pivot from a NEW source committing between the two statements was
+         * deleted by a statement that had never locked it, never counted it in
+         * `$before`, and never recorded it — leaving that source's newest revision
+         * claiming a relation the database no longer had.
+         *
+         * The delete is pinned to the frozen ids now. The row that arrives late is
+         * simply not this statement's business, which is the same contract the
+         * direct relation builder provides.
+         *
+         * Reproduced without a second connection by inserting the late row from
+         * inside the freeze itself — the listener fires on the pivot lock, which is
+         * exactly the window the race uses.
+         */
+        $target = anEntry(['title' => 'Referenced']);
+        $early = anEntry(['title' => 'Early']);
+        $late = anEntry(['title' => 'Late']);
+
+        $early->related()->attach($target->getKey());
+
+        // Shape rather than the lock clause, for the reason the lock-order test
+        // states: SQLite compiles `lockForUpdate()` to nothing.
+        $inserted = false;
+        DB::listen(function ($query) use (&$inserted, $late, $target): void {
+            $sql = (string) preg_replace('/[`"]/', '', $query->sql);
+
+            if ($inserted || ! str_starts_with($sql, 'select id, source_entry_id from entry_relations')) {
+                return;
+            }
+
+            $inserted = true;
+
+            // The concurrent attach, landing inside the window the freeze covers.
+            DB::table('entry_relations')->insert([
+                'org_id' => test()->org->id,
+                'source_entry_id' => $late->getKey(),
+                'target_entry_id' => $target->getKey(),
+                'ordering' => 0,
+            ]);
+        });
+
+        $target->referencedBy()->detach();
+
+        expect($inserted)->toBeTrue();
+
+        $survivors = DB::table('entry_relations')
+            ->where('target_entry_id', $target->getKey())
+            ->pluck('source_entry_id')
+            ->all();
+
+        // The frozen row is gone; the late arrival is untouched.
+        expect($survivors)->toBe([$late->getKey()]);
+    });
+
+    it('still removes everything it did freeze', function (): void {
+        // Pinning must not become a way of deleting nothing.
+        $target = anEntry(['title' => 'Referenced']);
+        $one = anEntry(['title' => 'One']);
+        $two = anEntry(['title' => 'Two']);
+
+        $one->related()->attach($target->getKey());
+        $two->related()->attach($target->getKey());
+
+        expect($target->referencedBy()->count())->toBe(2);
+
+        $target->referencedBy()->detach();
+
+        expect(DB::table('entry_relations')->where('target_entry_id', $target->getKey())->count())->toBe(0);
+    });
+});

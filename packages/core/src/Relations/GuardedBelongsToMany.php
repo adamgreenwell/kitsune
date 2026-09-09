@@ -161,10 +161,73 @@ class GuardedBelongsToMany extends BelongsToMany
 
         // Incoming, with no ids: every entry currently pointing at the parent.
         if ($ids === null) {
-            return $this->pluck($this->getRelated()->getQualifiedKeyName())->all();
+            return $this->freezingIncomingPivots();
         }
 
         return $this->sourceKeys($ids, []);
+    }
+
+    /**
+     * Lock the pivots an unqualified incoming detach will remove, and constrain the
+     * detach to exactly those rows.
+     *
+     * ⚠️ A SNAPSHOT was not enough, and this is the third time this project has
+     * found the shape.
+     *
+     * `referencedBy()->detach()` named its sources with an unlocked `pluck()`, and
+     * the inherited `detach()` then reran its own predicate — every pivot pointing
+     * at the parent, evaluated when the DELETE ran. An attach from a NEW source
+     * committing between those two statements was deleted by the detach, while that
+     * source was never locked, never in `$before`, and never in a revision. Its
+     * newest version claimed a relation the database no longer had.
+     *
+     * So the rows are frozen and the delete is pinned to the frozen ids. Anything
+     * that arrives afterwards is simply not this statement's business — which is
+     * the same contract `GuardedRelationBuilder::freezingRows()` provides, and the
+     * reason that one pins `whereKey()` rather than trusting its predicate twice.
+     *
+     * ⚠️ Entries first and pivots second, in that order, because
+     * `freezingRows()` does. The two paths reach the same rows, and if one took
+     * pivots before entries they would deadlock against each other rather than
+     * queue — which is the failure the previous lock-order fix was for.
+     *
+     * @return list<mixed>
+     */
+    private function freezingIncomingPivots(): array
+    {
+        $pivots = $this->getRelated()->getConnection()
+            ->table($this->getTable())
+            ->where($this->getForeignPivotKeyName(), $this->getParent()->getKey());
+
+        // Unlocked discovery, then the entry locks in a deterministic order.
+        $sources = (clone $pivots)->distinct()
+            ->pluck(self::SOURCE_COLUMN)
+            ->filter()
+            ->unique()
+            ->sort()
+            ->values()
+            ->all();
+
+        if ($sources !== []) {
+            Entry::withoutScopeBecause(
+                'locking the source entries of an incoming detach before their pivots, so every '
+                .'relation path takes the locks in one order',
+                fn ($query) => $query->whereKey($sources)->lockForUpdate()->get(),
+            );
+        }
+
+        // Now the pivots, under the entry locks just taken.
+        $frozen = $pivots->lockForUpdate()->get(['id', self::SOURCE_COLUMN]);
+
+        // ⚠️ Pin the delete to the frozen ids. `wherePivotIn` reaches
+        // `newPivotQuery()`, which is what the inherited `detach()` builds from —
+        // so the set frozen and the set deleted are the same set.
+        //
+        // An empty freeze still has to constrain: without this the inherited
+        // predicate would run unpinned and delete whatever had arrived since.
+        $this->wherePivotIn('id', $frozen->pluck('id')->all());
+
+        return $frozen->pluck(self::SOURCE_COLUMN)->unique()->filter()->values()->all();
     }
 
     /**

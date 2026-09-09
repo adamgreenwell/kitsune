@@ -846,6 +846,22 @@ class Entry extends Model implements RequiresModelSave
     }
 
     /**
+     * Refuse a revision that does not belong to this entry.
+     *
+     * ⚠️ ONE implementation for both call sites deliberately. The check runs twice
+     * — once on the caller's instance and once on the locked row — and two copies
+     * of the same rule are how the pre-lock and post-lock answers drift apart.
+     */
+    private function refuseForeignRevision(EntryRevision $revision): void
+    {
+        if ($revision->entry_id !== $this->getKey()) {
+            throw new RuntimeException(
+                "Revision [{$revision->getKey()}] belongs to another entry and cannot be restored onto this one."
+            );
+        }
+    }
+
+    /**
      * Put a revision's state back, as a NEW revision.
      *
      * History is append-only in the sense that matters: restoring version 3
@@ -855,11 +871,15 @@ class Entry extends Model implements RequiresModelSave
      */
     public function restoreRevision(EntryRevision $revision): self
     {
-        if ($revision->entry_id !== $this->getKey()) {
-            throw new RuntimeException(
-                "Revision [{$revision->getKey()}] belongs to another entry and cannot be restored onto this one."
-            );
-        }
+        // ⚠️ A courtesy check, and NOT the one that decides. It reads the caller's
+        // instance before any lock exists, so it can only report what was true
+        // when that instance was loaded. The authoritative check is the identical
+        // one inside the transaction, against the locked row.
+        //
+        // Kept because failing here costs nothing and gives the caller the error
+        // without opening a transaction — but it is the second check that is load
+        // bearing, and the two must not drift apart.
+        $this->refuseForeignRevision($revision);
 
         // ⚠️ Everything that JUDGES happens inside the transaction, after the
         // row is locked — and refreshing and judging outside it was still a race.
@@ -889,6 +909,23 @@ class Entry extends Model implements RequiresModelSave
                 ->whereKey($revision->getKey())
                 ->lockForUpdate()
                 ->firstOrFail();
+
+            // ⚠️ And OWNERSHIP is re-checked on the locked row, because the check
+            // above read a copy.
+            //
+            // `EntryRevision` is #[Unscoped] and writable, so `entry_id` can be
+            // reassigned between the caller's load and this lock. A revision moved
+            // onto this entry passed the outer check on its stale in-memory value
+            // and had its snapshot restored here — and when both entries share a
+            // type the type guard below agreed, so the values of an entry in
+            // ANOTHER ORG could be written onto this one (ADR-021: org isolation
+            // has no framework safety net).
+            //
+            // This is the same lesson as the type check three comments down, and
+            // it was applied to the type and not to the owner: re-reading the row
+            // under the lock is only half the job if the answers derived from it
+            // are still the ones computed before.
+            $this->refuseForeignRevision($revision);
 
             // ⚠️ And the refresh is needed for a second, separate reason: a model
             // from `create()` holds only the attributes the caller set, so `slug`

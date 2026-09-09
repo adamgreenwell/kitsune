@@ -75,11 +75,24 @@ class GuardedRelationBuilder extends Builder
         // destination was therefore neither locked nor versioned: its newest
         // revision stayed stale, and its cardinality was counted before any lock
         // on it, so concurrent moves could both land on a single-valued relation.
+        // ⚠️ Resolved BEFORE the sources callable runs, and handed INTO the freeze
+        // rather than appended after it.
+        //
+        // Appending it was still a deterministic deadlock: `freezingRows()` locks
+        // the old source and then the pivot, so a move A→B held A and its pivot
+        // before anything asked for B. The reciprocal move B→A held B and its
+        // pivot and then asked for A — each waiting on the entry the other already
+        // had. The previous fix put the destination in the lock SET without putting
+        // it in the lock ORDER, which is the half that mattered.
+        //
+        // Inside `freezingRows()` it joins the sorted entry lock taken before any
+        // pivot, so both moves acquire {A, B} in the same order and one waits for
+        // the other instead of deadlocking. Lock order is a property of the whole
+        // system, not of one method.
+        $destination = isset($values['source_entry_id']) ? [$values['source_entry_id']] : [];
+
         return $this->versioned(
-            fn (): array => array_values(array_unique([
-                ...$this->freezingRows(),
-                ...(isset($values['source_entry_id']) ? [$values['source_entry_id']] : []),
-            ])),
+            fn (): array => $this->freezingRows($destination),
             function () use ($values) {
                 // An instance save arrives here too, with its guards already run.
                 if ($this->getModel()->guardsRan) {
@@ -145,13 +158,26 @@ class GuardedRelationBuilder extends Builder
      *
      * @return list<mixed>
      */
-    private function freezingRows(): array
+    /**
+     * Lock every entry this statement can touch, then its pivots, and report which
+     * entries need a revision.
+     *
+     * @param  list<int|string>  $also  Entries the statement will touch that the
+     *                                  CURRENT rows do not name — a move's
+     *                                  destination. They join the sorted lock
+     *                                  below rather than being locked after it,
+     *                                  because a lock set without a lock order is
+     *                                  what deadlocks.
+     * @return list<int|string>
+     */
+    private function freezingRows(array $also = []): array
     {
         // Unlocked discovery: which entries might this statement touch?
         $sources = (clone $this)->toBase()
             ->distinct()
             ->pluck('entry_relations.source_entry_id')
             ->filter()
+            ->merge($also)
             ->unique()
             // Sorted, so concurrent writers over the same pair take the locks in
             // the same order and cannot deadlock against each other either.
@@ -186,7 +212,10 @@ class GuardedRelationBuilder extends Builder
         $base->offset = null;
         $base->limit = null;
 
-        return $rows->pluck('source_entry_id')->unique()->filter()->values()->all();
+        // ⚠️ The destination is reported as well as locked. It is not among the
+        // frozen rows' current sources — that is the whole point of a move — and a
+        // revision it never appears in leaves its newest version stale.
+        return $rows->pluck('source_entry_id')->merge($also)->unique()->filter()->values()->all();
     }
 
     /**
