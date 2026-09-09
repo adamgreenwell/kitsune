@@ -376,6 +376,7 @@ class AuditedBuilder extends ScopedBuilder
     public function increment($column, $amount = 1, array $extra = [])
     {
         $this->refuseScopeArithmetic([(string) $column => $amount, ...$extra]);
+        $this->refusePerRowExtras($extra);
 
         return $this->auditing(
             'updated',
@@ -391,6 +392,7 @@ class AuditedBuilder extends ScopedBuilder
     public function decrement($column, $amount = 1, array $extra = [])
     {
         $this->refuseScopeArithmetic([(string) $column => $amount, ...$extra]);
+        $this->refusePerRowExtras($extra);
 
         return $this->auditing(
             'updated',
@@ -411,6 +413,7 @@ class AuditedBuilder extends ScopedBuilder
     public function incrementEach(array $columns, array $extra = [])
     {
         $this->refuseScopeArithmetic([...$columns, ...$extra]);
+        $this->refusePerRowExtras($extra);
 
         return $this->auditing(
             'updated',
@@ -426,6 +429,7 @@ class AuditedBuilder extends ScopedBuilder
     public function decrementEach(array $columns, array $extra = [])
     {
         $this->refuseScopeArithmetic([...$columns, ...$extra]);
+        $this->refusePerRowExtras($extra);
 
         return $this->auditing(
             'updated',
@@ -685,6 +689,31 @@ class AuditedBuilder extends ScopedBuilder
                 $before[$entry->getKey()],
                 $after[$entry->getKey()],
             );
+        }
+    }
+
+    /**
+     * Refuse a per-row column smuggled in as an arithmetic assignment.
+     *
+     * ⚠️ Laravel's arithmetic methods take an `$extra` map of ORDINARY assignments,
+     * and they forward straight to the query builder — so they reach neither
+     * `update()` nor `ScopedBuilder::refusePerRowColumns()`.
+     *
+     * `increment('ordering', 0, ['values' => '{"body":"<script>…"}'])` therefore put
+     * raw bytes into `entries.values` with no conversion, and the revision snapshotted
+     * them unsanitized. The same route already had to be closed once for auditing and
+     * once for versioning; this is the third thing it was skipping.
+     *
+     * REFUSED rather than converted, for the reason a bulk update is: an arithmetic
+     * statement can match any number of rows of any number of types, so there is no
+     * single correct conversion for the values it carries.
+     *
+     * @param  array<string, mixed>  $extra
+     */
+    private function refusePerRowExtras(array $extra): void
+    {
+        if ($extra !== []) {
+            $this->refusePerRowColumns($extra);
         }
     }
 

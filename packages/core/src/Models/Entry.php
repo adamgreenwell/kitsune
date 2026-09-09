@@ -1079,6 +1079,17 @@ class Entry extends Model implements RequiresModelSave
             }
         }
 
+        // ⚠️ A TYPE CHANGE is a conversion trigger, because the type decides what the
+        // stored bytes MEAN.
+        //
+        // `values` is keyed by handle and unknown keys pass through untouched, so an
+        // entry can hold `<script>` under a key its current type does not declare —
+        // nothing converts it, because no field claims it. Move the entry to a type
+        // where that key IS `rich_text` and the value becomes rich text having never
+        // met the sanitiser. `entry_type_id` is explicitly mutable (ADR-010), so this
+        // is a supported operation and not an edge case.
+        $convertible[] = 'entry_type_id';
+
         if (array_intersect(array_keys($values), $convertible) === []) {
             return $values;
         }
@@ -1110,6 +1121,23 @@ class Entry extends Model implements RequiresModelSave
             is_array($values['values']) => $values['values'],
             default => null,
         };
+
+        // ⚠️ On a type change that carries no `values` of its own, the STORED values
+        // are converted against the destination type. Without this the trigger above
+        // would resolve the new schema and then find nothing to apply it to.
+        //
+        // Only for a row that exists: on an insert there is nothing stored yet, and
+        // seeding from the instance would write a key the caller never sent.
+        $retyping = $this->exists
+            && array_key_exists('entry_type_id', $values)
+            && (int) $values['entry_type_id'] !== (int) $this->getRawOriginal('entry_type_id');
+
+        if ($inline === null && $retyping) {
+            $inline = $this->values ?? [];
+            // Written back in the encoded shape, because that is what the column takes
+            // and nothing else in this write is carrying it.
+            $encoded = true;
+        }
 
         foreach ($type->fields()->with('fieldStorage')->get() as $field) {
             $storage = $field->fieldStorage;

@@ -438,3 +438,96 @@ describe('a save that touches no field value resolves no schema', function (): v
             ->and(storedValues($entry->fresh())['body'])->toBe('<p>New</p>');
     });
 });
+
+describe('the conversion covers the arithmetic side door too', function (): void {
+    it('refuses values smuggled in as an arithmetic assignment', function (): void {
+        /*
+         * ⚠️ Laravel's arithmetic methods take an `$extra` map of ordinary assignments
+         * and forward straight to the query builder — reaching neither `update()` nor
+         * `refusePerRowColumns()`.
+         *
+         * So `increment('ordering', 0, ['values' => '…<script>…'])` put raw bytes into
+         * `entries.values` with no conversion, and the revision snapshotted them
+         * unsanitized. This route had already been closed once for auditing and once
+         * for versioning; the conversion was the third thing it skipped.
+         *
+         * Refused rather than converted, for the same reason a bulk update is: one
+         * arithmetic statement can match any number of rows of any number of types.
+         */
+        $entry = Entry::create([
+            'entry_type_id' => $this->type->id, 'title' => 'Hello',
+            'values' => ['body' => '<p>Fine</p>'],
+        ]);
+
+        expect(fn () => Entry::query()->whereKey($entry->getKey())
+            ->increment('author_id', 0, ['values' => json_encode(['body' => '<script>alert(1)</script>'])]))
+            ->toThrow(RuntimeException::class, 'cannot be written in bulk');
+
+        // Nothing was written.
+        expect(storedValues($entry->fresh())['body'])->toBe('<p>Fine</p>');
+    });
+
+    it('still allows an arithmetic write that carries no field values', function (): void {
+        // The refusal must be about the smuggled column, not about arithmetic.
+        $entry = Entry::create([
+            'entry_type_id' => $this->type->id, 'title' => 'Hello',
+            'values' => ['body' => '<p>Fine</p>'],
+        ]);
+
+        // `author_id` because `entries` has no `ordering` column — a numeric column
+        // that exists is all this needs.
+        $entry->update(['author_id' => 1]);
+
+        Entry::query()->whereKey($entry->getKey())->increment('author_id', 1);
+
+        expect((int) $entry->fresh()->author_id)->toBe(2);
+    });
+});
+
+describe('a type change reconverts what is already stored', function (): void {
+    it('sanitizes a value that only becomes rich text on the destination type', function (): void {
+        /*
+         * ⚠️ `values` is keyed by handle and an unknown key passes through untouched —
+         * nothing converts it, because no field claims it. So an entry can hold
+         * `<script>` under a key its current type does not declare, and then move to a
+         * type where that key IS `rich_text`: the value becomes rich text having never
+         * met the sanitiser.
+         *
+         * `entry_type_id` is explicitly mutable (ADR-010), so this is a supported
+         * operation rather than an edge case, and the type is what decides what the
+         * stored bytes mean.
+         */
+        $bare = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'bare', 'name' => 'Bare', 'plural_name' => 'Bares',
+        ]);
+
+        // Stored under a key this type does not declare, so nothing converts it.
+        $entry = Entry::create([
+            'entry_type_id' => $bare->id,
+            'title' => 'Smuggled',
+            'values' => ['body' => '<p>Hi</p><script>alert(1)</script>'],
+        ]);
+
+        expect(json_encode(storedValues($entry)))->toContain('script');
+
+        // Now move it to the type where `body` IS rich text.
+        $entry->update(['entry_type_id' => $this->type->id]);
+
+        expect(storedValues($entry->fresh())['body'])->toBe('<p>Hi</p>')
+            ->and(json_encode(storedValues($entry->fresh())))->not->toContain('script');
+    });
+
+    it('leaves values alone when the type does not change', function (): void {
+        // ⚠️ The trigger is a CHANGE of type, not the column merely being present in
+        // the write — otherwise every save that touches `entry_type_id` would rewrite
+        // the whole values blob for nothing.
+        $entry = Entry::create([
+            'entry_type_id' => $this->type->id, 'title' => 'Hello',
+            'values' => ['body' => '<p>Kept</p>'],
+        ]);
+
+        $entry->update(['entry_type_id' => $this->type->id, 'title' => 'Retitled']);
+
+        expect(storedValues($entry->fresh())['body'])->toBe('<p>Kept</p>');
+    });
+});
