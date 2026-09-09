@@ -172,6 +172,33 @@ describe('an explicit locale in the URL wins, per ADR-019', function (): void {
         }
     });
 
+    it('ignores a locale parameter that is not a string', function (): void {
+        /*
+         * ⚠️ A 500 ON A URL ANYONE CAN TYPE, and the guard the resolver already had could
+         * not catch it. `?locale[]=fr` makes Laravel return `['fr']` and
+         * `?locale[a][b]=fr` a nested array — measured, both — so the value hit a
+         * `?string` parameter and threw a TypeError before `firstUsable()` ever ran. An
+         * untrusted URL became an error page rather than being ignored.
+         *
+         * Two guards, two questions: this one asks whether there is a string at all, the
+         * shape guard asks whether the string looks like a language tag. Neither subsumes
+         * the other, which is why a shape guard on every candidate did not cover this.
+         */
+        app()->setLocale('en');
+        app(Context::class)->setSite($this->arabic);
+
+        foreach (['?locale[]=fr', '?locale[a][b]=fr', '?locale[]=fr&locale[]=de'] as $query) {
+            $request = Request::create('/admin'.$query);
+            $request->setUserResolver(fn () => new ViewerWithPreference('de'));
+
+            $response = (new SetUiLocale(new LocaleResolver))->handle($request, fn () => response('ok'));
+
+            // Falls through to the stored preference, and crucially does not throw.
+            expect(app()->getLocale())->toBe('de', "[{$query}] did not fall through")
+                ->and($response->getContent())->toBe('ok');
+        }
+    });
+
     it('reads the query string and not the request body', function (): void {
         /*
          * ⚠️ `query()` rather than `input()`, because `input()` also reads the BODY. A

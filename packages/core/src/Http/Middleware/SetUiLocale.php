@@ -57,6 +57,27 @@ final class SetUiLocale
 
     public function __construct(private readonly LocaleResolver $locales) {}
 
+    /**
+     * The locale asked for in the URL, or null when nothing usable was.
+     *
+     * ⚠️ A QUERY PARAMETER IS NOT NECESSARILY A STRING, and treating it as one was a
+     * 500 on a URL anyone can type. `?locale[]=fr` makes Laravel return `['fr']`, and
+     * `?locale[a][b]=fr` a nested array — measured, both — so passing the value straight
+     * into a `?string` parameter threw a TypeError before the resolver's shape guard
+     * could reject it. An untrusted URL turned into an error page instead of being
+     * ignored.
+     *
+     * The guard is on the TYPE here and on the shape in `LocaleResolver`, and they are
+     * different questions: this one asks whether there is a string at all, that one
+     * whether the string looks like a language tag. Neither subsumes the other.
+     */
+    private static function requestedLocale(Request $request): ?string
+    {
+        $requested = $request->query(self::LOCALE_PARAMETER);
+
+        return is_string($requested) ? $requested : null;
+    }
+
     public function handle(Request $request, Closure $next): Response
     {
         app()->setLocale($this->locales->forViewer(
@@ -71,7 +92,7 @@ final class SetUiLocale
             // POST field named `locale` — an ordinary name for a form field, including one
             // that edits this very preference — would silently redirect the chrome
             // mid-submit. The URL is the stated channel; the body is not.
-            requested: $request->query(self::LOCALE_PARAMETER),
+            requested: self::requestedLocale($request),
         ));
 
         return $next($request);
