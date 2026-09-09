@@ -20,9 +20,14 @@ use Kitsune\Core\Schema\Drivers\PostgresDriver;
 use Kitsune\Core\Schema\Drivers\SqliteDriver;
 
 /*
- * field-types.md: "A type that answers three of four is not shippable." These
- * tests hold every registered type to the whole contract, so a new type
+ * These tests hold every registered type to the whole contract, so a new type
  * cannot be added that edits beautifully and cannot be queried.
+ *
+ * ⚠️ The quotation that used to head this block — "a type that answers three of
+ * four is not shippable" — has been removed from field-types.md, because all
+ * twelve shipped types answered exactly three: there was no UI method on the
+ * interface at all. Citing an aspiration as an invariant made a real gap look
+ * closed. `control()` is the UI face now (ADR-029).
  */
 
 beforeEach(function (): void {

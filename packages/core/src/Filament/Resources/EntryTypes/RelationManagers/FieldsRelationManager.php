@@ -230,8 +230,10 @@ class FieldsRelationManager extends RelationManager
                         ->dehydrated(),
                 ]),
 
-            // Rendered from the field type's own settingsSchema() data, so
-            // core stays headless-capable and a new type needs no admin code.
+            // Rendered from the field type's own settingsSchema() data — a field type
+            // describes, the panel builds (ADR-029) — so a new type needs no admin code.
+            // Not "so core stays headless-capable": core hard-requires Filament
+            // (ADR-008), and ADR-029 records what the seam actually buys.
             Section::make('Settings')
                 ->schema(fn (Get $get): array => ($type = self::type($get)) === null
                     ? []
