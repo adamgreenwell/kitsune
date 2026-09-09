@@ -356,16 +356,63 @@ class Entry extends Model implements RequiresModelSave
         return true;
     }
 
-    /** Whether this save changed anything a reader would call a new version. */
-    private function hasVersionedChanges(): bool
+    /**
+     * The values a revision would record, as they currently stand.
+     *
+     * ⚠️ RAW originals rather than accessor values. `published_at` casts to a
+     * Carbon instance, and comparing two of those with `!==` compares object
+     * identity — every restore would look like a change. The raw values are
+     * scalars and strings, so a plain array comparison means what it says.
+     *
+     * ⚠️ Except for a JSON column, where the raw string is NOT the value.
+     *
+     * MySQL stores and returns `values` in its own key order, so a no-op restore
+     * read `{"b":2,"a":1}` before and wrote `{"a":1,"b":2}` after — the same data,
+     * a different serialisation, and a duplicate revision filed for a restore that
+     * changed nothing. Found by the engine matrix: SQLite, PostgreSQL and MariaDB
+     * all preserved the order and agreed, so a single-engine run would have shipped
+     * it. And a duplicate is not merely untidy — history is bounded, so it costs a
+     * genuine older version off the end.
+     *
+     * Nothing in Kitsune may depend on JSON key order (field order comes from
+     * `fields.ordering`), which is exactly why the comparison must not either.
+     *
+     * @return array<string, mixed>
+     */
+    private function versionedState(): array
     {
-        foreach (self::VERSIONED_COLUMNS as $attribute) {
-            if ($this->wasChanged($attribute)) {
-                return true;
+        $state = [];
+
+        foreach (self::VERSIONED_COLUMNS as $column) {
+            $raw = $this->getRawOriginal($column);
+
+            // Only the columns actually cast to a structure are decoded — a title
+            // that happens to look like JSON is a title.
+            $state[$column] = ($this->getCasts()[$column] ?? null) === 'array' && is_string($raw)
+                ? self::keySorted((array) json_decode($raw, true))
+                : $raw;
+        }
+
+        return $state;
+    }
+
+    /**
+     * The same data with every level's keys in one order.
+     *
+     * @param  array<array-key, mixed>  $value
+     * @return array<array-key, mixed>
+     */
+    private static function keySorted(array $value): array
+    {
+        ksort($value);
+
+        foreach ($value as $key => $nested) {
+            if (is_array($nested)) {
+                $value[$key] = self::keySorted($nested);
             }
         }
 
-        return false;
+        return $value;
     }
 
     /**
@@ -970,6 +1017,22 @@ class Entry extends Model implements RequiresModelSave
 
             $relationsBefore = $this->relationState();
 
+            // ⚠️ A SNAPSHOT, because `wasChanged()` cannot answer this.
+            //
+            // It reads the model's `$changes`, which is populated by the last save
+            // that actually wrote something — and neither `refresh()` nor a save
+            // with nothing dirty clears it. So an instance that had already
+            // performed an update and then restored its newest revision saw the
+            // EARLIER edit's changes, filed a duplicate revision for a restore that
+            // changed nothing, and with enough repetitions pruned a genuine older
+            // version off the end of the bounded history.
+            //
+            // Comparing before and after answers the question actually being asked
+            // — did this restore change the entry? — without depending on when
+            // Eloquent last synced its bookkeeping. It is the same comparison
+            // `recordRevisionForEventlessWrite()` makes, for the same reason.
+            $scalarBefore = $this->versionedState();
+
             // ⚠️ ONE version, recorded at the END. The scalar save fires
             // `updated`, so a revision filed there described the entry with its
             // OLD relations — and when nothing scalar changed it filed nothing at
@@ -985,7 +1048,7 @@ class Entry extends Model implements RequiresModelSave
                 }
             });
 
-            if ($this->hasVersionedChanges() || $this->relationState() !== $relationsBefore) {
+            if ($this->versionedState() !== $scalarBefore || $this->relationState() !== $relationsBefore) {
                 $this->recordRevision();
             }
         });

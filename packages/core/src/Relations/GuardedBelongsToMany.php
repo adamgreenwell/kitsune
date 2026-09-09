@@ -137,10 +137,27 @@ class GuardedBelongsToMany extends BelongsToMany
      */
     public function detach($ids = null, $touch = true)
     {
-        return $this->versioned(
-            fn (): array => $this->detachSourceKeys($ids),
-            fn () => parent::detach($ids, $touch),
-        );
+        // ⚠️ The pivot pin belongs to THIS delete, and leaving it on the relation
+        // made a retained object progressively unable to detach anything.
+        //
+        // `freezingIncomingPivots()` adds `id IN (...)` through `wherePivotIn()`,
+        // which appends to the relation's own `$pivotWhereIns`. A caller that keeps
+        // a `referencedBy()` object and detaches twice therefore accumulated two
+        // disjoint id sets, ANDed together — so the second detach matched nothing
+        // and silently left the row it was asked to remove.
+        //
+        // Snapshotted and restored unconditionally: it costs an array copy, and it
+        // means no future constraint added inside the freeze can leak either.
+        $pins = $this->pivotWhereIns;
+
+        try {
+            return $this->versioned(
+                fn (): array => $this->detachSourceKeys($ids),
+                fn () => parent::detach($ids, $touch),
+            );
+        } finally {
+            $this->pivotWhereIns = $pins;
+        }
     }
 
     /**

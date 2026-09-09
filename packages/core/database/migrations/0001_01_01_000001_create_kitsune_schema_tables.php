@@ -158,6 +158,29 @@ return new class extends Migration
             // error. Every revision is written by `recordRevision()` from an
             // entry whose own column is NOT NULL, so the value is always there;
             // the schema now says that rather than leaving a hole to handle.
+            //
+            // ⚠️ CASCADE, and the protection lives in the guard rather than here.
+            //
+            // The hazard is real: `entries.entry_type_id` is MUTABLE, so moving
+            // every entry of type A to type B leaves `EntryType::guardCascade()`
+            // counting zero A entries while every one of those entries still has
+            // A-era revisions. Deleting A then took that history out through this
+            // key, for entries that still exist, in a system whose revision UI
+            // deliberately offers no way to delete a revision.
+            //
+            // ⚠️ RESTRICT was the first answer and it was wrong, because the
+            // database cannot tell the two cases apart. Deleting an ORG legitimately
+            // removes its types and their history, and it reaches `entry_types` by
+            // cascade — so a restrict here made `delete from orgs` fail with a
+            // foreign key violation. At the database level "delete a type because
+            // its org is going" and "delete a type on its own" are the same
+            // statement; only the caller knows which it is.
+            //
+            // So the distinction lives where the intent is known:
+            // `EntryType::guardCascade()` refuses the second case and now counts
+            // revisions as well as entries, and `RefusesCascadingDeletes` makes the
+            // bulk paths run the same rule. The cascade stays for the first case,
+            // where taking the history along is correct.
             $table->foreignId('entry_type_id')->constrained()->cascadeOnDelete();
             $table->json('values')->nullable();
             // ⚠️ Relations are the THIRD storage strategy and a revision that

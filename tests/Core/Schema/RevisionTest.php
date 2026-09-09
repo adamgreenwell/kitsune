@@ -1610,3 +1610,199 @@ describe('an incoming detach removes the rows it froze', function (): void {
         expect(DB::table('entry_relations')->where('target_entry_id', $target->getKey())->count())->toBe(0);
     });
 });
+
+describe('history is not collateral damage of deleting a type', function (): void {
+    it('refuses to delete a type whose revisions still record it', function (): void {
+        /*
+         * ⚠️ `EntryType::guardCascade()` counted ENTRIES, and `entry_type_id` on an
+         * entry is mutable — so moving every entry of type A to type B made the
+         * count zero and permitted the delete. The foreign key then cascaded away
+         * every surviving entry's A-era revisions: the entries stayed, their history
+         * went, irreversibly, in a system whose revision UI deliberately offers no
+         * way to delete a revision at all.
+         *
+         * Those revisions are the only remaining record of what the values meant
+         * under A, which is exactly why they are recorded against a type at all.
+         */
+        $other = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'note', 'name' => 'Note', 'plural_name' => 'Notes',
+        ]);
+
+        $entry = anEntry(['title' => 'Written as an article']);
+        $entry->update(['title' => 'Still an article']);
+
+        $before = EntryRevision::query()->where('entry_type_id', $this->type->id)->count();
+        expect($before)->toBeGreaterThan(0);
+
+        // Move it, which is a supported operation and leaves the history behind.
+        $entry->update(['entry_type_id' => $other->id]);
+
+        expect(Entry::query()->where('entry_type_id', $this->type->id)->count())->toBe(0)
+            ->and(EntryRevision::query()->where('entry_type_id', $this->type->id)->count())->toBe($before);
+
+        expect(fn () => $this->type->delete())
+            ->toThrow(RuntimeException::class, 'still record it as the schema');
+
+        // And the history is intact, which is the thing being protected.
+        expect(EntryRevision::query()->where('entry_type_id', $this->type->id)->count())->toBe($before)
+            ->and($entry->fresh())->not->toBeNull();
+    });
+
+    it('still deletes a type nothing records', function (): void {
+        // The guard must not become a reason types can never be removed.
+        $unused = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'unused', 'name' => 'Unused', 'plural_name' => 'Unused',
+        ]);
+
+        $unused->delete();
+
+        expect(EntryType::query()->whereKey($unused->getKey())->exists())->toBeFalse();
+    });
+});
+
+describe('a field is discoverable through the history that records it', function (): void {
+    it('refuses to remove a field whose only data is in a moved entry\'s history', function (): void {
+        /*
+         * ⚠️ The revision check sat UNDER `entries.entry_type_id = $type`, so it
+         * asked "does any entry OF THIS TYPE have a revision holding this?" — and
+         * after a move there are none, while the revisions still exist.
+         *
+         * So deleting the field was permitted, and `redactField()` then resolves
+         * storage through the entry's CURRENT schema and cannot see the field at
+         * all. The historical values are stranded and uneraseable, which is the
+         * precise failure ADR-020 exists to prevent.
+         *
+         * `entry_revisions.entry_type_id` records the schema each snapshot was
+         * written against, so the question is answerable without touching `entries`.
+         */
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'author_name', 'type' => 'text',
+            'pii_class' => 'personal', 'cardinality' => 1,
+        ]);
+        $field = Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id,
+            'label' => 'Author name', 'ordering' => 0,
+        ]);
+
+        $entry = anEntry(['title' => 'Profile', 'values' => ['author_name' => 'Alex Doe']]);
+
+        // Clear the live value, so only history holds it...
+        $entry->update(['values' => []]);
+
+        // ...then move the entry to another type, which is what hid the history.
+        $other = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'note', 'name' => 'Note', 'plural_name' => 'Notes',
+        ]);
+        $entry->update(['entry_type_id' => $other->id]);
+
+        expect(fn () => $field->delete())
+            ->toThrow(RuntimeException::class, 'still hold data for it');
+    });
+
+    it('still removes a field nothing holds data for', function (): void {
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'unused_note', 'type' => 'text',
+            'pii_class' => 'none', 'cardinality' => 1,
+        ]);
+        $field = Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id,
+            'label' => 'Unused', 'ordering' => 0,
+        ]);
+
+        $field->delete();
+
+        expect(Field::query()->whereKey($field->getKey())->exists())->toBeFalse();
+    });
+});
+
+describe('a no-op restore files nothing, however the instance got here', function (): void {
+    it('does not file a duplicate for a restore on an instance that already saved', function (): void {
+        /*
+         * ⚠️ `wasChanged()` reads the model's `$changes`, populated by the last save
+         * that actually wrote something — and neither `refresh()` nor a save with
+         * nothing dirty clears it.
+         *
+         * So the SAME instance updating and then restoring its newest revision saw
+         * the earlier edit's changes and filed a revision for a restore that changed
+         * nothing. History is bounded, so enough repetitions prune a genuine older
+         * version off the end — a duplicate is not merely untidy, it costs a real
+         * version.
+         *
+         * The decision is made on a before/after snapshot now, which answers the
+         * question actually being asked rather than depending on when Eloquent last
+         * synced its bookkeeping.
+         */
+        // ⚠️ Keys deliberately NOT in sorted order, because that is what caught the
+        // second half of this bug. MySQL stores and returns `values` in its own key
+        // order, so the state read before the restore and the state written after it
+        // were the same data in a different serialisation — and the comparison
+        // called that a change. SQLite, PostgreSQL and MariaDB all preserved the
+        // order and agreed, so only the engine matrix could see it.
+        $entry = anEntry(['title' => 'First', 'values' => ['zebra' => 1, 'apple' => 2]]);
+
+        // The same instance performs an update, which populates `$changes`...
+        $entry->update(['title' => 'Second']);
+
+        $newest = $entry->revisions()->orderByDesc('id')->firstOrFail();
+        $count = $entry->revisions()->count();
+
+        // ...and then restores the revision it already matches.
+        $entry->restoreRevision($newest);
+
+        expect($entry->revisions()->count())->toBe($count)
+            ->and($entry->fresh()->title)->toBe('Second');
+
+        // Repeatedly, because the bounded history is what a duplicate costs.
+        $entry->restoreRevision($newest);
+        $entry->restoreRevision($newest);
+
+        expect($entry->revisions()->count())->toBe($count);
+    });
+
+    it('still files a version when a restore genuinely changes something', function (): void {
+        // The snapshot comparison must not become a way of never recording.
+        $entry = anEntry(['title' => 'First']);
+        $entry->update(['title' => 'Second']);
+
+        $first = $entry->revisions()->orderBy('id')->firstOrFail();
+        $count = $entry->revisions()->count();
+
+        $entry->restoreRevision($first);
+
+        expect($entry->revisions()->count())->toBe($count + 1)
+            ->and($entry->fresh()->title)->toBe('First');
+    });
+});
+
+describe('the detach pin does not outlive its delete', function (): void {
+    it('detaches twice on the same retained relation object', function (): void {
+        /*
+         * ⚠️ The freeze pins the delete with `wherePivotIn('id', ...)`, which appends
+         * to the RELATION's own `$pivotWhereIns`. A caller holding a
+         * `referencedBy()` object and detaching twice therefore accumulated two
+         * disjoint id sets, ANDed together — so the second detach matched nothing
+         * and silently left the row it was asked to remove.
+         *
+         * Retaining a relation object is ordinary Eloquent usage, so the pin has to
+         * belong to one delete rather than to the relation.
+         */
+        $target = anEntry(['title' => 'Referenced']);
+        $first = anEntry(['title' => 'First source']);
+        $second = anEntry(['title' => 'Second source']);
+
+        // ⚠️ ONE relation object, used for both operations. Resolving it twice
+        // would hide the defect entirely.
+        $incoming = $target->referencedBy();
+
+        $first->related()->attach($target->getKey());
+        $incoming->detach();
+
+        expect(DB::table('entry_relations')->where('target_entry_id', $target->getKey())->count())->toBe(0);
+
+        // A new incoming relation, and the same object asked again.
+        $second->related()->attach($target->getKey());
+        $incoming->detach();
+
+        expect(DB::table('entry_relations')->where('target_entry_id', $target->getKey())->count())->toBe(0);
+    });
+});

@@ -446,17 +446,45 @@ class EntryType extends Model implements RefusesCascadingDeletes, RequiresModelS
             fn ($query) => $query->withTrashed()->where('entry_type_id', $this->getKey())->count(),
         );
 
-        if ($entries === 0) {
+        if ($entries > 0) {
+            throw new RuntimeException(sprintf(
+                'Entry type [%s] still has %d entr%s, and the database would delete them by cascade — '
+                .'permanently, with nothing in the audit trail saying they existed (ADR-020). Delete '
+                .'the entries first, which is audited.',
+                $this->handle,
+                $entries,
+                $entries === 1 ? 'y' : 'ies',
+            ));
+        }
+
+        // ⚠️ REVISIONS as well, and counting entries alone was not the same
+        // question.
+        //
+        // `entries.entry_type_id` is mutable. Move every entry of type A to type B
+        // and the count above is zero — while every one of those entries still has
+        // A-era revisions recording the schema their values were authored against.
+        // Permitting the delete then took that history out through the foreign key,
+        // for entries that still exist, in a system whose revision UI deliberately
+        // offers no way to delete a revision.
+        //
+        // The foreign key restricts now, so the database would refuse anyway. This
+        // is here to refuse FIRST, with a reason a person can act on — a constraint
+        // violation names a column, not a decision.
+        $revisions = EntryRevision::query()->where('entry_type_id', $this->getKey())->count();
+
+        if ($revisions === 0) {
             return;
         }
 
         throw new RuntimeException(sprintf(
-            'Entry type [%s] still has %d entr%s, and the database would delete them by cascade — '
-            .'permanently, with nothing in the audit trail saying they existed (ADR-020). Delete '
-            .'the entries first, which is audited.',
+            'Entry type [%s] has no entries left, but %d revision%s still record it as the schema '
+            .'their values were written against — belonging to entries that have since moved to '
+            .'another type. Deleting it would remove that history for entries that still exist, and '
+            .'nothing in Kitsune deletes a revision (ADR-020). Erase those entries\' history first '
+            .'if it genuinely has to go.',
             $this->handle,
-            $entries,
-            $entries === 1 ? 'y' : 'ies',
+            $revisions,
+            $revisions === 1 ? '' : 's',
         ));
     }
 
