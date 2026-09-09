@@ -792,9 +792,13 @@ describe('a pattern that cannot compile is refused where it is authored', functi
         expect(Pattern::compiles('^[A-Z]{2}-[0-9]+$'))->toBeTrue()
             ->and(Pattern::compiles('^[A-Z'))->toBeFalse()
             ->and(Pattern::compiles('a/b#c~d%e!f'))->toBeFalse()
-            ->and(Pattern::delimit('^[a-z]+$'))->toBe('/^[a-z]+$/u')
+            // ⚠️ `uD`, not `u`. `D` anchors `$` to the end of input, which is what
+            // ECMAScript's `$` means without `m` — PCRE otherwise lets it match
+            // before a final newline, so the validator accepted a trailing newline
+            // that the published schema forbade.
+            ->and(Pattern::delimit('^[a-z]+$'))->toBe('/^[a-z]+$/uD')
             // The first delimiter the pattern does not itself contain.
-            ->and(Pattern::delimit('a/b'))->toBe('#a/b#u');
+            ->and(Pattern::delimit('a/b'))->toBe('#a/b#uD');
     });
 });
 

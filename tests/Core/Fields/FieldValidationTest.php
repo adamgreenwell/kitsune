@@ -336,6 +336,35 @@ it('publishes the text length and pattern it enforces', function (): void {
 });
 
 describe('one pattern string cannot serve two grammars', function (): void {
+    it('anchors $ to the end of input, as the published dialect does', function (): void {
+        /*
+         * ⚠️ A divergence in the VALIDATOR, not in the published text — and the API
+         * was the laxer of the two, which is the worse direction.
+         *
+         * PCRE lets `$` match before a final newline; ECMAScript's `$` without `m`
+         * matches only at the end of input. Measured on PHP 8.4.25/PCRE 10.48 and
+         * Node v22.23.2, `^a$` matches "a\n" server-side and no generated client
+         * accepts the same value. So a field advertising `^[a-z]+$` accepted
+         * something its own schema forbade.
+         *
+         * `delimit()` adds `D` now. It cannot be expressed in the published pattern,
+         * and refusing `$` would remove the most common anchor there is — so making
+         * PCRE behave the way the schema already promises is the only fix that keeps
+         * the constraint.
+         */
+        expect(validate('text', ['f' => 'abc'], ['pattern' => '^[a-z]+$'])->fails())->toBeFalse()
+            // The trailing newline is refused now, matching every consumer.
+            ->and(validate('text', ['f' => "abc\n"], ['pattern' => '^[a-z]+$'])->fails())->toBeTrue()
+            ->and(validate('text', ['f' => "abc\nabc"], ['pattern' => '^[a-z]+$'])->fails())->toBeTrue();
+
+        // And the modifier is not smuggled into what consumers are given: the
+        // published pattern is still the author's own text.
+        $type = app(FieldTypeRegistry::class)->get('text');
+
+        expect($type->apiSchema(configFor('text', ['maxLength' => 40, 'pattern' => '^[a-z]+$']))['pattern'])
+            ->toBe('^[a-z]+$');
+    });
+
     /*
      * ⚠️ JSON Schema wants an UNDELIMITED pattern; `preg_match()` requires
      * delimiters. `^[a-z]+$` — the form the published schema needs, and the

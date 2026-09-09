@@ -36,12 +36,38 @@ final class Pattern
      */
     private const DELIMITERS = ['/', '#', '~', '%', '!'];
 
+    /**
+     * Modifiers every pattern is compiled with, chosen so PCRE agrees with the
+     * dialect the pattern is published in.
+     *
+     * `u` for UTF-8 and Unicode properties, which the screen's measurements assume.
+     *
+     * ⚠️ `D` because `$` MEANS SOMETHING DIFFERENT without it, and this was a
+     * divergence in the validator rather than in the published text.
+     *
+     * PCRE lets `$` match before a final newline; ECMAScript's `$` without `m`
+     * matches only at the end of input. Measured on PHP 8.4.25/PCRE 10.48 and Node
+     * v22.23.2:
+     *
+     *   `^a$`  on "a\n"   PCRE matches, ECMAScript does not
+     *   `^a$D` on "a\n"   neither matches
+     *
+     * So a field validated `^[a-z]+$` accepted a trailing newline through the API
+     * and every generated client rejected the same value — the API being the LAXER
+     * of the two, which is the worse direction. `D` is the whole fix: it cannot be
+     * expressed in the published pattern, and refusing `$` outright would remove
+     * the most common anchor there is.
+     *
+     * `D` is ignored when `m` is set, and nothing here sets `m`.
+     */
+    private const MODIFIERS = 'uD';
+
     /** The pattern wrapped in a delimiter it does not itself contain, or null. */
     public static function delimit(string $pattern): ?string
     {
         foreach (self::DELIMITERS as $delimiter) {
             if (! str_contains($pattern, $delimiter)) {
-                return $delimiter.$pattern.$delimiter.'u';
+                return $delimiter.$pattern.$delimiter.self::MODIFIERS;
             }
         }
 
