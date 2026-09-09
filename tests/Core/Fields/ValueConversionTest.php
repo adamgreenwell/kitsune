@@ -296,3 +296,145 @@ describe('the pre-sanitization original is kept beside the revision', function (
         }
     });
 });
+
+describe('a quiet save cannot skip the conversion', function (): void {
+    /*
+     * ⚠️ The first version of this pipeline lived in a `saving` listener, and
+     * `saveQuietly()`, `createQuietly()`, `updateQuietly()` and `withoutEvents()` all
+     * suppress model events while still reaching the builder. So a `<script>` payload
+     * went in unchanged AND was recorded unsanitized in the revision.
+     *
+     * My commit message for that version said "the guard is where the write is" while
+     * the guard sat in an event, which is not where the write is. This project has
+     * found that shape ten times; this is the first time I added one.
+     *
+     * Conversion happens in `AuditedBuilder::insertGetId()` and `update()` now — the
+     * path every one of these still travels.
+     */
+    it('sanitizes a createQuietly', function (): void {
+        $entry = Entry::withoutEvents(fn () => Entry::create([
+            'entry_type_id' => test()->type->id,
+            'org_id' => test()->org->id,
+            'site_id' => test()->site->id,
+            'type_handle' => 'article',
+            'title' => 'Quiet',
+            'values' => ['body' => '<p>Quiet</p><script>alert(1)</script>'],
+        ]));
+
+        expect(storedValues($entry)['body'])->toBe('<p>Quiet</p>')
+            ->and(json_encode(storedValues($entry)))->not->toContain('script');
+    });
+
+    it('sanitizes a saveQuietly', function (): void {
+        $entry = Entry::create([
+            'entry_type_id' => $this->type->id, 'title' => 'Hello',
+            'values' => ['body' => '<p>Fine</p>'],
+        ]);
+
+        $entry->values = ['body' => '<p>Later</p><script>alert(1)</script>'];
+        $entry->saveQuietly();
+
+        expect(storedValues($entry->fresh())['body'])->toBe('<p>Later</p>')
+            ->and(json_encode(storedValues($entry->fresh())))->not->toContain('script');
+    });
+
+    it('sanitizes inside withoutEvents', function (): void {
+        $entry = Entry::create([
+            'entry_type_id' => $this->type->id, 'title' => 'Hello',
+            'values' => ['body' => '<p>Fine</p>'],
+        ]);
+
+        Entry::withoutEvents(function () use ($entry): void {
+            $entry->update(['values' => ['body' => '<p>Silent</p><img src=x onerror=alert(1)>']]);
+        });
+
+        expect(json_encode(storedValues($entry->fresh())))->not->toContain('onerror');
+    });
+
+    it('records the revision original from a quiet write too', function (): void {
+        // ⚠️ The revision half of the same gap: a quiet write recorded the
+        // unsanitized bytes into the snapshot as well, so history carried what the
+        // entry did not.
+        $entry = Entry::create([
+            'entry_type_id' => $this->type->id, 'title' => 'Hello',
+            'values' => ['body' => '<p>One</p>'],
+        ]);
+
+        $entry->values = ['body' => '<p>Two</p><script>x</script>'];
+        $entry->saveQuietly();
+
+        $revision = $entry->revisions()->latest('id')->firstOrFail();
+
+        expect($revision->values['body'])->toBe('<p>Two</p>')
+            ->and($revision->unsanitized_values['body'])->toContain('script');
+    });
+});
+
+describe('a save that touches no field value resolves no schema', function (): void {
+    it('runs no extra queries when only the title changes', function (): void {
+        /*
+         * ⚠️ The first version CLAIMED this optimisation in a comment and did not
+         * implement it: it queried the entry type and loaded its fields and storage on
+         * every save, whatever changed. On the 1 vCPU / SQLite floor (ADR-027) that is
+         * several queries added to every write for nothing.
+         *
+         * The short-circuit is structural now rather than a check: only columns the
+         * write actually carries are converted, so a title-only save never resolves a
+         * field at all. Counting queries is the only way to assert an absence.
+         */
+        $entry = Entry::create([
+            'entry_type_id' => $this->type->id, 'title' => 'First',
+            'values' => ['body' => '<p>Body</p>'],
+        ]);
+
+        /*
+         * ⚠️ Matched on where the statement STARTS, not on what it contains.
+         *
+         * `lockStorageHoldingData()` is a pre-existing `saved` listener and its query
+         * is `select * from field_storage where is_locked = ? and exists (select *
+         * from fields ...)` — so a `str_contains($sql, 'from fields')` matcher counts
+         * it and this test fails for a reason that has nothing to do with the
+         * conversion. I hit exactly that, and the tempting fix was to loosen the
+         * assertion rather than sharpen the matcher.
+         *
+         * The conversion's own queries are the type lookup and its fields, both of
+         * which START with those tables. The subquery does not.
+         */
+        $schemaQueries = 0;
+        DB::listen(function ($query) use (&$schemaQueries): void {
+            $sql = (string) preg_replace('/[`"]/', '', $query->sql);
+
+            if (str_starts_with($sql, 'select * from entry_types')
+                || str_starts_with($sql, 'select * from fields ')) {
+                $schemaQueries++;
+            }
+        });
+
+        $entry->update(['title' => 'Retitled']);
+
+        expect($schemaQueries)->toBe(0);
+    });
+
+    it('does resolve the schema when a field value changes', function (): void {
+        // The other side: the short-circuit must not become a way of never converting.
+        $entry = Entry::create([
+            'entry_type_id' => $this->type->id, 'title' => 'First',
+            'values' => ['body' => '<p>Body</p>'],
+        ]);
+
+        $schemaQueries = 0;
+        DB::listen(function ($query) use (&$schemaQueries): void {
+            $sql = (string) preg_replace('/[`"]/', '', $query->sql);
+
+            if (str_starts_with($sql, 'select * from entry_types')
+                || str_starts_with($sql, 'select * from fields ')) {
+                $schemaQueries++;
+            }
+        });
+
+        $entry->update(['values' => ['body' => '<p>New</p><script>x</script>']]);
+
+        expect($schemaQueries)->toBeGreaterThan(0)
+            ->and(storedValues($entry->fresh())['body'])->toBe('<p>New</p>');
+    });
+});

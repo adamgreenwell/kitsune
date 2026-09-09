@@ -95,6 +95,10 @@ class AuditedBuilder extends ScopedBuilder
     {
         $model = $this->getModel();
 
+        // ⚠️ Conversion happens HERE, not in a `saving` listener, because this is the
+        // path a quiet save cannot skip. See `Entry::convertFieldValuesForWrite()`.
+        $values = $model->convertFieldValuesForWrite($values);
+
         $this->guardScopeKeys($values);
 
         return DB::transaction(function () use ($values, $sequence, $model) {
@@ -334,6 +338,9 @@ class AuditedBuilder extends ScopedBuilder
     /** @param  array<string, mixed>  $values */
     public function update(array $values)
     {
+        // Same conversion as the insert path, at the same place: the write.
+        $values = $this->getModel()->convertFieldValuesForWrite($values);
+
         $this->guardScopeKeys($values);
 
         return $this->auditing($this->actionFor($values), fn () => parent::update($values), $values);

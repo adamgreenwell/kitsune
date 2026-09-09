@@ -227,7 +227,9 @@ User-supplied HTML rendered on public pages. **The only field type in v1 that is
 - `<script>`, `<style>`, `<iframe>`, event handler attributes and `javascript:` URLs are never permitted, regardless of settings
 - Store sanitized. Store the pre-sanitization original **only** in the revision record, never in `entries.values` — implemented as `entry_revisions.unsanitized_values`, a column `snapshot()` does not expose, so a restore cannot reach it. Erasure sweeps it alongside `values`, because it holds the author's original bytes and is personal data like any other value
 
-> **Status, measured 2026-09-09: the write half is implemented.** `Entry::saving` runs every submitted value through its field type's `toStorage()`, so `rich_text` is sanitized on the way in — a test asserts the bytes in the column, not the sanitizer's return value. `values` is in `columnsRequiringModelSave()`, so the one write shape that would skip the pipeline is refused rather than trusted.
+> **Status, measured 2026-09-09: the write half is implemented.** `AuditedBuilder`'s insert and update paths run every value being written through its field type's `toStorage()`, so `rich_text` is sanitized on the way in — a test asserts the bytes in the column, not the sanitizer's return value. `values` is in `columnsRequiringModelSave()`, so the one write shape that would skip the pipeline is refused rather than trusted.
+>
+> ⚠️ In the **builder**, not in a `saving` listener. `saveQuietly()`, `createQuietly()`, `updateQuietly()` and `withoutEvents()` suppress model events while still reaching the builder, so a listener would have left every quiet write unsanitized — in `entries.values` and in the revision snapshot alike. A guard has to sit where the write is, and an event is not where the write is.
 >
 > A bulk write to `values` is refused rather than converted, and that is deliberate: one statement covers rows of many entry types with different field sets, so there is no single correct conversion for it. The conversion is per row because the schema is per row.
 >

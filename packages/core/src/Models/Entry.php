@@ -87,20 +87,6 @@ class Entry extends Model implements RequiresModelSave
 
     protected static function booted(): void
     {
-        // ⚠️ CONVERSION FIRST, before any guard reads a value.
-        //
-        // `FieldType::toStorage()` is declared on the contract, implemented by all
-        // twelve types, and until now had no caller on any save path — so whatever
-        // a caller put in `values` was what got stored. For `rich_text` that means
-        // the sanitiser never ran: field-types.md §6 calls it the only XSS vector in
-        // v1 and requires it be sanitized on write, and that requirement was simply
-        // unmet (issue #42).
-        //
-        // Registered first so every later guard, and every projection, sees the
-        // value in its STORED form rather than the submitted one. A guard that
-        // inspects a value the pipeline is about to rewrite is inspecting a draft.
-        static::saving(fn (self $entry) => $entry->convertValuesForStorage());
-
         // type_handle is denormalised for routing lookups, so it must never
         // disagree with the type it points at.
         // ⚠️ A SITE change revalidates the relations pointing at this entry.
@@ -1018,35 +1004,11 @@ class Entry extends Model implements RequiresModelSave
     public const KEEP_REVISIONS = 50;
 
     /**
-     * Put every submitted value through its field type's `toStorage()`.
-     *
-     * ⚠️ This is the value-conversion pipeline, and its absence was a security
-     * requirement going unmet rather than an untidiness. `RichTextType::toStorage()`
-     * sanitises; nothing called it; so `<p>Hello</p><script>alert(1)</script>` was
-     * stored verbatim (issue #42, field-types.md §6).
-     *
-     * ⚠️ THE GUARD IS WHERE THE WRITE IS. The model is fully mass assignable, so
-     * "callers should convert first" is not a mechanism — it is a hope. Every path
-     * that stores an entry ends at a model save, so the conversion lives here and
-     * `columnsRequiringModelSave()` refuses the one shape that would skip it.
-     *
-     * ⚠️ Only when the value actually changed. This resolves the type's fields,
-     * which is a query, and an entry is saved for many reasons that touch no field
-     * value at all — a slug restamp, a site move, an erasure of a different field.
-     * Converting unconditionally would put that query on all of them.
-     *
-     * Relational fields are deliberately not handled here: their data is rows in
-     * `entry_relations`, written through the relation API and its guarded builder,
-     * not through any attribute on this model. There is no submitted value on the
-     * entry for `toStorage()` to convert.
-     */
-    /**
      * Pre-conversion values awaiting the revision that will record them.
      *
      * ⚠️ Transient, and cleared by the recorder rather than left to expire. A
-     * surviving entry here would attach one save's originals to a later, unrelated
-     * revision — which is worse than losing them, because it would be a false record
-     * of what an author wrote.
+     * surviving entry here would attach one write's originals to a later, unrelated
+     * revision — a false record of what an author wrote, which is worse than none.
      *
      * @var array<string, mixed>
      */
@@ -1055,11 +1017,10 @@ class Entry extends Model implements RequiresModelSave
     /**
      * Take over another instance's pending originals.
      *
-     * ⚠️ Needed because the instance that CONVERTS is not the instance that RECORDS.
-     * `AuditedBuilder` records inside the write transaction, and it reloads the row
-     * to do so — deliberately, so the snapshot is the persisted state rather than
-     * whatever the caller happened to leave in memory. That reload is a different
-     * object, and the originals live on the one that ran the conversion.
+     * ⚠️ Needed because the instance whose values were CONVERTED is not always the
+     * instance that RECORDS. `AuditedBuilder` records inside the write transaction
+     * and reloads the row to do it — deliberately, so the snapshot is persisted state
+     * — and that reload is a different object.
      *
      * The source is cleared, so a hand-off cannot record the same originals twice.
      */
@@ -1069,22 +1030,86 @@ class Entry extends Model implements RequiresModelSave
         $source->retainedOriginals = [];
     }
 
-    private function convertValuesForStorage(): void
+    /**
+     * Every value being written, put through its field type's `toStorage()`.
+     *
+     * ⚠️ Called from the BUILDER, not from a `saving` listener, and that was the
+     * defect in the first version of this pipeline.
+     *
+     * `saveQuietly()`, `createQuietly()`, `updateQuietly()` and anything inside
+     * `withoutEvents()` suppress model events while still reaching the builder — so
+     * a `rich_text` payload containing a `<script>` tag went in unchanged and was
+     * recorded unsanitized in the revision as well. My own commit message said "the
+     * guard is where the write is" while the guard sat in an event, which is not
+     * where the write is. This project has now found that shape ten times, and this
+     * is the first time I have been the one to add it.
+     *
+     * ⚠️ The short-circuit is structural rather than a check: only columns actually
+     * present in `$values` are converted, so a save that moves `title` or `site_id`
+     * resolves no schema at all. The first version claimed that optimisation in a
+     * comment and did not implement it — it queried the type and its fields on every
+     * save, which on the 1 vCPU / SQLite floor (ADR-027) is several queries added to
+     * every write for nothing.
+     *
+     * @param  array<string, mixed>  $values  Raw column values, as the builder has them.
+     * @return array<string, mixed>
+     */
+    public function convertFieldValuesForWrite(array $values): array
     {
-        // A fresh save decides its own originals; anything left from a previous one
-        // was already recorded or already irrelevant.
         $this->retainedOriginals = [];
 
-        $type = EntryType::query()->whereKey($this->entry_type_id)->first();
+        $registry = app(FieldTypeRegistry::class);
+
+        // ⚠️ THE SHORT-CIRCUIT, before any query, and it has to come first to be one.
+        //
+        // The convertible columns are `values` plus whatever the registered types
+        // promote to — which the REGISTRY knows without touching the database, because
+        // `promotedColumn()` is named for the type. So a write carrying neither can be
+        // dismissed here, and a save that moves only `title`, `status` or `site_id`
+        // resolves no schema at all.
+        //
+        // The first version put its dirty check after resolving the type and its
+        // fields, which is to say it did not have one. On the 1 vCPU / SQLite floor
+        // (ADR-027) that was several queries on every write, for nothing.
+        $convertible = ['values'];
+
+        foreach ($registry->all() as $candidate) {
+            if (($column = $candidate->promotedColumn()) !== null) {
+                $convertible[] = $column;
+            }
+        }
+
+        if (array_intersect(array_keys($values), $convertible) === []) {
+            return $values;
+        }
+
+        $typeId = $values['entry_type_id'] ?? $this->entry_type_id;
+
+        // ⚠️ Falsy rather than `=== null`: the docblock types this column non-null, so
+        // a strict null check is dead code to static analysis — but a fresh instance
+        // may genuinely not have set it yet, and an id of 0 is not a type either.
+        if (! $typeId) {
+            return $values;
+        }
+
+        $type = EntryType::query()->whereKey($typeId)->first();
 
         if ($type === null) {
             // The foreign key's job to report, not this one's.
-            return;
+            return $values;
         }
 
-        $registry = app(FieldTypeRegistry::class);
-        $values = $this->values ?? [];
-        $converted = $values;
+        // ⚠️ `values` reaches the builder ALREADY ENCODED on an instance save: the
+        // array cast runs in `setAttribute()`, long before this. Decoding and
+        // re-encoding in the shape it arrived is what keeps this from double-encoding
+        // — the same trap the guarded builders hit with `newModelInstance()`.
+        $encoded = array_key_exists('values', $values) && is_string($values['values']);
+        $inline = match (true) {
+            ! array_key_exists('values', $values) => null,
+            is_string($values['values']) => json_decode($values['values'], true),
+            is_array($values['values']) => $values['values'],
+            default => null,
+        };
 
         foreach ($type->fields()->with('fieldStorage')->get() as $field) {
             $storage = $field->fieldStorage;
@@ -1098,19 +1123,17 @@ class Entry extends Model implements RequiresModelSave
             $handle = (string) $storage->handle;
 
             if ($storage->strategy() === StorageStrategy::Inline) {
-                // Absent is not the same as null: a key the caller did not send must
-                // stay unsent, or every save would write a null over every field the
-                // form did not include.
-                if (array_key_exists($handle, $values)) {
-                    $converted[$handle] = $fieldType->toStorage($values[$handle], $config);
+                // Absent is not null: a key the write does not carry must stay as it
+                // is, not be overwritten with a converted null.
+                if (is_array($inline) && array_key_exists($handle, $inline)) {
+                    $submitted = $inline[$handle];
+                    $inline[$handle] = $fieldType->toStorage($submitted, $config);
 
-                    // ⚠️ Kept only when the TYPE says its conversion is lossy and the
-                    // conversion actually took something. A rich-text value that
-                    // survived sanitising unchanged has no original worth storing, and
-                    // storing one anyway would put a redundant copy of every value in
-                    // a column erasure has to sweep.
-                    if ($fieldType->retainsOriginal() && $converted[$handle] !== $values[$handle]) {
-                        $this->retainedOriginals[$handle] = $values[$handle];
+                    // Kept only when the type says its conversion is lossy AND the
+                    // conversion took something — a value that survived unchanged has
+                    // no original worth storing in a column erasure has to sweep.
+                    if ($fieldType->retainsOriginal() && $inline[$handle] !== $submitted) {
+                        $this->retainedOriginals[$handle] = $submitted;
                     }
                 }
 
@@ -1123,19 +1146,22 @@ class Entry extends Model implements RequiresModelSave
 
             $column = $storage->promotedColumn();
 
-            // ⚠️ Only a DIRTY promoted column. The column is shared across handles
-            // (see `ownsPromotedColumn()`), so converting one that was not submitted
-            // would run another field's value through this field's type.
-            if ($column === null || ! $this->isDirty($column)) {
+            // ⚠️ Only a column this write carries. The column is shared across handles
+            // (`SlugType::promotedColumn()` is named for the type), so converting one
+            // the write never touched would run another field's value through this
+            // field's type.
+            if ($column === null || ! array_key_exists($column, $values)) {
                 continue;
             }
 
-            $this->setAttribute($column, $fieldType->toStorage($this->getAttribute($column), $config));
+            $values[$column] = $fieldType->toStorage($values[$column], $config);
         }
 
-        if ($converted !== $values) {
-            $this->values = $converted;
+        if ($inline !== null) {
+            $values['values'] = $encoded ? json_encode($inline) : $inline;
         }
+
+        return $values;
     }
 
     /**
