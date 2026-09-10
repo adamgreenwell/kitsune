@@ -106,6 +106,20 @@ final class RichTextType extends BaseFieldType
         'p', 'li', 'h2', 'h3', 'h4', 'blockquote', 'pre', 'figure', 'figcaption', 'ul', 'ol',
     ];
 
+    /**
+     * Allowed tags that hold FLOW content, so a loose run inside one can be wrapped in a `<p>`.
+     *
+     * ⚠️ THE SET IS DECIDED BY WHAT A `<p>` MAY LEGALLY SIT INSIDE, not by which tags hold text —
+     * which is why it is not `CONTAINER_TAGS` and not `BLOCK_TAGS`. `ul` and `ol` take only `li`,
+     * `p` and the headings take phrasing content, and `pre` takes phrasing content AND is
+     * whitespace-significant. Wrapping in any of those would fix a direction by producing markup no
+     * browser should be handed.
+     *
+     * ⚠️ Named separately from the two lists above BECAUSE it is nearly one of them, and a reader
+     * who assumed it was would reintroduce exactly the over-reach this avoids.
+     */
+    private const FLOW_CONTAINER_TAGS = ['figure', 'blockquote', 'li', 'figcaption'];
+
     public static function handle(): string
     {
         return 'rich_text';
@@ -269,19 +283,32 @@ final class RichTextType extends BaseFieldType
         $this->wrapLooseRuns($document, $wrapper);
 
         /*
-         * ⚠️ AND INSIDE EVERY `figure`, which the outer pass cannot reach. Review found it:
-         * `<figure><strong>مرحبا</strong><figcaption>English</figcaption></figure>` is valid rich
-         * text — a figure holds flow content — and the Arabic run got no direction at all while the
-         * caption did, so it inherited the page.
+         * ⚠️ AND INSIDE EVERY FLOW-CONTENT CONTAINER, which the outer pass cannot reach. Review found
+         * it twice, and the second time because the first fix was too narrow.
          *
-         * ⚠️ `figure` ONLY, not `ul` or `ol`. All three are containers rather than blocks, but a `<p>`
-         * is valid flow content inside a figure and is NOT valid inside a list: wrapping a loose run
-         * in `ul` would fix a direction by producing markup no browser should be given. Loose text
-         * directly inside `ul` is invalid input to begin with, and the sanitiser does not produce it
-         * from valid input.
+         * `<figure><strong>مرحبا</strong><figcaption>English</figcaption></figure>` is valid rich
+         * text, and the Arabic run got no direction at all while the caption did — so it inherited
+         * the page. Restricting the pass to `figure` then left the identical defect in the other
+         * three: `<blockquote>English<p>عربي</p>עברית</blockquote>` gave the trailing Hebrew run no
+         * wrapper, so it resolved from the blockquote's own `auto` — which reads `English` first.
+         *
+         * ⚠️ THESE FOUR AND NO MORE, because the set is decided by what a `<p>` may legally sit
+         * inside rather than by which tags happen to hold text. A wrapper is only correct where flow
+         * content is:
+         *
+         *   figure, blockquote, li, figcaption   flow content — a `<p>` is valid
+         *   ul, ol                               only `li`; a `<p>` here is markup no browser
+         *                                        should be handed, and the sanitiser produces no
+         *                                        loose text there from valid input
+         *   p, h2, h3, h4                        phrasing content only, and each already carries
+         *                                        its own direction from the block pass above
+         *   pre                                  phrasing only, AND whitespace-significant, so
+         *                                        inserting an element would change the content
          */
-        foreach (iterator_to_array($document->getElementsByTagName('figure')) as $figure) {
-            $this->wrapLooseRuns($document, $figure);
+        foreach (self::FLOW_CONTAINER_TAGS as $tag) {
+            foreach (iterator_to_array($document->getElementsByTagName($tag)) as $container) {
+                $this->wrapLooseRuns($document, $container);
+            }
         }
 
         return $this->serialize($wrapper);
@@ -411,24 +438,58 @@ final class RichTextType extends BaseFieldType
 
         $runs[] = $current;
 
+        $wrappable = [];
+
         foreach ($runs as $run) {
             // Trailing whitespace only separated this run from the block that closed it.
             while ($run !== [] && self::isWhitespaceNode($run[count($run) - 1])) {
                 array_pop($run);
             }
 
-            if ($run === [] || ! self::carriesText($run)) {
-                /*
-                 * ⚠️ A RUN WITH NO TEXT HAS NO DIRECTION, so wrapping it would add markup for
-                 * nothing. The case that matters is `<figure><img><figcaption>…` — the commonest
-                 * figure there is — where recursing into the figure first wrapped the image in a
-                 * paragraph. `dir="auto"` on an image resolves from no characters at all.
-                 */
-                continue;
+            /*
+             * ⚠️ A RUN WITH NO TEXT HAS NO DIRECTION, so wrapping it would add markup for nothing.
+             * The case that matters is `<figure><img><figcaption>…` — the commonest figure there is
+             * — where recursing into the figure first wrapped the image in a paragraph. `dir="auto"`
+             * on an image resolves from no characters at all.
+             */
+            if ($run !== [] && self::carriesText($run)) {
+                $wrappable[] = $run;
             }
+        }
 
+        $own = self::ownDirection($wrapper);
+
+        /*
+         * ⚠️ A WRAPPER IS ONLY CORRECT WHERE NOTHING ELSE CAN CARRY THE DIRECTION, and wrapping
+         * unconditionally broke documents that were already right. Review's second finding widened
+         * this pass from `figure` to every flow-content container — and `blockquote`, `li` and
+         * `figcaption` are BLOCKS, so each already carries a direction of its own. Wrapping their
+         * single run put a `<p>` inside every `<li>` in every existing document: correct direction,
+         * gratuitous markup, and a visible change to how every list renders, since a paragraph in a
+         * list item brings block margins with it.
+         *
+         * The container carries ONE direction, so it can serve exactly one run. One run and a
+         * direction to hold it needs nothing:
+         *
+         *   <li dir="auto">عربي</li>                      the li's own auto reads عربي — correct
+         *   <li dir="auto">English<p>عربي</p>עברית</li>   the li's auto reads English, so the
+         *                                                 HEBREW run inherits English's direction
+         *   <figure>عربي<figcaption>…                     figure is not a block and carries none,
+         *                                                 so even one run has nowhere to resolve
+         *
+         * ⚠️ AND `figure dir="rtl"` IS NOW LEFT ALONE ENTIRELY, which is a better answer to review's
+         * other finding than propagating was. The run inherits `rtl` because inheritance was already
+         * right; the defect was inserting a wrapper that broke it. Propagation still earns its place
+         * for the multi-run case, where wrappers are unavoidable and must each carry the author's
+         * choice rather than re-deriving one.
+         */
+        if (count($wrappable) < 2 && $own !== null) {
+            return;
+        }
+
+        foreach ($wrappable as $run) {
             $paragraph = $document->createElement('p');
-            $paragraph->setAttribute('dir', 'auto');
+            $paragraph->setAttribute('dir', $own ?? 'auto');
 
             $wrapper->insertBefore($paragraph, $run[0]);
 
@@ -436,6 +497,30 @@ final class RichTextType extends BaseFieldType
                 $paragraph->appendChild($node);
             }
         }
+    }
+
+    /**
+     * The direction `$container` establishes for its own children, or null when it establishes none.
+     *
+     * ⚠️ NULL AND `auto` ARE DIFFERENT ANSWERS, and collapsing them is what made the first version of
+     * this wrong. "This container resolves its children's direction" and "fall back to auto" look
+     * alike at the point of use and mean opposite things at the point of decision: a container that
+     * establishes a direction can serve a run without a wrapper, and one that does not cannot.
+     *
+     * ⚠️ THE SAME THREE VALUES AS THE BLOCK PASS, and the same reason `hasAttribute()` was not
+     * enough there: `dir=""` and `dir="banana"` survive sanitising, because `dir` is allowed and its
+     * value was never checked. An attribute that establishes no direction must read as null here, or
+     * it suppresses a wrapper while doing nothing itself.
+     */
+    private static function ownDirection(DOMNode $container): ?string
+    {
+        if (! $container instanceof DOMElement) {
+            return null;
+        }
+
+        $direction = strtolower($container->getAttribute('dir'));
+
+        return in_array($direction, self::DIRECTIONS, true) ? $direction : null;
     }
 
     /**

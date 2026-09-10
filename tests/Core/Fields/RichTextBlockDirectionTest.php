@@ -171,14 +171,124 @@ it('leaves a run with no text unwrapped', function (): void {
 
 it('does not wrap a loose run inside a list', function (): void {
     /*
-     * ⚠️ `figure` ONLY, not `ul` or `ol`. All three are containers rather than blocks, but a `<p>` is
-     * valid flow content inside a figure and is NOT valid inside a list — wrapping there would fix a
-     * direction by producing markup no browser should be handed. Loose text directly inside `ul` is
-     * invalid input to begin with, and the sanitiser does not produce it from valid input.
+     * ⚠️ NOT `ul` OR `ol`, however many text-bearing runs they hold. The recursion covers containers
+     * that take FLOW content, and a list takes only `li` — so a `<p>` there would fix a direction by
+     * producing markup no browser should be handed. Loose text directly inside `ul` is invalid input
+     * to begin with, and the sanitiser does not produce it from valid input.
      */
     expect(storedBody('<ul><li>En</li><li>عربي</li></ul>'))
         ->toBe('<ul><li dir="auto">En</li><li dir="auto">عربي</li></ul>');
+
+    // Two runs directly inside the list, which is the shape that would tempt the pass in.
+    expect(storedBody('<ul>English<li>Item</li>עברית</ul>'))
+        ->toBe('<ul>English<li dir="auto">Item</li>עברית</ul>');
 });
+
+it('gives every run in a flow-content container its own direction', function (string $html, string $expected): void {
+    /*
+     * ⚠️ `figure` ALONE WAS TOO NARROW, which review found after the figure fix. `blockquote`, `li`
+     * and `figcaption` take flow content too, so the identical per-run defect sat in all three:
+     * `<blockquote>English<p>عربي</p>עברית</blockquote>` gave the trailing Hebrew run no wrapper, so
+     * it resolved from the blockquote's own `auto` — and that reads `English` first.
+     *
+     * The set is decided by what a `<p>` may legally sit inside, not by which tags hold text.
+     */
+    expect(storedBody($html))->toBe($expected);
+})->with([
+    [
+        '<blockquote>English<p>عربي</p>עברית</blockquote>',
+        '<blockquote dir="auto"><p dir="auto">English</p><p dir="auto">عربي</p><p dir="auto">עברית</p></blockquote>',
+    ],
+    [
+        '<ul><li>English<p>عربي</p>עברית</li></ul>',
+        '<ul><li dir="auto"><p dir="auto">English</p><p dir="auto">عربي</p><p dir="auto">עברית</p></li></ul>',
+    ],
+    [
+        '<figure><img src="/a.png" alt="x"><figcaption>English<p>عربي</p>עברית</figcaption></figure>',
+        '<figure><img src="/a.png" alt="x"><figcaption dir="auto"><p dir="auto">English</p>'
+            .'<p dir="auto">عربي</p><p dir="auto">עברית</p></figcaption></figure>',
+    ],
+]);
+
+it('wraps nothing when the container can carry the run itself', function (string $html, string $expected): void {
+    /*
+     * ⚠️ THE HALF THAT WIDENING THE PASS BROKE, and it is the reason the rule is about what can carry
+     * a direction rather than about which tags to visit. `blockquote`, `li` and `figcaption` are
+     * BLOCKS: each already has a direction from the pass above, and that direction serves exactly one
+     * run. Wrapping unconditionally put a `<p>` inside every `<li>` in every existing document —
+     * correct direction, gratuitous markup, and a visible change, since a paragraph in a list item
+     * brings block margins with it.
+     *
+     * One run and somewhere to hold it needs nothing. Two runs and one direction does not go round.
+     */
+    expect(storedBody($html))->toBe($expected);
+})->with([
+    ['<blockquote>عربي</blockquote>', '<blockquote dir="auto">عربي</blockquote>'],
+    ['<ul><li>عربي</li></ul>', '<ul><li dir="auto">عربي</li></ul>'],
+    [
+        '<figure><img src="/a.png" alt="x"><figcaption>عربي</figcaption></figure>',
+        '<figure><img src="/a.png" alt="x"><figcaption dir="auto">عربي</figcaption></figure>',
+    ],
+    // ⚠️ A run BESIDE a block still counts as one: the container's own direction reaches it, and the
+    // block has its own. It is the SECOND loose run that has nowhere left to resolve.
+    ['<ul><li>English<p>عربي</p></li></ul>', '<ul><li dir="auto">English<p dir="auto">عربي</p></li></ul>'],
+]);
+
+it('does not override an explicit direction on the container', function (): void {
+    /*
+     * ⚠️ THE WRAPPER OVERRODE THE AUTHOR, which review found: `<figure dir="rtl">ACME مرحبا</figure>`
+     * became `<figure dir="rtl"><p dir="auto">ACME مرحبا</p></figure>`, and `auto` on the new
+     * paragraph resolves from `ACME` — so the run rendered left-to-right inside a container the
+     * author had explicitly declared right-to-left. Inheritance was giving the right answer until a
+     * wrapper was inserted to break it.
+     *
+     * ⚠️ THE ANSWER IS TO INSERT NOTHING, which is better than propagating the direction into a
+     * wrapper: the container establishes `rtl` and holds one run, so there is nothing a wrapper would
+     * add. `figure` is not a block and carries no direction of its own — an EXPLICIT one is still a
+     * direction, and this is the case that distinguishes "has one" from "would default to auto".
+     */
+    expect(storedBody('<figure dir="rtl">ACME مرحبا</figure>'))
+        ->toBe('<figure dir="rtl">ACME مرحبا</figure>');
+
+    expect(storedBody('<blockquote dir="rtl">ACME مرحبا</blockquote>'))
+        ->toBe('<blockquote dir="rtl">ACME مرحبا</blockquote>');
+});
+
+it('carries an explicit container direction into wrappers it cannot avoid', function (): void {
+    /*
+     * ⚠️ WHERE PROPAGATION STILL EARNS ITS PLACE. With more than one run the wrappers are
+     * unavoidable, and each must carry the author's choice rather than re-deriving one from its own
+     * text — `ACME` and `مرحبا` would resolve opposite ways under `auto`, inside a container the
+     * author declared `rtl`.
+     *
+     * ⚠️ The author's OWN `<p>` keeps its own direction. It is their markup, not a wrapper this
+     * added, and the block pass above already gave it one.
+     */
+    expect(storedBody('<blockquote dir="rtl">ACME<p>x</p>مرحبا</blockquote>'))
+        ->toBe('<blockquote dir="rtl"><p dir="rtl">ACME</p><p dir="auto">x</p><p dir="rtl">مرحبا</p></blockquote>');
+});
+
+it('does not let a dir that establishes no direction suppress a wrapper', function (string $invalid): void {
+    /*
+     * ⚠️ THE SAME TRAP AS `hasAttribute()` ONE LEVEL DOWN. `dir=""` and `dir="banana"` survive
+     * sanitising — `dir` is allowed and its value was never checked — and a container test that only
+     * asked whether the attribute was PRESENT would read them as a direction, suppressing the wrapper
+     * while establishing nothing itself. That is the same failure the block pass was already fixed
+     * for once, and it is why `ownDirection()` returns null rather than the raw attribute.
+     *
+     * ⚠️ ON A `figure`, AND THE FIRST VERSION OF THIS TEST WAS VACUOUS FOR USING `li`. `li` is a
+     * BLOCK, so the block pass above has already replaced its invalid `dir` with `auto` by the time
+     * this is read — the attribute is valid either way and the two implementations agree. `figure` is
+     * not a block and keeps whatever it was given, which is the only place the distinction is
+     * observable. Caught by reverting the check and finding the test still passed.
+     */
+    expect(storedBody('<figure dir="'.$invalid.'">عربي<figcaption>x</figcaption></figure>'))
+        ->toBe('<figure dir="'.$invalid.'"><p dir="auto">عربي</p><figcaption dir="auto">x</figcaption></figure>');
+
+    // And with two runs, the wrapper must not carry the meaningless value either.
+    expect(storedBody('<figure dir="'.$invalid.'">عربي<p>x</p>עברית</figure>'))
+        ->toBe('<figure dir="'.$invalid.'"><p dir="auto">عربي</p><p dir="auto">x</p><p dir="auto">עברית</p></figure>');
+})->with(['banana', '']);
 
 it('collects one sentence into one paragraph, not one per node', function (): void {
     // ⚠️ `a <strong>b</strong> c` is ONE sentence. Wrapping each node separately would give three
