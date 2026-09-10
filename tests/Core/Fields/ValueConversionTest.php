@@ -76,7 +76,7 @@ describe('rich text is sanitized on the way in', function (): void {
             'values' => ['body' => '<p>Hello</p><script>alert(1)</script>'],
         ]);
 
-        expect(storedValues($entry)['body'])->toBe('<p>Hello</p>')
+        expect(storedValues($entry)['body'])->toBe('<p dir="auto">Hello</p>')
             ->and(storedValues($entry)['body'])->not->toContain('script');
     });
 
@@ -118,7 +118,7 @@ describe('rich text is sanitized on the way in', function (): void {
         $entry->update(['title' => 'Retitled']);
 
         expect(storedValues($entry))->toHaveKey('body')
-            ->and(storedValues($entry)['body'])->toBe('<p>Kept</p>');
+            ->and(storedValues($entry)['body'])->toBe('<p dir="auto">Kept</p>');
     });
 });
 
@@ -165,7 +165,7 @@ describe('the pre-sanitization original is kept beside the revision', function (
         $revision = $entry->revisions()->latest('id')->firstOrFail();
 
         expect($revision->unsanitized_values['body'])->toBe('<p>Hello</p><script>alert(1)</script>')
-            ->and($revision->values['body'])->toBe('<p>Hello</p>')
+            ->and($revision->values['body'])->toBe('<p dir="auto">Hello</p>')
             // ⚠️ And NOT on the entry. That is the requirement, not a preference.
             ->and(storedValues($entry))->not->toHaveKey('body_original')
             ->and(json_encode(storedValues($entry)))->not->toContain('script');
@@ -181,6 +181,45 @@ describe('the pre-sanitization original is kept beside the revision', function (
         ]);
 
         expect($entry->revisions()->latest('id')->firstOrFail()->unsanitized_values)->toBeNull();
+    });
+
+    it('does not treat the direction step as a loss', function (): void {
+        /*
+         * ⚠️ THE REGRESSION THE TEST ABOVE CAUGHT, pinned from the other side. `rich_text` stamps
+         * `dir="auto"` on each block (issue #39), so its conversion ADDS as well as removes — and the
+         * recorder's old test, stored `!==` submitted, was true on EVERY rich text save. Every
+         * revision retained an original identical to its input but for an attribute the type had just
+         * added, in a column erasure has to sweep (ADR-020) and whose purpose is showing an author
+         * what the sanitiser REMOVED.
+         *
+         * `conversionLostSomething()` is asked of the type instead, because only the type knows which
+         * part of its own conversion is lossy — the same argument `retainsOriginal()` exists for.
+         */
+        $entry = Entry::create([
+            'entry_type_id' => $this->type->id, 'title' => 'Bidirectional',
+            'values' => ['body' => '<p>English</p><p>عربي</p>'],
+        ]);
+
+        // The stored value gained a direction per block...
+        expect(storedValues($entry)['body'])
+            ->toBe('<p dir="auto">English</p><p dir="auto">عربي</p>');
+
+        // ...and that is not a loss, so nothing is retained.
+        expect($entry->revisions()->latest('id')->firstOrFail()->unsanitized_values)->toBeNull();
+    });
+
+    it('still keeps the original when sanitising really did remove something', function (): void {
+        // The other half, so the fix cannot become "never retain anything": a stripped script IS a
+        // loss, and the author has to be able to see what went.
+        $entry = Entry::create([
+            'entry_type_id' => $this->type->id, 'title' => 'Hostile',
+            'values' => ['body' => '<p>Kept</p><script>alert(1)</script>'],
+        ]);
+
+        $revision = $entry->revisions()->latest('id')->firstOrFail();
+
+        expect($revision->unsanitized_values['body'])->toBe('<p>Kept</p><script>alert(1)</script>')
+            ->and($revision->values['body'])->toBe('<p dir="auto">Kept</p>');
     });
 
     it('keeps nothing for a type whose conversion is a cast', function (): void {
@@ -253,7 +292,7 @@ describe('the pre-sanitization original is kept beside the revision', function (
 
         // The original is kept, and kept OUT of the snapshot surface.
         expect($original->unsanitized_values['body'])->toContain('script')
-            ->and($original->values['body'])->toBe('<p>First</p>')
+            ->and($original->values['body'])->toBe('<p dir="auto">First</p>')
             ->and(json_encode($original->snapshot()))->not->toContain('script')
             ->and(EntryRevision::SNAPSHOT_ATTRIBUTES)->not->toContain('unsanitized_values')
             ->and(array_keys($original->snapshot()))->not->toContain('unsanitized_values');
@@ -262,7 +301,7 @@ describe('the pre-sanitization original is kept beside the revision', function (
         $entry->restoreRevision($original);
 
         // And the outcome, which the layout above is what actually guarantees.
-        expect(storedValues($entry->fresh())['body'])->toBe('<p>First</p>')
+        expect(storedValues($entry->fresh())['body'])->toBe('<p dir="auto">First</p>')
             ->and(json_encode(storedValues($entry->fresh())))->not->toContain('script');
     });
 
@@ -321,7 +360,7 @@ describe('a quiet save cannot skip the conversion', function (): void {
             'values' => ['body' => '<p>Quiet</p><script>alert(1)</script>'],
         ]));
 
-        expect(storedValues($entry)['body'])->toBe('<p>Quiet</p>')
+        expect(storedValues($entry)['body'])->toBe('<p dir="auto">Quiet</p>')
             ->and(json_encode(storedValues($entry)))->not->toContain('script');
     });
 
@@ -334,7 +373,7 @@ describe('a quiet save cannot skip the conversion', function (): void {
         $entry->values = ['body' => '<p>Later</p><script>alert(1)</script>'];
         $entry->saveQuietly();
 
-        expect(storedValues($entry->fresh())['body'])->toBe('<p>Later</p>')
+        expect(storedValues($entry->fresh())['body'])->toBe('<p dir="auto">Later</p>')
             ->and(json_encode(storedValues($entry->fresh())))->not->toContain('script');
     });
 
@@ -365,7 +404,7 @@ describe('a quiet save cannot skip the conversion', function (): void {
 
         $revision = $entry->revisions()->latest('id')->firstOrFail();
 
-        expect($revision->values['body'])->toBe('<p>Two</p>')
+        expect($revision->values['body'])->toBe('<p dir="auto">Two</p>')
             ->and($revision->unsanitized_values['body'])->toContain('script');
     });
 });
@@ -435,7 +474,7 @@ describe('a save that touches no field value resolves no schema', function (): v
         $entry->update(['values' => ['body' => '<p>New</p><script>x</script>']]);
 
         expect($schemaQueries)->toBeGreaterThan(0)
-            ->and(storedValues($entry->fresh())['body'])->toBe('<p>New</p>');
+            ->and(storedValues($entry->fresh())['body'])->toBe('<p dir="auto">New</p>');
     });
 });
 
@@ -464,7 +503,7 @@ describe('the conversion covers the arithmetic side door too', function (): void
             ->toThrow(RuntimeException::class, 'cannot be written in bulk');
 
         // Nothing was written.
-        expect(storedValues($entry->fresh())['body'])->toBe('<p>Fine</p>');
+        expect(storedValues($entry->fresh())['body'])->toBe('<p dir="auto">Fine</p>');
     });
 
     it('still allows an arithmetic write that carries no field values', function (): void {
@@ -513,7 +552,7 @@ describe('a type change reconverts what is already stored', function (): void {
         // Now move it to the type where `body` IS rich text.
         $entry->update(['entry_type_id' => $this->type->id]);
 
-        expect(storedValues($entry->fresh())['body'])->toBe('<p>Hi</p>')
+        expect(storedValues($entry->fresh())['body'])->toBe('<p dir="auto">Hi</p>')
             ->and(json_encode(storedValues($entry->fresh())))->not->toContain('script');
     });
 
@@ -528,6 +567,6 @@ describe('a type change reconverts what is already stored', function (): void {
 
         $entry->update(['entry_type_id' => $this->type->id, 'title' => 'Retitled']);
 
-        expect(storedValues($entry->fresh())['body'])->toBe('<p>Kept</p>');
+        expect(storedValues($entry->fresh())['body'])->toBe('<p dir="auto">Kept</p>');
     });
 });

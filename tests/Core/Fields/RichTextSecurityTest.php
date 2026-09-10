@@ -71,7 +71,7 @@ describe('rich_text sanitisation', function (): void {
     it('sanitises on write, so the stored value is already safe', function (): void {
         $stored = $this->richText->toStorage('<p>Hi</p><script>alert(1)</script>', $this->config);
 
-        expect($stored)->toBe('<p>Hi</p>');
+        expect($stored)->toBe('<p dir="auto">Hi</p>');
     });
 });
 

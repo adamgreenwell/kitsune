@@ -1346,10 +1346,19 @@ class Entry extends Model implements RequiresModelSave
                     $submitted = $inline[$handle];
                     $inline[$handle] = $fieldType->toStorage($submitted, $config);
 
-                    // Kept only when the type says its conversion is lossy AND the
-                    // conversion took something — a value that survived unchanged has
-                    // no original worth storing in a column erasure has to sweep.
-                    if ($fieldType->retainsOriginal() && $inline[$handle] !== $submitted) {
+                    /*
+                     * Kept only when the type says its conversion is lossy AND the conversion took
+                     * something — a value that survived unchanged has no original worth storing in
+                     * a column erasure has to sweep.
+                     *
+                     * ⚠️ THE TYPE ANSWERS THE SECOND HALF NOW, where this used to compare bytes
+                     * itself. `rich_text` stamps `dir="auto"` on each block (issue #39), so its
+                     * conversion ADDS as well as removes and a byte comparison was true on every
+                     * save — retaining an original identical to the input but for an attribute the
+                     * type had just added. Only the type knows which part of its own conversion is
+                     * lossy, which is the same argument `retainsOriginal()` is asked for.
+                     */
+                    if ($fieldType->retainsOriginal() && $fieldType->conversionLostSomething($submitted, $inline[$handle])) {
                         $this->retainedOriginals[$handle] = $submitted;
                     }
                 }

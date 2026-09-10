@@ -122,6 +122,9 @@ interface FieldType
     /** Whether a revision must keep the pre-sanitization original. */
     public function retainsOriginal(): bool;
 
+    /** Whether converting LOST something — not merely whether the bytes changed. */
+    public function conversionLostSomething(mixed $submitted, mixed $stored): bool;
+
     public function suggestedPiiClass(): string;      // ADR-020 fails closed
 }
 ```

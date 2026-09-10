@@ -66,6 +66,21 @@ final class RichTextType extends BaseFieldType
         'h2', 'h3', 'h4', 'blockquote', 'code', 'pre', 'img', 'figure', 'figcaption',
     ];
 
+    /**
+     * The tags that hold a run of text, and therefore have a direction of their own.
+     *
+     * ⚠️ `ul`, `ol` and `figure` are absent on purpose: they contain blocks rather than text, so a
+     * direction on them would be inherited by children that should each resolve their own. `li` and
+     * `figcaption` are the text-bearing halves of those pairs and are here.
+     *
+     * ⚠️ `br` and the inline tags are absent for the opposite reason — `dir` on a fragment of a
+     * sentence resolves from a fragment, which is how you get one clause of a paragraph pointing the
+     * wrong way.
+     */
+    public const BLOCK_TAGS = [
+        'p', 'li', 'h2', 'h3', 'h4', 'blockquote', 'pre', 'figcaption',
+    ];
+
     public static function handle(): string
     {
         return 'rich_text';
@@ -84,8 +99,14 @@ final class RichTextType extends BaseFieldType
     /**
      * The only `PerBlock` control. A single `dir` on the editor would impose one
      * direction on a document that may legitimately hold an Arabic paragraph and an
-     * English one — worse than none, because it looks handled. `dir` is already in
-     * ALLOWED_ATTRIBUTES, so per-block direction survives sanitising.
+     * English one — worse than none, because it looks handled.
+     *
+     * ⚠️ THIS DOCBLOCK USED TO SAY "`dir` is already in ALLOWED_ATTRIBUTES, so per-block direction
+     * survives sanitising", and that was true and not enough. Surviving is not the same as
+     * existing: nothing PRODUCED a `dir`, so an author writing an Arabic paragraph next to an
+     * English one got neither — every block inherited the chrome, which is issue #39's gap G3 in
+     * the one place the inventory called awkward. `toStorage()` now stamps `dir="auto"` on each
+     * block, so the browser resolves each one from its own first strong character.
      */
     public function control(): Control
     {
@@ -116,9 +137,115 @@ final class RichTextType extends BaseFieldType
         return true;
     }
 
+    /**
+     * Whether SANITISING removed something — not whether the stored bytes differ.
+     *
+     * ⚠️ THOSE STOPPED BEING THE SAME QUESTION when `castToStorage()` began stamping `dir="auto"`
+     * on each block for issue #39. The conversion now ADDS as well as removes, so the recorder's old
+     * test — stored `!==` submitted — was true for every rich text save, and every revision retained
+     * a pre-sanitisation original that was identical to the input apart from an attribute this class
+     * had just added. Caught by a test asserting that clean input keeps no original.
+     *
+     * The question §6 actually asks is "can the author see what the sanitiser took", so this
+     * compares the SANITISED value with what was submitted and ignores the direction step entirely.
+     */
+    public function conversionLostSomething(mixed $submitted, mixed $stored): bool
+    {
+        if (! is_string($submitted)) {
+            return $stored !== $submitted;
+        }
+
+        return $this->sanitize($submitted) !== $submitted;
+    }
+
     protected function castToStorage(mixed $input, FieldConfig $config): mixed
     {
-        return $input === null ? null : $this->sanitize((string) $input);
+        /*
+         * ⚠️ TWO STEPS, AND THEY ARE TWO STEPS ON PURPOSE. The first version of this stamped the
+         * direction inside `sanitize()`'s attribute walk, which broke nineteen tests — five of them
+         * in `RichTextSecurityTest`, asserting the sanitiser's exact output.
+         *
+         * That breakage was the design telling me something. `sanitize()` is a security boundary
+         * (field-types.md §6) and its output is asserted byte-for-byte precisely because it is one;
+         * threading a presentation concern through it means every future direction change edits
+         * security expectations, and a reviewer reading that diff cannot tell which half is which.
+         * Direction is not safety. It is a second step over a value already known to be safe.
+         *
+         * The cost is a second parse on write. Rich text writes are rare and bounded by
+         * `MAX_LENGTH`, and the separation is worth more than the microseconds.
+         */
+        if ($input === null) {
+            return null;
+        }
+
+        return $this->withBlockDirection($this->sanitize((string) $input));
+    }
+
+    /**
+     * Give every text-bearing block its own `dir="auto"`, so each resolves from its own content.
+     *
+     * ⚠️ A SINGLE `dir` ON THE FIELD IS WORSE THAN NONE, which is why this is per block. `dir="auto"`
+     * on the editor resolves from the FIRST strong directional character in the whole document, so a
+     * body that opens in English and continues in Arabic renders every Arabic paragraph
+     * left-to-right — and looks handled, which is the failure mode issue #39 exists to stop.
+     *
+     * ⚠️ ON THE WAY TO STORAGE, not at render time. A value arriving from the API, a seeder or an
+     * import gets the same treatment as one typed into the panel, and the stored bytes and the
+     * displayed bytes cannot drift apart — which is the kind of difference that survives for years
+     * because both halves look right on their own.
+     *
+     * ⚠️ ONLY WHEN ABSENT. `dir` is in ALLOWED_ATTRIBUTES, so an author who wrote `dir="rtl"` has
+     * said something more specific than `auto` — a paragraph of Arabic opening with a Latin brand
+     * name, where `auto` would resolve from the brand name and be wrong. This fills a gap rather
+     * than overruling a decision.
+     */
+    public function withBlockDirection(string $html): string
+    {
+        if (trim($html) === '') {
+            return $html;
+        }
+
+        $document = new DOMDocument;
+        $previous = libxml_use_internal_errors(true);
+
+        // The same wrapper-and-meta parsing aid `sanitize()` documents at length: the meta declares
+        // UTF-8, and the wrapper stops libxml wrapping loose top-level text in an implied `<p>`.
+        $document->loadHTML(
+            '<meta http-equiv="Content-Type" content="text/html; charset=utf-8"><div>'.$html.'</div>',
+            LIBXML_HTML_NOIMPLIED | LIBXML_HTML_NODEFDTD,
+        );
+
+        libxml_clear_errors();
+        libxml_use_internal_errors($previous);
+
+        foreach (self::BLOCK_TAGS as $tag) {
+            foreach (iterator_to_array($document->getElementsByTagName($tag)) as $element) {
+                // No `instanceof` guard: `getElementsByTagName()` yields elements by definition,
+                // and static analysis correctly calls the check dead.
+                if (! $element->hasAttribute('dir')) {
+                    $element->setAttribute('dir', 'auto');
+                }
+            }
+        }
+
+        /*
+         * ⚠️ THE WRAPPER'S CHILDREN, NOT THE DOCUMENT'S, and the first version of this returned an
+         * empty string by getting that wrong. Under `LIBXML_HTML_NOIMPLIED` the charset `<meta>`
+         * becomes the document ELEMENT and the wrapper `<div>` is not among `$document->childNodes`
+         * at all — measured: `childNodes` holds one node, the meta, while
+         * `getElementsByTagName('p')` finds both paragraphs.
+         *
+         * `sanitize()` never notices because `clean()` UNWRAPS the div — `div` is not an allowed tag
+         * — which lifts its children to document level on the way past. This method does not clean,
+         * so it has to address the wrapper itself.
+         *
+         * ⚠️ THE FIRST `div` IS RELIABLY THE WRAPPER, and that is an argument rather than a guess:
+         * this runs on output that has already been through `sanitize()`, and `div` is not in
+         * ALLOWED_TAGS, so no `div` can have survived from the input.
+         */
+        $wrapper = $document->getElementsByTagName('div')->item(0);
+
+        return $wrapper === null ? $html : $this->serialize($wrapper);
     }
 
     /**
@@ -180,14 +307,31 @@ final class RichTextType extends BaseFieldType
         libxml_clear_errors();
         libxml_use_internal_errors($previous);
 
-        $root = $document;
+        $this->clean($document);
 
-        $this->clean($root);
+        return $this->serialize($document);
+    }
+
+    /**
+     * The document back as HTML, without the parsing aids this class adds.
+     *
+     * ⚠️ EXTRACTED RATHER THAN COPIED. `withBlockDirection()` needs exactly the same skip — the
+     * charset `<meta>` is something these methods PREPEND, not content — and a second copy of that
+     * rule is a second place for it to be wrong. The `div` wrapper needs no skip here: `sanitize()`
+     * unwraps it because `div` is not an allowed tag, and `withBlockDirection()` runs on output that
+     * has already been through that.
+     */
+    private function serialize(DOMNode $parent): string
+    {
+        $document = $parent instanceof DOMDocument ? $parent : $parent->ownerDocument;
+
+        if ($document === null) {
+            return '';
+        }
 
         $out = '';
 
-        foreach (iterator_to_array($root->childNodes) as $child) {
-            // The charset hint this method added, not content.
+        foreach (iterator_to_array($parent->childNodes) as $child) {
             if ($child instanceof DOMElement && strtolower($child->nodeName) === 'meta') {
                 continue;
             }

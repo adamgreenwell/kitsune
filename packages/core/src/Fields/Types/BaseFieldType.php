@@ -227,6 +227,19 @@ abstract class BaseFieldType implements FieldType
         return false;
     }
 
+    /**
+     * Any change is a loss, unless a type knows better.
+     *
+     * ⚠️ THE OLD TEST, KEPT AS THE DEFAULT DELIBERATELY. Every conversion here is a cast or a
+     * strip, so "the bytes changed" and "something was lost" mean the same thing — and a type that
+     * has not thought about the distinction behaves exactly as it did before this question existed.
+     * `RichTextType` overrides it because its conversion now ADDS as well as removes.
+     */
+    public function conversionLostSomething(mixed $submitted, mixed $stored): bool
+    {
+        return $stored !== $submitted;
+    }
+
     public function validateSettings(array $settings): ?string
     {
         return null;

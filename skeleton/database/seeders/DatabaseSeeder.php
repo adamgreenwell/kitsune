@@ -195,7 +195,23 @@ class DatabaseSeeder extends Seeder
             'title' => 'صيانة الملاعب في الأسبوع السابع',
             'slug' => 'course-maintenance-week-7',
             'status' => 'published',
-            'values' => ['summary' => 'ملاحظات الأسبوع السابع.'],
+            'values' => [
+                'summary' => 'ملاحظات الأسبوع السابع.',
+                /*
+                 * ⚠️ A BODY THAT OPENS IN ENGLISH AND CONTINUES IN ARABIC, because that ordering is
+                 * the whole point. `dir="auto"` on the FIELD resolves from the first strong
+                 * directional character in the entire document, so this exact value renders every
+                 * Arabic paragraph left-to-right under a per-field direction — and looks handled.
+                 * Reverse the order and a per-field direction would pass by accident.
+                 *
+                 * ⚠️ The list is here because `ul` must stay undirected while each `li` resolves
+                 * separately: a container carrying a direction reproduces the per-field failure one
+                 * level down, and only a fixture with both languages inside one list can show it.
+                 */
+                'body' => '<p>Maintenance notes for week seven.</p>'
+                    .'<p>ملاحظات الصيانة للأسبوع السابع.</p>'
+                    .'<ul><li>Mow the fairway</li><li>تنظيف الحواجز الرملية</li></ul>',
+            ],
             'published_at' => now()->subDays(7),
         ]);
 
