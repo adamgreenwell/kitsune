@@ -64,6 +64,11 @@ afterAll(function (): void {
         $sweep->table('site_host_claims')->where('canonical_host', 'snapshot.test')->delete();
         $sweep->table('orgs')->where('slug', 'rival-org')->delete();
 
+        // The staleness tests commit their own rows for the same reason, on their own hosts.
+        $sweep->table('sites')->where('canonical_host', 'like', 'stale-%')->delete();
+        $sweep->table('site_host_claims')->where('canonical_host', 'like', 'stale-%')->delete();
+        $sweep->table('orgs')->where('slug', 'stale-rival')->delete();
+
         DB::purge('sweep');
     } catch (Throwable) {
         // The engine may have rolled the whole schema away already, which is equally clean.
@@ -417,3 +422,102 @@ it('locks one host when a save does not move', function (): void {
 
     expect($locked)->toBe(['staying.test'], 'a save that kept its host locked more than one mutex');
 });
+
+/**
+ * A committed site on a committed org, so another connection can move it under this one.
+ *
+ * ⚠️ COMMITTED, BY THE RIVAL CONNECTION, or there is nothing cross-connection to test. A row this
+ * connection creates lives in `RefreshDatabase`'s open transaction, and the rival's UPDATE would
+ * match zero rows — which is how the first version of these tests passed for no reason. The rows
+ * outlive the rollback and are removed by the file's `afterAll`.
+ *
+ * @return array{0: int, 1: Site}
+ */
+function committedSiteAt(string $host, string $handle): array
+{
+    $rival = rivalConnection();
+
+    $orgId = (int) ($rival->table('orgs')->where('slug', 'stale-rival')->value('id')
+        ?? $rival->table('orgs')->insertGetId([
+            'name' => 'Stale Rival', 'slug' => 'stale-rival', 'created_at' => now(), 'updated_at' => now(),
+        ]));
+
+    $siteId = (int) $rival->table('sites')->insertGetId([
+        'org_id' => $orgId, 'handle' => $handle, 'slug' => $handle, 'name' => $handle,
+        'locale' => 'en', 'url_strategy' => 'domain', 'base_url' => 'https://'.$host,
+        'canonical_host' => $host, 'path_prefix' => '',
+        'created_at' => now(), 'updated_at' => now(),
+    ]);
+
+    /** @var Site $site */
+    $site = Site::query()->withoutGlobalScopes()->findOrFail($siteId);
+
+    return [$siteId, $site];
+}
+
+it('refuses a save whose row moved hosts since the instance was loaded', function (): void {
+    /*
+     * ⚠️ THE ORIGIN CAME FROM THE LOADED INSTANCE, AND THAT REOPENED THE CYCLE — review's finding,
+     * and what it broke is the proof rather than the precision. That proof rests on "every site row
+     * this transaction touches sits at a host whose mutex it holds", and a row moved after this
+     * instance was read is at a host whose mutex this save never takes. Two such saves take DISJOINT
+     * mutex sets, serialise against nothing, and their rival reads acquire each other's rows.
+     * Measured as two real sessions — row 1 believed at `a.test` but actually at `b.test` moving to
+     * `c.test`, against row 2 believed at `d.test` but actually at `c.test` moving to `b.test`:
+     * PostgreSQL 17 reports `deadlock detected`. With this check both stop with their own message.
+     */
+    /*
+     * ⚠️ THE LOCKING READ IS LOAD-BEARING AND ONLY MySQL PROVES IT. Under Postgres's READ COMMITTED a
+     * plain read already sees the rival's committed move, so this test passes either way there —
+     * under REPEATABLE READ it answers from the snapshot taken when `committedSiteAt()` loaded the
+     * model, which predates the move, and the check sees nothing to refuse. Measured by reverting the
+     * clause:
+     *
+     *     plain read           pgsql  11 passed        mysql  1 failed, 10 passed
+     *     with lockForUpdate   pgsql  11 passed        mysql  11 passed
+     *
+     * The engine matrix is the only reason that is visible, which is what ADR-024 is for.
+     */
+    [$id, $site] = committedSiteAt('stale-before.test', 'stalemoved');
+
+    expect($site->getRawOriginal('canonical_host'))->toBe('stale-before.test');
+
+    $rival = rivalConnection();
+    $rival->table('sites')->where('id', $id)->update([
+        'base_url' => 'https://stale-elsewhere.test', 'canonical_host' => 'stale-elsewhere.test',
+    ]);
+
+    // This instance still believes `stale-before.test`, and is moving to a third host.
+    $site->base_url = 'https://stale-after.test';
+
+    expect(fn () => $site->save())->toThrow(RuntimeException::class, 'another save moved it');
+
+    /*
+     * ⚠️ READ BACK THROUGH THE RIVAL, not through this connection. Under REPEATABLE READ this
+     * transaction's snapshot predates the rival's UPDATE, so an ordinary read here would report the
+     * old host and the assertion would be about the snapshot rather than about the row.
+     */
+    expect((string) $rival->table('sites')->where('id', $id)->value('canonical_host'))
+        ->toBe('stale-elsewhere.test', 'the stale save overwrote the move it had not seen');
+})->skip(fn (): bool => ! lockingEngine(), 'a second connection to SQLite :memory: is a different database');
+
+it('allows a save whose row moved to the host it was already heading for', function (): void {
+    /*
+     * ⚠️ THE TEST IS THE INVARIANT, NOT "THE HOST CHANGED", and this is the case that separates them.
+     * A row moved to the very host this save is moving it TO is already under a mutex this save
+     * holds, so the lock discipline is intact — and refusing here would be policing lost updates in
+     * general, which is a separate decision about `Site` rather than a consequence of the proof.
+     */
+    [$id, $site] = committedSiteAt('stale-start.test', 'staleraced');
+
+    $rival = rivalConnection();
+    $rival->table('sites')->where('id', $id)->update([
+        'base_url' => 'https://stale-target.test', 'canonical_host' => 'stale-target.test',
+    ]);
+
+    $site->base_url = 'https://stale-target.test/news';
+
+    expect($site->save())->toBeTrue()
+        ->and($site->canonical_host)->toBe('stale-target.test')
+        ->and($site->path_prefix)->toBe('/news');
+})->skip(fn (): bool => ! lockingEngine(), 'a second connection to SQLite :memory: is a different database');

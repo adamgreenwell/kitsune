@@ -180,9 +180,23 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
      * a rival is already there — the sequential one, already closed. Postgres takes no gap lock, and
      * depending on MySQL's would make correctness engine-specific (invariant 5).
      *
-     * ⚠️ NESTED SAVES ARE SAFE. `DB::transaction()` inside an outer transaction is a savepoint, and
-     * re-locking a row this transaction already holds is a no-op — so a caller who wrapped several
-     * site saves in one transaction gets one lock per host rather than a deadlock.
+     * ⚠️ A NESTED SAVE RE-LOCKS NOTHING, WHICH IS NOT THE SAME AS BEING SAFE — and this docblock
+     * claimed the second on the strength of the first. `DB::transaction()` inside an outer
+     * transaction is a savepoint, and re-locking a row this transaction already holds is a no-op, so
+     * one host costs one lock however many saves touch it. What does NOT follow, and what review
+     * pointed out, is that a caller wrapping SEVERAL sites in one transaction is safe: every mutex
+     * is held until the OUTER commit, and the order those saves run in is the caller's. Two batches
+     * saving hosts A then B and B then A each hold their first mutex and block on the second, on
+     * completely distinct rows and prefixes.
+     *
+     * ⚠️ THIS METHOD CANNOT FIX THAT, and saying so is the point rather than an excuse. Ordered
+     * acquisition needs to cover every resource a transaction will take, and a per-save method
+     * cannot see the saves that come after it. So it is a CONTRACT: a caller who wraps several site
+     * saves in one transaction must order them by the hostname each will claim — the same order this
+     * method uses within one save — or accept that two such batches can deadlock. Documented in
+     * ADR-021 rather than left as a surprise, and a batch helper that enforces it is deliberately not
+     * added here: a new public API surface is on CONTRIBUTING's won't-merge list before v1.2, and a
+     * contract is the smaller half of the remedy until then.
      */
     public function save(array $options = []): bool
     {
@@ -201,7 +215,9 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
      */
     private function lockHostClaim(): void
     {
-        foreach ($this->contendedHosts() as $host) {
+        $hosts = $this->contendedHosts();
+
+        foreach ($hosts as $host) {
             /*
              * ⚠️ UPSERT THEN LOCK, in that order, and both are required. The row may not exist — the
              * first claimant of a hostname creates it — and two concurrent first claimants must not
@@ -230,6 +246,87 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
                 ->lockForUpdate()
                 ->first();
         }
+
+        $this->refuseStaleOrigin($hosts);
+    }
+
+    /**
+     * Refuse a save whose row has moved hosts since this instance was loaded.
+     *
+     * ⚠️ THE ORIGIN CAME FROM THE INSTANCE, AND THAT REOPENED THE CYCLE — review found it, and the
+     * proof in `contendedHosts()` is what it broke. That proof rests on "every site row this
+     * transaction touches sits at a host whose mutex it holds", and the row's host was read from
+     * `getRawOriginal()`: if another transaction moved the row after this instance was loaded, the
+     * mutex set is computed for a host the row has left. Two such saves take DISJOINT mutex sets,
+     * serialise against nothing, and their rival reads then acquire each other's rows. Staged as two
+     * real sessions — row 1 believed at `a.test` but actually at `b.test`, moving to `c.test`, against
+     * row 2 believed at `d.test` but actually at `c.test`, moving to `b.test`:
+     *
+     *   PostgreSQL 17  ERROR: deadlock detected
+     *
+     * ⚠️ DETECTED RATHER THAN REPAIRED, which is the honest fix and a better one on its own terms.
+     * Re-deriving the mutex set from the committed host needs the host read BEFORE the lock that
+     * makes it stable, so it can go stale again between the two — a loop with no guaranteed end. And
+     * an instance whose row has moved is a save about to overwrite a change it never saw: silently
+     * proceeding is a lost update, so the refusal is the correct answer to the question the caller
+     * actually asked. Re-measured with this check in place, the same two sessions both stop with
+     * their own message and neither deadlocks; the legitimate swap that motivated `contendedHosts()`
+     * still commits on both sides.
+     *
+     * ⚠️ A LOCKING READ, for the reason `refuseOverlappingClaim()` records: under MySQL and
+     * MariaDB's REPEATABLE READ a plain read answers from the transaction's snapshot, so a move that
+     * committed while this save queued for the mutex would be invisible — and invisible is exactly
+     * the state this exists to catch. The lock it takes on the row is one `parent::save()` is about
+     * to take anyway, so it adds no lock the transaction did not already need.
+     *
+     * ⚠️ AND WHEN IT PASSES, THE INVARIANT IS RESTORED: the row demonstrably sits at a host in
+     * `$hosts`, which this transaction holds the mutex for. That is what makes the check part of the
+     * proof rather than a guard beside it.
+     *
+     * @param  list<string>  $hosts
+     */
+    private function refuseStaleOrigin(array $hosts): void
+    {
+        $believed = $this->getRawOriginal('canonical_host');
+
+        if (! $this->exists || ! is_string($believed)) {
+            // A create claims no previous host, so there is no earlier state to have missed.
+            return;
+        }
+
+        $committed = DB::table('sites')
+            ->where('id', $this->getKey())
+            ->lockForUpdate()
+            ->value('canonical_host');
+
+        // Gone is not stale: the row was hard-deleted, and `parent::save()` will find nothing to
+        // update. Refusing here would replace that with a message about the wrong thing.
+        if ($committed === null) {
+            return;
+        }
+
+        /*
+         * ⚠️ THE TEST IS THE INVARIANT ITSELF, not `$committed !== $believed`, and the difference is
+         * deliberate. If another save moved the row to the very host this one is moving it TO, the
+         * mutex is already held and the lock discipline is intact — so that case is not this
+         * method's business even though the instance is stale. Policing lost updates in general is a
+         * separate decision about `Site`, not a consequence of the locking proof, and answering it
+         * here would smuggle one in.
+         */
+        if (in_array($committed, $hosts, true)) {
+            return;
+        }
+
+        throw new RuntimeException(sprintf(
+            'Refusing to save site [%s]: it was loaded while it answered on [%s] and it now answers '
+            .'on [%s], so another save moved it after this one read it. This save holds the host '
+            .'mutexes for the addresses it believed, not for the one the row is actually on, and '
+            .'proceeding would write a URL claim under the wrong locks (ADR-021). Reload the site '
+            .'and try again.',
+            $this->getAttribute('handle') ?? $this->getKey(),
+            $believed === '' ? 'any host' : $believed,
+            $committed === '' ? 'any host' : $committed,
+        ));
     }
 
     /**
