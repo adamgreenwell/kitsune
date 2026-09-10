@@ -53,10 +53,27 @@ foreach ($cases as $case) {
     }
 }
 
+/*
+ * ⚠️ A TIMEOUT IS ITS OWN OUTCOME, on both sides. PCRE reports `matches: null` when it exhausts
+ * its backtrack limit; the ECMAScript side reports `matches: null` with `timedOut` when it cannot
+ * answer inside its deadline. Both mean "the engine gave no verdict", and either collapsed into
+ * "no match" would hide catastrophic backtracking rather than report it.
+ */
+$noVerdict = [];
+
+foreach ($cases as $case) {
+    $id = $case['id'];
+
+    if (($pcre[$id]['matches'] ?? true) === null || ($ecma[$id]['timedOut'] ?? false) === true) {
+        $noVerdict[] = $id;
+    }
+}
+
 printf("divergent AND accepted  %d   <= live defects\n", count($live));
 printf("divergent AND refused   %d\n", $handled);
 printf("agrees BUT refused      %d   <= expressiveness cost\n", count($overRefused));
 printf("refused, both reject    %d   (agreement to REJECT — refusing costs nothing)\n", $bothReject);
+printf("no verdict from an engine %d  (%s)\n", count($noVerdict), implode(', ', $noVerdict));
 
 /*
  * ⚠️ A case can still appear as an over-refusal because its SUBJECT does not discriminate.

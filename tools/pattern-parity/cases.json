@@ -145,9 +145,9 @@
  },
  {
   "id": "combining-mark-group-name",
-  "pattern": "^(?<ao>[0-9]{4})$",
+  "pattern": "^(?<a\u0327o>[0-9]{4})$",
   "subject": "2026",
-  "why": "Group name is 'a' + U+0327 COMBINING CEDILLA + 'o' (NFC-stable, so it survives normalization in transit): ECMA-262 accepts combining marks in group names, PCRE2 rejects the name outright (measured: PHP compile error, Node MATCH) \u2014 the linguistic case where an author's own script decides whether the pattern compiles."
+  "why": "Group name is 'a' + U+0327 COMBINING CEDILLA + 'o'. ECMA-262 group names are IdentifierName and admit combining marks; PCRE2 restricts them to word characters. The case is worthless without the mark actually present \u2014 review found it had been flattened to plain ASCII 'ao', so both engines compiled it and the case validated nothing."
  },
  {
   "id": "dollar-sign-group-name",

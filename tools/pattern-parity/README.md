@@ -32,15 +32,39 @@ PHP `\\1` and Node `\1` — different patterns — and every conclusion drawn fr
 than method. That is why the cases live in **one shared JSON file** that both readers parse, and
 why the file is written ASCII-escaped so neither reader has to guess an encoding.
 
+## ⚠️ It measures ONE version pair
+
+The harness runs the PCRE and Node it has. **It cannot see divergence between versions it is not
+running** — and property membership is version-dependent, so a pattern portable on one pair can
+diverge on another.
+
+Demonstrated by review: `\p{Cn}` on U+10940 agrees on PCRE 10.48 with Node 22 and **diverges** on
+PCRE 10.44 with Node 24, because "unassigned" shrinks with every Unicode release. `Cn` is therefore
+excluded from the portable categories **on principle rather than on measurement**, and the harness
+duly reports it as an expressiveness cost. That is the instrument being honest about its reach.
+
+Record the two versions with any result you quote:
+
+```bash
+php -r 'echo PCRE_VERSION, PHP_EOL;'
+node --version
+```
+
 ## Reading the output
 
 - **divergent AND accepted** — a live defect. The engines disagree and nothing refuses it.
 - **divergent AND refused** — handled. The disagreement exists and is caught.
 - **agrees BUT refused** — the expressiveness cost: a pattern both engines would have honoured.
 
-A case whose `matches` is `null` while `compiles` is true means PCRE **errored** rather than
-answered — a backtrack limit, most likely. That is a third outcome, and treating it as "no match"
-hides catastrophic backtracking.
+A case whose `matches` is `null` while `compiles` is true means the engine **gave no verdict**
+rather than answering. PCRE reports it when it exhausts its backtrack limit; the ECMAScript side
+reports it with `timedOut: true` when it cannot answer inside the deadline. Treating either as
+"no match" hides catastrophic backtracking instead of reporting it.
+
+⚠️ **Every ECMAScript case runs in a worker with a deadline** (`PARITY_DEADLINE_MS`, default 2000).
+That is not defensive style: `RegExp.prototype.test` is synchronous, so one catastrophically
+backtracking case pinned the event loop and the tool emitted no JSON at all. The first version
+committed here had exactly that defect.
 
 ## Adding a case
 

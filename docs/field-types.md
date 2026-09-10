@@ -217,6 +217,12 @@ A named capture may use a name in **any script** — `(?<é>`, `(?<日本>`, `(?
 >
 > ⚠️ Two apparent findings were **my instrument, not the code**, and are recorded because they change how this must be measured: comparing with `/u` instead of `/uD` invented three `$` divergences, and comparing *raw source* in both engines invented four more — `delimit()` already rewrites `.` and `\s` to explicit ECMAScript-equivalent classes. Raw-vs-raw reported 7 divergences; true fidelity reports 3.
 >
+> ⚠️ **"Three" is scoped to ONE VERSION PAIR, and that is a limit of the method rather than a result.** The table above was measured on PCRE 10.48 with Node 22. Review demonstrated a **fourth** divergence on PCRE 10.44 with Node 24 — `\p{Cn}` on U+10940, unassigned to one engine's tables and assigned to the other's — which the newer pair agrees on. A harness runs the versions it has; it cannot see skew between versions it is not running.
+>
+> **So `Cn` is excluded from the portable categories on principle, not on measurement.** It means *"not yet assigned"*, so its membership **shrinks** with every Unicode release and any newly assigned codepoint flips it: two engines on different Unicode versions enforce opposite rules on the same input. Every other category *grows* instead of inverting, which is a weaker version of the same hazard and is stated here rather than hidden — a property claim is portable **only to the extent the two engines share a Unicode version**, and nothing in the pattern can assert that.
+>
+> ⚠️ A consequence worth expecting: the harness now reports `\p{Cn}` as an *expressiveness cost*, because on the pair it runs the two engines agree. That is the instrument being honest about what it can see, not a reason to re-admit the category.
+>
 > ### The grammar
 >
 > A pattern is accepted when **every construct in it appears below**. Anything else is refused with the reason, whether or not anyone anticipated it.
@@ -226,7 +232,7 @@ A named capture may use a name in **any script** — `(?<é>`, `(?<日本>`, `(?
 > | literal characters | a metacharacter must be escaped, from the portable punctuation set |
 > | `[...]`, `[^...]`, ranges `a-z` | with permitted escapes inside |
 > | `.` and `\s` `\S` | permitted **because `delimit()` normalises them** server-side to explicit ECMAScript-equivalent classes. They are the only constructs admitted by rewriting rather than by agreeing |
-> | `\p{...}` `\P{...}` | names from the published category, property and prefix allowlists |
+> | `\p{...}` `\P{...}` | names from the published category, property and prefix allowlists — **excluding `Cn`**, whose membership inverts between Unicode versions |
 > | `^` `$` | `$` is portable only because `D` is set; it cannot be expressed in the published pattern and must never be dropped |
 > | `*` `+` `?` `{n}` `{n,}` `{n,m}` and lazy forms | upper bound **at most 65535** — measured: PCRE refuses to compile above it, ECMAScript allows far more |
 > | `(?:...)` `(...)` `(?=...)` `(?!...)` `(?<=...)` `(?<!...)` `(?<name>...)` | the existing group allowlist, unchanged |

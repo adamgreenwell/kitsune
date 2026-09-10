@@ -434,7 +434,15 @@ final class Pattern
      * @var list<string>
      */
     private const PORTABLE_CATEGORIES = [
-        'C', 'Cc', 'Cf', 'Cn', 'Co', 'Cs',
+        // ⚠️ `Cn` IS DELIBERATELY ABSENT, and it is the one category that cannot be portable
+        // even in principle. It means "not yet assigned", so its membership SHRINKS with every
+        // Unicode release: a codepoint unassigned to one engine's tables is assigned in the
+        // other's the moment their Unicode versions differ, and the two engines then enforce
+        // opposite rules on the same input. Review demonstrated it on PCRE 10.44 with Node 24
+        // (U+10940); PCRE 10.48 with Node 22 agrees, which is precisely why a measurement on ONE
+        // version pair cannot license this claim. Every other category grows rather than
+        // inverts — see the note in field-types.md §3.
+        'C', 'Cc', 'Cf', 'Co', 'Cs',
         // ⚠️ `LC` is the Cased_Letter GROUP (Ll|Lt|Lu), and leaving it out was a
         // false refusal of a category both dialects have — the exact cost this
         // allowlist trades for, caught by asking both engines rather than by
