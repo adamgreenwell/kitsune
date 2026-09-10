@@ -521,3 +521,73 @@ it('allows a save whose row moved to the host it was already heading for', funct
         ->and($site->canonical_host)->toBe('stale-target.test')
         ->and($site->path_prefix)->toBe('/news');
 })->skip(fn (): bool => ! lockingEngine(), 'a second connection to SQLite :memory: is a different database');
+
+it('refuses a stale save on a site that was loaded with no host', function (): void {
+    /*
+     * ⚠️ THE BYPASS MY OWN FIX INTRODUCED, which review found. The first version returned early when
+     * the loaded `canonical_host` was null, reasoning that an admin-only site claims no host and so
+     * has no origin to be stale about. That is true of the INSTANCE and not of the ROW: another
+     * transaction can give that row a host, and this save then locks only its destination while its
+     * row sits somewhere else — the same disjoint-mutex cycle, reached through the one path that
+     * skipped the check. What the instance believes cannot decide whether the row is worth reading.
+     */
+    $rival = rivalConnection();
+
+    $orgId = (int) ($rival->table('orgs')->where('slug', 'stale-rival')->value('id')
+        ?? $rival->table('orgs')->insertGetId([
+            'name' => 'Stale Rival', 'slug' => 'stale-rival', 'created_at' => now(), 'updated_at' => now(),
+        ]));
+
+    // An admin-only site: no public URL, so no host and no prefix.
+    $siteId = (int) $rival->table('sites')->insertGetId([
+        'org_id' => $orgId, 'handle' => 'staleadmin', 'slug' => 'staleadmin', 'name' => 'Stale Admin',
+        'locale' => 'en', 'url_strategy' => 'domain', 'base_url' => null,
+        'canonical_host' => null, 'path_prefix' => null,
+        'created_at' => now(), 'updated_at' => now(),
+    ]);
+
+    /** @var Site $site */
+    $site = Site::query()->withoutGlobalScopes()->findOrFail($siteId);
+
+    expect($site->getRawOriginal('canonical_host'))->toBeNull('the fixture is not the shape under test');
+
+    // Another transaction gives the row a host this instance has never seen.
+    $rival->table('sites')->where('id', $siteId)->update([
+        'base_url' => 'https://stale-granted.test', 'canonical_host' => 'stale-granted.test',
+    ]);
+
+    $site->base_url = 'https://stale-third.test';
+
+    expect(fn () => $site->save())->toThrow(RuntimeException::class, 'another save moved it');
+})->skip(fn (): bool => ! lockingEngine(), 'a second connection to SQLite :memory: is a different database');
+
+it('allows a save on a site whose row genuinely has no host', function (): void {
+    /*
+     * ⚠️ A ROW ON NO HOST IS REACHED BY NOTHING, so it needs no mutex and cannot be in a cycle:
+     * `refuseOverlappingClaim()` finds rivals by `canonical_host` equality, which a NULL never
+     * satisfies, so the only save that ever locks such a row is a save of that row. Returning there
+     * is the invariant holding rather than an exemption — and this is what stops the fix above from
+     * becoming "an admin-only site cannot be given a URL".
+     */
+    $rival = rivalConnection();
+
+    $orgId = (int) ($rival->table('orgs')->where('slug', 'stale-rival')->value('id')
+        ?? $rival->table('orgs')->insertGetId([
+            'name' => 'Stale Rival', 'slug' => 'stale-rival', 'created_at' => now(), 'updated_at' => now(),
+        ]));
+
+    $siteId = (int) $rival->table('sites')->insertGetId([
+        'org_id' => $orgId, 'handle' => 'stalequiet', 'slug' => 'stalequiet', 'name' => 'Stale Quiet',
+        'locale' => 'en', 'url_strategy' => 'domain', 'base_url' => null,
+        'canonical_host' => null, 'path_prefix' => null,
+        'created_at' => now(), 'updated_at' => now(),
+    ]);
+
+    /** @var Site $site */
+    $site = Site::query()->withoutGlobalScopes()->findOrFail($siteId);
+    $site->base_url = 'https://stale-firsturl.test/news';
+
+    expect($site->save())->toBeTrue()
+        ->and($site->canonical_host)->toBe('stale-firsturl.test')
+        ->and($site->path_prefix)->toBe('/news');
+})->skip(fn (): bool => ! lockingEngine(), 'a second connection to SQLite :memory: is a different database');

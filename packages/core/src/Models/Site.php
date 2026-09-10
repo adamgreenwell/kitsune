@@ -280,27 +280,51 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
      * to take anyway, so it adds no lock the transaction did not already need.
      *
      * ⚠️ AND WHEN IT PASSES, THE INVARIANT IS RESTORED: the row demonstrably sits at a host in
-     * `$hosts`, which this transaction holds the mutex for. That is what makes the check part of the
+     * `$hosts`, which this transaction holds the mutex for — or on no host at all, which nothing
+     * else can lock. That is what makes the check part of the
      * proof rather than a guard beside it.
      *
      * @param  list<string>  $hosts
      */
     private function refuseStaleOrigin(array $hosts): void
     {
-        $believed = $this->getRawOriginal('canonical_host');
-
-        if (! $this->exists || ! is_string($believed)) {
-            // A create claims no previous host, so there is no earlier state to have missed.
+        if (! $this->exists) {
+            // A create has no row yet, so there is no earlier state it could have missed.
             return;
         }
 
-        $committed = DB::table('sites')
+        /*
+         * ⚠️ QUERIED WHATEVER THIS INSTANCE BELIEVES, AND THE FIRST VERSION SKIPPED ON NULL — review
+         * found the bypass my own fix introduced. It returned early when the loaded `canonical_host`
+         * was null, on the reasoning that an admin-only site claims no host and so has no origin to be
+         * stale about. True of the INSTANCE and not of the ROW: another transaction can give that row
+         * a host, and the stale save then locks only its destination while its row sits somewhere
+         * else — which is the same disjoint-mutex cycle, reached through the one path that skipped the
+         * check. What this instance believes cannot decide whether the row is worth reading.
+         *
+         * ⚠️ A MISSING ROW AND A PRESENT ROW WITH A NULL HOST ARE DIFFERENT ANSWERS, so this selects a
+         * row rather than a value: `value()` returns null for both, and they need opposite handling.
+         */
+        $row = DB::table('sites')
             ->where('id', $this->getKey())
             ->lockForUpdate()
-            ->value('canonical_host');
+            ->first(['canonical_host']);
 
         // Gone is not stale: the row was hard-deleted, and `parent::save()` will find nothing to
         // update. Refusing here would replace that with a message about the wrong thing.
+        if ($row === null) {
+            return;
+        }
+
+        $believed = $this->getRawOriginal('canonical_host');
+        $committed = $row->canonical_host;
+
+        /*
+         * ⚠️ A ROW ON NO HOST IS REACHED BY NOTHING, so it needs no mutex and cannot be in a cycle.
+         * `refuseOverlappingClaim()` finds rivals by `canonical_host` equality, which a NULL never
+         * satisfies — so the only save that ever locks such a row is a save of that row. Returning
+         * here is the invariant holding rather than an exemption from it.
+         */
         if ($committed === null) {
             return;
         }
@@ -324,7 +348,9 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
             .'proceeding would write a URL claim under the wrong locks (ADR-021). Reload the site '
             .'and try again.',
             $this->getAttribute('handle') ?? $this->getKey(),
-            $believed === '' ? 'any host' : $believed,
+            match ($believed) {
+                null => 'no host at all', '' => 'any host', default => $believed
+            },
             $committed === '' ? 'any host' : $committed,
         ));
     }
