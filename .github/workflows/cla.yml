@@ -12,7 +12,9 @@ name: CLA
 # record that looks like consent and may not be.
 #
 # SETUP REQUIRED before enabling:
-#   1. Complete the checklist at the end of CLA.md, including the grantee question
+#   1. Complete the checklist at the end of CLA.md, including the grantee question. Activation
+#      is the step AFTER that list rather than an item in it — an "enable the bot" checkbox
+#      inside a list that gates enabling the bot can never be ticked, which review caught.
 #   2. Add a secret PERSONAL_ACCESS_TOKEN — a fine-grained PAT scoped to THIS repository
 #      with Contents: read and write, so the action can append to the signatures file.
 #      Not the classic `repo` scope: this needs one repository, not all of them.

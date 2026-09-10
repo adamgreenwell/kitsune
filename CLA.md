@@ -119,11 +119,23 @@ promise the workflow's gate exists to prevent.
 - [ ] **The signature record re-verified against the pinned action SHA**, and the seven-field
       table above confirmed still accurate. The workflow pins a commit rather than a tag so this
       cannot change underneath the disclosure
-- [ ] **`CLA_ENABLED` set to `true`** and `PERSONAL_ACCESS_TOKEN` added — the last step, not the
-      first
 
 ⚠️ Nothing here is a legal opinion, including the shape of this list. It exists so that the
 questions counsel needs to answer are written down rather than remembered.
+
+### Then, and only then, turn it on
+
+⚠️ **Activation is deliberately NOT an item above.** The workflow's own rule is "do not enable
+the bot until this checklist is complete", so an *"enable the bot"* checkbox inside the checklist
+could never be ticked without breaking the rule that gates it — a circular prerequisite, which
+review caught. It is a step that follows a completed list, not a member of it.
+
+1. Add `PERSONAL_ACCESS_TOKEN` — a fine-grained PAT scoped to this repository alone, with
+   Contents: read and write
+2. Set the repository variable `CLA_ENABLED` to `true`
+
+Both are settings changes rather than code changes, which is why the gate is a variable and not
+a commented-out trigger.
 
 ---
 
