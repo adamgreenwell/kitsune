@@ -338,7 +338,25 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
             ));
         }
 
-        $host = $namesHost && is_string($parsed['host'] ?? null) ? $parsed['host'] : '';
+        /*
+         * ⚠️ A HOST-ADDRESSED STRATEGY MUST ACTUALLY YIELD A HOST. `parse_url('file:///news')`
+         * SUCCEEDS and returns no host, so the previous line silently turned that into `''` — the
+         * host-less wildcard — and a `domain` site configured with an unusable address was
+         * published at `/news` on EVERY host instead of being refused. Found by review, one step
+         * past the `parse_url() === false` case.
+         */
+        if ($namesHost && ! is_string($parsed['host'] ?? null)) {
+            throw new RuntimeException(sprintf(
+                'Refusing the base_url [%s]: url_strategy is [%s], which addresses a site by its '
+                .'host, and this value parses with no host at all. Treating it as host-less would '
+                .'publish the site on every host serving this installation.',
+                $baseUrl,
+                $strategy,
+            ));
+        }
+
+        // The guard above proves a host is present whenever one is wanted, so no second check.
+        $host = $namesHost ? (string) $parsed['host'] : '';
         $path = is_string($parsed['path'] ?? null) ? $parsed['path'] : '';
 
         return [self::canonicalHost($host), self::canonicalPrefix($path)];
@@ -359,6 +377,28 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
     public static function canonicalHost(string $host): string
     {
         $host = rtrim(mb_strtolower(trim($host)), '.');
+
+        /*
+         * ⚠️ A PERCENT-ESCAPED HOST IS A DIFFERENT SPELLING OF THE SAME HOST, and storing it
+         * literally let two orgs claim one address. `parse_url('https://%65xample.test')` keeps
+         * the host as `%65xample.test` — measured — while a browser normalises it to
+         * `example.test` before sending, so the two passed both the unique index and the overlap
+         * check as unrelated claims, and whoever held the encoded form became unreachable the
+         * moment the ordinary spelling was taken. Found by review.
+         *
+         * ⚠️ REFUSED RATHER THAN DECODED, for the same reason a path prefix is: decoding is not
+         * neutral. `%2E` becomes a label separator, so a decoded host can gain labels it was not
+         * given — and a host is the outermost boundary in this system, where re-segmentation is
+         * the last thing to permit.
+         */
+        if (str_contains($host, '%')) {
+            throw new RuntimeException(sprintf(
+                'Refusing the host [%s]: it contains a percent-escape, which a browser resolves '
+                .'before sending — so this would be requested as a different host than the one '
+                .'stored. Enter the host in its ordinary spelling.',
+                $host,
+            ));
+        }
 
         /*
          * ⚠️ AN INTERNATIONALISED HOST IS STORED IN ITS ASCII (A-LABEL) FORM, because that is

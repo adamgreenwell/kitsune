@@ -363,6 +363,41 @@ describe('base_url derives the host and prefix a site claims', function (): void
             ->and(Site::deriveUrlParts('   ', 'path'))->toBe([null, null]);
     });
 
+    it('refuses a percent-escaped host, which a browser resolves before asking', function (): void {
+        /*
+         * ⚠️ ANOTHER SPELLING OF ONE HOST, and storing it literally let two orgs claim one
+         * address. `parse_url('https://%65xample.test')` keeps the host as `%65xample.test` —
+         * measured — while a browser normalises it to `example.test` before sending. The two
+         * passed both the unique index and the overlap check as unrelated claims, and whoever
+         * held the encoded form became unreachable the moment the ordinary spelling was taken.
+         *
+         * ⚠️ Refused rather than decoded, for the same reason a path prefix is: `%2E` becomes a
+         * label separator, so decoding lets a host gain labels it was never given. A host is the
+         * outermost boundary here, and re-segmentation is the last thing to permit at it.
+         */
+        expect(fn () => Site::deriveUrlParts('https://%65xample.test/', 'domain'))
+            ->toThrow(RuntimeException::class, 'percent-escape');
+
+        // The ordinary spelling is untouched, so the guard costs nothing in the normal case.
+        expect(Site::deriveUrlParts('https://example.test/', 'domain'))->toBe(['example.test', '']);
+    });
+
+    it('refuses a host-addressed strategy whose URL parses with no host', function (): void {
+        /*
+         * ⚠️ ONE STEP PAST `parse_url() === false`. `parse_url('file:///news')` SUCCEEDS and
+         * returns no host, so converting that to `''` — the host-less wildcard — published a
+         * `domain` site at `/news` on EVERY host serving the installation, from a configured
+         * address that is unusable. Found by review.
+         */
+        foreach (['domain', 'subdomain'] as $strategy) {
+            expect(fn () => Site::deriveUrlParts('file:///news', $strategy))
+                ->toThrow(RuntimeException::class, 'no host at all');
+        }
+
+        // A host-less PATH prefix is still legitimate — that is what a path site is.
+        expect(Site::deriveUrlParts('/news', 'path'))->toBe(['', '/news']);
+    });
+
     it('refuses an unknown strategy rather than reading it as a path', function (): void {
         // Fail closed and loud: a typo would otherwise store a host as a prefix and leave
         // the site unreachable at its own address, with nothing on screen to say so.

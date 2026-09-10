@@ -88,5 +88,13 @@ Route::middleware([ResolveSiteFromRequest::class, SetSiteLocale::class])
             'direction' => Kitsune::textDirection(),
         ]);
     })
-    ->where('site', '[a-z0-9-]+')
+    /*
+     * ⚠️ THE SAME VOCABULARY `Site::canonicalPrefix()` ACCEPTS, and narrower was a shipped 404.
+     * The model admits `[A-Za-z0-9._~-]` and folds case, so `/.well-known` and `/v1.2` are valid
+     * one-segment prefixes — and this constraint excluded `.`, `_`, `~` and uppercase, so such a
+     * site saved successfully and its public URL returned 404 in the skeleton. Found by review.
+     *
+     * Two grammars for one thing is one grammar that drifts; if the model's changes, this must.
+     */
+    ->where('site', '[A-Za-z0-9._~-]+')
     ->name('site.home');
