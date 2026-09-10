@@ -21,6 +21,7 @@ use Kitsune\Core\Audit\AuditedBuilder;
 use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Fields\FieldTypeRegistry;
 use Kitsune\Core\Fields\StorageStrategy;
+use Kitsune\Core\Fields\Types\BaseFieldType;
 use Kitsune\Core\Relations\GuardedBelongsToMany;
 use Kitsune\Core\Schema\RevisionWrites;
 use Kitsune\Core\Tenancy\Attributes\SiteScoped;
@@ -1357,8 +1358,19 @@ class Entry extends Model implements RequiresModelSave
                      * save — retaining an original identical to the input but for an attribute the
                      * type had just added. Only the type knows which part of its own conversion is
                      * lossy, which is the same argument `retainsOriginal()` is asked for.
+                     *
+                     * ⚠️ ASKED OF `BaseFieldType`, NOT OF `FieldType`, and the byte comparison is
+                     * the fallback. Review objected that declaring this on the interface broadens
+                     * the extension API before v1.2, which CONTRIBUTING lists among the things that
+                     * will not merge — correctly, so the question is asked of the base class the
+                     * core types share and anything implementing the contract directly keeps the
+                     * behaviour it had.
                      */
-                    if ($fieldType->retainsOriginal() && $fieldType->conversionLostSomething($submitted, $inline[$handle])) {
+                    $lost = $fieldType instanceof BaseFieldType
+                        ? $fieldType->conversionLostSomething($submitted, $inline[$handle])
+                        : $inline[$handle] !== $submitted;
+
+                    if ($fieldType->retainsOriginal() && $lost) {
                         $this->retainedOriginals[$handle] = $submitted;
                     }
                 }

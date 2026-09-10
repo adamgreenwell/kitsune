@@ -186,23 +186,6 @@ interface FieldType
      */
     public function retainsOriginal(): bool;
 
-    /**
-     * Whether converting this value LOST something worth keeping beside the revision.
-     *
-     * ⚠️ SEPARATE FROM "the bytes changed", and it exists because those stopped being the same
-     * question. The recorder compared the stored value with the submitted one, which is right while
-     * every conversion is either a cast or a strip — and wrong the moment a conversion ADDS
-     * something. `RichTextType` now stamps `dir="auto"` on each block for issue #39, so every rich
-     * text save changed its bytes and every revision retained an original. That column is swept by
-     * erasure (ADR-020) and exists to show an author what a sanitiser REMOVED; filling it on every
-     * save makes it noise and makes the sweep bigger for nothing.
-     *
-     * ⚠️ ASKED OF THE TYPE, for the reason `retainsOriginal()` is: only the type knows which part of
-     * its own conversion is lossy. The default answers the old question, so a type that has not
-     * thought about it behaves exactly as before.
-     */
-    public function conversionLostSomething(mixed $submitted, mixed $stored): bool;
-
     /** A suggested pii_class; the org confirms it, because only they know (ADR-020). */
     public function suggestedPiiClass(): string;
 }

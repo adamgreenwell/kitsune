@@ -77,8 +77,28 @@ final class RichTextType extends BaseFieldType
      * sentence resolves from a fragment, which is how you get one clause of a paragraph pointing the
      * wrong way.
      */
+    /**
+     * The only values that establish a direction.
+     *
+     * ⚠️ `dir` IS ALLOWED AND ITS VALUE WAS NEVER CHECKED, which review found: `<p dir="">` and
+     * `<p dir="banana">` survive sanitising, and an attribute that establishes nothing was still
+     * enough to block the stamp. A malformed value is not a choice to respect.
+     */
+    public const DIRECTIONS = ['ltr', 'rtl', 'auto'];
+
     public const BLOCK_TAGS = [
         'p', 'li', 'h2', 'h3', 'h4', 'blockquote', 'pre', 'figcaption',
+    ];
+
+    /**
+     * Tags that are blocks at the top level, so a run beside one is a separate run.
+     *
+     * ⚠️ `ul`, `ol` and `figure` are here although they are NOT in `BLOCK_TAGS`: they carry no
+     * direction of their own — their children each resolve one — but they are still blocks, so text
+     * before and after a list is two runs rather than one.
+     */
+    public const CONTAINER_TAGS = [
+        'p', 'li', 'h2', 'h3', 'h4', 'blockquote', 'pre', 'figure', 'figcaption', 'ul', 'ol',
     ];
 
     public static function handle(): string
@@ -194,12 +214,25 @@ final class RichTextType extends BaseFieldType
      * displayed bytes cannot drift apart — which is the kind of difference that survives for years
      * because both halves look right on their own.
      *
-     * ⚠️ ONLY WHEN ABSENT. `dir` is in ALLOWED_ATTRIBUTES, so an author who wrote `dir="rtl"` has
-     * said something more specific than `auto` — a paragraph of Arabic opening with a Latin brand
-     * name, where `auto` would resolve from the brand name and be wrong. This fills a gap rather
-     * than overruling a decision.
+     * ⚠️ ONLY WHEN A VALID DIRECTION IS ABSENT. `dir` is in ALLOWED_ATTRIBUTES, so an author who
+     * wrote `dir="rtl"` has said something more specific than `auto` — a paragraph of Arabic opening
+     * with a Latin brand name, where `auto` would resolve from the brand name and be wrong. This
+     * fills a gap rather than overruling a decision.
+     *
+     * ⚠️ BUT `hasAttribute()` ALONE WAS THE WRONG TEST, which review found. `<p dir="">` and
+     * `<p dir="banana">` survive sanitising — `dir` is allowed and its VALUE was never checked — and
+     * an attribute that establishes no direction blocked the stamp while doing nothing itself, so an
+     * Arabic block still inherited the chrome. Only `ltr`, `rtl` and `auto` are directions; anything
+     * else is replaced rather than respected, because it expresses no choice to respect.
+     *
+     * ⚠️ AND A VALUE WITH NO BLOCK IN IT GOT NOTHING AT ALL, which review also found. `مرحبا` and
+     * `<strong>مرحبا</strong>` are shapes the sanitiser deliberately preserves — it refuses to wrap
+     * loose text, because reshaping content that arrived as a bare string is data loss of its own —
+     * so this loop found no block and added no direction. A top-level run is a paragraph in
+     * everything but markup, and it is wrapped in one so that it has somewhere to carry a direction.
+     * That is a reshape, and it is confined to the case where the alternative is no direction at all.
      */
-    public function withBlockDirection(string $html): string
+    private function withBlockDirection(string $html): string
     {
         if (trim($html) === '') {
             return $html;
@@ -222,7 +255,7 @@ final class RichTextType extends BaseFieldType
             foreach (iterator_to_array($document->getElementsByTagName($tag)) as $element) {
                 // No `instanceof` guard: `getElementsByTagName()` yields elements by definition,
                 // and static analysis correctly calls the check dead.
-                if (! $element->hasAttribute('dir')) {
+                if (! in_array(strtolower($element->getAttribute('dir')), self::DIRECTIONS, true)) {
                     $element->setAttribute('dir', 'auto');
                 }
             }
@@ -245,7 +278,13 @@ final class RichTextType extends BaseFieldType
          */
         $wrapper = $document->getElementsByTagName('div')->item(0);
 
-        return $wrapper === null ? $html : $this->serialize($wrapper);
+        if ($wrapper === null) {
+            return $html;
+        }
+
+        $this->wrapLooseRuns($document, $wrapper);
+
+        return $this->serialize($wrapper);
     }
 
     /**
@@ -310,6 +349,64 @@ final class RichTextType extends BaseFieldType
         $this->clean($document);
 
         return $this->serialize($document);
+    }
+
+    /**
+     * Wrap top-level text and inline runs in a paragraph, so they can carry a direction.
+     *
+     * ⚠️ A VALUE NEED NOT CONTAIN A BLOCK, which review found and I had assumed away. `مرحبا` and
+     * `<strong>مرحبا</strong>` are shapes `sanitize()` deliberately preserves, and neither has any
+     * element that a direction could sit on — so the per-block guarantee did not reach them and they
+     * inherited the chrome, which for API and import input is the ordinary case rather than an edge
+     * one.
+     *
+     * ⚠️ THIS RESHAPES, AND THAT IS THE TRADE. `sanitize()` refuses to wrap loose text because
+     * reshaping content that arrived as a bare string is data loss of its own — the reason its
+     * parsing wrapper exists at all. The alternative here is no direction at all for those values,
+     * and a top-level run is a paragraph in everything except markup. So the reshape is confined to
+     * exactly the nodes that have nowhere else to carry one, and adjacent runs are collected into ONE
+     * paragraph rather than one each, because `a <strong>b</strong> c` is one sentence.
+     */
+    private function wrapLooseRuns(DOMDocument $document, DOMNode $wrapper): void
+    {
+        $runs = [];
+        $current = [];
+
+        foreach (iterator_to_array($wrapper->childNodes) as $child) {
+            $isBlock = $child instanceof DOMElement
+                && in_array(strtolower($child->nodeName), self::CONTAINER_TAGS, true);
+
+            if ($isBlock) {
+                if ($current !== []) {
+                    $runs[] = $current;
+                    $current = [];
+                }
+
+                continue;
+            }
+
+            // Whitespace between blocks is formatting, not a run worth wrapping.
+            if ($child->nodeType === XML_TEXT_NODE && trim($child->textContent) === '') {
+                continue;
+            }
+
+            $current[] = $child;
+        }
+
+        if ($current !== []) {
+            $runs[] = $current;
+        }
+
+        foreach ($runs as $run) {
+            $paragraph = $document->createElement('p');
+            $paragraph->setAttribute('dir', 'auto');
+
+            $wrapper->insertBefore($paragraph, $run[0]);
+
+            foreach ($run as $node) {
+                $paragraph->appendChild($node);
+            }
+        }
     }
 
     /**
