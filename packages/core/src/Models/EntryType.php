@@ -21,6 +21,7 @@ use Kitsune\Core\Fields\FieldTypeRegistry;
 use Kitsune\Core\Fields\StorageStrategy;
 use Kitsune\Core\Filament\Icons;
 use Kitsune\Core\Tenancy\Attributes\Unscoped;
+use Kitsune\Core\Tenancy\Concerns\DerivesGuardedColumns;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tenancy\Contracts\RefusesCascadingDeletes;
 use Kitsune\Core\Tenancy\Contracts\RequiresModelSave;
@@ -41,6 +42,8 @@ use RuntimeException;
 #[Unscoped]
 class EntryType extends Model implements RefusesCascadingDeletes, RequiresModelSave
 {
+    use DerivesGuardedColumns;
+
     /**
      * Handles that would collide with a route segment (ADR-012).
      *
@@ -525,7 +528,15 @@ class EntryType extends Model implements RefusesCascadingDeletes, RequiresModelS
         // its fields stayed backed by the FORMER org's storage. That is the
         // exact state `Field::saving()` refuses to create, reached by moving
         // the other side of the relationship instead.
-        static::saving(fn (self $type) => $type->guardOrgMove());
+        static::saving(function (self $type): void {
+            $type->guardOrgMove();
+
+            // ⚠️ The guarded columns are `subject_field_id` and `org_id`, and `guardOrgMove()` plus
+            // the subject guard below are what validate them. Noted here because this listener is
+            // registered first, and every one of them throws rather than returning a verdict — so
+            // reaching the end of the chain is the proof, and a suppressed chain reaches nothing.
+            $type->noteGuardedColumnsDerived();
+        });
 
         // ⚠️ An icon nobody can resolve used to brick the whole admin.
         //

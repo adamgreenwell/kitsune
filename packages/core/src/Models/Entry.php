@@ -24,6 +24,7 @@ use Kitsune\Core\Fields\StorageStrategy;
 use Kitsune\Core\Relations\GuardedBelongsToMany;
 use Kitsune\Core\Schema\RevisionWrites;
 use Kitsune\Core\Tenancy\Attributes\SiteScoped;
+use Kitsune\Core\Tenancy\Concerns\DerivesGuardedColumns;
 use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
 use Kitsune\Core\Tenancy\Contracts\RequiresModelSave;
 use RuntimeException;
@@ -55,6 +56,7 @@ use RuntimeException;
 #[SiteScoped]
 class Entry extends Model implements RequiresModelSave
 {
+    use DerivesGuardedColumns;
     use EnforcesScope;
     use SoftDeletes;
 
@@ -1246,6 +1248,27 @@ class Entry extends Model implements RequiresModelSave
     public function convertFieldValuesForWrite(array $values): array
     {
         $this->retainedOriginals = [];
+
+        /*
+         * ⚠️ `type_handle` RESTAMPED HERE TOO, so the flag below is a true statement about BOTH of
+         * this model's guarded columns rather than about one of them. The restamp lives in a `saving`
+         * listener as well — which is where a caller reaching `$entry->update(['type_handle' => …])`
+         * meets it — and a quiet write suppresses that listener while still arriving here. The column
+         * is derived from `entry_type_id`, so whatever a caller wrote, the type it points at is the
+         * truth; recomputing it twice is one query on a write that is already resolving the schema.
+         *
+         * The relation check that `saving` performs alongside the restamp is NOT duplicated, and that
+         * is why the flag says "derived" rather than "the hook ran": refusing a type change that
+         * breaks a relation pointing AT this entry is a rule about relations, not about whether a
+         * guarded column holds a derived value.
+         */
+        if (array_key_exists('type_handle', $values) && array_key_exists('entry_type_id', $values)) {
+            $values['type_handle'] = EntryType::query()
+                ->whereKey($values['entry_type_id'])
+                ->value('handle') ?? $values['type_handle'];
+        }
+
+        $this->noteGuardedColumnsDerived();
 
         $registry = app(FieldTypeRegistry::class);
 

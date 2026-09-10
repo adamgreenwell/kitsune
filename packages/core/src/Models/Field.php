@@ -15,6 +15,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Query\Builder;
 use Kitsune\Core\Fields\StorageStrategy;
 use Kitsune\Core\Tenancy\Attributes\Unscoped;
+use Kitsune\Core\Tenancy\Concerns\DerivesGuardedColumns;
 use Kitsune\Core\Tenancy\Contracts\RefusesCascadingDeletes;
 use Kitsune\Core\Tenancy\Contracts\RequiresModelSave;
 use Kitsune\Core\Tenancy\ScopedBuilder;
@@ -38,6 +39,8 @@ use RuntimeException;
 #[Unscoped]
 class Field extends Model implements RefusesCascadingDeletes, RequiresModelSave
 {
+    use DerivesGuardedColumns;
+
     protected $guarded = [];
 
     protected static function booted(): void
@@ -83,7 +86,12 @@ class Field extends Model implements RefusesCascadingDeletes, RequiresModelSave
         // Registered AFTER the nomination guard so that when both apply — a
         // nominated field swapped onto a rival's storage — the more specific
         // refusal is the one the caller reads.
-        static::saving(fn (self $field) => $field->guardStorageOwnership());
+        static::saving(function (self $field): void {
+            $field->guardStorageOwnership();
+
+            // The guarded columns are `field_storage_id` and `entry_type_id`; this is what checks them.
+            $field->noteGuardedColumnsDerived();
+        });
 
         // ⚠️ Deleting is safe for the NOMINATION and not for the DATA, and this
         // comment used to claim it was safe outright.

@@ -15,6 +15,7 @@ use Filament\Models\Contracts\HasTenants;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Kitsune\Core\Tenancy\Attributes\OrgScoped;
+use Kitsune\Core\Tenancy\Concerns\DerivesGuardedColumns;
 use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tenancy\Contracts\RefusesCascadingDeletes;
@@ -47,6 +48,7 @@ use RuntimeException;
 #[OrgScoped]
 class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
 {
+    use DerivesGuardedColumns;
     use EnforcesScope;
 
     protected $guarded = [];
@@ -155,6 +157,10 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
             [$site->canonical_host, $site->path_prefix] = self::deriveUrlParts($site->base_url, $site->url_strategy);
 
             self::refuseOverlappingClaim($site);
+
+            // ⚠️ LAST, so the flag means "all of it ran" rather than "some of it started". A refusal
+            // above throws before this, and the builder then sees a write it must not let through.
+            $site->noteGuardedColumnsDerived();
         });
     }
 

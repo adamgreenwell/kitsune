@@ -209,18 +209,23 @@ class ScopedBuilder extends Builder
             }
 
             /*
-             * ⚠️ PRESENCE ON THE MODEL, NOT EQUALITY WITH IT, and equality broke twenty tests.
-             * `AuditedBuilder::insertGetId()` runs `convertFieldValuesForWrite()` before delegating
-             * here, so an `Entry`'s `values` reaching this point has deliberately been TRANSFORMED
-             * and no longer equals the attribute it came from. Comparing them refused every audited
-             * create.
+             * ⚠️ PRESENCE PROVED NOTHING, WHICH IS WHAT REVIEW FOUND. This asked whether the guarded
+             * column existed on the model behind the builder, reasoning that a saving model has it and
+             * the empty instance `Model::query()` makes does not. `createQuietly()`, `saveQuietly()`
+             * and anything inside `withoutEvents()` populate attributes while suppressing the `saving`
+             * callback that derives them — so `Site::createQuietly(['base_url' => …])` wrote
+             * `canonical_host = NULL` for a site declaring a public URL, and a quiet create naming the
+             * derived columns itself STOLE AN OVERLAPPING CROSS-ORG CLAIM. Measured: `steal.test/` held
+             * by one org, `steal.test/news` written under another, which is the ADR-021 theft this
+             * guard exists to prevent.
              *
-             * Presence is also the question actually being asked: does the model behind this builder
-             * carry this row, or is it the empty instance `Model::query()` makes? A saving model has
-             * the column set — the `saving` hooks put it there — and a fresh one does not, whatever
-             * happens to the value on the way down.
+             * An attribute can be supplied by any caller. The flag is set by the code that derives, so
+             * a path that skipped the deriving cannot present it — and equality, the version before
+             * presence, was never available: `AuditedBuilder::insertGetId()` transforms an `Entry`'s
+             * `values` before delegating here, so it no longer equals the attribute it came from and
+             * comparing them refused every audited create.
              */
-            if (array_key_exists($column, $model->getAttributes())) {
+            if ($model->guardedColumnsAreDerived()) {
                 continue;
             }
 
@@ -403,12 +408,15 @@ class ScopedBuilder extends Builder
         // `Model::performUpdate()` writes through the builder — so refusing
         // every bulk-shaped write would refuse `$model->update(...)` as well.
         //
-        // A loaded model is what separates them: `performUpdate()` roots its
-        // query in the instance being saved, while `Model::query()` builds one
-        // from a fresh, non-existent instance. That is the same discriminator
-        // Laravel uses for `setKeysForSaveQuery()`, and the guards it stands
-        // aside for have already run in `saving`.
-        if ($model->exists) {
+        // ⚠️ AND `exists` ALONE WAS THE WRONG TEST, for the reason the insert
+        // guard records at length: this stood aside because "the guards it
+        // stands aside for have already run in `saving`", and a quiet save
+        // suppresses `saving` while still being an instance save. Measured:
+        // `$site->saveQuietly()` moved `base_url` with `canonical_host` left on
+        // the old address. Both halves are needed — `exists` says it is an
+        // instance write rather than a bulk one, and the flag says the guards
+        // for that write actually ran.
+        if ($model->exists && $model->guardedColumnsAreDerived()) {
             return;
         }
 

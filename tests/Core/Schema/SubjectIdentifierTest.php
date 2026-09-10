@@ -19,6 +19,7 @@ use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Relations\GuardedBelongsToMany;
 use Kitsune\Core\Tenancy\Context;
+use Kitsune\Core\Tenancy\ScopeWrites;
 
 /*
  * ADR-020 primitives 2 and 3, which the compliance tooling in v1.1 is built
@@ -782,12 +783,20 @@ describe('a rival\'s storage cannot be borrowed at all', function (): void {
     });
 
     it('still refuses the nomination for a row that predates the guard', function (): void {
-        // Defence in depth: the attachment guard is new, so a row written
-        // before it could already exist. Created without events to represent
-        // exactly that.
-        $field = Field::withoutEvents(fn () => Field::create([
+        /*
+         * Defence in depth: the attachment guard is new, so a row written before it could already
+         * exist. This fabricates exactly that.
+         *
+         * ⚠️ `ScopeWrites::suspend()` AND NOT `withoutEvents()` ALONE, which stopped being enough
+         * once the builder required proof that the guards ran rather than trusting an attribute to be
+         * present (issue #60). Suppressing events is what makes this row bad; it is now also what
+         * makes the builder refuse to write it, so the fixture needs the reviewable opt-out the guard
+         * is designed around. That reads better than it did: the row is deliberately written past a
+         * guard, and the test now says so.
+         */
+        $field = ScopeWrites::suspend(fn () => Field::withoutEvents(fn () => Field::create([
             'entry_type_id' => $this->type->id, 'field_storage_id' => $this->theirs->id, 'label' => 'Their email',
-        ]));
+        ])));
 
         expect(fn () => $this->type->update(['subject_field_id' => $field->id]))
             ->toThrow(RuntimeException::class, "another organisation's storage");
@@ -1791,9 +1800,10 @@ it('refuses org-owned storage on a GLOBAL entry type', function (): void {
         'entry_type_id' => $global->id, 'field_storage_id' => $mine->id, 'label' => 'Email',
     ]))->toThrow(RuntimeException::class, 'belongs to another organisation');
 
-    $field = Field::withoutEvents(fn () => Field::create([
+    // ⚠️ Past the builder guard too, for the reason the `predates the guard` test above records.
+    $field = ScopeWrites::suspend(fn () => Field::withoutEvents(fn () => Field::create([
         'entry_type_id' => $global->id, 'field_storage_id' => $mine->id, 'label' => 'Email',
-    ]));
+    ])));
 
     expect(fn () => $global->update(['subject_field_id' => $field->id]))
         ->toThrow(RuntimeException::class, 'a global entry type');

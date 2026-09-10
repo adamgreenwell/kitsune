@@ -51,4 +51,14 @@ interface RequiresModelSave
      * @return array<string, string>
      */
     public static function columnsRequiringModelSave(): array;
+
+    /**
+     * Whether the columns above have been derived and validated for the write in flight.
+     *
+     * ⚠️ THE DISCRIMINATOR USED TO BE "THE ATTRIBUTE IS PRESENT ON THE MODEL", and review showed
+     * that proves nothing: `createQuietly()`, `saveQuietly()` and `withoutEvents()` populate
+     * attributes while suppressing the `saving` callback that derives them. A caller can supply an
+     * attribute; only the code that derives can set this. `DerivesGuardedColumns` implements it.
+     */
+    public function guardedColumnsAreDerived(): bool;
 }

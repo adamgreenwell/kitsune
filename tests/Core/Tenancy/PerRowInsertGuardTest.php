@@ -242,3 +242,143 @@ it('is only safe while every guarded model increments', function (): void {
 
     expect($found)->toBe($guarded, 'a RequiresModelSave model is not covered by this test');
 });
+
+describe('a quiet write is not a guarded write', function (): void {
+    /*
+     * ⚠️ THE DISCRIMINATOR WAS "THE ATTRIBUTE IS PRESENT ON THE MODEL", and review showed that proves
+     * nothing. `createQuietly()`, `saveQuietly()`, `updateQuietly()` and anything inside
+     * `withoutEvents()` populate a model's attributes while suppressing the `saving` callback that
+     * derives and validates them — so the write reaching the builder looked exactly like a genuine
+     * save. Measured on this branch before the fix, all three:
+     *
+     *   Site::query()->createQuietly([... 'base_url' => 'https://quiet.test/news'])
+     *     -> canonical_host NULL, path_prefix NULL      a site declaring a URL and reachable at none
+     *
+     *   Site::query()->createQuietly([... 'base_url' => 'https://steal.test/news',
+     *                                     'canonical_host' => 'steal.test', 'path_prefix' => '/news'])
+     *     -> WROTE `steal.test/news` under a rival org while another held `steal.test/`
+     *
+     *   $site->base_url = 'https://after.test'; $site->saveQuietly()
+     *     -> base_url after.test, canonical_host still before.test
+     *
+     * The second is the cross-org URL theft ADR-021 says has no framework safety net, reached through
+     * the front door. `field-types.md` §6 states the principle this violates in as many words: *"a
+     * guard has to sit where the write is, and an event is not where the write is."*
+     */
+    it('refuses a quiet create that leaves a derived column unwritten', function (): void {
+        expect(fn () => Site::query()->createQuietly([
+            'org_id' => $this->org->id, 'handle' => 'q1', 'slug' => 'q1', 'name' => 'Q1',
+            'locale' => 'en', 'url_strategy' => 'domain', 'base_url' => 'https://quiet.test/news',
+        ]))->toThrow(RuntimeException::class, 'checks that derive and validate it did not run');
+
+        expect(Site::withoutGlobalScopes()->where('handle', 'q1')->exists())->toBeFalse();
+    });
+
+    it('refuses a quiet create that supplies the derived columns itself', function (): void {
+        /*
+         * ⚠️ THE CASE PRESENCE COULD NEVER HAVE CAUGHT, and the worst of the three: every guarded
+         * column IS on the model, supplied by the caller, so the old test passed and the overlap check
+         * never ran. `steal.test/` is held by one org and this claims `steal.test/news` for another,
+         * which the resolver's longest-prefix rule then serves from the wrong org.
+         */
+        Site::create([
+            'org_id' => $this->org->id, 'handle' => 'owner', 'slug' => 'owner', 'name' => 'Owner',
+            'locale' => 'en', 'url_strategy' => 'domain', 'base_url' => 'https://steal.test/',
+        ]);
+
+        $rival = Org::create(['name' => 'Rival', 'slug' => 'rival-org']);
+
+        expect(fn () => Site::query()->createQuietly([
+            'org_id' => $rival->id, 'handle' => 'thief', 'slug' => 'thief', 'name' => 'Thief',
+            'locale' => 'en', 'url_strategy' => 'domain', 'base_url' => 'https://steal.test/news',
+            'canonical_host' => 'steal.test', 'path_prefix' => '/news',
+        ]))->toThrow(RuntimeException::class, 'checks that derive and validate it did not run');
+
+        expect(Site::withoutGlobalScopes()->where('canonical_host', 'steal.test')->count())
+            ->toBe(1, 'the quiet create landed a second claim on a host another org holds');
+    });
+
+    it('refuses a quiet update that moves a derived column', function (): void {
+        $site = Site::create([
+            'org_id' => $this->org->id, 'handle' => 'mover', 'slug' => 'mover', 'name' => 'Mover',
+            'locale' => 'en', 'url_strategy' => 'domain', 'base_url' => 'https://before.test',
+        ]);
+
+        $site->base_url = 'https://after.test';
+
+        expect(fn () => $site->saveQuietly())
+            ->toThrow(RuntimeException::class, 'cannot be written in bulk');
+
+        expect((string) Site::withoutGlobalScopes()->whereKey($site->getKey())->value('canonical_host'))
+            ->toBe('before.test', 'the quiet update moved the site off its derived host');
+    });
+
+    it('leaves a quiet write that touches no guarded column alone', function (): void {
+        /*
+         * ⚠️ THE BOUND ON THE REFUSAL. A quiet save that changes only `name` derives nothing and needs
+         * nothing derived, so refusing it would make the guard about events rather than about columns.
+         */
+        $site = Site::create([
+            'org_id' => $this->org->id, 'handle' => 'renamed', 'slug' => 'renamed', 'name' => 'Before',
+            'locale' => 'en', 'url_strategy' => 'domain', 'base_url' => 'https://renamed.test',
+        ]);
+
+        $site->name = 'After';
+
+        expect($site->saveQuietly())->toBeTrue()
+            ->and((string) Site::withoutGlobalScopes()->whereKey($site->getKey())->value('name'))->toBe('After');
+    });
+
+    it('still allows a quiet ENTRY create, whose guards run at the builder', function (): void {
+        /*
+         * ⚠️ WHY THE FLAG SAYS "DERIVED" RATHER THAN "THE HOOK RAN". `Entry` is the one guarded model
+         * whose columns are made correct where the write is: `AuditedBuilder` runs
+         * `convertFieldValuesForWrite()` on both the insert and the update path, which is §6's
+         * principle already applied. A flag meaning "the `saving` event fired" would have refused this
+         * for no reason — and `AuditLogTest` asserts a quiet entry create in the current scope is
+         * allowed, deliberately.
+         */
+        $type = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'page', 'name' => 'Page', 'plural_name' => 'Pages',
+        ]);
+
+        $site = Site::create([
+            'org_id' => $this->org->id, 'handle' => 'entries', 'slug' => 'entries', 'name' => 'Entries',
+        ]);
+
+        app(Context::class)->setSite($site);
+
+        $entry = Entry::query()->createQuietly([
+            'org_id' => $this->org->id, 'site_id' => $site->id,
+            'entry_type_id' => $type->id, 'type_handle' => 'page', 'title' => 'Quiet',
+        ]);
+
+        expect($entry->exists)->toBeTrue()->and($entry->title)->toBe('Quiet');
+    });
+
+    it('restamps a forged type handle on the quiet path too', function (): void {
+        /*
+         * ⚠️ WHICH THE FLAG'S CLAIM REQUIRED. `type_handle` is one of `Entry`'s guarded columns and its
+         * restamp lived only in `saving`, so saying "derived" while a quiet write left a forged handle
+         * intact would have been the same kind of false claim the presence check was. It is restamped
+         * in `convertFieldValuesForWrite()` now, which is where the other guarded column is handled.
+         */
+        $type = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'article', 'name' => 'Article', 'plural_name' => 'Articles',
+        ]);
+
+        $site = Site::create([
+            'org_id' => $this->org->id, 'handle' => 'forged', 'slug' => 'forged', 'name' => 'Forged',
+        ]);
+
+        app(Context::class)->setSite($site);
+
+        $entry = Entry::query()->createQuietly([
+            'org_id' => $this->org->id, 'site_id' => $site->id,
+            'entry_type_id' => $type->id, 'type_handle' => 'not_the_type', 'title' => 'Forged',
+        ]);
+
+        expect((string) Entry::withoutGlobalScopes()->whereKey($entry->getKey())->value('type_handle'))
+            ->toBe('article', 'a quiet create kept a handle the type does not have');
+    });
+});
