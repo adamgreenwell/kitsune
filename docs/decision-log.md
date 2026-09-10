@@ -1442,15 +1442,14 @@ Review found two patterns built entirely from permitted constructs that the gram
 
 That is a worse failure than an unwritten rule. An unwritten rule leaves an author to discover a divergence; a written one that is not enforced tells them the divergence cannot happen. It is the same defect as the `\p{Lower}` claim corrected in the same commit, and both are invariant 14.
 
-**Decision: the grammar is an allowlist of constructs *and* a closed set of structural rules, enforced together.** `structuralRefusal()` holds five, each a property of how constructs fit together rather than of any construct:
+**Decision: the grammar is an allowlist of constructs *and* a closed set of structural rules, enforced together.** `structuralRefusal()` holds four, each a property of how constructs fit together rather than of any construct:
 
 1. No quantifier on an assertion.
 2. A lookbehind's alternatives must be equal length.
-3. No unbounded quantifier over a group containing one — unless the repetition is *delimited*.
-4. No unbounded quantifier over ambiguous alternation — unless the alternatives are prefix-free literals.
-5. A capturing group inside a lookbehind must be fixed length.
+3. An unbounded repetition must have only one way to divide its subject.
+4. A capturing group inside a lookbehind must be fixed length.
 
-Rules 4 and 5 are review's. Rules 1–3 were already published, and are now true.
+Rules 3 and 4 are review's in part. Rules 1–3 were already published, and are now true.
 
 **The two exemptions are proofs, not conveniences**, and both were forced by measuring the cost of the rule without them:
 
@@ -1471,6 +1470,36 @@ The harness reports **0** `divergent AND accepted`, down from 2. The expressiven
 | Blanket rules with no exemptions | Refuses `^[^,]+(?:,[^,]+)*$` and `^(?:cat|dog)+$` — the commonest safe shapes there are. A validator paid for by every author is not free because the cost is invisible in the diff. |
 | Detect ambiguity in general | Not something to attempt in a validator on the authoring path. The exemptions are narrow, provable, and fail closed; everything else is refused with the portable spelling named. |
 | Ban captures inside lookbehinds | Measurement says fixed widths agree. It would have refused four working forms to catch two broken ones. |
+
+---
+
+### Amendment · 2026-09-10 — one property, not two rules; and the migration exists
+
+Three more from review, and each is a case where the previous amendment fixed a symptom rather than the property behind it.
+
+**Two rules were aimed at symptoms, and a third symptom walked between them.** The pair was "no unbounded quantifier over a group containing one" and "not over ambiguous alternation". `^(a{1,2})+$` satisfies neither trigger — the inner quantifier is bounded and there is no alternation — and measures at ECMAScript ~100 ms for 30 characters, past three seconds for 40, with PCRE's backtrack limit exhausted. Worse, a test in this repository asserted `^([a-z]{1,8})+$` was *acceptable*, under the heading "accepts a bounded outer quantifier". Same shape, same measurement. Two symptom rules let one symptom through and blessed another.
+
+They are now one rule about the property: **an unbounded repetition must have only one way to divide its subject.** A body establishes that by being fixed-width with every alternation inside it unambiguous, by having prefix-free literal alternatives, or by being delimited.
+
+**A forced division turned out not to be sufficient, which measurement established rather than reasoning.** `(?:[a-z]|x)+` is fixed at one character wide, so the division IS forced — and it is still catastrophic, because `x` lies inside `[a-z]`: on 30 `x` characters both branches match at every position, giving 2³⁰ branch choices. ECMAScript 7.9 s; PCRE's backtrack limit exhausted. The same pattern on 30 `a` characters is instant. So the fixed-width clause carries a second condition, checked recursively so that `(?:a(?:b|c))+` — as safe as `(?:ab|ac)+` — is not refused for having its alternation one level down.
+
+**Every scanner advanced past a backslash by exactly two characters**, which is right for `\.` and wrong for every escape with a payload. `fixedWidth()` read `\x61` as a `\x` atom plus the literals `6` and `1` and reported width 3 for a one-character escape, so `(?<=(\x61|aaa))b\1$` passed the equal-length lookbehind rule — PCRE says no on `aaaba`, ECMAScript says yes. One arithmetic error bypassed both lookbehind rules. `escapeSpan()` is now the single answer to "how long is this escape", used by every scan; the payload also matters for correctness rather than only precision, since `\c|` puts a `|` where a two-character step reads an alternation that is not there.
+
+**And the migration this ADR calls mandatory did not exist.** The consequence section said patterns outside the grammar "must be found before this lands"; review searched for the command and there was none. `kitsune:audit-patterns` reports every stored pattern the grammar refuses, with `--strict` as a deployment gate. It has no `--force`, deliberately unlike `kitsune:schema-sync`: a pattern says what a field accepts, and only its owner knows what that should be.
+
+That is the third time in this ADR's short life that something was published without being enforced — the three structural rules, the `\p{Lower}` allowlist claim, and now the migration itself. The pattern is worth naming: **prose describing intended behaviour reads exactly like prose describing actual behaviour**, and nothing in review catches the difference unless someone goes looking for the implementation.
+
+### Consequence
+
+Live defects remain **0**. The expressiveness cost is nine rows: three are portability judgements (`\b`, `\p{Cn}`, `\p{C}`) and six are cost refusals where the engines only appear to agree because the harness's subject is benign — for five of them neither engine gives a verdict at all.
+
+| Rejected | Why it lost |
+|---|---|
+| Keep two rules and add a third for bounded repeats | A fourth symptom would have followed. The property is "one way to divide", and rules that enumerate shapes will keep missing shapes. |
+| Treat fixed width as sufficient | Measured false: `(?:[a-z]|x)+` divides one way and still costs 7.9 s. |
+| Check alternations only at the body's top level | Refuses `(?:a(?:b|c))+`, which is exactly as safe as `(?:ab|ac)+`. |
+| Decide class overlap properly, so `(?:a|[b-z])+` publishes | Real analysis on an authoring request, to admit a pattern whose author can bound the repetition instead. Refused conservatively and the cost reported. |
+| Ship the enforcement and write the audit later | The audit is what makes the enforcement safe to deploy. "Later" is after somebody's install broke. |
 
 ---
 

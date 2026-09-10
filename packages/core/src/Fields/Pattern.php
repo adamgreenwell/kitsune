@@ -917,61 +917,157 @@ final class Pattern
             }
 
             /*
-             * ⚠️ RULE 3 — no unbounded quantifier over a group containing one. The document's own
-             * example `^([a-zA-Z0-9]+\.?)+$` is entirely permitted constructs and makes NEITHER
-             * engine answer on adversarial input: `preg_match()` returns false after exhausting
-             * its backtrack limit, and ECMAScript is still searching when the deadline expires.
-             * That is not a portability problem — it is catastrophic backtracking, and ADR-027's
-             * 1 vCPU floor is why the cost cannot be left to the consumer.
+             * ⚠️ RULE 3 — AN UNBOUNDED REPETITION MUST HAVE ONLY ONE WAY TO DIVIDE ITS SUBJECT.
+             * That is the property; everything else here is a way of establishing it. If a group's
+             * body can match two different lengths at the same position, a failing subject can be
+             * re-divided combinatorially, and neither engine answers: `preg_match()` returns false
+             * after exhausting its backtrack limit while ECMAScript is still searching past a
+             * deadline. Not a portability problem — the two agree, in that neither gives a verdict —
+             * but catastrophic backtracking, and ADR-027's 1 vCPU floor is why the cost cannot be
+             * left to the consumer.
              *
-             * ⚠️ EXEMPT WHEN THE REPETITION IS DELIMITED, because the rule as `field-types.md`
-             * published it — "no unbounded quantifier over a group containing one" — refuses
-             * `^[^,]+(?:,[^,]+)*$`, the ordinary comma-separated list, and that pattern is safe.
-             * See `repetitionIsDelimited()` for why it is provably safe rather than merely
-             * plausible. The published rule is corrected to match, since a rule that refuses the
-             * commonest safe shape in the language would be paid for by every author.
+             * ⚠️ THIS WAS TWO RULES AND THEY BOTH LEAKED. The published pair was "no unbounded
+             * quantifier over a group containing one" plus "not over ambiguous alternation", and
+             * review found `^(a{1,2})+$` slipping between them: the inner quantifier is BOUNDED, so
+             * the first rule does not fire, and there is no alternation, so the second does not
+             * either. Measured — 30 characters takes ECMAScript ~100ms, 40 runs past three seconds,
+             * and PCRE exhausts its backtrack limit.
+             *
+             * Worse, my own test asserted `^([a-z]{1,8})+$` was fine. It is the same shape and it
+             * measures the same way. Two rules aimed at symptoms let a third symptom through and
+             * blessed a fourth; one rule aimed at the property does not.
+             *
+             * Three ways to establish it, in cost order:
+             *
+             *  - FIXED WIDTH, WITH EVERY ALTERNATION INSIDE IT UNAMBIGUOUS. Every match of the body
+             *    is the same length, so the division is forced — but a forced division is not
+             *    enough on its own, and measuring found why. `(?:[a-z]|x)+` is fixed at one
+             *    character, so each iteration consumes exactly one; `x` is nevertheless inside
+             *    `[a-z]`, so on a subject of 30 `x` characters BOTH branches match at every
+             *    position and there are 2^30 branch choices. Measured: ECMAScript 7.9 seconds,
+             *    PCRE's backtrack limit exhausted — while the same pattern on 30 `a` characters is
+             *    instant, because only one branch can match there. `(?:ab)+` and `(?:cat|dog)+`
+             *    qualify; `(?:[a-z]|x)+` does not.
+             *  - PREFIX-FREE LITERALS. No branch is a prefix of another, so at most one can match at
+             *    a position. `(?:ab|c)+` qualifies at differing lengths.
+             *  - DELIMITED. The body starts with a required literal that no unbounded quantifier
+             *    inside it can consume, so the subject's own delimiters force the division.
+             *    `(?:,[^,]+)*` qualifies.
+             *
+             * Anything else is refused with the portable spelling named. `(a?)+` is refused although
+             * both engines happen to cope with it — it is ambiguous, `a*` says the same thing, and
+             * the project's rule is to refuse a divergence when a portable equivalent exists.
              */
-            if (self::containsUnboundedQuantifier($frame['body']) && ! self::repetitionIsDelimited($frame['body'])) {
+            $body = $frame['body'];
+
+            $forcedDivision = self::fixedWidth($body) !== null
+                && self::everyAlternationIsUnambiguous($body);
+
+            if (
+                ! $forcedDivision
+                && ! self::branchesAreUnambiguousLiterals($body)
+                && ! self::repetitionIsDelimited($body)
+            ) {
                 return sprintf(
-                    'the unbounded quantifier `%s` on `%s`, which already contains an unbounded '
-                    .'quantifier — nesting them makes the number of ways to match a subject grow '
-                    .'exponentially, so an adversarial value exhausts PCRE\'s backtrack limit and '
-                    .'runs unboundedly in ECMAScript. Bound one of the two, as in {1,32}',
+                    'the unbounded quantifier `%s` on `%s`, whose body can match more than one '
+                    .'length at the same position — so a failing subject can be re-divided '
+                    .'combinatorially, which exhausts PCRE\'s backtrack limit and runs unboundedly '
+                    .'in ECMAScript. Give the repeated group a fixed length, make its alternatives '
+                    .'distinct literals with none a prefix of another, start it with a delimiter it '
+                    .'cannot itself match, or bound the repetition as in {1,32}',
                     $frame['quantifier'],
                     self::excerpt($pattern, $frame['open'], $frame['close']),
                 );
             }
-
-            /*
-             * ⚠️ RULE 4 — no unbounded quantifier over ambiguous alternation. Review found this,
-             * and rule 3 cannot catch it because the repeated group holds no quantifier of its
-             * own: `^(a|aa)+$` is the classic shape, and measured here, a subject of 40 `a`
-             * characters plus `!` exhausts PCRE's backtrack limit while ECMAScript runs past a
-             * 1.5-second deadline.
-             *
-             * ⚠️ EXEMPT WHEN THE BRANCHES ARE PREFIX-FREE LITERALS, which is exact rather than
-             * generous: if no branch is a prefix of another then at most one can match at any
-             * position, the alternation is deterministic, and repeating it stays linear. So
-             * `^(?:cat|dog)+$` is publishable and `^(?:cat|ca)+$` is not. Anything that is not a
-             * plain literal is refused rather than analysed — an alternation of classes or
-             * quantified atoms is where a wrong answer would be expensive.
-             */
-            if (self::containsAlternation($frame['body'])) {
-                if (! self::branchesAreUnambiguousLiterals($frame['body'])) {
-                    return sprintf(
-                        'the unbounded quantifier `%s` on `%s`, whose alternatives can match the '
-                        .'same text in more than one way — repeating an ambiguous alternation makes '
-                        .'a failing subject exhaust PCRE\'s backtrack limit and run unboundedly in '
-                        .'ECMAScript. Make the alternatives distinct literals, none a prefix of '
-                        .'another, or bound the repetition',
-                        $frame['quantifier'],
-                        self::excerpt($pattern, $frame['open'], $frame['close']),
-                    );
-                }
-            }
         }
 
         return null;
+    }
+
+    /**
+     * Whether every alternation inside this body, at any depth, can match at most one way.
+     *
+     * ⚠️ A FORCED DIVISION IS NOT ENOUGH, which measurement established rather than reasoning.
+     * `(?:[a-z]|x)+` is fixed at one character wide, so every iteration consumes exactly one and
+     * there is only one way to divide the subject — and it is still catastrophic, because `x` lies
+     * inside `[a-z]`: on 30 `x` characters both branches match at every position, giving 2^30
+     * branch choices. ECMAScript took 7.9 seconds and PCRE exhausted its backtrack limit, while the
+     * same pattern on 30 `a` characters finished instantly because only one branch can match there.
+     *
+     * ⚠️ RECURSIVE, so `(?:a(?:b|c))+` is admitted. Checking only the body's own top-level
+     * alternation would refuse it — a nested alternation is invisible there — and `b` and `c` are
+     * distinct literals, so it is exactly as safe as `(?:ab|ac)+`. The first version of this rule
+     * refused it and would have cost authors a common shape for nothing.
+     *
+     * ⚠️ CONSERVATIVE WHERE IT CANNOT BE SURE. `(?:a|[b-z])+` has disjoint branches and is refused,
+     * because deciding whether two character classes overlap is more analysis than belongs on an
+     * authoring request. The message names the portable ways out, and the harness reports the cost.
+     */
+    private static function everyAlternationIsUnambiguous(string $body): bool
+    {
+        $branches = self::topLevelBranches($body);
+
+        if (count($branches) > 1 && ! self::branchesAreUnambiguousLiterals($body)) {
+            return false;
+        }
+
+        foreach ($branches as $branch) {
+            if (! self::nestedAlternationsAreUnambiguous($branch)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /** The same question asked of every group inside one alternation-free branch. */
+    private static function nestedAlternationsAreUnambiguous(string $branch): bool
+    {
+        $length = mb_strlen($branch);
+        $inClass = false;
+
+        for ($i = 0; $i < $length; $i++) {
+            $char = mb_substr($branch, $i, 1);
+
+            if ($char === '\\') {
+                $i += self::escapeSpan($branch, $i) - 1;
+
+                continue;
+            }
+
+            if ($inClass) {
+                $inClass = $char !== ']';
+
+                continue;
+            }
+
+            if ($char === '[') {
+                $inClass = true;
+
+                continue;
+            }
+
+            if ($char !== '(') {
+                continue;
+            }
+
+            $closes = self::groupEndsAt($branch, $i);
+
+            if ($closes === null) {
+                return false;
+            }
+
+            $kind = self::frameKindAt($branch, $i);
+            $prefix = self::framePrefixLength($branch, $i, $kind);
+
+            if (! self::everyAlternationIsUnambiguous(mb_substr($branch, $i + $prefix, $closes - $i - $prefix))) {
+                return false;
+            }
+
+            $i = $closes;
+        }
+
+        return true;
     }
 
     /**
@@ -1059,8 +1155,10 @@ final class Pattern
             $atom = $char;
 
             if ($char === '\\') {
-                $atom = mb_substr($body, $i, 2);
-                $i++;
+                // The whole escape is the atom: `\x61` is one character, not `\x` then `61`.
+                $span = self::escapeSpan($body, $i);
+                $atom = mb_substr($body, $i, $span);
+                $i += $span - 1;
             } elseif ($char === '[') {
                 $closes = self::classEndsAt($body, $i);
 
@@ -1106,6 +1204,56 @@ final class Pattern
         return false;
     }
 
+    /**
+     * How many characters the escape starting at `$at` occupies, counting the backslash.
+     *
+     * ⚠️ EVERY SCANNER IN THIS FILE NEEDS THIS, and each of them used to advance by exactly two.
+     * That is right for `\.` and wrong for every escape with a payload, and review found what it
+     * cost: `fixedWidth()` read `\x61` as a backslash-x atom followed by the literals `6` and `1`,
+     * so it reported width 3 for a one-character escape. `(?<=(\x61|aaa))b\1$` therefore passed
+     * the equal-length lookbehind rule — measured, PCRE says no and ECMAScript says yes.
+     *
+     * ⚠️ The payload is also why a two-character advance is not merely imprecise but WRONG for the
+     * structural scans: `\c|` puts a `|` in the payload position, and a scanner that steps over
+     * only `\c` reads it as an alternation that is not there.
+     *
+     * Only the forms the grammar admits are recognised — `\x{41}` is PCRE-only and refused
+     * elsewhere, so it is not a case here.
+     */
+    private static function escapeSpan(string $text, int $at): int
+    {
+        $letter = mb_substr($text, $at + 1, 1);
+
+        if ($letter === '') {
+            // A trailing backslash. `compiles()` has already refused it; this keeps the scan in step.
+            return 1;
+        }
+
+        // `\x41`, whose portable form is exactly two hex digits.
+        if ($letter === 'x' && preg_match('/^[0-9A-Fa-f]{2}$/', mb_substr($text, $at + 2, 2)) === 1) {
+            return 4;
+        }
+
+        // `\cA`, one character of payload.
+        if ($letter === 'c' && mb_substr($text, $at + 2, 1) !== '') {
+            return 3;
+        }
+
+        if (($letter === 'p' || $letter === 'P') && mb_substr($text, $at + 2, 1) === '{') {
+            $closes = mb_strpos($text, '}', $at + 2);
+
+            return $closes === false ? 2 : $closes - $at + 1;
+        }
+
+        if ($letter === 'k' && mb_substr($text, $at + 2, 1) === '<') {
+            $closes = mb_strpos($text, '>', $at + 2);
+
+            return $closes === false ? 2 : $closes - $at + 1;
+        }
+
+        return 2;
+    }
+
     /** A short quotation of the pattern between two offsets, for a refusal message. */
     private static function excerpt(string $pattern, int $open, int $close): string
     {
@@ -1139,7 +1287,7 @@ final class Pattern
             $char = mb_substr($pattern, $i, 1);
 
             if ($char === '\\') {
-                $i++;
+                $i += self::escapeSpan($pattern, $i) - 1;
 
                 continue;
             }
@@ -1257,55 +1405,6 @@ final class Pattern
         return $quantifier !== '' && preg_match('/^(?:\*|\+|\{[0-9]+,\})\??$/', $quantifier) === 1;
     }
 
-    /**
-     * Whether this subpattern contains an unbounded quantifier at any depth.
-     *
-     * ⚠️ Classes and escapes are skipped, so `[a+]` and `\+` are the literal characters they
-     * are rather than quantifiers — the same distinction the main scan draws, and the reason
-     * this cannot be a substring search.
-     */
-    private static function containsUnboundedQuantifier(string $body): bool
-    {
-        $length = mb_strlen($body);
-        $inClass = false;
-
-        for ($i = 0; $i < $length; $i++) {
-            $char = mb_substr($body, $i, 1);
-
-            if ($char === '\\') {
-                $i++;
-
-                continue;
-            }
-
-            if ($inClass) {
-                $inClass = $char !== ']';
-
-                continue;
-            }
-
-            if ($char === '[') {
-                $inClass = true;
-
-                continue;
-            }
-
-            if ($char === '*' || $char === '+') {
-                return true;
-            }
-
-            if ($char === '{' && ($closes = mb_strpos($body, '}', $i)) !== false) {
-                if (preg_match('/^\{[0-9]+,\}$/', mb_substr($body, $i, $closes - $i + 1)) === 1) {
-                    return true;
-                }
-
-                $i = $closes;
-            }
-        }
-
-        return false;
-    }
-
     /** Whether this subpattern contains an alternation at any depth. */
     private static function containsAlternation(string $body): bool
     {
@@ -1316,7 +1415,7 @@ final class Pattern
             $char = mb_substr($body, $i, 1);
 
             if ($char === '\\') {
-                $i++;
+                $i += self::escapeSpan($body, $i) - 1;
 
                 continue;
             }
@@ -1397,8 +1496,9 @@ final class Pattern
             $char = mb_substr($body, $i, 1);
 
             if ($char === '\\') {
-                $current .= $char.mb_substr($body, $i + 1, 1);
-                $i++;
+                $span = self::escapeSpan($body, $i);
+                $current .= mb_substr($body, $i, $span);
+                $i += $span - 1;
 
                 continue;
             }
@@ -1477,7 +1577,14 @@ final class Pattern
 
             if ($char === '\\') {
                 $escaped = mb_substr($body, $i + 1, 1);
-                $i++;
+
+                /*
+                 * ⚠️ THE WHOLE ESCAPE, and reading only its letter is what review found. `\x61` is
+                 * one character wide and four characters long; counting the payload as two more
+                 * atoms reported width 3, and `(?<=(\x61|aaa))b\1$` then passed the equal-length
+                 * lookbehind rule — PCRE says no on `aaaba`, ECMAScript says yes.
+                 */
+                $i += self::escapeSpan($body, $i) - 1;
 
                 // A backreference's width is whatever its group matched, which is not knowable
                 // here — and `\k<name>` is the same thing spelled differently.
@@ -1490,16 +1597,6 @@ final class Pattern
                 // wrong if that ever changed.
                 if ($escaped === 'b' || $escaped === 'B') {
                     $width = 0;
-                }
-
-                if (($escaped === 'p' || $escaped === 'P') && mb_substr($body, $i + 1, 1) === '{') {
-                    $closes = mb_strpos($body, '}', $i);
-
-                    if ($closes === false) {
-                        return null;
-                    }
-
-                    $i = $closes;
                 }
             } elseif ($char === '[') {
                 $closes = self::classEndsAt($body, $i);
@@ -1580,7 +1677,7 @@ final class Pattern
             $char = mb_substr($text, $i, 1);
 
             if ($char === '\\') {
-                $i++;
+                $i += self::escapeSpan($text, $i) - 1;
 
                 continue;
             }
@@ -1604,7 +1701,7 @@ final class Pattern
             $char = mb_substr($text, $i, 1);
 
             if ($char === '\\') {
-                $i++;
+                $i += self::escapeSpan($text, $i) - 1;
 
                 continue;
             }

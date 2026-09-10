@@ -11,6 +11,7 @@ declare(strict_types=1);
 namespace Kitsune\Core;
 
 use Illuminate\Support\ServiceProvider;
+use Kitsune\Core\Console\AuditPatternsCommand;
 use Kitsune\Core\Console\BenchmarkFloorCommand;
 use Kitsune\Core\Console\BenchmarkStorageCommand;
 use Kitsune\Core\Console\SchemaSyncCommand;
@@ -73,6 +74,7 @@ final class KitsuneServiceProvider extends ServiceProvider
 
         if ($this->app->runningInConsole()) {
             $this->commands([
+                AuditPatternsCommand::class,
                 BenchmarkStorageCommand::class,
                 BenchmarkFloorCommand::class,
                 SchemaSyncCommand::class,

@@ -790,5 +790,41 @@
     "pattern": "^[^,]+(?:,[^,]+)*$",
     "subject": "ab,cd,ef",
     "why": "Rule 3's exemption. Nests + inside * and is provably linear: every iteration must begin at a comma and [^,] cannot consume one, so the subject's commas force the split."
+  },
+  {
+    "id": "bounded-ambiguous-repeat",
+    "pattern": "^(a{1,2})+$",
+    "subject": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!",
+    "why": "Review's case, and it slipped between two published rules: the inner quantifier is BOUNDED so the nested-unbounded rule never fired, and there is no alternation so the ambiguous-alternation rule did not either. Both are now one rule about whether the body divides one way."
+  },
+  {
+    "id": "bounded-ambiguous-class-repeat",
+    "pattern": "^([a-z]{1,8})+$",
+    "subject": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!",
+    "why": "The same shape, and my own test asserted it was acceptable under the heading 'accepts a bounded outer quantifier'. PCRE exhausts its backtrack limit and ECMAScript runs past a two-second deadline."
+  },
+  {
+    "id": "overlapping-branches-fixed-width",
+    "pattern": "^(?:[a-z]|x)+$",
+    "subject": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx!",
+    "why": "A forced division is not sufficient: fixed at one character, so the split is forced, yet x lies inside [a-z] so both branches match at every position — 2^30 branch choices. ECMAScript 7.9s, PCRE backtrack limit. The same pattern on 30 a's is instant, which is why the rule is about the construct rather than a subject."
+  },
+  {
+    "id": "nested-unambiguous-alternation",
+    "pattern": "^(?:a(?:b|c))+$",
+    "subject": "abacab",
+    "why": "The recursive half of the exemption. A nested alternation of distinct literals is as safe as (?:ab|ac)+, and a check that looked only at the body's own top level refused it for nothing."
+  },
+  {
+    "id": "escape-width-in-lookbehind",
+    "pattern": "(?<=(\\x61|aaa))b\\1$",
+    "subject": "aaaba",
+    "why": "Review's case. Every scanner advanced past a backslash by two characters, so fixedWidth() read \\x61 as a \\x atom plus the literals 6 and 1 and reported width 3 — the branches looked equal and the lookbehind rule was bypassed. PCRE says no, ECMAScript says yes."
+  },
+  {
+    "id": "escape-width-equal-lookbehind",
+    "pattern": "(?<=(\\x61|a))b\\1$",
+    "subject": "aba",
+    "why": "The other half: \\x61 IS one character, so these alternatives are genuinely equal and both engines agree. Kept so the fix cannot become 'refuse anything with an escape in a lookbehind'."
   }
 ]

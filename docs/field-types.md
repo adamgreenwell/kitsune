@@ -246,19 +246,32 @@ A named capture may use a name in **any script** — `(?<é>`, `(?<日本>`, `(?
 > | `\1` `\k<name>` | only where the group **must** participate — see the rows above |
 > | `\t` `\n` `\r` `\f` `\xHH` | `\v` is excluded: vertical whitespace here, the letter `v` there |
 >
-> ### Five rules the construct list cannot express
+> ### Four rules the construct list cannot express
 >
 > ⚠️ **An allowlist of constructs is necessary and not sufficient**, and the third row of the divergence table above is why.
 >
-> ⚠️ **This section published three of these rules while the code enforced none of them**, and that is recorded rather than quietly corrected. Measured: `^(?=a)+a$`, `(?<=(a|aa))b\1$` and the example in rule 3 below were all *accepted* by `Pattern::unpublishable()`. The first two are exactly the two live defects the parity harness was reporting — the gap was visible the whole time, in the instrument built to find it. A published constraint the code does not keep is the failure invariant 14 exists for, and it is worse than an unwritten rule, because a reader has no reason to doubt it. All five are enforced by `structuralRefusal()` and asserted by `StructuralGrammarTest`; the harness now reports **zero** live defects.
+> ⚠️ **This section published three of these rules while the code enforced none of them**, and that is recorded rather than quietly corrected. Measured: `^(?=a)+a$`, `(?<=(a|aa))b\1$` and the example in rule 3 below were all *accepted* by `Pattern::unpublishable()`. The first two are exactly the two live defects the parity harness was reporting — the gap was visible the whole time, in the instrument built to find it. A published constraint the code does not keep is the failure invariant 14 exists for, and it is worse than an unwritten rule, because a reader has no reason to doubt it. All of them are enforced by `structuralRefusal()` and asserted by `StructuralGrammarTest`; the harness reports **zero** live defects. Two of the three were later found to leak and are now a single rule about a single property — see rule 3.
 >
 > 1. **No quantifier on an assertion.** `(?=a)+` is built from two permitted constructs and does not compile under ECMAScript `u`. Checked against **`u`-mode specifically**, because Annex B makes the unflagged dialect more permissive than the flagged one.
 > 2. **A lookbehind's alternatives must be equal length.** PCRE orders them by length, ECMAScript by written order, so a differing-length alternation changes which group captured what.
-> 3. **No unbounded quantifier over a group containing one, unless the repetition is delimited.** `([a-zA-Z0-9]+\.?)+` is entirely permitted constructs and makes **neither** engine answer on adversarial input: `preg_match()` returns `false` after exhausting its backtrack limit, and ECMAScript is still searching when the harness deadline expires. This is **not a portability problem** — the two agree, in the sense that neither gives a verdict — it is catastrophic backtracking, and ADR-027's 1 vCPU floor is why it cannot be left to the consumer.
+> 3. **An unbounded repetition must have only one way to divide its subject.** That is the property; the rest is how it is established. `([a-zA-Z0-9]+\.?)+` is entirely permitted constructs and makes **neither** engine answer on adversarial input: `preg_match()` returns `false` after exhausting its backtrack limit, and ECMAScript is still searching when the harness deadline expires. This is **not a portability problem** — the two agree, in the sense that neither gives a verdict — it is catastrophic backtracking, and ADR-027's 1 vCPU floor is why it cannot be left to the consumer.
 >
->     ⚠️ **The exemption is why this rule gained a clause.** Stated bluntly it refuses `^[^,]+(?:,[^,]+)*$` — the ordinary comma-separated list, and safe. If the repeated body starts with a **required literal** and no unbounded quantifier inside it can match that character, every iteration must begin at an occurrence of it and none can consume one, so the subject's own delimiters force the division into iterations: one way to split, nothing to backtrack over. That is a proof rather than a plausibility, and it measures out linear — 5,000 items in 0.04 ms under PCRE and 0.09 ms under ECMAScript, on input that fails at the very end. Class membership is asked of PCRE rather than parsed, and anything uncertain fails closed.
-> 4. **No unbounded quantifier over ambiguous alternation.** Rule 3 cannot catch `^(a|aa)+$`, because the repeated group holds no quantifier of its own — found by review. Measured, 40 `a` characters plus `!` exhausts PCRE's backtrack limit and runs past a 1.5-second ECMAScript deadline. **Exempt when the alternatives are prefix-free literals**, which is exact rather than generous: if no branch is a prefix of another then at most one can match at a position, so the alternation is deterministic and repeating it stays linear. `^(?:cat|dog)+$` publishes; `^(?:cat|ca)+$` does not.
-> 5. **A capturing group inside a lookbehind must be fixed length.** Also found by review, and measurement placed the line rather than a blanket ban: with a fixed width the engines agree, including two adjacent captures — `(?<=([ab]{2})([bc]{2}))\2\1$` matches in both. Make either variable and they part company, because the engines traverse a lookbehind in **opposite directions** and allocate the variable part to different groups. `(?<=(a+))\1$` on `aaaa`: PCRE errors, ECMAScript matches. `(?<=([ab]{1,2})([bc]{1,2}))\2\1$` on `abcbca`: PCRE says no, ECMAScript says yes.
+>     ⚠️ **This was two rules and they both leaked.** The pair published here was *"no unbounded quantifier over a group containing one"* plus *"not over ambiguous alternation"*, and review found `^(a{1,2})+$` slipping between them: the inner quantifier is **bounded**, so the first never fires, and there is no alternation, so the second does not either. Measured, 30 characters takes ECMAScript ~100 ms and 40 runs past three seconds while PCRE exhausts its backtrack limit. Worse, a test in this repository asserted `^([a-z]{1,8})+$` was *acceptable* — the same shape, measuring the same way. Two rules aimed at symptoms let a third symptom through and blessed a fourth.
+>
+>     Three ways to establish the property, and a body needs any one of them:
+>
+>     | Established by | Qualifies | Does not |
+>     |---|---|---|
+>     | **Fixed width, every alternation inside it unambiguous** | `(?:ab)+`, `(?:cat\|dog)+`, `(?:a(?:b\|c))+` | `(a{1,2})+`, `([a-z]{1,8})+`, `(a?)+` |
+>     | **Prefix-free literal alternatives** | `(?:ab\|c)+` at differing lengths | `(a\|aa)+`, `(?:cat\|ca)+`, `(?:a\|)+` |
+>     | **A delimited repetition** | `^[^,]+(?:,[^,]+)*$` | `(,+)*`, `(?:,[^;]+)*` |
+>
+>     ⚠️ **A forced division is not sufficient on its own**, and measuring is what established that. `(?:[a-z]|x)+` is fixed at one character, so every iteration consumes exactly one and there is only one way to divide the subject — and it is still catastrophic, because `x` lies inside `[a-z]`: on 30 `x` characters both branches match at every position, giving 2³⁰ branch choices. **ECMAScript 7.9 s, PCRE's backtrack limit exhausted** — while the same pattern on 30 `a` characters is instant, because only one branch can match there. One pattern, two subjects, and only one of them affordable, which is why the rule is about the construct rather than about any subject.
+>
+>     ⚠️ **The delimiter exemption is a proof, not a plausibility.** Stated without it, the rule refuses `^[^,]+(?:,[^,]+)*$` — the ordinary comma-separated list, and safe. If the repeated body starts with a **required literal** and no unbounded quantifier inside it can match that character, every iteration must begin at an occurrence of it and none can consume one, so the subject's own delimiters force the division: one way to split, nothing to backtrack over. It measures out linear — 5,000 items in 0.04 ms under PCRE and 0.09 ms under ECMAScript, on input that fails at the very end. Class membership is asked of PCRE rather than parsed, and anything uncertain fails closed.
+>
+>     ⚠️ **Conservative where it cannot be sure.** `(?:a|[b-z])+` has disjoint branches and is refused, because deciding whether two character classes overlap is more analysis than belongs on an authoring request. The message names the portable ways out, and the harness reports the cost rather than hiding it.
+> 4. **A capturing group inside a lookbehind must be fixed length.** Also found by review, and measurement placed the line rather than a blanket ban: with a fixed width the engines agree, including two adjacent captures — `(?<=([ab]{2})([bc]{2}))\2\1$` matches in both. Make either variable and they part company, because the engines traverse a lookbehind in **opposite directions** and allocate the variable part to different groups. `(?<=(a+))\1$` on `aaaa`: PCRE errors, ECMAScript matches. `(?<=([ab]{1,2})([bc]{1,2}))\2\1$` on `abcbca`: PCRE says no, ECMAScript says yes.
 >
 >     ⚠️ `(?<=(a{1,2}))\1$` and `(?<=(a?))\1$` *agree* on the subjects tried and are refused anyway. That agreement is subject-dependent luck rather than a property of the construct, and a rule that admitted them would be drawing its line at whichever subjects happened to get measured.
 >
@@ -277,11 +290,24 @@ A named capture may use a name in **any script** — `(?<é>`, `(?<日本>`, `(?
 > | `\bab\b` | A portable spelling exists and the message names it |
 > | `^\p{Cn}$`, `^\p{C}$` | Version skew the measured pair cannot show, because it shares one Unicode version |
 > | `^(a*)*b$` | Refused on **cost**, not portability — the engines agree here only because the harness's subject is benign |
-> | `^([a-zA-Z0-9]+\.?)+@x\.com$`, `^(a|aa)+$` | Refused on cost, and neither engine gives a verdict at all: PCRE exhausts its backtrack limit while ECMAScript passes the deadline. They are counted here *and* as `no verdict`, because "both agree" and "neither answered" are the same shape to a comparison of results |
+> | `^([a-zA-Z0-9]+\.?)+@x\.com$`, `^(a|aa)+$`, `^(a{1,2})+$`, `^([a-z]{1,8})+$`, `^(?:[a-z]|x)+$` | Refused on cost, and neither engine gives a verdict at all: PCRE exhausts its backtrack limit while ECMAScript passes the deadline. They are counted here *and* as `no verdict`, because "both agree" and "neither answered" are the same shape to a comparison of results |
+>
+> So of nine rows, **three** are portability judgements (`\b` and the two `C` categories) and **six** are cost refusals where the engines only appear to agree. None is an omission.
 >
 > ⚠️ **`divergent AND accepted` is now 0.** It was 2 before the five structural rules were enforced, and both entries were rules this document already claimed.
 >
-> ⚠️ **Migration is not optional.** Patterns already authored were accepted by the screen, not by the grammar, so any that fall outside it must be found before this lands — a pattern that saved yesterday and is refused today is a broken install, not a fixed one.
+> ⚠️ **Migration is not optional, and `kitsune:audit-patterns` is it.** Patterns already authored were accepted by the screen, not by the grammar, so any that fall outside it must be found before this lands — a pattern that saved yesterday and is refused today is a broken install, not a fixed one.
+>
+> This paragraph stood here for a while with **nothing implementing it**, which review found by searching for the migration it mandates. That is the same failure as a published rule with no enforcement, and this document had already made it once in this section.
+>
+> ```
+> php artisan kitsune:audit-patterns            # report; exits 0
+> php artisan kitsune:audit-patterns --strict   # gate; exits non-zero if any row is unpublishable
+> ```
+>
+> ⚠️ **What an upgraded installation actually suffers is worse than "some patterns are now invalid".** A stored `^(a|aa)+$` keeps being published in the API schema and keeps being enforced server-side, because nothing revalidates a row that is not saved. Then the first *unrelated* edit to that field — a label, a help string — fails `guardSettingsAreUsable()`, and the author is told their pattern is invalid on a screen where they changed something else. The refusal is correct and the moment is incomprehensible.
+>
+> ⚠️ **There is no `--force`,** unlike `kitsune:schema-sync`. A pattern says what a field accepts, and only its owner knows what that should be, so there is nothing for a repair flag to do.
 
 
 The same applies to `\k<name>`: a named reference is a backreference. And optionality is **inherited** — `^((a))?\2$` and `^(?:(a))?\1$` both diverge, because the enclosing group carries the quantifier while the capture itself carries none, and the enclosing group need not be a capturing one.

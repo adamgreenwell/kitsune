@@ -60,25 +60,87 @@ describe('rule 2 — a lookbehind\'s alternatives must be equal length', functio
     });
 });
 
-describe('rule 3 — no unbounded quantifier over a group containing one', function (): void {
+describe('rule 3 — an unbounded repetition must divide its subject one way only', function (): void {
     /*
      * ⚠️ NOT A PORTABILITY PROBLEM — the two engines agree, in the sense that NEITHER gives a
      * verdict. `preg_match()` returns false after exhausting its backtrack limit and ECMAScript is
      * still searching when the deadline expires. It is catastrophic backtracking, and ADR-027's
      * 1 vCPU floor is why the cost cannot be left to the consumer.
+     *
+     * ⚠️ THIS WAS TWO RULES AND THEY BOTH LEAKED. The published pair was "no unbounded quantifier
+     * over a group containing one" plus "not over ambiguous alternation". `^(a{1,2})+$` slips
+     * between them — the inner quantifier is BOUNDED so the first does not fire, and there is no
+     * alternation so the second does not either. Review found it; measured, 30 characters takes
+     * ECMAScript ~100ms, 40 runs past three seconds, and PCRE exhausts its backtrack limit.
+     *
+     * ⚠️ AND MY OWN TEST ASSERTED `^([a-z]{1,8})+$` WAS FINE, in the block this replaces, under the
+     * heading "accepts a bounded outer quantifier". It is the same shape and measures the same way:
+     * PCRE's backtrack limit, ECMAScript past a two-second deadline. Two rules aimed at symptoms let
+     * a third symptom through and blessed a fourth. One rule aimed at the property does not.
      */
-    it('refuses nested unbounded repetition', function (string $pattern): void {
+    it('refuses a body that can match more than one length', function (string $pattern): void {
         expect(Pattern::unpublishable($pattern))
-            ->not->toBeNull("[{$pattern}] nests unbounded quantifiers");
-    })->with(['^([a-zA-Z0-9]+\.?)+$', '(a+)+$', '(a*)*b', '(?:a{1,})+', '^(?:[a-z]*)+$', '^([a-z]+)*$']);
+            ->not->toBeNull("[{$pattern}] repeats an ambiguously divisible body");
+    })->with([
+        '^([a-zA-Z0-9]+\.?)+$',
+        '(a+)+$',
+        '(a*)*b',
+        '(?:a{1,})+',
+        '^(?:[a-z]*)+$',
+        '^([a-z]+)*$',
+        // Review's case: the inner quantifier is bounded, so the old rule 3 never fired.
+        '^(a{1,2})+$',
+        // Mine, asserted as ACCEPTABLE by the test this replaces.
+        '^([a-z]{1,8})+$',
+        // Ambiguous although both engines happen to cope: `a*` says the same thing portably.
+        '^(a?)+$',
+    ]);
 
-    it('accepts a bounded outer quantifier, and a single unbounded one', function (): void {
-        // Bounding either end removes the exponential growth, which is what the message says.
-        expect(Pattern::unpublishable('^([a-z]+){1,4}$'))->toBeNull()
-            ->and(Pattern::unpublishable('^([a-z]{1,8})+$'))->toBeNull()
-            ->and(Pattern::unpublishable('^([a-z]+)$'))->toBeNull()
-            ->and(Pattern::unpublishable('^[a-z]+$'))->toBeNull();
+    it('refuses alternatives that can match the same text two ways', function (string $pattern): void {
+        // Rule 4 as it was published, now the same rule: overlapping branches are one way for a
+        // body to be ambiguously divisible.
+        expect(Pattern::unpublishable($pattern))
+            ->not->toBeNull("[{$pattern}] repeats an ambiguous alternation");
+    })->with(['^(a|aa)+$', '^(a|ab)+$', '^(?:a|aa)+$', '^(?:cat|ca)+$', '^(?:a|)+$', '^(?:(?:a|aa))+$']);
+
+    it('refuses overlapping branches even at a fixed width', function (): void {
+        /*
+         * ⚠️ A FORCED DIVISION IS NOT ENOUGH, and measuring is what established that. `(?:[a-z]|x)+`
+         * is fixed at one character, so every iteration consumes exactly one and there is only one
+         * way to divide the subject — and it is still catastrophic, because `x` lies inside
+         * `[a-z]`: on 30 `x` characters both branches match at every position, giving 2^30 branch
+         * choices.
+         *
+         *   30 x's:  ECMAScript 7.9 s        PCRE backtrack limit exhausted
+         *   30 a's:  ECMAScript 0 ms         PCRE 0 ms
+         *
+         * The same pattern, two subjects, and only one of them is affordable — which is why the rule
+         * is about the construct rather than about any subject.
+         */
+        expect(Pattern::unpublishable('^(?:[a-z]|x)+$'))->not->toBeNull()
+            ->and(Pattern::unpublishable('^(?:(?:[a-z]|x))+$'))->not->toBeNull();
+
+        // ⚠️ Conservative where it cannot be sure: these branches are disjoint and safe, and are
+        // refused because deciding whether two classes overlap is more analysis than belongs on an
+        // authoring request. The cost is reported by the harness rather than hidden.
+        expect(Pattern::unpublishable('^(?:a|[b-z])+$'))->not->toBeNull();
     });
+
+    it('accepts a body whose division is forced', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))->toBeNull("[{$pattern}] has one way to divide");
+    })->with([
+        // Fixed width.
+        '^(?:ab)+$', '^(?:ab){2,8}$', '^(a|b)+$', '^(?:cat|dog)+$',
+        // ⚠️ RECURSIVELY fixed: a nested alternation of distinct literals is as safe as `(?:ab|ac)+`,
+        // and a check that looked only at the body's own top level refused it for nothing.
+        '^(?:a(?:b|c))+$',
+        // Prefix-free literals, at differing lengths, so at most one matches at a position.
+        '^(?:ab|c)+$',
+        // A bounded outer quantifier caps the exponent, so the ambiguity costs nothing.
+        '^(a|aa){1,4}$',
+        // One unbounded quantifier is not a nest.
+        '^([a-z]+)$', '^[a-z]+$', '^[a-z]{1,10}$',
+    ]);
 
     /*
      * ⚠️ THE DELIMITED LIST IS EXEMPT, and it has to be: `^[^,]+(?:,[^,]+)*$` nests `+` inside `*`
@@ -86,16 +148,16 @@ describe('rule 3 — no unbounded quantifier over a group containing one', funct
      * refused it, which is how the exemption came to be written.
      *
      * The exemption is a proof, not a guess. Every iteration must begin at a `,` and `[^,]` cannot
-     * consume one, so the commas in the subject FORCE the division into iterations — one way to
-     * split, nothing to backtrack over. Measured against a worst case that fails at the very end:
+     * consume one, so the commas in the subject FORCE the division — one way to split, nothing to
+     * backtrack over. Measured against a worst case that fails at the very end:
      *
      *   n=1000 items   PCRE 0.01 ms   ECMAScript 0.06 ms
      *   n=5000 items   PCRE 0.04 ms   ECMAScript 0.09 ms
      *   n=20000 items  PCRE (JIT stack limit)   ECMAScript 0.30 ms
      *
-     * Linear in both, which is what the proof claims. The JIT stack limit at n=20000 is a
-     * 60 KB subject and is a bound on subject LENGTH rather than on ambiguity — a text field
-     * defaults to 255 characters, so it is not reachable through a field value.
+     * Linear in both. The JIT stack limit at n=20000 is a 60 KB subject and is a bound on subject
+     * LENGTH rather than on ambiguity — a text field defaults to 255 characters, so it is not
+     * reachable through a field value.
      */
     it('exempts a delimited repetition, which cannot backtrack', function (string $pattern): void {
         expect(Pattern::unpublishable($pattern))
@@ -119,37 +181,6 @@ describe('rule 3 — no unbounded quantifier over a group containing one', funct
     it('does not mistake a literal plus for a quantifier', function (): void {
         expect(Pattern::unpublishable('^([a+]+)$'))->toBeNull()
             ->and(Pattern::unpublishable('^(a\+)+$'))->toBeNull();
-    });
-});
-
-describe('rule 4 — no unbounded quantifier over ambiguous alternation', function (): void {
-    /*
-     * ⚠️ RULE 3 CANNOT CATCH THIS, because the repeated group holds no quantifier of its own —
-     * which is what review pointed out. `^(a|aa)+$` is the classic shape: measured here, a subject
-     * of 40 `a` characters plus `!` exhausts PCRE's backtrack limit while ECMAScript runs past a
-     * 1.5-second deadline.
-     */
-    it('refuses alternatives that can match the same text two ways', function (string $pattern): void {
-        expect(Pattern::unpublishable($pattern))
-            ->not->toBeNull("[{$pattern}] repeats an ambiguous alternation");
-    })->with(['^(a|aa)+$', '^(a|ab)+$', '^(?:a|aa)+$', '^(?:cat|ca)+$', '^(?:a|)+$', '^(?:[a-z]|x)+$', '^(?:(?:a|aa))+$']);
-
-    /*
-     * ⚠️ THE EXEMPTION IS EXACT RATHER THAN GENEROUS. Prefix-freeness is precisely the condition
-     * under which at most one branch can match at a position — if two both matched, one would have
-     * to be a prefix of the other — so the alternation is deterministic and repeating something
-     * deterministic stays linear.
-     */
-    it('accepts prefix-free literal alternatives, which cannot be ambiguous', function (): void {
-        expect(Pattern::unpublishable('^(?:cat|dog)+$'))->toBeNull()
-            ->and(Pattern::unpublishable('^(?:ab|cd|ef)+$'))->toBeNull()
-            ->and(Pattern::unpublishable('^(a|b)+$'))->toBeNull();
-    });
-
-    it('accepts an ambiguous alternation under a BOUNDED quantifier', function (): void {
-        // The ambiguity is still there; the cost is not, because the exponent is capped.
-        expect(Pattern::unpublishable('^(a|aa){1,4}$'))->toBeNull()
-            ->and(Pattern::unpublishable('^(a|aa)$'))->toBeNull();
     });
 });
 
@@ -192,6 +223,44 @@ describe('rule 5 — a capturing group in a lookbehind must be fixed length', fu
         // The rule is about traversal direction, which only a lookbehind reverses.
         expect(Pattern::unpublishable('^(a+)\1$'))->toBeNull()
             ->and(Pattern::unpublishable('^(?=(a+))a\1$'))->toBeNull();
+    });
+});
+
+describe('a multi-character escape is one character wide', function (): void {
+    /*
+     * ⚠️ EVERY WIDTH IN THIS FILE DEPENDS ON THIS, and the scanners all advanced past a backslash by
+     * exactly two characters. That is right for `\.` and wrong for every escape with a payload:
+     * `fixedWidth()` read `\x61` as a `\x` atom followed by the literals `6` and `1` and reported
+     * width 3 for a one-character escape.
+     *
+     * The consequence was a live divergence, found by review. `(?<=(\x61|aaa))b\1$` was published
+     * because the branches looked equal at 3 — and on `aaaba`, PCRE says no while ECMAScript says
+     * yes. Both lookbehind rules were bypassed by one arithmetic error.
+     */
+    it('refuses a lookbehind whose alternatives are unequal once escapes are counted', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))
+            ->not->toBeNull("[{$pattern}] has unequal alternatives once the escape is measured");
+    })->with([
+        '(?<=(\x61|aaa))b\1$',
+        '(?<=(\cA|aa))b\1$',
+        '(?<=(\x61\x62|aaa))b\1$',
+    ]);
+
+    it('accepts one whose alternatives really are equal', function (): void {
+        // ⚠️ The other half: `\x61` IS one character, so these are genuinely equal and both engines
+        // agree on them — measured, PCRE 1 and ECMAScript 1 on `aba` and `abbab` respectively.
+        expect(Pattern::unpublishable('(?<=(\x61|a))b\1$'))->toBeNull()
+            ->and(Pattern::unpublishable('(?<=(\x61\x62|ab))b\1$'))->toBeNull();
+    });
+
+    it('does not read an escape payload as a metacharacter', function (): void {
+        /*
+         * ⚠️ NOT MERELY IMPRECISE BUT WRONG, and this is the case that shows it. `\c|` puts a `|` in
+         * the payload position: a scanner stepping over only `\c` reads an alternation that is not
+         * there, and `\x2A` puts the characters `2A` where a two-character step would land.
+         */
+        expect(Pattern::unpublishable('^(?:\cA)+$'))->toBeNull()
+            ->and(Pattern::unpublishable('^(?:\x61)+$'))->toBeNull();
     });
 });
 
