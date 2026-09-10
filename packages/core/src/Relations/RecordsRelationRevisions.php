@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Relations;
 
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Schema\RevisionWrites;
@@ -56,19 +57,43 @@ trait RecordsRelationRevisions
      * @param  callable(): list<mixed>  $sources
      * @param  callable(): mixed  $write
      */
+    /**
+     * Whether an enclosing `versioned()` frame already holds the transaction and the lock.
+     *
+     * ⚠️ SEPARATE FROM `RevisionWrites`, which is what review's finding was about. That flag says
+     * whether a revision should be RECORDED — a question the caller owns, and one an external
+     * `suspend()` legitimately answers "no" to. This one says whether the serialisation is already
+     * in hand, which only `versioned()` itself can know. Sharing one flag for both meant every
+     * suspended caller silently lost its row lock.
+     *
+     * Static rather than a property for the reason the other one is: a single relation write
+     * passes through several builder instances, so a per-object flag stands nothing down.
+     */
+    private static bool $insideVersionedFrame = false;
+
     private function versioned(callable $sources, callable $write): mixed
     {
-        // ⚠️ The SHARED flag, not a counter on this object — a per-instance depth
-        // was the first attempt and it did not hold.
-        //
-        // One relation write passes through more than one builder: `attach()`
-        // starts on `GuardedBelongsToMany` and lands on `EntryRelation`'s own
-        // builder, which is a DIFFERENT object with its own counter — so both
-        // recorded and one attach filed two versions. `sync()` filed three.
-        // `RevisionWrites` is already the project's shared answer to exactly this
-        // question, so the outermost write stands the inner ones down and records
-        // once itself.
-        if (RevisionWrites::suspended()) {
+        /*
+         * ⚠️ KEYED ON AN ENCLOSING FRAME, NOT ON `RevisionWrites::suspended()`, and review found
+         * why that distinction matters: this early return skips the transaction and the lock as
+         * well as the recording, so an EXTERNAL caller asking only for silence lost the
+         * serialisation too.
+         *
+         * `SyncsFieldRelations` wraps a form save's relation writes in `RevisionWrites::suspend()`
+         * to get one revision per save (issue #59). With the flag doing double duty, every
+         * `sync()` in that block ran with no row lock and no encompassing transaction — so a
+         * `sync([])` performed a bare detach, and a replacement sync could compute its detach set
+         * while another writer changed the same field. Two concurrent form saves could interleave
+         * into a relation set neither of them chose.
+         *
+         * The two questions were never the same question. "Is an outer frame already handling
+         * this?" is re-entrancy — one relation write passes through more than one builder, since
+         * `attach()` starts on `GuardedBelongsToMany` and lands on `EntryRelation`'s own builder,
+         * a DIFFERENT object, so both recorded and one attach filed two versions. "Should a
+         * revision be recorded at all?" is the caller's business. Only the first justifies
+         * skipping the lock, because only then does something else already hold it.
+         */
+        if (self::$insideVersionedFrame) {
             return $write();
         }
 
@@ -85,14 +110,26 @@ trait RecordsRelationRevisions
                     ->get();
             }
 
-            $entries = Entry::query()->withoutGlobalScopes()->whereKey($sources)->get();
-            $before = $entries->mapWithKeys(
-                fn (Entry $entry): array => [$entry->getKey() => $entry->relationState()],
-            )->all();
+            /*
+             * ⚠️ RECORDING IS A SEPARATE QUESTION FROM SERIALISING, which is the whole point of
+             * the change above. A suspended caller still gets the lock and the transaction; it
+             * just gets no revision — and the `before` snapshot it would be compared against is
+             * not read either, since nothing will use it.
+             */
+            $recording = ! RevisionWrites::suspended();
+            $entries = new Collection;
+            $before = [];
+
+            if ($recording) {
+                $entries = Entry::query()->withoutGlobalScopes()->whereKey($sources)->get();
+                $before = $entries->mapWithKeys(
+                    fn (Entry $entry): array => [$entry->getKey() => $entry->relationState()],
+                )->all();
+            }
 
             // Suspended for the WRITE only: whatever builders it passes through
             // see recording stood down, and this frame records afterwards.
-            $result = RevisionWrites::suspend($write);
+            $result = self::insideVersionedFrame(static fn (): mixed => RevisionWrites::suspend($write));
 
             foreach ($entries as $entry) {
                 $entry->recordRevisionForRelationChange($before[$entry->getKey()] ?? []);
@@ -100,5 +137,24 @@ trait RecordsRelationRevisions
 
             return $result;
         });
+    }
+
+    /**
+     * Runs `$callback` with the enclosing-frame flag raised.
+     *
+     * ⚠️ Restores the PREVIOUS value rather than clearing, for the same reason
+     * `RevisionWrites::suspend()` does: a nested frame must not stand the outer one down on its
+     * way out. Reached only from `versioned()`, which is why it is private.
+     */
+    private static function insideVersionedFrame(callable $callback): mixed
+    {
+        $previous = self::$insideVersionedFrame;
+        self::$insideVersionedFrame = true;
+
+        try {
+            return $callback();
+        } finally {
+            self::$insideVersionedFrame = $previous;
+        }
     }
 }

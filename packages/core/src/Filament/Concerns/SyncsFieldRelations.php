@@ -17,7 +17,7 @@ use Kitsune\Core\Filament\Schemas\FieldValueRenderer;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Field;
-use Kitsune\Core\Schema\RevisionWrites;
+use Kitsune\Core\Schema\RecordedRevisions;
 
 /**
  * Carries relation fields between the form and `entry_relations`.
@@ -38,9 +38,6 @@ use Kitsune\Core\Schema\RevisionWrites;
  */
 trait SyncsFieldRelations
 {
-    /** The newest revision id before this save wrote, or null when there was none. */
-    private ?int $revisionIdBeforeWrite = null;
-
     /**
      * Fills the form's relation state from the entry's existing relations.
      *
@@ -201,34 +198,41 @@ trait SyncsFieldRelations
          * intermediate snapshot the author never saved — and a bounded 50-version budget spent at
          * twice the rate or worse.
          */
-        RevisionWrites::suspend(function () use ($record, $state): void {
-            $this->syncEachRelationField($record, $state);
-        });
-
         /*
-         * ⚠️ OUTSIDE the suspension, and it needs the revision id from BEFORE the entry write to
-         * tell the two cases apart: a save that filed its own revision (complete it in place,
-         * because its snapshot predates the relations) from one that filed none because relations
-         * were the only change (record one now). Suppressing both unconditionally loses that
-         * second case entirely.
+         * ⚠️ ONE CALL, because the sync and the reconcile have to be one locked unit: the reconcile
+         * reads the relation state back, and a concurrent save landing between them made this
+         * save's revision record the OTHER save's relations. Measured — `A chose [1]; B chose [2];
+         * A's revision recorded [2]`.
+         *
+         * ⚠️ The transaction lives on `Entry` rather than here so that it can be tested. This
+         * method needs a Filament form to reach, and a test that rebuilt the transaction shape
+         * itself would assert a property of its own code — which is exactly how the first version
+         * of that test came to pass whatever this did.
          */
-        $record->reconcileRevisionAfterRelationSync($this->revisionIdBeforeWrite, $relationsBefore);
+        $record->writeRelationsAndReconcile(
+            fn () => $this->syncEachRelationField($record, $state),
+            $relationsBefore,
+        );
     }
 
     /**
-     * The id of the newest revision before this save wrote anything.
+     * Clears any revision this entry has left in the register from an earlier write.
      *
-     * ⚠️ Captured in the `mutateFormDataBefore*` hooks because those are the last point that runs
-     * BEFORE the entry write. Reading it afterwards cannot distinguish a revision this save filed
-     * from one that was already there.
+     * ⚠️ Called from the `mutateFormDataBefore*` hooks because those are the last point that runs
+     * BEFORE the entry write. A write that files a revision and never reconciles — anything that is
+     * not a form save — leaves its note behind, and without this the next form save on that entry
+     * would take an id belonging to that earlier write and complete the wrong revision.
+     *
+     * ⚠️ A CREATE has nothing to clear, and needs nothing: the entry has no key until it is
+     * inserted, so no note for it can exist. `recordRevision()` files the note with the real key.
      */
     private function rememberRevisionBeforeWrite(): void
     {
         $record = $this->getRecord();
 
-        $this->revisionIdBeforeWrite = $record instanceof Entry && $record->exists
-            ? $record->revisions()->max('id')
-            : null;
+        if ($record instanceof Entry && $record->exists) {
+            RecordedRevisions::forget((int) $record->getKey());
+        }
     }
 
     /** @param  array<string, mixed>  $state */
