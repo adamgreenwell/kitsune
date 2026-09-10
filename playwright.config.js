@@ -51,7 +51,7 @@ module.exports = defineConfig({
         { name: 'setup-rtl', testMatch: /auth-rtl\.setup\.js/ },
         {
             name: 'skeleton',
-            testMatch: /skeleton\.spec\.js/,
+            testMatch: /(skeleton|public-site-locale)\.spec\.js/,
             use: { ...devices['Desktop Chrome'] },
         },
         {
@@ -60,7 +60,10 @@ module.exports = defineConfig({
             // is a value rendering in the direction of the CHROME, so the interesting
             // case is RTL content in an LTR panel — the RTL project would hide it by
             // agreeing with the content.
-            testMatch: /(admin|accessibility|direction|relation-picker|entity-type-builder|revisions)\.spec\.js/,
+            // ⚠️ The UNION of both branches, not either one. #38 added `locale-persistence`
+            // and #39 added `relation-picker`, and a merge that kept one silently stops
+            // running the other's suite — green, and testing less than it did.
+            testMatch: /(admin|accessibility|direction|locale-persistence|relation-picker|entity-type-builder|revisions)\.spec\.js/,
             dependencies: ['setup'],
             use: { ...devices['Desktop Chrome'], storageState: '.playwright/admin-auth.json' },
         },

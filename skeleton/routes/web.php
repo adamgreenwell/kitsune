@@ -9,7 +9,10 @@
 declare(strict_types=1);
 
 use Illuminate\Support\Facades\Route;
+use Kitsune\Core\Http\Middleware\ResolveSiteFromRequest;
+use Kitsune\Core\Http\Middleware\SetSiteLocale;
 use Kitsune\Core\Kitsune;
+use Kitsune\Core\Tenancy\Context;
 
 /*
  * Placeholder front end. Kitsune has no admin panel yet - that arrives with
@@ -20,7 +23,18 @@ use Kitsune\Core\Kitsune;
  * It reports the two facts worth proving at this stage: the framework boots,
  * and kitsune/core is installed and resolvable.
  */
-Route::get('/', function () {
+/*
+ * ⚠️ `SetSiteLocale` RUNS HERE TOO, even though `/` addresses no site. Review found the gap:
+ * under Octane or any long-lived worker, `app()->setLocale()` persists across requests in the
+ * same process, so a request to `/golfdom-ar` left the locale Arabic and a following request to
+ * `/` rendered the welcome page with the previous site's `lang` and `dir`.
+ *
+ * The middleware resolves absence as "use the application default", so attaching it to a
+ * site-less route is exactly how the locale gets RESET rather than inherited. `ResolveSiteFromRequest`
+ * comes first for the same reason it does below: it reports absence by leaving Context empty,
+ * which is what `SetSiteLocale` then reads.
+ */
+Route::middleware([ResolveSiteFromRequest::class, SetSiteLocale::class])->get('/', function () {
     return response()->view('welcome', [
         'version' => Kitsune::version(),
         'phase' => 'Phase 0 — foundations',
@@ -31,3 +45,68 @@ Route::get('/', function () {
         'direction' => Kitsune::textDirection(),
     ]);
 })->name('home');
+
+/*
+ * A SITE-SCOPED public route, which is what `sites.locale` needed in order to mean
+ * anything (issue #38, gap G2).
+ *
+ * ⚠️ The middleware lives in kitsune/core and the ROUTE lives here, on purpose. Core
+ * registers no routes at all — a host application's URL space is its own, and a package
+ * that claimed `/{site}` would collide with whatever the application already serves
+ * there. So core supplies the mechanism and the application says where it applies, which
+ * is the same division the panel uses for `SetKitsuneContext`.
+ *
+ * ⚠️ REGISTERED LAST, because `{site}` matches one segment of anything. Laravel resolves
+ * in declaration order, so `/` above and every route Filament registers for `/admin` are
+ * already claimed by the time this is reached. Declaring it earlier would swallow the
+ * admin.
+ *
+ * ⚠️ The `{site}` segment is a PLACEHOLDER, not the lookup key. `ResolveSiteFromRequest`
+ * matches on the canonical host and path prefix a site's `base_url` declares (ADR-021), so
+ * this parameter exists only to let one route shape accept a one-segment prefix. Using it
+ * as the key is what the first version did, and it exposed every site at `/{slug}` on every
+ * host while leaving a properly configured site unreachable.
+ *
+ * ⚠️ This is NOT the front end. Phase 6 owns menus, routing, slugs and redirects; this
+ * route renders the same placeholder as `/` and exists to prove one thing that could not
+ * be proved before — that a public request resolves a Site and is served in that site's
+ * locale, per request, without touching APP_LOCALE.
+ */
+/*
+ * ⚠️ A FALLBACK, NOT A PARAMETERISED PATH, and three attempts got here.
+ *
+ * `/{site}` matched ONE segment while `Site::MAX_PREFIX_SEGMENTS` is 4 and the resolver builds
+ * candidates to that depth — so `base_url=https://example.test/news/fr` saved, was resolvable, and
+ * could never be reached. Widening it to `{site}` with a multi-segment pattern fixed that and broke
+ * the admin: `/admin/golfdom` matches a two-segment pattern, this file's routes are registered
+ * BEFORE Filament's panel routes, and the dashboard started returning 404. The browser suite caught
+ * it; the unit test I wrote for the widening did not, because it asserted the file still contained
+ * the phrase "declaration order" rather than asserting that the admin still resolved.
+ *
+ * A fallback removes the question. It runs only when no other route matched, so it cannot shadow
+ * the panel, or anything a host application adds later, at any depth — and it needs no vocabulary
+ * and no depth of its own, which is the pair that has now drifted from the model twice.
+ *
+ * ⚠️ `{site}` WAS ONLY EVER A PLACEHOLDER. `ResolveSiteFromRequest` matches on the canonical host
+ * and path prefix a site's `base_url` declares (ADR-021) and reads the request path itself, so
+ * removing the parameter removes nothing the resolver used.
+ */
+// ⚠️ `Route::fallback()` FIRST, then the middleware: `fallback` lives on the Router rather than on
+// `RouteRegistrar`, so `Route::middleware(...)->fallback(...)` is a BadMethodCallException at boot.
+Route::fallback(function () {
+    // ⚠️ 404 HERE rather than in the middleware. The middleware resolves identity and
+    // reports absence by leaving Context empty, because most public routes are not
+    // site-scoped and it must be attachable to them. A route that REQUIRES a site is
+    // the thing entitled to refuse.
+    abort_if(app(Context::class)->site() === null, 404);
+
+    return response()->view('welcome', [
+        'version' => Kitsune::version(),
+        'phase' => 'Phase 0 — foundations',
+        // Resolved from the SITE's locale by the middleware above, so two sites with
+        // different locales are served correctly from one process.
+        'direction' => Kitsune::textDirection(),
+    ]);
+})
+    ->middleware([ResolveSiteFromRequest::class, SetSiteLocale::class])
+    ->name('site.home');

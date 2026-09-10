@@ -744,6 +744,30 @@ entries
 
 **Site carries locale.** `golfdom.com` (en) and `golfdom.fr` (fr) are two sites in one group. This is not a new assumption — **ADR-019 already put content locale in the public path**, and a different base URL is precisely what a site *is*. One mechanism expresses all three URL strategies with no special cases, including path prefixes, where `base_url` is simply `https://example.com/fr`.
 
+> ⚠️ **Amended 2026-09-09 — `base_url` gains a host-less form, and two derived columns.** Found while implementing public site resolution (issue #38).
+>
+> **The host-less form.** `https://example.com/fr` pins a path prefix to one host. `/fr` means the same prefix on **whatever host serves the installation**, which is what a single-domain multi-language install actually wants — and the only form that survives being served from a different address in development, where `APP_URL` is `http://localhost` and the browser suite answers on `127.0.0.1:8125`. A null `base_url` means the site has no public URL and is reachable only through the admin.
+>
+> **`canonical_host` and `path_prefix`** are derived from `base_url` on save, stored, and **unique together**. Three reasons, none solvable by parsing `base_url` per request:
+>
+> - **Resolution must be indexed.** Scanning every site in PHP makes every public request O(total sites) in time and memory, unbounded as an installation grows, against ADR-027's 1 vCPU / 1 GB floor.
+> - **Two orgs must not claim one URL.** `base_url` accepts equivalent spellings — scheme, port, trailing slash, letter case, a trailing dot — so a uniqueness constraint on it directly would let two orgs each hold a distinct-looking value and both answer on one hostname, with row order deciding which. Canonicalising first makes the constraint mean something, and cross-org URL theft is the class ADR-021 says has no framework safety net.
+> - **The winner must be deterministic.** Ranked by specificity — this host with the longest matching prefix, down to this host at its root, then any host with the longest prefix, down to any host at its root — not by whichever row the database returned, so deleting an unrelated site cannot silently change which org a URL serves.
+>
+> ⚠️ The unique index deliberately does **not** lead with `org_id`, which is the carve-out added to AGENTS.md invariant 4 — a global uniqueness claim rather than a lookup index, consumed by a bootstrap that runs before scope exists. Leading with the scope key would permit the very thing the constraint forbids. The migration states both conditions beside the index.
+>
+> ⚠️ **The index is the exact-match backstop, not the whole guarantee.** It cannot see OVERLAPPING claims — org A holding `https://example.test` and org B holding `https://example.test/news` both satisfy it, and longest-prefix resolution then serves org A's hostname from org B. Prefix containment is not an equality, so `Site::refuseOverlappingClaim()` enforces it on save, unscoped, because the question is whether ANOTHER org holds a conflicting claim. Found by review of the implementation.
+>
+> NULL in both columns keeps admin-only sites out of the unique index, because NULLs compare distinct on every engine. An empty string is a real value: `canonical_host = ''` is any host, `path_prefix = ''` is the site root.
+>
+> ⚠️ **Amended again 2026-09-09 — a bare `base_url` needs the strategy, and a prefix has a depth bound.** Both found by review of the implementation.
+>
+> **A bare value is ambiguous.** `x.test` and `fr` are the same shape, so `deriveUrlParts()` judged on the string alone had to guess, and guessed "prefix": a `domain` site written as a bare `x.test` was stored as host `''` with prefix `/x.test`, unreachable at `https://x.test/` and claiming `http://any-host/x.test` instead. It now takes `url_strategy` — required, not defaulted, because a default is how the same guess returns — and an explicit scheme still outranks the column. `url_strategy` is also defaulted **on the model**, because a column default applies at INSERT and the value is read while deriving, before the row exists.
+>
+> **A path prefix is bounded at `Site::MAX_PREFIX_SEGMENTS`.** Resolution turns a request path into candidate prefixes asked for in one query, so an unbounded depth would let a URL a stranger chooses decide how much work the database does. The derivation **refuses** a deeper prefix rather than storing one, so the bound can never be why a saved site is unreachable — which is exactly what the first resolver did, matching only the FIRST segment and leaving a `/news/fr` site configured, indexed and reachable by nothing.
+>
+> ⚠️ **The slug is not a public address.** The first implementation matched a `path` site against its admin `slug`, which exposed every site at `/{slug}` on every host while leaving a site with a real `base_url` unreachable at its own URL — and dropped `subdomain` into an unhandled branch so those sites resolved to nothing. Under `base_url` there is no third case: a subdomain is just a host, which is what "one mechanism, no special cases" above already promised.
+
 **`entries.locale` is deleted.** Locale is derived from `sites.locale`. Queries filter by site, not by locale, so no denormalisation is needed.
 
 **Translation grouping does not move.** `entries.translation_group` still links siblings per-entry (ADR-017). Site groups handle brand and settings inheritance; translation groups handle translation. Independent concerns, no overlap.

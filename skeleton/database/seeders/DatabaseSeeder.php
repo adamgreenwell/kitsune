@@ -40,8 +40,12 @@ class DatabaseSeeder extends Seeder
 
         $context->setOrg($orgA);
         $group = SiteGroup::create(['org_id' => $orgA->id, 'handle' => 'golfdom', 'name' => 'Golfdom', 'settings' => ['logo' => 'golfdom.svg']]);
-        $en = Site::create(['org_id' => $orgA->id, 'site_group_id' => $group->id, 'handle' => 'golfdom', 'slug' => 'golfdom', 'name' => 'Golfdom', 'locale' => 'en', 'is_primary' => true]);
-        $fr = Site::create(['org_id' => $orgA->id, 'site_group_id' => $group->id, 'handle' => 'golfdom-fr', 'slug' => 'golfdom-fr', 'name' => 'Golfdom FR', 'locale' => 'fr']);
+        $en = Site::create(['org_id' => $orgA->id, 'site_group_id' => $group->id, 'handle' => 'golfdom', 'slug' => 'golfdom', 'name' => 'Golfdom', 'locale' => 'en', 'is_primary' => true,
+            // ⚠️ HOST-LESS, so it resolves wherever the installation is served — APP_URL is
+            // http://localhost while the browser suite serves 127.0.0.1:8125, and a
+            // fully-qualified base_url could never match both (ADR-021 amendment).
+            'base_url' => '/golfdom']);
+        $fr = Site::create(['org_id' => $orgA->id, 'site_group_id' => $group->id, 'handle' => 'golfdom-fr', 'slug' => 'golfdom-fr', 'name' => 'Golfdom FR', 'locale' => 'fr', 'base_url' => '/golfdom-fr']);
 
         $context->setOrg($orgB);
         // Deliberately the SAME handle as Golfdom's site. UNIQUE is
@@ -52,8 +56,34 @@ class DatabaseSeeder extends Seeder
         // the whole browser suite is the regression test for it.
         $rival = Site::create(['org_id' => $orgB->id, 'handle' => 'golfdom', 'slug' => 'rival-golfdom', 'name' => 'Rival Golfdom', 'locale' => 'en']);
 
+        // ⚠️ An RTL site, so the PUBLIC side has something to serve right-to-left without
+        // anyone editing APP_LOCALE (issue #38). `golfdom` is `en` and `golfdom-fr` is
+        // French — both LTR — so before this row there was no public URL that could
+        // demonstrate a site's locale reaching the document at all.
+        $context->setOrg($orgA);
+        $ar = Site::create([
+            'org_id' => $orgA->id, 'site_group_id' => $group->id, 'handle' => 'golfdom-ar',
+            'slug' => 'golfdom-ar', 'name' => 'Golfdom AR', 'locale' => 'ar',
+            'base_url' => '/golfdom-ar',
+        ]);
+
+        /*
+         * ⚠️ A NESTED PREFIX, because `Site::MAX_PREFIX_SEGMENTS` is 4 and nothing exercised more
+         * than one. The skeleton's public route matched a single segment for three revisions of this
+         * branch: a site at `/news/fr` saved, was resolvable, and could never be REACHED — and the
+         * suite could not see it, because no fixture had a prefix deeper than one segment.
+         *
+         * Hebrew rather than Arabic so the assertion cannot pass by matching the other RTL site.
+         */
+        $nested = Site::create([
+            'org_id' => $orgA->id, 'site_group_id' => $group->id, 'handle' => 'golfdom-nested',
+            'slug' => 'golfdom-nested', 'name' => 'Golfdom Nested', 'locale' => 'he',
+            'base_url' => '/news/fr',
+        ]);
+        $context->setOrg($orgB);
+
         $user = User::create(['name' => 'Alpha User', 'email' => 'alpha@kitsune.test', 'password' => Hash::make('password')]);
-        $user->sites()->attach([$en->id, $fr->id]);
+        $user->sites()->attach([$en->id, $fr->id, $ar->id]);
         $user->orgs()->attach($orgA->id);
 
         /*
@@ -73,7 +103,7 @@ class DatabaseSeeder extends Seeder
             'name' => 'مستخدم ألفا', 'email' => 'alpha-rtl@kitsune.test',
             'password' => Hash::make('password'), 'locale' => 'ar',
         ]);
-        $rtlUser->sites()->attach([$en->id, $fr->id]);
+        $rtlUser->sites()->attach([$en->id, $fr->id, $ar->id]);
         $rtlUser->orgs()->attach($orgA->id);
 
         // A user of the OTHER org, which the admin must never be able to
