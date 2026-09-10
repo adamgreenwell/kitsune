@@ -13,7 +13,6 @@ use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
-use PDOException;
 
 /**
  * Two concurrent claimants of one hostname cannot both pass the overlap check — issue #61.
@@ -34,6 +33,41 @@ use PDOException;
 beforeEach(function (): void {
     $this->org = Org::create(['name' => 'Claimant', 'slug' => 'claimant']);
     app(Context::class)->setOrg($this->org);
+});
+
+afterAll(function (): void {
+    /*
+     * ⚠️ COMMITTED ROWS FROM ANOTHER CONNECTION OUTLIVE `RefreshDatabase`, so the one test that needs
+     * them has to sweep them — and it cannot do so itself, because it holds locks on them until its
+     * transaction closes. This runs after the file's last test, which is the first safe moment.
+     */
+    /*
+     * ⚠️ EVERYTHING INSIDE THE `try`, INCLUDING RESOLVING THE CONNECTION, and leaving it outside made
+     * the whole file exit 2 — an ERROR rather than a failure — behind a green summary. On SQLite a
+     * second connection to `:memory:` is a different, empty database, so resolving it and asking for
+     * a table that does not exist throws from `afterAll`, which is outside any test.
+     *
+     * ⚠️ AND ONLY WHERE THE TEST THAT NEEDS IT RAN. The committing test skips on SQLite, so there is
+     * nothing to sweep there and no reason to open a connection at all.
+     */
+    try {
+        if (DB::connection()->getDriverName() === 'sqlite') {
+            return;
+        }
+
+        $default = (string) config('database.default');
+        config(['database.connections.sweep' => config("database.connections.{$default}")]);
+
+        $sweep = DB::connection('sweep');
+
+        $sweep->table('sites')->where('canonical_host', 'snapshot.test')->delete();
+        $sweep->table('site_host_claims')->where('canonical_host', 'snapshot.test')->delete();
+        $sweep->table('orgs')->where('slug', 'rival-org')->delete();
+
+        DB::purge('sweep');
+    } catch (Throwable) {
+        // The engine may have rolled the whole schema away already, which is equally clean.
+    }
 });
 
 afterEach(function (): void {
@@ -167,7 +201,7 @@ it('waits for a rival holding the same host, rather than passing the check besid
             'org_id' => $this->org->id, 'handle' => 'contend', 'slug' => 'contend', 'name' => 'Contend',
             'locale' => 'en', 'url_strategy' => 'domain', 'base_url' => 'https://rival.test/news',
         ]);
-    } catch (PDOException) {
+    } catch (PDOException) {  // A GLOBAL class: importing it in a global-namespace file is a warning.
         /*
          * ⚠️ `PDOException`, NOT `QueryException`, and the engines differ in a way worth recording.
          * Postgres blocks on the `SELECT … FOR UPDATE` and raises a `QueryException`; MySQL and
@@ -218,3 +252,67 @@ it('lets a rival on a DIFFERENT host through without waiting', function (): void
 
     expect($site->canonical_host)->toBe('unrelated.test');
 })->skip(fn (): bool => ! lockingEngine(), 'SQLite has no row lock to contend for');
+
+it('sees a rival committed while this save waited, not an older snapshot', function (): void {
+    /*
+     * ⚠️ HOLDING THE MUTEX IS WORTHLESS IF THE READ ANSWERS FROM AN OLDER POINT IN TIME, which under
+     * MySQL and MariaDB's REPEATABLE READ it can. Review found it: if a caller wrapped this save in a
+     * transaction that had already read anything, `lockHostClaim()`'s nested `DB::transaction()` is
+     * only a savepoint and the snapshot belongs to the OUTER transaction. A rival committing while
+     * this save queued for the mutex is then invisible, and `/` and `/news` coexist across orgs after
+     * all — the exact theft the mutex was added to prevent.
+     *
+     * ⚠️ THE SUITE SUPPLIES THE OUTER TRANSACTION, which is what makes this reachable rather than
+     * hypothetical: `RefreshDatabase` wraps every test in one, and the fixture above has already read
+     * through it. So this is the ordinary shape of a save inside a caller's transaction.
+     *
+     * `lockForUpdate()` on the rival lookup forces a current read on both MySQL engines. The lock is
+     * incidental — the mutex is what serialises — and the clause costs Postgres and SQLite nothing.
+     */
+    /*
+     * ⚠️ THIS READ IS LOAD-BEARING AND THE TEST WAS VACUOUS WITHOUT IT. In REPEATABLE READ the
+     * consistent snapshot is established at the transaction's first READ, and the fixture above only
+     * writes — so without this line the snapshot was taken AFTER the rival committed and an ordinary
+     * read saw the rival anyway. The test passed with the fix and without it, which I only found by
+     * reverting the fix to check.
+     *
+     * Pinning the snapshot first is what makes the condition reachable:
+     *
+     *     without lockForUpdate()   mysql  1 failed, 5 passed
+     *     with it                   mysql  6 passed
+     */
+    DB::table('sites')->count();
+
+    $rival = rivalConnection();
+
+    /*
+     * ⚠️ COMMITTED, BY ANOTHER CONNECTION, or there is no cross-snapshot visibility to test. It needs
+     * its own org too: this connection's org lives in an uncommitted transaction the rival cannot see,
+     * and the overlap check only refuses a claim held by a DIFFERENT org.
+     */
+    $rivalOrgId = $rival->table('orgs')->insertGetId([
+        'name' => 'Rival Org', 'slug' => 'rival-org', 'created_at' => now(), 'updated_at' => now(),
+    ]);
+
+    $rival->table('sites')->insert([
+        'org_id' => $rivalOrgId, 'handle' => 'rivalroot', 'slug' => 'rivalroot', 'name' => 'Rival Root',
+        'locale' => 'en', 'url_strategy' => 'domain', 'base_url' => 'https://snapshot.test/',
+        'canonical_host' => 'snapshot.test', 'path_prefix' => '',
+        'created_at' => now(), 'updated_at' => now(),
+    ]);
+
+    expect(fn () => Site::create([
+        'org_id' => $this->org->id, 'handle' => 'mine', 'slug' => 'mine', 'name' => 'Mine',
+        'locale' => 'en', 'url_strategy' => 'domain', 'base_url' => 'https://snapshot.test/news',
+    ]))->toThrow(RuntimeException::class, 'another org already holds');
+
+    /*
+     * ⚠️ THE SWEEP CANNOT HAPPEN HERE, and trying it cost fifty seconds and a deadlock. These rows
+     * are committed on another connection, so `RefreshDatabase`'s rollback never reaches them — but
+     * this connection now holds `lockForUpdate()` on them inside a transaction that is still open, so
+     * a delete from the rival waits for a lock this test is holding and times out.
+     *
+     * `afterAll` runs once the file's transactions are closed, which is the first moment the rows can
+     * be removed. Nothing between here and there uses `snapshot.test`.
+     */
+})->skip(fn (): bool => ! lockingEngine(), 'SQLite has one writer, so there is no second snapshot to be stale');

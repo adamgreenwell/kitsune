@@ -764,6 +764,8 @@ entries
 >
 > ⚠️ **Where the wait happens is the engine's business, and the two disagree.** Postgres blocks on the `SELECT … FOR UPDATE`; MySQL and MariaDB block earlier, on the unique index during the upsert, and raise `DeadlockException` — which extends `PDOException` and **not** `QueryException`, so a test catching the narrower type passed on Postgres and failed on both MySQL engines. SQLite serialises writers at the database level and compiles `FOR UPDATE` to nothing, so there is no row lock to demonstrate there; the concurrency test runs on all four and skips those two assertions with that reason stated.
 >
+> ⚠️ **And holding the mutex is worthless if the read answers from an older point in time.** Under MySQL and MariaDB's REPEATABLE READ it can: if a caller wrapped the save in a transaction that had already read anything, the nested `DB::transaction()` is only a savepoint and the snapshot belongs to the *outer* transaction — so a rival committing while this save queued for the mutex is invisible, and `/` and `/news` coexist across orgs after all. The rival lookup is therefore a **locking read**, which forces a current read on both MySQL engines; the lock is incidental, since the mutex is what serialises, and the clause costs Postgres and SQLite nothing. Found by review, and it is the kind of engine-specific hole invariant 5 exists to prevent.
+>
 > NULL in both columns keeps admin-only sites out of the unique index, because NULLs compare distinct on every engine. An empty string is a real value: `canonical_host = ''` is any host, `path_prefix = ''` is the site root.
 >
 > ⚠️ **Amended again 2026-09-09 — a bare `base_url` needs the strategy, and a prefix has a depth bound.** Both found by review of the implementation.

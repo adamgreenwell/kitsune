@@ -297,12 +297,28 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
             return;
         }
 
+        /*
+         * ⚠️ A LOCKING READ, SO IT CANNOT REUSE A CALLER'S SNAPSHOT. Holding the host mutex makes the
+         * rival set stable from here on, and that is worthless if this read answers from an OLDER
+         * point in time — which under MySQL and MariaDB's REPEATABLE READ it can. If a caller wrapped
+         * this save in a transaction that had already read anything, `lockHostClaim()`'s nested
+         * `DB::transaction()` is only a savepoint and the snapshot belongs to the OUTER transaction.
+         * A rival committing while this save queued for the mutex would then be invisible to an
+         * ordinary read, and `/` and `/news` could coexist across orgs after all.
+         *
+         * `lockForUpdate()` forces a current read on both MySQL engines, which is the property being
+         * bought here rather than the lock itself — the mutex is what serialises. Postgres reads the
+         * latest committed row under READ COMMITTED anyway, and SQLite has one writer; the clause
+         * costs them nothing and removes an engine-specific hole invariant 5 exists to prevent.
+         * Found by review.
+         */
         $rivals = self::withoutScopeBecause(
             'cross-org URL claims: the question is whether ANOTHER org holds an overlapping '
             .'claim, which a query scoped to the current org cannot ask',
             fn ($query) => $query
                 ->where('canonical_host', $site->canonical_host)
                 ->when($site->exists, fn ($q) => $q->whereKeyNot($site->getKey()))
+                ->lockForUpdate()
                 ->get(['id', 'org_id', 'base_url', 'path_prefix']),
         );
 
