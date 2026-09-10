@@ -384,20 +384,92 @@ describe('base_url derives the host and prefix a site claims', function (): void
         expect(Site::deriveUrlParts('https://example.test/', 'domain'))->toBe(['example.test', '']);
     });
 
-    it('refuses a host-addressed strategy whose URL parses with no host', function (): void {
+    it('refuses a public address that is not HTTP', function (): void {
         /*
-         * ⚠️ ONE STEP PAST `parse_url() === false`. `parse_url('file:///news')` SUCCEEDS and
-         * returns no host, so converting that to `''` — the host-less wildcard — published a
-         * `domain` site at `/news` on EVERY host serving the installation, from a configured
-         * address that is unusable. Found by review.
+         * ⚠️ `parse_url()` ACCEPTS ANY SCHEME, and every one of them was being stored as an HTTP
+         * claim. `file://example.test/news`, `javascript://example.test/news` and
+         * `ftp://example.test/` all parsed with a host and saved `example.test` + `/news`, so the
+         * site answered a public URL that the configured `base_url` cannot produce — the visible
+         * configuration and the address actually served describing different things. Found by
+         * review.
          */
-        foreach (['domain', 'subdomain'] as $strategy) {
-            expect(fn () => Site::deriveUrlParts('file:///news', $strategy))
-                ->toThrow(RuntimeException::class, 'no host at all');
+        foreach (['file://example.test/news', 'javascript://example.test/x', 'ftp://example.test/'] as $wrongScheme) {
+            expect(fn () => Site::deriveUrlParts($wrongScheme, 'domain'))
+                ->toThrow(RuntimeException::class, 'served over HTTP');
         }
+
+        // ⚠️ AND IT MUST NOT STEAL THE UNPARSEABLE REFUSAL. `parse_url('http://')` returns false
+        // outright, so there is no scheme to object to and "this is not a URL" says more.
+        expect(fn () => Site::deriveUrlParts('http://', 'domain'))
+            ->toThrow(RuntimeException::class, 'cannot be parsed');
+
+        /*
+         * ⚠️ THIS TEST REPLACED ONE ASSERTING `file:///news` IS REFUSED FOR HAVING "no host at
+         * all". That refusal still exists in `deriveUrlParts()` and is now SHADOWED: the scheme
+         * check runs first, and I could not construct any value that reaches the host-less branch
+         * once explicit addresses are restricted to http and https. It is kept rather than deleted
+         * because `parse_url()`'s behaviour varies between PHP versions and the guard costs
+         * nothing — but a test asserting a message nothing can produce would be worse than no test.
+         */
+        $case = fn (string $url, string $strategy): string => rescue(
+            function () use ($url, $strategy): string {
+                Site::deriveUrlParts($url, $strategy);
+
+                return 'accepted';
+            },
+            fn (Throwable $e): string => $e->getMessage(),
+        );
+
+        expect($case('file:///news', 'domain'))->toContain('served over HTTP');
+
+        // Case is not significant in a scheme, so an uppercase one is accepted rather than refused.
+        expect(Site::deriveUrlParts('HTTPS://example.test/x', 'domain'))->toBe(['example.test', '/x']);
 
         // A host-less PATH prefix is still legitimate — that is what a path site is.
         expect(Site::deriveUrlParts('/news', 'path'))->toBe(['', '/news']);
+    });
+
+    it('refuses a scheme that names no authority', function (): void {
+        /*
+         * ⚠️ A ONE-SLASH TYPO BECAME A HOSTNAME. `https:/news` contains no `://`, so it was not
+         * treated as an explicit URL and went on to be read as a bare address — storing a site
+         * whose claimed host was the literal string `https`.
+         *
+         * ⚠️ A `host:port` VALUE IS UNAFFECTED, which is why the guard tests the PARSED scheme
+         * rather than looking for a colon: `parse_url()` reads `example.test:8080` as a host and a
+         * port with no scheme at all.
+         */
+        foreach (['https:/news', 'http:/x'] as $strayScheme) {
+            expect(fn () => Site::deriveUrlParts($strayScheme, 'domain'))
+                ->toThrow(RuntimeException::class, 'single slash');
+        }
+
+        expect(Site::deriveUrlParts('example.test:8080/news', 'domain'))->toBe(['example.test', '/news'])
+            ->and(Site::deriveUrlParts('localhost:3000', 'domain'))->toBe(['localhost', '']);
+    });
+
+    it('refuses a base_url containing a backslash', function (): void {
+        /*
+         * ⚠️ A BACKSLASH IS A PATH SEPARATOR TO A BROWSER AND DATA TO `parse_url()`, so the two
+         * derive different addresses from one string. Measured:
+         *
+         *   https://example.test\@evil.test/x
+         *     parse_url  host=evil.test     path=/x
+         *     browser    host=example.test  path=/%5C@evil.test/x
+         *
+         * An operator entering that stored a claim on `evil.test` — a host they may not own, and
+         * one another org could legitimately hold — while their own browser went to `example.test`.
+         * Found by review.
+         *
+         * ⚠️ Refused rather than rewritten to `/`, because the two readings disagree about where
+         * the AUTHORITY ends: "fixing" it means choosing which host the operator meant.
+         */
+        foreach (['https://example.test\@evil.test/x', 'https://user\@example.test/news', 'https://example.test/a\b'] as $slashed) {
+            expect(fn () => Site::deriveUrlParts($slashed, 'domain'))
+                ->toThrow(RuntimeException::class, 'backslash');
+        }
+
+        expect(Site::deriveUrlParts('https://example.test/news', 'domain'))->toBe(['example.test', '/news']);
     });
 
     it('refuses a host that survives parsing but not canonicalisation', function (): void {
@@ -928,9 +1000,25 @@ describe('an unresolvable request is left alone', function (): void {
             }
         };
 
-        // Every spelling `canonicalHost()` refuses: a client error from the framework, not a 500.
+        // Every spelling the framework itself rejects: a client error from it, not a 500.
         foreach (['%65xample.test', 'x.test%00', 'π.test', 'x..test', '.'] as $refused) {
             expect($send($refused))->toBe(400, "[{$refused}] was not refused upstream");
+        }
+
+        /*
+         * ⚠️ AND EVERY SPELLING THE FRAMEWORK DELIVERS BUT STORAGE REFUSES MUST NOT 500 — which is
+         * where I put one. I declined a `catch` here on the strength of probing all 9,261
+         * three-character hosts, then added the numeric and IPv6 storage rules in the next commit;
+         * those refuse seven spellings Symfony delivers happily, and a three-character corpus
+         * cannot contain a bracketed IPv6 address. The middleware calls `Site::requestHost()`,
+         * which normalises what it can and never throws.
+         */
+        foreach ([
+            '2130706433', '[0:0:0:0:0:0:0:1]', '[0::1]', '[::0:1]',
+            '[::ffff:127.0.0.1]', '[::ffff:7f00:1]', '[2001:0db8::1]', '[::1]', '127.0.0.1',
+        ] as $deliverable) {
+            expect($send($deliverable))
+                ->toBe(200, "[{$deliverable}] produced a server error rather than resolving nothing");
         }
 
         /*

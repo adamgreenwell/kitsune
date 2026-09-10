@@ -304,8 +304,93 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
 
         $baseUrl = trim($baseUrl);
 
+        /*
+         * ⚠️ A BACKSLASH IS A PATH SEPARATOR TO A BROWSER AND ORDINARY DATA TO `parse_url()`, so
+         * the two derive DIFFERENT ADDRESSES from one string. Measured:
+         *
+         *     https://example.test\@evil.test/x
+         *       parse_url  host=evil.test     path=/x
+         *       browser    host=example.test  path=/%5C@evil.test/x
+         *
+         * An operator entering that got a stored claim on `evil.test` — a host they may not own,
+         * and one another org could legitimately hold — while their own browser went to
+         * `example.test`. The configuration on screen and the address served were different hosts,
+         * which is the ADR-021 failure with no framework safety net behind it.
+         *
+         * Refused rather than rewritten to `/`: the two readings disagree about where the AUTHORITY
+         * ends, so "fix it" means choosing which host the operator meant, and there is no basis for
+         * that choice. Found by review.
+         */
+        if (str_contains($baseUrl, '\\')) {
+            throw new RuntimeException(sprintf(
+                'Refusing the base_url [%s]: it contains a backslash, which a browser reads as a '
+                .'path separator and PHP does not — so the address stored and the address visited '
+                .'would be different hosts. Use forward slashes.',
+                $baseUrl,
+            ));
+        }
+
+        /*
+         * ⚠️ A SCHEME MUST BE FOLLOWED BY `//`, or it is not naming an authority. `https:/news`
+         * has one slash, so `$explicit` below is false and the value went on to be treated as a
+         * bare host — storing a site whose claimed HOST was the literal string `https`. A typo
+         * became a hostname.
+         *
+         * ⚠️ A `host:port` value is NOT caught by this, which is why the test is on the parsed
+         * scheme rather than on the presence of a colon: `parse_url()` reads `example.test:8080`
+         * as host and port with no scheme at all, so a port keeps working.
+         */
+        $stray = str_contains($baseUrl, '://') ? null : parse_url($baseUrl, PHP_URL_SCHEME);
+
+        if (is_string($stray)) {
+            throw new RuntimeException(sprintf(
+                'Refusing the base_url [%s]: the scheme [%s] is followed by a single slash, so it '
+                .'names no host — and read as a bare address, the scheme itself would become the '
+                .'host. Write %s:// or leave the scheme off.',
+                $baseUrl,
+                $stray,
+                $stray,
+            ));
+        }
+
         // A leading `//` would be a protocol-relative URL.
         $explicit = str_contains($baseUrl, '://') || str_starts_with($baseUrl, '//');
+
+        /*
+         * ⚠️ A PUBLIC ADDRESS IS HTTP, and every other scheme `parse_url()` accepts was being
+         * stored as though it were. `file://example.test/news`, `javascript://example.test/news`
+         * and `ftp://example.test/` all parsed with a host and saved the HTTP claim
+         * `example.test/news` — so the site answered a public URL that the configured `base_url`
+         * cannot produce, and the visible configuration described something else entirely.
+         *
+         * A protocol-relative `//host/path` and a bare host or path carry no scheme and are
+         * unaffected: those are the forms this method already normalises. Found by review.
+         */
+        /*
+         * ⚠️ ON THE RAW RETURN VALUE, not on a string cast of it, and only when a scheme actually
+         * parsed — otherwise this steals the refusal that belongs to the unparseable guard below.
+         * `parse_url('http://')` returns FALSE outright, so there is no scheme to object to, and
+         * "this is not a URL" says more than "the scheme [(none)] cannot produce the request".
+         *
+         * Casting first hid that: `(string) false` is `''`, and a `$scheme !== ''` test on the cast
+         * is a comparison static analysis reads as dead because its `parse_url` stub cannot return
+         * an empty scheme. `is_string()` asks the question the runtime actually answers.
+         */
+        $scheme = str_contains($baseUrl, '://') ? parse_url($baseUrl, PHP_URL_SCHEME) : null;
+
+        if (is_string($scheme)) {
+            $scheme = mb_strtolower($scheme);
+
+            if ($scheme !== 'http' && $scheme !== 'https') {
+                throw new RuntimeException(sprintf(
+                    'Refusing the base_url [%s]: a public address is served over HTTP, and the '
+                    .'scheme [%s] cannot produce the request this would claim. Use http:// or '
+                    .'https://, or leave the scheme off.',
+                    $baseUrl,
+                    $scheme,
+                ));
+            }
+        }
 
         // A `domain` or `subdomain` site names a host even when written bare; a `path` site
         // never does.
@@ -465,6 +550,50 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
         }
 
         return self::reachableHost(rtrim(mb_strtolower($ascii), '.'), $host);
+    }
+
+    /**
+     * The host from an untrusted `Host` header, normalised as far as it safely can be.
+     *
+     * ⚠️ IT NEVER THROWS, AND `canonicalHost()` DOES — which is the whole reason this exists.
+     * Storage refuses a host it cannot store, and that is right when an operator is SAVING an
+     * address. On the request path the header is untrusted input (invariant 6) and a throw is a
+     * 500 on a request that should simply not have resolved.
+     *
+     * ⚠️ I INTRODUCED THAT 500 AND MY OWN MEASUREMENT MISSED IT. An earlier review comment asked
+     * for a `catch` here; I refused it on the strength of probing all 9,261 three-character hosts
+     * and finding none that Symfony accepts and `canonicalHost()` refuses. That was true of the
+     * code as it then stood — and the very next commit added the numeric and IPv6 rules, which
+     * refuse seven spellings Symfony is happy to deliver: `2130706433`, `[0:0:0:0:0:0:0:1]`,
+     * `[0::1]`, `[::0:1]`, `[::ffff:127.0.0.1]`, `[::ffff:7f00:1]` and `[2001:0db8::1]`. A
+     * three-character corpus cannot contain a bracketed IPv6 address, so the probe could not have
+     * found them. `HostValidityParityTest` now sweeps a corpus that includes them.
+     *
+     * ⚠️ IT NORMALISES RATHER THAN REFUSING, which is better than the `catch` that was asked for.
+     * `[0:0:0:0:0:0:0:1]` and `[::1]` are one address, so a request carrying the long form SHOULD
+     * reach the site that stored the short one — refusing it would have been a wrong answer that
+     * merely failed quietly. Anything that cannot be normalised is returned as it came and simply
+     * matches no stored row, because storage refuses those spellings; host-less claims are tried
+     * separately by `resolve()`, so a path site still answers on any host, which is what a
+     * host-less claim means.
+     */
+    public static function requestHost(string $host): string
+    {
+        $host = rtrim(mb_strtolower(trim($host)), '.');
+
+        if ($host === '' || ! str_starts_with($host, '[')) {
+            return $host;
+        }
+
+        $inside = str_ends_with($host, ']') ? substr($host, 1, -1) : '';
+        $packed = $inside === '' ? false : @inet_pton($inside);
+
+        if ($packed === false || strlen($packed) !== 16) {
+            return $host;
+        }
+
+        // The compressed form is what storage holds, so this is what makes the long form resolve.
+        return '['.inet_ntop($packed).']';
     }
 
     /**

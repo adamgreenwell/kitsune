@@ -168,23 +168,24 @@ final class ResolveSiteFromRequest
          * lowercase it always was.
          */
         /*
-         * ⚠️ THIS CANNOT THROW, AND THAT IS MEASURED RATHER THAN ASSUMED. `Site::canonicalHost()`
-         * refuses a percent-escaped host and fails closed on a Unicode one — right for an operator
-         * SAVING an address, and a 500 if a stranger could reach it, since the `Host` header is
-         * untrusted input (invariant 6).
+         * ⚠️ `requestHost()`, NOT `canonicalHost()`, and the difference is a 500. The storage
+         * version refuses a host it cannot store — right for an operator saving an address, wrong
+         * for a stranger sending one, because the `Host` header is untrusted input (invariant 6).
          *
-         * A stranger cannot. `Request::getHost()` accepts only `[a-zA-Z0-9-:\]_]+\.?` runs, so
-         * every host that reaches here is ASCII with no `%` — the case `canonicalHost()` returns
-         * early. Probing all 9,261 three-character hosts over an alphabet that includes `%`, `\0`,
-         * `é` and the delimiters found zero that Symfony accepts and `canonicalHost()` refuses, and
-         * the refused ones are a 400 from the framework before this middleware runs, not a 500.
+         * ⚠️ I HAD THIS AS `canonicalHost()` AND DEFENDED IT WITH A MEASUREMENT THAT HAD GONE
+         * STALE. Review asked for a `catch` here; I declined, having probed all 9,261
+         * three-character hosts for one Symfony accepts and `canonicalHost()` refuses, and found
+         * none. The next commit then added the numeric and IPv6 rules, which refuse seven
+         * spellings Symfony delivers happily — and a three-character corpus cannot contain a
+         * bracketed IPv6 address, so the probe was structurally unable to find them. The lesson is
+         * in the corpus, not in the conclusion: `HostValidityParityTest` now sweeps bracketed
+         * forms, and it is what would have caught this.
          *
-         * So there is no `try` here on purpose: catching an exception that cannot arrive would
-         * assert a danger the measurement denies. `PublicSiteLocaleTest` pins the 400 instead,
-         * because that upstream refusal is the thing this relies on — if Symfony ever widens its
-         * host validation, that test fails and this comment stops being true.
+         * `requestHost()` also does better than the `catch` asked for: it COMPRESSES a long IPv6
+         * form, so a request for `[0:0:0:0:0:0:0:1]` reaches the site that stored `[::1]` instead
+         * of merely failing without a crash.
          */
-        return Site::canonicalHost($host);
+        return Site::requestHost($host);
     }
 
     /**
