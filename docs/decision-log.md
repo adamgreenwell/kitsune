@@ -1330,6 +1330,73 @@ So the test of this ADR is not "can a non-panel consumer render it" — there is
 
 ---
 
+## ADR-030 — kitsunecms.org runs on Kitsune, so the site waits for the blueprint
+
+**Status:** Decided · 2026-09-10
+
+Raised while starting work on the site and stopped before anything was built. The question asked was *what do we build it with*; the answer settles *when* instead.
+
+**The project's own site is its first install.** Not a demo of one — the real thing, in public, with the maintainer as the operator who has to live with it.
+
+That is available exactly once. A site stood up now on Astro, Hugo or WordPress would be replaced later by a Kitsune site, and that replacement would be a migration performed by the one person least able to learn anything from it: someone who already knows every workaround. Building it on Kitsune the first time makes the site a **test**. Building it on anything else makes the eventual move a **chore**, and chores get deferred.
+
+### What it tests that nothing else does
+
+Phase 5 commits to a first-party **Marketing Site** blueprint. Shipping that blueprint and hoping someone uses it is the weak version of that commitment; the project's own site being its first user is the strong one, and the difference is who absorbs the defects. Every gap in the blueprint becomes the maintainer's problem before it is a user's — which is the same argument ADR-024 makes for browser tests, applied one layer out. The PHP suite was seven-of-eight green while the dashboard returned 500 because nothing crossed the seam a user crosses. A blueprint nobody has installed is that suite.
+
+The same holds for the resource floor. ADR-027 fixes it with a number — 1 vCPU, 1 GB RAM, SQLite, no container runtime — and **a floor nobody stands on is a claim rather than a constraint.** The site runs the self-host path at that floor, not KaaS, and that choice is disclosed below rather than left implicit.
+
+### The real deadline is ADR-026, not the blueprint
+
+ADR-026 requires the installer to be served from `kitsunecms.org` — versioned, checksum-pinned, **never from a redirect**. The domain therefore has to be serving real content before Phase 6's installer can ship at all. So the blueprint gates when the site *may* move; the installer sets when it *must*. These are different dates and the second one is not negotiable by preference.
+
+**Verified 2026-09-10** (invariant 15): the domain is registered and delegated to Cloudflare nameservers, with no A record. Nothing is served. `README.md` links to it from the status banner — the most prominent link in the project — and that link 404s today. It is being left as-is deliberately; see the cost below.
+
+### The bar
+
+**The Marketing Site blueprint applies cleanly to a fresh install.** The trigger is the capability, not a version number, and a tag may or may not exist on the day it is met.
+
+Concretely — all four, and each one answerable by somebody who is not the maintainer:
+
+- Phase 5's **Marketing Site blueprint exists and applies to a fresh install** with no manual step outside the apply flow. No hand-edited config, no SQL, no *"and then you also need to."*
+- It applies **idempotently**, which Phase 5 already requires of every blueprint: re-applying upgrades rather than clobbers.
+- It does so **at the ADR-027 floor** — SQLite, 1 vCPU, 1 GB, no container runtime, no external services. The site is the first thing to stand on that floor for real, so meeting the bar on a developer laptop does not count.
+- The result is **editable by its operator through the admin**: content changes without a deploy. That is the entire claim a CMS makes, and a marketing site that needs a commit to fix a typo has not demonstrated it.
+
+**Why the capability rather than a tag.** A tag is something the maintainer decides; these four are facts about the software that someone else can check. Given the distortion risk named under cost below, the trigger for this particular decision should not be one the maintainer can satisfy by concluding it is satisfied.
+
+**Why not the stricter bar.** Making the trigger *"a fresh floor-spec box, installed by the real installer, serves the site"* was considered and rejected as close to circular: ADR-026 cannot ship the installer until `kitsunecms.org` serves the checksum-pinned script, so gating the site on a working installer leaves the two blocked on each other at ship time. The site is meant to precede the installer and prove the ground it stands on — a marketing site is the smaller workload, and finding out there that the floor does not hold is much cheaper than finding out during an install someone else is watching.
+
+### What this ADR does not claim
+
+- **It does not commit to dogfooding at any cost.** If the blueprint lands and Kitsune still cannot serve the site, that is *information about the platform*, not a problem with the plan — and the honest response is to say so publicly rather than to quietly stand up a static site and not mention it.
+- **It does not cover the documentation site** (Phase 6, separate roadmap line). Docs have different needs — search, versioning, deep cross-linking — and whether those are a Kitsune workload or a static-generator workload is unsettled. Deciding it here would be deciding it without evidence.
+- **It does not forbid a holding page.** One was considered and declined on 2026-09-10 — a disposable non-Kitsune artifact is still an artifact somebody has to tear down, and the README already states the project is pre-alpha with nothing released.
+
+| Rejected | Why it lost |
+|---|---|
+| Static site now (Astro/Hugo), migrate to Kitsune later | Spends the one first-install opportunity on a throwaway, and creates a migration whose most likely outcome is that it never happens. The project would then be a CMS whose own site runs on a static generator — the loudest statement available about how much its author trusts it. |
+| WordPress now | Same as above, and worse: ADR-007 makes WordPress the migration *source* case. Being a WordPress site while building the thing that migrates people off WordPress is not a position that survives being noticed. |
+| Run the site on KaaS, the hosted service | The commercially attractive option, and it degrades the self-host path by removing its most motivated user. See the disclosure below. |
+| Wait for v1.0 rather than the blueprint | Leaves the domain dark for two more phases, and ADR-026 will not permit it — the installer cannot ship from a domain serving nothing, so the site has to precede v1.0 regardless. |
+| Ship the site now as-is and call it the alpha | Inverts the dependency: the site would set the platform's readiness bar instead of the reverse, and everything unfinished becomes something to hide rather than something to fix. |
+| Leave the timing informal — "we'll do it when it's ready" | This is the option this ADR exists to close. Invariant 12 binds the maintainer identically, and an undocumented intention is exactly what a future contributor routes around by opening a PR with an Astro site in it, entirely reasonably. |
+
+**Cost, stated.** Four, and they are real:
+
+- **The domain sits dark through pre-alpha**, and the README's most prominent link 404s. Accepted deliberately on 2026-09-10.
+- **The site's launch is now coupled to the platform's readiness.** If Phase 5 slips, the site slips with it. There is no independent path.
+- **The project's public face will run on alpha software.** A shop window that breaks in public is a worse first impression than no shop window — which is an argument for the bar above being strict rather than early.
+- **⚠️ Distortion risk, and it is the one to watch.** Once the project is its own customer, roadmap pressure can start coming from *what the site needs* rather than *what operators need*. These overlap, which is what makes the drift hard to see. This paragraph is the thing to hold a future decision against when some feature is justified primarily by kitsunecms.org needing it.
+
+⚠️ **Commercial interest, disclosed per ADR-023.** **Running the project's own site on KaaS would be the commercially preferable choice** — a visible reference install, continuous exercise of the paid product, and materially less work for the maintainer, since the hosted platform is the path with someone paid to keep it working. It is rejected here.
+
+GOVERNANCE and ADR-026 both commit that the self-host path is never degraded, and **the most reliable way for a self-host path to degrade is for the people maintaining it to stop walking it.** ADR-026 already discloses that a frictionless installer runs against the hosted service's interest; this decision is the same tension one level up, and it resolves the same way. If kitsunecms.org is ever quietly moved onto KaaS for operational convenience, this paragraph is the thing that was traded away.
+
+The inverse is a genuine gap and is named rather than solved: **KaaS then has no dogfooding of its own.** That should be met by giving the hosted platform a real first-party workload of its own, not by relocating this one.
+
+---
+
 ## Open questions
 
 - Storage benchmark at 10k / 100k / 1M entries
@@ -1338,7 +1405,7 @@ So the test of this ADR is not "can a non-panel consumer render it" — there is
 - Do relations target the translation group or a specific locale row (ADR-017)? Group-targeting with an optional locale override is the leading candidate
 - **Name/trademark clearance** — no PHP/CMS collision, but Mozilla's support platform and a Rust ActivityPub project both use "Kitsune." Confirm availability in software/SaaS classes **before** spending on a logo.
 
-  **Domain settled provisionally, 2026-09-07: `kitsunecms.org`.** `kitsune.org` is held by another party and is being pursued; acquiring it would make it a redirect, not a rename. Naming the domain now unblocks ADR-026's installer, which cannot be served from a URL that might later move — a checksum-pinned script behind a redirect is exactly what that ADR refuses.
+  **Domain settled provisionally, 2026-09-07: `kitsunecms.org`.** `kitsune.org` is held by another party and is being pursued; acquiring it would make it a redirect, not a rename. Naming the domain now unblocks ADR-026's installer, which cannot be served from a URL that might later move — a checksum-pinned script behind a redirect is exactly what that ADR refuses. **What runs at that domain, and when, is settled by ADR-030:** the site is Kitsune's first install, so it waits for Phase 5's Marketing Site blueprint to apply cleanly at the ADR-027 floor rather than being stood up on something else in the meantime.
 - KaaS deployment topology beneath the org- and site-aware core — now an ops decision, not architecture, though ADR-020 gives it a legal input via data residency
 
 **Unverifiable, do not cite:** the free/paid split of Filament's plugin directory. Filters exist; counts are not published.
