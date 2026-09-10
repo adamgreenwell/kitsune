@@ -592,80 +592,65 @@ it('allows a save on a site whose row genuinely has no host', function (): void 
         ->and($site->path_prefix)->toBe('/news');
 })->skip(fn (): bool => ! lockingEngine(), 'a second connection to SQLite :memory: is a different database');
 
-it('locks the whole union before saving a batch, in hostname order', function (): void {
+it('refuses a save when the connection reports REPEATABLE READ', function (): void {
     /*
-     * ⚠️ THE CONTRACT WAS UNSOUND AND REVIEW DISPROVED IT WITH A COUNTER-EXAMPLE. It said a caller
-     * batching site saves must order them by the hostname each will CLAIM — by destination — and every
-     * save also locks its ORIGIN, so destination order is not an order over the union. Staged as two
-     * real sessions, both obeying that contract:
+     * ⚠️ `lockForUpdate()` DOES NOT ESCAPE A POSTGRES SNAPSHOT, which review found — and the round that
+     * added that clause believed it did. Under MySQL and MariaDB's REPEATABLE READ a locking read IS a
+     * current read, measured, which is why the clause exists. PostgreSQL is different: at REPEATABLE
+     * READ a row INSERTED after the snapshot is invisible, `FOR UPDATE` or not. Measured on PostgreSQL
+     * 17 with two sessions — one took a snapshot, a rival committed `x.test/`, and the locking read
+     * returned only the pre-snapshot `x.test/other`.
      *
-     *     TX1  a.test -> d.test, then b.test -> e.test      (d < e)
-     *     TX2  b.test -> c.test, then a.test -> f.test      (c < f)
+     * ⚠️ THE CACHE IS SEEDED RATHER THAN THE CONNECTION RECONFIGURED, and the reason is worth stating
+     * because my first attempt was worse. `RefreshDatabase` already holds this connection inside a
+     * transaction and an isolation level cannot change mid-transaction, so I reached for a public
+     * test-only property on `Site` to point it at a second connection — production surface existing
+     * only for a test, which is precisely what review objected to one thread over. Seeding the private
+     * cache tests the refusal and its message with no seam at all.
      *
-     *   PostgreSQL 17  ERROR: deadlock detected
-     *
-     * TX1 holds `a` and wants `b`; TX2 holds `b` and wants `a`. No ordering of the SAVES fixes it,
-     * because each save locks a non-contiguous pair — which is why a contract was the wrong shape of
-     * answer. Re-measured with the union pre-acquired: both commit and both moves land.
+     * The other half — that `SHOW transaction_isolation` reports what this reads — is asserted below,
+     * and the behaviour it guards was measured at the SQL level rather than inferred.
      */
-    $one = Site::create([
-        'org_id' => $this->org->id, 'handle' => 'batchone', 'slug' => 'batchone', 'name' => 'One',
-        'locale' => 'en', 'url_strategy' => 'domain', 'base_url' => 'https://bbb-batch.test',
-    ]);
+    $cache = new ReflectionProperty(Site::class, 'isolationChecked');
+    $name = DB::connection()->getName() ?? 'default';
 
-    $two = Site::create([
-        'org_id' => $this->org->id, 'handle' => 'batchtwo', 'slug' => 'batchtwo', 'name' => 'Two',
-        'locale' => 'en', 'url_strategy' => 'domain', 'base_url' => 'https://ddd-batch.test',
-    ]);
+    $cache->setValue(null, [$name => 'repeatable read']);
 
-    $locked = [];
+    try {
+        expect(fn () => Site::create([
+            'org_id' => $this->org->id, 'handle' => 'rr', 'slug' => 'rr', 'name' => 'RR',
+            'locale' => 'en', 'url_strategy' => 'domain', 'base_url' => 'https://rr.test',
+        ]))->toThrow(RuntimeException::class, 'REPEATABLE READ');
 
-    DB::listen(function ($query) use (&$locked): void {
-        if (preg_match('/^\s*select\b/i', $query->sql) === 1 && str_contains($query->sql, 'site_host_claims')) {
-            $locked[] = (string) ($query->bindings[0] ?? '');
-        }
-    });
+        expect(Site::withoutGlobalScopes()->where('handle', 'rr')->exists())->toBeFalse();
+    } finally {
+        $cache->setValue(null, []);
+    }
+})->skip(fn (): bool => DB::connection()->getDriverName() !== 'pgsql', 'the requirement is PostgreSQL-specific');
 
-    // A move that crosses: one goes to a host sorting BEFORE the other's origin.
-    $one->base_url = 'https://eee-batch.test';
-    $two->base_url = 'https://aaa-batch.test';
-
-    Site::saveAllInHostOrder([$one, $two]);
-
+it('reads the isolation level the connection actually reports', function (): void {
     /*
-     * ⚠️ THE UNION FIRST AND IN ORDER, then whatever each save re-locks — which is a no-op on a row
-     * this transaction already holds. The assertion is on the leading four rather than on the whole
-     * list, because the per-save locks that follow are the no-ops and pinning them would be pinning
-     * an implementation detail of `save()` rather than the ordering this method exists for.
+     * ⚠️ THE INSTRUMENT, ASSERTED SEPARATELY. The test above seeds the cache, so it says nothing about
+     * whether the probe fills it correctly — and a check that reads the wrong thing would refuse
+     * nothing while looking implemented. `SHOW transaction_isolation` is what `refuseUnusableIsolation()`
+     * runs, and this asserts it comes back as one of the levels the refusal compares against.
      */
-    expect(array_slice($locked, 0, 4))
-        ->toBe(['aaa-batch.test', 'bbb-batch.test', 'ddd-batch.test', 'eee-batch.test'],
-            'the batch did not acquire its whole host union in hostname order');
+    $level = DB::connection()->selectOne('SHOW transaction_isolation');
 
-    expect($one->fresh()->canonical_host)->toBe('eee-batch.test')
-        ->and($two->fresh()->canonical_host)->toBe('aaa-batch.test');
-});
+    expect(strtolower((string) ($level->transaction_isolation ?? '')))
+        ->toBeIn(['read committed', 'repeatable read', 'serializable', 'read uncommitted']);
+})->skip(fn (): bool => DB::connection()->getDriverName() !== 'pgsql', 'PostgreSQL syntax');
 
-it('saves a batch of creates, which have no origin to add to the union', function (): void {
+it('leaves a save on any other engine alone', function (): void {
     /*
-     * ⚠️ THE BOUND ON THE UNION. A create claims one host and vacates none, so the union of a batch of
-     * creates is just their destinations — and the helper must not invent an origin for a row that has
-     * none, which is what `contendedHosts()` returning only non-null hosts gives it.
+     * ⚠️ THE BOUND. MySQL and MariaDB run at REPEATABLE READ by DEFAULT and are safe there, because a
+     * locking read is a current read — measured, and the reason `refuseOverlappingClaim()` locks. A
+     * check that refused every REPEATABLE READ connection would refuse both of them outright.
      */
-    $one = new Site([
-        'org_id' => $this->org->id, 'handle' => 'newone', 'slug' => 'newone', 'name' => 'New One',
-        'locale' => 'en', 'url_strategy' => 'domain', 'base_url' => 'https://zzz-new.test',
+    $site = Site::create([
+        'org_id' => $this->org->id, 'handle' => 'anyengine', 'slug' => 'anyengine', 'name' => 'Any',
+        'locale' => 'en', 'url_strategy' => 'domain', 'base_url' => 'https://anyengine.test',
     ]);
 
-    $two = new Site([
-        'org_id' => $this->org->id, 'handle' => 'newtwo', 'slug' => 'newtwo', 'name' => 'New Two',
-        'locale' => 'en', 'url_strategy' => 'domain', 'base_url' => 'https://yyy-new.test',
-    ]);
-
-    Site::saveAllInHostOrder([$one, $two]);
-
-    expect($one->exists)->toBeTrue()
-        ->and($two->exists)->toBeTrue()
-        ->and($one->canonical_host)->toBe('zzz-new.test')
-        ->and($two->canonical_host)->toBe('yyy-new.test');
-});
+    expect($site->canonical_host)->toBe('anyengine.test');
+})->skip(fn (): bool => DB::connection()->getDriverName() === 'pgsql', 'the refusal is PostgreSQL-specific');

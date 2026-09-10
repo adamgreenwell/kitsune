@@ -94,6 +94,16 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
      */
     public const PREFIX_SEGMENT_PATTERN = '[A-Za-z0-9._~-]+';
 
+    /**
+     * The isolation level each connection reported, so the check is one query per connection.
+     *
+     * ⚠️ Keyed by connection NAME rather than a single flag, because the engine matrix runs four of
+     * them and a per-process cache would answer for whichever ran first.
+     *
+     * @var array<string, string>
+     */
+    private static array $isolationChecked = [];
+
     /** The URL strategies ADR-021 defines. Anything else is a typo, not a fourth strategy. */
     private const STRATEGIES = ['path', 'subdomain', 'domain'];
 
@@ -195,10 +205,18 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
      * the union: `a→d` then `b→e` against `b→c` then `a→f` obeys it and deadlocks on Postgres. There is
      * no ordering of the SAVES that fixes it, because each save locks a non-contiguous pair.
      *
-     * So the answer is `saveAllInHostOrder()`, which acquires the union before any save. It is new
-     * public surface, which CONTRIBUTING freezes before v1.2 and which is why the contract was tried
-     * first — but a contract asking callers to do something they have no supported door for is a wish
-     * rather than a contract, and `site_host_claims` is deliberately below Eloquent.
+     * ⚠️ SO IT IS A KNOWN LIMITATION, DEFERRED, and this is the third answer to the same finding —
+     * the first two are recorded because each was wrong in a way worth keeping. A CONTRACT was tried
+     * ("order your saves by the hostname each claims") and review disproved it. A public
+     * `saveAllInHostOrder()` was tried next, which acquires the union before any save and does work —
+     * and review held it to `CONTRIBUTING.md`, correctly: new public API before v1.2 is on the
+     * won't-merge list, and my argument that callers "have no door" is weak when there is no caller.
+     * Nothing in this repository batches site saves.
+     *
+     * What is left is honest rather than fixed: a caller who wraps several site MOVES in one
+     * transaction can deadlock, the failure is loud and retryable rather than silent, and the
+     * mechanism lands with the v1.2 API. ADR-021 carries the counter-example so nobody has to
+     * rediscover it, and issue #71 carries the remaining work rather than a docblock.
      */
     public function save(array $options = []): bool
     {
@@ -217,6 +235,8 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
      */
     private function lockHostClaim(): void
     {
+        self::refuseUnusableIsolation();
+
         $hosts = $this->contendedHosts();
 
         self::lockClaims($hosts);
@@ -224,67 +244,74 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
     }
 
     /**
-     * Saves several sites under ONE globally ordered set of host mutexes.
+     * Refuse a save whose rival lookup cannot see a rival that committed while it queued.
      *
-     * ⚠️ THE CONTRACT I WROTE LAST ROUND WAS UNSOUND, and review disproved it with a counter-example
-     * rather than an argument. It said a caller batching site saves must order them "by the hostname
-     * each will claim" — by DESTINATION — and every save also locks its ORIGIN, so destination order
-     * is not an order over the union. Staged as two real sessions, both obeying that contract:
+     * ⚠️ `lockForUpdate()` DOES NOT ESCAPE A POSTGRES SNAPSHOT, which review found — and the previous
+     * round added that clause believing it did. Under MySQL and MariaDB's REPEATABLE READ a locking
+     * read IS a current read, which is measured and is why the clause is there. PostgreSQL is
+     * different: at REPEATABLE READ a row INSERTED after the transaction's snapshot is simply
+     * invisible, `FOR UPDATE` or not. Measured on PostgreSQL 17 — a session took a snapshot, a rival
+     * committed `x.test/`, and the locking read returned only the pre-snapshot `x.test/other`.
      *
-     *     TX1  a.test -> d.test, then b.test -> e.test      (d < e)
-     *     TX2  b.test -> c.test, then a.test -> f.test      (c < f)
+     * So the whole mutex design rests on one requirement — the rival lookup must see rivals that
+     * committed while this save queued — and Postgres satisfies it at READ COMMITTED, which is its
+     * default and Laravel's. This makes the requirement enforceable rather than assumed: it is
+     * checked once per connection, and a save under Postgres REPEATABLE READ is refused with the
+     * reason rather than silently permitting the cross-org claim the mutex exists to prevent.
      *
-     *   PostgreSQL 17  ERROR: deadlock detected
+     * ⚠️ NOT A SECOND CONNECTION, which was the other candidate. A fresh connection has a fresh
+     * snapshot and would work — and it costs a connection per site save, cannot see this transaction's
+     * own mutex, and on SQLite `:memory:` is a different database entirely. Checking a precondition is
+     * smaller than working around it.
      *
-     * TX1 holds `a` and wants `b`; TX2 holds `b` and wants `a`. There is no ordering of the SAVES
-     * that fixes it, because each save locks a non-contiguous pair — which is why a contract was the
-     * wrong shape of answer and this is the right one.
+     * ⚠️ SERIALIZABLE IS NOT REFUSED. Postgres aborts a SERIALIZABLE transaction whose read has been
+     * invalidated, so the requirement is met by a different mechanism — a loud failure rather than a
+     * stale read. Only the middle level is unsafe, which is why the check names it rather than
+     * demanding READ COMMITTED.
      *
-     * ⚠️ THE UNION, ACQUIRED BEFORE ANY SAVE. Every host either save will touch is locked in hostname
-     * order first, so two batches whose host sets intersect queue on the lowest shared hostname
-     * instead of deadlocking. Re-measured with the union held: both transactions commit and both moves
-     * land. Each `save()` then re-locks hosts this transaction already holds, which is a no-op.
-     *
-     * ⚠️ NEW PUBLIC SURFACE, AND I DECLINED IT LAST ROUND. `CONTRIBUTING.md` lists a new public API
-     * before v1.2 among the things that will not merge, so the first answer was the contract — and the
-     * contract does not close. A method here is the smaller half of what is left: ordered acquisition
-     * has to cover every resource a transaction will take, a per-save method cannot see the saves that
-     * follow it, and a caller has no supported way to reach `site_host_claims` itself. Asking callers
-     * to do something they have no door for is not a contract, it is a wish.
-     *
-     * @param  iterable<Site>  $sites
+     * ⚠️ INVARIANT 5 IS NOT BROKEN BY THIS. The correctness requirement is one sentence and the same on
+     * every engine; what differs is how each satisfies it, and this refuses a configuration that
+     * satisfies it on none.
      */
-    public static function saveAllInHostOrder(iterable $sites): void
+    private static function refuseUnusableIsolation(): void
     {
-        // Materialised because it is walked twice, and a generator would be empty the second time.
-        $sites = is_array($sites) ? $sites : iterator_to_array($sites);
+        $connection = DB::connection();
 
-        DB::transaction(function () use ($sites): void {
-            $hosts = [];
+        if ($connection->getDriverName() !== 'pgsql') {
+            return;
+        }
 
-            foreach ($sites as $site) {
-                foreach ($site->contendedHosts() as $host) {
-                    $hosts[] = $host;
-                }
-            }
+        $name = $connection->getName() ?? 'default';
 
-            $hosts = array_values(array_unique($hosts));
-            sort($hosts);
+        if (! array_key_exists($name, self::$isolationChecked)) {
+            $level = $connection->selectOne('SHOW transaction_isolation');
 
-            self::lockClaims($hosts);
+            self::$isolationChecked[$name] = is_object($level)
+                ? strtolower((string) ($level->transaction_isolation ?? ''))
+                : '';
+        }
 
-            foreach ($sites as $site) {
-                $site->save();
-            }
-        });
+        if (self::$isolationChecked[$name] !== 'repeatable read') {
+            return;
+        }
+
+        throw new RuntimeException(
+            'Refusing to save a site: this PostgreSQL connection is at REPEATABLE READ, where a rival '
+            .'claim committed while this save queued for the hostname mutex is invisible to the overlap '
+            .'check — measured, `FOR UPDATE` does not escape the snapshot for a row inserted after it. '
+            .'Two orgs could then hold overlapping URLs on one hostname, which is the cross-org theft '
+            ."the mutex exists to prevent (ADR-021). Use READ COMMITTED, which is PostgreSQL's default "
+            ."and Laravel's, or SERIALIZABLE, which aborts rather than reading stale."
+        );
     }
 
     /**
      * Takes the durable per-host mutex for each of these hostnames, in the order given.
      *
-     * ⚠️ THE ORDER IS THE CALLER'S RESPONSIBILITY and both callers sort: `contendedHosts()` for one
-     * save, `saveAllInHostOrder()` for a batch. Sorting here as well would hide which of them is the
-     * one that has to be right.
+     * ⚠️ THE ORDER IS THE CALLER'S RESPONSIBILITY, and `contendedHosts()` is the caller that sorts.
+     * Sorting here as well would hide which of the two is the one that has to be right — and the
+     * separation is kept rather than collapsed because the batch mechanism this was extracted for lands
+     * at v1.2, where a second caller will need exactly this shape.
      *
      * @param  list<string>  $hosts
      */
