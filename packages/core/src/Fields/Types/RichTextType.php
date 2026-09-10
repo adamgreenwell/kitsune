@@ -80,13 +80,18 @@ final class RichTextType extends BaseFieldType
     /**
      * The only values that establish a direction.
      *
+     * ⚠️ PRIVATE, LIKE THE TWO TAG LISTS BELOW. Review pointed out that a public constant is three
+     * more symbols on the pre-v1.2 extension surface — a plugin can depend on a list this
+     * implementation has to stay free to change, and `CONTRIBUTING.md` lists new public API before
+     * v1.2 among the things that will not merge. They are used only by private methods in this class.
+     *
      * ⚠️ `dir` IS ALLOWED AND ITS VALUE WAS NEVER CHECKED, which review found: `<p dir="">` and
      * `<p dir="banana">` survive sanitising, and an attribute that establishes nothing was still
      * enough to block the stamp. A malformed value is not a choice to respect.
      */
-    public const DIRECTIONS = ['ltr', 'rtl', 'auto'];
+    private const DIRECTIONS = ['ltr', 'rtl', 'auto'];
 
-    public const BLOCK_TAGS = [
+    private const BLOCK_TAGS = [
         'p', 'li', 'h2', 'h3', 'h4', 'blockquote', 'pre', 'figcaption',
     ];
 
@@ -97,7 +102,7 @@ final class RichTextType extends BaseFieldType
      * direction of their own — their children each resolve one — but they are still blocks, so text
      * before and after a list is two runs rather than one.
      */
-    public const CONTAINER_TAGS = [
+    private const CONTAINER_TAGS = [
         'p', 'li', 'h2', 'h3', 'h4', 'blockquote', 'pre', 'figure', 'figcaption', 'ul', 'ol',
     ];
 
@@ -263,6 +268,22 @@ final class RichTextType extends BaseFieldType
 
         $this->wrapLooseRuns($document, $wrapper);
 
+        /*
+         * ⚠️ AND INSIDE EVERY `figure`, which the outer pass cannot reach. Review found it:
+         * `<figure><strong>مرحبا</strong><figcaption>English</figcaption></figure>` is valid rich
+         * text — a figure holds flow content — and the Arabic run got no direction at all while the
+         * caption did, so it inherited the page.
+         *
+         * ⚠️ `figure` ONLY, not `ul` or `ol`. All three are containers rather than blocks, but a `<p>`
+         * is valid flow content inside a figure and is NOT valid inside a list: wrapping a loose run
+         * in `ul` would fix a direction by producing markup no browser should be given. Loose text
+         * directly inside `ul` is invalid input to begin with, and the sanitiser does not produce it
+         * from valid input.
+         */
+        foreach (iterator_to_array($document->getElementsByTagName('figure')) as $figure) {
+            $this->wrapLooseRuns($document, $figure);
+        }
+
         return $this->serialize($wrapper);
     }
 
@@ -396,7 +417,13 @@ final class RichTextType extends BaseFieldType
                 array_pop($run);
             }
 
-            if ($run === []) {
+            if ($run === [] || ! self::carriesText($run)) {
+                /*
+                 * ⚠️ A RUN WITH NO TEXT HAS NO DIRECTION, so wrapping it would add markup for
+                 * nothing. The case that matters is `<figure><img><figcaption>…` — the commonest
+                 * figure there is — where recursing into the figure first wrapped the image in a
+                 * paragraph. `dir="auto"` on an image resolves from no characters at all.
+                 */
                 continue;
             }
 
@@ -409,6 +436,26 @@ final class RichTextType extends BaseFieldType
                 $paragraph->appendChild($node);
             }
         }
+    }
+
+    /**
+     * Whether a run contains any text for a direction to resolve from.
+     *
+     * ⚠️ `textContent` RATHER THAN THE NODE TYPE, because the text may be nested: `<strong>مرحبا</strong>`
+     * is an element whose content is what `dir="auto"` would read. An `<img>` has none, and neither
+     * does a run of `<br>`.
+     *
+     * @param  list<DOMNode>  $run
+     */
+    private static function carriesText(array $run): bool
+    {
+        foreach ($run as $node) {
+            if (trim($node->textContent) !== '') {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /** Whether this node is text that carries no content of its own. */

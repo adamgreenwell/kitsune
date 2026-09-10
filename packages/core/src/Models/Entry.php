@@ -18,10 +18,11 @@ use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Audit\AuditedBuilder;
-use Kitsune\Core\Fields\ConversionLoss;
 use Kitsune\Core\Fields\FieldConfig;
+use Kitsune\Core\Fields\FieldType;
 use Kitsune\Core\Fields\FieldTypeRegistry;
 use Kitsune\Core\Fields\StorageStrategy;
+use Kitsune\Core\Fields\Types\RichTextType;
 use Kitsune\Core\Relations\GuardedBelongsToMany;
 use Kitsune\Core\Schema\RevisionWrites;
 use Kitsune\Core\Tenancy\Attributes\SiteScoped;
@@ -474,6 +475,46 @@ class Entry extends Model implements RequiresModelSave
         }
 
         return false;
+    }
+
+    /**
+     * Whether converting a value LOST something worth keeping beside its revision.
+     *
+     * ⚠️ SEPARATE FROM "the bytes changed", because those stopped being the same question. The
+     * recorder compared the stored value with the submitted one, which is right while every
+     * conversion is a cast or a strip — and wrong the moment one ADDS something. `RichTextType`
+     * stamps `dir="auto"` on each block (issue #39), so every rich text save changed its bytes and
+     * every revision retained an original identical to its input but for an attribute the type had
+     * just added. That column is swept by erasure (ADR-020) and exists to show an author what a
+     * sanitiser REMOVED.
+     *
+     * ⚠️ PRIVATE, AND ON A MODEL, which is the fourth home this has had — each earlier one found by
+     * review, and each a smaller version of the same mistake. On `FieldType` it grew the extension
+     * API, which CONTRIBUTING forbids before v1.2. On `BaseFieldType` with an `@internal` tag, a tag
+     * is not a visibility and a plugin subclass with a same-named method still collides. As a `final`
+     * class it was still autoloadable, so a plugin could bind to it and the intended v1.2 removal
+     * would become a compatibility break. Private on a model is the first version a plugin cannot
+     * reach at all.
+     *
+     * ⚠️ SO IT TESTS A TYPE BY IDENTITY, which `FieldType`'s own docblock argues against — *"the
+     * model testing for `rich_text` by name puts a field-type concern in every layer that touches a
+     * value"*. That argument is about a concern spread across LAYERS; this is one method inside one
+     * of them. It is the price of freezing the contract before v1.2 and the first thing to undo when
+     * it opens: at v1.2 this becomes a method on `FieldType` and this disappears.
+     */
+    private function conversionLostSomething(FieldType $type, mixed $submitted, mixed $stored): bool
+    {
+        if ($type instanceof RichTextType && is_string($submitted)) {
+            /*
+             * ⚠️ COMPARED AGAINST THE SANITISED FORM, not the stored one, because the stored form also
+             * carries the per-block direction this exists to ignore. §6 asks whether the author can
+             * see what the sanitiser took, and that is the only part of the conversion that takes
+             * anything.
+             */
+            return $type->sanitize($submitted) !== $submitted;
+        }
+
+        return $stored !== $submitted;
     }
 
     private function recordRevision(): void
@@ -1364,9 +1405,11 @@ class Entry extends Model implements RequiresModelSave
                      * which CONTRIBUTING lists among the things that will not merge; putting it on
                      * `BaseFieldType` with an `@internal` tag is no better, because a tag is not a
                      * visibility and a plugin subclass with a same-named method still collides.
-                     * `ConversionLoss` records why it therefore tests a type by identity.
+                     * As a `final` class of its own it was still autoloadable, so a plugin could
+                     * bind to it and the intended v1.2 removal would become a compatibility break.
+                     * A private method on this model is the first version a plugin cannot reach.
                      */
-                    if ($fieldType->retainsOriginal() && ConversionLoss::occurred($fieldType, $submitted, $inline[$handle])) {
+                    if ($fieldType->retainsOriginal() && $this->conversionLostSomething($fieldType, $submitted, $inline[$handle])) {
                         $this->retainedOriginals[$handle] = $submitted;
                     }
                 }

@@ -141,6 +141,45 @@ it('gives a top-level run somewhere to carry a direction', function (): void {
         ->and(storedBody('<strong>مرحبا</strong>'))->toBe('<p dir="auto"><strong>مرحبا</strong></p>');
 });
 
+it('gives a run inside a figure its own direction', function (): void {
+    /*
+     * ⚠️ A `figure` HOLDS FLOW CONTENT, so a run can sit directly inside one — and the outer pass
+     * could not reach it. Review found it:
+     * `<figure><strong>مرحبا</strong><figcaption>English</figcaption></figure>` is valid rich text,
+     * and the Arabic run got no direction at all while the caption did.
+     */
+    expect(storedBody('<figure><strong>مرحبا</strong><figcaption>English</figcaption></figure>'))
+        ->toBe('<figure><p dir="auto"><strong>مرحبا</strong></p><figcaption dir="auto">English</figcaption></figure>');
+
+    expect(storedBody('<figure>bare <em>run</em><figcaption>cap</figcaption></figure>'))
+        ->toBe('<figure><p dir="auto">bare <em>run</em></p><figcaption dir="auto">cap</figcaption></figure>');
+});
+
+it('leaves a run with no text unwrapped', function (): void {
+    /*
+     * ⚠️ THE COMMONEST FIGURE THERE IS, and the first version of the recursion above broke it:
+     * `<figure><img><figcaption>` had its image wrapped in a paragraph, because the run was
+     * non-empty. `dir="auto"` on an image resolves from no characters at all, so the wrapper was
+     * markup added for nothing.
+     */
+    expect(storedBody('<figure><img src="/a.png" alt="x"><figcaption>عربي</figcaption></figure>'))
+        ->toBe('<figure><img src="/a.png" alt="x"><figcaption dir="auto">عربي</figcaption></figure>');
+
+    // Same at the top level: an image alone is not a paragraph.
+    expect(storedBody('<img src="/a.png" alt="x">'))->toBe('<img src="/a.png" alt="x">');
+});
+
+it('does not wrap a loose run inside a list', function (): void {
+    /*
+     * ⚠️ `figure` ONLY, not `ul` or `ol`. All three are containers rather than blocks, but a `<p>` is
+     * valid flow content inside a figure and is NOT valid inside a list — wrapping there would fix a
+     * direction by producing markup no browser should be handed. Loose text directly inside `ul` is
+     * invalid input to begin with, and the sanitiser does not produce it from valid input.
+     */
+    expect(storedBody('<ul><li>En</li><li>عربي</li></ul>'))
+        ->toBe('<ul><li dir="auto">En</li><li dir="auto">عربي</li></ul>');
+});
+
 it('collects one sentence into one paragraph, not one per node', function (): void {
     // ⚠️ `a <strong>b</strong> c` is ONE sentence. Wrapping each node separately would give three
     // paragraphs, each resolving its own direction — a clause-by-clause direction, which is the
