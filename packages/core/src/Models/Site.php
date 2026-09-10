@@ -14,6 +14,7 @@ use Filament\Facades\Filament;
 use Filament\Models\Contracts\HasTenants;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Tenancy\Attributes\OrgScoped;
 use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
 use Kitsune\Core\Tenancy\Context;
@@ -159,6 +160,92 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
     }
 
     /**
+     * Serialises the save against every other claimant of the same hostname — issue #61.
+     *
+     * ⚠️ THE OVERLAP CHECK IS A CHECK-THEN-ACT AND THIS IS WHAT MAKES IT ATOMIC.
+     * `refuseOverlappingClaim()` reads the rival claims for a host and compares prefixes in PHP,
+     * because "one prefix contains the other" is not an equality any unique index can express — so two
+     * orgs creating `example.test/` and `example.test/news` at the same moment could both complete
+     * the read before either insert committed. The derived index keys differ, the unique constraint
+     * accepted both, and the resolver's longest-prefix rule then served one org's URL from the other.
+     *
+     * ⚠️ THE TRANSACTION HAS TO BE OPENED HERE, which is why this is an override rather than more
+     * work in the `saving` hook. A lock taken in a hook is only meaningful if the CALLER wrapped the
+     * save in a transaction, and a hook cannot make that true — `Site::create()` outside one is the
+     * ordinary case. A `lockForUpdate()` in the hook would have looked like serialisation while
+     * working only sometimes, which is worse than not having it.
+     *
+     * ⚠️ AND THERE IS NOTHING ON `sites` TO LOCK when both claims are new, which is why
+     * `site_host_claims` exists. Locking the existing rows for a host serialises only the case where
+     * a rival is already there — the sequential one, already closed. Postgres takes no gap lock, and
+     * depending on MySQL's would make correctness engine-specific (invariant 5).
+     *
+     * ⚠️ NESTED SAVES ARE SAFE. `DB::transaction()` inside an outer transaction is a savepoint, and
+     * re-locking a row this transaction already holds is a no-op — so a caller who wrapped several
+     * site saves in one transaction gets one lock per host rather than a deadlock.
+     */
+    public function save(array $options = []): bool
+    {
+        return (bool) DB::transaction(function () use ($options): bool {
+            $this->lockHostClaim();
+
+            return parent::save($options);
+        });
+    }
+
+    /**
+     * Takes the durable per-host mutex for whatever host this save is about to claim.
+     *
+     * ⚠️ DERIVED HERE RATHER THAN READ, because the lock has to be taken BEFORE the `saving` hook
+     * derives anything — that hook runs inside `parent::save()`, by which time it is too late to
+     * serialise. `deriveUrlParts()` is the same static the hook calls, so the two cannot disagree, and
+     * calling it twice is a string operation rather than a query.
+     *
+     * ⚠️ REFUSALS ARE LEFT TO THE HOOK. If `base_url` is malformed this derivation throws, and it
+     * throws the same message the hook would — the transaction rolls back and the caller sees the
+     * refusal it would have seen anyway. Catching it here to "try again later" would swap a clear
+     * refusal for a lock nobody needed.
+     *
+     * ⚠️ A SITE WITH NO PUBLIC URL LOCKS NOTHING. `[null, null]` is the representation for an
+     * admin-only site, which claims no address and therefore contends with nobody.
+     */
+    private function lockHostClaim(): void
+    {
+        [$host] = self::deriveUrlParts($this->base_url, $this->url_strategy);
+
+        if ($host === null) {
+            return;
+        }
+
+        /*
+         * ⚠️ UPSERT THEN LOCK, in that order, and both are required. The row may not exist — the
+         * first claimant of a hostname creates it — and two concurrent first claimants must not both
+         * proceed. `insertOrIgnore()` lets exactly one of them create it and the other continue
+         * without an error, and the `SELECT … FOR UPDATE` that follows is what they then queue on.
+         *
+         * ⚠️ `DB::table()`, DELIBERATELY BELOW ELOQUENT. This row is a mutex rather than a record:
+         * it has no model, no scope and no events, and giving it any of those would invite somebody
+         * to read it as a claim. It is also written on every site save, so the cheapest path is the
+         * right one.
+         */
+        DB::table('site_host_claims')->insertOrIgnore([
+            'canonical_host' => $host,
+            'created_at' => now(),
+        ]);
+
+        /*
+         * ⚠️ SQLITE COMPILES `FOR UPDATE` TO NOTHING, and that is not a hole: SQLite serialises
+         * writers at the database level, so a second writer waits on the transaction itself. The
+         * engines where this lock does the work are Postgres and MySQL, which is why the test for it
+         * runs on all three rather than on the default.
+         */
+        DB::table('site_host_claims')
+            ->where('canonical_host', $host)
+            ->lockForUpdate()
+            ->first();
+    }
+
+    /**
      * Refuses a public URL that OVERLAPS one another org already holds.
      *
      * ⚠️ THE UNIQUE INDEX IS NOT ENOUGH, AND SAYING IT WAS WAS WRONG. It compares the pair
@@ -184,19 +271,22 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
      * exclusively — and the resolver already prefers a host-specific claim, so a specific claim
      * shadowing a promiscuous one is the intended precedence rather than theft.
      *
-     * ⚠️ NOT SERIALIZED, AND THAT IS A KNOWN GAP RATHER THAN AN OVERSIGHT — issue #61. This
-     * reads before the row is written, so two orgs creating `example.test/` and
-     * `example.test/news` CONCURRENTLY can both pass it: the derived index keys differ, so the
-     * unique constraint accepts both, and the theft above is recreated. Closing it needs a
-     * durable per-host claim row to lock plus a transactional save, because there is no existing
-     * row to lock when both claims are new — a schema change and a decision, not a patch.
+     * ⚠️ THIS IS A CHECK-THEN-ACT, AND `save()` IS WHAT MAKES IT ATOMIC — issue #61, now closed.
+     * The read here happens before the row is written, so two orgs creating `example.test/` and
+     * `example.test/news` CONCURRENTLY could both pass it: the derived index keys differ, the
+     * unique constraint accepted both, and the theft above was recreated. `Site::save()` now takes
+     * a durable per-host mutex inside a transaction before this runs, so the second claimant of a
+     * hostname queues behind the first and sees its committed row.
      *
-     * What this does close is the case where a rival claim ALREADY EXISTS, which is every
-     * sequential path including the one review demonstrated. The exact-match unique index still
-     * prevents identical pairs at the database level regardless of timing. A `lockForUpdate()`
-     * here would look like serialization without being it: a lock taken in a `saving` hook is
-     * only meaningful if the caller wrapped the save in a transaction, and a hook cannot make
-     * that true.
+     * ⚠️ A `lockForUpdate()` HERE WOULD NOT HAVE DONE IT, which is why the fix is a schema change
+     * and an override rather than a line in this method. A lock taken in a `saving` hook is only
+     * meaningful if the CALLER wrapped the save in a transaction, and a hook cannot make that true —
+     * `Site::create()` outside one is the ordinary case. And when both claims are new there is
+     * nothing on `sites` to lock: Postgres takes no gap lock, and depending on MySQL's would make
+     * correctness engine-specific (invariant 5). See `lockHostClaim()` and `site_host_claims`.
+     *
+     * The exact-match unique index remains the database-level backstop for identical pairs,
+     * regardless of timing.
      *
      * @throws RuntimeException when another org already holds an overlapping claim
      */
