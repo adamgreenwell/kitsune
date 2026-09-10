@@ -23,6 +23,7 @@ use Illuminate\Foundation\Http\Middleware\PreventRequestForgery;
 use Illuminate\Routing\Middleware\SubstituteBindings;
 use Illuminate\Session\Middleware\StartSession;
 use Illuminate\View\Middleware\ShareErrorsFromSession;
+use Kitsune\Core\Filament\Colors\ContrastSafeRamp;
 use Kitsune\Core\Filament\Panels\KitsunePanel;
 
 class AdminPanelProvider extends PanelProvider
@@ -37,7 +38,11 @@ class AdminPanelProvider extends PanelProvider
                 ->id('admin')
                 ->path('admin')
                 ->login()
-                ->colors(['primary' => Color::Amber])
+                // ⚠️ Amber's stock 600-on-50 badge pairing is 3.08:1 against a 4.5:1 threshold
+                // (issue #55, measured by axe). `ContrastSafeRamp` darkens that one shade to
+                // a value Filament already ships, and `ContrastSafeRampTest` checks the
+                // arithmetic so a palette change cannot reintroduce it silently.
+                ->colors(['primary' => ContrastSafeRamp::for(Color::Amber)])
                 ->middleware([
                     EncryptCookies::class,
                     AddQueuedCookiesToResponse::class,

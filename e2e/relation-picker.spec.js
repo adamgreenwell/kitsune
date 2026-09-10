@@ -1,5 +1,6 @@
 // @ts-check
 const { test, expect } = require('@playwright/test');
+const AxeBuilder = require('@axe-core/playwright').default;
 
 /*
  * A relation field saves to `entry_relations` and comes back — issue #39's relational leg.
@@ -212,6 +213,61 @@ test.describe('a relation field round-trips through entry_relations', () => {
         await page.getByRole('button', { name: /^Delete$/ }).first().click();
         await page.locator('.fi-modal-window').getByRole('button', { name: /^Delete$/ }).click();
         await expect(page).toHaveURL(/\/c\/article(\?|$)/, { timeout: 15_000 });
+    });
+
+    test('a SELECTED chip has no critical or serious WCAG violations', async ({ page }) => {
+        /*
+         * ⚠️ THE AUDIT THAT WOULD HAVE CAUGHT #55, and the reason it lives here rather than in
+         * `accessibility.spec.js`: the violation only exists once something is SELECTED. Filament
+         * renders a selection as a badge, and `Color::Amber`'s stock 600-on-50 pairing measured
+         * **3.08:1** at 12px against a 4.5:1 threshold — so every audit of an empty form passed
+         * while every author who picked a target saw unreadable text.
+         *
+         * `ContrastSafeRampTest` checks the arithmetic in PHP. This checks the browser: real
+         * computed colours, the real badge, axe's own judgement rather than my converter's.
+         *
+         * ⚠️ Scoped to critical and serious, matching `accessibility.spec.js` — the same bar the
+         * rest of the suite holds, so this does not quietly hold a different one.
+         */
+        await page.goto(`/admin/${SITE}/c/article/1/edit`);
+        await expect(picker(page)).toBeVisible();
+
+        await removeSelections(page);
+        await choose(page, 'week 3', /week 3/);
+
+        /*
+         * ⚠️ THE DROPDOWN IS CLOSED FIRST, because leaving it open audits a state no author sits
+         * in — and it has its own violation. Filament's open select dropdown reports a CRITICAL
+         * `aria-required-children` on the listbox, which is inherited chrome rather than anything
+         * this control does, and folding it in here would make this test fail for a reason it is
+         * not about. Recorded separately rather than swallowed.
+         */
+        await page.keyboard.press('Escape');
+        await expect(page.locator('[id^="fi-select-input-dropdown-"]')).toBeHidden();
+
+        const results = await new AxeBuilder({ page })
+            .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])
+            .analyze();
+
+        const blocking = results.violations.filter(
+            (v) => v.impact === 'critical' || v.impact === 'serious',
+        );
+
+        if (blocking.length > 0) {
+            for (const v of blocking) {
+                console.log(`  [${v.impact}] ${v.id}: ${v.help}`);
+                console.log(`    ${v.nodes.length} node(s), e.g. ${v.nodes[0]?.target?.join(' ')}`);
+                console.log(`    ${v.nodes[0]?.failureSummary?.replace(/\n/g, ' ')}`);
+            }
+        }
+
+        expect(blocking).toEqual([]);
+
+        // Nothing was saved, so there is nothing to clean up — the selection lives only in the
+        // unsaved form. Asserted rather than assumed, because a stray save would pollute the
+        // fixture the way it did before `leaveClean()` existed.
+        await page.reload();
+        await expect(picker(page)).toContainText('Select an option');
     });
 
     test('an Arabic-titled target resolves right-to-left in the picker', async ({ page }) => {
