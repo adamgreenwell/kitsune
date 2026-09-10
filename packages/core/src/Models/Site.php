@@ -14,7 +14,6 @@ use Filament\Facades\Filament;
 use Filament\Models\Contracts\HasTenants;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
-use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Tenancy\Attributes\OrgScoped;
 use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
 use Kitsune\Core\Tenancy\Context;
@@ -93,16 +92,6 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
      * test, because two literals cannot disagree until someone compares them.
      */
     public const PREFIX_SEGMENT_PATTERN = '[A-Za-z0-9._~-]+';
-
-    /**
-     * The isolation level each connection reported, so the check is one query per connection.
-     *
-     * ⚠️ Keyed by connection NAME rather than a single flag, because the engine matrix runs four of
-     * them and a per-process cache would answer for whichever ran first.
-     *
-     * @var array<string, string>
-     */
-    private static array $isolationChecked = [];
 
     /** The URL strategies ADR-021 defines. Anything else is a typo, not a fourth strategy. */
     private const STRATEGIES = ['path', 'subdomain', 'domain'];
@@ -220,7 +209,18 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
      */
     public function save(array $options = []): bool
     {
-        return (bool) DB::transaction(function () use ($options): bool {
+        /*
+         * ⚠️ THE MODEL'S OWN CONNECTION, NOT THE DEFAULT ONE, and a test written for the isolation
+         * check is what surfaced it. `DB::transaction()` and `DB::table()` both resolve the DEFAULT
+         * connection, so a `Site` on any other one took its mutex and opened its transaction on one
+         * connection while `parent::save()` wrote through another — the serialisation and the write in
+         * different transactions entirely, which is the whole mechanism defeated rather than weakened.
+         *
+         * Nothing in this repository puts a Site on a second connection, so this was latent rather
+         * than live. It is the same class as every other finding on this branch: a guard that holds on
+         * the path it was written for and not on the one beside it.
+         */
+        return (bool) $this->getConnection()->transaction(function () use ($options): bool {
             $this->lockHostClaim();
 
             return parent::save($options);
@@ -235,11 +235,11 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
      */
     private function lockHostClaim(): void
     {
-        self::refuseUnusableIsolation();
+        $this->refuseUnusableIsolation();
 
         $hosts = $this->contendedHosts();
 
-        self::lockClaims($hosts);
+        $this->lockClaims($hosts);
         $this->refuseStaleOrigin($hosts);
     }
 
@@ -273,25 +273,38 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
      * every engine; what differs is how each satisfies it, and this refuses a configuration that
      * satisfies it on none.
      */
-    private static function refuseUnusableIsolation(): void
+    private function refuseUnusableIsolation(): void
     {
-        $connection = DB::connection();
+        $connection = $this->getConnection();
 
         if ($connection->getDriverName() !== 'pgsql') {
             return;
         }
 
-        $name = $connection->getName() ?? 'default';
+        /*
+         * ⚠️ ASKED EVERY TIME, BECAUSE THE ANSWER IS A PROPERTY OF THE TRANSACTION AND NOT OF THE
+         * CONNECTION — review found the cache was wrong in BOTH directions. A long-lived connection
+         * first seen at READ COMMITTED had that recorded for ever, so a later
+         * `BEGIN ISOLATION LEVEL REPEATABLE READ` on the same connection skipped the check entirely;
+         * and one first seen at REPEATABLE READ would have refused every valid save afterwards.
+         *
+         * Measured on PostgreSQL 17, one connection:
+         *
+         *   in a plain transaction              read committed
+         *   in a REPEATABLE READ transaction    repeatable read
+         *   outside a transaction again         read committed
+         *
+         * ⚠️ AND NO CHEAPER KEY EXISTS. `DB::transactionLevel()` counts savepoints and does not
+         * identify a transaction, and `txid_current()` costs a query AND assigns a real transaction id
+         * as a side effect, which is worse than the query it would save. So the probe runs per save:
+         * measured at 0.82 ms, against a save that already opens a transaction and takes a row lock,
+         * and only on the engine that needs it.
+         */
+        $level = $connection->selectOne('SHOW transaction_isolation');
 
-        if (! array_key_exists($name, self::$isolationChecked)) {
-            $level = $connection->selectOne('SHOW transaction_isolation');
+        $isolation = is_object($level) ? strtolower((string) ($level->transaction_isolation ?? '')) : '';
 
-            self::$isolationChecked[$name] = is_object($level)
-                ? strtolower((string) ($level->transaction_isolation ?? ''))
-                : '';
-        }
-
-        if (self::$isolationChecked[$name] !== 'repeatable read') {
+        if ($isolation !== 'repeatable read') {
             return;
         }
 
@@ -315,7 +328,7 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
      *
      * @param  list<string>  $hosts
      */
-    private static function lockClaims(array $hosts): void
+    private function lockClaims(array $hosts): void
     {
         foreach ($hosts as $host) {
             /*
@@ -330,7 +343,7 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
              * invite somebody to read it as a claim. It is also written on every site save, so the
              * cheapest path is the right one.
              */
-            DB::table('site_host_claims')->insertOrIgnore([
+            $this->getConnection()->table('site_host_claims')->insertOrIgnore([
                 'canonical_host' => $host,
                 'created_at' => now(),
             ]);
@@ -341,7 +354,7 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
              * engines where this lock does the work are Postgres and MySQL, which is why the test
              * for it runs on all three rather than on the default.
              */
-            DB::table('site_host_claims')
+            $this->getConnection()->table('site_host_claims')
                 ->where('canonical_host', $host)
                 ->lockForUpdate()
                 ->first();
@@ -403,7 +416,7 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
          * ⚠️ A MISSING ROW AND A PRESENT ROW WITH A NULL HOST ARE DIFFERENT ANSWERS, so this selects a
          * row rather than a value: `value()` returns null for both, and they need opposite handling.
          */
-        $row = DB::table('sites')
+        $row = $this->getConnection()->table('sites')
             ->where('id', $this->getKey())
             ->lockForUpdate()
             ->first(['canonical_host']);

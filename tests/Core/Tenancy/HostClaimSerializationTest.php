@@ -592,39 +592,106 @@ it('allows a save on a site whose row genuinely has no host', function (): void 
         ->and($site->path_prefix)->toBe('/news');
 })->skip(fn (): bool => ! lockingEngine(), 'a second connection to SQLite :memory: is a different database');
 
-it('refuses a save when the connection reports REPEATABLE READ', function (): void {
+it('refuses a save inside a REPEATABLE READ transaction, and only that transaction', function (): void {
     /*
-     * ⚠️ `lockForUpdate()` DOES NOT ESCAPE A POSTGRES SNAPSHOT, which review found — and the round that
-     * added that clause believed it did. Under MySQL and MariaDB's REPEATABLE READ a locking read IS a
-     * current read, measured, which is why the clause exists. PostgreSQL is different: at REPEATABLE
-     * READ a row INSERTED after the snapshot is invisible, `FOR UPDATE` or not. Measured on PostgreSQL
-     * 17 with two sessions — one took a snapshot, a rival committed `x.test/`, and the locking read
-     * returned only the pre-snapshot `x.test/other`.
+     * ⚠️ `lockForUpdate()` DOES NOT ESCAPE A POSTGRES SNAPSHOT. Under MySQL and MariaDB's REPEATABLE
+     * READ a locking read IS a current read, measured, which is why the clause exists. PostgreSQL is
+     * different: at REPEATABLE READ a row INSERTED after the snapshot is invisible, `FOR UPDATE` or not.
+     * Measured on PostgreSQL 17 with two sessions — one took a snapshot, a rival committed `x.test/`,
+     * and the locking read returned only the pre-snapshot `x.test/other`.
      *
-     * ⚠️ THE CACHE IS SEEDED RATHER THAN THE CONNECTION RECONFIGURED, and the reason is worth stating
-     * because my first attempt was worse. `RefreshDatabase` already holds this connection inside a
-     * transaction and an isolation level cannot change mid-transaction, so I reached for a public
-     * test-only property on `Site` to point it at a second connection — production surface existing
-     * only for a test, which is precisely what review objected to one thread over. Seeding the private
-     * cache tests the refusal and its message with no seam at all.
+     * ⚠️ AND THE FIRST VERSION CACHED THE ANSWER PER CONNECTION, which review found was wrong in both
+     * directions: a connection first seen at READ COMMITTED had that recorded for ever, so a later
+     * REPEATABLE READ transaction skipped the check, and one first seen at REPEATABLE READ would have
+     * refused every valid save afterwards. The level is a property of the TRANSACTION — measured on one
+     * connection: `read committed` outside, `repeatable read` inside, `read committed` again after.
      *
-     * The other half — that `SHOW transaction_isolation` reports what this reads — is asserted below,
-     * and the behaviour it guards was measured at the SQL level rather than inferred.
+     * ⚠️ SO THIS DRIVES A REAL TRANSACTION rather than seeding a cache, which is what makes it test the
+     * probe as well as the refusal. `RefreshDatabase` holds the default connection inside a transaction
+     * whose level cannot change, so the save runs on a second connection — and the SAME connection is
+     * then asked to save outside that transaction, which is the half a per-connection cache got wrong.
      */
-    $cache = new ReflectionProperty(Site::class, 'isolationChecked');
-    $name = DB::connection()->getName() ?? 'default';
+    $name = 'isolation';
+    $default = (string) config('database.default');
 
-    $cache->setValue(null, [$name => 'repeatable read']);
+    config(['database.connections.'.$name => config("database.connections.{$default}")]);
+
+    $connection = DB::connection($name);
 
     try {
-        expect(fn () => Site::create([
-            'org_id' => $this->org->id, 'handle' => 'rr', 'slug' => 'rr', 'name' => 'RR',
-            'locale' => 'en', 'url_strategy' => 'domain', 'base_url' => 'https://rr.test',
-        ]))->toThrow(RuntimeException::class, 'REPEATABLE READ');
+        $orgId = (int) $connection->table('orgs')->insertGetId([
+            'name' => 'Isolation', 'slug' => 'isolation-org', 'created_at' => now(), 'updated_at' => now(),
+        ]);
 
-        expect(Site::withoutGlobalScopes()->where('handle', 'rr')->exists())->toBeFalse();
+        /*
+         * ⚠️ THE CONTEXT HAS TO POINT AT THIS CONNECTION'S ORG, or the scope guard refuses the save
+         * before the isolation check is reached — which is a refusal for the wrong reason and would have
+         * made this test pass without exercising anything. The fixture org lives inside
+         * `RefreshDatabase`'s transaction on the default connection and is invisible here.
+         */
+        app(Context::class)->setOrg(Org::on($name)->findOrFail($orgId));
+
+        $row = fn (string $handle, string $host): array => [
+            'org_id' => $orgId, 'handle' => $handle, 'slug' => $handle, 'name' => $handle,
+            'locale' => 'en', 'url_strategy' => 'domain', 'base_url' => 'https://'.$host,
+        ];
+
+        /*
+         * ⚠️ THE SESSION DEFAULT, NOT A MANUAL `BEGIN`. Laravel's `transaction()` refuses to open one
+         * inside a transaction it did not start — "There is already an active transaction" — so driving
+         * the level that way tests PDO's bookkeeping rather than the check. `SET SESSION CHARACTERISTICS`
+         * sets the level for SUBSEQUENT transactions, which is what `config/database.php`'s
+         * `isolation_level` does and therefore the shape a real deployment would arrive in.
+         *
+         * ⚠️ REPEATABLE READ FIRST, so no cache could have been primed with the safe answer.
+         */
+        $connection->statement('SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL REPEATABLE READ');
+
+        $refused = null;
+
+        try {
+            $site = new Site($row('isorr', 'iso-rr.test'));
+            $site->setConnection($name);
+            $site->save();
+        } catch (RuntimeException $e) {
+            $refused = $e->getMessage();
+        }
+
+        expect($refused)->toContain('REPEATABLE READ');
+
+        // ⚠️ THE SAME CONNECTION, back at READ COMMITTED, must save. A per-connection cache would have
+        // recorded `repeatable read` above and refused this for ever — the inverse half of the finding.
+        $connection->statement('SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL READ COMMITTED');
+
+        $ok = new Site($row('isook', 'iso-ok.test'));
+        $ok->setConnection($name);
+
+        expect($ok->save())->toBeTrue()
+            ->and($ok->canonical_host)->toBe('iso-ok.test');
+
+        /*
+         * ⚠️ AND THE MUTEX MUST BE ON THE MODEL'S CONNECTION, which is a second defect this test found
+         * rather than one review reported. `DB::transaction()` and `DB::table()` both resolve the DEFAULT
+         * connection, so a Site on any other one took its mutex and opened its transaction on one
+         * connection while `parent::save()` wrote through another — the serialisation and the write in
+         * different transactions entirely, which defeats the mechanism rather than weakening it.
+         *
+         * Asserted by looking for the claim row HERE: with the default connection it would have been
+         * written inside `RefreshDatabase`'s transaction on that one, and this connection would not see
+         * it.
+         */
+        expect($connection->table('site_host_claims')->where('canonical_host', 'iso-ok.test')->exists())
+            ->toBeTrue('the host mutex was taken on a different connection from the write');
     } finally {
-        $cache->setValue(null, []);
+        try {
+            $connection->table('sites')->where('org_id', $orgId ?? 0)->delete();
+            $connection->table('site_host_claims')->where('canonical_host', 'like', 'iso-%')->delete();
+            $connection->table('orgs')->where('slug', 'isolation-org')->delete();
+        } catch (Throwable) {
+            // The schema may already be gone, which is equally clean.
+        }
+
+        DB::purge($name);
     }
 })->skip(fn (): bool => DB::connection()->getDriverName() !== 'pgsql', 'the requirement is PostgreSQL-specific');
 
