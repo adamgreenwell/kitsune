@@ -62,9 +62,80 @@ The corporate variant is otherwise identical to the individual terms.
 
 ## Signing
 
-Signature collection is not yet wired up. When it is, signing happens on your first pull request — a bot comments with a link, you agree once, and it never asks again.
+Signing happens on your first pull request — a bot comments with a link, you agree once by
+replying to it, and it never asks again. Your GitHub username and the date are recorded on a
+separate `cla-signatures` branch.
+
+⚠️ **What the signing bot records, stated exactly rather than approximately.** Read out of the
+pinned action's own source (`contributor-assistant/github-action` v2.6.1) rather than from its
+documentation, because a privacy claim taken on trust is not a claim:
+
+| Field | What it is |
+|---|---|
+| `name` | your GitHub login |
+| `id` | your GitHub numeric user id |
+| `comment_id` | the id of the comment you signed with |
+| `body` | the signing sentence itself, lowercased |
+| `created_at` | when you signed |
+| `repoId` | this repository's numeric id |
+| `pullRequestNo` | the pull request you signed on |
+
+**No email address, no postal address, no employer, and no name beyond your GitHub login.**
+
+An earlier draft of this section claimed only a username and a date were stored. That was
+wrong — review caught it, and verifying against the source found one field (`body`) that the
+review had not listed either. The reasoning `pii_class` applies to an **org's** fields
+(ADR-020) applies to the project's own records too, and it starts with saying accurately what
+is held.
+
+⚠️ **The bot is wired up and deliberately switched off.** `.github/workflows/cla.yml` is gated
+on a repository variable, so enabling it is a settings change rather than a code change — and
+it must stay off until this text has been through counsel. A bot collecting signatures against
+an unreviewed agreement produces a record that *looks* like consent and may not be, which is
+worse than collecting nothing.
 
 Until then, external pull requests are not being accepted, so there is nothing to sign for.
+
+---
+
+## Before this goes into force
+
+`.github/workflows/cla.yml` points at this checklist as its enablement condition, so it has to
+be completable rather than aspirational. Review found it referenced and absent — it had been
+written into a draft of this file that was reverted, which is exactly the kind of dangling
+promise the workflow's gate exists to prevent.
+
+- [ ] **Counsel has read the agreement above**, and has decided whether Kitsune should adopt the
+      canonical Apache ICLA verbatim instead of maintaining this adaptation
+- [ ] **The grantee is named correctly.** The text says "the Project", which is not a legal
+      person. Whether the grant runs to an individual, a company, or a future foundation is the
+      one decision here that outlasts the file, and `GOVERNANCE.md`'s succession provisions have
+      to agree with whatever it says
+- [ ] **Governing law and jurisdiction settled**, or a deliberate decision recorded to state
+      none. This draft states none, because guessing is worse than omitting
+- [ ] **The corporate variant reviewed**, including how the list of authorised employees is
+      maintained — a roster in a public repository is personal data the project does not need,
+      and the section above is deliberately thin on the mechanism
+- [ ] **The signature record re-verified against the pinned action SHA**, and the seven-field
+      table above confirmed still accurate. The workflow pins a commit rather than a tag so this
+      cannot change underneath the disclosure
+
+⚠️ Nothing here is a legal opinion, including the shape of this list. It exists so that the
+questions counsel needs to answer are written down rather than remembered.
+
+### Then, and only then, turn it on
+
+⚠️ **Activation is deliberately NOT an item above.** The workflow's own rule is "do not enable
+the bot until this checklist is complete", so an *"enable the bot"* checkbox inside the checklist
+could never be ticked without breaking the rule that gates it — a circular prerequisite, which
+review caught. It is a step that follows a completed list, not a member of it.
+
+1. Add `PERSONAL_ACCESS_TOKEN` — a fine-grained PAT scoped to this repository alone, with
+   Contents: read and write
+2. Set the repository variable `CLA_ENABLED` to `true`
+
+Both are settings changes rather than code changes, which is why the gate is a variable and not
+a commented-out trigger.
 
 ---
 
