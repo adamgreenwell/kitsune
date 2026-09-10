@@ -448,6 +448,43 @@ describe('base_url derives the host and prefix a site claims', function (): void
             ->and(Site::deriveUrlParts('localhost:3000', 'domain'))->toBe(['localhost', '']);
     });
 
+    it('refuses a base_url containing a control character', function (): void {
+        /*
+         * ⚠️ NASTIER THAN THE BACKSLASH, because what PHP produces looks entirely plausible.
+         * Measured against the WHATWG URL parser, which is what a browser implements:
+         *
+         *   https://exa<TAB>mple.test/
+         *     parse_url  host=exa_mple.test   ← an underscore, a LEGAL host character
+         *     browser    host=example.test    ← stripped
+         *
+         * Tab, newline and carriage return all behave that way; NUL gives PHP the same underscore
+         * and is rejected outright by a browser. In the PATH it is the same substitution — a tab in
+         * `/news` stores the prefix `/_news` while the request arrives for `/news`.
+         *
+         * So the claim is on an address nobody can reach, another org can take the address the
+         * operator meant without colliding, and the uniqueness and overlap checks guard a string the
+         * browser never sends. Found by review.
+         */
+        foreach ([9, 10, 13, 0, 31, 127] as $code) {
+            $hostile = 'https://exa'.chr($code).'mple.test/';
+
+            expect(fn () => Site::deriveUrlParts($hostile, 'domain'))
+                ->toThrow(RuntimeException::class, 'control character');
+        }
+
+        // ⚠️ AND IN THE PATH TOO, which the host-shaped examples above would not have caught.
+        expect(fn () => Site::deriveUrlParts('https://example.test/'.chr(9).'news', 'domain'))
+            ->toThrow(RuntimeException::class, 'control character');
+
+        /*
+         * ⚠️ AN UNDERSCORE AN OPERATOR ACTUALLY TYPED IS FINE, and this is the row that makes the
+         * refusal a fix rather than a blanket ban: `exa_mple.test` is a legal host, a browser
+         * requests it unchanged, and it is only the SUBSTITUTED underscore that lies.
+         */
+        expect(Site::deriveUrlParts('https://exa_mple.test/', 'domain'))->toBe(['exa_mple.test', ''])
+            ->and(Site::deriveUrlParts('https://example.test/news', 'domain'))->toBe(['example.test', '/news']);
+    });
+
     it('refuses a base_url containing a backslash', function (): void {
         /*
          * ⚠️ A BACKSLASH IS A PATH SEPARATOR TO A BROWSER AND DATA TO `parse_url()`, so the two

@@ -331,6 +331,36 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
         }
 
         /*
+         * ⚠️ A CONTROL CHARACTER IS SUBSTITUTED BY `parse_url()` AND STRIPPED BY A BROWSER, so the
+         * two derive different addresses from one string — and this one is nastier than the
+         * backslash because what PHP produces looks entirely plausible. Measured:
+         *
+         *     https://exa<TAB>mple.test/
+         *       parse_url  host=exa_mple.test     ← an underscore, which is a LEGAL host character
+         *       browser    host=example.test      ← stripped
+         *
+         * Tab, newline and carriage return all behave that way; NUL gives `exa_mple.test` to PHP and
+         * is rejected outright by a browser. In the path it is the same substitution: a tab in
+         * `/news` stores the prefix `/_news` while the request arrives for `/news`.
+         *
+         * So the operator's claim is on a host or prefix nobody can reach, another org can take the
+         * address they meant without colliding, and the uniqueness and overlap checks are guarding
+         * a string the browser never sends. Refused rather than stripped, for the backslash's
+         * reason: stripping means deciding what they meant, and a control character in a URL is a
+         * paste accident or an attack, both of which want the same answer. Found by review.
+         */
+        if (preg_match('/[\x00-\x1F\x7F]/', $baseUrl) === 1) {
+            throw new RuntimeException(sprintf(
+                'Refusing the base_url [%s]: it contains a control character. PHP replaces one with '
+                .'an underscore while a browser strips it, so the address stored would not be the '
+                .'address requested — and an underscore is a legal host character, so the result '
+                .'looks valid. Remove it.',
+                // Shown with the control character made visible, or the message says nothing.
+                addcslashes($baseUrl, "\x00..\x1F\x7F"),
+            ));
+        }
+
+        /*
          * ⚠️ A SCHEME MUST BE FOLLOWED BY `//`, or it is not naming an authority. `https:/news`
          * has one slash, so `$explicit` below is false and the value went on to be treated as a
          * bare host — storing a site whose claimed HOST was the literal string `https`. A typo
