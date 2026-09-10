@@ -216,23 +216,28 @@ trait SyncsFieldRelations
     }
 
     /**
-     * Clears any revision this entry has left in the register from an earlier write.
+     * Opens the register's window, so this save's revision is the only one recorded.
      *
      * ⚠️ Called from the `mutateFormDataBefore*` hooks because those are the last point that runs
-     * BEFORE the entry write. A write that files a revision and never reconciles — anything that is
-     * not a form save — leaves its note behind, and without this the next form save on that entry
-     * would take an id belonging to that earlier write and complete the wrong revision.
+     * BEFORE the entry write, and the register has to be open by the time `recordRevision()` runs.
      *
-     * ⚠️ A CREATE has nothing to clear, and needs nothing: the entry has no key until it is
-     * inserted, so no note for it can exist. `recordRevision()` files the note with the real key.
+     * ⚠️ OPENING IS THE POINT, not clearing, and review is the reason it is stated that way.
+     * `recordRevision()` is the single place every revision is created — API, importer, queue,
+     * console — so registering unconditionally meant a long-lived worker held one array element per
+     * entry it ever revised, with nothing that would ever come back for them. Only a form save has a
+     * reconciler, so only a form save opens the window.
+     *
+     * ⚠️ A CREATE STILL OPENS IT, with nothing to clear: the entry has no key until it is inserted,
+     * so no stale note for it can exist, but `recordRevision()` needs permission to file the note it
+     * makes with the real key a moment later.
      */
     private function rememberRevisionBeforeWrite(): void
     {
         $record = $this->getRecord();
 
-        if ($record instanceof Entry && $record->exists) {
-            RecordedRevisions::forget((int) $record->getKey());
-        }
+        app(RecordedRevisions::class)->open(
+            $record instanceof Entry && $record->exists ? (int) $record->getKey() : null,
+        );
     }
 
     /** @param  array<string, mixed>  $state */

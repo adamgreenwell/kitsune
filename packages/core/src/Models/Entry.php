@@ -468,7 +468,7 @@ class Entry extends Model implements RequiresModelSave
          * `RecordedRevisions` holds what this process actually wrote, so a concurrent request's
          * revision can never be mistaken for this one's — there is nothing to infer.
          */
-        $mine = RecordedRevisions::take((int) $this->getKey());
+        $mine = app(RecordedRevisions::class)->take((int) $this->getKey());
 
         if ($mine !== null) {
             $revision = $this->revisions()->whereKey($mine)->first();
@@ -632,7 +632,7 @@ class Entry extends Model implements RequiresModelSave
          * revision this save filed from one that was already there. Inferring it does not work —
          * see `RecordedRevisions` for the two attempts and why each failed.
          */
-        RecordedRevisions::note((int) $this->getKey(), (int) $revision->getKey());
+        app(RecordedRevisions::class)->note((int) $this->getKey(), (int) $revision->getKey());
 
         // Cleared HERE rather than left to expire. Carrying them forward would attach
         // this save's originals to a later revision — a false record of what an author

@@ -61,10 +61,11 @@ it('does not fold two saves with equal scalars into one revision', function (): 
      * `relation_state` cannot be added to that comparison to fix it: the relations are the thing
      * being written, so the snapshot never matches until after the write it is meant to identify.
      */
+    app(RecordedRevisions::class)->open();
     $entry = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Draft']);
 
     // Editor A: changes the title, and picks `one`.
-    RecordedRevisions::forget((int) $entry->getKey());
+    app(RecordedRevisions::class)->open((int) $entry->getKey());
     $entry->title = 'Agreed title';
     $entry->save();
     $revisionsAfterA = $entry->revisions()->count();
@@ -82,7 +83,7 @@ it('does not fold two saves with equal scalars into one revision', function (): 
      * files nothing — and a different relation.
      */
     $fresh = Entry::query()->whereKey($entry->getKey())->sole();
-    RecordedRevisions::forget((int) $fresh->getKey());
+    app(RecordedRevisions::class)->open((int) $fresh->getKey());
     $fresh->title = 'Agreed title';
     $fresh->save();
 
@@ -131,6 +132,7 @@ it('keeps the transaction around a relation write whose revision is suspended', 
      * found — a regression test that passes before the fix proves nothing. What has to be asserted
      * is the level `versioned()` adds.
      */
+    app(RecordedRevisions::class)->open();
     $entry = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Draft']);
 
     $baseline = DB::transactionLevel();
@@ -159,6 +161,7 @@ it('still files exactly one revision per relation write when nothing is suspende
      * own — and before the shared flag both recorded, so one attach filed two versions and a
      * `sync()` filed three.
      */
+    app(RecordedRevisions::class)->open();
     $entry = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Draft']);
     $before = $entry->revisions()->count();
 
@@ -186,6 +189,7 @@ it('reconciles inside the transaction that wrote the relations', function (): vo
      * that the revision update and the relation writes happen in one transaction above the
      * baseline, which is the property the lock needs in order to mean anything.
      */
+    app(RecordedRevisions::class)->open();
     $entry = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Draft']);
 
     $baseline = DB::transactionLevel();
@@ -215,7 +219,7 @@ it('reconciles inside the transaction that wrote the relations', function (): vo
 
     $relationsBefore = $entry->relationState();
 
-    RecordedRevisions::forget((int) $entry->getKey());
+    app(RecordedRevisions::class)->open((int) $entry->getKey());
     $entry->title = 'Renamed';
     $entry->save();
 
@@ -233,4 +237,56 @@ it('reconciles inside the transaction that wrote the relations', function (): vo
             $baseline,
             'the reconcile ran outside the transaction that wrote the relations',
         );
+});
+
+it('registers nothing for a write that is not a form save', function (): void {
+    /*
+     * ⚠️ THE DOCBLOCK CLAIMED THIS AND IT WAS FALSE, which review found by reading it. It said
+     * `take()` clearing meant "the map holds only entries mid-save" — but `recordRevision()` is the
+     * single place every revision is created, so an API write, an importer or a queued job filed a
+     * note too, and nothing outside the Filament hooks ever takes one. A long-lived worker revising
+     * many distinct entries kept one array element per entry for the life of the process, while the
+     * comment asserted it could not.
+     *
+     * ⚠️ THE FIX IS A WINDOW, NOT A SIZE CAP, and that is a stronger guarantee: the register now
+     * describes exactly what it claims to, rather than being a cache that happens to stay small.
+     * Only `mutateFormDataBefore*` opens it, so a write with no reconciler never registers.
+     */
+    expect(app(RecordedRevisions::class)->held())->toBe(0, 'the register did not start empty');
+
+    // Ten ordinary writes, each filing a revision, none of them a form save.
+    foreach (range(1, 10) as $i) {
+        $entry = Entry::create(['entry_type_id' => $this->type->id, 'title' => "Imported {$i}"]);
+        $entry->title = "Imported {$i} revised";
+        $entry->save();
+
+        expect($entry->revisions()->count())->toBeGreaterThan(0, 'the write filed no revision at all');
+    }
+
+    expect(app(RecordedRevisions::class)->held())->toBe(0, 'a non-form write registered a revision nothing will collect');
+});
+
+it('closes the window when the reconciler takes its revision', function (): void {
+    /*
+     * ⚠️ SO A SAVE THAT NEVER RECONCILES CANNOT LEAVE REGISTRATION ON for the rest of the request.
+     * `take()` closes as well as reads, which is what bounds the window to one save rather than to
+     * one request.
+     */
+    app(RecordedRevisions::class)->open();
+    $entry = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Draft']);
+
+    expect(app(RecordedRevisions::class)->held())->toBe(1, 'the form save did not register its revision');
+
+    $entry->writeRelationsAndReconcile(
+        fn () => $entry->syncFieldRelations($this->authors, [$this->one->id]),
+        $entry->relationState(),
+    );
+
+    expect(app(RecordedRevisions::class)->held())->toBe(0, 'the register still holds a revision after reconciling');
+
+    // And a later ordinary write does not re-register, because the window closed.
+    $entry->title = 'Renamed by a job';
+    $entry->save();
+
+    expect(app(RecordedRevisions::class)->held())->toBe(0, 'the window stayed open after the reconciler closed it');
 });

@@ -82,9 +82,24 @@ afterEach(fn () => app(Context::class)->forget());
  */
 function beginFormSave(Entry $entry): void
 {
-    if ($entry->exists) {
-        RecordedRevisions::forget((int) $entry->getKey());
-    }
+    app(RecordedRevisions::class)->open($entry->exists ? (int) $entry->getKey() : null);
+}
+
+/**
+ * The same hook on a CREATE, where there is no record yet.
+ *
+ * ⚠️ IT STILL HAS TO RUN. The register only notes a revision while a form save's window is open —
+ * otherwise an API write, an importer or a queued job filed a note nothing would ever collect, which
+ * review found as an unbounded map. `mutateFormDataBeforeCreate()` opens it with no key, because the
+ * entry has none until it is inserted; `recordRevision()` then files the note with the real key.
+ *
+ * Three tests here failed the moment the window was introduced, for exactly the right reason: they
+ * created an entry without opening one, so the create's revision went unregistered and the reconciler
+ * filed a second.
+ */
+function beginFormCreate(): void
+{
+    app(RecordedRevisions::class)->open();
 }
 
 function formSave(Entry $entry, array $sync): void
@@ -106,6 +121,7 @@ function formSave(Entry $entry, array $sync): void
 
 it('records ONE revision for a create that fills two relation fields', function (): void {
     // A create has no prior revision, which is what the null says.
+    beginFormCreate();
     $entry = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Source']);
 
     formSave($entry, [
@@ -124,6 +140,7 @@ it('records ONE revision for a create that fills two relation fields', function 
 });
 
 it('records ONE revision for an edit that changes a scalar and a relation together', function (): void {
+    beginFormCreate();
     $entry = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Source']);
     formSave($entry, [[$this->authors, [$this->target->id]]]);
 
@@ -146,6 +163,7 @@ it('still records a revision when relations are the ONLY change', function (): v
      * that suspended both and trusted the entry write would lose the change silently, and
      * "restore the latest version" would then revert relations the author had deliberately set.
      */
+    beginFormCreate();
     $entry = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Source']);
     formSave($entry, [[$this->authors, [$this->target->id]]]);
 
@@ -161,6 +179,7 @@ it('still records a revision when relations are the ONLY change', function (): v
 it('files nothing when a save changed no relations at all', function (): void {
     // Otherwise every no-op save costs a version off a bounded history — the same argument the
     // JSON key-order duplicate already established.
+    beginFormCreate();
     $entry = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Source']);
     formSave($entry, [[$this->authors, [$this->target->id]]]);
 
@@ -195,6 +214,7 @@ it('leaves another request\'s revision alone', function (): void {
      * instance it constructs rather than the one the page holds, so a property set in
      * `recordRevision()` is null by the time the page reconciles. Measured.
      */
+    beginFormCreate();
     $entry = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Source']);
     formSave($entry, [[$this->authors, [$this->target->id]]]);
 
