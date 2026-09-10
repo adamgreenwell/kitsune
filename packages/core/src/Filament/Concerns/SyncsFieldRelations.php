@@ -17,6 +17,7 @@ use Kitsune\Core\Filament\Schemas\FieldValueRenderer;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Field;
+use Kitsune\Core\Schema\RevisionWrites;
 
 /**
  * Carries relation fields between the form and `entry_relations`.
@@ -37,6 +38,9 @@ use Kitsune\Core\Models\Field;
  */
 trait SyncsFieldRelations
 {
+    /** The newest revision id before this save wrote, or null when there was none. */
+    private ?int $revisionIdBeforeWrite = null;
+
     /**
      * Fills the form's relation state from the entry's existing relations.
      *
@@ -88,6 +92,8 @@ trait SyncsFieldRelations
      */
     protected function mutateFormDataBeforeSave(array $data): array
     {
+        $this->rememberRevisionBeforeWrite();
+
         return $this->withoutRelationState($this->mutateEntryDataBeforeSave($data));
     }
 
@@ -97,6 +103,8 @@ trait SyncsFieldRelations
      */
     protected function mutateFormDataBeforeCreate(array $data): array
     {
+        $this->rememberRevisionBeforeWrite();
+
         return $this->withoutRelationState($this->mutateEntryDataBeforeCreate($data));
     }
 
@@ -182,6 +190,50 @@ trait SyncsFieldRelations
         /** @var array<string, mixed> $state */
         $state = (array) data_get($this->form->getRawState(), FieldValueRenderer::RELATION_STATE_PREFIX, []);
 
+        $relationsBefore = $record->relationState();
+
+        /*
+         * ⚠️ SUSPENDED ACROSS EVERY FIELD, then ONE revision reconciled after. A form save was
+         * filing 1 + N revisions, one per relation field — measured `created=1
+         * afterRelationSync=2 afterSecondField=3` (issue #59). Each write path files one
+         * legitimately; what is new is that a form save performs both, because relation state is
+         * written after the entry exists (ADR-015). The result was phantom history — an
+         * intermediate snapshot the author never saved — and a bounded 50-version budget spent at
+         * twice the rate or worse.
+         */
+        RevisionWrites::suspend(function () use ($record, $state): void {
+            $this->syncEachRelationField($record, $state);
+        });
+
+        /*
+         * ⚠️ OUTSIDE the suspension, and it needs the revision id from BEFORE the entry write to
+         * tell the two cases apart: a save that filed its own revision (complete it in place,
+         * because its snapshot predates the relations) from one that filed none because relations
+         * were the only change (record one now). Suppressing both unconditionally loses that
+         * second case entirely.
+         */
+        $record->reconcileRevisionAfterRelationSync($this->revisionIdBeforeWrite, $relationsBefore);
+    }
+
+    /**
+     * The id of the newest revision before this save wrote anything.
+     *
+     * ⚠️ Captured in the `mutateFormDataBefore*` hooks because those are the last point that runs
+     * BEFORE the entry write. Reading it afterwards cannot distinguish a revision this save filed
+     * from one that was already there.
+     */
+    private function rememberRevisionBeforeWrite(): void
+    {
+        $record = $this->getRecord();
+
+        $this->revisionIdBeforeWrite = $record instanceof Entry && $record->exists
+            ? $record->revisions()->max('id')
+            : null;
+    }
+
+    /** @param  array<string, mixed>  $state */
+    private function syncEachRelationField(Entry $record, array $state): void
+    {
         foreach ($this->relationFields() as $field) {
             $handle = $field->fieldStorage->handle;
 

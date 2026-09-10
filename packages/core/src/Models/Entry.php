@@ -379,6 +379,63 @@ class Entry extends Model implements RequiresModelSave
     }
 
     /**
+     * Makes ONE revision represent a form save, after its relations have been written.
+     *
+     * ⚠️ A FORM SAVE WAS FILING 1 + N REVISIONS, one per relation field (issue #59). Measured:
+     * `created=1  afterRelationSync=2  afterSecondField=3`. Two write paths each legitimately
+     * file one — the entry write through the model event, and `GuardedBelongsToMany::sync()`
+     * through `recordRevisionForRelationChange()` — and neither is wrong alone. What is new is
+     * that a FORM save does both, because relation state is written after the entry exists
+     * (ADR-015). The cost is phantom history and a 50-version budget consumed at 2x or worse.
+     *
+     * ⚠️ SUPPRESSING THE SYNC'S REVISION ALONE IS NOT THE FIX, and this method exists because
+     * both obvious answers are wrong:
+     *
+     * - `entry_revisions` has a `relation_state` column, so a revision DOES capture relations.
+     *   The entry write's snapshot is taken BEFORE they are written, so keeping only that one
+     *   leaves history asserting "no relations" for the save that added them.
+     * - Suspending both and always filing one at the end loses the change entirely on an edit
+     *   where relations are the ONLY thing that changed: the entry write is not dirty, so it
+     *   files nothing, and the sync's revision was the sole record.
+     *
+     * So the caller says which revision existed BEFORE the write, and this reconciles:
+     * if the write filed one, its relation state is completed in place — the same operation
+     * `redactField()` already performs on a revision, so mutating one is precedented rather
+     * than a new liberty. If it filed none, relations were the only change and one is recorded.
+     *
+     * @param  array<string, list<int>>  $relationsBefore
+     */
+    public function reconcileRevisionAfterRelationSync(?int $revisionIdBeforeSave, array $relationsBefore): bool
+    {
+        if (RevisionWrites::suspended()) {
+            return false;
+        }
+
+        $latest = $this->revisions()->orderByDesc('id')->first();
+
+        // The entry write filed a revision of its own, so complete it rather than adding a second.
+        if ($latest !== null && (int) $latest->getKey() !== (int) ($revisionIdBeforeSave ?? 0)) {
+            $current = $this->relationState();
+
+            if ($latest->relation_state === $current) {
+                return false;
+            }
+
+            $latest->relation_state = $current;
+            $latest->save();
+
+            return true;
+        }
+
+        /*
+         * Nothing was filed, so the relations were the only change — and this is the case that
+         * makes blanket suppression wrong. `recordRevisionForRelationChange()` still compares
+         * against `$relationsBefore`, so a sync that changed nothing files nothing.
+         */
+        return $this->recordRevisionForRelationChange($relationsBefore);
+    }
+
+    /**
      * The values a revision would record, as they currently stand.
      *
      * ⚠️ RAW originals rather than accessor values. `published_at` casts to a
