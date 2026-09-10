@@ -225,10 +225,7 @@ it('reconciles inside the transaction that wrote the relations', function (): vo
 
     // ⚠️ THE REAL METHOD. Rebuilding its transaction here is what made the first version of this
     // test unfalsifiable — it asserted a property of the test's own code.
-    $entry->writeRelationsAndReconcile(
-        fn () => $entry->syncFieldRelations($this->authors, [$this->one->id]),
-        $relationsBefore,
-    );
+    $entry->writeRelationsAndReconcile(fn () => $entry->syncFieldRelations($this->authors, [$this->one->id]));
 
     expect($relationLevels)->not->toBe([], 'nothing wrote entry_relations, so this asserts nothing')
         ->and($revisionLevels)->not->toBe([], 'no revision was completed, so this asserts nothing')
@@ -277,10 +274,7 @@ it('closes the window when the reconciler takes its revision', function (): void
 
     expect(app(RecordedRevisions::class)->held())->toBe(1, 'the form save did not register its revision');
 
-    $entry->writeRelationsAndReconcile(
-        fn () => $entry->syncFieldRelations($this->authors, [$this->one->id]),
-        $entry->relationState(),
-    );
+    $entry->writeRelationsAndReconcile(fn () => $entry->syncFieldRelations($this->authors, [$this->one->id]));
 
     expect(app(RecordedRevisions::class)->held())->toBe(0, 'the register still holds a revision after reconciling');
 
@@ -289,4 +283,78 @@ it('closes the window when the reconciler takes its revision', function (): void
     $entry->save();
 
     expect(app(RecordedRevisions::class)->held())->toBe(0, 'the window stayed open after the reconciler closed it');
+});
+
+it('does not complete a revision another save has overtaken', function (): void {
+    /*
+     * ⚠️ OWNING A REVISION IS NOT THE SAME AS IT STILL BEING THE NEWEST, which review found beyond
+     * the ownership race. Save A files its scalar revision; save B then completes a NEWER
+     * scalar-and-relation revision; A finally syncs its relations. Completing A's older revision
+     * leaves history ending with B's — claiming B's relations — while A's later relation write is what
+     * is live. The newest revision has to describe the newest state.
+     *
+     * Overtaken, the reconciler records a revision for the current state instead, which is the same
+     * answer as "relations were the only change": from history's point of view that is what this save
+     * has become.
+     */
+    $entry = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Draft']);
+
+    // Save A's scalar write files a revision and registers it.
+    app(RecordedRevisions::class)->open((int) $entry->getKey());
+    $entry->title = 'By A';
+    $entry->save();
+
+    $filedByA = (int) $entry->revisions()->max('id');
+
+    // Save B overtakes with a newer revision of its own, before A reaches its relation sync.
+    $other = Entry::query()->whereKey($entry->getKey())->sole();
+    $other->title = 'By B';
+    $other->save();
+
+    $filedByB = (int) $entry->revisions()->max('id');
+
+    expect($filedByB)->toBeGreaterThan($filedByA, 'B did not actually overtake A');
+
+    /*
+     * ⚠️ A's OWNERSHIP IS RESTORED BY HAND, and that is a limit of the test rather than a shortcut.
+     * The register is bound `scoped`, so in production A and B are separate requests with separate
+     * registers and B's save cannot touch A's. In ONE process there is one register, and B's save
+     * overwrote A's note — which is why the first version of this test asserted nothing: `$mine` was
+     * B's revision, `$mine` WAS the newest, and the reconciler completed it correctly.
+     *
+     * The state under test is "the register holds an id that is no longer the newest". How it comes
+     * about is a two-process detail a single-connection test cannot reproduce, so it is constructed.
+     */
+    app(RecordedRevisions::class)->open((int) $entry->getKey());
+    app(RecordedRevisions::class)->note((int) $entry->getKey(), $filedByA);
+
+    // Now A syncs its relations and reconciles.
+    $entry->writeRelationsAndReconcile(fn () => $entry->syncFieldRelations($this->authors, [$this->one->id]));
+
+    $newest = $entry->revisions()->orderByDesc('id')->first();
+
+    /*
+     * ⚠️ A NEW revision, not A's older one, and its relation state is the live one. Mutating A's would
+     * have left B's revision newest and describing relations that are no longer there.
+     */
+    expect((int) $newest->getKey())->toBeGreaterThan($filedByB, 'the reconciler mutated an overtaken revision')
+        ->and($newest->relation_state[(string) $this->authors->getKey()] ?? null)->toBe([$this->one->id]);
+});
+
+it('reads the before-state under the lock, not before it', function (): void {
+    /*
+     * ⚠️ THE BEFORE-STATE WAS PASSED IN FROM OUTSIDE THE TRANSACTION, which review found. A
+     * relations-only save read X, another request changed the relations to Y, and this one wrote X
+     * back — the comparison saw final X equal to the before-state, filed nothing, and history kept a
+     * revision describing Y over a live entry holding X.
+     *
+     * ⚠️ ASSERTED ON THE SIGNATURE, because that is what makes the bug unreachable rather than merely
+     * fixed: the parameter is gone, so a caller cannot pass a stale value. A behavioural test would
+     * have to interleave two writes inside one connection's transaction, which cannot demonstrate
+     * anything the lock does.
+     */
+    $method = new ReflectionMethod(Entry::class, 'writeRelationsAndReconcile');
+
+    expect($method->getNumberOfParameters())->toBe(1, 'the before-state can still be passed in')
+        ->and($method->getParameters()[0]->getName())->toBe('sync');
 });

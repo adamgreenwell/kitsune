@@ -116,7 +116,7 @@ function formSave(Entry $entry, array $sync): void
         foreach ($sync as [$storage, $ids]) {
             $entry->syncFieldRelations($storage, $ids);
         }
-    }, $relationsBefore);
+    });
 }
 
 it('records ONE revision for a create that fills two relation fields', function (): void {

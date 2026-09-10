@@ -403,14 +403,27 @@ class Entry extends Model implements RequiresModelSave
      * test came to pass whatever the trait did.
      *
      * @param  callable():void  $sync
-     * @param  array<string, list<int>>  $relationsBefore
      */
-    public function writeRelationsAndReconcile(callable $sync, array $relationsBefore): void
+    public function writeRelationsAndReconcile(callable $sync): void
     {
-        DB::transaction(function () use ($sync, $relationsBefore): void {
+        DB::transaction(function () use ($sync): void {
             // withoutGlobalScopes, as in `versioned()`: this is a lock rather than a read that
             // reaches a caller, and a scoped query that matched nothing would take no lock at all.
             self::query()->withoutGlobalScopes()->whereKey($this->getKey())->lockForUpdate()->get();
+
+            /*
+             * ⚠️ READ INSIDE THE LOCK, and it used to be passed in from outside — which review found.
+             * A relations-only save read this before the transaction opened, so: it read X, another
+             * request changed the relations to Y, and this request then wrote X back. The fallback
+             * comparison saw final X equal to the before-state, filed nothing, and history was left
+             * with a revision describing Y while the live entry held X.
+             *
+             * The whole point of the lock is that the relations do not move under this save, and a
+             * before-state read outside it is a value from before that guarantee started. So the
+             * parameter is gone rather than documented: a caller cannot pass a stale one if there is
+             * nothing to pass.
+             */
+            $relationsBefore = $this->relationState();
 
             RevisionWrites::suspend($sync);
 
@@ -478,7 +491,20 @@ class Entry extends Model implements RequiresModelSave
              * a 50-version budget can retire the revision just filed. Falling through records the
              * relation change on its own, which is the honest answer when the snapshot is gone.
              */
-            if ($revision instanceof EntryRevision) {
+            /*
+             * ⚠️ OWNING IT IS NOT ENOUGH — IT MUST STILL BE THE NEWEST, which review found. Save A
+             * files its scalar revision; save B then completes a NEWER scalar-and-relation revision;
+             * A finally syncs its relations. Completing A's older revision then leaves history ending
+             * with B's, claiming B's relations, while A's later relation write is what is live. The
+             * newest revision has to describe the newest state.
+             *
+             * Overtaken, this falls through and records a revision for the current state instead —
+             * which is the same answer as "relations were the only change", because from history's
+             * point of view that is exactly what this save now is.
+             */
+            $newest = $this->revisions()->max('id');
+
+            if ($revision instanceof EntryRevision && (int) $newest === (int) $mine) {
                 $current = $this->relationState();
 
                 if ($revision->relation_state === $current) {

@@ -187,8 +187,12 @@ trait SyncsFieldRelations
         /** @var array<string, mixed> $state */
         $state = (array) data_get($this->form->getRawState(), FieldValueRenderer::RELATION_STATE_PREFIX, []);
 
-        $relationsBefore = $record->relationState();
-
+        /*
+         * ⚠️ THE BEFORE-STATE IS READ INSIDE THE LOCK now, not here, and review found why. Reading it
+         * before the transaction opened meant a relations-only save could read X, another request
+         * change the relations to Y, and this one write X back — the comparison then saw no change,
+         * filed nothing, and history kept a revision describing Y over a live entry holding X.
+         */
         /*
          * ⚠️ SUSPENDED ACROSS EVERY FIELD, then ONE revision reconciled after. A form save was
          * filing 1 + N revisions, one per relation field — measured `created=1
@@ -211,7 +215,6 @@ trait SyncsFieldRelations
          */
         $record->writeRelationsAndReconcile(
             fn () => $this->syncEachRelationField($record, $state),
-            $relationsBefore,
         );
     }
 
