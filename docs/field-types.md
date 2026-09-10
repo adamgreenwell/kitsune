@@ -207,13 +207,13 @@ A named capture may use a name in **any script** — `(?<é>`, `(?<日本>`, `(?
 >
 > A denylist **fails open**: a construct nobody anticipated is accepted and published wrong, silently. An allowlist fails closed — an unknown construct is refused because it was never admitted, not because someone remembered it. Rule 3 says `apiSchema()` may only publish a constraint the consumer can enforce; a grammar makes that enforceable *by construction* rather than by enumeration.
 >
-> **Fresh evidence, measured 2026-09-09.** 103 candidate constructs, enumerated from six independent angles, run through one shared case file so PCRE and ECMAScript are asked the same question. At production fidelity — PCRE compiling `Pattern::delimit()`'s output, ECMAScript compiling the published source — **three constructs the screen accepts today still diverge**:
+> **Fresh evidence, measured 2026-09-09.** 103 candidate constructs, enumerated from six independent angles, run through one shared case file so PCRE and ECMAScript are asked the same question. At production fidelity — PCRE compiling `Pattern::delimit()`'s output, ECMAScript compiling the published source — **two constructs the screen accepts today diverge, and a third makes neither engine answer at all**:
 >
 > | Pattern | PCRE | ECMAScript |
 > |---|---|---|
 > | `^(?=a)+a$` | compiles, matches | **refuses to compile** under `u` — *"Invalid quantifier"* |
 > | `(?<=(a\|aa))b\1$` | no match | **match** — PCRE orders lookbehind branches by length, ECMAScript by written order |
-> | `^([a-zA-Z0-9]+\.?)+@x\.com$` | **errors** — backtrack limit exhausted | completes |
+> | `^([a-zA-Z0-9]+\.?)+@x\.com$` | **no verdict** — backtrack limit exhausted, ~2ms | **no verdict** — still searching at the harness deadline |
 >
 > ⚠️ Two apparent findings were **my instrument, not the code**, and are recorded because they change how this must be measured: comparing with `/u` instead of `/uD` invented three `$` divergences, and comparing *raw source* in both engines invented four more — `delimit()` already rewrites `.` and `\s` to explicit ECMAScript-equivalent classes. Raw-vs-raw reported 7 divergences; true fidelity reports 3.
 >
@@ -246,7 +246,9 @@ A named capture may use a name in **any script** — `(?<é>`, `(?<日本>`, `(?
 >
 > 1. **No quantifier on an assertion.** `(?=a)+` is built from two permitted constructs and does not compile under ECMAScript `u`. Checked against **`u`-mode specifically**, because Annex B makes the unflagged dialect more permissive than the flagged one.
 > 2. **A lookbehind's alternatives must be equal length.** PCRE orders them by length, ECMAScript by written order, so a differing-length alternation changes which group captured what.
-> 3. **No unbounded quantifier over a group containing one.** `([a-zA-Z0-9]+\.?)+` is entirely permitted constructs and exhausts PCRE's backtrack limit on adversarial input — where `preg_match()` returns `false` rather than a verdict. This is **not a portability problem**; it is catastrophic backtracking, and ADR-027's 1 vCPU floor is why it cannot be left to the consumer.
+> 3. **No unbounded quantifier over a group containing one.** `([a-zA-Z0-9]+\.?)+` is entirely permitted constructs and makes **neither** engine answer on adversarial input: `preg_match()` returns `false` after exhausting its backtrack limit, and ECMAScript is still searching when the harness deadline expires. This is **not a portability problem** — the two agree, in the sense that neither gives a verdict — it is catastrophic backtracking, and ADR-027's 1 vCPU floor is why it cannot be left to the consumer.
+>
+> ⚠️ That row was originally counted among the divergences, and review corrected it: comparing the harness's full result shapes made it look like disagreement, because only the ECMAScript side carries timeout metadata. It is now classified as *no verdict from either engine*, which is both accurate and a sharper statement of the same point — the danger here is the cost of the pattern, not a difference of opinion about it.
 >
 > ### What this costs
 >

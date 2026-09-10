@@ -21,6 +21,20 @@ $cases = json_decode((string) file_get_contents(__DIR__.'/cases.json'), true, 51
 $pcre = json_decode((string) file_get_contents($argv[1]), true, 512, JSON_THROW_ON_ERROR);
 $ecma = json_decode((string) file_get_contents($argv[2]), true, 512, JSON_THROW_ON_ERROR);
 
+/**
+ * The comparable part of a measurement: did it compile, and did it match.
+ *
+ * Diagnostics such as `timedOut` are deliberately dropped — they describe HOW an engine failed to
+ * answer, not WHAT it answered, and including them makes richer reporting look like disagreement.
+ */
+function outcome(?array $result): array
+{
+    return [
+        'compiles' => $result['compiles'] ?? null,
+        'matches' => $result['matches'] ?? null,
+    ];
+}
+
 $live = [];
 $handled = 0;
 $overRefused = [];
@@ -28,7 +42,15 @@ $bothReject = 0;
 
 foreach ($cases as $case) {
     $id = $case['id'];
-    $diverges = ($pcre[$id] ?? null) !== ($ecma[$id] ?? null);
+    /*
+     * ⚠️ COMPARED ON NORMALISED OUTCOMES, NOT ON RESULT SHAPES, and comparing shapes contradicted
+     * this tool's own stated symmetry. The ECMAScript side carries a `timedOut` key that the PCRE
+     * side has no equivalent for, so `{compiles:true,matches:null}` versus
+     * `{compiles:true,matches:null,timedOut:true}` compared as DIFFERENT — reporting a divergence
+     * created purely by one engine supplying more diagnostics than the other. Both mean "no
+     * verdict"; `timedOut` is kept for diagnosis and excluded from the comparison. Found by review.
+     */
+    $diverges = outcome($pcre[$id] ?? null) !== outcome($ecma[$id] ?? null);
 
     $compiles = Pattern::compiles($case['pattern']);
     $refused = ! $compiles || Pattern::unpublishable($case['pattern']) !== null;
@@ -64,7 +86,19 @@ $noVerdict = [];
 foreach ($cases as $case) {
     $id = $case['id'];
 
-    if (($pcre[$id]['matches'] ?? true) === null || ($ecma[$id]['timedOut'] ?? false) === true) {
+    /*
+     * ⚠️ `??` CANNOT DETECT A PRESENT NULL, which is exactly what a no-verdict result is. PHP's
+     * null-coalescing treats `['matches' => null]` as absent and yields the default, so
+     * `($pcre[$id]['matches'] ?? true) === null` was never true and this line omitted the PCRE
+     * backtrack-limit case it exists to record. `array_key_exists` asks the question actually
+     * meant. Found by review.
+     */
+    $pcreGaveNoVerdict = array_key_exists($id, $pcre)
+        && array_key_exists('matches', $pcre[$id])
+        && $pcre[$id]['matches'] === null
+        && ($pcre[$id]['compiles'] ?? false) === true;
+
+    if ($pcreGaveNoVerdict || ($ecma[$id]['timedOut'] ?? false) === true) {
         $noVerdict[] = $id;
     }
 }
