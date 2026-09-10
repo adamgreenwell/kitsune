@@ -324,6 +324,45 @@ describe('base_url derives the host and prefix a site claims', function (): void
         }
     });
 
+    it('refuses dot segments, which a browser resolves away before asking', function (): void {
+        /*
+         * ⚠️ CROSS-ORG URL THEFT THROUGH A DOOR THE OVERLAP CHECK CANNOT SEE, found by review
+         * AFTER that check landed. A browser normalises the path before sending it, so a site
+         * configured as `/a/../b` is requested as `/b` — a different stored key, unrelated under
+         * `prefixesOverlap()`, and served by whoever holds `/b`.
+         *
+         * ⚠️ An allowlist of CHARACTERS cannot close this: every character in `..` is permitted.
+         * That is worth remembering while implementing #44's grammar, which rests on the same
+         * idea — a construct allowlist is necessary and not sufficient.
+         */
+        foreach (['/a/../b', '/./b', '/..', '/a/.'] as $written) {
+            expect(fn () => Site::deriveUrlParts($written, 'path'))
+                ->toThrow(RuntimeException::class, 'dot segments');
+        }
+
+        // And a name that merely CONTAINS a dot is ordinary and stays legal.
+        expect(Site::deriveUrlParts('/.well-known/acme', 'path'))->toBe(['', '/.well-known/acme'])
+            ->and(Site::deriveUrlParts('/v1.2', 'path'))->toBe(['', '/v1.2']);
+    });
+
+    it('refuses a base_url it cannot parse, rather than silently withdrawing the address', function (): void {
+        /*
+         * ⚠️ `[null, null]` MEANS "deliberately no public URL", and returning it for something
+         * unparseable conflated two different things. The save SUCCEEDED while withdrawing the
+         * site's address: `base_url` still visibly set, resolution excluding it, no uniqueness
+         * claim made, and nothing reporting any of it. Found by review.
+         */
+        foreach (['http://', 'https://x.test:notaport/'] as $written) {
+            expect(fn () => Site::deriveUrlParts($written, 'domain'))
+                ->toThrow(RuntimeException::class, 'cannot be parsed');
+        }
+
+        // An intentionally admin-only site still means both null — the case that representation
+        // is actually for.
+        expect(Site::deriveUrlParts(null, 'path'))->toBe([null, null])
+            ->and(Site::deriveUrlParts('   ', 'path'))->toBe([null, null]);
+    });
+
     it('refuses an unknown strategy rather than reading it as a path', function (): void {
         // Fail closed and loud: a typo would otherwise store a host as a prefix and leave
         // the site unreachable at its own address, with nothing on screen to say so.

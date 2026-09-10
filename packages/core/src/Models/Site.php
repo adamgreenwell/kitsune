@@ -321,8 +321,21 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
             default => 'kitsune://placeholder/'.ltrim($baseUrl, '/'),
         });
 
+        /*
+         * ⚠️ A MALFORMED VALUE IS REFUSED, NOT MAPPED TO "no public URL". `[null, null]` is the
+         * representation reserved for a site that deliberately has no public address, and
+         * returning it for something unparseable — `http://`, a non-numeric port — meant the save
+         * SUCCEEDED while silently withdrawing the site's address: `base_url` still populated and
+         * visibly set, resolution excluding it, no uniqueness claim made, and nothing reporting
+         * any of that. Found by review.
+         */
         if ($parsed === false) {
-            return [null, null];
+            throw new RuntimeException(sprintf(
+                'Refusing the base_url [%s]: it cannot be parsed as a URL. Refused rather than '
+                .'treated as "no public URL", because that would leave the value visibly set '
+                .'while the site answered at no address.',
+                $baseUrl,
+            ));
         }
 
         $host = $namesHost && is_string($parsed['host'] ?? null) ? $parsed['host'] : '';
@@ -433,6 +446,26 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
              *
              * So the same posture as an internationalised host: refuse, and say what to enter.
              */
+            /*
+             * ⚠️ `.` AND `..` ARE REFUSED, and allowing them was cross-org URL theft through a
+             * door the overlap check cannot see. A browser NORMALISES the path before sending it,
+             * so a site configured as `/a/../b` is requested as `/b` — a different stored key,
+             * unrelated under `prefixesOverlap()`, and served by whoever holds `/b`. Review found
+             * it after the overlap fix, which is exactly the kind of gap an allowlist of
+             * CHARACTERS cannot close: every character in `..` is permitted.
+             *
+             * Only the complete segments are refused. `.well-known` and `v1.2` are ordinary names
+             * and stay legal.
+             */
+            if ($segment === '.' || $segment === '..') {
+                throw new RuntimeException(sprintf(
+                    'Refusing the path prefix segment [%s]: a browser resolves dot segments away '
+                    .'before sending the request, so this prefix would be requested as something '
+                    .'else — and served by whichever site holds that other path.',
+                    $segment,
+                ));
+            }
+
             if (preg_match('/^[A-Za-z0-9._~-]+$/', $segment) !== 1) {
                 throw new RuntimeException(sprintf(
                     'Refusing the path prefix segment [%s]: a prefix may use only letters, '
