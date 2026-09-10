@@ -844,5 +844,17 @@
     "pattern": "(?<=(a{2}?|aa))b\\1$",
     "subject": "aabaa",
     "why": "The other half: `a{2}?` and `aa` ARE both two wide, so this is genuinely equal-length and must publish. Kept so the fix cannot become 'refuse anything lazy in a lookbehind'."
+  },
+  {
+    "id": "nested-group-hides-optional-delimiter",
+    "pattern": "^(?:,(?:,?))*X$",
+    "subject": ",,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,Y",
+    "why": "A required group around the optional delimiter. The proof jumped from a group's `(` to its `)` and asked only about the group's own quantifier, so this was exempted while the identical `^(?:,,?)*X$` was refused. Node 22 spends 10.5s here."
+  },
+  {
+    "id": "bom-delimiter-ecmascript-space",
+    "pattern": "^(?:\uFEFF\\s?)*X$",
+    "subject": "\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFFY",
+    "why": "PCRE's `\\s` excludes U+FEFF and ECMAScript's includes it. The membership probe compiled the raw `\\s` rather than the class `delimit()` rewrites it to, so the optional atom was declared unable to reach the delimiter. Node 22 spends 17.2s here."
   }
 ]

@@ -222,3 +222,53 @@ it('finds the contract block at all', function () use ($signaturesFromDocumentat
     expect($declared)->toBeGreaterThan(0, 'reflection over FieldType found no methods at all')
         ->and($signaturesFromDocumentation())->toHaveCount($declared);
 });
+
+it('pins the published candidate count to the harness case file', function (): void {
+    /*
+     * ⚠️ THE NUMBER HAD NEVER BEEN TRUE. §4 published "103 candidate constructs" from the commit
+     * that landed the harness onwards, and `cases.json` held 123 in that same commit — then 126,
+     * 132, 138 and 141 as each review round added its own case, with the prose never moving. A
+     * measurement is a claim about a file; if the file is not consulted the number is decoration.
+     *
+     * ⚠️ AND IT IS THE ONE NUMBER THAT DISCREDITS THE REST. The harness README's own opening is
+     * that an earlier version reported seven divergences where there are three, and that either
+     * error "would discredit a real finding". A denominator nobody can reproduce does exactly
+     * that to every ratio built on it — including "of N candidates, two are refused today".
+     *
+     * Both spellings are checked, because they are two independent chances to update one of them.
+     */
+    $markdown = (string) file_get_contents(dirname(__DIR__, 3).'/docs/field-types.md');
+    $cases = json_decode(
+        (string) file_get_contents(dirname(__DIR__, 3).'/tools/pattern-parity/cases.json'),
+        true,
+        512,
+        JSON_THROW_ON_ERROR,
+    );
+
+    expect($cases)->toBeArray()->and($cases)->not->toBeEmpty();
+
+    $count = count($cases);
+
+    expect(mb_substr_count($markdown, "{$count} candidate constructs"))
+        ->toBe(1, "docs/field-types.md §4 does not say \"{$count} candidate constructs\", which is what cases.json holds")
+        ->and(mb_substr_count($markdown, "of {$count} candidates"))
+        ->toBe(1, "docs/field-types.md \"What this costs\" does not say \"of {$count} candidates\"");
+
+    /*
+     * ⚠️ Not vacuous: any OTHER number in either phrasing is a stale count the two assertions above
+     * cannot see, because they only look for the right one.
+     *
+     * ⚠️ SCOPED TO THESE TWO PHRASINGS, not to "candidate" anywhere. A first version matched
+     * `/(\d+) candidate/` and failed on §4's *"across 23 candidate names"* — a different
+     * measurement, of named-capture scripts, correct as written. A documentation test that fails on
+     * a true sentence teaches whoever hits it to loosen the test.
+     */
+    expect(preg_match_all('/(\d+) candidate constructs|of (\d+) candidates/', $markdown, $found, PREG_SET_ORDER))
+        ->toBe(2, 'docs/field-types.md no longer quotes the candidate count in both places');
+
+    foreach ($found as $match) {
+        $written = (int) ($match[1] !== '' ? $match[1] : $match[2]);
+
+        expect($written)->toBe($count, "docs/field-types.md quotes {$written} candidates; cases.json holds {$count}");
+    }
+});

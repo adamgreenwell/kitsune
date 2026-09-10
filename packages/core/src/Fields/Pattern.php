@@ -1149,8 +1149,10 @@ final class Pattern
      * A REQUIRED atom that matches the delimiter is fine — `,a,` still splits one way — because it is
      * the choice about whether to consume one that creates the ambiguity, not the consuming.
      *
-     * ⚠️ FAILS CLOSED. An unparseable atom, a group, or `.` returns true, which means "not
-     * exempt", which means refused. The exemption has to be certain to be worth having.
+     * ⚠️ FAILS CLOSED. An unparseable atom, an unbounded-quantified group, or `.` returns true,
+     * which means "not exempt", which means refused. The exemption has to be certain to be worth
+     * having. A group with no quantifier is read through instead of refused, because refusing it
+     * would take the ordinary `(?:,[^,]+)*` list with it.
      */
     private static function variableAtomCanMatch(string $body, string $delimiter): bool
     {
@@ -1193,16 +1195,53 @@ final class Pattern
                 $i += mb_strlen($quantifier);
             }
 
+            if (str_starts_with($atom, '(')) {
+                /*
+                 * ⚠️ A REQUIRED GROUP IS TRANSPARENT, NOT EMPTY, which is what review found next.
+                 * Skipping to the closing bracket asked only about the group's own quantifier, so
+                 * a variable-width atom one level down was invisible: `^(?:,(?:,?))*X$` was
+                 * accepted although it is `^(?:,,?)*X$` — refused directly — with a bracket pair
+                 * around the optional comma. Measured on the same 40-delimiter subject that
+                 * exposed the direct form: Node 22 spends 10.5 SECONDS deciding it does not match.
+                 *
+                 * A group carrying a variable-width quantifier still fails closed without being
+                 * read, because repeating a body an unbounded number of times can consume the
+                 * delimiter however the body is written.
+                 */
+                if (self::isVariableWidth($quantifier)) {
+                    return true;
+                }
+
+                $prefix = self::framePrefixLength($atom, 0, self::frameKindAt($atom, 0));
+                $inner = mb_substr($atom, $prefix, mb_strlen($atom) - $prefix - 1);
+
+                if (self::variableAtomCanMatch($inner, $delimiter)) {
+                    return true;
+                }
+
+                continue;
+            }
+
             if (! self::isVariableWidth($quantifier)) {
                 continue;
             }
 
-            // A group's contents are not analysed, and `.` matches almost everything.
-            if (str_starts_with($atom, '(') || $atom === '.') {
+            // `.` matches almost everything, including every delimiter this proof admits.
+            if ($atom === '.') {
                 return true;
             }
 
-            if (@preg_match('/^'.$atom.'$/uD', $delimiter) !== 0) {
+            /*
+             * ⚠️ THE NORMALISED ATOM, not the published one, because they are not the same pattern
+             * and `delimit()` compiles the normalised form. `\s` is rewritten to the class
+             * ECMAScript means by it (see `ECMASCRIPT_SPACE`), and the two dialects disagree on
+             * three code points — so a raw PCRE probe answered about a class that is never
+             * compiled. Review found the direction that matters: PCRE's `\s` excludes U+FEFF, so
+             * `^(?:<U+FEFF>\s?)*X$` was told its optional atom could not consume the delimiter and
+             * was accepted. ECMAScript's `\s` DOES include the BOM, and Node 22 spends 17.2
+             * SECONDS on 40 BOMs followed by a non-match.
+             */
+            if (@preg_match('/^'.self::withEcmaScriptDot($atom).'$/uD', $delimiter) !== 0) {
                 return true;
             }
         }

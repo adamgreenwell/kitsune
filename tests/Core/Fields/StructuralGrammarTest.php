@@ -162,7 +162,14 @@ describe('rule 3 — an unbounded repetition must divide its subject one way onl
     it('exempts a delimited repetition, which cannot backtrack', function (string $pattern): void {
         expect(Pattern::unpublishable($pattern))
             ->toBeNull("[{$pattern}] is a delimited list and provably linear");
-    })->with(['^[^,]+(?:,[^,]+)*$', '^[^;]+(?:;[^;]+)*$', '^[a-z]+(?:\.[a-z]+)*$']);
+    })->with([
+        '^[^,]+(?:,[^,]+)*$',
+        '^[^;]+(?:;[^;]+)*$',
+        '^[a-z]+(?:\.[a-z]+)*$',
+        // ⚠️ Reading THROUGH a required group must not become refusing one: the group here holds
+        // nothing that can consume a comma, so the list is as exempt as the form without it.
+        '^[^,]+(?:,(?:[^,]+))*$',
+    ]);
 
     it('does not exempt a delimiter a BOUNDED atom can also consume', function (string $pattern): void {
         /*
@@ -179,6 +186,50 @@ describe('rule 3 — an unbounded repetition must divide its subject one way onl
         expect(Pattern::unpublishable($pattern))
             ->not->toBeNull("[{$pattern}] lets a variable atom consume its own delimiter");
     })->with(['^(?:,,?)*X$', '^(?:,,{0,2})*X$', '^(?:,,*)*X$', '^(?:,[,a]?)*X$']);
+
+    it('sees a variable atom through a required group', function (string $pattern): void {
+        /*
+         * ⚠️ A BRACKET PAIR WAS ENOUGH TO HIDE IT, which review found after the bounded-atom fix
+         * above. The scan jumped from a group's `(` to its `)` and asked only about the group's own
+         * quantifier, so an optional delimiter one level down was invisible: `^(?:,(?:,?))*X$` is
+         * `^(?:,,?)*X$` — refused on the line above — with brackets around the optional comma, and
+         * it was accepted. Measured on the same 40-delimiter subject, Node 22.23.2:
+         *
+         *   ^(?:,,?)*X$        40 commas + Y    1.3 s
+         *   ^(?:,(?:,?))*X$    40 commas + Y   10.5 s
+         *
+         * A required group is transparent now rather than opaque. A capture behaves the same way, a
+         * fixed repetition of the group does too, and nesting does not help.
+         */
+        expect(Pattern::unpublishable($pattern))
+            ->not->toBeNull("[{$pattern}] hides a variable atom inside a required group");
+    })->with([
+        '^(?:,(?:,?))*X$',
+        '^(?:,(,?))*X$',
+        '^(?:,(?:(?:,?)))*X$',
+        '^(?:,(?:,?){2})*X$',
+        '^(?:,(?:,*))*X$',
+    ]);
+
+    it('tests delimiter membership against the pattern that is compiled', function (): void {
+        /*
+         * ⚠️ THE PROBE COMPILED A CLASS THAT IS NEVER COMPILED. `delimit()` rewrites `\s` to the
+         * class ECMAScript means by it, because the dialects disagree on three code points — and
+         * the membership probe asked PCRE about the RAW `\s` instead. PCRE's `\s` excludes U+FEFF,
+         * so `^(?:<BOM>\s?)*X$` was told its optional atom could not consume the delimiter and was
+         * exempted. ECMAScript's `\s` includes the BOM. Measured, Node 22.23.2: 40 BOMs followed by
+         * a `Y` takes 17.2 SECONDS.
+         *
+         * ⚠️ THE SAME DISAGREEMENT CUTS THE OTHER WAY, and the fix has to get that direction right
+         * too or it is just a stricter guess. `\S` is normalised as well, so `<BOM>\S?` cannot
+         * consume the BOM in EITHER dialect once compiled — the division is forced and the pattern
+         * is exempt. Testing the normalised atom is what makes both answers follow from one rule.
+         */
+        expect(Pattern::unpublishable('^(?:'."\u{FEFF}".'\s?)*X$'))
+            ->not->toBeNull('ECMAScript\'s `\s` matches U+FEFF, so the optional atom can eat the delimiter')
+            ->and(Pattern::unpublishable('^(?:'."\u{FEFF}".'\S?)*X$'))
+            ->toBeNull('the normalised `\S` excludes U+FEFF in both dialects, so the division is forced');
+    });
 
     /*
      * ⚠️ AND THE EXEMPTION DOES NOT LEAK. Each of these fails one clause of the proof: the first
