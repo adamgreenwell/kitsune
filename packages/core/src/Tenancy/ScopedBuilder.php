@@ -70,6 +70,114 @@ class ScopedBuilder extends Builder
     }
 
     /**
+     * ⚠️ THE INSERT FAMILY WAS UNGUARDED, so `columnsRequiringModelSave()` covered half the doors.
+     * Measured on `Site` before this: `update(['base_url' => …])` refused, and
+     * `insert([… 'base_url' => 'https://x.test' …])` created a row with `canonical_host = NULL` — a
+     * site declaring a public URL and reachable at none. `RequiresModelSave`'s docblock claimed the
+     * model event became "the only door rather than the first one", which was true of `update()`
+     * alone (issue #60).
+     *
+     * ⚠️ REFUSED BY METHOD, NOT BY `$model->exists`, which is the discriminator the reverted first
+     * attempt used and why it refused every ordinary create. `Model::performInsert()` writes through
+     * this builder, and during an insert `exists` is false — so a guard keyed on it fires on the
+     * legitimate path. `AuditedBuilder` already solved this for `Entry` and the answer is which
+     * METHOD was called: `performInsert()` uses `insertGetId()` for an incrementing model, and a bulk
+     * caller uses `insert()` or one of the `…Using` forms. Those are refused; `insertGetId()` is not.
+     *
+     * ⚠️ AND ONLY WHEN THE MODEL INCREMENTS, because that assumption is what makes the method a
+     * discriminator at all: a non-incrementing model's `performInsert()` uses `insert()`, so refusing
+     * it there would break creates exactly as the reverted attempt did. No `RequiresModelSave` model
+     * is non-incrementing today and `PerRowInsertGuardTest` asserts that, so the day one appears the
+     * test fails rather than the creates.
+     *
+     * ⚠️ `->toBase()` AND `DB::table()` REMAIN OUT OF SCOPE by construction. Guards live at the
+     * Eloquent layer and nothing there can police a caller who has explicitly stepped below it. That
+     * is a boundary rather than an oversight, and it is stated so it is not mistaken for one.
+     *
+     * @param  array<string, mixed>  $values
+     */
+    public function insert(array $values): bool
+    {
+        $this->refuseBulkCreate('insert');
+
+        return parent::insert($values);
+    }
+
+    /** @param  array<string, mixed>  $values */
+    public function insertOrIgnore(array $values): int
+    {
+        // ⚠️ Refused whatever the model's key strategy: `performInsert()` never uses this one, so
+        // there is no legitimate per-row caller to protect.
+        $this->refuseBulkCreate('insertOrIgnore', always: true);
+
+        return parent::insertOrIgnore($values);
+    }
+
+    /**
+     * @param  array<int, string>  $columns
+     * @param  mixed  $query
+     */
+    public function insertUsing(array $columns, $query): int
+    {
+        $this->refuseBulkCreate('insertUsing', always: true);
+
+        return parent::insertUsing($columns, $query);
+    }
+
+    /**
+     * @param  array<int, string>  $columns
+     * @param  mixed  $query
+     */
+    public function insertOrIgnoreUsing(array $columns, $query): int
+    {
+        $this->refuseBulkCreate('insertOrIgnoreUsing', always: true);
+
+        return parent::insertOrIgnoreUsing($columns, $query);
+    }
+
+    /**
+     * Refuse a bulk creation path on a model whose columns need a per-row guard.
+     *
+     * ⚠️ THE MESSAGE NAMES THE COLUMNS AND THE REASON, because a refusal an importer cannot act on
+     * is a wall rather than a guard. Every column in `columnsRequiringModelSave()` is listed with
+     * the sentence the model gave for it.
+     */
+    private function refuseBulkCreate(string $method, bool $always = false): void
+    {
+        $model = $this->getModel();
+
+        if (ScopeWrites::suspended() || ! $model instanceof RequiresModelSave) {
+            return;
+        }
+
+        // See the note on `insert()`: the method is a discriminator only where `performInsert()`
+        // does not use it.
+        if (! $always && ! $model->getIncrementing()) {
+            return;
+        }
+
+        $guarded = $model::columnsRequiringModelSave();
+
+        if ($guarded === []) {
+            return;
+        }
+
+        throw new RuntimeException(sprintf(
+            '%s cannot be created in bulk with %s(): %s A bulk insert dispatches no model events, so '
+            .'the checks that derive and validate those columns never run — and the row is written '
+            .'with them empty, which for a URL claim means a site declaring an address it can never '
+            .'be reached at. Save the model instead.',
+            $model::class,
+            $method,
+            implode(' ', array_map(
+                static fn (string $column, string $reason): string => "[{$column}] {$reason}",
+                array_keys($guarded),
+                $guarded,
+            )),
+        ));
+    }
+
+    /**
      * ⚠️ Deletion is guarded HERE as well as in the model event.
      *
      * `Site::query()->delete()`, `deleteQuietly()` and anything inside

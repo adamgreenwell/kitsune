@@ -225,9 +225,8 @@ class AuditedBuilder extends ScopedBuilder
     /**
      * @param  \Closure|\Illuminate\Database\Query\Builder|\Illuminate\Database\Eloquent\Builder<*>|string  $query
      * @param  array<int, string>  $columns
-     * @return int
      */
-    public function insertUsing(array $columns, $query)
+    public function insertUsing(array $columns, $query): int
     {
         throw new RuntimeException(self::NO_BULK_CREATE);
     }
@@ -235,9 +234,8 @@ class AuditedBuilder extends ScopedBuilder
     /**
      * @param  \Closure|\Illuminate\Database\Query\Builder|\Illuminate\Database\Eloquent\Builder<*>|string  $query
      * @param  array<int, string>  $columns
-     * @return int
      */
-    public function insertOrIgnoreUsing(array $columns, $query)
+    public function insertOrIgnoreUsing(array $columns, $query): int
     {
         throw new RuntimeException(self::NO_BULK_CREATE);
     }
