@@ -167,6 +167,23 @@ final class ResolveSiteFromRequest
          * A request host is normally ASCII already, so this is usually the same trim and
          * lowercase it always was.
          */
+        /*
+         * ⚠️ THIS CANNOT THROW, AND THAT IS MEASURED RATHER THAN ASSUMED. `Site::canonicalHost()`
+         * refuses a percent-escaped host and fails closed on a Unicode one — right for an operator
+         * SAVING an address, and a 500 if a stranger could reach it, since the `Host` header is
+         * untrusted input (invariant 6).
+         *
+         * A stranger cannot. `Request::getHost()` accepts only `[a-zA-Z0-9-:\]_]+\.?` runs, so
+         * every host that reaches here is ASCII with no `%` — the case `canonicalHost()` returns
+         * early. Probing all 9,261 three-character hosts over an alphabet that includes `%`, `\0`,
+         * `é` and the delimiters found zero that Symfony accepts and `canonicalHost()` refuses, and
+         * the refused ones are a 400 from the framework before this middleware runs, not a 500.
+         *
+         * So there is no `try` here on purpose: catching an exception that cannot arrive would
+         * assert a danger the measurement denies. `PublicSiteLocaleTest` pins the 400 instead,
+         * because that upstream refusal is the thing this relies on — if Symfony ever widens its
+         * host validation, that test fails and this comment stops being true.
+         */
         return Site::canonicalHost($host);
     }
 

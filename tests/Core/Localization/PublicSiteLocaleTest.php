@@ -8,8 +8,10 @@
 
 declare(strict_types=1);
 
+use Illuminate\Contracts\Http\Kernel;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Route;
 use Kitsune\Core\Http\Middleware\ResolveSiteFromRequest;
 use Kitsune\Core\Http\Middleware\SetSiteLocale;
 use Kitsune\Core\Kitsune;
@@ -398,6 +400,31 @@ describe('base_url derives the host and prefix a site claims', function (): void
         expect(Site::deriveUrlParts('/news', 'path'))->toBe(['', '/news']);
     });
 
+    it('refuses a host that survives parsing but not canonicalisation', function (): void {
+        /*
+         * ⚠️ AND ONE STEP PAST *THAT*, because a host being PRESENT is not the same as a host
+         * being a host. `parse_url('https://./news')` returns the host `'.'` — measured, a
+         * non-empty string, so the presence guard above is satisfied — and canonicalising strips
+         * the trailing dot, leaving `''`: the same host-less wildcard the presence guard exists to
+         * refuse, reached by a different road.
+         *
+         * The consequence is identical too. The site saved, answered at `/news` on every host, and
+         * the unique index and overlap check both went on protecting a claim to `''` that the
+         * operator never made — so the next operator to legitimately configure a path site at
+         * `/news` collided with a wildcard nobody could see. Found by review of the commit that
+         * added the presence guard, which is why both tests live here.
+         */
+        foreach (['domain', 'subdomain'] as $strategy) {
+            foreach (['https://./news', 'https://../news', 'https://.'] as $address) {
+                expect(fn () => Site::deriveUrlParts($address, $strategy))
+                    ->toThrow(RuntimeException::class, 'reduces to nothing');
+            }
+        }
+
+        // A trailing dot on a REAL host is still just that host — the root label is not the host.
+        expect(Site::deriveUrlParts('https://x.test./news', 'domain'))->toBe(['x.test', '/news']);
+    });
+
     it('refuses an unknown strategy rather than reading it as a path', function (): void {
         // Fail closed and loud: a typo would otherwise store a host as a prefix and leave
         // the site unreachable at its own address, with nothing on screen to say so.
@@ -778,6 +805,53 @@ describe('an unresolvable request is left alone', function (): void {
      * rather than `setLocale()`, so the risk is different from the UI locale's — but a
      * path segment shaped like an attack must simply not match, rather than erroring.
      */
+    /*
+     * ⚠️ THE FRAMEWORK REFUSES A MALFORMED `Host` BEFORE THIS CODE SEES IT, and this pins that,
+     * because `ResolveSiteFromRequest` depends on it. `Site::canonicalHost()` throws on a
+     * percent-escaped or Unicode host — right when an operator is SAVING an address, and a 500 if
+     * a stranger could reach it, since anyone can put anything in a `Host` header (invariant 6).
+     *
+     * Review raised exactly that 500. Measurement says it cannot happen: `Request::getHost()`
+     * accepts only `[a-zA-Z0-9-:\]_]+\.?` runs, so every host reaching the middleware is ASCII
+     * with no `%`, which `canonicalHost()` returns early — probing all 9,261 three-character hosts
+     * over an alphabet including `%`, `\0`, `é` and the delimiters found zero Symfony accepts and
+     * `canonicalHost()` refuses. The refused ones are a 400.
+     *
+     * So the middleware has no `try` in it, and this test is what keeps that honest: if Symfony
+     * ever widens its host validation, a host that throws becomes reachable and this fails.
+     */
+    it('is never reached by a host the framework will not accept', function (): void {
+        Route::middleware([ResolveSiteFromRequest::class, SetSiteLocale::class])
+            ->get('/probe', fn () => app()->getLocale());
+
+        // ⚠️ SET ON THE HEADER, not in the URI: `Request::create()` overwrites `HTTP_HOST` from the
+        // URI it parses, so passing the host there measures nothing. A client sets a header.
+        $send = function (string $host, string $path = '/probe'): int|string {
+            $request = Request::create('http://placeholder'.$path);
+            $request->headers->set('Host', $host);
+            $request->server->set('HTTP_HOST', $host);
+
+            try {
+                return app(Kernel::class)->handle($request)->getStatusCode();
+            } catch (Throwable $e) {
+                return 'uncaught '.$e::class;
+            }
+        };
+
+        // Every spelling `canonicalHost()` refuses: a client error from the framework, not a 500.
+        foreach (['%65xample.test', 'x.test%00', 'π.test', 'x..test', '.'] as $refused) {
+            expect($send($refused))->toBe(400, "[{$refused}] was not refused upstream");
+        }
+
+        /*
+         * ⚠️ AND A HOST SYMFONY ACCEPTS RESOLVES OR DOESN'T — it never errors. `xn--a` is invalid
+         * punycode, so `idn_to_ascii()` returns false for it, yet Symfony accepts every character:
+         * it is the closest thing to a host that reaches `canonicalHost()` and could surprise it.
+         */
+        expect($send('xn--a'))->toBe(200)
+            ->and($send('ok.test'))->toBe(200);
+    });
+
     it('does not match a hostile path segment', function (): void {
         config()->set('app.locale', 'en');
 

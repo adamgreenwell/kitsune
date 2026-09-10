@@ -357,6 +357,27 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
 
         // The guard above proves a host is present whenever one is wanted, so no second check.
         $host = $namesHost ? (string) $parsed['host'] : '';
+
+        /*
+         * ⚠️ AND IT MUST SURVIVE CANONICALISATION, which the presence check alone does not
+         * guarantee. `parse_url('https://./news')` returns the host `'.'` — a string, so the guard
+         * above passes — and canonicalising strips the trailing dot, leaving `''`: the host-less
+         * WILDCARD. A `domain` site with that address therefore saved and answered at `/news` on
+         * every host, while the uniqueness and overlap checks protected a claim the operator never
+         * made. Found by review, one step past the presence check.
+         */
+        if ($namesHost) {
+            $canonical = self::canonicalHost($host);
+
+            if ($canonical === '') {
+                throw new RuntimeException(sprintf(
+                    'Refusing the base_url [%s]: its host reduces to nothing once canonicalised, '
+                    .'which is the host-less wildcard rather than a host. The site would answer on '
+                    .'every host serving this installation.',
+                    $baseUrl,
+                ));
+            }
+        }
         $path = is_string($parsed['path'] ?? null) ? $parsed['path'] : '';
 
         return [self::canonicalHost($host), self::canonicalPrefix($path)];
