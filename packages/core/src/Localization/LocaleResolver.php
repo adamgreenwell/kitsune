@@ -122,6 +122,16 @@ final class LocaleResolver
             }
         }
 
-        return $default ?? (string) config('app.locale', 'en');
+        /*
+         * ⚠️ NOT `config('app.locale')`, and that is the whole point of this line.
+         * `Application::setLocale()` WRITES that key, so reading it back yields whatever the last
+         * request set — not the operator's default. Under a long-lived worker a site-less request
+         * therefore inherited the previous site's language while appearing to fall back. Measured:
+         * after serving an Arabic site, `config('app.locale')` was `ar`.
+         *
+         * `kitsune.default_locale` is captured in `register()`, once per worker, before any
+         * request can move it.
+         */
+        return $default ?? (string) app('kitsune.default_locale');
     }
 }

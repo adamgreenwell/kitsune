@@ -475,6 +475,58 @@ describe('base_url derives the host and prefix a site claims', function (): void
         app(Context::class)->forget();
     });
 
+    it('judges overlap by the EFFECTIVE org, not one the caller happened to pass', function (): void {
+        /*
+         * ⚠️ THE BLIND SPOT EVERY OTHER TEST HERE SHARES: they all pass `org_id` explicitly.
+         * `EnforcesScope` stamps it from Context on `creating`, which Eloquent fires AFTER
+         * `saving` — so on a create that does not name the org, `$site->org_id` is still NULL when
+         * the overlap check runs. `(int) null` is `0`, which matches no org, so every rival looked
+         * like a different one and an org nesting under its own host was refused as theft.
+         *
+         * It failed SAFE — the cross-org refusal still held — but it refused a documented,
+         * legitimate arrangement, and no test could see it because none exercised the stamping
+         * path. Found by review.
+         */
+        $rival = Org::create(['name' => 'Rival Effective', 'slug' => 'rival-effective']);
+
+        app(Context::class)->setOrg($this->org);
+        Site::create([
+            'org_id' => $this->org->id, 'handle' => 'root', 'slug' => 'admin-root',
+            'name' => 'Root', 'locale' => 'en', 'url_strategy' => 'domain',
+            'base_url' => 'https://effective.example.test',
+        ]);
+
+        // No `org_id`: exactly how a Filament form or a seeder relying on Context creates one.
+        $nested = Site::create([
+            'handle' => 'nested-fr', 'slug' => 'admin-nested-fr',
+            'name' => 'Nested FR', 'locale' => 'fr', 'url_strategy' => 'path',
+            'base_url' => 'https://effective.example.test/fr',
+        ]);
+
+        expect($nested->exists)->toBeTrue('an org was refused a nest under its own host')
+            ->and((int) $nested->org_id)->toBe((int) $this->org->id);
+
+        // And the guard still holds for a genuine rival on the same path, also without org_id.
+        app(Context::class)->setOrg($rival);
+
+        $stolen = false;
+
+        try {
+            Site::create([
+                'handle' => 'steal-effective', 'slug' => 'admin-steal-effective',
+                'name' => 'Steal', 'locale' => 'de', 'url_strategy' => 'path',
+                'base_url' => 'https://effective.example.test/news',
+            ]);
+            $stolen = true;
+        } catch (Throwable) {
+            // Refused, which is the point.
+        }
+
+        expect($stolen)->toBeFalse('a rival org claimed an overlapping URL via Context stamping');
+
+        app(Context::class)->forget();
+    });
+
     it('refuses a BULK write to the columns the derived pair comes from', function (): void {
         /*
          * ⚠️ THE `saving` HOOK IS NOT ENOUGH ON ITS OWN, which review found here.
@@ -579,6 +631,50 @@ describe('resolution does not scale with the number of sites', function (): void
 
         expect($lookups[0]['bindings'])
             ->toBeGreaterThanOrEqual(8, 'the four candidate host/prefix pairs should be bound, not scanned');
+    });
+});
+
+describe('the application default survives a request that changed the locale', function (): void {
+    it('does not inherit the previous site\'s language on a site-less request', function (): void {
+        /*
+         * ⚠️ `config('app.locale')` IS RUNTIME STATE, NOT A DEFAULT, and that is the defect.
+         * `Application::setLocale()` does `config->set('app.locale', ...)`, so after serving an
+         * Arabic site the "application default" IS Arabic — measured. Under Octane or any
+         * long-lived worker, the next site-less request then inherited it while appearing to fall
+         * back correctly. Found by review.
+         *
+         * ⚠️ The fix had to be captured EAGERLY. A lazily-resolved singleton reads the value on
+         * first use, which in a worker is during the first request that needs a fallback — after
+         * the pollution. Measured too: with a singleton the leak persisted unchanged.
+         */
+        app(Context::class)->setOrg($this->org);
+        Site::create([
+            'org_id' => $this->org->id, 'handle' => 'leak-ar', 'slug' => 'admin-leak-ar',
+            'name' => 'Leak AR', 'locale' => 'ar', 'url_strategy' => 'path',
+            'base_url' => '/leak-arabic',
+        ]);
+        app(Context::class)->forget();
+
+        expect(app('kitsune.default_locale'))->toBe('en', 'the captured default is already polluted');
+
+        /*
+         * ⚠️ `Context` IS FORGOTTEN BETWEEN REQUESTS, AND THAT IS WHAT MAKES THIS FAITHFUL.
+         * It is bound as `scoped`, so Octane and queue workers rebuild it per request — while
+         * `config` is a singleton and genuinely survives. Reusing one Context across calls would
+         * test a leak production does not have, and would hide the one it does: the first version
+         * of this test failed for exactly that reason, and the failure was the test's, not the
+         * code's.
+         */
+        $worker = function (string $uri): string {
+            app(Context::class)->forget();
+
+            return serve($uri);
+        };
+
+        // Same process, same config, three requests in sequence — what a worker actually does.
+        expect($worker('http://localhost/leak-arabic'))->toBe('ar')
+            ->and($worker('http://localhost/'))->toBe('en')
+            ->and($worker('http://localhost/leak-arabic'))->toBe('ar');
     });
 });
 

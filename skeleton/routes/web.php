@@ -23,7 +23,18 @@ use Kitsune\Core\Tenancy\Context;
  * It reports the two facts worth proving at this stage: the framework boots,
  * and kitsune/core is installed and resolvable.
  */
-Route::get('/', function () {
+/*
+ * ⚠️ `SetSiteLocale` RUNS HERE TOO, even though `/` addresses no site. Review found the gap:
+ * under Octane or any long-lived worker, `app()->setLocale()` persists across requests in the
+ * same process, so a request to `/golfdom-ar` left the locale Arabic and a following request to
+ * `/` rendered the welcome page with the previous site's `lang` and `dir`.
+ *
+ * The middleware resolves absence as "use the application default", so attaching it to a
+ * site-less route is exactly how the locale gets RESET rather than inherited. `ResolveSiteFromRequest`
+ * comes first for the same reason it does below: it reports absence by leaving Context empty,
+ * which is what `SetSiteLocale` then reads.
+ */
+Route::middleware([ResolveSiteFromRequest::class, SetSiteLocale::class])->get('/', function () {
     return response()->view('welcome', [
         'version' => Kitsune::version(),
         'phase' => 'Phase 0 — foundations',

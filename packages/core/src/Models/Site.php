@@ -16,6 +16,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Kitsune\Core\Tenancy\Attributes\OrgScoped;
 use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
+use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tenancy\Contracts\RefusesCascadingDeletes;
 use Kitsune\Core\Tenancy\Contracts\RequiresModelSave;
 use RuntimeException;
@@ -203,8 +204,22 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
                 ->get(['id', 'org_id', 'base_url', 'path_prefix']),
         );
 
+        /*
+         * ⚠️ THE EFFECTIVE ORG, NOT `$site->org_id`, and review found why. `EnforcesScope` stamps
+         * `org_id` from Context on `creating`, which Eloquent fires AFTER `saving` — so on a
+         * create that does not name the org explicitly, `$site->org_id` is still NULL here.
+         * `(int) null` is `0`, which matches no org, so every rival looked like a DIFFERENT org
+         * and an org nesting `/fr` under its own `/` was refused as theft.
+         *
+         * It failed safe rather than open — the cross-org refusal still held — but it refused a
+         * documented, legitimate arrangement. Measured: it was allowed with an explicit `org_id`
+         * and refused without one, which is why every test here missed it. They all passed the
+         * org explicitly.
+         */
+        $orgId = $site->org_id ?? app(Context::class)->orgId();
+
         foreach ($rivals as $rival) {
-            if ((int) $rival->org_id === (int) $site->org_id) {
+            if ($orgId !== null && (int) $rival->org_id === (int) $orgId) {
                 // One org may arrange its own sites however it likes.
                 continue;
             }
@@ -401,6 +416,32 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
 
         if ($segments === []) {
             return '';
+        }
+
+        foreach ($segments as $segment) {
+            /*
+             * ⚠️ REFUSED RATHER THAN ENCODED, and the alternatives are both worse. A browser
+             * sends `/caf%C3%A9` for a configured `/café`, and `Request::path()` hands the
+             * resolver that ENCODED form — measured — so a literal non-ASCII prefix stores a
+             * value no request can ever equal: the site saves and is unreachable.
+             *
+             * Percent-encoding here instead would have to survive the lowercasing above (hex is
+             * conventionally uppercase, so `%C3%A9` would become `%c3%a9` and stop matching), and
+             * DECODING both sides would make `%2F` collapse into a path separator — letting a
+             * request re-segment itself into a prefix it was never given. That is a boundary this
+             * must not blur.
+             *
+             * So the same posture as an internationalised host: refuse, and say what to enter.
+             */
+            if (preg_match('/^[A-Za-z0-9._~-]+$/', $segment) !== 1) {
+                throw new RuntimeException(sprintf(
+                    'Refusing the path prefix segment [%s]: a prefix may use only letters, '
+                    .'digits, and - . _ ~ so that it matches the form a browser actually '
+                    .'requests. A literal space or non-ASCII character is sent percent-encoded, '
+                    .'and the site would save successfully and be reachable at no URL.',
+                    $segment,
+                ));
+            }
         }
 
         if (count($segments) > self::MAX_PREFIX_SEGMENTS) {

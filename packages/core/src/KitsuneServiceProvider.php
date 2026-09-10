@@ -31,6 +31,31 @@ final class KitsuneServiceProvider extends ServiceProvider
         // against it during boot, which is the extension point ADR-001
         // promises developers.
         $this->app->singleton(FieldTypeRegistry::class, static fn (): FieldTypeRegistry => new FieldTypeRegistry);
+
+        /*
+         * ⚠️ THE APPLICATION'S DEFAULT LOCALE, CAPTURED BEFORE ANYTHING CAN MOVE IT.
+         *
+         * `Application::setLocale()` does `config->set('app.locale', ...)`, so `config('app.locale')`
+         * is RUNTIME STATE rather than a default — a site request that sets Arabic overwrites it
+         * for the process. Under Octane or any long-lived worker, the next site-less request then
+         * "fell back to the application default" and got Arabic, because the default it read had
+         * already been replaced. Found by review; measured.
+         *
+         * Bound in `register()`, which runs once per worker before any request is handled, so this
+         * holds the value the operator configured. `LocaleResolver` falls back to this rather than
+         * to live config.
+         */
+        /*
+         * ⚠️ `instance()`, NOT `singleton()`. A singleton registers a LAZY factory, so the value
+         * would be captured on first resolution — which in a worker is during the first request
+         * that needs a fallback, by which time `setLocale()` has already overwritten
+         * `config('app.locale')`. Measured: with a singleton the leak persisted unchanged, because
+         * the "default" was read after the pollution rather than before it.
+         *
+         * `instance()` evaluates now, in `register()`, which runs once per worker before any
+         * request is handled.
+         */
+        $this->app->instance('kitsune.default_locale', (string) config('app.locale', 'en'));
     }
 
     public function boot(): void

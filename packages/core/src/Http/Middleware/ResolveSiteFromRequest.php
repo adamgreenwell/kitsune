@@ -112,6 +112,20 @@ final class ResolveSiteFromRequest
             'public site resolution: the org context is derived from the site this returns, so it cannot constrain it',
             fn ($query) => $query
                 ->whereNotNull('canonical_host')
+                /*
+                 * ⚠️ A SOFT-DELETED ORG'S SITES MUST NOT ANSWER, and review found that they did.
+                 * `Org::delete()` is a soft delete, so the database cascade never runs and the
+                 * site rows survive — and this query removes Site's own global scopes, which was
+                 * read as "removes every scope". It does not remove SoftDeletes on ORG, but
+                 * nothing here consulted the org at all, so a deleted customer's public URL kept
+                 * serving their content indefinitely.
+                 *
+                 * `whereHas('org')` asks the org relation, which keeps its own soft-delete scope,
+                 * so a trashed org's sites drop out. Cheaper than it looks: it is an EXISTS on an
+                 * indexed foreign key inside a query already bounded to a handful of candidate
+                 * pairs.
+                 */
+                ->whereHas('org')
                 ->where(function ($inner) use ($candidates): void {
                     foreach ($candidates as [$candidateHost, $candidatePrefix]) {
                         $inner->orWhere(function ($pair) use ($candidateHost, $candidatePrefix): void {
