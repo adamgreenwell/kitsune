@@ -1262,10 +1262,27 @@ class Entry extends Model implements RequiresModelSave
          * breaks a relation pointing AT this entry is a rule about relations, not about whether a
          * guarded column holds a derived value.
          */
-        if (array_key_exists('type_handle', $values) && array_key_exists('entry_type_id', $values)) {
-            $values['type_handle'] = EntryType::query()
-                ->whereKey($values['entry_type_id'])
-                ->value('handle') ?? $values['type_handle'];
+        if (array_key_exists('type_handle', $values) || array_key_exists('entry_type_id', $values)) {
+            /*
+             * ⚠️ EITHER COLUMN, NOT BOTH — review found the `&&` and it was wrong in both directions.
+             * Laravel's update payload carries only the DIRTY columns, so a quiet update that moves
+             * `entry_type_id` alone never reached the restamp, and one that forges `type_handle` alone
+             * never reached it either. The flag below then claimed the guarded columns were derived
+             * while `ScopedBuilder` persisted the mismatch, and every relation check and type lookup
+             * reads the handle rather than the id.
+             *
+             * ⚠️ THE ID FALLS BACK TO THE INSTANCE, because it is exactly the case where `$values`
+             * does not carry it: an update whose only dirty column is `type_handle` still has the
+             * entry's real `entry_type_id` on the model, and that is the truth the handle is derived
+             * from.
+             */
+            $typeId = $values['entry_type_id'] ?? $this->getAttribute('entry_type_id');
+
+            $handle = $typeId === null ? null : EntryType::query()->whereKey($typeId)->value('handle');
+
+            if ($handle !== null) {
+                $values['type_handle'] = $handle;
+            }
         }
 
         $this->noteGuardedColumnsDerived();

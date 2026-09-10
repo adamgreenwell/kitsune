@@ -12,6 +12,7 @@ use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Field;
+use Kitsune\Core\Models\FieldStorage;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
@@ -381,4 +382,125 @@ describe('a quiet write is not a guarded write', function (): void {
         expect((string) Entry::withoutGlobalScopes()->whereKey($entry->getKey())->value('type_handle'))
             ->toBe('article', 'a quiet create kept a handle the type does not have');
     });
+});
+
+it('refuses a detached insert that names another org', function (): void {
+    /*
+     * ⚠️ THE SCOPE KEYS WERE UNGUARDED ON THIS PATH ALONE, and the hole is a cross-org WRITE rather
+     * than a malformed column — review found it. `org_id` is not in `columnsRequiringModelSave()` and
+     * does not need to be: `EnforcesScope`'s `creating` listener stamps it, and `insertGetId()`
+     * dispatches nothing. So a caller in org A could name org B's id, omit every guarded column, and
+     * leave `refuseDetachedInsert()` nothing to inspect. Measured before the fix: the row landed in
+     * org B. `update()` and both of `AuditedBuilder`'s paths had always guarded the keys.
+     */
+    $theirs = Org::create(['name' => 'Theirs', 'slug' => 'theirs']);
+
+    expect(fn () => Site::query()->insertGetId([
+        'org_id' => $theirs->id, 'handle' => 'planted', 'slug' => 'planted', 'name' => 'Planted',
+        'locale' => 'en', 'created_at' => now(), 'updated_at' => now(),
+    ]))->toThrow(RuntimeException::class, 'from a context scoped to');
+
+    expect(Site::withoutGlobalScopes()->where('handle', 'planted')->exists())->toBeFalse();
+});
+
+it('still lets a MODEL create name another org, which is a settled policy elsewhere', function (): void {
+    /*
+     * ⚠️ THE LIMIT IS MEASURED RATHER THAN CHOSEN. Guarding every insert refuses 37 tests across ten
+     * files, because naming another org's id on a model create is a shape this codebase uses
+     * deliberately — a fixture building a rival org's data, a console command seeding one. That policy
+     * belongs where `EnforcesScope` runs, and the insert guard has no business relitigating it.
+     *
+     * The discriminator is whether a model instance is behind the builder — which is a different
+     * question from the one presence answered wrongly for the guarded columns. There it was asked to
+     * prove the guards RAN, which an attribute cannot do; here it answers whether these values came off
+     * an instance at all.
+     */
+    $theirs = Org::create(['name' => 'Theirs', 'slug' => 'theirs']);
+
+    $type = EntryType::create([
+        'org_id' => $theirs->id, 'handle' => 'rival', 'name' => 'Rival', 'plural_name' => 'Rivals',
+    ]);
+
+    expect($type->exists)->toBeTrue()->and($type->org_id)->toBe($theirs->id);
+});
+
+it('restamps the type handle when either type column moves alone', function (): void {
+    /*
+     * ⚠️ THE CONDITION WAS `&&` AND IT WAS WRONG IN BOTH DIRECTIONS — review found it. Laravel's update
+     * payload carries only the DIRTY columns, so a quiet update moving `entry_type_id` alone never
+     * reached the restamp, and one forging `type_handle` alone never reached it either. The flag then
+     * claimed the guarded columns were derived while the builder persisted the mismatch — and every
+     * relation check and type lookup reads the handle rather than the id.
+     */
+    $page = EntryType::create([
+        'org_id' => $this->org->id, 'handle' => 'page', 'name' => 'Page', 'plural_name' => 'Pages',
+    ]);
+
+    $article = EntryType::create([
+        'org_id' => $this->org->id, 'handle' => 'article', 'name' => 'Article', 'plural_name' => 'Articles',
+    ]);
+
+    $site = Site::create([
+        'org_id' => $this->org->id, 'handle' => 'restamp', 'slug' => 'restamp', 'name' => 'Restamp',
+    ]);
+
+    app(Context::class)->setSite($site);
+
+    $entry = Entry::create([
+        'entry_type_id' => $page->id, 'type_handle' => 'page', 'title' => 'Moving',
+    ]);
+
+    // Only the id is dirty: the handle is not in the payload at all, and must still be derived.
+    $entry->entry_type_id = $article->id;
+    $entry->saveQuietly();
+
+    expect((string) Entry::withoutGlobalScopes()->whereKey($entry->getKey())->value('type_handle'))
+        ->toBe('article', 'the handle was left stale when only the id moved');
+
+    // And only a forged handle is dirty: the id on the model is the truth it derives from.
+    $entry->type_handle = 'page';
+    $entry->saveQuietly();
+
+    expect((string) Entry::withoutGlobalScopes()->whereKey($entry->getKey())->value('type_handle'))
+        ->toBe('article', 'a forged handle survived when it was the only dirty column');
+});
+
+it('records the derived proof only after every guard has passed', function (): void {
+    /*
+     * ⚠️ THE FLAG WAS ARMED IN THE FIRST LISTENER, which review found was a stale proof waiting to
+     * happen. Listeners run in registration order and each guard throws rather than returning a
+     * verdict, so arming early meant a save that aborted in a LATER guard left the flag set: catch the
+     * exception, call `saveQuietly()` on the same instance, and the builder accepts the write on a
+     * proof that no longer holds. `saved` clears the flag, and an aborted save never reaches `saved`.
+     *
+     * ⚠️ Each model arms in a listener OF ITS OWN, registered last, rather than at the end of the last
+     * guard — which would work until the next guard is registered after it.
+     */
+    $type = EntryType::create([
+        'org_id' => $this->org->id, 'handle' => 'aborter', 'name' => 'Aborter', 'plural_name' => 'Aborters',
+    ]);
+
+    $other = EntryType::create([
+        'org_id' => $this->org->id, 'handle' => 'other', 'name' => 'Other', 'plural_name' => 'Others',
+    ]);
+
+    $storage = FieldStorage::create([
+        'org_id' => $this->org->id, 'handle' => 'subject', 'type' => 'text', 'pii_class' => 'personal',
+    ]);
+
+    $foreign = Field::create([
+        'entry_type_id' => $other->id, 'field_storage_id' => $storage->id, 'label' => 'Subject',
+    ]);
+
+    // A nomination naming another type's field: refused by a listener that runs AFTER the first.
+    $type->subject_field_id = $foreign->id;
+
+    expect(fn () => $type->save())->toThrow(RuntimeException::class);
+
+    // ⚠️ The instance now carries the invalid value AND, before the fix, a proof that its guards ran.
+    expect(fn () => $type->saveQuietly())
+        ->toThrow(RuntimeException::class, 'cannot be written in bulk');
+
+    expect(EntryType::withoutGlobalScopes()->whereKey($type->getKey())->value('subject_field_id'))
+        ->toBeNull('the aborted save left a proof behind and the quiet retry used it');
 });

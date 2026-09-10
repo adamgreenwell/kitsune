@@ -86,12 +86,13 @@ class Field extends Model implements RefusesCascadingDeletes, RequiresModelSave
         // Registered AFTER the nomination guard so that when both apply — a
         // nominated field swapped onto a rival's storage — the more specific
         // refusal is the one the caller reads.
-        static::saving(function (self $field): void {
-            $field->guardStorageOwnership();
+        static::saving(fn (self $field) => $field->guardStorageOwnership());
 
-            // The guarded columns are `field_storage_id` and `entry_type_id`; this is what checks them.
-            $field->noteGuardedColumnsDerived();
-        });
+        // ⚠️ ITS OWN LISTENER, REGISTERED LAST, for the reason `EntryType` records: listeners run in
+        // registration order, each guard throws rather than returning a verdict, and arming before a
+        // later one runs leaves a stale proof behind when a save aborts. Appending it to the last
+        // guard would work until the next guard is added after that one.
+        static::saving(fn (self $field) => $field->noteGuardedColumnsDerived());
 
         // ⚠️ Deleting is safe for the NOMINATION and not for the DATA, and this
         // comment used to claim it was safe outright.

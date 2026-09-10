@@ -157,11 +157,13 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
             [$site->canonical_host, $site->path_prefix] = self::deriveUrlParts($site->base_url, $site->url_strategy);
 
             self::refuseOverlappingClaim($site);
-
-            // ⚠️ LAST, so the flag means "all of it ran" rather than "some of it started". A refusal
-            // above throws before this, and the builder then sees a write it must not let through.
-            $site->noteGuardedColumnsDerived();
         });
+
+        // ⚠️ ITS OWN LISTENER, REGISTERED LAST, for the reason `EntryType` records: listeners run in
+        // registration order, each guard throws rather than returning a verdict, and arming before a
+        // later one runs leaves a stale proof behind when a save aborts. Appending it to the last
+        // guard would work until the next guard is added after that one.
+        static::saving(fn (self $site) => $site->noteGuardedColumnsDerived());
     }
 
     /**

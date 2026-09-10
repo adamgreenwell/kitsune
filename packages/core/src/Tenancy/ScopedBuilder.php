@@ -157,6 +157,19 @@ class ScopedBuilder extends Builder
      */
     public function insertGetId(array $values, $sequence = null)
     {
+        /*
+         * ⚠️ THE SCOPE KEYS TOO, WHICH THIS PATH ALONE WAS MISSING — review found it, and the hole is
+         * a cross-org write rather than a malformed column. `org_id` is NOT in
+         * `Site::columnsRequiringModelSave()` and does not need to be: it is stamped by
+         * `EnforcesScope`'s `creating` listener, which `insertGetId()` never dispatches. So a caller in
+         * org A could name org B's id, omit every guarded column, and leave `refuseDetachedInsert()`
+         * with nothing to inspect. Measured: the row landed in org B.
+         *
+         * ⚠️ AND `update()` HAS ALWAYS DONE THIS, as have both of `AuditedBuilder`'s paths. Three call
+         * sites guarded the keys and the fourth delegated straight to the parent — the shape of gap
+         * this whole issue is about, one method along again.
+         */
+        $this->refuseDetachedScopeKeys($values);
         $this->refuseDetachedInsert('insertGetId', $values);
 
         return parent::insertGetId($values, $sequence);
@@ -179,6 +192,62 @@ class ScopedBuilder extends Builder
          * cannot follow. Naming the real receiver is clearer than annotating around the magic.
          */
         return $this->toBase()->insertOrIgnoreReturning($values, $returning, $uniqueBy);
+    }
+
+    /**
+     * Refuse a HAND-ROLLED insert that names another scope's key.
+     *
+     * ⚠️ THE SCOPE KEYS WERE UNGUARDED ON THIS PATH ALONE — review found it, and the hole is a
+     * cross-org write rather than a malformed column. `org_id` is NOT in
+     * `Site::columnsRequiringModelSave()` and does not need to be: it is stamped by `EnforcesScope`'s
+     * `creating` listener, which `insertGetId()` never dispatches. So a caller in org A could name org
+     * B's id, omit every guarded column, and leave `refuseDetachedInsert()` nothing to inspect.
+     * Measured: the row landed in org B. `update()` has always guarded the keys, and so have both of
+     * `AuditedBuilder`'s paths — three call sites did and the fourth delegated straight to the parent.
+     *
+     * ⚠️ ONLY A DETACHED INSERT, AND THAT LIMIT IS MEASURED RATHER THAN CHOSEN. Guarding every insert
+     * refuses 37 tests across ten files, because naming another org's id on a MODEL create is a shape
+     * this codebase uses deliberately — a fixture building a rival org's data, a console command
+     * seeding one. That is a policy about model creates, settled where `EnforcesScope` runs, and this
+     * method has no business relitigating it: `Entry` already guards its keys on insert through
+     * `AuditedBuilder`, so the two would otherwise disagree in the other direction.
+     *
+     * ⚠️ THE DISCRIMINATOR IS WHETHER THIS KEY CAME OFF THE MODEL, per key, and it took two attempts.
+     * "The model has any attributes at all" was the first, and it was presence again and wrong again:
+     * `Site` declares a default `url_strategy`, so a FRESH instance has an attribute and
+     * `Model::query()` looked like a save. Caught by the test for the very hole this closes.
+     *
+     * Equality on the key itself is the question actually being asked. `Model::performInsert()` builds
+     * `$values` FROM the instance's attributes, so the org id there is the org id on the model; a
+     * hand-rolled insert names one the model has never held. This is safe where equality was not safe
+     * for `refuseDetachedInsert()` — there `AuditedBuilder` deliberately TRANSFORMS an `Entry`'s
+     * `values` on the way down, and nothing transforms a scope key.
+     *
+     * @param  array<string, mixed>  $values
+     */
+    private function refuseDetachedScopeKeys(array $values): void
+    {
+        $model = $this->getModel();
+        $detached = [];
+
+        foreach ($values as $column => $value) {
+            $bare = $this->bareColumn((string) $column);
+
+            if ($bare !== 'org_id' && $bare !== 'site_id') {
+                continue;
+            }
+
+            $onModel = $model->getAttribute($bare);
+
+            // Loose on purpose: an id is an int on the model and may arrive as a numeric string.
+            if ($onModel === null || (string) $onModel !== (string) $value) {
+                $detached[$bare] = $value;
+            }
+        }
+
+        if ($detached !== []) {
+            $this->guardScopeKeys($detached);
+        }
     }
 
     /**

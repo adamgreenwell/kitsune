@@ -528,15 +528,7 @@ class EntryType extends Model implements RefusesCascadingDeletes, RequiresModelS
         // its fields stayed backed by the FORMER org's storage. That is the
         // exact state `Field::saving()` refuses to create, reached by moving
         // the other side of the relationship instead.
-        static::saving(function (self $type): void {
-            $type->guardOrgMove();
-
-            // ⚠️ The guarded columns are `subject_field_id` and `org_id`, and `guardOrgMove()` plus
-            // the subject guard below are what validate them. Noted here because this listener is
-            // registered first, and every one of them throws rather than returning a verdict — so
-            // reaching the end of the chain is the proof, and a suppressed chain reaches nothing.
-            $type->noteGuardedColumnsDerived();
-        });
+        static::saving(fn (self $type) => $type->guardOrgMove());
 
         // ⚠️ An icon nobody can resolve used to brick the whole admin.
         //
@@ -588,6 +580,22 @@ class EntryType extends Model implements RefusesCascadingDeletes, RequiresModelS
                 throw new ReservedHandleException($type->handle);
             }
         });
+
+        /*
+         * ⚠️ LAST, AFTER EVERY GUARD, and the first version armed it in the FIRST listener — which
+         * review found was a stale proof waiting to happen. Listeners run in registration order and
+         * each of these throws rather than returning a verdict, so arming early meant a save that
+         * aborted in a later guard left the flag SET: catch the exception, call `saveQuietly()` on the
+         * same instance, and the builder accepts the write on a proof that no longer holds.
+         *
+         * `saved` clears the flag, and an aborted save never reaches `saved`. So the flag has to be
+         * set at the point where "all of them passed" is true, which is the end of the chain.
+         *
+         * ⚠️ REGISTERED HERE RATHER THAN APPENDED TO THE LAST GUARD, because the next guard added to
+         * this model will be registered after it and would silently move ahead of the arming again.
+         * A listener of its own is the one shape that keeps working when the list grows.
+         */
+        static::saving(fn (self $type) => $type->noteGuardedColumnsDerived());
     }
 
     /** @return BelongsTo<Org, $this> */
