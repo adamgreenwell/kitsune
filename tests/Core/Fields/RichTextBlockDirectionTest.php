@@ -9,6 +9,7 @@
 declare(strict_types=1);
 
 use Illuminate\Support\Facades\DB;
+use Kitsune\Core\Fields\Types\RichTextType;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Field;
@@ -261,11 +262,15 @@ it('carries an explicit container direction into wrappers it cannot avoid', func
      * text — `ACME` and `مرحبا` would resolve opposite ways under `auto`, inside a container the
      * author declared `rtl`.
      *
-     * ⚠️ The author's OWN `<p>` keeps its own direction. It is their markup, not a wrapper this
-     * added, and the block pass above already gave it one.
+     * ⚠️ THIS TEST ASSERTED `dir="auto"` ON THE AUTHOR'S OWN `<p>`, and that expectation was the very
+     * defect the next round of review found. The reasoning was "it is their markup, not a wrapper
+     * this added, and the block pass already gave it one" — true about ownership and wrong about the
+     * value: a `<p>` with no direction of its own inside a container declared `rtl` inherits `rtl`,
+     * and stamping `auto` there overrode the author exactly as it did on a `figcaption`. The wrapper
+     * rule and the block rule now give the same answer because they are the same rule.
      */
     expect(storedBody('<blockquote dir="rtl">ACME<p>x</p>مرحبا</blockquote>'))
-        ->toBe('<blockquote dir="rtl"><p dir="rtl">ACME</p><p dir="auto">x</p><p dir="rtl">مرحبا</p></blockquote>');
+        ->toBe('<blockquote dir="rtl"><p dir="rtl">ACME</p><p dir="rtl">x</p><p dir="rtl">مرحبا</p></blockquote>');
 });
 
 it('does not let a dir that establishes no direction suppress a wrapper', function (string $invalid): void {
@@ -359,4 +364,93 @@ it('is idempotent, so a re-save does not accumulate attributes', function (): vo
     $once = storedBody('<p>Hello</p><p>مرحبا</p>');
 
     expect(storedBody($once))->toBe($once);
+});
+
+it('inherits a fixed direction rather than overriding it with auto', function (string $html, string $expected): void {
+    /*
+     * ⚠️ THE SAME MISTAKE, A THIRD TIME, ONE STEP FURTHER OUT — and that is the part worth recording.
+     * Round one stamped `auto` on a block that had its own direction; round two stamped it on a
+     * WRAPPER inside a directed container; this is the block pass stamping it on a CHILD of one.
+     * `<figure dir="rtl"><figcaption>ACME مرحبا</figcaption></figure>` gave the caption `auto`, and
+     * `auto` resolves from `ACME` — an explicit `rtl` beaten by a default, with inheritance having
+     * been right all along.
+     *
+     * ⚠️ A FIXED ancestor is inherited and an `auto` one is not, which is the whole rule. `ltr` and
+     * `rtl` are decisions and reach every descendant that states none. `auto` is not a direction but
+     * an instruction to resolve from content, so a child under it must resolve from its OWN content
+     * — which is `auto` again, and is what issue #39 is about.
+     */
+    expect(storedBody($html))->toBe($expected);
+})->with([
+    [
+        '<figure dir="rtl"><figcaption>ACME مرحبا</figcaption></figure>',
+        '<figure dir="rtl"><figcaption dir="rtl">ACME مرحبا</figcaption></figure>',
+    ],
+    [
+        '<blockquote dir="rtl"><p>ACME مرحبا</p></blockquote>',
+        '<blockquote dir="rtl"><p dir="rtl">ACME مرحبا</p></blockquote>',
+    ],
+    [
+        '<figure dir="ltr"><figcaption>عربي ACME</figcaption></figure>',
+        '<figure dir="ltr"><figcaption dir="ltr">عربي ACME</figcaption></figure>',
+    ],
+    // ⚠️ Two levels down, so the walk cannot be a parent-only check.
+    [
+        '<figure dir="rtl"><figcaption><p>ACME مرحبا</p></figcaption></figure>',
+        '<figure dir="rtl"><figcaption dir="rtl"><p dir="rtl">ACME مرحبا</p></figcaption></figure>',
+    ],
+    /*
+     * ⚠️ A child under `auto` gets `auto`, and the two readings of why COINCIDE — "inherit the
+     * ancestor's auto" and "resolve from your own content" produce the same attribute. The first
+     * implementation had a branch distinguishing them; reverting it changed nothing, so the branch
+     * was asserting something it could not act on and is gone. The guarantee is still worth pinning.
+     */
+    [
+        '<figure dir="auto"><figcaption>ACME مرحبا</figcaption></figure>',
+        '<figure dir="auto"><figcaption dir="auto">ACME مرحبا</figcaption></figure>',
+    ],
+    // No ancestor direction at all, which is the ordinary case and must be unchanged.
+    [
+        '<figure><figcaption>ACME مرحبا</figcaption></figure>',
+        '<figure><figcaption dir="auto">ACME مرحبا</figcaption></figure>',
+    ],
+    // A child that states its own direction outranks the ancestor, as it always did.
+    [
+        '<figure dir="rtl"><figcaption dir="ltr">ACME مرحبا</figcaption></figure>',
+        '<figure dir="rtl"><figcaption dir="ltr">ACME مرحبا</figcaption></figure>',
+    ],
+]);
+
+it('sanitizes a repeated value once, and does not serve a different one from the memo', function (): void {
+    /*
+     * ⚠️ THE SAME VALUE WAS PARSED THREE TIMES PER WRITE, which review found. `castToStorage()`
+     * sanitises and then stamps directions — two parses, argued for in that method — and the
+     * revision's loss check then called `sanitize()` again with the same string. Measured, one
+     * parse-and-walk is 17.9 ms at 786 KB on a machine much faster than ADR-027's 1 vCPU floor, and
+     * the value is unbounded: `scalarValidationRules()` is `['string']` and `apiSchema()` publishes
+     * no length. The docblock claiming it was "bounded by MAX_LENGTH" and cost "microseconds" was
+     * wrong on both counts — `MAX_LENGTH` bounds an authored validation PATTERN.
+     *
+     * ⚠️ WHAT A TEST CAN PIN IS THE MEMO'S CORRECTNESS, not its speed. The parse count is a
+     * measurement recorded where the decision is; what has to hold forever is that a repeat gets the
+     * same bytes, that a DIFFERENT input is never served the previous answer, and that the single
+     * entry being evicted leaves the first value still correct. `ValueConversionTest` covers the
+     * behaviour the third parse was serving — `unsanitized_values` on a lossy save — so the memo
+     * being wrong would fail there too.
+     */
+    $type = new RichTextType;
+
+    $lossy = '<p>Hello</p><script>alert(1)</script>';
+    $other = '<p>Something else</p>';
+
+    $first = $type->sanitize($lossy);
+
+    expect($type->sanitize($lossy))->toBe($first, 'a repeated value came back different')
+        ->and($first)->toBe('<p>Hello</p>', 'the script survived')
+        ->and($type->sanitize($other))->toBe($other, 'a different value was served from the memo')
+        ->and($type->sanitize($lossy))->toBe($first, 'the evicted value came back wrong');
+
+    // ⚠️ And an empty value returns before the memo, so it can neither poison nor read it.
+    expect($type->sanitize('  '))->toBe('  ')
+        ->and($type->sanitize($lossy))->toBe($first);
 });

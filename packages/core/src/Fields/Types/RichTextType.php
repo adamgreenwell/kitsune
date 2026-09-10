@@ -67,17 +67,6 @@ final class RichTextType extends BaseFieldType
     ];
 
     /**
-     * The tags that hold a run of text, and therefore have a direction of their own.
-     *
-     * ⚠️ `ul`, `ol` and `figure` are absent on purpose: they contain blocks rather than text, so a
-     * direction on them would be inherited by children that should each resolve their own. `li` and
-     * `figcaption` are the text-bearing halves of those pairs and are here.
-     *
-     * ⚠️ `br` and the inline tags are absent for the opposite reason — `dir` on a fragment of a
-     * sentence resolves from a fragment, which is how you get one clause of a paragraph pointing the
-     * wrong way.
-     */
-    /**
      * The only values that establish a direction.
      *
      * ⚠️ PRIVATE, LIKE THE TWO TAG LISTS BELOW. Review pointed out that a public constant is three
@@ -91,6 +80,17 @@ final class RichTextType extends BaseFieldType
      */
     private const DIRECTIONS = ['ltr', 'rtl', 'auto'];
 
+    /**
+     * The tags that hold a run of text, and therefore have a direction of their own.
+     *
+     * ⚠️ `ul`, `ol` and `figure` are absent on purpose: they contain blocks rather than text, so a
+     * direction on them would be inherited by children that should each resolve their own. `li` and
+     * `figcaption` are the text-bearing halves of those pairs and are here.
+     *
+     * ⚠️ `br` and the inline tags are absent for the opposite reason — `dir` on a fragment of a
+     * sentence resolves from a fragment, which is how you get one clause of a paragraph pointing the
+     * wrong way.
+     */
     private const BLOCK_TAGS = [
         'p', 'li', 'h2', 'h3', 'h4', 'blockquote', 'pre', 'figcaption',
     ];
@@ -119,6 +119,17 @@ final class RichTextType extends BaseFieldType
      * who assumed it was would reintroduce exactly the over-reach this avoids.
      */
     private const FLOW_CONTAINER_TAGS = ['figure', 'blockquote', 'li', 'figcaption'];
+
+    /**
+     * The last value `sanitize()` was handed, and what it returned.
+     *
+     * ⚠️ ONE ENTRY, because one is what the access pattern needs: a write sanitises a value and then
+     * asks whether sanitising changed it. A growing cache would be a memory leak keyed on user input
+     * — see `sanitize()` for why this is keyed on the exact string rather than a digest.
+     */
+    private ?string $memoInput = null;
+
+    private ?string $memoOutput = null;
 
     public static function handle(): string
     {
@@ -189,8 +200,18 @@ final class RichTextType extends BaseFieldType
          * security expectations, and a reviewer reading that diff cannot tell which half is which.
          * Direction is not safety. It is a second step over a value already known to be safe.
          *
-         * The cost is a second parse on write. Rich text writes are rare and bounded by
-         * `MAX_LENGTH`, and the separation is worth more than the microseconds.
+         * ⚠️ THE COST IS A SECOND PARSE, AND THIS SENTENCE USED TO GET IT WRONG TWICE. It said the
+         * value was "bounded by `MAX_LENGTH`" and the cost was "microseconds". Review checked both:
+         * `MAX_LENGTH` is `Pattern`'s bound on an authored VALIDATION PATTERN and has nothing to do
+         * with a rich text value, `scalarValidationRules()` is `['string']` alone, and `apiSchema()`
+         * publishes no length — so the value is unbounded from the API and from an import. Measured
+         * on a machine much faster than ADR-027's 1 vCPU floor, one parse-and-walk is 0.8 ms at
+         * 31 KB, 3.9 ms at 157 KB and 17.9 ms at 786 KB: linear, and milliseconds rather than
+         * microseconds.
+         *
+         * The separation is still worth a second parse — it is a security boundary against a
+         * presentation concern — but it is worth it at a price, not for free, and there is no third
+         * parse: `sanitize()` memoises its last input so the revision's loss check reuses this one.
          */
         if ($input === null) {
             return null;
@@ -253,9 +274,24 @@ final class RichTextType extends BaseFieldType
             foreach (iterator_to_array($document->getElementsByTagName($tag)) as $element) {
                 // No `instanceof` guard: `getElementsByTagName()` yields elements by definition,
                 // and static analysis correctly calls the check dead.
-                if (! in_array(strtolower($element->getAttribute('dir')), self::DIRECTIONS, true)) {
-                    $element->setAttribute('dir', 'auto');
+                if (self::ownDirection($element) !== null) {
+                    continue;
                 }
+
+                /*
+                 * ⚠️ `auto` FILLS A GAP AND MUST NOT CLOSE A CHOICE ONE LEVEL UP, which review found
+                 * — the third time this exact mistake has appeared on this branch, each time one step
+                 * further from where it was fixed. `<figure dir="rtl"><figcaption>ACME مرحبا</…>` had
+                 * `auto` stamped on the caption, and `auto` resolves from `ACME`: an explicit `rtl`
+                 * was overridden by a default. Inheritance was giving the right answer.
+                 *
+                 * ⚠️ A FIXED ancestor is inherited; an `auto` one is not, and that asymmetry is the
+                 * whole rule. `ltr` and `rtl` are decisions and reach every descendant that states
+                 * none. `auto` is not a direction — it is an instruction to resolve from content —
+                 * so a child under it must resolve from ITS OWN content, which is `auto` again and is
+                 * exactly what issue #39 is about.
+                 */
+                $element->setAttribute('dir', self::nearestDirection($element) ?? 'auto');
             }
         }
 
@@ -339,6 +375,26 @@ final class RichTextType extends BaseFieldType
             return $html;
         }
 
+        /*
+         * ⚠️ THE SAME VALUE WAS PARSED THREE TIMES PER WRITE, which review found. `castToStorage()`
+         * sanitises and then stamps directions — two parses, and that second one is argued for above
+         * — and then `Entry` asks whether sanitising REMOVED anything, which called this again with
+         * the same string. Measured, one parse-and-walk is 17.9 ms at 786 KB on a machine much faster
+         * than ADR-027's floor, and the value is unbounded: `scalarValidationRules()` is `['string']`.
+         *
+         * ⚠️ MEMOISED HERE RATHER THAN ANSWERED ELSEWHERE, because the alternative was a method
+         * saying "did the last sanitise lose anything" — new public surface on a field type, which is
+         * the thing the two previous rounds of this branch were about. A memo inside the method has
+         * no surface at all and serves every caller that repeats itself.
+         *
+         * ⚠️ KEYED ON THE EXACT STRING, not on a hash. A collision would return the wrong sanitised
+         * HTML from a security boundary; the retention is one value that is already in memory for the
+         * duration of the write, and one entry is all the access pattern needs.
+         */
+        if ($html === $this->memoInput) {
+            return (string) $this->memoOutput;
+        }
+
         $document = new DOMDocument;
 
         // libxml complains about HTML5 elements and about the malformed markup
@@ -375,7 +431,10 @@ final class RichTextType extends BaseFieldType
 
         $this->clean($document);
 
-        return $this->serialize($document);
+        $this->memoInput = $html;
+        $this->memoOutput = $this->serialize($document);
+
+        return $this->memoOutput;
     }
 
     /**
@@ -497,6 +556,35 @@ final class RichTextType extends BaseFieldType
                 $paragraph->appendChild($node);
             }
         }
+    }
+
+    /**
+     * The direction this element inherits from its nearest directed ancestor, or null when it has none.
+     *
+     * ⚠️ THE NEAREST ONE WINS AND THE WALK STOPS THERE, because that is what inheritance does.
+     * Continuing past a directed ancestor to find a fixed grandparent would give a child a direction
+     * the browser would never have given it.
+     *
+     * ⚠️ `auto` NEEDS NO SPECIAL CASE, AND THE FIRST VERSION OF THIS HAD ONE. It mapped an `auto`
+     * ancestor to null so the caller would default to `auto` — reasoning that `auto` is an instruction
+     * to resolve from content rather than a direction to inherit. That reasoning is right and the
+     * branch was still dead: both readings stamp `auto`, so it was a conditional asserting a
+     * distinction the code could not act on. Found by reverting it and watching every test still pass.
+     *
+     * ⚠️ The parsing wrapper `div` carries no `dir`, so a top-level block walks to the top and gets
+     * `auto` from the caller — the behaviour that existed before inheritance was considered at all.
+     */
+    private static function nearestDirection(DOMNode $element): ?string
+    {
+        for ($ancestor = $element->parentNode; $ancestor !== null; $ancestor = $ancestor->parentNode) {
+            $direction = self::ownDirection($ancestor);
+
+            if ($direction !== null) {
+                return $direction;
+            }
+        }
+
+        return null;
     }
 
     /**
