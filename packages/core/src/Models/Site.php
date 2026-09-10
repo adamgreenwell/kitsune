@@ -434,7 +434,7 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
          * diverge in the first place.
          */
         if (mb_check_encoding($host, 'ASCII')) {
-            return $host;
+            return self::reachableHost($host, $host);
         }
 
         /*
@@ -464,7 +464,129 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
             ));
         }
 
-        return rtrim(mb_strtolower($ascii), '.');
+        return self::reachableHost(rtrim(mb_strtolower($ascii), '.'), $host);
+    }
+
+    /**
+     * The host in the one spelling a request can arrive in, or a refusal.
+     *
+     * ⚠️ A STORED HOST NOBODY CAN REQUEST IS WORSE THAN A REFUSED ONE, and the ASCII fast path
+     * above returned any ASCII string verbatim — so this is the check it was missing. Two
+     * separate review findings, one cause:
+     *
+     * - **A numeric host has many spellings and a browser sends exactly one.** Measured through
+     *   the WHATWG URL parser, which is the algorithm browsers implement: `127.1`, `010.1`,
+     *   `0x7f.0.0.1`, `0177.0.0.1` and `2130706433` ALL become `127.0.0.1`, and
+     *   `[0:0:0:0:0:0:0:1]`, `[0::1]` and `[::0:1]` all become `[::1]`. Stored verbatim, each
+     *   non-canonical spelling is a claim no request reaches — while another org holding the
+     *   canonical form passes the unique index as an unrelated claim and receives that
+     *   operator's audience. ADR-021 has no framework safety net for cross-org URL theft, which
+     *   is why this is refused at the boundary.
+     * - **A host the framework rejects can still be saved.** `x..test` saves, and
+     *   `Request::getHost()` answers 400 for it before any middleware runs, so the site is
+     *   unreachable at the address its operator configured.
+     *
+     * ⚠️ REFUSED RATHER THAN NORMALISED, unlike the IDN case above, and the reason is that
+     * normalising here would mean reimplementing the WHATWG IPv4 parser — decimal, octal and hex
+     * labels, with the last one absorbing the remainder. Getting that subtly wrong would CREATE
+     * an alias rather than close one, which is worse than refusing a spelling an operator can
+     * fix in one keystroke. The IDN conversion is delegated to `intl`; there is no equivalent to
+     * delegate to here.
+     */
+    private static function reachableHost(string $ascii, string $given): string
+    {
+        if ($ascii === '') {
+            return '';
+        }
+
+        if (str_starts_with($ascii, '[')) {
+            return self::canonicalIpv6($ascii, $given);
+        }
+
+        /*
+         * ⚠️ A FINAL LABEL THAT IS ALL DIGITS OR HEX MEANS THIS IS AN IP, not a name — a DNS
+         * top-level label cannot be entirely numeric, so there is no legitimate name to refuse
+         * here. The WHATWG parser reads such a host as an address, which is why `2130706433`
+         * reaches `127.0.0.1` while Symfony is content to treat it as a name.
+         */
+        if (preg_match('/(?:^|\.)(?:0[xX][0-9a-fA-F]*|[0-9]+)$/D', $ascii) === 1) {
+            if (filter_var($ascii, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) === false) {
+                throw new RuntimeException(sprintf(
+                    'Refusing the host [%s]: its last label is numeric, which makes it an IP '
+                    .'address rather than a name, and it is not a valid IPv4 address in the one '
+                    .'spelling a browser sends. `127.1`, `010.1`, `0x7f.0.0.1` and `2130706433` '
+                    .'are all requested as `127.0.0.1`. Enter the four-part decimal form.',
+                    $given,
+                ));
+            }
+
+            return $ascii;
+        }
+
+        /*
+         * ⚠️ THE SAME RULE `Request::getHost()` APPLIES, so a saved host is one a request can
+         * deliver. Kept as a copy rather than a call because `getHost()` also consults trusted
+         * proxies and the trusted-host regexp — runtime configuration that has no business
+         * deciding whether an address can be stored. `HostValidityParityTest` asserts this agrees
+         * with Symfony across a corpus, so the copy is pinned by a test rather than by hope.
+         * Vendor source: `Symfony\Component\HttpFoundation\Request::isHostValid()`.
+         */
+        if (preg_replace('/[-a-zA-Z0-9_]++\.?/', '', $ascii) !== '') {
+            throw new RuntimeException(sprintf(
+                'Refusing the host [%s]: it is not a shape a request can carry, so the framework '
+                .'answers 400 for it before routing and the site would be unreachable at its own '
+                .'address. A label may hold letters, digits, hyphens and underscores.',
+                $given,
+            ));
+        }
+
+        return $ascii;
+    }
+
+    /**
+     * A bracketed IPv6 host in the spelling a browser sends, or a refusal.
+     *
+     * ⚠️ PHP AND THE URL PARSER DISAGREE ON ONE RANGE, so that range is refused rather than
+     * guessed at. Measured across twelve forms: `inet_ntop(inet_pton(...))` matches the WHATWG
+     * serialisation everywhere EXCEPT IPv4-mapped addresses, where PHP prints
+     * `::ffff:127.0.0.1` and a browser sends `::ffff:7f00:1`. Requiring PHP's form there would
+     * reject the spelling that actually arrives and accept one that never does — precisely
+     * backwards — and hand-rolling the spec's serialiser is the mistake this method avoids.
+     */
+    private static function canonicalIpv6(string $ascii, string $given): string
+    {
+        $inside = str_ends_with($ascii, ']') ? substr($ascii, 1, -1) : '';
+        $packed = $inside === '' ? false : @inet_pton($inside);
+
+        if ($packed === false || strlen($packed) !== 16) {
+            throw new RuntimeException(sprintf(
+                'Refusing the host [%s]: a bracketed host is an IPv6 address, and this is not '
+                .'one. A request carrying it would be refused before routing.',
+                $given,
+            ));
+        }
+
+        $canonical = (string) inet_ntop($packed);
+
+        if (str_contains($canonical, '.')) {
+            throw new RuntimeException(sprintf(
+                'Refusing the host [%s]: it is an IPv4-mapped IPv6 address, and PHP and browsers '
+                .'spell that range differently — PHP writes `::ffff:127.0.0.1` where a browser '
+                .'sends `::ffff:7f00:1`. Address the site by its IPv4 form instead.',
+                $given,
+            ));
+        }
+
+        if ($inside !== $canonical) {
+            throw new RuntimeException(sprintf(
+                'Refusing the host [%s]: an IPv6 address has one spelling a browser sends, and '
+                .'this is not it. Enter it as [%s].',
+                $given,
+                $canonical,
+            ));
+        }
+
+        return '['.$canonical.']';
     }
 
     /**

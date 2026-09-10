@@ -425,6 +425,96 @@ describe('base_url derives the host and prefix a site claims', function (): void
         expect(Site::deriveUrlParts('https://x.test./news', 'domain'))->toBe(['x.test', '/news']);
     });
 
+    it('refuses a numeric host in any spelling but the one a browser sends', function (): void {
+        /*
+         * ⚠️ ONE ADDRESS, FIVE SPELLINGS, and a browser sends exactly one. Measured through the
+         * WHATWG URL parser, which is the algorithm browsers implement:
+         *
+         *   127.1 → 127.0.0.1        0x7f.0.0.1 → 127.0.0.1     2130706433 → 127.0.0.1
+         *   010.1 → 8.0.0.1          0177.0.0.1 → 127.0.0.1
+         *
+         * Stored verbatim, each non-canonical spelling was a claim no request could reach — and
+         * worse than merely broken, because another org holding `127.0.0.1` passed the unique index
+         * as an unrelated claim and received the first operator's audience. ADR-021 records that
+         * cross-org URL theft has no framework safety net, so it is refused at the boundary.
+         *
+         * ⚠️ Refused rather than normalised, unlike the IDN case: normalising would mean
+         * reimplementing the WHATWG IPv4 parser — decimal, octal and hex labels, the last
+         * absorbing the remainder — and getting that subtly wrong would CREATE an alias.
+         */
+        foreach (['127.1', '010.1', '0x7f.0.0.1', '2130706433', '0177.0.0.1', '1.2.3.4.5'] as $alias) {
+            expect(fn () => Site::deriveUrlParts('https://'.$alias.'/', 'domain'))
+                ->toThrow(RuntimeException::class, 'numeric');
+        }
+
+        // The spelling a browser actually sends is stored, so the guard costs nothing in practice.
+        expect(Site::deriveUrlParts('https://127.0.0.1/news', 'domain'))->toBe(['127.0.0.1', '/news'])
+            ->and(Site::deriveUrlParts('https://255.255.255.255/', 'domain'))->toBe(['255.255.255.255', '']);
+
+        // ⚠️ And a NAME whose last label is not numeric is untouched — no DNS top-level label is
+        // all digits, so this rule cannot refuse a legitimate name.
+        expect(Site::deriveUrlParts('https://x1.test/', 'domain'))->toBe(['x1.test', '']);
+    });
+
+    it('refuses an IPv6 host in any spelling but the compressed one', function (): void {
+        /*
+         * ⚠️ SAME DEFECT, AND HERE BOTH SPELLINGS PASS THE FRAMEWORK, which makes it the cleaner
+         * instance: `[0:0:0:0:0:0:0:1]`, `[0::1]` and `[::0:1]` are all requested as `[::1]`.
+         *
+         * ⚠️ THE IPv4-MAPPED RANGE IS REFUSED OUTRIGHT, because PHP and browsers spell it
+         * differently — measured across twelve forms, `inet_ntop(inet_pton(...))` matches the
+         * WHATWG serialisation everywhere except there, where PHP writes `::ffff:127.0.0.1` and a
+         * browser sends `::ffff:7f00:1`. Requiring PHP's form would reject the spelling that
+         * arrives and accept one that never does.
+         */
+        foreach (['[0:0:0:0:0:0:0:1]', '[0::1]', '[::0:1]'] as $alias) {
+            expect(fn () => Site::deriveUrlParts('https://'.$alias.'/', 'domain'))
+                ->toThrow(RuntimeException::class, 'one spelling a browser sends');
+        }
+
+        foreach (['[::ffff:127.0.0.1]', '[::ffff:7f00:1]'] as $mapped) {
+            expect(fn () => Site::deriveUrlParts('https://'.$mapped.'/', 'domain'))
+                ->toThrow(RuntimeException::class, 'IPv4-mapped');
+        }
+
+        expect(fn () => Site::deriveUrlParts('https://[notv6]/', 'domain'))
+            ->toThrow(RuntimeException::class, 'not');
+
+        // The compressed form is stored, brackets and all, because that is what `Host` carries.
+        expect(Site::deriveUrlParts('https://[::1]/news', 'domain'))->toBe(['[::1]', '/news'])
+            ->and(Site::deriveUrlParts('https://[2001:db8::1]/', 'domain'))->toBe(['[2001:db8::1]', '']);
+    });
+
+    it('refuses a host shape the framework answers 400 for', function (): void {
+        /*
+         * ⚠️ THE SYMMETRIC HALF of the request-path test below, and review found it by reading
+         * that test: if `Request::getHost()` answers 400 for `x..test` before any middleware runs,
+         * then storing `x..test` stores a site unreachable at the address its operator configured.
+         *
+         * The rule is a copy of Symfony's, and `HostValidityParityTest` asserts the copy still
+         * agrees with Symfony rather than leaving that to hope.
+         */
+        foreach (['x..test', '.x.test', 'x test', 'x,test'] as $undeliverable) {
+            expect(fn () => Site::deriveUrlParts('https://'.$undeliverable.'/', 'domain'))
+                ->toThrow(RuntimeException::class, 'shape a request can carry');
+        }
+
+        /*
+         * ⚠️ AND TWO SHAPES NEVER REACH THIS RULE, which the first version of this test asserted
+         * wrongly: `parse_url()` resolves them before the host is examined. `https://x/test/` has
+         * the host `x` and the path `/test/`, and `https://x@test/` has the host `test` with `x` as
+         * userinfo. Both hosts are legitimate, so the refusal has nothing to refuse — recorded
+         * because a test that expects a throw here is testing its own mistake.
+         */
+        expect(Site::deriveUrlParts('https://x/test/', 'domain'))->toBe(['x', '/test'])
+            ->and(Site::deriveUrlParts('https://x@test/', 'domain'))->toBe(['test', '']);
+
+        // Underscores and leading hyphens are ugly and deliverable, so they are not this rule's
+        // business — the test is reachability, not taste.
+        expect(Site::deriveUrlParts('https://a_b.test/', 'domain'))->toBe(['a_b.test', ''])
+            ->and(Site::deriveUrlParts('https://-x.test/', 'domain'))->toBe(['-x.test', '']);
+    });
+
     it('refuses an unknown strategy rather than reading it as a path', function (): void {
         // Fail closed and loud: a typo would otherwise store a host as a prefix and leave
         // the site unreachable at its own address, with nothing on screen to say so.
