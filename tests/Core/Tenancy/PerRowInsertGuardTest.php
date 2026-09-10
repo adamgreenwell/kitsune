@@ -504,3 +504,78 @@ it('records the derived proof only after every guard has passed', function (): v
     expect(EntryType::withoutGlobalScopes()->whereKey($type->getKey())->value('subject_field_id'))
         ->toBeNull('the aborted save left a proof behind and the quiet retry used it');
 });
+
+it('refuses a detached insert from no scope at all', function (): void {
+    /*
+     * ⚠️ NO CONTEXT IS NOT PERMISSION, which review found. `guardScopeKeys()` accepts every value when
+     * the context has none to compare against — right for an update, where the row already belongs to
+     * somebody and the caller is not choosing — and wrong for a hand-rolled insert: a console command or
+     * a queue job with no `Context` could name ANY org, and nothing could vouch for it either way. The
+     * earlier fix satisfied the comparison; this one is the case that removes it.
+     *
+     * `AuditedBuilder` already treats a keyed write with no context this way for `Entry`, so this makes
+     * the two agree rather than inventing a policy.
+     */
+    $victim = Org::create(['name' => 'Victim', 'slug' => 'victim']);
+
+    app(Context::class)->forget();
+
+    expect(fn () => Site::query()->insertGetId([
+        'org_id' => $victim->id, 'handle' => 'nocontext', 'slug' => 'nocontext', 'name' => 'No Context',
+        'locale' => 'en', 'created_at' => now(), 'updated_at' => now(),
+    ]))->toThrow(RuntimeException::class, 'from no scope at all');
+
+    expect(Site::withoutGlobalScopes()->where('handle', 'nocontext')->exists())->toBeFalse();
+});
+
+it('will not reuse a proof once a guarded value has changed under it', function (): void {
+    /*
+     * ⚠️ A BOOLEAN FLAG SAYS "SOME WRITE'S GUARDS RAN" AND CANNOT SAY WHICH, which review found two ways
+     * past. `saved` clears it and an aborted save never reaches `saved` — so a `Site` update that derived
+     * its URL columns and then failed in the LATER `updating` scope check left the proof standing: catch
+     * that, change `base_url`, call `saveQuietly()`, and the builder accepted a write whose derived
+     * columns belong to the previous value. And the mutator being public let a caller arm the proof on
+     * `Site::query()`'s own model and hand-roll the insert.
+     *
+     * The proof is about VALUES now — these columns, derived to these values — so changing any of them
+     * without deriving again invalidates it whatever became of the save that made it.
+     */
+    $site = Site::create([
+        'org_id' => $this->org->id, 'handle' => 'proof', 'slug' => 'proof', 'name' => 'Proof',
+        'locale' => 'en', 'url_strategy' => 'domain', 'base_url' => 'https://proof.test',
+    ]);
+
+    $theirs = Org::create(['name' => 'Theirs', 'slug' => 'theirs']);
+
+    // A save that derives, arms, and then aborts in a listener that runs after `saving`.
+    $site->org_id = $theirs->id;
+    $site->base_url = 'https://moved.test';
+
+    expect(fn () => $site->save())->toThrow(RuntimeException::class);
+
+    // The caller restores the org and changes the URL again, then goes quiet.
+    $site->org_id = $this->org->id;
+    $site->base_url = 'https://moved-again.test';
+
+    expect(fn () => $site->saveQuietly())->toThrow(RuntimeException::class, 'cannot be written in bulk');
+
+    expect((string) Site::withoutGlobalScopes()->whereKey($site->getKey())->value('canonical_host'))
+        ->toBe('proof.test', 'a stale proof let a quiet save through');
+});
+
+it('keeps the proof mutator out of a caller\'s reach', function (): void {
+    /*
+     * ⚠️ REVIEW ASKED FOR THIS AND IT COSTS NOTHING. A public mutator let any caller take
+     * `Site::query()`, arm the proof on the builder's own model, and then hand-roll an insert with
+     * columns it authored. The models call it from closures declared inside their own `booted()`, so
+     * class scope is all the visibility it ever needed.
+     *
+     * The value snapshot refuses a forged arming anyway — a fresh model snapshots nulls, and the insert
+     * names real values — so this is the second lock on the door rather than the only one.
+     */
+    $method = new ReflectionMethod(Site::class, 'noteGuardedColumnsDerived');
+
+    expect($method->isPublic())->toBeFalse('any caller can arm the proof')
+        ->and((new ReflectionMethod(Site::class, 'guardedColumnsAreDerived'))->isPublic())
+        ->toBeTrue('the builder has to be able to read it');
+});

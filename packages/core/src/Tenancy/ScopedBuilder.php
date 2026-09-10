@@ -245,9 +245,42 @@ class ScopedBuilder extends Builder
             }
         }
 
-        if ($detached !== []) {
-            $this->guardScopeKeys($detached);
+        if ($detached === []) {
+            return;
         }
+
+        /*
+         * ⚠️ NO CONTEXT IS NOT PERMISSION, which review found. `guardScopeKeys()` accepts every value
+         * when the context has none to compare against — right for an update, where the row already
+         * belongs to somebody and the caller is not choosing — and wrong here: a console command or a
+         * queue job with no `Context` could hand-roll an insert naming ANY org, and nothing could vouch
+         * for it either way. Measured, that is the same cross-org planting as the earlier case with the
+         * comparison removed instead of satisfied.
+         *
+         * `AuditedBuilder` already treats a keyed write with no context this way for `Entry` — "refuses
+         * a create with no org context, and leaves no entry behind" — so this makes the two agree rather
+         * than inventing a policy.
+         */
+        $context = app(Context::class);
+
+        foreach ($detached as $column => $value) {
+            $current = $column === 'org_id' ? $context->orgId() : $context->siteId();
+
+            if ($value !== null && $current === null) {
+                throw new RuntimeException(sprintf(
+                    'Refusing to insert %s with [%s] = %s from no scope at all: this is a hand-rolled '
+                    .'insert rather than a model save, so `EnforcesScope` never ran, and with no context '
+                    .'established there is nothing that can vouch for the value either way (ADR-021). '
+                    .'Save the model, establish a context, or use withoutScopeBecause() if this is '
+                    .'deliberate.',
+                    $this->getModel()::class,
+                    $column,
+                    is_scalar($value) ? (string) $value : gettype($value),
+                ));
+            }
+        }
+
+        $this->guardScopeKeys($detached);
     }
 
     /**

@@ -37,28 +37,82 @@ namespace Kitsune\Core\Tenancy\Concerns;
 trait DerivesGuardedColumns
 {
     /**
-     * True only while THIS instance's guarded columns have been derived for the write in flight.
+     * The guarded columns as they stood when they were derived, or null when nothing has been.
      *
-     * ⚠️ Cleared after the write, so the next one has to earn it again — the same discipline
-     * `FieldStorage` uses, and the reason a flag is not a permanent grant.
+     * ⚠️ A SNAPSHOT RATHER THAN A BOOLEAN, and a boolean was not enough — review found two ways past it.
+     * A flag says "some write's guards ran"; it cannot say WHICH write. `saved` clears it and an
+     * aborted save never reaches `saved`, so a `Site` update that derived its URL columns and then
+     * failed in the later `updating` scope check left the flag standing: catch that, change `base_url`,
+     * call `saveQuietly()`, and the builder accepted a write whose derived columns belong to the
+     * previous value. And the mutator being reachable let a caller arm the flag on `Site::query()`'s
+     * model and then hand-roll the insert.
+     *
+     * The proof is therefore about VALUES: these columns, derived to these values. Change any of them
+     * without deriving again and the proof no longer describes the write, whatever happened to the
+     * save that made it.
+     *
+     * @var array<string, mixed>|null
      */
-    private bool $guardedColumnsDerived = false;
+    private ?array $guardedColumnsDerived = null;
 
     public static function bootDerivesGuardedColumns(): void
     {
+        // ⚠️ Still cleared after a completed write, so a second save has to earn its own proof rather
+        // than inheriting one that happens to still describe the same values.
         static::saved(function (self $model): void {
-            $model->guardedColumnsDerived = false;
+            $model->guardedColumnsDerived = null;
         });
     }
 
     public function guardedColumnsAreDerived(): bool
     {
-        return $this->guardedColumnsDerived;
+        if ($this->guardedColumnsDerived === null) {
+            return false;
+        }
+
+        /*
+         * ⚠️ COMPARED LOOSELY, because a value can arrive as an int on the model and a numeric string
+         * from a form, and a proof that fails on `255` versus `'255'` would send an author looking for a
+         * bug that is not there. What matters is whether the value CHANGED since it was derived.
+         *
+         * ⚠️ AND NOT EVERY GUARDED COLUMN IS A SCALAR — `Entry`'s `values` is a JSON-cast ARRAY, and a
+         * string cast on it threw `Array to string conversion` in 150 tests. Loose equality answers
+         * both kinds: for arrays it compares keys and values, and for scalars it ignores the int/string
+         * difference the paragraph above is about.
+         */
+        foreach (static::columnsRequiringModelSave() as $column => $ignored) {
+            $derived = $this->guardedColumnsDerived[$column] ?? null;
+            $now = $this->getAttribute($column);
+
+            if (($derived === null) !== ($now === null)) {
+                return false;
+            }
+
+            if ($derived !== null && $derived != $now) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
-    /** Called by whatever derives and validates this model's guarded columns. */
-    public function noteGuardedColumnsDerived(): void
+    /**
+     * Called by whatever derives and validates this model's guarded columns.
+     *
+     * ⚠️ PROTECTED, WHICH REVIEW ASKED FOR AND COSTS NOTHING. A public mutator let any caller arm the
+     * proof on `Site::query()`'s own model and then hand-roll an insert with columns it authored. The
+     * models call this from closures declared inside their own `booted()`, so class scope is all the
+     * visibility it ever needed — and the value snapshot above refuses a forged arming anyway, so this
+     * is the second lock on a door rather than the only one.
+     */
+    protected function noteGuardedColumnsDerived(): void
     {
-        $this->guardedColumnsDerived = true;
+        $snapshot = [];
+
+        foreach (static::columnsRequiringModelSave() as $column => $ignored) {
+            $snapshot[$column] = $this->getAttribute($column);
+        }
+
+        $this->guardedColumnsDerived = $snapshot;
     }
 }
