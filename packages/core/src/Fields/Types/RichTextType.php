@@ -121,15 +121,29 @@ final class RichTextType extends BaseFieldType
     private const FLOW_CONTAINER_TAGS = ['figure', 'blockquote', 'li', 'figcaption'];
 
     /**
-     * The last value `sanitize()` was handed, and what it returned.
+     * The value `sanitize()` was handed for the conversion in flight, and what it returned.
      *
-     * ⚠️ ONE ENTRY, because one is what the access pattern needs: a write sanitises a value and then
-     * asks whether sanitising changed it. A growing cache would be a memory leak keyed on user input
-     * — see `sanitize()` for why this is keyed on the exact string rather than a digest.
+     * ⚠️ HELD FOR ONE READ AND THEN RELEASED, because `FieldTypeRegistry` is a SINGLETON and this
+     * instance therefore lives as long as the application. Review found what the first version cost:
+     * under Octane, a queue worker or a long import, caching the last submitted body and its sanitised
+     * copy pins two copies of unbounded user HTML across requests — a substantial fraction of
+     * ADR-027's 1 GB floor, held for nothing, until another value happens to replace it.
+     *
+     * ⚠️ AND ONLY A CONVERSION FILLS IT, which is the other half. `sanitize()` is public and §6's
+     * contract, so any caller can reach it; a memo populated by every call would leave a body behind
+     * whenever nobody came back for it. `castToStorage()` arms it for exactly one conversion, the
+     * revision's loss check consumes it, and a `sanitize()` call outside a write caches nothing at
+     * all.
+     *
+     * Keyed on the exact string rather than a digest: a collision would return the wrong sanitised
+     * HTML out of a security boundary.
      */
     private ?string $memoInput = null;
 
     private ?string $memoOutput = null;
+
+    /** Whether the next `sanitize()` is the one a conversion will ask about twice. */
+    private bool $memoArmed = false;
 
     public static function handle(): string
     {
@@ -211,11 +225,22 @@ final class RichTextType extends BaseFieldType
          *
          * The separation is still worth a second parse — it is a security boundary against a
          * presentation concern — but it is worth it at a price, not for free, and there is no third
-         * parse: `sanitize()` memoises its last input so the revision's loss check reuses this one.
+         * parse: `sanitize()` keeps this conversion's answer for the loss check that follows, and
+         * releases it as soon as that read happens. See the memo's docblock for why the lifetime is
+         * one read rather than "the last value seen": the registry is a singleton, so a cache on this
+         * instance is a cache for the life of the process.
          */
         if ($input === null) {
             return null;
         }
+
+        /*
+         * ⚠️ ARMS THE MEMO FOR THIS ONE CONVERSION, so `sanitize()` keeps its answer for the loss check
+         * that follows and for nothing else. See the memo's own docblock: the registry is a singleton,
+         * and a cache filled by every caller of a public method is a body retained for the life of the
+         * process.
+         */
+        $this->memoArmed = true;
 
         return $this->withBlockDirection($this->sanitize((string) $input));
     }
@@ -372,6 +397,11 @@ final class RichTextType extends BaseFieldType
     public function sanitize(string $html): string
     {
         if (trim($html) === '') {
+            // ⚠️ DISARMS ON THE WAY OUT. An empty value needs no memo, and leaving the arming set
+            // would hand it to whichever unrelated caller sanitised next — which is the retention this
+            // arming exists to prevent, moved one call along.
+            $this->memoArmed = false;
+
             return $html;
         }
 
@@ -392,7 +422,14 @@ final class RichTextType extends BaseFieldType
          * duration of the write, and one entry is all the access pattern needs.
          */
         if ($html === $this->memoInput) {
-            return (string) $this->memoOutput;
+            $output = (string) $this->memoOutput;
+
+            // ⚠️ RELEASED ON READ. The write asks twice and never a third time, so holding it beyond
+            // the second answer is holding it for nobody.
+            $this->memoInput = null;
+            $this->memoOutput = null;
+
+            return $output;
         }
 
         $document = new DOMDocument;
@@ -431,10 +468,15 @@ final class RichTextType extends BaseFieldType
 
         $this->clean($document);
 
-        $this->memoInput = $html;
-        $this->memoOutput = $this->serialize($document);
+        $clean = $this->serialize($document);
 
-        return $this->memoOutput;
+        if ($this->memoArmed) {
+            $this->memoInput = $html;
+            $this->memoOutput = $clean;
+            $this->memoArmed = false;
+        }
+
+        return $clean;
     }
 
     /**

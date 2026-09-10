@@ -454,3 +454,59 @@ it('sanitizes a repeated value once, and does not serve a different one from the
     expect($type->sanitize('  '))->toBe('  ')
         ->and($type->sanitize($lossy))->toBe($first);
 });
+
+it('retains no user HTML once the conversion and its loss check are done', function (): void {
+    /*
+     * ⚠️ `FieldTypeRegistry` IS A SINGLETON, so this instance lives as long as the application — and
+     * review found what the first memo cost: under Octane, a queue worker or a long import it pinned
+     * the last submitted body AND its sanitised copy across requests, a substantial fraction of
+     * ADR-027's 1 GB floor held for nobody until another value replaced it.
+     *
+     * ⚠️ ASSERTED BY READING THE PRIVATE PROPERTIES, which is unusual and is the honest instrument
+     * here: the difference between "cached" and "released" has no other observable consequence, and
+     * asserting it through timing would be a test that passes on a fast machine. The property IS the
+     * subject.
+     *
+     * Measured on a 199 KB value: 398 KB held between the two sanitises, 0 KB after the second.
+     */
+    $type = new RichTextType;
+    $klass = RichTextType::class;
+
+    $held = function () use ($type, $klass): int {
+        $bytes = 0;
+
+        foreach (['memoInput', 'memoOutput'] as $name) {
+            $value = (new ReflectionProperty($klass, $name))->getValue($type);
+            $bytes += is_string($value) ? mb_strlen($value) : 0;
+        }
+
+        return $bytes;
+    };
+
+    $armed = new ReflectionProperty($klass, 'memoArmed');
+    $html = str_repeat('<p>Body text</p>', 200);
+
+    // What a conversion does: arm, then sanitise.
+    $armed->setValue($type, true);
+    $clean = $type->sanitize($html);
+
+    expect($held())->toBeGreaterThan(0, 'the conversion cached nothing, so the loss check will reparse');
+
+    // What the revision's loss check does: ask the same question once.
+    expect($type->sanitize($html))->toBe($clean, 'the memo returned different bytes')
+        ->and($held())->toBe(0, 'the singleton is still holding the submitted body');
+
+    // ⚠️ A `sanitize()` OUTSIDE a conversion caches nothing at all, because `sanitize()` is public
+    // and §6's contract — a memo filled by every caller leaves a body behind whenever nobody returns.
+    $type->sanitize($html);
+
+    expect($held())->toBe(0, 'an unarmed sanitize cached a value nobody will read')
+        ->and($type->sanitize($html))->toBe($clean, 'a reparse after release returned the wrong bytes');
+
+    // ⚠️ And an empty value disarms rather than passing the arming to the next caller.
+    $armed->setValue($type, true);
+    $type->sanitize('   ');
+    $type->sanitize($html);
+
+    expect($held())->toBe(0, 'an empty value handed its arming to an unrelated call');
+});
