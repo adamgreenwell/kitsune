@@ -157,27 +157,6 @@ final class RichTextType extends BaseFieldType
         return true;
     }
 
-    /**
-     * Whether SANITISING removed something — not whether the stored bytes differ.
-     *
-     * ⚠️ THOSE STOPPED BEING THE SAME QUESTION when `castToStorage()` began stamping `dir="auto"`
-     * on each block for issue #39. The conversion now ADDS as well as removes, so the recorder's old
-     * test — stored `!==` submitted — was true for every rich text save, and every revision retained
-     * a pre-sanitisation original that was identical to the input apart from an attribute this class
-     * had just added. Caught by a test asserting that clean input keeps no original.
-     *
-     * The question §6 actually asks is "can the author see what the sanitiser took", so this
-     * compares the SANITISED value with what was submitted and ignores the direction step entirely.
-     */
-    public function conversionLostSomething(mixed $submitted, mixed $stored): bool
-    {
-        if (! is_string($submitted)) {
-            return $stored !== $submitted;
-        }
-
-        return $this->sanitize($submitted) !== $submitted;
-    }
-
     protected function castToStorage(mixed $input, FieldConfig $config): mixed
     {
         /*
@@ -369,6 +348,24 @@ final class RichTextType extends BaseFieldType
      */
     private function wrapLooseRuns(DOMDocument $document, DOMNode $wrapper): void
     {
+        /*
+         * ⚠️ WHITESPACE CONTINUES A RUN BUT CANNOT START ONE, and getting only the second half right
+         * corrupted content. The first version skipped every whitespace-only text node, so the space
+         * in `<strong>hello</strong> <em>world</em>` was left OUTSIDE the paragraph while both
+         * elements moved into it — stored as `<p><strong>hello</strong><em>world</em></p> ` and
+         * rendered as `helloworld`. A sanitiser that silently joins two words is worse than one that
+         * misses an attribute. Found by review.
+         *
+         * The distinction is position, not content: whitespace BETWEEN blocks is formatting, and
+         * whitespace INSIDE a run is a word boundary. So a run in progress takes it, a run not yet
+         * started does not, and a run closing at a block drops whatever trailing whitespace only
+         * separated it from that block.
+         *
+         * ⚠️ No closure holds `$current` by reference, deliberately: the first version used one and
+         * static analysis could not follow the type through it, which is a signal about the shape
+         * rather than about the analyser.
+         *
+         */
         $runs = [];
         $current = [];
 
@@ -377,27 +374,32 @@ final class RichTextType extends BaseFieldType
                 && in_array(strtolower($child->nodeName), self::CONTAINER_TAGS, true);
 
             if ($isBlock) {
-                if ($current !== []) {
-                    $runs[] = $current;
-                    $current = [];
-                }
+                $runs[] = $current;
+                $current = [];
 
                 continue;
             }
 
-            // Whitespace between blocks is formatting, not a run worth wrapping.
-            if ($child->nodeType === XML_TEXT_NODE && trim($child->textContent) === '') {
+            // Whitespace before any content is formatting between blocks, not a word boundary.
+            if ($current === [] && self::isWhitespaceNode($child)) {
                 continue;
             }
 
             $current[] = $child;
         }
 
-        if ($current !== []) {
-            $runs[] = $current;
-        }
+        $runs[] = $current;
 
         foreach ($runs as $run) {
+            // Trailing whitespace only separated this run from the block that closed it.
+            while ($run !== [] && self::isWhitespaceNode($run[count($run) - 1])) {
+                array_pop($run);
+            }
+
+            if ($run === []) {
+                continue;
+            }
+
             $paragraph = $document->createElement('p');
             $paragraph->setAttribute('dir', 'auto');
 
@@ -407,6 +409,12 @@ final class RichTextType extends BaseFieldType
                 $paragraph->appendChild($node);
             }
         }
+    }
+
+    /** Whether this node is text that carries no content of its own. */
+    private static function isWhitespaceNode(DOMNode $node): bool
+    {
+        return $node->nodeType === XML_TEXT_NODE && trim($node->textContent) === '';
     }
 
     /**

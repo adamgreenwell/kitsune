@@ -18,10 +18,10 @@ use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Audit\AuditedBuilder;
+use Kitsune\Core\Fields\ConversionLoss;
 use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Fields\FieldTypeRegistry;
 use Kitsune\Core\Fields\StorageStrategy;
-use Kitsune\Core\Fields\Types\BaseFieldType;
 use Kitsune\Core\Relations\GuardedBelongsToMany;
 use Kitsune\Core\Schema\RevisionWrites;
 use Kitsune\Core\Tenancy\Attributes\SiteScoped;
@@ -1359,18 +1359,14 @@ class Entry extends Model implements RequiresModelSave
                      * type had just added. Only the type knows which part of its own conversion is
                      * lossy, which is the same argument `retainsOriginal()` is asked for.
                      *
-                     * ⚠️ ASKED OF `BaseFieldType`, NOT OF `FieldType`, and the byte comparison is
-                     * the fallback. Review objected that declaring this on the interface broadens
-                     * the extension API before v1.2, which CONTRIBUTING lists among the things that
-                     * will not merge — correctly, so the question is asked of the base class the
-                     * core types share and anything implementing the contract directly keeps the
-                     * behaviour it had.
+                     * ⚠️ ASKED OF A CORE CLASS, NOT OF THE TYPE, and that is the API freeze
+                     * talking. Declaring it on `FieldType` broadens the extension API before v1.2,
+                     * which CONTRIBUTING lists among the things that will not merge; putting it on
+                     * `BaseFieldType` with an `@internal` tag is no better, because a tag is not a
+                     * visibility and a plugin subclass with a same-named method still collides.
+                     * `ConversionLoss` records why it therefore tests a type by identity.
                      */
-                    $lost = $fieldType instanceof BaseFieldType
-                        ? $fieldType->conversionLostSomething($submitted, $inline[$handle])
-                        : $inline[$handle] !== $submitted;
-
-                    if ($fieldType->retainsOriginal() && $lost) {
+                    if ($fieldType->retainsOriginal() && ConversionLoss::occurred($fieldType, $submitted, $inline[$handle])) {
                         $this->retainedOriginals[$handle] = $submitted;
                     }
                 }

@@ -148,6 +148,36 @@ it('collects one sentence into one paragraph, not one per node', function (): vo
     expect(storedBody('a <strong>b</strong> c'))->toBe('<p dir="auto">a <strong>b</strong> c</p>');
 });
 
+it('keeps the whitespace that separates words in a run', function (): void {
+    /*
+     * ⚠️ THE FIRST VERSION CORRUPTED CONTENT, and review found it. Whitespace-only text nodes were
+     * skipped outright, so the space in `<strong>hello</strong> <em>world</em>` was left OUTSIDE the
+     * paragraph while both elements moved into it — stored as
+     * `<p><strong>hello</strong><em>world</em></p> ` and rendered as `helloworld`.
+     *
+     * A sanitiser that silently joins two words is worse than one that misses an attribute, so this
+     * is asserted on the exact bytes rather than on the presence of a `dir`.
+     */
+    expect(storedBody('<strong>hello</strong> <em>world</em>'))
+        ->toBe('<p dir="auto"><strong>hello</strong> <em>world</em></p>');
+
+    // More than one space is still content: collapsing is the renderer's business, not storage's.
+    expect(storedBody('<strong>x</strong>  <strong>y</strong>'))
+        ->toBe('<p dir="auto"><strong>x</strong>  <strong>y</strong></p>');
+});
+
+it('leaves whitespace that sits between blocks outside the runs', function (): void {
+    /*
+     * ⚠️ THE OTHER HALF, and why the rule is about POSITION rather than content. Whitespace between
+     * blocks is formatting; wrapping it would add an empty paragraph to every pretty-printed value,
+     * and a run closing at a block should not swallow the space that merely separated them.
+     */
+    expect(storedBody('<p>block</p> <strong>after</strong>'))
+        ->toBe('<p dir="auto">block</p> <p dir="auto"><strong>after</strong></p>')
+        ->and(storedBody('<strong>before</strong> <p>block</p>'))
+        ->toBe('<p dir="auto"><strong>before</strong></p> <p dir="auto">block</p>');
+});
+
 it('separates runs that a block sits between', function (): void {
     // A list is a block even though it carries no direction itself, so text before and after it are
     // two runs rather than one — which is why `CONTAINER_TAGS` is wider than `BLOCK_TAGS`.

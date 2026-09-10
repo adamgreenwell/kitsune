@@ -227,29 +227,6 @@ abstract class BaseFieldType implements FieldType
         return false;
     }
 
-    /**
-     * Any change is a loss, unless a type knows better.
-     *
-     * ⚠️ THE OLD TEST, KEPT AS THE DEFAULT DELIBERATELY. Every conversion here is a cast or a
-     * strip, so "the bytes changed" and "something was lost" mean the same thing — and a type that
-     * has not thought about the distinction behaves exactly as it did before this question existed.
-     * `RichTextType` overrides it because its conversion now ADDS as well as removes.
-     *
-     * ⚠️ NOT ON `FieldType`, AND THAT IS THE POINT. Review objected that the first version declared
-     * this on the interface, which is the extension API a plugin implements — and CONTRIBUTING lists
-     * "a new public API surface before v1.2" among the things that will not merge, because
-     * broadening an unstable contract early is how ecosystems break later (Standing Principle #1).
-     * The objection is right. This is bookkeeping between `Entry` and the types shipped in core, so
-     * it lives on the base class the core types share, and `Entry` falls back to the byte comparison
-     * for anything implementing `FieldType` directly.
-     *
-     * @internal Not part of the extension contract; may change without notice before v1.2.
-     */
-    public function conversionLostSomething(mixed $submitted, mixed $stored): bool
-    {
-        return $stored !== $submitted;
-    }
-
     public function validateSettings(array $settings): ?string
     {
         return null;
