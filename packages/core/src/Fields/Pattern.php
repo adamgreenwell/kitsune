@@ -1099,7 +1099,7 @@ final class Pattern
 
         $delimiter = self::leadingLiteral($body);
 
-        return $delimiter !== null && ! self::unboundedAtomCanMatch($body, $delimiter);
+        return $delimiter !== null && ! self::variableAtomCanMatch($body, $delimiter);
     }
 
     /**
@@ -1143,10 +1143,16 @@ final class Pattern
      * class syntax — ranges, negation, nested shorthands, escapes — to answer a question PCRE
      * already answers exactly is how a subtly wrong "safe" verdict would get written.
      *
+     * ⚠️ EVERY VARIABLE-WIDTH ATOM, NOT ONLY THE UNBOUNDED ONES, which is what review found. Asking
+     * only about unbounded atoms exempted `^(?:,,?)*X$`: the optional comma is bounded, and it can
+     * still either end the current iteration or start the next, so the division is not forced at all.
+     * A REQUIRED atom that matches the delimiter is fine — `,a,` still splits one way — because it is
+     * the choice about whether to consume one that creates the ambiguity, not the consuming.
+     *
      * ⚠️ FAILS CLOSED. An unparseable atom, a group, or `.` returns true, which means "not
      * exempt", which means refused. The exemption has to be certain to be worth having.
      */
-    private static function unboundedAtomCanMatch(string $body, string $delimiter): bool
+    private static function variableAtomCanMatch(string $body, string $delimiter): bool
     {
         $length = mb_strlen($body);
 
@@ -1187,7 +1193,7 @@ final class Pattern
                 $i += mb_strlen($quantifier);
             }
 
-            if (! self::isUnbounded($quantifier)) {
+            if (! self::isVariableWidth($quantifier)) {
                 continue;
             }
 
@@ -1396,13 +1402,51 @@ final class Pattern
 
         $brace = mb_substr($pattern, $at, $closes - $at + 1);
 
-        return preg_match('/^\{[0-9]+(,[0-9]*)?\}$/', $brace) === 1 ? $brace : '';
+        if (preg_match('/^\{[0-9]+(,[0-9]*)?\}$/', $brace) !== 1) {
+            return '';
+        }
+
+        /*
+         * ⚠️ THE LAZY SUFFIX IS PART OF THE QUANTIFIER, and dropping it made `fixedWidth()` count the
+         * `?` as a separate one-character atom. `a{2}?` was therefore measured as width 3, so
+         * `(?<=(a{2}?|aaa))b\1$` looked like two equal branches and published — and on `aaabaa`,
+         * PCRE says no while ECMAScript says yes. Found by review.
+         *
+         * The `*`/`+`/`?` branch above already did this; only the braced form did not.
+         */
+        return mb_substr($pattern, $closes + 1, 1) === '?' ? $brace.'?' : $brace;
     }
 
     /** Whether a quantifier has no upper bound, which is what makes nesting dangerous. */
     private static function isUnbounded(string $quantifier): bool
     {
         return $quantifier !== '' && preg_match('/^(?:\*|\+|\{[0-9]+,\})\??$/', $quantifier) === 1;
+    }
+
+    /**
+     * Whether a quantifier lets its atom match more than one length.
+     *
+     * ⚠️ WIDER THAN `isUnbounded()`, and the difference is a defect review found. The delimiter
+     * proof asked only whether an UNBOUNDED atom could consume the delimiter, so `^(?:,,?)*X$` was
+     * exempted: the optional comma is bounded, and it can still either end the current iteration or
+     * start the next. Measured — 40 commas plus a `Y` takes ECMAScript about 1.3 seconds and grows
+     * exponentially.
+     *
+     * `{n}` is fixed and `{n}?` is fixed-but-lazy, which changes preference rather than width.
+     * Everything else — `?`, `*`, `+`, `{n,}`, `{n,m}` with n ≠ m — can match two lengths.
+     */
+    private static function isVariableWidth(string $quantifier): bool
+    {
+        if ($quantifier === '') {
+            return false;
+        }
+
+        if (preg_match('/^\{([0-9]+)(?:,([0-9]*))?\}\??$/', $quantifier, $bound) === 1) {
+            // `{n}` names one length; `{n,}` and `{n,m}` name a range unless m equals n.
+            return array_key_exists(2, $bound) && $bound[2] !== (string) (int) $bound[1];
+        }
+
+        return true;
     }
 
     /** Whether this subpattern contains an alternation at any depth. */
@@ -1652,10 +1696,17 @@ final class Pattern
         return $total;
     }
 
-    /** The exact number of repetitions a quantifier names, or null when it names a range. */
+    /**
+     * The exact number of repetitions a quantifier names, or null when it names a range.
+     *
+     * ⚠️ A LAZY SUFFIX IS PREFERENCE, NOT WIDTH, and this did not accept one — so once
+     * `quantifierAt()` began carrying it, `a{2}?` stopped being recognised as fixed and
+     * `(?<=(a{2}?|aa))b\1$` was refused for having a variable-length capture. Both branches are two
+     * characters wide; `?` changes which match is preferred, not how long it is.
+     */
     private static function fixedRepetitions(string $quantifier): ?int
     {
-        return preg_match('/^\{([0-9]+)\}$/', $quantifier, $bound) === 1 ? (int) $bound[1] : null;
+        return preg_match('/^\{([0-9]+)\}\??$/', $quantifier, $bound) === 1 ? (int) $bound[1] : null;
     }
 
     /** Where the character class opening at `$at` closes, or null when it does not. */

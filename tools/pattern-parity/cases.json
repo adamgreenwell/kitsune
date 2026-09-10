@@ -826,5 +826,23 @@
     "pattern": "(?<=(\\x61|a))b\\1$",
     "subject": "aba",
     "why": "The other half: \\x61 IS one character, so these alternatives are genuinely equal and both engines agree. Kept so the fix cannot become 'refuse anything with an escape in a lookbehind'."
+  },
+  {
+    "id": "bounded-delimiter-consumer",
+    "pattern": "^(?:,,?)*X$",
+    "subject": ",,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,Y",
+    "why": "Review's case. The delimiter proof asked only whether an UNBOUNDED atom could consume the delimiter, so the optional comma was ignored — and it can either end the current iteration or start the next. 40 commas plus a Y takes ECMAScript about 1.3 seconds and grows exponentially."
+  },
+  {
+    "id": "lazy-braced-width-in-lookbehind",
+    "pattern": "(?<=(a{2}?|aaa))b\\1$",
+    "subject": "aaabaa",
+    "why": "Review's case. `quantifierAt()` dropped the lazy suffix on a braced form, so `fixedWidth()` counted the trailing ? as a separate one-character atom and measured `a{2}?` as width 3 — the branches looked equal and the lookbehind rule was bypassed. PCRE says no, ECMAScript says yes."
+  },
+  {
+    "id": "lazy-braced-width-equal",
+    "pattern": "(?<=(a{2}?|aa))b\\1$",
+    "subject": "aabaa",
+    "why": "The other half: `a{2}?` and `aa` ARE both two wide, so this is genuinely equal-length and must publish. Kept so the fix cannot become 'refuse anything lazy in a lookbehind'."
   }
 ]

@@ -123,3 +123,49 @@ it('ignores rows with no pattern rather than counting them', function (): void {
         ->expectsOutputToContain('examined 0 stored patterns')
         ->assertSuccessful();
 });
+
+it('holds only a count, however many patterns are unpublishable', function (): void {
+    /*
+     * ⚠️ IT COLLECTED EVERY FAILING MODEL, which review found. Memory grew with the number of
+     * FAILURES rather than with the chunk — `chunkById()` bounds only the database batch — so an audit
+     * whose entire purpose is to run before an upgrade on a large installation could exhaust ADR-027's
+     * 1 GB floor before printing anything. That is the worst moment to run out of memory: the operator
+     * learns nothing and cannot tell whether the audit found nothing or died.
+     *
+     * ⚠️ ASSERTED ON MEMORY RATHER THAN ON THE OUTPUT, because the output was already correct — it
+     * was correct and unbounded. Fifty failing rows is far more than a chunk, and the growth over the
+     * walk is what changed.
+     */
+    foreach (range(1, 50) as $i) {
+        storedPattern($this->org->id, "bad{$i}", '^(a|aa)+$');
+    }
+
+    $before = memory_get_usage();
+
+    $this->artisan('kitsune:audit-patterns')
+        ->expectsOutputToContain('50 stored patterns are unpublishable.')
+        ->assertSuccessful();
+
+    $grew = memory_get_usage() - $before;
+
+    /*
+     * A generous ceiling on purpose: this is asserting that memory does not scale with the failure
+     * count, not measuring an exact figure. Collecting fifty hydrated models with their attributes
+     * and original arrays comfortably exceeded this; a count does not approach it.
+     */
+    expect($grew)->toBeLessThan(2_000_000, 'memory grew with the number of failures rather than the chunk');
+});
+
+it('prints each row as it walks, so a long report is not lost on failure', function (): void {
+    // ⚠️ The summary moved to the END as a consequence of streaming, which is also the better place
+    // for it: an operator reading a long report wants the count where they finish, and a report that
+    // dies halfway has still printed everything it found.
+    storedPattern($this->org->id, 'first', '^(a|aa)+$');
+    storedPattern($this->org->id, 'second', '^(b|bb)+$');
+
+    $this->artisan('kitsune:audit-patterns')
+        ->expectsOutputToContain('first')
+        ->expectsOutputToContain('second')
+        ->expectsOutputToContain('2 stored patterns are unpublishable.')
+        ->assertSuccessful();
+});

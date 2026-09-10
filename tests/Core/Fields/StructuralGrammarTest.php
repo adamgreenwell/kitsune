@@ -164,6 +164,22 @@ describe('rule 3 — an unbounded repetition must divide its subject one way onl
             ->toBeNull("[{$pattern}] is a delimited list and provably linear");
     })->with(['^[^,]+(?:,[^,]+)*$', '^[^;]+(?:;[^;]+)*$', '^[a-z]+(?:\.[a-z]+)*$']);
 
+    it('does not exempt a delimiter a BOUNDED atom can also consume', function (string $pattern): void {
+        /*
+         * ⚠️ THE PROOF ASKED THE WRONG QUESTION, and review found it. It checked whether an UNBOUNDED
+         * atom could consume the delimiter, so `^(?:,,?)*X$` was exempted — the optional comma is
+         * bounded, and it can still either end the current iteration or start the next, which is
+         * exactly the ambiguity the proof is meant to rule out. Measured: 40 commas plus a `Y` takes
+         * ECMAScript about 1.3 seconds and grows exponentially.
+         *
+         * What matters is whether the atom can match TWO LENGTHS, not whether it has an upper bound.
+         * A required atom that matches the delimiter is still fine — `,a,` splits one way — because
+         * the ambiguity comes from the CHOICE about consuming one, not from consuming it.
+         */
+        expect(Pattern::unpublishable($pattern))
+            ->not->toBeNull("[{$pattern}] lets a variable atom consume its own delimiter");
+    })->with(['^(?:,,?)*X$', '^(?:,,{0,2})*X$', '^(?:,,*)*X$', '^(?:,[,a]?)*X$']);
+
     /*
      * ⚠️ AND THE EXEMPTION DOES NOT LEAK. Each of these fails one clause of the proof: the first
      * begins with a class rather than a literal, the second's leading literal IS the unbounded
@@ -223,6 +239,32 @@ describe('rule 5 — a capturing group in a lookbehind must be fixed length', fu
         // The rule is about traversal direction, which only a lookbehind reverses.
         expect(Pattern::unpublishable('^(a+)\1$'))->toBeNull()
             ->and(Pattern::unpublishable('^(?=(a+))a\1$'))->toBeNull();
+    });
+});
+
+describe('a lazy quantifier is part of the quantifier', function (): void {
+    /*
+     * ⚠️ `quantifierAt()` DROPPED THE LAZY SUFFIX ON A BRACED FORM, so `fixedWidth()` counted the
+     * trailing `?` as a separate one-character atom. `a{2}?` was measured as width 3, which made
+     * `(?<=(a{2}?|aaa))b\1$` look like two equal branches — and on `aaabaa`, PCRE says no while
+     * ECMAScript says yes. The `*`/`+`/`?` branch already carried its suffix; only the brace did not.
+     */
+    it('measures a lazy braced quantifier at its real width', function (): void {
+        expect(Pattern::unpublishable('(?<=(a{2}?|aaa))b\1$'))
+            ->not->toBeNull('a{2}? is two characters wide, not three');
+    });
+
+    it('still accepts branches that are equal once the suffix is counted', function (): void {
+        // ⚠️ The other half: `a{2}?` and `aa` ARE both two wide, so this is genuinely equal-length and
+        // must publish. A fix that simply refused anything lazy would pass the test above and be wrong.
+        expect(Pattern::unpublishable('(?<=(a{2}|aa))b\1$'))->toBeNull()
+            ->and(Pattern::unpublishable('(?<=(a{2}?|aa))b\1$'))->toBeNull();
+    });
+
+    it('treats a lazy suffix as preference, not as width', function (): void {
+        // `{n}?` names one length; laziness changes which match is preferred, not how long it is.
+        expect(Pattern::unpublishable('^(?:ab){2}?$'))->toBeNull()
+            ->and(Pattern::unpublishable('^[a-z]{3}?$'))->toBeNull();
     });
 });
 

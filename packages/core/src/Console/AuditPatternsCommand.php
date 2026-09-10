@@ -45,7 +45,18 @@ final class AuditPatternsCommand extends Command
 
     public function handle(): int
     {
-        $unpublishable = [];
+        /*
+         * ⚠️ COUNTED, NOT COLLECTED, which review found. The first version appended every failing
+         * `FieldStorage` MODEL to an array and printed after the walk, so memory grew with the number
+         * of failures rather than with the chunk — and `chunkById()` bounds only the database batch.
+         * An audit whose whole purpose is to run before an upgrade on a large installation could
+         * therefore exhaust the 1 GB floor (ADR-027) before printing anything, which is the worst
+         * possible moment to run out of memory: the operator learns nothing and cannot tell whether
+         * the audit found nothing or died.
+         *
+         * Rows are emitted inside the chunk and only the count is carried.
+         */
+        $unpublishable = 0;
         $examined = 0;
 
         /*
@@ -70,31 +81,33 @@ final class AuditPatternsCommand extends Command
 
                     $examined++;
 
-                    if (($reason = Pattern::unpublishable($pattern)) !== null) {
-                        $unpublishable[] = [$storage, $pattern, $reason];
+                    if (($reason = Pattern::unpublishable($pattern)) === null) {
+                        continue;
                     }
+
+                    $unpublishable++;
+
+                    $this->line("  <comment>field_storage #{$storage->getKey()}</comment> <info>{$storage->handle}</info> (org {$storage->org_id})");
+                    $this->line("    pattern: {$pattern}");
+                    $this->line("    refused: {$reason}");
+                    $this->newLine();
                 }
             });
 
+        /*
+         * ⚠️ THE SUMMARY COMES LAST, AFTER the rows, which is a consequence of streaming them. An
+         * operator reading a long report wants the count at the end rather than a header they have
+         * scrolled past — and a report that dies halfway has still printed everything it found.
+         */
         $this->line("examined <info>{$examined}</info> stored pattern".($examined === 1 ? '' : 's'));
-        $this->newLine();
 
-        if ($unpublishable === []) {
+        if ($unpublishable === 0) {
             $this->info('Every stored pattern satisfies the published grammar.');
 
             return self::SUCCESS;
         }
 
-        foreach ($unpublishable as [$storage, $pattern, $reason]) {
-            $this->line("  <comment>field_storage #{$storage->getKey()}</comment> <info>{$storage->handle}</info> (org {$storage->org_id})");
-            $this->line("    pattern: {$pattern}");
-            $this->line("    refused: {$reason}");
-            $this->newLine();
-        }
-
-        $count = count($unpublishable);
-
-        $this->warn("{$count} stored pattern".($count === 1 ? ' is' : 's are').' unpublishable.');
+        $this->warn("{$unpublishable} stored pattern".($unpublishable === 1 ? ' is' : 's are').' unpublishable.');
         $this->line('Each must be rewritten before the next save of its field, which will otherwise');
         $this->line('be refused for a pattern the author did not touch. There is no automatic repair:');
         $this->line('a pattern says what a field accepts, and only its owner knows what that should be.');
