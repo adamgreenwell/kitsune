@@ -1397,6 +1397,45 @@ The inverse is a genuine gap and is named rather than solved: **KaaS then has no
 
 ---
 
+## ADR-031 — An authored pattern is validated against a published grammar, not screened for known divergences
+
+**Status:** Decided · 2026-09-10
+
+Issue #44. `Pattern::unpublishable()` began as a screen: a list of constructs known to diverge between PCRE and ECMAScript, refused by name. A screen is a denylist, and the failure mode of a denylist is the construct nobody thought of — which here means a pattern the server enforces and the published JSON Schema does not, or the reverse.
+
+`TextType` publishes the author's pattern into `scalarApiSchema()` and validates values with `patternRule()`. The two consumers are a generated client's regex engine and PCRE, so a divergence is not cosmetic: the client validates locally, the server validates authoritatively, and they disagree about the same string.
+
+### Decision
+
+**A pattern is accepted when every construct in it appears on a published allowlist. Anything else is refused, with the reason, whether or not anyone anticipated it.** The grammar is published in `docs/field-types.md` §3 and enforced by `Pattern::unpublishable()`.
+
+The direction of staleness is what settles this. An allowlist goes stale by refusing something portable: the author is blocked, sees a message naming what *is* allowed, and a maintainer adds the name — reviewable, testable, and visible. A denylist goes stale by *accepting* something unportable, and that is found by a consumer failing in production. There are also ~170 Unicode scripts, so a list naming them in order to refuse them would go stale on every Unicode release.
+
+**The allowlist was derived by measurement, not from the specifications.** Every candidate name was compiled in both engines and only the ones both took are on the list — which earned its keep immediately: `Assigned` and `Changes_When_NFKC_Casefolded` are in ECMAScript and PCRE rejects both, while `LC` is a group category both engines have that the first hand-written list omitted. `tools/pattern-parity/` is that measurement, landed as a harness so the claim is reproducible rather than asserted.
+
+### What the grammar guarantees, and what it cannot
+
+**It guarantees dialect portability:** the construct exists in both grammars and means the same *rule* in each. That is enforceable by an allowlist, and it is what this ADR delivers.
+
+**It cannot guarantee Unicode-version stability**, and this is disclosed rather than implied. `\p{L}` gained SIDETIC LETTER N01 (U+10940) in Unicode 17.0, so a server at 15.1 and a client at 17.0 enforce different rules on `^\p{L}+$` for that codepoint. No allowlist can make two engines share a Unicode table, and the client's version is outside the operator's control entirely. A property claim is portable **only to the extent the two engines share a Unicode version.**
+
+`Cn` and `C` are excluded, and the reason is not that their membership moves — every category's membership moves. It is that neither polarity of them names a stable rule to converge on. *"A letter"* is a rule both engines are answering, one with a shorter table, converging with each release. *"Not yet assigned"* describes the table's incompleteness, so the answer moves *away* from the author's intent every release: `\p{Cn}` matches steadily less, `\P{Cn}` steadily more. `C` is `Cc|Cf|Co|Cs|Cn` and inherits that. Their complements are refused with them, and a complement of any *other* property is permitted — symmetrically with the property, since `\P{L}` and `\p{L}` diverge on the same codepoint in opposite directions and refusing one would claim a portability the other does not have.
+
+### Consequence
+
+**Migration is not optional.** Patterns already authored were accepted by the screen, not by the grammar, so any outside it must be found before this lands — a pattern that saved yesterday and is refused today is a broken install, not a fixed one.
+
+The measured expressiveness cost is three refusals of constructs both engines honour, and all three are deliberate: `\b`, which has a portable spelling to redirect an author to, and `\p{Cn}`/`\p{C}`, which the measured pair cannot show diverging because it shares one Unicode version. `\p{Lower}`, `\p{Alpha}` and `\p{Upper}` *were* omissions and are now on the list, added on a set comparison across all 1,114,112 codepoints rather than on compiling — `\p{Space}` compiles in PCRE and is rejected by ECMAScript, which is why the aliases were measured one at a time instead of adopted as a family.
+
+| Rejected | Why it lost |
+|---|---|
+| Keep the screen, add divergences as they are found | Its staleness mode is accepting an unportable construct, discovered by a consumer failing. Seven of the first eight "divergences" measured were artefacts of the harness rather than the code, which is how much confidence a by-name list of offenders deserves. |
+| Allow any name PCRE accepts | Publishes a JSON Schema the consumer cannot compile, and reports nothing when it happens. |
+| Exclude every version-sensitive property | Empties the list: `\p{L}`, `\p{Nd}` and every complement qualify. It also claims a guarantee no allowlist can keep, which is invariant 14's failure. |
+| Refuse the complements (`\P{L}`, `[^\p{L}]`) but keep the properties | Half of a symmetric pair. Both diverge on the same codepoint, in opposite directions, on the same engines. |
+
+---
+
 ## Open questions
 
 - Storage benchmark at 10k / 100k / 1M entries

@@ -219,9 +219,15 @@ A named capture may use a name in **any script** — `(?<é>`, `(?<日本>`, `(?
 >
 > ⚠️ **"Three" is scoped to ONE VERSION PAIR, and that is a limit of the method rather than a result.** The table above was measured on PCRE 10.48 with Node 22. Review demonstrated a **fourth** divergence on PCRE 10.44 with Node 24 — `\p{Cn}` on U+10940, unassigned to one engine's tables and assigned to the other's — which the newer pair agrees on. A harness runs the versions it has; it cannot see skew between versions it is not running.
 >
-> **So `Cn` is excluded from the portable categories on principle, not on measurement.** It means *"not yet assigned"*, so its membership **shrinks** with every Unicode release and any newly assigned codepoint flips it: two engines on different Unicode versions enforce opposite rules on the same input. Every other category *grows* instead of inverting, which is a weaker version of the same hazard and is stated here rather than hidden — a property claim is portable **only to the extent the two engines share a Unicode version**, and nothing in the pattern can assert that.
+> **So `Cn` and `C` are excluded from the portable categories on principle, not on measurement** — and the principle is narrower than "their membership moves between versions", because *every* category's membership moves. U+10940 is SIDETIC LETTER N01, **assigned in Unicode 17.0** with category `Lo`: a server at 15.1 and a client at 17.0 enforce different rules on `^\p{L}+$` for that one codepoint. No allowlist can fix that, and one that tried to would end up empty.
 >
-> ⚠️ A consequence worth expecting: the harness now reports `\p{Cn}` as an *expressiveness cost*, because on the pair it runs the two engines agree. That is the instrument being honest about what it can see, not a reason to re-admit the category.
+> **The line is whether there is a stable rule to converge on.** *"A letter"* is one — both engines are answering the same question, one of them has a shorter table, and each Unicode release brings them closer to what the author meant. *"Not yet assigned"* is not a rule at all; it is a description of the table's incompleteness, so the answer moves **away** from the author's intent with every release, in both polarities at once: `\p{Cn}` matches steadily less and `\P{Cn}` steadily more, and neither converges anywhere. `C` is excluded because it **contains** `Cn` (`Cc|Cf|Co|Cs|Cn`) and inherits that exactly — it was on the allowlist while `Cn` was off it, which is the same unportable set with one extra spelling. `Cc`, `Cf`, `Co` and `Cs` stay: each names *assigned* characters.
+>
+> One removal covers four spellings each — `\p{C}`, `\P{C}`, `[\p{C}]`, `[^\p{C}]` — because the refusal reads the property **name** and does not consult class context.
+>
+> ⚠️ **A property complement is admitted, deliberately.** `\P{L}` and `[^\p{L}]` do include unassigned characters, so a newly assigned letter leaves the complement — but `\p{L}` diverges on the *same* codepoint in the opposite direction, and on the same engine pair. Refusing one polarity while admitting the other would remove half of a symmetric pair and claim a portability the remaining half does not have either. So both are admitted and the limit is disclosed once, here: **a property claim is portable only to the extent the two engines share a Unicode version, and nothing in a pattern can assert that.** What makes `Cn` and `C` different is not their polarity — it is that neither polarity of them names a stable rule.
+>
+> ⚠️ A consequence worth expecting: the harness reports `\p{Cn}` and `\p{C}` as an *expressiveness cost*, because on the pair it runs the two engines agree — they share Unicode 17.0, and agree on all 1,114,112 codepoints for `L`, `N`, `Nd`, `C`, `Cn`, `Cf`, `P`, `S`, `Z` and `M`. That is the instrument being honest about what it can see, not a reason to re-admit the categories.
 >
 > ### The grammar
 >
@@ -232,7 +238,7 @@ A named capture may use a name in **any script** — `(?<é>`, `(?<日本>`, `(?
 > | literal characters | a metacharacter must be escaped, from the portable punctuation set |
 > | `[...]`, `[^...]`, ranges `a-z` | with permitted escapes inside |
 > | `.` and `\s` `\S` | permitted **because `delimit()` normalises them** server-side to explicit ECMAScript-equivalent classes. They are the only constructs admitted by rewriting rather than by agreeing |
-> | `\p{...}` `\P{...}` | names from the published category, property and prefix allowlists — **excluding `Cn`**, whose membership inverts between Unicode versions |
+> | `\p{...}` `\P{...}` | names from the published category, property and prefix allowlists — **excluding `Cn` and `C`**, which describe the absence of an assignment rather than a stable rule. Both polarities and both class forms are refused. A complement of any *other* property is permitted, symmetrically with the property |
 > | `^` `$` | `$` is portable only because `D` is set; it cannot be expressed in the published pattern and must never be dropped |
 > | `*` `+` `?` `{n}` `{n,}` `{n,m}` and lazy forms | upper bound **at most 65535** — measured: PCRE refuses to compile above it, ECMAScript allows far more |
 > | `(?:...)` `(...)` `(?=...)` `(?!...)` `(?<=...)` `(?<!...)` `(?<name>...)` | the existing group allowlist, unchanged |
@@ -252,7 +258,11 @@ A named capture may use a name in **any script** — `(?<é>`, `(?<日本>`, `(?
 >
 > ### What this costs
 >
-> Measured, so it is a number rather than a worry: of 103 candidates, **two** are refused today that both engines agree on — `\p{Lower}` and `\p{Alpha}`, POSIX-style aliases missing from the property allowlist. Widening a list is a reviewable, testable act; a denylist's gaps are found by accident. Those two are added.
+> Measured, so it is a number rather than a worry: of 103 candidates, **two** are refused today that both engines agree on — `\p{Lower}` and `\p{Alpha}`, POSIX-style aliases missing from the property allowlist. Widening a list is a reviewable, testable act; a denylist's gaps are found by accident. **Both are now on it, and `\p{Upper}` with them** — the obvious third of the family, added at the same time so the allowlist does not carry an arbitrary subset.
+>
+> ⚠️ **Added on a set comparison, not on compiling**, because compiling proves only that a name is accepted. Each alias was compared with its canonical spelling across all 1,114,112 codepoints in *both* engines and is exactly equal: `Lower`/`Lowercase` 2,595 members, `Alpha`/`Alphabetic` 147,421, `Upper`/`Uppercase` 2,006. `\p{Space}` is the reason this is measured one name at a time rather than adopted as a family — **PCRE compiles it and ECMAScript rejects the name**, so it stays out.
+>
+> The remaining `agrees BUT refused` rows are refusals on purpose, not gaps: `\b`, which has a portable spelling to redirect an author to, and `\p{Cn}`/`\p{C}`, which the pair being measured cannot show diverging because it shares one Unicode version.
 >
 > ⚠️ **Migration is not optional.** Patterns already authored were accepted by the screen, not by the grammar, so any that fall outside it must be found before this lands — a pattern that saved yesterday and is refused today is a broken install, not a fixed one.
 

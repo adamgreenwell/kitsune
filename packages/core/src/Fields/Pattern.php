@@ -434,15 +434,39 @@ final class Pattern
      * @var list<string>
      */
     private const PORTABLE_CATEGORIES = [
-        // ⚠️ `Cn` IS DELIBERATELY ABSENT, and it is the one category that cannot be portable
-        // even in principle. It means "not yet assigned", so its membership SHRINKS with every
-        // Unicode release: a codepoint unassigned to one engine's tables is assigned in the
-        // other's the moment their Unicode versions differ, and the two engines then enforce
-        // opposite rules on the same input. Review demonstrated it on PCRE 10.44 with Node 24
-        // (U+10940); PCRE 10.48 with Node 22 agrees, which is precisely why a measurement on ONE
-        // version pair cannot license this claim. Every other category grows rather than
-        // inverts — see the note in field-types.md §3.
-        'C', 'Cc', 'Cf', 'Co', 'Cs',
+        /*
+         * ⚠️ `Cn` AND `C` ARE BOTH DELIBERATELY ABSENT, and the reason is narrower than "their
+         * membership moves between Unicode versions" — EVERY category's membership moves. U+10940
+         * is SIDETIC LETTER N01, assigned in Unicode 17.0 with category Lo, so a server at 15.1 and
+         * a client at 17.0 enforce different rules on `^\p{L}+$` for that one codepoint. Removing
+         * categories cannot fix that, and an allowlist that tried would end up empty: this list
+         * decides whether a construct EXISTS and means the same RULE in both dialects, and nothing
+         * in a pattern can make two engines share a Unicode table (field-types.md §3 says so).
+         *
+         * What separates these two from the rest is whether there is a stable rule to converge ON.
+         * "A letter" is one: both engines are answering the same question, one of them has a
+         * shorter table, and each release brings them closer to what the author meant. "Not yet
+         * assigned" is not a rule at all — it is a description of the table's incompleteness, so
+         * the answer moves AWAY from the author's intent with every release, in both polarities:
+         * `\p{Cn}` matches steadily less, `\P{Cn}` steadily more, and neither converges anywhere.
+         *
+         * `C` is absent because it CONTAINS `Cn` (Cc|Cf|Co|Cs|Cn) and inherits that exactly. It was
+         * on this list while `Cn` was off it, which review correctly called arbitrary — `\p{C}`
+         * was the same unportable set with one extra spelling. `Cc`, `Cf`, `Co` and `Cs` stay:
+         * each names assigned characters, so each grows like every other category.
+         *
+         * ⚠️ ONE REMOVAL COVERS FOUR SPELLINGS, because `propertyRefusal()` reads the NAME and does
+         * not consult class context: `\p{C}`, `\P{C}`, `[\p{C}]` and `[^\p{C}]` are all refused by
+         * `C` being absent here. `Assigned` — the complement of `Cn` under another name — is absent
+         * from PORTABLE_PROPERTIES for an unrelated reason (PCRE rejects it), and would have
+         * belonged out for this one too.
+         *
+         * Review demonstrated the divergence on PCRE 10.44 with Node 24. PCRE 10.48 with Node 22
+         * agrees on all 1,114,112 codepoints for L, N, Nd, C, Cn, Cf, P, S, Z and M, because both
+         * sit at Unicode 17.0 — which is precisely why a measurement on ONE version pair cannot
+         * license a portability claim.
+         */
+        'Cc', 'Cf', 'Co', 'Cs',
         // ⚠️ `LC` is the Cased_Letter GROUP (Ll|Lt|Lu), and leaving it out was a
         // false refusal of a category both dialects have — the exact cost this
         // allowlist trades for, caught by asking both engines rather than by
@@ -475,16 +499,29 @@ final class Pattern
      * @var list<string>
      */
     private const PORTABLE_PROPERTIES = [
-        'ASCII', 'ASCII_Hex_Digit', 'Alphabetic', 'Any', 'Bidi_Control', 'Bidi_Mirrored',
+        /*
+         * ⚠️ `Alpha`, `Lower` and `Upper` ARE POSIX-STYLE ALIASES, added because the harness
+         * reported them as an expressiveness cost — both engines honour them and the screen refused
+         * them anyway — and field-types.md §3 published that they had been added while they had not.
+         *
+         * ⚠️ ADDED ON A SET COMPARISON, not on compiling. Compiling proves a name is accepted, not
+         * that it means the same thing: each alias was compared with its canonical spelling over all
+         * 1,114,112 codepoints in BOTH engines and is exactly equal (Lower/Lowercase 2,595 members;
+         * Alpha/Alphabetic 147,421; Upper/Uppercase 2,006). `Space` is deliberately not here — PCRE
+         * compiles `\p{Space}` and ECMAScript rejects the name, so the aliases are not portable as a
+         * family and were measured one at a time.
+         */
+        'ASCII', 'ASCII_Hex_Digit', 'Alpha', 'Alphabetic', 'Any', 'Bidi_Control', 'Bidi_Mirrored',
         'Case_Ignorable', 'Cased', 'Changes_When_Casefolded', 'Changes_When_Casemapped',
         'Changes_When_Lowercased', 'Changes_When_Titlecased', 'Changes_When_Uppercased',
         'Dash', 'Default_Ignorable_Code_Point', 'Deprecated', 'Diacritic', 'Emoji',
         'Emoji_Component', 'Emoji_Modifier', 'Emoji_Modifier_Base', 'Emoji_Presentation',
         'Extended_Pictographic', 'Extender', 'Grapheme_Base', 'Grapheme_Extend', 'Hex_Digit',
         'IDS_Binary_Operator', 'IDS_Trinary_Operator', 'ID_Continue', 'ID_Start', 'Ideographic',
-        'Join_Control', 'Logical_Order_Exception', 'Lowercase', 'Math', 'Noncharacter_Code_Point',
+        'Join_Control', 'Logical_Order_Exception', 'Lower', 'Lowercase', 'Math', 'Noncharacter_Code_Point',
         'Pattern_Syntax', 'Pattern_White_Space', 'Quotation_Mark', 'Radical', 'Regional_Indicator',
-        'Sentence_Terminal', 'Soft_Dotted', 'Terminal_Punctuation', 'Unified_Ideograph', 'Uppercase',
+        'Sentence_Terminal', 'Soft_Dotted', 'Terminal_Punctuation', 'Unified_Ideograph', 'Upper',
+        'Uppercase',
         'Variation_Selector', 'White_Space', 'XID_Continue', 'XID_Start',
     ];
 

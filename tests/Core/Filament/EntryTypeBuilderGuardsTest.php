@@ -2463,12 +2463,37 @@ describe('settings that contradict themselves are refused', function (): void {
         // Non-empty, or the assertion below would pass by testing nothing.
         expect($portable)->not->toBe([]);
 
+        /*
+         * ⚠️ TWO NAMES ARE REFUSED ON PURPOSE THOUGH BOTH ENGINES TAKE THEM, and they have to be
+         * named here or this assertion cannot tell a deliberate cost from an omission — which is
+         * the whole thing it exists to detect.
+         *
+         * `Cn` means "not yet assigned" and `C` contains it (Cc|Cf|Co|Cs|Cn). Both engines compile
+         * either, and on ONE Unicode version they agree — which is why they reach this line. Across
+         * versions they cannot: the set is defined by the table's incompleteness, so the answer
+         * moves away from the author's intent with every release in both polarities. U+10940 is
+         * SIDETIC LETTER N01, assigned in Unicode 17.0, which is the codepoint that shows it.
+         * See `PortablePropertyTest` and field-types.md §3.
+         */
+        $refusedOnPurpose = ['Cn', 'C'];
+
         $falselyRefused = array_values(array_filter(
             $portable,
-            fn (string $name): bool => Pattern::unpublishable('^\p{'.$name.'}+$') !== null,
+            fn (string $name): bool => ! in_array($name, $refusedOnPurpose, true)
+                && Pattern::unpublishable('^\p{'.$name.'}+$') !== null,
         ));
 
         expect($falselyRefused)->toBe([]);
+
+        /*
+         * ⚠️ AND THE EXEMPTION LIST IS ITSELF ASSERTED, so it cannot quietly become a place where
+         * inconvenient names are parked. Every entry must actually be refused — a stale one would
+         * otherwise sit here exempting nothing while reading as a justified exclusion.
+         */
+        foreach ($refusedOnPurpose as $name) {
+            expect(Pattern::unpublishable('^\p{'.$name.'}+$'))
+                ->not->toBeNull("[\\p{{$name}}] is exempted here but is not actually refused");
+        }
     })->skip(function (): bool {
         exec('command -v node', $found, $status);
 

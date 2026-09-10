@@ -1,740 +1,758 @@
 [
- {
-  "id": "digit-arabic",
-  "pattern": "^\\d+$",
-  "subject": "\u0661\u0662",
-  "why": ""
- },
- {
-  "id": "word-cyrillic",
-  "pattern": "^\\w+$",
-  "subject": "\u0430\u0431",
-  "why": ""
- },
- {
-  "id": "space-nbsp",
-  "pattern": "^\\s+$",
-  "subject": "\u00a0",
-  "why": ""
- },
- {
-  "id": "dot-linesep",
-  "pattern": "^.$",
-  "subject": "\u2028",
-  "why": ""
- },
- {
-  "id": "noncapture-alt",
-  "pattern": "^(?:ab|cd)$",
-  "subject": "cd",
-  "why": ""
- },
- {
-  "id": "backref",
-  "pattern": "^(a)\\1$",
-  "subject": "aa",
-  "why": ""
- },
- {
-  "id": "lazy-quant",
-  "pattern": "^a+?b$",
-  "subject": "aab",
-  "why": ""
- },
- {
-  "id": "bounded-quant",
-  "pattern": "^a{2,3}$",
-  "subject": "aaa",
-  "why": ""
- },
- {
-  "id": "class-range",
-  "pattern": "^[a-z0-9]+$",
-  "subject": "abc9",
-  "why": ""
- },
- {
-  "id": "prop-script",
-  "pattern": "^\\p{Script=Arabic}+$",
-  "subject": "\u0645\u0631\u062d\u0628\u0627",
-  "why": ""
- },
- {
-  "id": "prop-bare",
-  "pattern": "^\\p{L}+$",
-  "subject": "abc",
-  "why": ""
- },
- {
-  "id": "anchor-A",
-  "pattern": "\\Aabc",
-  "subject": "abc",
-  "why": ""
- },
- {
-  "id": "lookahead",
-  "pattern": "^(?=a)ab$",
-  "subject": "ab",
-  "why": ""
- },
- {
-  "id": "lookbehind",
-  "pattern": "(?<=a)b",
-  "subject": "ab",
-  "why": ""
- },
- {
-  "id": "named-group",
-  "pattern": "^(?<x>a)$",
-  "subject": "a",
-  "why": ""
- },
- {
-  "id": "possessive",
-  "pattern": "^a++$",
-  "subject": "aa",
-  "why": ""
- },
- {
-  "id": "atomic",
-  "pattern": "^(?>a)$",
-  "subject": "a",
-  "why": ""
- },
- {
-  "id": "hex-escape",
-  "pattern": "^\\x41$",
-  "subject": "A",
-  "why": ""
- },
- {
-  "id": "unicode-escape",
-  "pattern": "^\\x{1F600}$",
-  "subject": "\ud83d\ude00",
-  "why": ""
- },
- {
-  "id": "boundary-b",
-  "pattern": "\\bab\\b",
-  "subject": "ab",
-  "why": ""
- },
- {
-  "id": "escaped-slash",
-  "pattern": "^a\\/b$",
-  "subject": "a/b",
-  "why": ""
- },
- {
-  "id": "escaped-dash-class",
-  "pattern": "^[a\\-b]+$",
-  "subject": "a-b",
-  "why": ""
- },
- {
-  "id": "unset-group-backref",
-  "pattern": "^(?:(a)|b)\\1$",
-  "subject": "b",
-  "why": "Backreference to a group in an alternative that never participated: PCRE2 fails the backref, ECMA-262 matches it as empty (measured: PHP NOMATCH, Node MATCH) \u2014 proves group+alternation+backref cannot be allowlisted together even though each part is already allowed."
- },
- {
-  "id": "quantified-capture-persistence",
-  "pattern": "^(?:(a)|b)+c\\1$",
-  "subject": "abca",
-  "why": "ECMA-262 clears captures inside a quantified group at each iteration while PCRE2 keeps the last value (measured: PHP MATCH, Node NOMATCH) \u2014 proves a capture written in one iteration and read after the loop means different things."
- },
- {
-  "id": "combining-mark-group-name",
-  "pattern": "^(?<a\u0327o>[0-9]{4})$",
-  "subject": "2026",
-  "why": "Group name is 'a' + U+0327 COMBINING CEDILLA + 'o'. ECMA-262 group names are IdentifierName and admit combining marks; PCRE2 restricts them to word characters. The case is worthless without the mark actually present \u2014 review found it had been flattened to plain ASCII 'ao', so both engines compiled it and the case validated nothing."
- },
- {
-  "id": "dollar-sign-group-name",
-  "pattern": "^(?<$y>[0-9]{4})$",
-  "subject": "2026",
-  "why": "ECMA-262 group names are IdentifierName (so '$' is legal) while PCRE2 restricts them to word characters (measured: PHP compile error, Node MATCH) \u2014 establishes that named-group NAME legality diverges, and diverges in the JS-accepts/PHP-refuses direction."
- },
- {
-  "id": "bare-inline-caseless",
-  "pattern": "^(?i)stra\u00dfe$",
-  "subject": "STRA\u00dfE",
-  "why": "Bare inline modifier: PCRE2 turns on caseless matching from that point, ECMA-262 has no such construct at all (measured: PHP MATCH, Node SyntaxError) \u2014 a published schema built from this source is not merely stricter, it is uncompilable."
- },
- {
-  "id": "scoped-modifier-kelvin",
-  "pattern": "^(?i:k)$",
-  "subject": "K",
-  "why": "Subject is U+212A KELVIN SIGN: scoped modifier group is PCRE2-valid and (unlike the bare form) is ES2025 syntax, so this measures both availability on the consumer's engine and whether Unicode simple case folding of K/k agrees (measured: PHP MATCH, Node 22 SyntaxError \u2014 a Node 24+ consumer would compile it and the folding comparison becomes the real result)."
- },
- {
-  "id": "bare-inline-free-spacing",
-  "pattern": "^(?x) a b $",
-  "subject": "ab",
-  "why": "PCRE2 (?x) deletes the literal spaces, and ECMA-262 has no x flag in any edition, so unlike (?i:...) this can never converge (measured: PHP MATCH, Node SyntaxError) \u2014 proves the literal meaning of the source text itself is engine-dependent."
- },
- {
-  "id": "inline-comment-group",
-  "pattern": "^a(?#a note)b$",
-  "subject": "ab",
-  "why": "(?#...) is a PCRE2 comment and ECMA-262 has no comment syntax (measured: PHP MATCH, Node SyntaxError) \u2014 the construct a non-developer is most likely to want for self-documenting a pattern is exactly the one that breaks publication."
- },
- {
-  "id": "python-style-named-group",
-  "pattern": "^(?P<year>[0-9]{4})$",
-  "subject": "2026",
-  "why": "PCRE2 accepts the Python-style (?P<name>...) alias that ECMA-262 does not (measured: PHP MATCH, Node SyntaxError) \u2014 distinct from the already-measured (?<x>a), and it is the spelling PHP's own documentation shows, so it will be authored."
- },
- {
-  "id": "relative-backreference",
-  "pattern": "^(a)(b)\\g{-1}$",
-  "subject": "abb",
-  "why": "Group-relative backreference \\g{-1} is PCRE2-only; in ECMA-262 unicode mode \\g is an invalid escape (measured: PHP MATCH, Node SyntaxError) \u2014 classifies the relative (as opposed to absolute) way of naming a group."
- },
- {
-  "id": "octal-escape-vs-group-number",
-  "pattern": "^(a)\\101$",
-  "subject": "aA",
-  "why": "With one capture group, PCRE2 reads \\101 as the octal escape for 'A' while ECMA-262 unicode mode treats it as a reference to nonexistent group 101 (measured: PHP MATCH of \"aA\", Node SyntaxError) \u2014 group numbering silently reinterprets an escape, so the boundary between backref and literal is engine-dependent."
- },
- {
-  "id": "branch-reset-group",
-  "pattern": "^(?|(a)|(b))\\1$",
-  "subject": "bb",
-  "why": "Branch reset makes both alternatives group 1 in PCRE2, so \\1 is \"b\"; ECMA-262 has no (?| construct (measured: PHP MATCH, Node SyntaxError) \u2014 the one construct where alternation changes group NUMBERING rather than just participation."
- },
- {
-  "id": "numeric-conditional",
-  "pattern": "^(a)?(?(1)b|c)$",
-  "subject": "c",
-  "why": "Subject exercises the else-branch of a PCRE2 conditional on whether group 1 participated; ECMA-262 has no conditionals (measured: PHP MATCH, Node SyntaxError) \u2014 proves group participation can drive control flow in PHP with no schema-side equivalent."
- },
- {
-  "id": "recursive-subroutine-call",
-  "pattern": "^(a(?1)?b)$",
-  "subject": "aabb",
-  "why": "Recursive subroutine call to group 1 matches balanced a\u2026b in PCRE2 and is not expressible in ECMA-262 (measured: PHP MATCH, Node SyntaxError) \u2014 the balanced-nesting idiom people copy from the web, and the reason (?N) must be refused rather than approximated."
- },
- {
-  "id": "alternation-pruning-verb",
-  "pattern": "^(?:a(*FAIL)|a)b$",
-  "subject": "ab",
-  "why": "PCRE2 backtracking control verbs silently prune an alternative that ECMA-262 cannot even parse (measured: PHP MATCH, Node SyntaxError) \u2014 classifies the whole (*VERB) family, which is group-shaped syntax the validator will otherwise walk straight past."
- },
- {
-  "id": "brace-bare-open-literal",
-  "pattern": "^a{$",
-  "subject": "a{",
-  "why": "PCRE2 silently treats an unmatched { as a literal character while ECMA u-mode makes it a SyntaxError, so a typo'd bound (e.g. ^\\d{2$) compiles server-side and hard-fails every API consumer (measured: PHP MATCH, Node SyntaxError 'Incomplete quantifier')."
- },
- {
-  "id": "bound-comma-first",
-  "pattern": "^a{,3}$",
-  "subject": "aa",
-  "why": "PCRE2 10.43+ accepts {,n} as {0,n} whereas ECMA u-mode rejects it outright, so this is a construct where PCRE2 quantifies and ECMA refuses to compile at all (measured: PHP MATCH on 'aa' proving {0,3} semantics, Node SyntaxError)."
- },
- {
-  "id": "bound-whitespace-inside",
-  "pattern": "^a{ 2 }$",
-  "subject": "aa",
-  "why": "Tests whether whitespace inside braces makes the bound a quantifier, a literal, or an error; PCRE2 10.48 accepts it as a real quantifier while ECMA u-mode refuses (measured: PHP MATCH on 'aa' \u2014 quantifier, not literal \u2014 Node SyntaxError), the pattern most likely to be typed by a non-developer."
- },
- {
-  "id": "bound-escaped-braces-literal",
-  "pattern": "^a\\{2\\}$",
-  "subject": "a{2}",
-  "why": "Positive control establishing the one sanctioned way to author a literal brace: \\{ is a legal IdentityEscape in ECMA u-mode and literal in PCRE2, so if this agrees it becomes the allowlist's replacement for the three refused brace forms (measured: both MATCH 'a{2}')."
- },
- {
-  "id": "bound-upper-over-65535",
-  "pattern": "^a{0,65536}$",
-  "subject": "aaa",
-  "why": "Pins the divergent quantifier ceiling \u2014 PCRE2 caps a repeat count at 65535 and refuses to compile above it, while ECMA allows up to 2^32-1, so an author-visible bound is accepted by the API schema but rejected by the server (measured: PHP compile failure 'number too big in {} quantifier', Node MATCH)."
- },
- {
-  "id": "bound-upper-at-65535",
-  "pattern": "^a{0,65535}$",
-  "subject": "aaa",
-  "why": "The just-under-the-line half of the ceiling pair, needed so the published grammar can state an exact inclusive maximum bound rather than an approximate one (measured: both MATCH, so 65535 is legal in both)."
- },
- {
-  "id": "group-bound-pattern-too-large",
-  "pattern": "^(?:a?){20000}$",
-  "subject": "aaa",
-  "why": "A bound on a group is expanded by replication in PCRE2, so a count far below the 65535 numeric cap can still blow the compiled-pattern size limit that ECMA has no equivalent of \u2014 a second, independent bound ceiling that depends on what is being quantified (measured: PHP 'regular expression is too large', Node MATCH)."
- },
- {
-  "id": "quantified-group-capture-reset",
-  "pattern": "^(?:(a)|b)+\\1$",
-  "subject": "aba",
-  "why": "The highest-value case: ECMA clears captures inside a quantified group on every iteration while PCRE2 retains the last value, so a quantified group feeding a backreference silently accepts different input in each engine with no error anywhere (measured: PHP MATCH with $1='a', Node NOMATCH)."
- },
- {
-  "id": "zero-bound-unset-backref",
-  "pattern": "^(a){0}\\1b$",
-  "subject": "b",
-  "why": "A {0} bound makes the capture non-participating, and the engines disagree on what a backreference to a non-participating group matches \u2014 PCRE2 fails it, ECMA matches empty \u2014 a silent boolean divergence driven purely by the bound (measured: PHP NOMATCH, Node MATCH)."
- },
- {
-  "id": "optional-group-unset-backref",
-  "pattern": "^(a)?\\1b$",
-  "subject": "b",
-  "why": "Same unset-backreference divergence reached through ? instead of {0}, which determines whether the refusal rule must cover every optional/starred capture group followed by a backreference (a broad restriction) or just the {0} form (a trivial one) (measured: PHP NOMATCH, Node MATCH)."
- },
- {
-  "id": "quantifier-on-lookahead",
-  "pattern": "^(?=a)+a$",
-  "subject": "a",
-  "why": "Tests whether an assertion is a repeatable item: PCRE2 accepts a quantified lookahead and matches, while ECMA u-mode disallows quantified assertions entirely, so the construct compiles server-side and breaks the published schema (measured: PHP MATCH, Node SyntaxError 'Invalid quantifier')."
- },
- {
-  "id": "grapheme-cluster-bound",
-  "pattern": "^\\X{2}$",
-  "subject": "n\u0308n\u0308",
-  "why": "Asks what unit a bound counts when the author wants 'two characters' of combining-mark text: PCRE2's \\X counts grapheme clusters, and ECMA has no such atom at all, so a length rule written this way cannot survive publication (measured: PHP MATCH on two clusters, Node SyntaxError 'Invalid escape')."
- },
- {
-  "id": "astral-literal-bound",
-  "pattern": "^\ud83d\ude00{2}$",
-  "subject": "\ud83d\ude00\ud83d\ude00",
-  "why": "Confirms the quantified atom is a whole code point rather than a UTF-16 code unit in both engines \u2014 the subject is the discriminating one because surrogate-level binding would reject it \u2014 licensing bounds on non-BMP literals in the allowlist (measured: both MATCH)."
- },
- {
-  "id": "star-on-starred-group-cost",
-  "pattern": "^(a*)*b$",
-  "subject": "aaaaaaaaaaaaaaaaaaaaaaaa",
-  "why": "Same verdict, four orders of magnitude apart in cost: PCRE2 optimizes the degenerate nested quantifier away while V8 backtracks exponentially, so a pattern that is free server-side is a ReDoS handed to every API consumer (measured: PHP NOMATCH in 0ms, Node NOMATCH in 1513ms, doubling per added character)."
- },
- {
-  "id": "class-s-zwnbsp",
-  "pattern": "^[\\s]$",
-  "subject": "\ufeff",
-  "why": "Subject is U+FEFF ZWNBSP: proves ECMA-262 \\s inside a class is BROADER than PCRE2/UCP \\s (ES counts ZWNBSP as WhiteSpace, PCRE2 does not) \u2014 a client-side-accepted value the server rejects."
- },
- {
-  "id": "class-s-mongolian-vowel-sep",
-  "pattern": "^[\\s]$",
-  "subject": "\u180e",
-  "why": "Subject is U+180E MONGOLIAN VOWEL SEPARATOR: proves the divergence runs the OTHER way too \u2014 PCRE2's \\h/\\s list still includes it (pre-Unicode-6.3 view) while ES does not, so \\s is bidirectionally non-portable."
- },
- {
-  "id": "class-w-superscript-two",
-  "pattern": "^[\\w]$",
-  "subject": "\u00b2",
-  "why": "Subject is U+00B2 (category No): proves PCRE2/UCP \\w admits digit-like non-ASCII characters that its own \\d rejects, while ES \\w stays ASCII \u2014 the class boundary sits in a different place in each engine."
- },
- {
-  "id": "neg-class-d-arabic-indic",
-  "pattern": "^[^\\d]+$",
-  "subject": "\u0663",
-  "why": "Subject is U+0663 ARABIC-INDIC THREE: proves negation INVERTS which engine is permissive \u2014 PCRE2 excludes it from [^\\d] while ES admits it, so a negated class is stricter server-side than the published schema."
- },
- {
-  "id": "posix-alpha-in-class",
-  "pattern": "^[[:alpha:]]$",
-  "subject": "a",
-  "why": "Proves PCRE2 POSIX bracket expressions are not merely different in meaning but produce a published schema ECMA-262 cannot compile at all (the trailing ] becomes a lone quantifier bracket in u-mode)."
- },
- {
-  "id": "posix-alpha-bare",
-  "pattern": "^[:alpha:]+$",
-  "subject": "alpha",
-  "why": "The common authoring typo without an enclosing class: proves PCRE2 refuses it outright while ES silently accepts it as the literal set {:,a,l,p,h}, so authoring-time acceptance and consumer-side meaning can invert."
- },
- {
-  "id": "class-rbracket-first",
-  "pattern": "^[]]$",
-  "subject": "]",
-  "why": "Proves the Perl/POSVIX convention that a leading ] is a literal class member holds in PCRE2 but is a SyntaxError in ES u-mode (empty class plus lone ]), so any pattern matching a literal bracket this way must be refused."
- },
- {
-  "id": "neg-class-empty",
-  "pattern": "^[^]$",
-  "subject": "]",
-  "why": "Proves the reverse bracket asymmetry: PCRE2 refuses [^] as an unterminated class while ES compiles it to 'any code point', the most permissive possible published constraint."
- },
- {
-  "id": "class-set-op-intersection",
-  "pattern": "^[a-z&&[aeiou]]$",
-  "subject": "a]",
-  "why": "ECMAScript v-flag set-operation syntax compiled under u: proves PCRE2 silently mis-parses it as a union containing literal & and [ (matching 'a]'), while ES rejects it \u2014 nested classes and set ops are unsafe in both directions."
- },
- {
-  "id": "class-u-escape-range",
-  "pattern": "^[A-Z]+$",
-  "subject": "AZ",
-  "why": "Proves the JS-idiomatic \\uXXXX range endpoint is ES-only: PCRE2 10.48 explicitly refuses \\u, so an author copying a JS pattern is blocked server-side rather than silently diverging."
- },
- {
-  "id": "class-escaped-underscore",
-  "pattern": "^[\\_]$",
-  "subject": "_",
-  "why": "Proves defensive backslashing of a non-syntax character inside a class (PCRE2: literal) is a hard SyntaxError under ES u-mode's restricted IdentityEscape \u2014 a very common authoring habit that would break every consumer."
- },
- {
-  "id": "class-h-escape-space",
-  "pattern": "^[\\h]$",
-  "subject": " ",
-  "why": "Proves PCRE2's \\h horizontal-whitespace escape inside a class has no ECMA-262 equivalent (invalid escape in u-mode); ASCII space is used so the outcome isolates escape support, not Unicode membership."
- },
- {
-  "id": "class-quote-literal-block",
-  "pattern": "^[\\Q.-]\\E]+$",
-  "subject": "]-.",
-  "why": "Proves \\Q...\\E literal quoting is PCRE2-only and additionally hides a ] from any ES parser, so it must be refused rather than translated."
- },
- {
-  "id": "class-bare-script-name",
-  "pattern": "^[\\p{Greek}]+$",
-  "subject": "\u03bb",
-  "why": "Subject is U+03BB: proves PCRE2 accepts a bare script name as a property while ES requires Script=/sc= and rejects \\p{Greek} outright \u2014 property-name spelling is part of the grammar, not just the property itself."
- },
- {
-  "id": "class-long-general-category",
-  "pattern": "^[\\p{General_Category=Letter}]+$",
-  "subject": "\u03bb",
-  "why": "The mirror case: proves ES accepts the long General_Category=Letter form that PCRE2 10.48 refuses, so allowlisting \\p{...} requires an explicit list of spellings valid in BOTH engines."
- },
- {
-  "id": "bslash-v-vertical-ws",
-  "pattern": "^\\v$",
-  "subject": "\u0085",
-  "why": "Same syntax, different meaning with no compile error either side: PCRE2 \\v is the vertical-whitespace CLASS (LF, VT, FF, CR, NEL, LS, PS) so it matches U+0085, while ECMA-262 \\v is exactly VT U+000B and does not \u2014 the highest-risk silent divergence in the escape family (verified: PHP match, Node nomatch)."
- },
- {
-  "id": "bslash-u-four-hex",
-  "pattern": "^A$",
-  "subject": "A",
-  "why": "Reverses the usual strictness direction: ECMA-262 \\uHHHH is the canonical codepoint escape a JSON-Schema author would copy, but PCRE2 without ALT_BSUX refuses \\u outright \u2014 proves the grammar must ban the form that looks most native to the published side (verified: Node match, PHP compile error)."
- },
- {
-  "id": "bslash-u-brace-astral",
-  "pattern": "^\\u{1F600}$",
-  "subject": "\ud83d\ude00",
-  "why": "The braced ECMA-262 codepoint escape for an astral character compiles and matches in Node but is a PCRE2 compile error, so it must be refused even though \\x{1F600} (already measured) is the PCRE2-side spelling of the same intent."
- },
- {
-  "id": "octal-three-digit",
-  "pattern": "^\\101$",
-  "subject": "A",
-  "why": "Legacy three-digit octal escape: PCRE2 reads it as chr(0o101)='A' while u-mode ECMA-262 forbids octal escapes entirely \u2014 proves \\NNN is refusable and that \\ + digit cannot be judged by PCRE2 semantics alone (verified: PHP match, Node SyntaxError)."
- },
- {
-  "id": "octal-vs-backref-ten",
-  "pattern": "^(a)\\10$",
-  "subject": "a\b",
-  "why": "The octal/backreference ambiguity itself: with only one group, PCRE2 re-reads \\10 as octal 0o10 = U+0008 backspace, while u-mode ECMA-262 rejects it as an invalid escape \u2014 proves \\ + multi-digit is a two-reading construct whose meaning depends on the group count (verified: PHP match, Node SyntaxError)."
- },
- {
-  "id": "bslash-e-esc",
-  "pattern": "^\\e$",
-  "subject": "\u001b",
-  "why": "Control-character escape present only in PCRE2: \\e is ESC U+001B there and an invalid identity escape under u-mode \u2014 proves the \\e/\\a-style single-letter control escapes must be refused (verified: PHP match, Node SyntaxError)."
- },
- {
-  "id": "ctrl-escape-c-nonletter",
-  "pattern": "^\\c[$",
-  "subject": "\u001b",
-  "why": "Pins the exact boundary of \\c: PCRE2 XORs 0x40 with any following char so \\c[ is ESC, while u-mode ECMA-262 requires \\c + ASCII letter and rejects this \u2014 proves \\c is only safe when the next character is a letter (\\cJ agrees in both), so the grammar needs a per-argument rule, not a per-escape one."
- },
- {
-  "id": "short-hex-one-digit",
-  "pattern": "^\\x4$",
-  "subject": "\u0004",
-  "why": "Hex-escape length strictness: PCRE2 accepts one or two hex digits after \\x (yielding U+0004) while ECMA-262 u-mode demands exactly two \u2014 proves \\xHH must be allowlisted only in its full two-digit form (verified: PHP match, Node SyntaxError)."
- },
- {
-  "id": "identity-escape-hyphen",
-  "pattern": "^a\\-b$",
-  "subject": "a-b",
-  "why": "The likeliest author mistake in the whole set: outside a character class PCRE2 allows \\- as an identity escape, but ECMA-262 u-mode restricts IdentityEscape to SyntaxCharacter plus '/' and rejects it \u2014 proves \\- is only portable inside a class (already measured as [a\\-b]), never outside (verified: PHP match, Node SyntaxError)."
- },
- {
-  "id": "identity-escape-space",
-  "pattern": "^a\\ b$",
-  "subject": "a b",
-  "why": "Escaped whitespace: PCRE2 treats \\<space> as a literal space, u-mode ECMA-262 rejects it \u2014 proves over-escaping a non-syntax punctuation/whitespace character is a refusal class in general, not just for '-' (verified: PHP match, Node SyntaxError)."
- },
- {
-  "id": "bslash-X-grapheme",
-  "pattern": "^\\X$",
-  "subject": "e\u0301",
-  "why": "PCRE2-only \\X matches a whole extended grapheme cluster, so it consumes base+combining-mark as one unit, while u-mode ECMA-262 rejects \\X \u2014 proves a construct that changes the unit of matching for decomposed non-ASCII text cannot be published (verified: PHP match on U+0065 U+0301, Node SyntaxError)."
- },
- {
-  "id": "quote-literal-span",
-  "pattern": "^\\Qa.b\\E$",
-  "subject": "axb",
-  "why": "Literal-quoting span: PCRE2 makes the '.' inside \\Q...\\E literal (so 'axb' does NOT match), while ECMA-262 u-mode rejects \\Q \u2014 the nomatch proves \\Q is actively suppressing metacharacters, i.e. an author's 'make this literal' idiom silently has no counterpart downstream (verified: PHP nomatch, Node SyntaxError)."
- },
- {
-  "id": "bslash-Z-trailing-newline",
-  "pattern": "^abc\\Z",
-  "subject": "abc\n",
-  "why": "PCRE2's \\Z end-anchor matches before a final newline (so 'abc\\n' passes) and has no ECMA-262 equivalent \u2014 proves both that \\Z/\\z must be refused and that PCRE2 end-of-subject leniency lets trailing-newline input slip through a validator (verified: PHP match, Node SyntaxError)."
- },
- {
-  "id": "bslash-R-crlf",
-  "pattern": "^\\R$",
-  "subject": "\r\n",
-  "why": "PCRE2 \\R matches any newline sequence including the TWO-character CRLF as a single unit, while u-mode ECMA-262 rejects \\R \u2014 proves a refusable escape whose PCRE2 semantics cannot even be expressed as a single-character class downstream (verified: PHP match on U+000D U+000A, Node SyntaxError)."
- },
- {
-  "id": "p-script-colon-sep",
-  "pattern": "^\\p{Script:Greek}$",
-  "subject": "\u03b1",
-  "why": "PCRE accepts ':' as the property separator where ECMAScript requires '=' and throws (verified: SyntaxError in Node), so the separator character needs its own ruling rather than riding on the loose-name row."
- },
- {
-  "id": "p-sc-short-alias",
-  "pattern": "^\\p{sc=Greek}$",
-  "subject": "\u03b1",
-  "why": "Proves whether the short property alias 'sc' travels with '=' in both engines, i.e. whether the allowlist must enumerate aliases as well as the canonical 'Script'."
- },
- {
-  "id": "p-scx-long-name",
-  "pattern": "^\\p{Script_Extensions=Greek}$",
-  "subject": "\u02b9",
-  "why": "U+0374 has Script=Common but Script_Extensions=Greek, so this proves both that the Script_Extensions spelling compiles in PCRE and that its set agrees with ECMAScript's (true) exactly where scx and sc part ways."
- },
- {
-  "id": "p-script-not-scx",
-  "pattern": "^\\p{Script=Greek}$",
-  "subject": "\u02b9",
-  "why": "ECMAScript answers false on U+0374; a PCRE that resolves Script= against Script_Extensions would answer true, a conflation invisible on any character whose sc and scx agree."
- },
- {
-  "id": "p-gc-long-form-astral",
-  "pattern": "^\\p{General_Category=Lu}$",
-  "subject": "\ud83a\udd00",
-  "why": "Tests the long General_Category spelling an author copies off the JSON Schema side, on an astral Lu (U+1E900 Adlam) so a property table that stops at the BMP shows up as a mismatch rather than a compile error."
- },
- {
-  "id": "p-cased-letter-long-name",
-  "pattern": "^\\p{Cased_Letter}$",
-  "subject": "\u01c5",
-  "why": "The long name for the LC group the allowlist already permits, measured on the titlecase category (U+01C5) that belongs to LC but to neither Lu nor Ll \u2014 so a partial LC implementation is exposed."
- },
- {
-  "id": "p-lowercase-other-lowercase",
-  "pattern": "^\\p{Lowercase}$",
-  "subject": "\u00aa",
-  "why": "Lowercase is Ll plus Other_Lowercase; U+00AA is Lo, so a PCRE that maps the binary property onto Ll diverges here and on no ordinary letter."
- },
- {
-  "id": "p-lower-posix-alias",
-  "pattern": "^\\p{Lower}$",
-  "subject": "\u00aa",
-  "why": "'Lower' is an ECMAScript alias for Lowercase but collides with PCRE's POSIX 'lower'; the same subject separates 'alias honoured' from 'alias silently resolved to Ll'."
- },
- {
-  "id": "p-uppercase-roman-numeral",
-  "pattern": "^\\p{Uppercase}$",
-  "subject": "\u2160",
-  "why": "Other_Uppercase on a non-letter category (U+2160 is Nl) \u2014 the mirror of the Lowercase case, and one of the few case semantics reachable at all when no 'i' flag is available."
- },
- {
-  "id": "p-alpha-alias-nl",
-  "pattern": "^\\p{Alpha}$",
-  "subject": "\u2160",
-  "why": "Combines the 'Alpha' alias with Alphabetic's inclusion of Nl, where \\p{L} is false, so an alias quietly resolved to L is visible instead of hidden."
- },
- {
-  "id": "p-changes-when-uppercased",
-  "pattern": "^\\p{Changes_When_Uppercased}$",
-  "subject": "\u00df",
-  "why": "A case-mapping binary property ECMAScript defines (true for \u00df\u2192SS) and PCRE may not implement at all, which would be a compile-time divergence rather than a semantic one."
- },
- {
-  "id": "p-extended-pictographic",
-  "pattern": "^\\p{Extended_Pictographic}$",
-  "subject": "\ud83d\ude00",
-  "why": "The property an emoji-constrained field would actually reach for, on an astral code point: ECMAScript has it, and PCRE's tables may not carry emoji-data-derived properties."
- },
- {
-  "id": "p-script-newest-name",
-  "pattern": "^\\p{Script=Sidetic}$",
-  "subject": "\ud802\udd40",
-  "why": "A Unicode 17 script name (U+10940): whichever engine's tables are older rejects the name outright, which is the version-skew failure a published script allowlist has to survive."
- },
- {
-  "id": "p-cn-version-skew",
-  "pattern": "^\\p{Cn}$",
-  "subject": "\ud802\udd40",
-  "why": "Same code point, set contents instead of name inventory \u2014 Cn compiles in both engines, so an engine on an older Unicode calls U+10940 unassigned while the newer one does not."
- },
- {
-  "id": "p-negated-p-class-astral",
-  "pattern": "^[^\\p{L}]$",
-  "subject": "\ud83d\ude00",
-  "why": "A negated property class over an astral code point: ECMAScript matches it as one code point, and any engine counting UTF-16 units or splitting the surrogate pair fails the anchors."
- },
- {
-  "id": "dollar-trailing-newline-latin",
-  "pattern": "^[a-z]+$",
-  "subject": "abc\n",
-  "why": "The headline anchor divergence: PCRE2's $ also matches before a single trailing newline, so an author's \"^...$\" fully-anchored field accepts a trailing \\n that ECMA-262 rejects (verified locally: PHP MATCH, Node no-match)."
- },
- {
-  "id": "dollar-midpattern-then-newline",
-  "pattern": "^a$\\n",
-  "subject": "a\n",
-  "why": "Proves PCRE2's $ is a positional assertion, not a terminal one \u2014 it succeeds mid-pattern and the newline is still consumable afterwards \u2014 while ECMA-262 fails there, so the divergence is not just about what the match ends with."
- },
- {
-  "id": "anchor-in-alternation-branch",
-  "pattern": "^(?:xyz|abc$)",
-  "subject": "abc\n",
-  "why": "Tests whether the $-before-final-newline leniency still applies when the anchor sits inside a non-capturing group's alternation branch rather than at top level (PHP MATCH, Node no-match)."
- },
- {
-  "id": "bsZ-end-anchor-newline",
-  "pattern": "^a\\Z",
-  "subject": "a\n",
-  "why": "\\Z is a PCRE2-only end anchor with the same trailing-newline leniency as $; in ECMA-262 'u' mode it is a SyntaxError (Invalid escape), so it is a compile-time refusal, not a semantic mismatch."
- },
- {
-  "id": "bsz-absolute-end",
-  "pattern": "^a\\z",
-  "subject": "a",
-  "why": "\\z is the strict end-of-subject anchor authors would naturally reach for as a fix for $, so the grammar must publish that it is unavailable: PHP compiles and matches, Node 'u' mode throws Invalid escape."
- },
- {
-  "id": "inline-m-modifier-anchors",
-  "pattern": "(?m)^b$",
-  "subject": "a\nb",
-  "why": "A leading inline (?m) silently redefines ^ and $ as line anchors in PCRE2 but is a SyntaxError (Invalid group) in ECMA-262, so multiline anchor semantics are reachable in one engine and unexpressible in the other."
- },
- {
-  "id": "scoped-m-modifier-group",
-  "pattern": "(?m:^b$)",
-  "subject": "a\nb",
-  "why": "The ES2025 scoped-modifier form is the only cross-engine spelling that could exist, and the subject is chosen so a silently ignored modifier shows as a mismatch; on Node 22 it is still a SyntaxError, pinning the runtime floor for this construct."
- },
- {
-  "id": "crlf-verb-anchor",
-  "pattern": "(*CRLF)^a$",
-  "subject": "a\r\n",
-  "why": "PCRE2 newline-convention verbs widen $ to match before a CRLF pair; in ECMA-262 the leading (* is a SyntaxError, so this must be refused as a whole class of anchor-mutating prefixes."
- },
- {
-  "id": "bsK-match-reset",
-  "pattern": "^a\\Kb",
-  "subject": "ab",
-  "why": "\\K resets the reported match start in PCRE2 (match becomes \"b\") and throws in ECMA-262 'u' mode \u2014 relevant because JSON Schema \"pattern\" is an unanchored search where match extent is observable."
- },
- {
-  "id": "word-boundary-accented-word",
-  "pattern": "\\bcaf\u00e9\\b",
-  "subject": "caf\u00e9",
-  "why": "The realistic authored idiom: PHP's /u sets PCRE2_UCP so \u00e9 is a word char and the trailing \\b holds, while ECMA-262 \\w stays ASCII so no boundary exists after \u00e9 \u2014 same pattern, opposite verdicts on ordinary Latin-1 text."
- },
- {
-  "id": "bsB-inside-accented",
-  "pattern": "a\\B\u00ef",
-  "subject": "na\u00efve",
-  "why": "Tests \\B (not just \\b) across an ASCII/non-ASCII letter junction: UCP makes it a non-boundary in PCRE2 (match) but a boundary in ECMA-262 (no match), confirming both boundary operators inherit the \\w definition split."
- },
- {
-  "id": "boundary-underscore-arabic-digit",
-  "pattern": "_\\b",
-  "subject": "_\u0663",
-  "why": "Discriminates in the reverse direction \u2014 ECMA-262 matches and PCRE2 does not \u2014 because U+0663 is a word char only under UCP; also covers the underscore/digit side of \\w, guarding against a rule that only ever fires one way."
- },
- {
-  "id": "boundary-astral-math-letter",
-  "pattern": "\\b\ud835\udc00\\b",
-  "subject": "\ud835\udc00",
-  "why": "Word boundaries around an astral letter (U+1D400): checks that boundary evaluation at a supplementary code point behaves as one character in both engines and isolates whether any divergence is UCP-driven or astral-driven."
- },
- {
-  "id": "boundary-bmp-cjk-letter",
-  "pattern": "\\b\u65e5\\b",
-  "subject": "\u65e5",
-  "why": "BMP control for the astral case: if this diverges identically then the cause is the UCP \\w definition rather than surrogate handling, which is what lets the grammar write one rule instead of two."
- },
- {
-  "id": "bsB-at-start-before-accent",
-  "pattern": "\\B\u00e9",
-  "subject": "\u00e9",
-  "why": "Boundary semantics at position zero, where the engines invert: ECMA-262 sees no boundary before a non-ASCII letter so \\B succeeds, PCRE2 sees one so it fails \u2014 proving start-of-subject boundary state is also UCP-dependent."
- },
- {
-  "id": "dot-carriage-return",
-  "pattern": "^.+$",
-  "subject": "a\r",
-  "why": "MEASURED: PHP matches, Node does not \u2014 PCRE excludes only the newline convention char (LF) from `.` while ECMA-262 excludes LF, CR, LS and PS; every proposer probed `.` on U+2028 but nobody probed CR, the one line terminator that actually arrives in CMS input from Windows paste."
- },
- {
-  "id": "s-next-line-u0085",
-  "pattern": "^\\s$",
-  "subject": "\u0085",
-  "why": "MEASURED: PHP matches, Node does not \u2014 PCRE2's UCP `\\s` includes the C1 control U+0085 NEL, ECMA-262's WhiteSpace list does not; NBSP was measured but it is a Zs and both engines agree on it, so the whole Cc/Cf side of `\\s` is still unmeasured."
- },
- {
-  "id": "lookbehind-alt-length-order",
-  "pattern": "(?<=(a|aa))b\\1$",
-  "subject": "aaba",
-  "why": "MEASURED: Node matches (group 1 = \"a\", written alternation order preserved in backward matching), PHP does not (PCRE2 orders lookbehind branches by length, binding group 1 = \"aa\") \u2014 the matrix already blessed \"lookbehind\" as a measured construct, and this shows that blessing is wrong the moment the lookbehind contains alternatives of unequal length plus a backreference."
- },
- {
-  "id": "lookbehind-unbounded-plus",
-  "pattern": "(?<=a+)b",
-  "subject": "aab",
-  "why": "MEASURED: Node matches, PHP refuses to compile (\"length of lookbehind assertion is not limited\") \u2014 nobody probed the direction where PCRE2 is the STRICTER engine, so the grammar has no evidence about lookbehind LENGTH rules (bounded `(?<=\\d{2,4})` compiles and agrees in both; unbounded does not)."
- },
- {
-  "id": "forward-numbered-backref",
-  "pattern": "^\\1(a)$",
-  "subject": "a",
-  "why": "MEASURED: Node matches (unset group backreference succeeds as empty), PHP does not \u2014 a forward reference is a construct legal in BOTH engines and distinct from the already-measured plain `(a)\\1`, and it is the likeliest author accident (backreference typed before the group) in the unset-group family."
- },
- {
-  "id": "prop-name-lowercase-loose",
-  "pattern": "^\\p{lu}$",
-  "subject": "A",
-  "why": "MEASURED: PHP matches, Node refuses (\"Invalid property name\") \u2014 PCRE2 applies loose matching to property names (case, spaces and underscores ignored, so `\\p{lu}`, `\\p{Lu }`, `\\p{cased_letter}` all compile), while every `\\p` case proposed used canonically-cased names and so never touched the looseness rule that makes the two surfaces different sizes."
- },
- {
-  "id": "prop-single-letter-no-braces",
-  "pattern": "^\\pL$",
-  "subject": "a",
-  "why": "MEASURED: PHP matches, Node refuses \u2014 the braceless one-letter property form `\\pL`/`\\PL` is what the PHP manual itself shows and what an author will copy, yet all 12 proposed `\\p` cases assumed the braced spelling."
- },
- {
-  "id": "prop-caret-negation",
-  "pattern": "^\\p{^L}$",
-  "subject": "1",
-  "why": "MEASURED: PHP matches, Node refuses \u2014 PCRE2's in-brace negation `\\p{^L}` is a third distinct spelling rule (separate from loose names and from braceless forms) that silently stores and then breaks every consumer."
- },
- {
-  "id": "named-backref-brace-form",
-  "pattern": "^(?<y>a)\\k{y}$",
-  "subject": "aa",
-  "why": "MEASURED: PHP matches, Node refuses (\"Invalid named reference\") \u2014 named GROUPS were measured but never named BACKREFERENCES, so the grammar cannot yet say that `\\k<y>` is the one portable spelling (I verified it agrees) while `\\k{y}`, `\\k'y'`, `(?P=y)` and `\\g{y}` are PCRE-only."
- },
- {
-  "id": "bare-close-bracket-literal",
-  "pattern": "^a]$",
-  "subject": "a]",
-  "why": "MEASURED: PHP matches (bare `]` is a literal), Node refuses (\"Lone quantifier brackets\" \u2014 `]` is a SyntaxCharacter forbidden as a PatternCharacter under /u) \u2014 the proposals covered the `{` version of this rule and stopped, missing that `]` behaves the same way and is the more likely leftover from an edited character class."
- },
- {
-  "id": "duplicate-named-group-alt",
-  "pattern": "^(?:(?<y>a)|(?<y>b))$",
-  "subject": "b",
-  "why": "MEASURED: Node matches (ES2025 duplicate named capture groups shipped in V8), PHP refuses without `(?J)` \u2014 a second case where the JS surface is LARGER than PCRE's, which matters because a grammar derived only from \"PHP accepts, JS refuses\" evidence will be shaped as if PCRE were always the superset."
- },
- {
-  "id": "backtrack-limit-email-shape",
-  "pattern": "^([a-zA-Z0-9]+\\.?)+@x\\.com$",
-  "subject": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!@x.com",
-  "why": "MEASURED: PHP returns FALSE in 1.8ms (\"Backtrack limit exhausted\"), Node was still searching after 20s \u2014 every cost-related proposal was about COMPILE size (`{0,65536}`, 20000 nested groups), so nobody measured runtime decidability, where PCRE's 1M backtrack cap turns a rejection into an error while V8 has no cap and the published pattern becomes a client-side DoS."
- },
- {
-  "id": "backslash-n-uppercase-any",
-  "pattern": "^\\N$",
-  "subject": "a",
-  "why": "MEASURED: PHP matches (PCRE `\\N` = any character except newline), Node refuses (\"Invalid escape\") \u2014 a capitalisation slip on `\\n` silently stores as a wildcard with the opposite meaning of what was typed, and the escape-family proposals covered `\\e`, `\\R`, `\\X`, `\\v`, `\\h` but not this one."
- }
+  {
+    "id": "digit-arabic",
+    "pattern": "^\\d+$",
+    "subject": "١٢",
+    "why": ""
+  },
+  {
+    "id": "word-cyrillic",
+    "pattern": "^\\w+$",
+    "subject": "аб",
+    "why": ""
+  },
+  {
+    "id": "space-nbsp",
+    "pattern": "^\\s+$",
+    "subject": " ",
+    "why": ""
+  },
+  {
+    "id": "dot-linesep",
+    "pattern": "^.$",
+    "subject": " ",
+    "why": ""
+  },
+  {
+    "id": "noncapture-alt",
+    "pattern": "^(?:ab|cd)$",
+    "subject": "cd",
+    "why": ""
+  },
+  {
+    "id": "backref",
+    "pattern": "^(a)\\1$",
+    "subject": "aa",
+    "why": ""
+  },
+  {
+    "id": "lazy-quant",
+    "pattern": "^a+?b$",
+    "subject": "aab",
+    "why": ""
+  },
+  {
+    "id": "bounded-quant",
+    "pattern": "^a{2,3}$",
+    "subject": "aaa",
+    "why": ""
+  },
+  {
+    "id": "class-range",
+    "pattern": "^[a-z0-9]+$",
+    "subject": "abc9",
+    "why": ""
+  },
+  {
+    "id": "prop-script",
+    "pattern": "^\\p{Script=Arabic}+$",
+    "subject": "مرحبا",
+    "why": ""
+  },
+  {
+    "id": "prop-bare",
+    "pattern": "^\\p{L}+$",
+    "subject": "abc",
+    "why": ""
+  },
+  {
+    "id": "anchor-A",
+    "pattern": "\\Aabc",
+    "subject": "abc",
+    "why": ""
+  },
+  {
+    "id": "lookahead",
+    "pattern": "^(?=a)ab$",
+    "subject": "ab",
+    "why": ""
+  },
+  {
+    "id": "lookbehind",
+    "pattern": "(?<=a)b",
+    "subject": "ab",
+    "why": ""
+  },
+  {
+    "id": "named-group",
+    "pattern": "^(?<x>a)$",
+    "subject": "a",
+    "why": ""
+  },
+  {
+    "id": "possessive",
+    "pattern": "^a++$",
+    "subject": "aa",
+    "why": ""
+  },
+  {
+    "id": "atomic",
+    "pattern": "^(?>a)$",
+    "subject": "a",
+    "why": ""
+  },
+  {
+    "id": "hex-escape",
+    "pattern": "^\\x41$",
+    "subject": "A",
+    "why": ""
+  },
+  {
+    "id": "unicode-escape",
+    "pattern": "^\\x{1F600}$",
+    "subject": "😀",
+    "why": ""
+  },
+  {
+    "id": "boundary-b",
+    "pattern": "\\bab\\b",
+    "subject": "ab",
+    "why": ""
+  },
+  {
+    "id": "escaped-slash",
+    "pattern": "^a\\/b$",
+    "subject": "a/b",
+    "why": ""
+  },
+  {
+    "id": "escaped-dash-class",
+    "pattern": "^[a\\-b]+$",
+    "subject": "a-b",
+    "why": ""
+  },
+  {
+    "id": "unset-group-backref",
+    "pattern": "^(?:(a)|b)\\1$",
+    "subject": "b",
+    "why": "Backreference to a group in an alternative that never participated: PCRE2 fails the backref, ECMA-262 matches it as empty (measured: PHP NOMATCH, Node MATCH) — proves group+alternation+backref cannot be allowlisted together even though each part is already allowed."
+  },
+  {
+    "id": "quantified-capture-persistence",
+    "pattern": "^(?:(a)|b)+c\\1$",
+    "subject": "abca",
+    "why": "ECMA-262 clears captures inside a quantified group at each iteration while PCRE2 keeps the last value (measured: PHP MATCH, Node NOMATCH) — proves a capture written in one iteration and read after the loop means different things."
+  },
+  {
+    "id": "combining-mark-group-name",
+    "pattern": "^(?<a̧o>[0-9]{4})$",
+    "subject": "2026",
+    "why": "Group name is 'a' + U+0327 COMBINING CEDILLA + 'o'. ECMA-262 group names are IdentifierName and admit combining marks; PCRE2 restricts them to word characters. The case is worthless without the mark actually present — review found it had been flattened to plain ASCII 'ao', so both engines compiled it and the case validated nothing."
+  },
+  {
+    "id": "dollar-sign-group-name",
+    "pattern": "^(?<$y>[0-9]{4})$",
+    "subject": "2026",
+    "why": "ECMA-262 group names are IdentifierName (so '$' is legal) while PCRE2 restricts them to word characters (measured: PHP compile error, Node MATCH) — establishes that named-group NAME legality diverges, and diverges in the JS-accepts/PHP-refuses direction."
+  },
+  {
+    "id": "bare-inline-caseless",
+    "pattern": "^(?i)straße$",
+    "subject": "STRAßE",
+    "why": "Bare inline modifier: PCRE2 turns on caseless matching from that point, ECMA-262 has no such construct at all (measured: PHP MATCH, Node SyntaxError) — a published schema built from this source is not merely stricter, it is uncompilable."
+  },
+  {
+    "id": "scoped-modifier-kelvin",
+    "pattern": "^(?i:k)$",
+    "subject": "K",
+    "why": "Subject is U+212A KELVIN SIGN: scoped modifier group is PCRE2-valid and (unlike the bare form) is ES2025 syntax, so this measures both availability on the consumer's engine and whether Unicode simple case folding of K/k agrees (measured: PHP MATCH, Node 22 SyntaxError — a Node 24+ consumer would compile it and the folding comparison becomes the real result)."
+  },
+  {
+    "id": "bare-inline-free-spacing",
+    "pattern": "^(?x) a b $",
+    "subject": "ab",
+    "why": "PCRE2 (?x) deletes the literal spaces, and ECMA-262 has no x flag in any edition, so unlike (?i:...) this can never converge (measured: PHP MATCH, Node SyntaxError) — proves the literal meaning of the source text itself is engine-dependent."
+  },
+  {
+    "id": "inline-comment-group",
+    "pattern": "^a(?#a note)b$",
+    "subject": "ab",
+    "why": "(?#...) is a PCRE2 comment and ECMA-262 has no comment syntax (measured: PHP MATCH, Node SyntaxError) — the construct a non-developer is most likely to want for self-documenting a pattern is exactly the one that breaks publication."
+  },
+  {
+    "id": "python-style-named-group",
+    "pattern": "^(?P<year>[0-9]{4})$",
+    "subject": "2026",
+    "why": "PCRE2 accepts the Python-style (?P<name>...) alias that ECMA-262 does not (measured: PHP MATCH, Node SyntaxError) — distinct from the already-measured (?<x>a), and it is the spelling PHP's own documentation shows, so it will be authored."
+  },
+  {
+    "id": "relative-backreference",
+    "pattern": "^(a)(b)\\g{-1}$",
+    "subject": "abb",
+    "why": "Group-relative backreference \\g{-1} is PCRE2-only; in ECMA-262 unicode mode \\g is an invalid escape (measured: PHP MATCH, Node SyntaxError) — classifies the relative (as opposed to absolute) way of naming a group."
+  },
+  {
+    "id": "octal-escape-vs-group-number",
+    "pattern": "^(a)\\101$",
+    "subject": "aA",
+    "why": "With one capture group, PCRE2 reads \\101 as the octal escape for 'A' while ECMA-262 unicode mode treats it as a reference to nonexistent group 101 (measured: PHP MATCH of \"aA\", Node SyntaxError) — group numbering silently reinterprets an escape, so the boundary between backref and literal is engine-dependent."
+  },
+  {
+    "id": "branch-reset-group",
+    "pattern": "^(?|(a)|(b))\\1$",
+    "subject": "bb",
+    "why": "Branch reset makes both alternatives group 1 in PCRE2, so \\1 is \"b\"; ECMA-262 has no (?| construct (measured: PHP MATCH, Node SyntaxError) — the one construct where alternation changes group NUMBERING rather than just participation."
+  },
+  {
+    "id": "numeric-conditional",
+    "pattern": "^(a)?(?(1)b|c)$",
+    "subject": "c",
+    "why": "Subject exercises the else-branch of a PCRE2 conditional on whether group 1 participated; ECMA-262 has no conditionals (measured: PHP MATCH, Node SyntaxError) — proves group participation can drive control flow in PHP with no schema-side equivalent."
+  },
+  {
+    "id": "recursive-subroutine-call",
+    "pattern": "^(a(?1)?b)$",
+    "subject": "aabb",
+    "why": "Recursive subroutine call to group 1 matches balanced a…b in PCRE2 and is not expressible in ECMA-262 (measured: PHP MATCH, Node SyntaxError) — the balanced-nesting idiom people copy from the web, and the reason (?N) must be refused rather than approximated."
+  },
+  {
+    "id": "alternation-pruning-verb",
+    "pattern": "^(?:a(*FAIL)|a)b$",
+    "subject": "ab",
+    "why": "PCRE2 backtracking control verbs silently prune an alternative that ECMA-262 cannot even parse (measured: PHP MATCH, Node SyntaxError) — classifies the whole (*VERB) family, which is group-shaped syntax the validator will otherwise walk straight past."
+  },
+  {
+    "id": "brace-bare-open-literal",
+    "pattern": "^a{$",
+    "subject": "a{",
+    "why": "PCRE2 silently treats an unmatched { as a literal character while ECMA u-mode makes it a SyntaxError, so a typo'd bound (e.g. ^\\d{2$) compiles server-side and hard-fails every API consumer (measured: PHP MATCH, Node SyntaxError 'Incomplete quantifier')."
+  },
+  {
+    "id": "bound-comma-first",
+    "pattern": "^a{,3}$",
+    "subject": "aa",
+    "why": "PCRE2 10.43+ accepts {,n} as {0,n} whereas ECMA u-mode rejects it outright, so this is a construct where PCRE2 quantifies and ECMA refuses to compile at all (measured: PHP MATCH on 'aa' proving {0,3} semantics, Node SyntaxError)."
+  },
+  {
+    "id": "bound-whitespace-inside",
+    "pattern": "^a{ 2 }$",
+    "subject": "aa",
+    "why": "Tests whether whitespace inside braces makes the bound a quantifier, a literal, or an error; PCRE2 10.48 accepts it as a real quantifier while ECMA u-mode refuses (measured: PHP MATCH on 'aa' — quantifier, not literal — Node SyntaxError), the pattern most likely to be typed by a non-developer."
+  },
+  {
+    "id": "bound-escaped-braces-literal",
+    "pattern": "^a\\{2\\}$",
+    "subject": "a{2}",
+    "why": "Positive control establishing the one sanctioned way to author a literal brace: \\{ is a legal IdentityEscape in ECMA u-mode and literal in PCRE2, so if this agrees it becomes the allowlist's replacement for the three refused brace forms (measured: both MATCH 'a{2}')."
+  },
+  {
+    "id": "bound-upper-over-65535",
+    "pattern": "^a{0,65536}$",
+    "subject": "aaa",
+    "why": "Pins the divergent quantifier ceiling — PCRE2 caps a repeat count at 65535 and refuses to compile above it, while ECMA allows up to 2^32-1, so an author-visible bound is accepted by the API schema but rejected by the server (measured: PHP compile failure 'number too big in {} quantifier', Node MATCH)."
+  },
+  {
+    "id": "bound-upper-at-65535",
+    "pattern": "^a{0,65535}$",
+    "subject": "aaa",
+    "why": "The just-under-the-line half of the ceiling pair, needed so the published grammar can state an exact inclusive maximum bound rather than an approximate one (measured: both MATCH, so 65535 is legal in both)."
+  },
+  {
+    "id": "group-bound-pattern-too-large",
+    "pattern": "^(?:a?){20000}$",
+    "subject": "aaa",
+    "why": "A bound on a group is expanded by replication in PCRE2, so a count far below the 65535 numeric cap can still blow the compiled-pattern size limit that ECMA has no equivalent of — a second, independent bound ceiling that depends on what is being quantified (measured: PHP 'regular expression is too large', Node MATCH)."
+  },
+  {
+    "id": "quantified-group-capture-reset",
+    "pattern": "^(?:(a)|b)+\\1$",
+    "subject": "aba",
+    "why": "The highest-value case: ECMA clears captures inside a quantified group on every iteration while PCRE2 retains the last value, so a quantified group feeding a backreference silently accepts different input in each engine with no error anywhere (measured: PHP MATCH with $1='a', Node NOMATCH)."
+  },
+  {
+    "id": "zero-bound-unset-backref",
+    "pattern": "^(a){0}\\1b$",
+    "subject": "b",
+    "why": "A {0} bound makes the capture non-participating, and the engines disagree on what a backreference to a non-participating group matches — PCRE2 fails it, ECMA matches empty — a silent boolean divergence driven purely by the bound (measured: PHP NOMATCH, Node MATCH)."
+  },
+  {
+    "id": "optional-group-unset-backref",
+    "pattern": "^(a)?\\1b$",
+    "subject": "b",
+    "why": "Same unset-backreference divergence reached through ? instead of {0}, which determines whether the refusal rule must cover every optional/starred capture group followed by a backreference (a broad restriction) or just the {0} form (a trivial one) (measured: PHP NOMATCH, Node MATCH)."
+  },
+  {
+    "id": "quantifier-on-lookahead",
+    "pattern": "^(?=a)+a$",
+    "subject": "a",
+    "why": "Tests whether an assertion is a repeatable item: PCRE2 accepts a quantified lookahead and matches, while ECMA u-mode disallows quantified assertions entirely, so the construct compiles server-side and breaks the published schema (measured: PHP MATCH, Node SyntaxError 'Invalid quantifier')."
+  },
+  {
+    "id": "grapheme-cluster-bound",
+    "pattern": "^\\X{2}$",
+    "subject": "n̈n̈",
+    "why": "Asks what unit a bound counts when the author wants 'two characters' of combining-mark text: PCRE2's \\X counts grapheme clusters, and ECMA has no such atom at all, so a length rule written this way cannot survive publication (measured: PHP MATCH on two clusters, Node SyntaxError 'Invalid escape')."
+  },
+  {
+    "id": "astral-literal-bound",
+    "pattern": "^😀{2}$",
+    "subject": "😀😀",
+    "why": "Confirms the quantified atom is a whole code point rather than a UTF-16 code unit in both engines — the subject is the discriminating one because surrogate-level binding would reject it — licensing bounds on non-BMP literals in the allowlist (measured: both MATCH)."
+  },
+  {
+    "id": "star-on-starred-group-cost",
+    "pattern": "^(a*)*b$",
+    "subject": "aaaaaaaaaaaaaaaaaaaaaaaa",
+    "why": "Same verdict, four orders of magnitude apart in cost: PCRE2 optimizes the degenerate nested quantifier away while V8 backtracks exponentially, so a pattern that is free server-side is a ReDoS handed to every API consumer (measured: PHP NOMATCH in 0ms, Node NOMATCH in 1513ms, doubling per added character)."
+  },
+  {
+    "id": "class-s-zwnbsp",
+    "pattern": "^[\\s]$",
+    "subject": "﻿",
+    "why": "Subject is U+FEFF ZWNBSP: proves ECMA-262 \\s inside a class is BROADER than PCRE2/UCP \\s (ES counts ZWNBSP as WhiteSpace, PCRE2 does not) — a client-side-accepted value the server rejects."
+  },
+  {
+    "id": "class-s-mongolian-vowel-sep",
+    "pattern": "^[\\s]$",
+    "subject": "᠎",
+    "why": "Subject is U+180E MONGOLIAN VOWEL SEPARATOR: proves the divergence runs the OTHER way too — PCRE2's \\h/\\s list still includes it (pre-Unicode-6.3 view) while ES does not, so \\s is bidirectionally non-portable."
+  },
+  {
+    "id": "class-w-superscript-two",
+    "pattern": "^[\\w]$",
+    "subject": "²",
+    "why": "Subject is U+00B2 (category No): proves PCRE2/UCP \\w admits digit-like non-ASCII characters that its own \\d rejects, while ES \\w stays ASCII — the class boundary sits in a different place in each engine."
+  },
+  {
+    "id": "neg-class-d-arabic-indic",
+    "pattern": "^[^\\d]+$",
+    "subject": "٣",
+    "why": "Subject is U+0663 ARABIC-INDIC THREE: proves negation INVERTS which engine is permissive — PCRE2 excludes it from [^\\d] while ES admits it, so a negated class is stricter server-side than the published schema."
+  },
+  {
+    "id": "posix-alpha-in-class",
+    "pattern": "^[[:alpha:]]$",
+    "subject": "a",
+    "why": "Proves PCRE2 POSIX bracket expressions are not merely different in meaning but produce a published schema ECMA-262 cannot compile at all (the trailing ] becomes a lone quantifier bracket in u-mode)."
+  },
+  {
+    "id": "posix-alpha-bare",
+    "pattern": "^[:alpha:]+$",
+    "subject": "alpha",
+    "why": "The common authoring typo without an enclosing class: proves PCRE2 refuses it outright while ES silently accepts it as the literal set {:,a,l,p,h}, so authoring-time acceptance and consumer-side meaning can invert."
+  },
+  {
+    "id": "class-rbracket-first",
+    "pattern": "^[]]$",
+    "subject": "]",
+    "why": "Proves the Perl/POSVIX convention that a leading ] is a literal class member holds in PCRE2 but is a SyntaxError in ES u-mode (empty class plus lone ]), so any pattern matching a literal bracket this way must be refused."
+  },
+  {
+    "id": "neg-class-empty",
+    "pattern": "^[^]$",
+    "subject": "]",
+    "why": "Proves the reverse bracket asymmetry: PCRE2 refuses [^] as an unterminated class while ES compiles it to 'any code point', the most permissive possible published constraint."
+  },
+  {
+    "id": "class-set-op-intersection",
+    "pattern": "^[a-z&&[aeiou]]$",
+    "subject": "a]",
+    "why": "ECMAScript v-flag set-operation syntax compiled under u: proves PCRE2 silently mis-parses it as a union containing literal & and [ (matching 'a]'), while ES rejects it — nested classes and set ops are unsafe in both directions."
+  },
+  {
+    "id": "class-u-escape-range",
+    "pattern": "^[A-Z]+$",
+    "subject": "AZ",
+    "why": "Proves the JS-idiomatic \\uXXXX range endpoint is ES-only: PCRE2 10.48 explicitly refuses \\u, so an author copying a JS pattern is blocked server-side rather than silently diverging."
+  },
+  {
+    "id": "class-escaped-underscore",
+    "pattern": "^[\\_]$",
+    "subject": "_",
+    "why": "Proves defensive backslashing of a non-syntax character inside a class (PCRE2: literal) is a hard SyntaxError under ES u-mode's restricted IdentityEscape — a very common authoring habit that would break every consumer."
+  },
+  {
+    "id": "class-h-escape-space",
+    "pattern": "^[\\h]$",
+    "subject": " ",
+    "why": "Proves PCRE2's \\h horizontal-whitespace escape inside a class has no ECMA-262 equivalent (invalid escape in u-mode); ASCII space is used so the outcome isolates escape support, not Unicode membership."
+  },
+  {
+    "id": "class-quote-literal-block",
+    "pattern": "^[\\Q.-]\\E]+$",
+    "subject": "]-.",
+    "why": "Proves \\Q...\\E literal quoting is PCRE2-only and additionally hides a ] from any ES parser, so it must be refused rather than translated."
+  },
+  {
+    "id": "class-bare-script-name",
+    "pattern": "^[\\p{Greek}]+$",
+    "subject": "λ",
+    "why": "Subject is U+03BB: proves PCRE2 accepts a bare script name as a property while ES requires Script=/sc= and rejects \\p{Greek} outright — property-name spelling is part of the grammar, not just the property itself."
+  },
+  {
+    "id": "class-long-general-category",
+    "pattern": "^[\\p{General_Category=Letter}]+$",
+    "subject": "λ",
+    "why": "The mirror case: proves ES accepts the long General_Category=Letter form that PCRE2 10.48 refuses, so allowlisting \\p{...} requires an explicit list of spellings valid in BOTH engines."
+  },
+  {
+    "id": "bslash-v-vertical-ws",
+    "pattern": "^\\v$",
+    "subject": "",
+    "why": "Same syntax, different meaning with no compile error either side: PCRE2 \\v is the vertical-whitespace CLASS (LF, VT, FF, CR, NEL, LS, PS) so it matches U+0085, while ECMA-262 \\v is exactly VT U+000B and does not — the highest-risk silent divergence in the escape family (verified: PHP match, Node nomatch)."
+  },
+  {
+    "id": "bslash-u-four-hex",
+    "pattern": "^A$",
+    "subject": "A",
+    "why": "Reverses the usual strictness direction: ECMA-262 \\uHHHH is the canonical codepoint escape a JSON-Schema author would copy, but PCRE2 without ALT_BSUX refuses \\u outright — proves the grammar must ban the form that looks most native to the published side (verified: Node match, PHP compile error)."
+  },
+  {
+    "id": "bslash-u-brace-astral",
+    "pattern": "^\\u{1F600}$",
+    "subject": "😀",
+    "why": "The braced ECMA-262 codepoint escape for an astral character compiles and matches in Node but is a PCRE2 compile error, so it must be refused even though \\x{1F600} (already measured) is the PCRE2-side spelling of the same intent."
+  },
+  {
+    "id": "octal-three-digit",
+    "pattern": "^\\101$",
+    "subject": "A",
+    "why": "Legacy three-digit octal escape: PCRE2 reads it as chr(0o101)='A' while u-mode ECMA-262 forbids octal escapes entirely — proves \\NNN is refusable and that \\ + digit cannot be judged by PCRE2 semantics alone (verified: PHP match, Node SyntaxError)."
+  },
+  {
+    "id": "octal-vs-backref-ten",
+    "pattern": "^(a)\\10$",
+    "subject": "a\b",
+    "why": "The octal/backreference ambiguity itself: with only one group, PCRE2 re-reads \\10 as octal 0o10 = U+0008 backspace, while u-mode ECMA-262 rejects it as an invalid escape — proves \\ + multi-digit is a two-reading construct whose meaning depends on the group count (verified: PHP match, Node SyntaxError)."
+  },
+  {
+    "id": "bslash-e-esc",
+    "pattern": "^\\e$",
+    "subject": "\u001b",
+    "why": "Control-character escape present only in PCRE2: \\e is ESC U+001B there and an invalid identity escape under u-mode — proves the \\e/\\a-style single-letter control escapes must be refused (verified: PHP match, Node SyntaxError)."
+  },
+  {
+    "id": "ctrl-escape-c-nonletter",
+    "pattern": "^\\c[$",
+    "subject": "\u001b",
+    "why": "Pins the exact boundary of \\c: PCRE2 XORs 0x40 with any following char so \\c[ is ESC, while u-mode ECMA-262 requires \\c + ASCII letter and rejects this — proves \\c is only safe when the next character is a letter (\\cJ agrees in both), so the grammar needs a per-argument rule, not a per-escape one."
+  },
+  {
+    "id": "short-hex-one-digit",
+    "pattern": "^\\x4$",
+    "subject": "\u0004",
+    "why": "Hex-escape length strictness: PCRE2 accepts one or two hex digits after \\x (yielding U+0004) while ECMA-262 u-mode demands exactly two — proves \\xHH must be allowlisted only in its full two-digit form (verified: PHP match, Node SyntaxError)."
+  },
+  {
+    "id": "identity-escape-hyphen",
+    "pattern": "^a\\-b$",
+    "subject": "a-b",
+    "why": "The likeliest author mistake in the whole set: outside a character class PCRE2 allows \\- as an identity escape, but ECMA-262 u-mode restricts IdentityEscape to SyntaxCharacter plus '/' and rejects it — proves \\- is only portable inside a class (already measured as [a\\-b]), never outside (verified: PHP match, Node SyntaxError)."
+  },
+  {
+    "id": "identity-escape-space",
+    "pattern": "^a\\ b$",
+    "subject": "a b",
+    "why": "Escaped whitespace: PCRE2 treats \\<space> as a literal space, u-mode ECMA-262 rejects it — proves over-escaping a non-syntax punctuation/whitespace character is a refusal class in general, not just for '-' (verified: PHP match, Node SyntaxError)."
+  },
+  {
+    "id": "bslash-X-grapheme",
+    "pattern": "^\\X$",
+    "subject": "é",
+    "why": "PCRE2-only \\X matches a whole extended grapheme cluster, so it consumes base+combining-mark as one unit, while u-mode ECMA-262 rejects \\X — proves a construct that changes the unit of matching for decomposed non-ASCII text cannot be published (verified: PHP match on U+0065 U+0301, Node SyntaxError)."
+  },
+  {
+    "id": "quote-literal-span",
+    "pattern": "^\\Qa.b\\E$",
+    "subject": "axb",
+    "why": "Literal-quoting span: PCRE2 makes the '.' inside \\Q...\\E literal (so 'axb' does NOT match), while ECMA-262 u-mode rejects \\Q — the nomatch proves \\Q is actively suppressing metacharacters, i.e. an author's 'make this literal' idiom silently has no counterpart downstream (verified: PHP nomatch, Node SyntaxError)."
+  },
+  {
+    "id": "bslash-Z-trailing-newline",
+    "pattern": "^abc\\Z",
+    "subject": "abc\n",
+    "why": "PCRE2's \\Z end-anchor matches before a final newline (so 'abc\\n' passes) and has no ECMA-262 equivalent — proves both that \\Z/\\z must be refused and that PCRE2 end-of-subject leniency lets trailing-newline input slip through a validator (verified: PHP match, Node SyntaxError)."
+  },
+  {
+    "id": "bslash-R-crlf",
+    "pattern": "^\\R$",
+    "subject": "\r\n",
+    "why": "PCRE2 \\R matches any newline sequence including the TWO-character CRLF as a single unit, while u-mode ECMA-262 rejects \\R — proves a refusable escape whose PCRE2 semantics cannot even be expressed as a single-character class downstream (verified: PHP match on U+000D U+000A, Node SyntaxError)."
+  },
+  {
+    "id": "p-script-colon-sep",
+    "pattern": "^\\p{Script:Greek}$",
+    "subject": "α",
+    "why": "PCRE accepts ':' as the property separator where ECMAScript requires '=' and throws (verified: SyntaxError in Node), so the separator character needs its own ruling rather than riding on the loose-name row."
+  },
+  {
+    "id": "p-sc-short-alias",
+    "pattern": "^\\p{sc=Greek}$",
+    "subject": "α",
+    "why": "Proves whether the short property alias 'sc' travels with '=' in both engines, i.e. whether the allowlist must enumerate aliases as well as the canonical 'Script'."
+  },
+  {
+    "id": "p-scx-long-name",
+    "pattern": "^\\p{Script_Extensions=Greek}$",
+    "subject": "ʹ",
+    "why": "U+0374 has Script=Common but Script_Extensions=Greek, so this proves both that the Script_Extensions spelling compiles in PCRE and that its set agrees with ECMAScript's (true) exactly where scx and sc part ways."
+  },
+  {
+    "id": "p-script-not-scx",
+    "pattern": "^\\p{Script=Greek}$",
+    "subject": "ʹ",
+    "why": "ECMAScript answers false on U+0374; a PCRE that resolves Script= against Script_Extensions would answer true, a conflation invisible on any character whose sc and scx agree."
+  },
+  {
+    "id": "p-gc-long-form-astral",
+    "pattern": "^\\p{General_Category=Lu}$",
+    "subject": "𞤀",
+    "why": "Tests the long General_Category spelling an author copies off the JSON Schema side, on an astral Lu (U+1E900 Adlam) so a property table that stops at the BMP shows up as a mismatch rather than a compile error."
+  },
+  {
+    "id": "p-cased-letter-long-name",
+    "pattern": "^\\p{Cased_Letter}$",
+    "subject": "ǅ",
+    "why": "The long name for the LC group the allowlist already permits, measured on the titlecase category (U+01C5) that belongs to LC but to neither Lu nor Ll — so a partial LC implementation is exposed."
+  },
+  {
+    "id": "p-lowercase-other-lowercase",
+    "pattern": "^\\p{Lowercase}$",
+    "subject": "ª",
+    "why": "Lowercase is Ll plus Other_Lowercase; U+00AA is Lo, so a PCRE that maps the binary property onto Ll diverges here and on no ordinary letter."
+  },
+  {
+    "id": "p-lower-posix-alias",
+    "pattern": "^\\p{Lower}$",
+    "subject": "ª",
+    "why": "'Lower' is an ECMAScript alias for Lowercase but collides with PCRE's POSIX 'lower'; the same subject separates 'alias honoured' from 'alias silently resolved to Ll'."
+  },
+  {
+    "id": "p-uppercase-roman-numeral",
+    "pattern": "^\\p{Uppercase}$",
+    "subject": "Ⅰ",
+    "why": "Other_Uppercase on a non-letter category (U+2160 is Nl) — the mirror of the Lowercase case, and one of the few case semantics reachable at all when no 'i' flag is available."
+  },
+  {
+    "id": "p-alpha-alias-nl",
+    "pattern": "^\\p{Alpha}$",
+    "subject": "Ⅰ",
+    "why": "Combines the 'Alpha' alias with Alphabetic's inclusion of Nl, where \\p{L} is false, so an alias quietly resolved to L is visible instead of hidden."
+  },
+  {
+    "id": "p-changes-when-uppercased",
+    "pattern": "^\\p{Changes_When_Uppercased}$",
+    "subject": "ß",
+    "why": "A case-mapping binary property ECMAScript defines (true for ß→SS) and PCRE may not implement at all, which would be a compile-time divergence rather than a semantic one."
+  },
+  {
+    "id": "p-extended-pictographic",
+    "pattern": "^\\p{Extended_Pictographic}$",
+    "subject": "😀",
+    "why": "The property an emoji-constrained field would actually reach for, on an astral code point: ECMAScript has it, and PCRE's tables may not carry emoji-data-derived properties."
+  },
+  {
+    "id": "p-script-newest-name",
+    "pattern": "^\\p{Script=Sidetic}$",
+    "subject": "𐥀",
+    "why": "A Unicode 17 script name (U+10940): whichever engine's tables are older rejects the name outright, which is the version-skew failure a published script allowlist has to survive."
+  },
+  {
+    "id": "p-cn-version-skew",
+    "pattern": "^\\p{Cn}$",
+    "subject": "𐥀",
+    "why": "Same code point, set contents instead of name inventory — Cn compiles in both engines, so an engine on an older Unicode calls U+10940 unassigned while the newer one does not."
+  },
+  {
+    "id": "aggregate-C-unassigned",
+    "pattern": "^\\p{C}$",
+    "subject": "𐥀",
+    "why": "The Cn exclusion reached by another spelling: C is Cc|Cf|Co|Cs|Cn, so it contains the unassigned set and inverts with it. It was on the portable list while Cn was off it, which made the exclusion arbitrary. Both engines here sit at Unicode 17.0 and agree, so this reports as an expressiveness cost rather than a divergence."
+  },
+  {
+    "id": "assigned-letter-same-codepoint",
+    "pattern": "^\\p{L}$",
+    "subject": "𐥀",
+    "why": "The SYMMETRY case, and the reason the exclusion stops at Cn and C. U+10940 is SIDETIC LETTER N01, assigned in Unicode 17.0, so \\p{L} diverges on exactly the code point \\p{Cn} does — in the opposite direction. A grammar that refused every version-sensitive property would have to refuse this, which is why the limit is disclosed instead of enforced."
+  },
+  {
+    "id": "complement-of-letter",
+    "pattern": "^\\P{L}$",
+    "subject": "𐥀",
+    "why": "The complement review asked to exclude. It diverges no more than \\p{L} does and for the same reason, so refusing it would remove half of a symmetric pair and still claim portability for the other half."
+  },
+  {
+    "id": "p-negated-p-class-astral",
+    "pattern": "^[^\\p{L}]$",
+    "subject": "😀",
+    "why": "A negated property class over an astral code point: ECMAScript matches it as one code point, and any engine counting UTF-16 units or splitting the surrogate pair fails the anchors."
+  },
+  {
+    "id": "dollar-trailing-newline-latin",
+    "pattern": "^[a-z]+$",
+    "subject": "abc\n",
+    "why": "The headline anchor divergence: PCRE2's $ also matches before a single trailing newline, so an author's \"^...$\" fully-anchored field accepts a trailing \\n that ECMA-262 rejects (verified locally: PHP MATCH, Node no-match)."
+  },
+  {
+    "id": "dollar-midpattern-then-newline",
+    "pattern": "^a$\\n",
+    "subject": "a\n",
+    "why": "Proves PCRE2's $ is a positional assertion, not a terminal one — it succeeds mid-pattern and the newline is still consumable afterwards — while ECMA-262 fails there, so the divergence is not just about what the match ends with."
+  },
+  {
+    "id": "anchor-in-alternation-branch",
+    "pattern": "^(?:xyz|abc$)",
+    "subject": "abc\n",
+    "why": "Tests whether the $-before-final-newline leniency still applies when the anchor sits inside a non-capturing group's alternation branch rather than at top level (PHP MATCH, Node no-match)."
+  },
+  {
+    "id": "bsZ-end-anchor-newline",
+    "pattern": "^a\\Z",
+    "subject": "a\n",
+    "why": "\\Z is a PCRE2-only end anchor with the same trailing-newline leniency as $; in ECMA-262 'u' mode it is a SyntaxError (Invalid escape), so it is a compile-time refusal, not a semantic mismatch."
+  },
+  {
+    "id": "bsz-absolute-end",
+    "pattern": "^a\\z",
+    "subject": "a",
+    "why": "\\z is the strict end-of-subject anchor authors would naturally reach for as a fix for $, so the grammar must publish that it is unavailable: PHP compiles and matches, Node 'u' mode throws Invalid escape."
+  },
+  {
+    "id": "inline-m-modifier-anchors",
+    "pattern": "(?m)^b$",
+    "subject": "a\nb",
+    "why": "A leading inline (?m) silently redefines ^ and $ as line anchors in PCRE2 but is a SyntaxError (Invalid group) in ECMA-262, so multiline anchor semantics are reachable in one engine and unexpressible in the other."
+  },
+  {
+    "id": "scoped-m-modifier-group",
+    "pattern": "(?m:^b$)",
+    "subject": "a\nb",
+    "why": "The ES2025 scoped-modifier form is the only cross-engine spelling that could exist, and the subject is chosen so a silently ignored modifier shows as a mismatch; on Node 22 it is still a SyntaxError, pinning the runtime floor for this construct."
+  },
+  {
+    "id": "crlf-verb-anchor",
+    "pattern": "(*CRLF)^a$",
+    "subject": "a\r\n",
+    "why": "PCRE2 newline-convention verbs widen $ to match before a CRLF pair; in ECMA-262 the leading (* is a SyntaxError, so this must be refused as a whole class of anchor-mutating prefixes."
+  },
+  {
+    "id": "bsK-match-reset",
+    "pattern": "^a\\Kb",
+    "subject": "ab",
+    "why": "\\K resets the reported match start in PCRE2 (match becomes \"b\") and throws in ECMA-262 'u' mode — relevant because JSON Schema \"pattern\" is an unanchored search where match extent is observable."
+  },
+  {
+    "id": "word-boundary-accented-word",
+    "pattern": "\\bcafé\\b",
+    "subject": "café",
+    "why": "The realistic authored idiom: PHP's /u sets PCRE2_UCP so é is a word char and the trailing \\b holds, while ECMA-262 \\w stays ASCII so no boundary exists after é — same pattern, opposite verdicts on ordinary Latin-1 text."
+  },
+  {
+    "id": "bsB-inside-accented",
+    "pattern": "a\\Bï",
+    "subject": "naïve",
+    "why": "Tests \\B (not just \\b) across an ASCII/non-ASCII letter junction: UCP makes it a non-boundary in PCRE2 (match) but a boundary in ECMA-262 (no match), confirming both boundary operators inherit the \\w definition split."
+  },
+  {
+    "id": "boundary-underscore-arabic-digit",
+    "pattern": "_\\b",
+    "subject": "_٣",
+    "why": "Discriminates in the reverse direction — ECMA-262 matches and PCRE2 does not — because U+0663 is a word char only under UCP; also covers the underscore/digit side of \\w, guarding against a rule that only ever fires one way."
+  },
+  {
+    "id": "boundary-astral-math-letter",
+    "pattern": "\\b𝐀\\b",
+    "subject": "𝐀",
+    "why": "Word boundaries around an astral letter (U+1D400): checks that boundary evaluation at a supplementary code point behaves as one character in both engines and isolates whether any divergence is UCP-driven or astral-driven."
+  },
+  {
+    "id": "boundary-bmp-cjk-letter",
+    "pattern": "\\b日\\b",
+    "subject": "日",
+    "why": "BMP control for the astral case: if this diverges identically then the cause is the UCP \\w definition rather than surrogate handling, which is what lets the grammar write one rule instead of two."
+  },
+  {
+    "id": "bsB-at-start-before-accent",
+    "pattern": "\\Bé",
+    "subject": "é",
+    "why": "Boundary semantics at position zero, where the engines invert: ECMA-262 sees no boundary before a non-ASCII letter so \\B succeeds, PCRE2 sees one so it fails — proving start-of-subject boundary state is also UCP-dependent."
+  },
+  {
+    "id": "dot-carriage-return",
+    "pattern": "^.+$",
+    "subject": "a\r",
+    "why": "MEASURED: PHP matches, Node does not — PCRE excludes only the newline convention char (LF) from `.` while ECMA-262 excludes LF, CR, LS and PS; every proposer probed `.` on U+2028 but nobody probed CR, the one line terminator that actually arrives in CMS input from Windows paste."
+  },
+  {
+    "id": "s-next-line-u0085",
+    "pattern": "^\\s$",
+    "subject": "",
+    "why": "MEASURED: PHP matches, Node does not — PCRE2's UCP `\\s` includes the C1 control U+0085 NEL, ECMA-262's WhiteSpace list does not; NBSP was measured but it is a Zs and both engines agree on it, so the whole Cc/Cf side of `\\s` is still unmeasured."
+  },
+  {
+    "id": "lookbehind-alt-length-order",
+    "pattern": "(?<=(a|aa))b\\1$",
+    "subject": "aaba",
+    "why": "MEASURED: Node matches (group 1 = \"a\", written alternation order preserved in backward matching), PHP does not (PCRE2 orders lookbehind branches by length, binding group 1 = \"aa\") — the matrix already blessed \"lookbehind\" as a measured construct, and this shows that blessing is wrong the moment the lookbehind contains alternatives of unequal length plus a backreference."
+  },
+  {
+    "id": "lookbehind-unbounded-plus",
+    "pattern": "(?<=a+)b",
+    "subject": "aab",
+    "why": "MEASURED: Node matches, PHP refuses to compile (\"length of lookbehind assertion is not limited\") — nobody probed the direction where PCRE2 is the STRICTER engine, so the grammar has no evidence about lookbehind LENGTH rules (bounded `(?<=\\d{2,4})` compiles and agrees in both; unbounded does not)."
+  },
+  {
+    "id": "forward-numbered-backref",
+    "pattern": "^\\1(a)$",
+    "subject": "a",
+    "why": "MEASURED: Node matches (unset group backreference succeeds as empty), PHP does not — a forward reference is a construct legal in BOTH engines and distinct from the already-measured plain `(a)\\1`, and it is the likeliest author accident (backreference typed before the group) in the unset-group family."
+  },
+  {
+    "id": "prop-name-lowercase-loose",
+    "pattern": "^\\p{lu}$",
+    "subject": "A",
+    "why": "MEASURED: PHP matches, Node refuses (\"Invalid property name\") — PCRE2 applies loose matching to property names (case, spaces and underscores ignored, so `\\p{lu}`, `\\p{Lu }`, `\\p{cased_letter}` all compile), while every `\\p` case proposed used canonically-cased names and so never touched the looseness rule that makes the two surfaces different sizes."
+  },
+  {
+    "id": "prop-single-letter-no-braces",
+    "pattern": "^\\pL$",
+    "subject": "a",
+    "why": "MEASURED: PHP matches, Node refuses — the braceless one-letter property form `\\pL`/`\\PL` is what the PHP manual itself shows and what an author will copy, yet all 12 proposed `\\p` cases assumed the braced spelling."
+  },
+  {
+    "id": "prop-caret-negation",
+    "pattern": "^\\p{^L}$",
+    "subject": "1",
+    "why": "MEASURED: PHP matches, Node refuses — PCRE2's in-brace negation `\\p{^L}` is a third distinct spelling rule (separate from loose names and from braceless forms) that silently stores and then breaks every consumer."
+  },
+  {
+    "id": "named-backref-brace-form",
+    "pattern": "^(?<y>a)\\k{y}$",
+    "subject": "aa",
+    "why": "MEASURED: PHP matches, Node refuses (\"Invalid named reference\") — named GROUPS were measured but never named BACKREFERENCES, so the grammar cannot yet say that `\\k<y>` is the one portable spelling (I verified it agrees) while `\\k{y}`, `\\k'y'`, `(?P=y)` and `\\g{y}` are PCRE-only."
+  },
+  {
+    "id": "bare-close-bracket-literal",
+    "pattern": "^a]$",
+    "subject": "a]",
+    "why": "MEASURED: PHP matches (bare `]` is a literal), Node refuses (\"Lone quantifier brackets\" — `]` is a SyntaxCharacter forbidden as a PatternCharacter under /u) — the proposals covered the `{` version of this rule and stopped, missing that `]` behaves the same way and is the more likely leftover from an edited character class."
+  },
+  {
+    "id": "duplicate-named-group-alt",
+    "pattern": "^(?:(?<y>a)|(?<y>b))$",
+    "subject": "b",
+    "why": "MEASURED: Node matches (ES2025 duplicate named capture groups shipped in V8), PHP refuses without `(?J)` — a second case where the JS surface is LARGER than PCRE's, which matters because a grammar derived only from \"PHP accepts, JS refuses\" evidence will be shaped as if PCRE were always the superset."
+  },
+  {
+    "id": "backtrack-limit-email-shape",
+    "pattern": "^([a-zA-Z0-9]+\\.?)+@x\\.com$",
+    "subject": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!@x.com",
+    "why": "MEASURED: PHP returns FALSE in 1.8ms (\"Backtrack limit exhausted\"), Node was still searching after 20s — every cost-related proposal was about COMPILE size (`{0,65536}`, 20000 nested groups), so nobody measured runtime decidability, where PCRE's 1M backtrack cap turns a rejection into an error while V8 has no cap and the published pattern becomes a client-side DoS."
+  },
+  {
+    "id": "backslash-n-uppercase-any",
+    "pattern": "^\\N$",
+    "subject": "a",
+    "why": "MEASURED: PHP matches (PCRE `\\N` = any character except newline), Node refuses (\"Invalid escape\") — a capitalisation slip on `\\n` silently stores as a wildcard with the opposite meaning of what was typed, and the escape-family proposals covered `\\e`, `\\R`, `\\X`, `\\v`, `\\h` but not this one."
+  }
 ]
