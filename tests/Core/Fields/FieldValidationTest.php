@@ -12,6 +12,7 @@ use Illuminate\Support\Facades\Validator;
 use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Fields\FieldTypeRegistry;
 use Kitsune\Core\Fields\Types\NumberType;
+use Kitsune\Core\Fields\Types\TextType;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Field;
@@ -1008,4 +1009,39 @@ describe('the same refusal applies to input that arrives already decoded', funct
         expect(validate('json', ['f' => ['list' => ['a', 'b'], 'map' => ['k' => 'v']]])->fails())
             ->toBeFalse();
     });
+});
+
+it('caps a text field length, which is what the pattern screen\'s bound rests on', function (): void {
+    /*
+     * ⚠️ A CLAIM ABOUT A BOUND HAS TO NAME THE THING THAT ENFORCES IT, and review checked one of mine
+     * that did not. `Pattern` permits TWO adjacent variable-width atoms because the cost is quadratic
+     * in the value's length rather than exponential, and the docblock saying so added "which `TextType`
+     * bounds by its configured `maxLength`". The setting had no upper bound, so quadratic meant
+     * whatever an org configured. Measured on Node 22.23.2 against a subject that fails at the end:
+     *
+     *   1,000  1 ms     10,000  144 ms     65,535  6.2 SECONDS
+     *   5,000 36 ms     20,000  579 ms    100,000 14.4 SECONDS
+     *
+     * ⚠️ ONLY `TextType` TAKES A PATTERN, which is why the ceiling is here and not shared: `textarea`
+     * and `rich_text` carry long content and neither accepts one, so neither pays for this.
+     */
+    $type = app(FieldTypeRegistry::class)->get('text');
+
+    expect($type->validateSettings(['maxLength' => TextType::MAX_CONFIGURABLE_LENGTH]))->toBeNull()
+        ->and($type->validateSettings(['maxLength' => TextType::MAX_CONFIGURABLE_LENGTH + 1]))
+        ->toContain('limited to')
+        // ⚠️ Refused before the pattern is looked at, so an over-long field with a fine pattern still
+        // hears about the length rather than passing.
+        ->and($type->validateSettings([
+            'maxLength' => 65535,
+            'pattern' => '^[a-z]+$',
+        ]))->toContain('limited to');
+
+    // ⚠️ And published, because invariant 14 is that an enforced constraint which is not published is
+    // one a consumer gets wrong.
+    expect($type->settingsSchema()['maxLength']['maximum'])->toBe(TextType::MAX_CONFIGURABLE_LENGTH);
+
+    // The textarea's own limit is untouched: it takes no pattern, so it pays nothing for this.
+    expect(app(FieldTypeRegistry::class)->get('textarea')->validateSettings(['maxLength' => 65535]))
+        ->toBeNull();
 });

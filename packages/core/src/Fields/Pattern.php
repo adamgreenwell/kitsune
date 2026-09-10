@@ -961,6 +961,31 @@ final class Pattern
             }
 
             /*
+             * ⚠️ RULE 2, WIDENED: THE WHOLE LOOKBEHIND MUST BE ONE FIXED WIDTH. Review found that
+             * checking the lookbehind's TOP-LEVEL alternatives leaves a nested one unexamined —
+             * `(?<=([ab])(?:a|aa))\1$` has no top-level alternation at all, so nothing looked, and both
+             * engines compile it while disagreeing about what it matches: PCRE takes `baab` and Node
+             * does not, Node takes `baaa` and PCRE does not. The capture is fixed-width; the LOOKBEHIND
+             * is not, at 2 or 3 characters.
+             *
+             * ⚠️ THIS IS THE SAME RULE STATED PROPERLY RATHER THAN A SECOND ONE. "Every alternative the
+             * same fixed length" was always an approximation of "the lookbehind has one width", reached
+             * by looking at the one place a width usually varies. Asking `fixedWidth()` about the body
+             * asks the real question, at any depth, and the branch above is kept only because its
+             * message names the alternation an author actually wrote.
+             */
+            if ($isLookbehind && self::fixedWidth($frame['body']) === null) {
+                return sprintf(
+                    'the lookbehind `%s`, which can match more than one length — PCRE tries the '
+                    .'possibilities longest-first and ECMAScript in written order, so the two disagree '
+                    .'about how much text the assertion covered and about what any group inside it '
+                    .'captured. Measured, `(?<=([ab])(?:a|aa))\1$` matches `baab` in PCRE and `baaa` in '
+                    .'ECMAScript. Give the lookbehind ONE fixed length, or use separate lookbehinds',
+                    self::excerpt($pattern, $frame['open'], $frame['close']),
+                );
+            }
+
+            /*
              * ⚠️ RULE 5 — a capturing group inside a lookbehind must be fixed length. Review
              * found this one, and measurement placed the line precisely: with a FIXED width the
              * engines agree, including two adjacent captures — `(?<=([ab]{2})([bc]{2}))\2\1$`
@@ -1197,6 +1222,20 @@ final class Pattern
     {
         $product = 1;
         $covered = [];
+
+        /*
+         * ⚠️ OUTERMOST FIRST, AND WITHOUT THIS THE SKIP BELOW DID NOTHING — review found it. `frames()`
+         * appends a group as it CLOSES, so a child arrives before its parent: the containment test ran
+         * with `$covered` still empty for the child, counted it, then counted the parent too and
+         * multiplied every level. Seventeen nestings of `(?:<previous>|a)` were reported as 131,072
+         * combinations and refused, although the expression has eighteen alternative paths and 100,000
+         * Node matches complete in 3 ms.
+         *
+         * ⚠️ A GROUP WITH NO TOP-LEVEL ALTERNATION STILL DOES NOT COVER ITS CHILDREN, which is what
+         * keeps the dangerous shape caught: thirty sequential `(?:a|a)` inside one wrapping group are
+         * each counted, because the wrapper contributes no branches of its own.
+         */
+        usort($frames, static fn (array $a, array $b): int => $a['open'] <=> $b['open']);
 
         foreach ($frames as $frame) {
             // Skip a frame that sits inside one already counted.
@@ -1598,9 +1637,15 @@ final class Pattern
      *   top level, `^a*a*a*a*b$`    (k=4)      n=500  7.9 SECONDS
      *
      * So the repetition body admits ONE and the top level admits TWO. Two at the top level is
-     * quadratic in the value's length, which `TextType` bounds by its configured `maxLength` (255 by
-     * default), and it is what real patterns are made of — `^.+\.[a-z]+$` and `^[^@]+@[^@]+$` both
-     * measure 0 ms. Three is cubic and already 490 ms at a length an org can configure.
+     * quadratic in the value's length, and it is what real patterns are made of — `^.+\.[a-z]+$` and
+     * `^[^@]+@[^@]+$` both measure 0 ms. Three is cubic and already 490 ms at 1,000 characters.
+     *
+     * ⚠️ AND THIS PARAGRAPH USED TO SAY "which `TextType` bounds by its configured `maxLength` (255 by
+     * default)", which review checked and found was not a bound: the setting had no ceiling, so
+     * quadratic meant whatever an org configured — 6.2 SECONDS at 65,535 characters. `TextType` now
+     * caps it at `MAX_CONFIGURABLE_LENGTH`, chosen from that measurement, and the allowance here rests
+     * on that cap rather than on a default. A claim about a bound has to name the thing that enforces
+     * it.
      *
      * ⚠️ ONLY A REQUIRED LITERAL THE LEFT ATOM CANNOT MATCH ENDS A RUN, and a fixed-width atom does
      * not. `a*[a-z]{2}a*` looks divided and is not: the middle is two characters wide but its

@@ -19,6 +19,15 @@ use Kitsune\Core\Fields\Projection;
 
 final class TextType extends BaseFieldType
 {
+    /**
+     * The longest a text field's value may be configured to be.
+     *
+     * ⚠️ A CEILING BECAUSE THE PATTERN SCREEN'S BOUND DEPENDS ON ONE. `Pattern` permits two adjacent
+     * variable-width atoms — quadratic rather than exponential — on the strength of the value being
+     * bounded, and nothing bounded it. See `validateSettings()` for the measurement.
+     */
+    public const MAX_CONFIGURABLE_LENGTH = 5000;
+
     public static function handle(): string
     {
         return 'text';
@@ -148,7 +157,14 @@ final class TextType extends BaseFieldType
     public function settingsSchema(): array
     {
         return [
-            'maxLength' => ['type' => 'integer', 'default' => 255, 'label' => 'Maximum length'],
+            'maxLength' => [
+                'type' => 'integer',
+                'default' => 255,
+                // Published because it is enforced — see `validateSettings()` for the measurement that
+                // places it, and invariant 14 for why it cannot be enforced silently.
+                'maximum' => self::MAX_CONFIGURABLE_LENGTH,
+                'label' => 'Maximum length',
+            ],
             // The constraint on this setting lives in `validateSettings()`
             // rather than in a descriptor key: it has to reject a pattern that
             // cannot compile AND one that cannot be published, and a per-setting
@@ -174,6 +190,39 @@ final class TextType extends BaseFieldType
      */
     public function validateSettings(array $settings): ?string
     {
+        /*
+         * ⚠️ THE LENGTH CEILING IS WHAT MAKES THE PATTERN SCREEN'S BOUND REAL, which review found by
+         * reading a claim of mine and checking it. `Pattern` permits TWO adjacent variable-width atoms
+         * because the cost is quadratic in the value's length rather than exponential, and the docblock
+         * saying so added "which `TextType` bounds by its configured `maxLength`". It does not: this
+         * setting had no upper bound at all, so `^a*a*b$` — accepted, and a shape real patterns are made
+         * of — costs whatever an org configures. Measured on Node 22.23.2 against a failing subject:
+         *
+         *   1,000  1 ms     10,000  144 ms     65,535  6.2 SECONDS
+         *   5,000 36 ms     20,000  579 ms    100,000 14.4 SECONDS
+         *
+         * 5,000 keeps the worst adversarial case — a quadratic pattern, a maximal value, and a subject
+         * that fails at the end — at 36 ms here and inside half a second on ADR-027's 1 vCPU floor. It
+         * is generous for a `Control::Line` field: a URL, a name, a title. Long content is `textarea`
+         * and `rich_text`, neither of which takes a pattern, so neither is affected.
+         *
+         * ⚠️ ENFORCED HERE AND PUBLISHED IN `settingsSchema()`, because invariant 14 is that a
+         * constraint which is enforced and not published is one a consumer gets wrong.
+         */
+        $maxLength = $settings['maxLength'] ?? null;
+
+        if (is_numeric($maxLength) && (int) $maxLength > self::MAX_CONFIGURABLE_LENGTH) {
+            return sprintf(
+                'A text field is limited to %s characters, and this asks for %s. The pattern screen '
+                .'permits shapes whose cost grows with the SQUARE of the value length — `^a*a*b$` is '
+                .'one, and measured, it takes ECMAScript 6.2 seconds at 65,535 characters against a '
+                .'value that fails at the end. Use a textarea or rich text for longer content; neither '
+                .'takes a pattern.',
+                number_format(self::MAX_CONFIGURABLE_LENGTH),
+                number_format((int) $maxLength),
+            );
+        }
+
         $pattern = $settings['pattern'] ?? null;
 
         if (! is_string($pattern) || $pattern === '') {

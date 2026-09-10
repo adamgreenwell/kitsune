@@ -928,5 +928,17 @@
     "pattern": "^(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)b$",
     "subject": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "why": "Ambiguity with no quantifier anywhere and no variable-width atom: thirty groups each offering two identical ways to match one character, so 2^30 combinations. 240 characters of pattern; PCRE exhausts its backtrack limit and Node 22 takes 50.2s."
+  },
+  {
+    "id": "lookbehind-nested-alternation",
+    "pattern": "(?<=([ab])(?:a|aa))\\1$",
+    "subject": "baab",
+    "why": "Rule 2 checked the lookbehind's TOP-LEVEL alternatives, and this one has none — the nest makes the lookbehind two characters or three while the capture stays fixed-width. Both engines compile it: PCRE matches `baab` and Node does not, Node matches `baaa` and PCRE does not."
+  },
+  {
+    "id": "harmless-alternation-nesting",
+    "pattern": "^(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:a|a)|a)|a)|a)|a)|a)|a)|a)|a)|a)|a)|a)|a)|a)|a)|a)|a)$",
+    "subject": "a",
+    "why": "Seventeen nestings of `(?:<previous>|a)`. The ambiguity product multiplied every level, because frames() appends a group as it CLOSES so a child arrives before its parent and the containment skip had nothing recorded yet. Eighteen alternative paths, and 100,000 Node matches in 3ms — kept so the fix cannot become `refuse nesting`."
   }
 ]

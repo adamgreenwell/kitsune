@@ -555,6 +555,69 @@ describe('rule 5 — a capturing group in a lookbehind must be fixed length', fu
     });
 });
 
+describe('a lookbehind must match exactly one length', function (): void {
+    it('refuses a nested alternation that makes the lookbehind variable', function (string $pattern): void {
+        /*
+         * ⚠️ RULE 2 CHECKED THE TOP LEVEL AND A NEST SAT OUTSIDE IT — review found it.
+         * `(?<=([ab])(?:a|aa))\1$` has no top-level alternation at all, so nothing looked, and both
+         * engines compile it while disagreeing about what it matches: PCRE takes `baab` and Node does
+         * not, Node takes `baaa` and PCRE does not. The capture is fixed-width; the LOOKBEHIND is not,
+         * at two characters or three.
+         *
+         * ⚠️ THE FIX IS THE SAME RULE STATED PROPERLY, not a second one. "Every alternative the same
+         * fixed length" was always an approximation of "the lookbehind has one width", reached by
+         * looking at the one place a width usually varies. Asking `fixedWidth()` about the body asks
+         * the real question at any depth — and every case rule 2 already refused still fails, so the
+         * two are one rule with the narrow message kept for the alternation an author wrote.
+         */
+        expect(Pattern::unpublishable($pattern))
+            ->not->toBeNull("[{$pattern}] can match more than one length behind the position");
+    })->with([
+        '(?<=([ab])(?:a|aa))\1$',
+        '(?<=(?:a|aa)([ab]))\1$',
+        '(?<=a(?:b|bb)c)x$',
+        '(?<!([ab])(?:a|aa))\1$',
+    ]);
+
+    it('still publishes a lookbehind of one fixed width, however it is written', function (string $pattern): void {
+        // ⚠️ The cost, bounded: a nest whose branches are all the same width is still one width.
+        expect(Pattern::unpublishable($pattern))->toBeNull("[{$pattern}] is one fixed width");
+    })->with([
+        '(?<=(ab))\1$',
+        '(?<=([ab]{2})([bc]{2}))\2\1$',
+        '(?<=a(?:b|c)d)x$',
+        '(?<=(a{2}?|aa))b\1$',
+    ]);
+});
+
+describe('nesting is not a Cartesian product', function (): void {
+    it('does not multiply an alternation by the one it is nested in', function (): void {
+        /*
+         * ⚠️ `frames()` APPENDS A GROUP AS IT CLOSES, so a child arrives before its parent and the
+         * containment skip ran with nothing recorded yet — review found it. Seventeen nestings of
+         * `(?:<previous>|a)` were reported as 131,072 combinations and refused, although the expression
+         * has eighteen alternative paths and 100,000 Node matches complete in 3 ms.
+         */
+        $nested = 'a';
+
+        for ($i = 0; $i < 17; $i++) {
+            $nested = '(?:'.$nested.'|a)';
+        }
+
+        expect(Pattern::unpublishable('^'.$nested.'$'))->toBeNull('harmless nesting was read as a product');
+    });
+
+    it('still multiplies a sequence, wrapped or not', function (): void {
+        /*
+         * ⚠️ THE HALF THAT MUST NOT MOVE. A group with no top-level alternation contributes no branches
+         * and so does not cover its children — thirty sequential `(?:a|a)` inside one wrapper are each
+         * counted, which is what keeps the 50-second case refused.
+         */
+        expect(Pattern::unpublishable('^'.str_repeat('(?:a|a)', 30).'b$'))->not->toBeNull()
+            ->and(Pattern::unpublishable('^(?:'.str_repeat('(?:a|a)', 30).')b$'))->not->toBeNull();
+    });
+});
+
 describe('a lazy quantifier is part of the quantifier', function (): void {
     /*
      * ⚠️ `quantifierAt()` DROPPED THE LAZY SUFFIX ON A BRACED FORM, so `fixedWidth()` counted the
