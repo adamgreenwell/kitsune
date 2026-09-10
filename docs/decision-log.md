@@ -1399,7 +1399,7 @@ The inverse is a genuine gap and is named rather than solved: **KaaS then has no
 
 ## ADR-031 — An authored pattern is validated against a published grammar, not screened for known divergences
 
-**Status:** Decided · 2026-09-10
+**Status:** Decided · 2026-09-10 · Amended 2026-09-10
 
 Issue #44. `Pattern::unpublishable()` began as a screen: a list of constructs known to diverge between PCRE and ECMAScript, refused by name. A screen is a denylist, and the failure mode of a denylist is the construct nobody thought of — which here means a pattern the server enforces and the published JSON Schema does not, or the reverse.
 
@@ -1433,6 +1433,44 @@ The measured expressiveness cost is three refusals of constructs both engines ho
 | Allow any name PCRE accepts | Publishes a JSON Schema the consumer cannot compile, and reports nothing when it happens. |
 | Exclude every version-sensitive property | Empties the list: `\p{L}`, `\p{Nd}` and every complement qualify. It also claims a guarantee no allowlist can keep, which is invariant 14's failure. |
 | Refuse the complements (`\P{L}`, `[^\p{L}]`) but keep the properties | Half of a symmetric pair. Both diverge on the same codepoint, in opposite directions, on the same engines. |
+
+### Amendment · 2026-09-10 — the allowlist is necessary and not sufficient
+
+Review found two patterns built entirely from permitted constructs that the grammar should not publish: `^(a|aa)+$`, which makes neither engine answer, and `(?<=([ab]{1,2})([bc]{1,2}))\2\1$`, on which PCRE and ECMAScript disagree outright. Checking them surfaced the larger problem.
+
+**`docs/field-types.md` §3 published three such rules and the code enforced none of them.** Measured: `^(?=a)+a$`, `(?<=(a|aa))b\1$` and the document's own example `^([a-zA-Z0-9]+\.?)+$` were all accepted by `Pattern::unpublishable()`. The first two are exactly the two `divergent AND accepted` rows the parity harness had been reporting — the instrument built to find this was reporting it, and the document was read as if it described the code.
+
+That is a worse failure than an unwritten rule. An unwritten rule leaves an author to discover a divergence; a written one that is not enforced tells them the divergence cannot happen. It is the same defect as the `\p{Lower}` claim corrected in the same commit, and both are invariant 14.
+
+**Decision: the grammar is an allowlist of constructs *and* a closed set of structural rules, enforced together.** `structuralRefusal()` holds five, each a property of how constructs fit together rather than of any construct:
+
+1. No quantifier on an assertion.
+2. A lookbehind's alternatives must be equal length.
+3. No unbounded quantifier over a group containing one — unless the repetition is *delimited*.
+4. No unbounded quantifier over ambiguous alternation — unless the alternatives are prefix-free literals.
+5. A capturing group inside a lookbehind must be fixed length.
+
+Rules 4 and 5 are review's. Rules 1–3 were already published, and are now true.
+
+**The two exemptions are proofs, not conveniences**, and both were forced by measuring the cost of the rule without them:
+
+- Rule 3 stated bluntly refuses `^[^,]+(?:,[^,]+)*$`, the ordinary delimited list. If the repeated body begins with a required literal and no unbounded quantifier inside it can match that character, every iteration must begin at an occurrence of it and none can consume one — so the subject's own delimiters force the split. One way to divide, nothing to backtrack over. Measured linear: 5,000 items in 0.04 ms (PCRE) and 0.09 ms (ECMAScript), on input that fails at the last character.
+- Rule 4 stated bluntly refuses `^(?:cat|dog)+$`. Prefix-freeness is exactly the condition under which at most one branch can match at a position, so the alternation is deterministic.
+
+**Rule 5's line was placed by measurement rather than by caution.** A blanket ban on captures inside lookbehinds was the obvious rule and is wrong: with a fixed width the engines agree, including two adjacent captures. Only variable width diverges, because the engines traverse a lookbehind in opposite directions. Two forms that *agree on the subjects tried* — `(?<=(a{1,2}))\1$` and `(?<=(a?))\1$` — are refused anyway, because that agreement is subject-dependent rather than a property of the construct.
+
+### Consequence
+
+The harness reports **0** `divergent AND accepted`, down from 2. The expressiveness cost is 6 rows, every one deliberate: `\b` has a portable spelling, `\p{Cn}` and `\p{C}` are version skew the measured pair cannot show, and three are refused on cost rather than portability.
+
+**Structural rules make the migration warning sharper, not softer.** A pattern that was accepted by the construct screen can now be refused for its shape, and `^(a|aa)+$` is a plausible thing to have authored. The audit before this lands must run `unpublishable()` over stored patterns, not just check them against the construct list.
+
+| Rejected | Why it lost |
+|---|---|
+| Leave the three rules as documentation | They read as enforced. A reader has no way to tell the difference, which is what made them worse than absent. |
+| Blanket rules with no exemptions | Refuses `^[^,]+(?:,[^,]+)*$` and `^(?:cat|dog)+$` — the commonest safe shapes there are. A validator paid for by every author is not free because the cost is invisible in the diff. |
+| Detect ambiguity in general | Not something to attempt in a validator on the authoring path. The exemptions are narrow, provable, and fail closed; everything else is refused with the portable spelling named. |
+| Ban captures inside lookbehinds | Measurement says fixed widths agree. It would have refused four working forms to catch two broken ones. |
 
 ---
 

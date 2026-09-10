@@ -803,6 +803,831 @@ final class Pattern
             }
         }
 
+        /*
+         * ⚠️ LAST, and after the construct scan rather than woven into it, because every rule in
+         * there is about a SHAPE spanning several constructs — which the character loop, by
+         * design, cannot see. Running it here also means a pattern with an illegal construct is
+         * refused for that reason rather than for a structural consequence of it.
+         */
+        return self::structuralRefusal($pattern);
+    }
+
+    /**
+     * Whether the pattern's SHAPE is publishable, given every construct in it already is.
+     *
+     * ⚠️ AN ALLOWLIST OF CONSTRUCTS IS NECESSARY AND NOT SUFFICIENT, and `field-types.md` §3
+     * published three rules saying so while enforcing none of them. Measured before this method
+     * existed: `^(?=a)+a$`, `(?<=(a|aa))b\1$` and the document's own example
+     * `^([a-zA-Z0-9]+\.?)+$` were all accepted by `unpublishable()`. The first two are exactly
+     * the two live defects the parity harness reports, which is how the gap was visible the
+     * whole time — a published constraint the code did not keep, the failure invariant 14 names.
+     *
+     * Review then found two more of the same kind, and they are handled here for the same reason
+     * rather than bolted on elsewhere: every rule in this method is a property of how the parts
+     * FIT TOGETHER, which no per-construct table can express.
+     *
+     * ⚠️ These are conservative by design. Deciding whether a repetition is genuinely ambiguous
+     * is not something to attempt in a validator, so the rules refuse a SHAPE and name the
+     * portable way to say the same thing. The expressiveness cost is real and is reported by the
+     * harness rather than hidden.
+     */
+    private static function structuralRefusal(string $pattern): ?string
+    {
+        $frames = self::frames($pattern);
+
+        foreach ($frames as $frame) {
+            $isLookbehind = $frame['kind'] === 'lookbehind' || $frame['kind'] === 'nlookbehind';
+            $isAssertion = $isLookbehind || $frame['kind'] === 'lookahead' || $frame['kind'] === 'nlookahead';
+
+            /*
+             * ⚠️ RULE 1 — no quantifier on an assertion. `(?=a)+` is built from two permitted
+             * constructs and does not compile under ECMAScript `u` at all, while PCRE takes it.
+             * Checked against `u`-mode specifically, because Annex B makes the unflagged dialect
+             * more permissive than the flagged one.
+             */
+            if ($isAssertion && $frame['quantifier'] !== '') {
+                return sprintf(
+                    'the quantifier `%s` on the assertion `%s` — an assertion consumes nothing, so '
+                    .'ECMAScript rejects a quantifier on one outright while PCRE accepts it. Remove '
+                    .'the quantifier, or repeat what the assertion guards instead',
+                    $frame['quantifier'],
+                    self::excerpt($pattern, $frame['open'], $frame['close']),
+                );
+            }
+
+            if ($isLookbehind) {
+                $branches = self::topLevelBranches($frame['body']);
+
+                /*
+                 * ⚠️ RULE 2 — a lookbehind's alternatives must be equal length. PCRE orders them
+                 * by length and ECMAScript by written order, so a differing-length alternation
+                 * changes which group captured what. `(?<=(a|aa))b\1$` compiles in both and they
+                 * disagree about the subject — one of the two live defects the harness reported.
+                 */
+                if (count($branches) > 1) {
+                    $lengths = [];
+
+                    foreach ($branches as $branch) {
+                        $lengths[] = self::fixedWidth($branch);
+                    }
+
+                    if (in_array(null, $lengths, true) || count(array_unique($lengths, SORT_REGULAR)) > 1) {
+                        return sprintf(
+                            'the lookbehind `%s`, whose alternatives are not all the same fixed '
+                            .'length — PCRE tries them longest-first and ECMAScript in written '
+                            .'order, so the two disagree about which alternative matched and about '
+                            .'what any group inside it captured. Give every alternative the same '
+                            .'fixed length, or use separate lookbehinds',
+                            self::excerpt($pattern, $frame['open'], $frame['close']),
+                        );
+                    }
+                }
+            }
+
+            /*
+             * ⚠️ RULE 5 — a capturing group inside a lookbehind must be fixed length. Review
+             * found this one, and measurement placed the line precisely: with a FIXED width the
+             * engines agree, including two adjacent captures — `(?<=([ab]{2})([bc]{2}))\2\1$`
+             * matches in both. Make either capture variable and they part company, because the
+             * two engines walk a lookbehind in opposite directions and allocate the variable part
+             * to different captures:
+             *
+             *   `(?<=(a+))\1$`                     on `aaaa`   PCRE errors, ECMAScript matches
+             *   `(?<=([ab]{1,2})([bc]{1,2}))\2\1$` on `abcbca` PCRE says no, ECMAScript says yes
+             *
+             * `(?<=(a{1,2}))\1$` and `(?<=(a?))\1$` happen to agree on the subjects tried, which
+             * is subject-dependent luck rather than a guarantee — they are the same construct and
+             * are refused with the rest.
+             */
+            if (($frame['kind'] === 'capture' || $frame['kind'] === 'named') && $frame['inLookbehind']) {
+                if (self::fixedWidth($frame['body']) === null) {
+                    return sprintf(
+                        'the variable-length capturing group `%s` inside a lookbehind — the two '
+                        .'engines traverse a lookbehind in opposite directions, so they allocate '
+                        .'the variable part to different groups and a backreference to it means '
+                        .'different things. Give the group a fixed length, or move the capture '
+                        .'outside the lookbehind',
+                        self::excerpt($pattern, $frame['open'], $frame['close']),
+                    );
+                }
+            }
+
+            if (! self::isUnbounded($frame['quantifier'])) {
+                continue;
+            }
+
+            /*
+             * ⚠️ RULE 3 — no unbounded quantifier over a group containing one. The document's own
+             * example `^([a-zA-Z0-9]+\.?)+$` is entirely permitted constructs and makes NEITHER
+             * engine answer on adversarial input: `preg_match()` returns false after exhausting
+             * its backtrack limit, and ECMAScript is still searching when the deadline expires.
+             * That is not a portability problem — it is catastrophic backtracking, and ADR-027's
+             * 1 vCPU floor is why the cost cannot be left to the consumer.
+             *
+             * ⚠️ EXEMPT WHEN THE REPETITION IS DELIMITED, because the rule as `field-types.md`
+             * published it — "no unbounded quantifier over a group containing one" — refuses
+             * `^[^,]+(?:,[^,]+)*$`, the ordinary comma-separated list, and that pattern is safe.
+             * See `repetitionIsDelimited()` for why it is provably safe rather than merely
+             * plausible. The published rule is corrected to match, since a rule that refuses the
+             * commonest safe shape in the language would be paid for by every author.
+             */
+            if (self::containsUnboundedQuantifier($frame['body']) && ! self::repetitionIsDelimited($frame['body'])) {
+                return sprintf(
+                    'the unbounded quantifier `%s` on `%s`, which already contains an unbounded '
+                    .'quantifier — nesting them makes the number of ways to match a subject grow '
+                    .'exponentially, so an adversarial value exhausts PCRE\'s backtrack limit and '
+                    .'runs unboundedly in ECMAScript. Bound one of the two, as in {1,32}',
+                    $frame['quantifier'],
+                    self::excerpt($pattern, $frame['open'], $frame['close']),
+                );
+            }
+
+            /*
+             * ⚠️ RULE 4 — no unbounded quantifier over ambiguous alternation. Review found this,
+             * and rule 3 cannot catch it because the repeated group holds no quantifier of its
+             * own: `^(a|aa)+$` is the classic shape, and measured here, a subject of 40 `a`
+             * characters plus `!` exhausts PCRE's backtrack limit while ECMAScript runs past a
+             * 1.5-second deadline.
+             *
+             * ⚠️ EXEMPT WHEN THE BRANCHES ARE PREFIX-FREE LITERALS, which is exact rather than
+             * generous: if no branch is a prefix of another then at most one can match at any
+             * position, the alternation is deterministic, and repeating it stays linear. So
+             * `^(?:cat|dog)+$` is publishable and `^(?:cat|ca)+$` is not. Anything that is not a
+             * plain literal is refused rather than analysed — an alternation of classes or
+             * quantified atoms is where a wrong answer would be expensive.
+             */
+            if (self::containsAlternation($frame['body'])) {
+                if (! self::branchesAreUnambiguousLiterals($frame['body'])) {
+                    return sprintf(
+                        'the unbounded quantifier `%s` on `%s`, whose alternatives can match the '
+                        .'same text in more than one way — repeating an ambiguous alternation makes '
+                        .'a failing subject exhaust PCRE\'s backtrack limit and run unboundedly in '
+                        .'ECMAScript. Make the alternatives distinct literals, none a prefix of '
+                        .'another, or bound the repetition',
+                        $frame['quantifier'],
+                        self::excerpt($pattern, $frame['open'], $frame['close']),
+                    );
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Whether an unbounded repetition of this body is forced to split in exactly one place.
+     *
+     * ⚠️ THE ORDINARY DELIMITED LIST IS SAFE, and the blunt form of rule 3 refused it:
+     * `^[^,]+(?:,[^,]+)*$` nests `+` inside `*` and cannot backtrack catastrophically. This is
+     * the exemption that keeps it, and it is a proof rather than a guess.
+     *
+     * If the body begins with a required literal character and no unbounded quantifier inside the
+     * body can match that character, then every iteration must start at an occurrence of it and
+     * none can consume one. The positions of that character in the subject therefore FORCE the
+     * division into iterations — there is exactly one way to split, so there is nothing to
+     * backtrack over and the match stays linear however long the subject is.
+     *
+     * `(?:,[^,]+)*` qualifies: the delimiter is `,` and `[^,]` cannot match it. `([a-zA-Z0-9]+\.?)+`
+     * does not, because it begins with a class rather than a literal — and it is precisely the
+     * shape that makes neither engine answer. `(a+)+` does not, because its leading literal is the
+     * unbounded atom itself.
+     *
+     * ⚠️ ALTERNATION DISQUALIFIES IT OUTRIGHT. With two branches there is no single leading
+     * character to reason from, and rule 4 is the rule that looks at that case.
+     */
+    private static function repetitionIsDelimited(string $body): bool
+    {
+        if (self::containsAlternation($body)) {
+            return false;
+        }
+
+        $delimiter = self::leadingLiteral($body);
+
+        return $delimiter !== null && ! self::unboundedAtomCanMatch($body, $delimiter);
+    }
+
+    /**
+     * The body's first character when it is a required, unquantified literal, else null.
+     *
+     * ⚠️ A QUANTIFIER ON IT DISQUALIFIES IT, even `{2,}`, because the proof needs each iteration to
+     * begin with exactly one occurrence of the delimiter. A class, a group, `.` or an anchor is not
+     * a literal and returns null — as does a class shorthand like `\w`, where the backslash is
+     * present but the atom is a set.
+     */
+    private static function leadingLiteral(string $body): ?string
+    {
+        if ($body === '') {
+            return null;
+        }
+
+        $first = mb_substr($body, 0, 1);
+        $atom = 1;
+        $character = $first;
+
+        if ($first === '\\') {
+            $character = mb_substr($body, 1, 1);
+            $atom = 2;
+
+            // `\d`, `\w`, `\s` and friends are sets rather than characters.
+            if (preg_match('/^[A-Za-z0-9]$/', $character) === 1) {
+                return null;
+            }
+        } elseif (in_array($first, ['[', '(', '.', '^', '$', '|', '*', '+', '?'], true)) {
+            return null;
+        }
+
+        return self::quantifierAt($body, $atom) === '' ? $character : null;
+    }
+
+    /**
+     * Whether any unbounded-quantified atom in the body could consume `$delimiter`.
+     *
+     * ⚠️ CLASS MEMBERSHIP IS DELEGATED TO PCRE rather than parsed here: the atom is compiled as
+     * an anchored pattern and asked directly whether it matches the one character. Hand-parsing
+     * class syntax — ranges, negation, nested shorthands, escapes — to answer a question PCRE
+     * already answers exactly is how a subtly wrong "safe" verdict would get written.
+     *
+     * ⚠️ FAILS CLOSED. An unparseable atom, a group, or `.` returns true, which means "not
+     * exempt", which means refused. The exemption has to be certain to be worth having.
+     */
+    private static function unboundedAtomCanMatch(string $body, string $delimiter): bool
+    {
+        $length = mb_strlen($body);
+
+        for ($i = 0; $i < $length; $i++) {
+            $char = mb_substr($body, $i, 1);
+            $atom = $char;
+
+            if ($char === '\\') {
+                $atom = mb_substr($body, $i, 2);
+                $i++;
+            } elseif ($char === '[') {
+                $closes = self::classEndsAt($body, $i);
+
+                if ($closes === null) {
+                    return true;
+                }
+
+                $atom = mb_substr($body, $i, $closes - $i + 1);
+                $i = $closes;
+            } elseif ($char === '(') {
+                $closes = self::groupEndsAt($body, $i);
+
+                if ($closes === null) {
+                    return true;
+                }
+
+                $atom = mb_substr($body, $i, $closes - $i + 1);
+                $i = $closes;
+            } elseif ($char === '^' || $char === '$') {
+                continue;
+            }
+
+            $quantifier = self::quantifierAt($body, $i + 1);
+
+            if ($quantifier !== '') {
+                $i += mb_strlen($quantifier);
+            }
+
+            if (! self::isUnbounded($quantifier)) {
+                continue;
+            }
+
+            // A group's contents are not analysed, and `.` matches almost everything.
+            if (str_starts_with($atom, '(') || $atom === '.') {
+                return true;
+            }
+
+            if (@preg_match('/^'.$atom.'$/uD', $delimiter) !== 0) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /** A short quotation of the pattern between two offsets, for a refusal message. */
+    private static function excerpt(string $pattern, int $open, int $close): string
+    {
+        $text = mb_substr($pattern, $open, $close - $open + 1);
+
+        return mb_strlen($text) > 32 ? mb_substr($text, 0, 32).'…' : $text;
+    }
+
+    /**
+     * Every parenthesised group in the pattern, with what encloses it and what follows it.
+     *
+     * ⚠️ A SECOND SCAN rather than an extension of `capturingGroupSpans()`, which exists to
+     * answer whether a BACKREFERENCE can see its group and carries optionality and branch
+     * indices for that purpose. The structural rules need the group's kind, its body, the
+     * quantifier attached to it and whether a lookbehind encloses it — a different question
+     * about the same syntax, and merging them would make one method serve two masters.
+     *
+     * The group vocabulary is closed by `groupRefusal()` before this runs: `(`, `(?:`, `(?=`,
+     * `(?!`, `(?<=`, `(?<!` and `(?<name>` are the only forms that reach here.
+     *
+     * @return list<array{open:int, close:int, kind:string, body:string, quantifier:string, inLookbehind:bool}>
+     */
+    private static function frames(string $pattern): array
+    {
+        $length = mb_strlen($pattern);
+        $inClass = false;
+        $stack = [];
+        $frames = [];
+
+        for ($i = 0; $i < $length; $i++) {
+            $char = mb_substr($pattern, $i, 1);
+
+            if ($char === '\\') {
+                $i++;
+
+                continue;
+            }
+
+            if ($inClass) {
+                $inClass = $char !== ']';
+
+                continue;
+            }
+
+            if ($char === '[') {
+                $inClass = true;
+
+                continue;
+            }
+
+            if ($char === '(') {
+                $stack[] = ['open' => $i, 'kind' => self::frameKindAt($pattern, $i)];
+
+                continue;
+            }
+
+            if ($char !== ')' || $stack === []) {
+                continue;
+            }
+
+            $open = array_pop($stack);
+
+            // ⚠️ Enclosure is read from the STACK as it stands, so this is the lookbehind
+            // question answered at the moment the group closes rather than by a second walk.
+            $inLookbehind = false;
+
+            foreach ($stack as $ancestor) {
+                if ($ancestor['kind'] === 'lookbehind' || $ancestor['kind'] === 'nlookbehind') {
+                    $inLookbehind = true;
+                }
+            }
+
+            $prefix = self::framePrefixLength($pattern, $open['open'], $open['kind']);
+
+            $frames[] = [
+                'open' => $open['open'],
+                'close' => $i,
+                'kind' => $open['kind'],
+                'body' => mb_substr($pattern, $open['open'] + $prefix, $i - $open['open'] - $prefix),
+                'quantifier' => self::quantifierAt($pattern, $i + 1),
+                'inLookbehind' => $inLookbehind,
+            ];
+        }
+
+        return $frames;
+    }
+
+    /** Which of the six permitted group forms opens at `$at`. */
+    private static function frameKindAt(string $pattern, int $at): string
+    {
+        if (mb_substr($pattern, $at + 1, 1) !== '?') {
+            return 'capture';
+        }
+
+        return match (true) {
+            mb_substr($pattern, $at + 2, 1) === ':' => 'group',
+            mb_substr($pattern, $at + 2, 1) === '=' => 'lookahead',
+            mb_substr($pattern, $at + 2, 1) === '!' => 'nlookahead',
+            mb_substr($pattern, $at + 2, 2) === '<=' => 'lookbehind',
+            mb_substr($pattern, $at + 2, 2) === '<!' => 'nlookbehind',
+            default => 'named',
+        };
+    }
+
+    /** How many characters of the group's opening are syntax rather than body. */
+    private static function framePrefixLength(string $pattern, int $at, string $kind): int
+    {
+        if ($kind === 'capture') {
+            return 1;
+        }
+
+        if ($kind === 'named') {
+            $closes = mb_strpos($pattern, '>', $at);
+
+            return $closes === false ? 3 : $closes - $at + 1;
+        }
+
+        return $kind === 'lookbehind' || $kind === 'nlookbehind' ? 4 : 3;
+    }
+
+    /** The quantifier written at `$at`, or an empty string when there is none. */
+    private static function quantifierAt(string $pattern, int $at): string
+    {
+        $char = mb_substr($pattern, $at, 1);
+
+        if ($char === '*' || $char === '+' || $char === '?') {
+            // The lazy suffix is part of the quantifier; it changes preference, not bounds.
+            return mb_substr($pattern, $at + 1, 1) === '?' ? $char.'?' : $char;
+        }
+
+        if ($char !== '{') {
+            return '';
+        }
+
+        $closes = mb_strpos($pattern, '}', $at);
+
+        if ($closes === false) {
+            return '';
+        }
+
+        $brace = mb_substr($pattern, $at, $closes - $at + 1);
+
+        return preg_match('/^\{[0-9]+(,[0-9]*)?\}$/', $brace) === 1 ? $brace : '';
+    }
+
+    /** Whether a quantifier has no upper bound, which is what makes nesting dangerous. */
+    private static function isUnbounded(string $quantifier): bool
+    {
+        return $quantifier !== '' && preg_match('/^(?:\*|\+|\{[0-9]+,\})\??$/', $quantifier) === 1;
+    }
+
+    /**
+     * Whether this subpattern contains an unbounded quantifier at any depth.
+     *
+     * ⚠️ Classes and escapes are skipped, so `[a+]` and `\+` are the literal characters they
+     * are rather than quantifiers — the same distinction the main scan draws, and the reason
+     * this cannot be a substring search.
+     */
+    private static function containsUnboundedQuantifier(string $body): bool
+    {
+        $length = mb_strlen($body);
+        $inClass = false;
+
+        for ($i = 0; $i < $length; $i++) {
+            $char = mb_substr($body, $i, 1);
+
+            if ($char === '\\') {
+                $i++;
+
+                continue;
+            }
+
+            if ($inClass) {
+                $inClass = $char !== ']';
+
+                continue;
+            }
+
+            if ($char === '[') {
+                $inClass = true;
+
+                continue;
+            }
+
+            if ($char === '*' || $char === '+') {
+                return true;
+            }
+
+            if ($char === '{' && ($closes = mb_strpos($body, '}', $i)) !== false) {
+                if (preg_match('/^\{[0-9]+,\}$/', mb_substr($body, $i, $closes - $i + 1)) === 1) {
+                    return true;
+                }
+
+                $i = $closes;
+            }
+        }
+
+        return false;
+    }
+
+    /** Whether this subpattern contains an alternation at any depth. */
+    private static function containsAlternation(string $body): bool
+    {
+        $length = mb_strlen($body);
+        $inClass = false;
+
+        for ($i = 0; $i < $length; $i++) {
+            $char = mb_substr($body, $i, 1);
+
+            if ($char === '\\') {
+                $i++;
+
+                continue;
+            }
+
+            if ($inClass) {
+                $inClass = $char !== ']';
+
+                continue;
+            }
+
+            if ($char === '[') {
+                $inClass = true;
+
+                continue;
+            }
+
+            if ($char === '|') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Whether the body is exactly an alternation of distinct literals, none a prefix of another.
+     *
+     * ⚠️ THE EXEMPTION IS EXACT, not generous. Prefix-freeness is precisely the condition under
+     * which at most one branch can match at a given position: if two branches both matched
+     * there, one would have to be a prefix of the other. So the alternation is deterministic,
+     * and repeating something deterministic stays linear however long the subject is.
+     *
+     * ⚠️ An EMPTY branch fails this, and must. `(?:a|)+` can match the empty string at every
+     * position, which is unbounded ambiguity of the worst kind — and the empty string is a
+     * prefix of everything, so the same test that rejects `a|aa` rejects it too.
+     */
+    private static function branchesAreUnambiguousLiterals(string $body): bool
+    {
+        $branches = self::topLevelBranches($body);
+
+        if (count($branches) < 2) {
+            return false;
+        }
+
+        foreach ($branches as $branch) {
+            // Conservative on purpose: a class or a quantified atom is where a wrong answer
+            // about ambiguity would be expensive, so only plain literal text is exempted.
+            if (preg_match('/^[A-Za-z0-9_-]+$/D', $branch) !== 1) {
+                return false;
+            }
+        }
+
+        foreach ($branches as $one) {
+            foreach ($branches as $other) {
+                if ($one !== $other && str_starts_with($other, $one)) {
+                    return false;
+                }
+            }
+        }
+
+        return count(array_unique($branches)) === count($branches);
+    }
+
+    /**
+     * The body split on its own top-level `|`, ignoring separators inside groups and classes.
+     *
+     * @return list<string>
+     */
+    private static function topLevelBranches(string $body): array
+    {
+        $length = mb_strlen($body);
+        $inClass = false;
+        $depth = 0;
+        $branches = [];
+        $current = '';
+
+        for ($i = 0; $i < $length; $i++) {
+            $char = mb_substr($body, $i, 1);
+
+            if ($char === '\\') {
+                $current .= $char.mb_substr($body, $i + 1, 1);
+                $i++;
+
+                continue;
+            }
+
+            if ($inClass) {
+                $inClass = $char !== ']';
+                $current .= $char;
+
+                continue;
+            }
+
+            if ($char === '[') {
+                $inClass = true;
+                $current .= $char;
+
+                continue;
+            }
+
+            if ($char === '(') {
+                $depth++;
+            } elseif ($char === ')') {
+                $depth--;
+            } elseif ($char === '|' && $depth === 0) {
+                $branches[] = $current;
+                $current = '';
+
+                continue;
+            }
+
+            $current .= $char;
+        }
+
+        $branches[] = $current;
+
+        return $branches;
+    }
+
+    /**
+     * How many characters this subpattern always consumes, or null when that is not fixed.
+     *
+     * ⚠️ WIDTH, not length in characters of the pattern: `[ab]` is one, `(?=x)` is zero because
+     * an assertion consumes nothing, and `a{3}` is three. Used by the two lookbehind rules,
+     * where a variable width is exactly what the engines disagree about.
+     *
+     * ⚠️ Returns null rather than guessing wherever the answer is not certain — an unterminated
+     * class, a backreference (whose width is whatever the group matched), or an alternation whose
+     * branches differ. A null is a refusal, so the uncertain case fails closed.
+     */
+    private static function fixedWidth(string $body): ?int
+    {
+        $branches = self::topLevelBranches($body);
+
+        if (count($branches) > 1) {
+            $widths = [];
+
+            foreach ($branches as $branch) {
+                $width = self::fixedWidth($branch);
+
+                if ($width === null) {
+                    return null;
+                }
+
+                $widths[] = $width;
+            }
+
+            return count(array_unique($widths)) === 1 ? $widths[0] : null;
+        }
+
+        $body = $branches[0];
+        $length = mb_strlen($body);
+        $total = 0;
+
+        for ($i = 0; $i < $length; $i++) {
+            $char = mb_substr($body, $i, 1);
+            $width = 1;
+
+            if ($char === '\\') {
+                $escaped = mb_substr($body, $i + 1, 1);
+                $i++;
+
+                // A backreference's width is whatever its group matched, which is not knowable
+                // here — and `\k<name>` is the same thing spelled differently.
+                if ($escaped === 'k' || preg_match('/^[1-9]$/', $escaped) === 1) {
+                    return null;
+                }
+
+                // ⚠️ `\b` and `\B` consume nothing. They are refused elsewhere, so this is for
+                // completeness rather than reachability — but a width of 1 for them would be
+                // wrong if that ever changed.
+                if ($escaped === 'b' || $escaped === 'B') {
+                    $width = 0;
+                }
+
+                if (($escaped === 'p' || $escaped === 'P') && mb_substr($body, $i + 1, 1) === '{') {
+                    $closes = mb_strpos($body, '}', $i);
+
+                    if ($closes === false) {
+                        return null;
+                    }
+
+                    $i = $closes;
+                }
+            } elseif ($char === '[') {
+                $closes = self::classEndsAt($body, $i);
+
+                if ($closes === null) {
+                    return null;
+                }
+
+                $i = $closes;
+            } elseif ($char === '(') {
+                $closes = self::groupEndsAt($body, $i);
+
+                if ($closes === null) {
+                    return null;
+                }
+
+                $kind = self::frameKindAt($body, $i);
+                $prefix = self::framePrefixLength($body, $i, $kind);
+                $inner = mb_substr($body, $i + $prefix, $closes - $i - $prefix);
+
+                // An assertion consumes nothing, whatever its body does.
+                if ($kind === 'lookahead' || $kind === 'nlookahead' || $kind === 'lookbehind' || $kind === 'nlookbehind') {
+                    $width = 0;
+                } else {
+                    $width = self::fixedWidth($inner);
+
+                    if ($width === null) {
+                        return null;
+                    }
+                }
+
+                $i = $closes;
+            } elseif ($char === '^' || $char === '$') {
+                $width = 0;
+            }
+
+            $quantifier = self::quantifierAt($body, $i + 1);
+
+            if ($quantifier !== '') {
+                $repeat = self::fixedRepetitions($quantifier);
+
+                if ($repeat === null) {
+                    return null;
+                }
+
+                $width *= $repeat;
+                $i += mb_strlen($quantifier);
+            }
+
+            $total += $width;
+        }
+
+        return $total;
+    }
+
+    /** The exact number of repetitions a quantifier names, or null when it names a range. */
+    private static function fixedRepetitions(string $quantifier): ?int
+    {
+        return preg_match('/^\{([0-9]+)\}$/', $quantifier, $bound) === 1 ? (int) $bound[1] : null;
+    }
+
+    /** Where the character class opening at `$at` closes, or null when it does not. */
+    private static function classEndsAt(string $text, int $at): ?int
+    {
+        $length = mb_strlen($text);
+        $i = $at + 1;
+
+        // A `^` negates, and a `]` in first position is the literal character.
+        if (mb_substr($text, $i, 1) === '^') {
+            $i++;
+        }
+
+        if (mb_substr($text, $i, 1) === ']') {
+            $i++;
+        }
+
+        for (; $i < $length; $i++) {
+            $char = mb_substr($text, $i, 1);
+
+            if ($char === '\\') {
+                $i++;
+
+                continue;
+            }
+
+            if ($char === ']') {
+                return $i;
+            }
+        }
+
+        return null;
+    }
+
+    /** Where the group opening at `$at` closes, or null when it does not. */
+    private static function groupEndsAt(string $text, int $at): ?int
+    {
+        $length = mb_strlen($text);
+        $inClass = false;
+        $depth = 0;
+
+        for ($i = $at; $i < $length; $i++) {
+            $char = mb_substr($text, $i, 1);
+
+            if ($char === '\\') {
+                $i++;
+
+                continue;
+            }
+
+            if ($inClass) {
+                $inClass = $char !== ']';
+
+                continue;
+            }
+
+            if ($char === '[') {
+                $inClass = true;
+
+                continue;
+            }
+
+            if ($char === '(') {
+                $depth++;
+            } elseif ($char === ')' && --$depth === 0) {
+                return $i;
+            }
+        }
+
         return null;
     }
 

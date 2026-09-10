@@ -754,5 +754,41 @@
     "pattern": "^\\N$",
     "subject": "a",
     "why": "MEASURED: PHP matches (PCRE `\\N` = any character except newline), Node refuses (\"Invalid escape\") — a capitalisation slip on `\\n` silently stores as a wildcard with the opposite meaning of what was typed, and the escape-family proposals covered `\\e`, `\\R`, `\\X`, `\\v`, `\\h` but not this one."
+  },
+  {
+    "id": "quantified-lookbehind",
+    "pattern": "(?<=a)+b",
+    "subject": "ab",
+    "why": "Rule 1 in the lookbehind position. An assertion consumes nothing, so ECMAScript rejects a quantifier on one under `u` while PCRE accepts it."
+  },
+  {
+    "id": "ambiguous-alternation-repeated",
+    "pattern": "^(a|aa)+$",
+    "subject": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!",
+    "why": "Rule 4, found by review. Rule 3 cannot catch it because the repeated group holds no quantifier of its own; 40 a's plus ! exhausts PCRE's backtrack limit and runs past a 1.5s ECMAScript deadline."
+  },
+  {
+    "id": "prefix-free-alternation-repeated",
+    "pattern": "^(?:cat|dog)+$",
+    "subject": "catdogcat",
+    "why": "Rule 4's exemption, and the reason it is exact rather than generous: no branch is a prefix of another, so at most one can match at a position and the repetition is deterministic."
+  },
+  {
+    "id": "variable-capture-in-lookbehind",
+    "pattern": "(?<=([ab]{1,2})([bc]{1,2}))\\2\\1$",
+    "subject": "abcbca",
+    "why": "Rule 5, found by review. The engines traverse a lookbehind in opposite directions and allocate the variable width to different captures: PCRE says no, ECMAScript says yes."
+  },
+  {
+    "id": "fixed-capture-in-lookbehind",
+    "pattern": "(?<=([ab]{2})([bc]{2}))\\2\\1$",
+    "subject": "abbcbcab",
+    "why": "Rule 5's boundary, which is what placed the line at variable width rather than at captures-in-lookbehinds: two adjacent FIXED captures agree in both engines."
+  },
+  {
+    "id": "delimited-repetition",
+    "pattern": "^[^,]+(?:,[^,]+)*$",
+    "subject": "ab,cd,ef",
+    "why": "Rule 3's exemption. Nests + inside * and is provably linear: every iteration must begin at a comma and [^,] cannot consume one, so the subject's commas force the split."
   }
 ]

@@ -207,7 +207,7 @@ A named capture may use a name in **any script** — `(?<é>`, `(?<日本>`, `(?
 >
 > A denylist **fails open**: a construct nobody anticipated is accepted and published wrong, silently. An allowlist fails closed — an unknown construct is refused because it was never admitted, not because someone remembered it. Rule 3 says `apiSchema()` may only publish a constraint the consumer can enforce; a grammar makes that enforceable *by construction* rather than by enumeration.
 >
-> **Fresh evidence, measured 2026-09-09.** 103 candidate constructs, enumerated from six independent angles, run through one shared case file so PCRE and ECMAScript are asked the same question. At production fidelity — PCRE compiling `Pattern::delimit()`'s output, ECMAScript compiling the published source — **two constructs the screen accepts today diverge, and a third makes neither engine answer at all**:
+> **Fresh evidence, measured 2026-09-09.** 103 candidate constructs, enumerated from six independent angles, run through one shared case file so PCRE and ECMAScript are asked the same question. At production fidelity — PCRE compiling `Pattern::delimit()`'s output, ECMAScript compiling the published source — **two constructs the screen accepted diverged, and a third made neither engine answer at all**. Both divergences are now refused by the structural rules below, so the current count is zero:
 >
 > | Pattern | PCRE | ECMAScript |
 > |---|---|---|
@@ -246,13 +246,21 @@ A named capture may use a name in **any script** — `(?<é>`, `(?<日本>`, `(?
 > | `\1` `\k<name>` | only where the group **must** participate — see the rows above |
 > | `\t` `\n` `\r` `\f` `\xHH` | `\v` is excluded: vertical whitespace here, the letter `v` there |
 >
-> ### Three rules the construct list cannot express
+> ### Five rules the construct list cannot express
 >
 > ⚠️ **An allowlist of constructs is necessary and not sufficient**, and the third row of the divergence table above is why.
 >
+> ⚠️ **This section published three of these rules while the code enforced none of them**, and that is recorded rather than quietly corrected. Measured: `^(?=a)+a$`, `(?<=(a|aa))b\1$` and the example in rule 3 below were all *accepted* by `Pattern::unpublishable()`. The first two are exactly the two live defects the parity harness was reporting — the gap was visible the whole time, in the instrument built to find it. A published constraint the code does not keep is the failure invariant 14 exists for, and it is worse than an unwritten rule, because a reader has no reason to doubt it. All five are enforced by `structuralRefusal()` and asserted by `StructuralGrammarTest`; the harness now reports **zero** live defects.
+>
 > 1. **No quantifier on an assertion.** `(?=a)+` is built from two permitted constructs and does not compile under ECMAScript `u`. Checked against **`u`-mode specifically**, because Annex B makes the unflagged dialect more permissive than the flagged one.
 > 2. **A lookbehind's alternatives must be equal length.** PCRE orders them by length, ECMAScript by written order, so a differing-length alternation changes which group captured what.
-> 3. **No unbounded quantifier over a group containing one.** `([a-zA-Z0-9]+\.?)+` is entirely permitted constructs and makes **neither** engine answer on adversarial input: `preg_match()` returns `false` after exhausting its backtrack limit, and ECMAScript is still searching when the harness deadline expires. This is **not a portability problem** — the two agree, in the sense that neither gives a verdict — it is catastrophic backtracking, and ADR-027's 1 vCPU floor is why it cannot be left to the consumer.
+> 3. **No unbounded quantifier over a group containing one, unless the repetition is delimited.** `([a-zA-Z0-9]+\.?)+` is entirely permitted constructs and makes **neither** engine answer on adversarial input: `preg_match()` returns `false` after exhausting its backtrack limit, and ECMAScript is still searching when the harness deadline expires. This is **not a portability problem** — the two agree, in the sense that neither gives a verdict — it is catastrophic backtracking, and ADR-027's 1 vCPU floor is why it cannot be left to the consumer.
+>
+>     ⚠️ **The exemption is why this rule gained a clause.** Stated bluntly it refuses `^[^,]+(?:,[^,]+)*$` — the ordinary comma-separated list, and safe. If the repeated body starts with a **required literal** and no unbounded quantifier inside it can match that character, every iteration must begin at an occurrence of it and none can consume one, so the subject's own delimiters force the division into iterations: one way to split, nothing to backtrack over. That is a proof rather than a plausibility, and it measures out linear — 5,000 items in 0.04 ms under PCRE and 0.09 ms under ECMAScript, on input that fails at the very end. Class membership is asked of PCRE rather than parsed, and anything uncertain fails closed.
+> 4. **No unbounded quantifier over ambiguous alternation.** Rule 3 cannot catch `^(a|aa)+$`, because the repeated group holds no quantifier of its own — found by review. Measured, 40 `a` characters plus `!` exhausts PCRE's backtrack limit and runs past a 1.5-second ECMAScript deadline. **Exempt when the alternatives are prefix-free literals**, which is exact rather than generous: if no branch is a prefix of another then at most one can match at a position, so the alternation is deterministic and repeating it stays linear. `^(?:cat|dog)+$` publishes; `^(?:cat|ca)+$` does not.
+> 5. **A capturing group inside a lookbehind must be fixed length.** Also found by review, and measurement placed the line rather than a blanket ban: with a fixed width the engines agree, including two adjacent captures — `(?<=([ab]{2})([bc]{2}))\2\1$` matches in both. Make either variable and they part company, because the engines traverse a lookbehind in **opposite directions** and allocate the variable part to different groups. `(?<=(a+))\1$` on `aaaa`: PCRE errors, ECMAScript matches. `(?<=([ab]{1,2})([bc]{1,2}))\2\1$` on `abcbca`: PCRE says no, ECMAScript says yes.
+>
+>     ⚠️ `(?<=(a{1,2}))\1$` and `(?<=(a?))\1$` *agree* on the subjects tried and are refused anyway. That agreement is subject-dependent luck rather than a property of the construct, and a rule that admitted them would be drawing its line at whichever subjects happened to get measured.
 >
 > ⚠️ That row was originally counted among the divergences, and review corrected it: comparing the harness's full result shapes made it look like disagreement, because only the ECMAScript side carries timeout metadata. It is now classified as *no verdict from either engine*, which is both accurate and a sharper statement of the same point — the danger here is the cost of the pattern, not a difference of opinion about it.
 >
@@ -262,7 +270,16 @@ A named capture may use a name in **any script** — `(?<é>`, `(?<日本>`, `(?
 >
 > ⚠️ **Added on a set comparison, not on compiling**, because compiling proves only that a name is accepted. Each alias was compared with its canonical spelling across all 1,114,112 codepoints in *both* engines and is exactly equal: `Lower`/`Lowercase` 2,595 members, `Alpha`/`Alphabetic` 147,421, `Upper`/`Uppercase` 2,006. `\p{Space}` is the reason this is measured one name at a time rather than adopted as a family — **PCRE compiles it and ECMAScript rejects the name**, so it stays out.
 >
-> The remaining `agrees BUT refused` rows are refusals on purpose, not gaps: `\b`, which has a portable spelling to redirect an author to, and `\p{Cn}`/`\p{C}`, which the pair being measured cannot show diverging because it shares one Unicode version.
+> The remaining `agrees BUT refused` rows are refusals on purpose, not gaps — six of them, and each has a reason that is not "nobody got round to it":
+>
+> | Refused | Why it is not a gap |
+> |---|---|
+> | `\bab\b` | A portable spelling exists and the message names it |
+> | `^\p{Cn}$`, `^\p{C}$` | Version skew the measured pair cannot show, because it shares one Unicode version |
+> | `^(a*)*b$` | Refused on **cost**, not portability — the engines agree here only because the harness's subject is benign |
+> | `^([a-zA-Z0-9]+\.?)+@x\.com$`, `^(a|aa)+$` | Refused on cost, and neither engine gives a verdict at all: PCRE exhausts its backtrack limit while ECMAScript passes the deadline. They are counted here *and* as `no verdict`, because "both agree" and "neither answered" are the same shape to a comparison of results |
+>
+> ⚠️ **`divergent AND accepted` is now 0.** It was 2 before the five structural rules were enforced, and both entries were rules this document already claimed.
 >
 > ⚠️ **Migration is not optional.** Patterns already authored were accepted by the screen, not by the grammar, so any that fall outside it must be found before this lands — a pattern that saved yesterday and is refused today is a broken install, not a fixed one.
 
