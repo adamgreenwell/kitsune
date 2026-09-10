@@ -207,7 +207,7 @@ A named capture may use a name in **any script** — `(?<é>`, `(?<日本>`, `(?
 >
 > A denylist **fails open**: a construct nobody anticipated is accepted and published wrong, silently. An allowlist fails closed — an unknown construct is refused because it was never admitted, not because someone remembered it. Rule 3 says `apiSchema()` may only publish a constraint the consumer can enforce; a grammar makes that enforceable *by construction* rather than by enumeration.
 >
-> **Fresh evidence, measured 2026-09-10.** 148 candidate constructs, enumerated from six independent angles, run through one shared case file so PCRE and ECMAScript are asked the same question. At production fidelity — PCRE compiling `Pattern::delimit()`'s output, ECMAScript compiling the published source — **two constructs the screen accepted diverged, and a third made neither engine answer at all**. Both divergences are now refused by the structural rules below, so the current count is zero:
+> **Fresh evidence, measured 2026-09-10.** 152 candidate constructs, enumerated from six independent angles, run through one shared case file so PCRE and ECMAScript are asked the same question. At production fidelity — PCRE compiling `Pattern::delimit()`'s output, ECMAScript compiling the published source — **two constructs the screen accepted diverged, and a third made neither engine answer at all**. Both divergences are now refused by the structural rules below, so the current count is zero:
 >
 > | Pattern | PCRE | ECMAScript |
 > |---|---|---|
@@ -278,6 +278,27 @@ A named capture may use a name in **any script** — `(?<é>`, `(?<日本>`, `(?
 >
 >     The added condition is the same proof one level in: **every variable-width atom must be separated from the next by a required literal the atom on its LEFT cannot match.** That is the precise condition rather than a convenient one — for `A+ s B+`, if `A` cannot match `s` then `A+` must stop at the *first* `s` and the division is forced whatever `B` can match; if `A` can, it may swallow one and leave a later one. So `^(?:,[^,]+-[^,]+)*X$` is refused (`[^,]` matches `-`, measured 610 ms at 24 segments and climbing) while `^(?:,[^,-]+-[^,-]+)*X$` is **published** (measured flat at 24 segments). The simpler rule "at most one variable-width atom" would have refused the second, which is why it is not the rule.
 >
+>     ⚠️ **Three holes, one cause: the walk was not uniform.** Found by review in one round, and all three were the same defect seen from different sides — which is why the fix is a rewritten traversal rather than three patches.
+>
+>     | What was missed | Measured, Node 22.23.2 |
+>     |---|---|
+>     | **A pattern with no parentheses**, since every rule was driven by the frame list — `^a*a*a*a*a*a*b$` | **26.4 s** on 100 characters and a failing one |
+>     | **Any repetition with a finite bound**, since the gate read "unbounded" — `^(a\|aa){1,32}$` | **24.3 s** on 40 characters |
+>     | **A group holding both atoms**, since the pending atom was overwritten rather than compared — `^(?:,(?:a*a*))*X$` | **58 s** on 20 segments |
+>
+>     ⚠️ **A finite bound is not a safe bound, and there is deliberately no threshold.** The bound is the exponent and the *body* is the base, and nothing bounds the base: `^(a|aa){1,16}$` is 7 ms while `^(a|aa|aaa){1,16}$` is 3.4 s and `^(a|aa|aaa|aaaa){1,14}$` is 16.6 s. The safe bound *falls* as the body widens, so a constant is something a wider body defeats. Every repetition that can run twice is screened, and `^(a|aa){1,4}$` is now refused where this document previously published it with the reasoning *"a bounded outer quantifier caps the exponent, so the ambiguity costs nothing"*. It caps the exponent and not the base.
+>
+>     ⚠️ **The limit on adjacent atoms differs by context, because the cost class does.** Inside a repetition, k adjacent variable-width atoms give the repetition k choices per iteration and the total is **exponential**; at the top level the same k is a **polynomial of degree k**. So a repetition body admits **one** and the top level admits **two**:
+>
+>     | | k=2 | k=3 | k=4 | k=6 |
+>     |---|---|---|---|---|
+>     | `^a*…b$` at n=100 | 0 ms | 3 ms | 68 ms | **26.4 s** |
+>     | at n=1000 | 2 ms | 490 ms | — | — |
+>
+>     Two is quadratic in the value's length — which `TextType` bounds by its configured `maxLength`, 255 by default — and it is what real patterns are made of: `^.+\.[a-z]+$` and `^[^@]+@[^@]+$` both measure 0 ms and both would have been refused by a limit of one. Three is cubic and already 490 ms at a length an org can configure.
+>
+>     ⚠️ **Only a required literal the left atom cannot match ends a run, and a fixed width does not.** `a*[a-z]{2}a*` looks divided and is not: the middle atom is two characters wide but its *position* is still free. The argument is the delimiter proof's, and it is about distinguishability rather than width.
+>
 >     ⚠️ **Membership is tested against the pattern that is actually compiled**, which is not the one the author wrote. `delimit()` rewrites `.`, `\s` and `\S` to explicit ECMAScript-equivalent classes, and the two dialects disagree on three code points — so probing the raw text asks about a class that is never compiled. PCRE's `\s` excludes U+FEFF, so `^(?:<U+FEFF>\s?)*X$` was told its optional atom could not reach the delimiter and was exempted; **ECMAScript's `\s` includes the BOM, and Node 22 takes 17.2 s** on 40 of them. The same normalisation settles the opposite direction: `<U+FEFF>\S?` cannot consume a BOM in *either* dialect once compiled, so it stays exempt.
 >
 >     ⚠️ **Conservative where it cannot be sure.** `(?:a|[b-z])+` has disjoint branches and is refused, because deciding whether two character classes overlap is more analysis than belongs on an authoring request. The message names the portable ways out, and the harness reports the cost rather than hiding it.
@@ -302,7 +323,7 @@ A named capture may use a name in **any script** — `(?<é>`, `(?<日本>`, `(?
 >
 > ### What this costs
 >
-> Measured, so it is a number rather than a worry: of 148 candidates, **two** are refused today that both engines agree on — `\p{Lower}` and `\p{Alpha}`, POSIX-style aliases missing from the property allowlist. Widening a list is a reviewable, testable act; a denylist's gaps are found by accident. **Both are now on it, and `\p{Upper}` with them** — the obvious third of the family, added at the same time so the allowlist does not carry an arbitrary subset.
+> Measured, so it is a number rather than a worry: of 152 candidates, **two** are refused today that both engines agree on — `\p{Lower}` and `\p{Alpha}`, POSIX-style aliases missing from the property allowlist. Widening a list is a reviewable, testable act; a denylist's gaps are found by accident. **Both are now on it, and `\p{Upper}` with them** — the obvious third of the family, added at the same time so the allowlist does not carry an arbitrary subset.
 >
 > ⚠️ **Added on a set comparison, not on compiling**, because compiling proves only that a name is accepted. Each alias was compared with its canonical spelling across all 1,114,112 codepoints in *both* engines and is exactly equal: `Lower`/`Lowercase` 2,595 members, `Alpha`/`Alphabetic` 147,421, `Upper`/`Uppercase` 2,006. `\p{Space}` is the reason this is measured one name at a time rather than adopted as a family — **PCRE compiles it and ECMAScript rejects the name**, so it stays out.
 >
@@ -313,9 +334,9 @@ A named capture may use a name in **any script** — `(?<é>`, `(?<日本>`, `(?
 > | `\bab\b` | A portable spelling exists and the message names it |
 > | `^\p{Cn}$`, `^\p{C}$` | Version skew the measured pair cannot show, because it shares one Unicode version |
 > | `^(a*)*b$` | Refused on **cost**, not portability — the engines agree here only because the harness's subject is benign |
-> | `^([a-zA-Z0-9]+\.?)+@x\.com$`, `^(a|aa)+$`, `^(a{1,2})+$`, `^([a-z]{1,8})+$`, `^(?:[a-z]|x)+$` | Refused on cost, and neither engine gives a verdict at all: PCRE exhausts its backtrack limit while ECMAScript passes the deadline. They are counted here *and* as `no verdict`, because "both agree" and "neither answered" are the same shape to a comparison of results |
+> | `^([a-zA-Z0-9]+\.?)+@x\.com$`, `^(a|aa)+$`, `^(a{1,2})+$`, `^([a-z]{1,8})+$`, `^(?:[a-z]|x)+$`, `^(a\|aa){1,32}$` | Refused on cost, and neither engine gives a verdict at all: PCRE exhausts its backtrack limit while ECMAScript passes the deadline. They are counted here *and* as `no verdict`, because "both agree" and "neither answered" are the same shape to a comparison of results |
 >
-> So of nine rows, **three** are portability judgements (`\b` and the two `C` categories) and **six** are cost refusals where the engines only appear to agree. None is an omission.
+> So of ten rows, **three** are portability judgements (`\b` and the two `C` categories) and **seven** are cost refusals where the engines only appear to agree. None is an omission.
 >
 > ⚠️ **`divergent AND accepted` is now 0.** It was 2 before the five structural rules were enforced, and both entries were rules this document already claimed.
 >

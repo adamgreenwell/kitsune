@@ -94,6 +94,19 @@ describe('rule 3 — an unbounded repetition must divide its subject one way onl
         '^([a-z]{1,8})+$',
         // Ambiguous although both engines happen to cope: `a*` says the same thing portably.
         '^(a?)+$',
+        /*
+         * ⚠️ THIS WAS AN ACCEPT CASE, documented as "a bounded outer quantifier caps the exponent, so
+         * the ambiguity costs nothing". Review disproved it and measurement placed the correction: the
+         * bound is the exponent and the BODY is the base, and nothing bounds the base. On Node
+         * 22.23.2 with 40 `a` characters and a failing `!`, `^(a|aa){1,20}$` takes 114 ms,
+         * `^(a|aa|aaa){1,16}$` takes 3.4 seconds and `^(a|aa|aaa|aaaa){1,14}$` takes 16.6 seconds —
+         * the safe bound falls as the body widens, so a threshold on the bound is a constant a wider
+         * body defeats. There is no threshold: anything that can run twice is screened.
+         */
+        '^(a|aa){1,4}$',
+        '^(a|aa){1,32}$',
+        '^(a{1,2}){1,8}$',
+        '^(a|aa){2}$',
     ]);
 
     it('refuses alternatives that can match the same text two ways', function (string $pattern): void {
@@ -136,8 +149,7 @@ describe('rule 3 — an unbounded repetition must divide its subject one way onl
         '^(?:a(?:b|c))+$',
         // Prefix-free literals, at differing lengths, so at most one matches at a position.
         '^(?:ab|c)+$',
-        // A bounded outer quantifier caps the exponent, so the ambiguity costs nothing.
-        '^(a|aa){1,4}$',
+
         // One unbounded quantifier is not a nest.
         '^([a-z]+)$', '^[a-z]+$', '^[a-z]{1,10}$',
     ]);
@@ -254,6 +266,75 @@ describe('rule 3 — an unbounded repetition must divide its subject one way onl
         // One variable atom with a required literal in front of it: forced by the delimiter alone.
         '^(?:,a[^,]+)*X$',
         '^(?:,ab)*X$',
+    ]);
+
+    it('analyses the pattern itself, not only its parenthesised frames', function (string $pattern): void {
+        /*
+         * ⚠️ EVERY RULE WAS DRIVEN BY `frames()`, so a pattern with no brackets at all was analysed by
+         * none of them — review found `^a*a*a*a*a*a*b$` published, and Node 22.23.2 spends 26 SECONDS
+         * on 100 characters and a failing one. A screen that is a loop over brackets cannot be the
+         * whole screen.
+         *
+         * ⚠️ THE TOP LEVEL ADMITS TWO WHERE A REPETITION BODY ADMITS ONE, because the cost class
+         * differs and both were measured. Here k adjacent atoms give a polynomial of degree k:
+         *
+         *   k=2  `^a*a*b$`          n=1000    2 ms    n=20000  572 ms
+         *   k=3  `^a*a*a*b$`        n=1000  490 ms
+         *   k=4  `^a*a*a*a*b$`      n=500   7.9 SECONDS
+         *   k=6  `^a*a*a*a*a*a*b$`  n=100  26.4 SECONDS
+         *
+         * Inside a repetition the same k is exponential — `^(?:,a*a*)*X$` is 59.8 seconds at 20
+         * segments — which is why one limit is not two.
+         */
+        expect(Pattern::unpublishable($pattern))
+            ->not->toBeNull("[{$pattern}] runs variable atoms together with nothing to divide them");
+    })->with([
+        '^a*a*a*b$',
+        '^a*a*a*a*a*a*b$',
+        '^.*.*.*b$',
+        '^[a-z]+[a-z]*[a-z]*$',
+    ]);
+
+    it('publishes two adjacent atoms, which is what real patterns are made of', function (string $pattern): void {
+        /*
+         * ⚠️ THE COST OF DRAWING THE LINE AT ONE would have been these, and they are the patterns
+         * people actually write. Both measure 0 ms, and two adjacent atoms are quadratic in the
+         * value's length — which `TextType` bounds by its configured `maxLength`, 255 by default.
+         */
+        expect(Pattern::unpublishable($pattern))->toBeNull("[{$pattern}] is quadratic and affordable");
+    })->with([
+        '^a*a*b$',
+        '^.+\.[a-z]+$',
+        '^[^@]+@[^@]+$',
+    ]);
+
+    it('sees a variable atom through a group on either side of a pending one', function (string $pattern): void {
+        /*
+         * ⚠️ THE PENDING ATOM WAS OVERWRITTEN RATHER THAN COMPARED, which review found: the previous
+         * version recursed into a required group and ASSIGNED its pending atom from the result,
+         * discarding whatever was pending outside — so `,a*(?:a*)` read as one atom rather than two
+         * adjacent ones. Node 22.23.2: 59.4 SECONDS on 20 `,aa` segments and a failing `Y`, the same
+         * as the ungrouped form.
+         *
+         * The walk flattens required groups into one list now, so there is no pending state to lose
+         * and the bug cannot be written again by construction.
+         */
+        expect(Pattern::unpublishable($pattern))
+            ->not->toBeNull("[{$pattern}] hides an adjacent variable atom inside a group");
+    })->with([
+        '^(?:,a*(?:a*))*X$',
+        '^(?:,(?:a*)a*)*X$',
+        '^(?:,(?:a*)(?:a*))*X$',
+        '^(?:,(?:(?:a*))a*)*X$',
+        /*
+         * ⚠️ BOTH ATOMS INSIDE ONE GROUP, AND THIS IS THE CASE THE FLATTENING IS FOR. My first set of
+         * cases here were all vacuous, which reverting the flattening is what showed: a required group
+         * holding a variable atom reads as a variable atom itself, so every case with a star OUTSIDE
+         * the group was already refused by that alone. With both stars INSIDE, the coarse reading sees
+         * one atom and publishes it — measured 58 SECONDS on 20 `,aa` segments.
+         */
+        '^(?:,(?:a*a*))*X$',
+        '^(?:,(?:(?:a*a*)))*X$',
     ]);
 
     it('tests delimiter membership against the pattern that is compiled', function (): void {

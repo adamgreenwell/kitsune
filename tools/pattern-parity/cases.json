@@ -886,5 +886,29 @@
     "pattern": "^(?:,[^,-]+-[^,-]+)*X$",
     "subject": ",a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-bY",
     "why": "Two variable atoms and a separator NEITHER can match, so both boundaries are forced. Measured flat at 24 segments, and kept because `at most one variable atom` would have been simpler and would refuse it."
+  },
+  {
+    "id": "top-level-adjacent-stars",
+    "pattern": "^a*a*a*a*a*a*b$",
+    "subject": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!",
+    "why": "No parentheses at all, so the frame-driven structural walk analysed none of it. Six adjacent variable atoms are a polynomial of degree six: Node 22 takes 26.4s on 100 characters and a failing one."
+  },
+  {
+    "id": "top-level-two-stars",
+    "pattern": "^a*a*b$",
+    "subject": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!",
+    "why": "The other side of that line, kept because refusing it would take `^.+\\.[a-z]+$` and `^[^@]+@[^@]+$` with it. Two adjacent atoms are quadratic in the value length, which TextType bounds: 2ms at 1000 characters."
+  },
+  {
+    "id": "bounded-ambiguous-repetition",
+    "pattern": "^(a|aa){1,32}$",
+    "subject": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!",
+    "why": "A finite bound bypassed every ambiguity check. The bound is the exponent and the body is the base, and nothing bounds the base — Node 22 takes 24.3s here, and 16.6s for a four-branch body at only {1,14}."
+  },
+  {
+    "id": "grouped-adjacent-stars-in-body",
+    "pattern": "^(?:,(?:a*a*))*X$",
+    "subject": ",aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aaY",
+    "why": "Both stars inside one required group. A group holding a variable atom read as one variable atom, so the pair inside it was invisible; the walk flattens required groups now. Node 22 takes 58s at 20 segments."
   }
 ]

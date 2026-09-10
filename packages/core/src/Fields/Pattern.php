@@ -51,6 +51,19 @@ final class Pattern
      */
     public const MAX_LENGTH = 1000;
 
+    /**
+     * How many variable-width atoms may sit in a row with no forced boundary between them.
+     *
+     * ⚠️ TWO NUMBERS BECAUSE THERE ARE TWO COST CLASSES, both measured — see `atomRunExceeds()`.
+     * Inside a repetition, k adjacent atoms are exponential in the subject and one is the limit. At
+     * the top level the same k is a polynomial of degree k: two is quadratic in a value whose length
+     * `TextType` bounds, and is what real patterns are made of, while three is cubic and already
+     * 490 ms at a length an org can configure.
+     */
+    private const RUN_INSIDE_REPETITION = 1;
+
+    private const RUN_AT_TOP_LEVEL = 2;
+
     private const DELIMITERS = ['/', '#', '~', '%', '!'];
 
     /**
@@ -949,7 +962,23 @@ final class Pattern
                 }
             }
 
-            if (! self::isUnbounded($frame['quantifier'])) {
+            /*
+             * ⚠️ A FINITE BOUND IS NOT A SAFE BOUND, which review found: this asked only whether the
+             * quantifier had an upper bound, and skipped every ambiguity check for `{1,32}`. The exponent is the bound and the BASE
+             * is how many ways one iteration can match, and nothing bounds the base. Measured on
+             * Node 22.23.2, 40 `a` characters and a failing `!`:
+             *
+             *   `^(a|aa){1,16}$`            7 ms      `^(a|aa){1,20}$`             114 ms
+             *   `^(a|aa|aaa){1,12}$`       41 ms      `^(a|aa|aaa){1,16}$`         3.4 SECONDS
+             *   `^(a|aa|aaa|aaaa){1,10}$`  70 ms      `^(a|aa|aaa|aaaa){1,14}$`   16.6 SECONDS
+             *
+             * The safe bound FALLS as the body widens, so a threshold on the bound alone is a
+             * constant that a wider body defeats — which is why there is no threshold. Any repetition
+             * that can run twice is screened, and `^(a|aa){1,4}$` is refused where it used to be
+             * published with the reasoning "a bounded outer quantifier caps the exponent, so the
+             * ambiguity costs nothing". It caps the exponent and not the base.
+             */
+            if (! self::repeatsMoreThanOnce($frame['quantifier'])) {
                 continue;
             }
 
@@ -1006,16 +1035,42 @@ final class Pattern
                 && ! self::repetitionIsDelimited($body)
             ) {
                 return sprintf(
-                    'the unbounded quantifier `%s` on `%s`, whose body can match more than one '
+                    'the repetition `%s` on `%s`, whose body can match more than one '
                     .'length at the same position — so a failing subject can be re-divided '
                     .'combinatorially, which exhausts PCRE\'s backtrack limit and runs unboundedly '
                     .'in ECMAScript. Give the repeated group a fixed length, make its alternatives '
-                    .'distinct literals with none a prefix of another, start it with a delimiter it '
-                    .'cannot itself match, or bound the repetition as in {1,32}',
+                    .'distinct literals with none a prefix of another, or start it with a delimiter '
+                    .'it cannot itself match. Bounding the repetition does NOT help: the bound is '
+                    .'the exponent and the body is the base, and nothing bounds the base',
                     $frame['quantifier'],
                     self::excerpt($pattern, $frame['open'], $frame['close']),
                 );
             }
+        }
+
+        /*
+         * ⚠️ AND THE PATTERN ITSELF, WHICH NOTHING ABOVE REACHES. Every rule so far is driven by
+         * `frames()`, so a pattern with no parentheses at all was analysed by none of them — review
+         * found `^a*a*a*a*a*a*b$` published, and Node 22 spends 26 SECONDS on 100 characters and a
+         * failing one. The loop above cannot be the whole screen when the whole screen is a loop over
+         * brackets.
+         *
+         * The top level admits two adjacent atoms rather than one, for the measured reason
+         * `RUN_AT_TOP_LEVEL` carries: here the cost is a polynomial of degree k, while inside a
+         * repetition it is exponential.
+         */
+        if (self::atomRunExceeds($pattern, self::RUN_AT_TOP_LEVEL)) {
+            return sprintf(
+                'more than %d variable-width atoms in a row with nothing between them that forces '
+                .'where one ends and the next begins — as in `%s`. Each one can give up characters to '
+                .'the next, so a subject that fails at the end is retried in every combination: '
+                .'measured, `^a*a*a*a*b$` takes ECMAScript 7.9 seconds on 500 characters. Two in a '
+                .'row is permitted because it is quadratic rather than polynomial in the count; '
+                .'beyond that, separate them with a character none of them can match, or say the '
+                .'same thing with one quantifier — `a*a*` means `a*`',
+                self::RUN_AT_TOP_LEVEL,
+                self::excerpt($pattern, 0, min(mb_strlen($pattern) - 1, 40)),
+            );
         }
 
         return null;
@@ -1138,7 +1193,7 @@ final class Pattern
 
         return $delimiter !== null
             && ! self::variableAtomCanMatch($body, $delimiter)
-            && self::variableAtomsAreSeparated($body);
+            && ! self::atomRunExceeds($body, self::RUN_INSIDE_REPETITION);
     }
 
     /**
@@ -1371,108 +1426,168 @@ final class Pattern
     }
 
     /**
-     * Whether every variable-width atom in the body is separated from the next by a literal.
+     * Whether more than `$limit` variable-width atoms sit in a row with no forced boundary.
      *
-     * ⚠️ FORCING THE SPLIT BETWEEN ITERATIONS IS NOT ENOUGH, and review found the gap by putting
-     * the ambiguity entirely BETWEEN non-delimiter atoms. `^(?:,a*a*)*X$` satisfies the delimiter
-     * proof exactly — neither `a*` can match a comma, so every iteration must begin at one and none
-     * can consume one — and each `,aa` segment still has three ways to divide `aa` between the two
-     * stars. The iteration boundaries are forced; what happens inside them is not. Measured on
-     * Node 22.23.2, subject `,aa` repeated then a failing `Y`:
+     * ⚠️ ONE TRAVERSAL, TWO LIMITS, AND THE LIMITS ARE MEASURED. Review found three holes in the
+     * previous version and all three were the same hole: the walk was not uniform. It ran only over
+     * parenthesised frames, so `^a*a*a*a*a*a*b$` was analysed not at all; it skipped any repetition
+     * with a finite bound, so `^(a|aa){1,32}$` was too; and it overwrote its pending atom when a
+     * required group held another, so a bracket pair hid `^(?:,a*(?:a*))*X$`. Fixing the walk fixes
+     * all three, which is why this is a rewrite rather than three patches.
      *
-     *     n=12  9 ms      n=16  723 ms      n=20  58.8 SECONDS
+     * ⚠️ THE LIMIT DIFFERS BY CONTEXT BECAUSE THE COST CLASS DOES. Inside a repetition, k adjacent
+     * atoms give the repetition k choices per iteration and the total is EXPONENTIAL in the subject.
+     * At the top level the same k gives a polynomial of degree k. Measured on Node 22.23.2 with a
+     * failing subject:
      *
-     * ⚠️ THE LEFT ATOM IS THE ONE THAT MATTERS, and that is an argument rather than a convenience.
-     * For `A+ s B+` with `s` a required literal: if `A` cannot match `s` then `A+` must stop at the
-     * FIRST `s`, so the division is forced whatever `B` can match. If `A` CAN match `s`, then `A+`
-     * may swallow one `s` and leave a later one, which is the ambiguity. So the separator has to be
-     * unmatchable by the atom on its left.
+     *   inside a repetition, `^(?:,a*a*)*X$`   n=12  53 ms   n=16  729 ms   n=20  59.8 SECONDS
+     *   top level, `^a*a*b$`        (k=2)      n=1000  2 ms   n=20000  572 ms
+     *   top level, `^a*a*a*b$`      (k=3)      n=1000  490 ms
+     *   top level, `^a*a*a*a*b$`    (k=4)      n=500  7.9 SECONDS
      *
-     * ⚠️ NOT "AT MOST ONE VARIABLE ATOM", which would have been simpler and would have refused a
-     * shape that measures flat. Both of these have two:
+     * So the repetition body admits ONE and the top level admits TWO. Two at the top level is
+     * quadratic in the value's length, which `TextType` bounds by its configured `maxLength` (255 by
+     * default), and it is what real patterns are made of — `^.+\.[a-z]+$` and `^[^@]+@[^@]+$` both
+     * measure 0 ms. Three is cubic and already 490 ms at a length an org can configure.
      *
-     *     ^(?:,[^,]+-[^,]+)*X$     `[^,]` matches `-`      n=24 610 ms and climbing — refused
-     *     ^(?:,[^,-]+-[^,-]+)*X$   `[^,-]` does not        n=24 0 ms, linear — accepted
+     * ⚠️ ONLY A REQUIRED LITERAL THE LEFT ATOM CANNOT MATCH ENDS A RUN, and a fixed-width atom does
+     * not. `a*[a-z]{2}a*` looks divided and is not: the middle is two characters wide but its
+     * POSITION is still free, so the subject can be split many ways. The argument is the same one
+     * the delimiter proof rests on, and it is about distinguishability rather than width.
      *
-     * The rule that separates those two is the rule this project already uses one level up, so it
-     * is the same proof applied to internal separators rather than a second idea bolted on.
-     *
-     * ⚠️ FAILS CLOSED on an unparseable atom, like everything else in the exemption.
+     * ⚠️ FAILS CLOSED on anything unparseable.
      */
-    private static function variableAtomsAreSeparated(string $body): bool
+    private static function atomRunExceeds(string $sequence, int $limit): bool
     {
-        $length = mb_strlen($body);
+        $atoms = self::flatAtoms($sequence);
 
-        // The last variable-width atom seen, and whether a literal it cannot match has followed it.
-        $pending = null;
+        if ($atoms === null) {
+            return true;
+        }
+
+        $run = 0;
+        $previous = null;
+
+        foreach ($atoms as $atom) {
+            if ($atom['variable']) {
+                /*
+                 * ⚠️ A GROUP CAN SEPARATE ITSELF, which is what keeps the ordinary delimited list
+                 * publishable at the top level. `[^,]+(?:,[^,]+)*` is two variable-width atoms in a
+                 * row, and the second one must BEGIN with a comma the first cannot match — so the
+                 * boundary is forced by the group's own leading literal rather than by anything
+                 * between them.
+                 */
+                $lead = $atom['lead'];
+
+                $run = $previous !== null && $lead !== null && ! self::atomMatches($previous, $lead)
+                    ? 1
+                    : $run + 1;
+
+                if ($run > $limit) {
+                    return true;
+                }
+
+                $previous = $atom['atom'];
+
+                continue;
+            }
+
+            if ($previous === null || $atom['quantifier'] !== '') {
+                continue;
+            }
+
+            $character = self::literalCharacter($atom['atom']);
+
+            if ($character !== null && ! self::atomMatches($previous, $character)) {
+                $run = 0;
+                $previous = null;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * The sequence as a flat list of atoms, reading through groups that run at most once.
+     *
+     * ⚠️ FLATTENING IS WHAT MAKES THE PENDING STATE SURVIVE A GROUP. The previous version recursed
+     * and assigned its pending atom from the recursion's result, which discarded whatever was pending
+     * outside — so `,a*(?:a*)` read as one atom rather than two adjacent ones. Review found it. With
+     * the contents spliced into one list there is no pending state to lose, and the bug cannot be
+     * written again by construction.
+     *
+     * ⚠️ ONLY A GROUP THAT RUNS AT MOST ONCE AND IS REQUIRED IS SPLICED. `(?:ab)?` must stay whole,
+     * or its contents would read as required and `a` would look like a separator that can be absent.
+     * A group that repeats stays whole too, and is variable when anything inside it is — `(?:a*){2}`
+     * is `a*a*` and must not read as one fixed atom.
+     *
+     * @return list<array{atom: string, quantifier: string, variable: bool, lead: string|null}>|null
+     */
+    private static function flatAtoms(string $sequence, int $depth = 0): ?array
+    {
+        // A bound on nesting, so a pathological pattern cannot recurse without end. The length
+        // limit already caps depth at 250; this is the belt to that brace.
+        if ($depth > 64) {
+            return null;
+        }
+
+        $length = mb_strlen($sequence);
+        $atoms = [];
 
         for ($i = 0; $i < $length; $i++) {
-            $token = self::atomAt($body, $i);
+            $token = self::atomAt($sequence, $i);
 
             if ($token === null) {
-                return false;
+                return null;
             }
 
             $atom = $token['atom'];
+            $quantifier = $token['quantifier'];
             $i = $token['after'] - 1;
 
             if ($atom === '^' || $atom === '$') {
                 continue;
             }
 
-            /*
-             * ⚠️ A GROUP IS READ THROUGH exactly as it is by the delimiter check, because `,(?:a*)a*`
-             * is `,a*a*` with brackets — the shape the previous round of review found one rule along.
-             * A group carrying a variable-width quantifier is opaque and fails closed.
-             */
-            if (str_starts_with($atom, '(')) {
-                if (self::isVariableWidth($token['quantifier'])) {
-                    return false;
+            if (! str_starts_with($atom, '(')) {
+                $atoms[] = [
+                    'atom' => $atom,
+                    'quantifier' => $quantifier,
+                    'variable' => self::isVariableWidth($quantifier),
+                    'lead' => null,
+                ];
+
+                continue;
+            }
+
+            $prefix = self::framePrefixLength($atom, 0, self::frameKindAt($atom, 0));
+            $inner = mb_substr($atom, $prefix, mb_strlen($atom) - $prefix - 1);
+
+            if ($quantifier === '' || $quantifier === '{1}' || $quantifier === '{1}?') {
+                $spliced = self::flatAtoms($inner, $depth + 1);
+
+                if ($spliced === null) {
+                    return null;
                 }
 
-                $prefix = self::framePrefixLength($atom, 0, self::frameKindAt($atom, 0));
-                $inner = mb_substr($atom, $prefix, mb_strlen($atom) - $prefix - 1);
-
-                if (! self::variableAtomsAreSeparated($inner)) {
-                    return false;
-                }
-
-                /*
-                 * A required group whose own contents are separated still counts as an atom of
-                 * unknown separating power, so it neither separates a pending atom nor becomes one.
-                 * Conservative, and it only costs a bracket pair the author can remove.
-                 */
-                if (self::variableAtomCanMatchAnything($inner)) {
-                    $pending = $inner;
+                foreach ($spliced as $one) {
+                    $atoms[] = $one;
                 }
 
                 continue;
             }
 
-            if (self::isVariableWidth($token['quantifier'])) {
-                // Two in a row with nothing between them is `a*a*`, which is the whole finding.
-                if ($pending !== null) {
-                    return false;
-                }
-
-                $pending = $atom;
-
-                continue;
-            }
-
-            // A required, unquantified single character is the only thing that can separate.
-            if ($pending === null || $token['quantifier'] !== '') {
-                continue;
-            }
-
-            $character = self::literalCharacter($atom);
-
-            if ($character !== null && ! self::atomMatches($pending, $character)) {
-                $pending = null;
-            }
+            $atoms[] = [
+                'atom' => $atom,
+                'quantifier' => $quantifier,
+                'variable' => self::isVariableWidth($quantifier) || self::variableAtomCanMatchAnything($inner),
+                // A repeated group begins where its body begins, so its body's leading literal is
+                // what a preceding atom would have to run into.
+                'lead' => self::leadingLiteral($inner),
+            ];
         }
 
-        return true;
+        return $atoms;
     }
 
     /** Whether this subpattern holds any variable-width atom at all. */
@@ -1770,16 +1885,13 @@ final class Pattern
         return mb_substr($pattern, $closes + 1, 1) === '?' ? $brace.'?' : $brace;
     }
 
-    /** Whether a quantifier has no upper bound, which is what makes nesting dangerous. */
-    private static function isUnbounded(string $quantifier): bool
-    {
-        return $quantifier !== '' && preg_match('/^(?:\*|\+|\{[0-9]+,\})\??$/', $quantifier) === 1;
-    }
-
     /**
      * Whether a quantifier lets its atom match more than one length.
      *
-     * ⚠️ WIDER THAN `isUnbounded()`, and the difference is a defect review found. The delimiter
+     * ⚠️ WIDER THAN "HAS NO UPPER BOUND", and the difference is a defect review found. This class had
+     * an `isUnbounded()` for exactly that narrower question; it was the last caller's, and it went
+     * with the caller — a quantifier having an upper bound stopped meaning anything safe when review
+     * showed the bound is only the exponent. The delimiter
      * proof asked only whether an UNBOUNDED atom could consume the delimiter, so `^(?:,,?)*X$` was
      * exempted: the optional comma is bounded, and it can still either end the current iteration or
      * start the next. Measured — 40 commas plus a `Y` takes ECMAScript about 1.3 seconds and grows
