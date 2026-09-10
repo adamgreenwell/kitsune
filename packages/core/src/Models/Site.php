@@ -194,55 +194,117 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
     }
 
     /**
-     * Takes the durable per-host mutex for whatever host this save is about to claim.
+     * Takes the durable per-host mutex for every hostname this save contends for.
+     *
+     * ⚠️ WHICH HOSTS, AND WHY THE ORDER MATTERS, is `contendedHosts()` — it carries the measured
+     * deadlock that made this a loop rather than a single lock. This method is the lock itself.
+     */
+    private function lockHostClaim(): void
+    {
+        foreach ($this->contendedHosts() as $host) {
+            /*
+             * ⚠️ UPSERT THEN LOCK, in that order, and both are required. The row may not exist — the
+             * first claimant of a hostname creates it — and two concurrent first claimants must not
+             * both proceed. `insertOrIgnore()` lets exactly one of them create it and the other
+             * continue without an error, and the `SELECT … FOR UPDATE` that follows is what they
+             * then queue on.
+             *
+             * ⚠️ `DB::table()`, DELIBERATELY BELOW ELOQUENT. This row is a mutex rather than a
+             * record: it has no model, no scope and no events, and giving it any of those would
+             * invite somebody to read it as a claim. It is also written on every site save, so the
+             * cheapest path is the right one.
+             */
+            DB::table('site_host_claims')->insertOrIgnore([
+                'canonical_host' => $host,
+                'created_at' => now(),
+            ]);
+
+            /*
+             * ⚠️ SQLITE COMPILES `FOR UPDATE` TO NOTHING, and that is not a hole: SQLite serialises
+             * writers at the database level, so a second writer waits on the transaction itself. The
+             * engines where this lock does the work are Postgres and MySQL, which is why the test
+             * for it runs on all three rather than on the default.
+             */
+            DB::table('site_host_claims')
+                ->where('canonical_host', $host)
+                ->lockForUpdate()
+                ->first();
+        }
+    }
+
+    /**
+     * Every hostname this save contends for, in one globally agreed order.
+     *
+     * ⚠️ BOTH HOSTS, NOT ONLY THE DESTINATION, AND THE DEADLOCK IS MEASURED. Review found it: two
+     * same-org sites moving across each other's hosts deadlock even with disjoint prefixes, because
+     * each locks a mutex the other does not hold and then needs a site row the other does.
+     *
+     *     site 1 at a.test/x -> b.test/x        site 2 at b.test/y -> a.test/y
+     *     TX1 locks mutex(b.test), then site 2  TX2 locks mutex(a.test), then site 1
+     *     TX1 UPDATEs site 1 — held by TX2      TX2 UPDATEs site 2 — held by TX1
+     *
+     *   PostgreSQL 17  ERROR: deadlock detected — while updating tuple in relation "sites"
+     *   MySQL 8.4      ERROR 1213 (40001): Deadlock found when trying to get lock
+     *
+     * `DB::transaction()` takes one attempt, so one otherwise-valid save surfaces as an exception.
+     * Measured again with both mutexes held in sorted order: both transactions commit and the sites
+     * complete the swap.
+     *
+     * ⚠️ SORTED, WHICH IS THE WHOLE MECHANISM. Ordered acquisition is what makes a lock cycle
+     * impossible, and it only works if EVERY transaction agrees on the order — so the order comes
+     * from the hostnames themselves rather than from origin-then-destination, which is exactly the
+     * per-transaction order that deadlocked.
+     *
+     * ⚠️ AND IT IS A PROOF, not two passing runs. With both mutexes held, every site row a
+     * transaction touches belongs to a host whose mutex it holds: its own row sits at its ORIGINAL
+     * host, and the rival rows `refuseOverlappingClaim()` locks sit at its DESTINATION host. Two
+     * transactions whose row sets intersect must therefore intersect in mutexes too, and mutex
+     * acquisition is globally ordered.
+     *
+     * ⚠️ THE ORIGINAL HOST IS LOCKED EVEN WHEN THE SAVE REMOVES THE URL ENTIRELY. Nothing needs
+     * checking for a site that claims no address, but the save still UPDATEs a row sitting at the
+     * old host — which a rival claiming that host may hold. Dropping the lock there would reopen the
+     * cycle for the one case that looks like it does not need it.
+     *
+     * ⚠️ ONE LOCKING READ PER HOST, rather than one `whereIn(...)->orderBy(...)`. The `IN` form also
+     * passed both engines, but row-lock order relative to a sort is the planner's business and not
+     * contractual. Issuing a statement per host in sorted order makes the acquisition order this
+     * method's.
      *
      * ⚠️ DERIVED HERE RATHER THAN READ, because the lock has to be taken BEFORE the `saving` hook
      * derives anything — that hook runs inside `parent::save()`, by which time it is too late to
-     * serialise. `deriveUrlParts()` is the same static the hook calls, so the two cannot disagree, and
-     * calling it twice is a string operation rather than a query.
+     * serialise. `deriveUrlParts()` is the same static the hook calls, so the two cannot disagree,
+     * and calling it twice is a string operation rather than a query.
      *
      * ⚠️ REFUSALS ARE LEFT TO THE HOOK. If `base_url` is malformed this derivation throws, and it
      * throws the same message the hook would — the transaction rolls back and the caller sees the
      * refusal it would have seen anyway. Catching it here to "try again later" would swap a clear
      * refusal for a lock nobody needed.
      *
-     * ⚠️ A SITE WITH NO PUBLIC URL LOCKS NOTHING. `[null, null]` is the representation for an
-     * admin-only site, which claims no address and therefore contends with nobody.
+     * ⚠️ A SITE WITH NO PUBLIC URL AND NO PREVIOUS ONE LOCKS NOTHING. `[null, null]` is the
+     * representation for an admin-only site, which claims no address and contends with nobody.
+     *
+     * ⚠️ THE ORIGINAL IS THE LOADED VALUE, so a host changed by another process after this instance
+     * was read is not the one locked. That is the same boundary `refuseOverlappingClaim()` already
+     * works within — it excludes `$site->getKey()` from its own rival read — and reading the
+     * committed host instead would need a query whose own ordering this method exists to establish.
+     *
+     * @return list<string>
      */
-    private function lockHostClaim(): void
+    private function contendedHosts(): array
     {
-        [$host] = self::deriveUrlParts($this->base_url, $this->url_strategy);
+        [$destination] = self::deriveUrlParts($this->base_url, $this->url_strategy);
 
-        if ($host === null) {
-            return;
-        }
+        $origin = $this->exists ? $this->getRawOriginal('canonical_host') : null;
 
-        /*
-         * ⚠️ UPSERT THEN LOCK, in that order, and both are required. The row may not exist — the
-         * first claimant of a hostname creates it — and two concurrent first claimants must not both
-         * proceed. `insertOrIgnore()` lets exactly one of them create it and the other continue
-         * without an error, and the `SELECT … FOR UPDATE` that follows is what they then queue on.
-         *
-         * ⚠️ `DB::table()`, DELIBERATELY BELOW ELOQUENT. This row is a mutex rather than a record:
-         * it has no model, no scope and no events, and giving it any of those would invite somebody
-         * to read it as a claim. It is also written on every site save, so the cheapest path is the
-         * right one.
-         */
-        DB::table('site_host_claims')->insertOrIgnore([
-            'canonical_host' => $host,
-            'created_at' => now(),
-        ]);
+        $hosts = array_values(array_unique(array_filter(
+            [$destination, is_string($origin) ? $origin : null],
+            static fn (?string $host): bool => $host !== null,
+        )));
 
-        /*
-         * ⚠️ SQLITE COMPILES `FOR UPDATE` TO NOTHING, and that is not a hole: SQLite serialises
-         * writers at the database level, so a second writer waits on the transaction itself. The
-         * engines where this lock does the work are Postgres and MySQL, which is why the test for it
-         * runs on all three rather than on the default.
-         */
-        DB::table('site_host_claims')
-            ->where('canonical_host', $host)
-            ->lockForUpdate()
-            ->first();
+        sort($hosts);
+
+        return $hosts;
     }
 
     /**

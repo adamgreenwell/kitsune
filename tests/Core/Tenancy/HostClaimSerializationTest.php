@@ -316,3 +316,104 @@ it('sees a rival committed while this save waited, not an older snapshot', funct
      * be removed. Nothing between here and there uses `snapshot.test`.
      */
 })->skip(fn (): bool => ! lockingEngine(), 'SQLite has one writer, so there is no second snapshot to be stale');
+
+it('locks both hosts of a move, in hostname order', function (): void {
+    /*
+     * ⚠️ THE DEADLOCK REVIEW FOUND, and it is measured rather than reasoned. Two same-org sites
+     * moving across each other's hosts each locked a mutex the other did not hold, then needed a
+     * site row the other did. Staged as two real sessions against the running engines:
+     *
+     *     site 1 at a.test/x -> b.test/x        site 2 at b.test/y -> a.test/y
+     *     TX1 locks mutex(b.test), then site 2  TX2 locks mutex(a.test), then site 1
+     *     TX1 UPDATEs site 1 — held by TX2      TX2 UPDATEs site 2 — held by TX1
+     *
+     *   PostgreSQL 17  ERROR: deadlock detected — while updating tuple in relation "sites"
+     *   MySQL 8.4      ERROR 1213 (40001): Deadlock found when trying to get lock
+     *
+     * `DB::transaction()` takes one attempt, so an otherwise-valid save surfaced as an exception.
+     * With both mutexes held in sorted order both transactions committed and the swap completed.
+     *
+     * ⚠️ ASSERTED ON THE ORDER, NOT BY STAGING THE DEADLOCK, and that is the honest test rather than
+     * the convenient one. A deadlock needs both transactions in flight; a second connection can hold
+     * a lock but cannot then be asked for one, because this connection is blocked waiting. What
+     * prevents the cycle is a total order every transaction agrees on — so that is what is pinned,
+     * on both directions of the same move.
+     */
+    $site = Site::create([
+        'org_id' => $this->org->id, 'handle' => 'mover', 'slug' => 'mover', 'name' => 'Mover',
+        'locale' => 'en', 'url_strategy' => 'domain', 'base_url' => 'https://bbb.test/x',
+    ]);
+
+    $locked = [];
+
+    DB::listen(function ($query) use (&$locked): void {
+        // The locking read, not the upsert: `insertOrIgnore` names the host as a binding too.
+        if (preg_match('/^\s*select\b/i', $query->sql) === 1 && str_contains($query->sql, 'site_host_claims')) {
+            $locked[] = (string) ($query->bindings[0] ?? '');
+        }
+    });
+
+    // bbb.test -> aaa.test. Origin sorts AFTER destination, so origin-then-destination would differ.
+    $site->base_url = 'https://aaa.test/x';
+    $site->save();
+
+    expect($locked)->toBe(['aaa.test', 'bbb.test'], 'a move did not lock both hosts in hostname order');
+
+    // And back again: the same order, from the opposite move.
+    $locked = [];
+    $site->base_url = 'https://bbb.test/x';
+    $site->save();
+
+    expect($locked)->toBe(['aaa.test', 'bbb.test'], 'the order followed the move rather than the hostnames');
+});
+
+it('locks the old host when a save removes the public URL', function (): void {
+    /*
+     * ⚠️ THE CASE THAT LOOKS LIKE IT NEEDS NO LOCK. Nothing needs checking for a site that claims no
+     * address — `refuseOverlappingClaim()` returns early — but the save still UPDATEs a row sitting
+     * at the old host, and a rival claiming that host may hold it. Dropping the lock here would
+     * reopen the cycle for exactly the case that appears exempt.
+     */
+    $site = Site::create([
+        'org_id' => $this->org->id, 'handle' => 'leaver', 'slug' => 'leaver', 'name' => 'Leaver',
+        'locale' => 'en', 'url_strategy' => 'domain', 'base_url' => 'https://leaving.test',
+    ]);
+
+    $locked = [];
+
+    DB::listen(function ($query) use (&$locked): void {
+        if (preg_match('/^\s*select\b/i', $query->sql) === 1 && str_contains($query->sql, 'site_host_claims')) {
+            $locked[] = (string) ($query->bindings[0] ?? '');
+        }
+    });
+
+    $site->base_url = null;
+    $site->save();
+
+    expect($site->canonical_host)->toBeNull('the save did not actually remove the public URL')
+        ->and($locked)->toBe(['leaving.test'], 'a save that gives up a host took no lock on it');
+});
+
+it('locks one host when a save does not move', function (): void {
+    /*
+     * ⚠️ THE COST STAYS BOUNDED. Locking two mutexes per save would double the contention the
+     * per-host design exists to avoid, so a save that keeps its host must still take exactly one.
+     */
+    $site = Site::create([
+        'org_id' => $this->org->id, 'handle' => 'stayer', 'slug' => 'stayer', 'name' => 'Stayer',
+        'locale' => 'en', 'url_strategy' => 'domain', 'base_url' => 'https://staying.test/one',
+    ]);
+
+    $locked = [];
+
+    DB::listen(function ($query) use (&$locked): void {
+        if (preg_match('/^\s*select\b/i', $query->sql) === 1 && str_contains($query->sql, 'site_host_claims')) {
+            $locked[] = (string) ($query->bindings[0] ?? '');
+        }
+    });
+
+    $site->base_url = 'https://staying.test/two';
+    $site->save();
+
+    expect($locked)->toBe(['staying.test'], 'a save that kept its host locked more than one mutex');
+});
