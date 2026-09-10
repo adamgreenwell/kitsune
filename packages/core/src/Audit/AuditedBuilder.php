@@ -12,6 +12,7 @@ namespace Kitsune\Core\Audit;
 
 use Illuminate\Contracts\Database\Query\Expression;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Kitsune\Core\Models\Entry;
@@ -241,12 +242,15 @@ class AuditedBuilder extends ScopedBuilder
     }
 
     /**
+     * ⚠️ The framework returns a `Collection` here, which this docblock said was an `array` until
+     * `ScopedBuilder` declared the type and the mismatch surfaced. Both say `Collection` now.
+     *
      * @param  array<string, mixed>  $values
-     * @param  array<int, string>  $returning
-     * @param  array<int, string>|string|null  $uniqueBy
-     * @return array<int, mixed>
+     * @param  non-empty-array<non-empty-string>  $returning
+     * @param  non-empty-string|non-empty-array<non-empty-string>|null  $uniqueBy
+     * @return Collection<int, mixed>
      */
-    public function insertOrIgnoreReturning(array $values, array $returning = ['*'], array|string|null $uniqueBy = null)
+    public function insertOrIgnoreReturning(array $values, array $returning = ['*'], array|string|null $uniqueBy = null): Collection
     {
         throw new RuntimeException(self::NO_BULK_CREATE);
     }

@@ -13,6 +13,7 @@ namespace Kitsune\Core\Tenancy;
 use Illuminate\Contracts\Database\Query\Expression;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Tenancy\Contracts\RefusesCascadingDeletes;
 use Kitsune\Core\Tenancy\Contracts\RequiresModelSave;
@@ -133,6 +134,106 @@ class ScopedBuilder extends Builder
         $this->refuseBulkCreate('insertOrIgnoreUsing', always: true);
 
         return parent::insertOrIgnoreUsing($columns, $query);
+    }
+
+    /**
+     * ⚠️ `insertGetId()` IS PUBLICLY CALLABLE, which the first version of this guard treated as if it
+     * were `performInsert()`'s private door. `Site::query()->insertGetId([… 'base_url' => …])`
+     * therefore still wrote a row with whatever `canonical_host` the caller chose, or none — the same
+     * cross-org claim hole the change was meant to close, reached one method along. Found by review,
+     * and the test that claimed to enumerate every creation path did not cover it.
+     *
+     * ⚠️ THE DISCRIMINATOR IS THE MODEL BEHIND THE BUILDER, not the method. `Model::performInsert()`
+     * builds its query from `newModelQuery()`, so `getModel()` IS the instance being saved and every
+     * guarded value in `$values` came off its own attributes — the `saving` hooks having already put
+     * them there. `Site::query()` builds one from a fresh, empty instance, so a guarded column in
+     * `$values` has nothing on the model to match. That is a general test rather than a per-model one,
+     * which matters because the four guarded models guard different KINDS of column: `Site`'s are
+     * derived, `EntryType`'s and `Field`'s are validated, and a create legitimately names those.
+     *
+     * @param  array<string, mixed>  $values
+     * @param  string|null  $sequence
+     * @return int
+     */
+    public function insertGetId(array $values, $sequence = null)
+    {
+        $this->refuseDetachedInsert('insertGetId', $values);
+
+        return parent::insertGetId($values, $sequence);
+    }
+
+    /**
+     * @param  array<string, mixed>  $values
+     * @param  non-empty-array<non-empty-string>  $returning
+     * @param  non-empty-string|non-empty-array<non-empty-string>|null  $uniqueBy
+     * @return Collection<int, mixed>
+     */
+    public function insertOrIgnoreReturning(array $values, array $returning = ['*'], array|string|null $uniqueBy = null): Collection
+    {
+        // `performInsert()` never uses this one, so there is no per-row caller to protect.
+        $this->refuseBulkCreate('insertOrIgnoreReturning', always: true);
+
+        /*
+         * ⚠️ Forwarded through `toBase()` rather than `parent::`, because Eloquent's builder does not
+         * declare this method — it reaches the QUERY builder through `__call`, which static analysis
+         * cannot follow. Naming the real receiver is clearer than annotating around the magic.
+         */
+        return $this->toBase()->insertOrIgnoreReturning($values, $returning, $uniqueBy);
+    }
+
+    /**
+     * Refuse an insert that names a guarded column the model behind it never set.
+     *
+     * ⚠️ THE COMPARISON IS AGAINST THE BUILDER'S OWN MODEL, and that is what separates a save from a
+     * hand-rolled insert without needing to know what any column means. On a save the values came
+     * off that instance, so they match; on `Model::query()->insertGetId([...])` the instance is empty
+     * and they cannot.
+     *
+     * ⚠️ ABSENT IS NOT A MISMATCH. A row that names no guarded column has nothing this can check and
+     * nothing it needs to: the columns' correctness is the thing being protected, and a row that does
+     * not touch them cannot get them wrong.
+     *
+     * @param  array<string, mixed>  $values
+     */
+    private function refuseDetachedInsert(string $method, array $values): void
+    {
+        $model = $this->getModel();
+
+        if (ScopeWrites::suspended() || ! $model instanceof RequiresModelSave) {
+            return;
+        }
+
+        foreach ($model::columnsRequiringModelSave() as $column => $reason) {
+            if (! array_key_exists($column, $values)) {
+                continue;
+            }
+
+            /*
+             * ⚠️ PRESENCE ON THE MODEL, NOT EQUALITY WITH IT, and equality broke twenty tests.
+             * `AuditedBuilder::insertGetId()` runs `convertFieldValuesForWrite()` before delegating
+             * here, so an `Entry`'s `values` reaching this point has deliberately been TRANSFORMED
+             * and no longer equals the attribute it came from. Comparing them refused every audited
+             * create.
+             *
+             * Presence is also the question actually being asked: does the model behind this builder
+             * carry this row, or is it the empty instance `Model::query()` makes? A saving model has
+             * the column set — the `saving` hooks put it there — and a fresh one does not, whatever
+             * happens to the value on the way down.
+             */
+            if (array_key_exists($column, $model->getAttributes())) {
+                continue;
+            }
+
+            throw new RuntimeException(sprintf(
+                '[%s] cannot be written by %s() on %s: %s The model behind this query never set that '
+                .'value, so the checks that derive and validate it did not run. Save the model '
+                .'instead.',
+                $column,
+                $method,
+                $model::class,
+                $reason,
+            ));
+        }
     }
 
     /**

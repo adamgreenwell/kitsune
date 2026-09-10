@@ -103,6 +103,49 @@ it('refuses a bulk insert on every guarded model', function (): void {
     }
 });
 
+it('refuses a DIRECT insertGetId, which performInsert alone may use', function (): void {
+    /*
+     * ⚠️ THE HOLE THE FIRST VERSION LEFT, found by review. `insertGetId()` is publicly callable, not
+     * `performInsert()`'s private door — so `Site::query()->insertGetId([… 'base_url' => …])` wrote a
+     * row with whatever `canonical_host` the caller chose, or none, which is the cross-org claim hole
+     * the change was meant to close reached one method along. My enumeration test claimed to cover
+     * every creation path and did not cover this one.
+     *
+     * ⚠️ THE DISCRIMINATOR IS THE MODEL BEHIND THE BUILDER, not the method. `performInsert()` builds
+     * its query from `newModelQuery()`, so the builder's model IS the instance being saved and every
+     * guarded value came off its own attributes. `Site::query()` builds one from a fresh, empty
+     * instance, so a guarded column in the values has nothing to match.
+     */
+    expect(fn () => Site::query()->insertGetId(siteRow($this->org->id, 'direct') + [
+        'created_at' => now(), 'updated_at' => now(),
+    ]))->toThrow(RuntimeException::class, 'never set that value');
+
+    expect(DB::table('sites')->where('handle', 'direct')->exists())->toBeFalse();
+});
+
+it('refuses insertOrIgnoreReturning, which performInsert never uses', function (): void {
+    // Forwarded straight through before, and named in `AuditedBuilder`'s insertion surface — so its
+    // absence here was an enumeration gap rather than a judgement.
+    expect(fn () => Site::query()->insertOrIgnoreReturning(siteRow($this->org->id, 'returning') + [
+        'created_at' => now(), 'updated_at' => now(),
+    ]))->toThrow(RuntimeException::class, 'cannot be created in bulk');
+});
+
+it('lets a guarded column through when the model behind the query set it', function (): void {
+    /*
+     * ⚠️ THE OTHER HALF, and the reason the guard compares rather than refuses outright: `EntryType`
+     * and `Field` guard columns that a create legitimately NAMES — `org_id`, `entry_type_id` — where
+     * `Site`'s are derived. A blanket refusal of any insert naming a guarded column would have broken
+     * two models' creates, which is the shape of the mistake this whole issue is about.
+     */
+    $type = EntryType::create([
+        'org_id' => $this->org->id, 'handle' => 'named', 'name' => 'Named', 'plural_name' => 'Nameds',
+    ]);
+
+    expect($type->exists)->toBeTrue()
+        ->and($type->org_id)->toBe($this->org->id);
+});
+
 it('still allows an ordinary create, which the reverted attempt did not', function (): void {
     /*
      * ⚠️ THE REGRESSION THAT SENT THIS BACK TO THE ISSUE TRACKER. Guarding the insert family by
