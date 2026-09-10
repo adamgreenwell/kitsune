@@ -358,3 +358,57 @@ it('reads the before-state under the lock, not before it', function (): void {
     expect($method->getNumberOfParameters())->toBe(1, 'the before-state can still be passed in')
         ->and($method->getParameters()[0]->getName())->toBe('sync');
 });
+
+it('describes the committed row, not the overtaken save\'s own scalars', function (): void {
+    /*
+     * ⚠️ THE FALLBACK RECORDED THROUGH THE IN-MEMORY MODEL, not the row the lock protects — review's
+     * finding, and the same defect the overtaken check above was written to fix, one layer down.
+     *
+     * A saves the title `A`, filing a revision. B then overwrites it with `B` and files a newer one.
+     * A finally syncs its relations: overtaken, so the reconciler correctly refuses to complete A's
+     * older revision and falls through to record a new one. `recordRevision()` snapshots
+     * `$this->getAttribute(...)`, and `$this` is A's instance — which still holds `A`.
+     *
+     * History therefore ended with a revision claiming `A` plus A's relations, while the row held
+     * `B` plus A's relations. Nothing was lost, but the newest revision described a state that never
+     * existed, and "restore the latest version" would have reverted B's title.
+     *
+     * ⚠️ The overtaking is CONSTRUCTED in the register for the same reason as the test above: two
+     * processes racing is not something one connection can reproduce.
+     */
+    app(RecordedRevisions::class)->open();
+    $entry = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Draft']);
+
+    // A saves its title and files a revision.
+    app(RecordedRevisions::class)->open((int) $entry->getKey());
+    $entry->title = 'A title';
+    $entry->save();
+    $filedByA = (int) $entry->revisions()->max('id');
+
+    // B overwrites the title from its own instance and files a newer revision.
+    $fresh = Entry::query()->whereKey($entry->getKey())->sole();
+    app(RecordedRevisions::class)->open((int) $fresh->getKey());
+    $fresh->title = 'B title';
+    $fresh->save();
+    $filedByB = (int) $fresh->revisions()->max('id');
+
+    expect($filedByB)->toBeGreaterThan($filedByA, 'B filed no revision, so A was never overtaken');
+
+    // A's write is still the one being reconciled, and A's instance still holds A's title.
+    app(RecordedRevisions::class)->open((int) $entry->getKey());
+    app(RecordedRevisions::class)->note((int) $entry->getKey(), $filedByA);
+
+    expect($entry->title)->toBe('A title', 'A\'s instance is not stale, so this asserts nothing');
+
+    $entry->writeRelationsAndReconcile(fn () => $entry->syncFieldRelations($this->authors, [$this->one->id]));
+
+    $newest = $entry->revisions()->orderByDesc('id')->first();
+
+    expect((int) $newest->getKey())->toBeGreaterThan($filedByB, 'the fallback filed no new revision')
+        ->and($newest->title)->toBe('B title', 'the newest revision describes a title the row does not hold')
+        ->and($newest->relation_state[(string) $this->authors->getKey()] ?? null)
+        ->toBe([$this->one->id], 'the fallback lost A\'s relation choice');
+
+    // ⚠️ And A's own older revision is left alone: it was accurate when it was filed.
+    expect(Entry::find($entry->getKey())->revisions()->whereKey($filedByA)->sole()->title)->toBe('A title');
+});

@@ -522,8 +522,46 @@ class Entry extends Model implements RequiresModelSave
          * Nothing was filed, so the relations were the only change — and this is the case that
          * makes blanket suppression wrong. `recordRevisionForRelationChange()` still compares
          * against `$relationsBefore`, so a sync that changed nothing files nothing.
+         *
+         * ⚠️ FROM THE LOCKED ROW, NOT FROM THIS INSTANCE, which review found — and it is the same
+         * defect as the overtaken check above, one layer down. `recordRevision()` snapshots
+         * `$this->getAttribute(...)`, and on the overtaken path `$this` is precisely the save whose
+         * scalars are no longer live: A wrote the title `A`, B overwrote it with `B` and filed a
+         * newer revision, and A then fell through to here still holding `A`. History ended with a
+         * revision claiming A's title and A's relations over a row holding B's title — a state that
+         * never existed, and one "restore the latest version" would have reverted B's title to.
+         *
+         * The reload is what `RecordsRelationRevisions::versioned()` already does at its own call
+         * site: it loads the entries inside the lock and records from those instances, so nothing
+         * there is stale. This is the path that skipped it.
          */
+        $this->syncScalarsFromLockedRow();
+
         return $this->recordRevisionForRelationChange($relationsBefore);
+    }
+
+    /**
+     * Replace this instance's attributes with the row as it currently stands.
+     *
+     * ⚠️ Attributes only. `relationState()` reads the pivot table directly and `$retainedOriginals`
+     * is a plain property, so this save's pre-sanitization originals survive a reload that its
+     * scalars do not — which is right both ways round: the originals belong to this write, and the
+     * scalars belong to whoever wrote them last.
+     *
+     * ⚠️ withoutGlobalScopes, as everywhere else in this transaction: the row is being read to
+     * describe it, not to hand it to a caller, and a scoped query that matched nothing would leave
+     * the stale attributes in place — failing open on exactly the case this exists for.
+     */
+    private function syncScalarsFromLockedRow(): void
+    {
+        $live = self::query()->withoutGlobalScopes()->whereKey($this->getKey())->first();
+
+        // ⚠️ Gone is not an error and not a reason to write A's stale values either: a hard delete
+        // in this window means there is no row for a revision to describe, and the comparison in
+        // `recordRevisionForRelationChange()` is what decides whether to file one.
+        if ($live instanceof self) {
+            $this->setRawAttributes($live->getAttributes(), sync: true);
+        }
     }
 
     /**
