@@ -1956,8 +1956,15 @@ describe('settings that contradict themselves are refused', function (): void {
             // A valid quantifier followed by a stray brace: the first is consumed, the
             // second is not, which is the case a per-construct check has to get right.
             ->and(Pattern::unpublishable('a{2,4}b}'))->toContain('unmatched')
-            // PCRE reads `[]]` as a class containing `]`; ECMAScript rejects it.
-            ->and(Pattern::unpublishable('[]]'))->toContain('unmatched')
+            /*
+             * ⚠️ THIS ASSERTED `unmatched` AND THE REASON WAS WRONG, which review made visible one
+             * finding later. `[]]` is refused either way, but not for the bracket being unbalanced:
+             * PCRE reads a class containing `]` while ECMAScript under `u` reads an EMPTY class, so
+             * the dialects disagree about what the pattern IS. This test's own comment said as much
+             * and then asserted the incidental message — and a rule that fires on the unbalanced
+             * shape and not the balanced one let `[]a[]` through, which is what review found.
+             */
+            ->and(Pattern::unpublishable('[]]'))->toContain('whose first member is `]`')
             // ⚠️ And everything that legitimately closes something must still pass.
             // By the time the scanner reaches the refusal, a quantifier's brace has
             // been consumed above, a property's in the escape branch, a class's by the

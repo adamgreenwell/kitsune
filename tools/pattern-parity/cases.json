@@ -910,5 +910,23 @@
     "pattern": "^(?:,(?:a*a*))*X$",
     "subject": ",aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aaY",
     "why": "Both stars inside one required group. A group holding a variable atom read as one variable atom, so the pair inside it was invisible; the walk flattens required groups now. Node 22 takes 58s at 20 segments."
+  },
+  {
+    "id": "class-first-position-bracket",
+    "pattern": "[]a[]",
+    "subject": "a",
+    "why": "PCRE reads a first-position `]` as a literal member; ECMAScript under `u` reads `[]` as an EMPTY class. Both compile, PCRE matches `a`, and Node reads an empty class then `a` then another empty class so it can never match. `[]]` was already refused for the unbalanced bracket, which is why this shape slipped past."
+  },
+  {
+    "id": "set-escape-as-range-endpoint",
+    "pattern": "[\\b-\\s]",
+    "subject": "\b",
+    "why": "The cost of admitting a construct by rewriting it. `delimit()` splices `\\s` into a character list so PCRE compiles this, while ECMAScript under `u` refuses a character-set escape as a range endpoint and does not compile the published pattern at all."
+  },
+  {
+    "id": "ambiguity-product-no-quantifier",
+    "pattern": "^(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)b$",
+    "subject": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "why": "Ambiguity with no quantifier anywhere and no variable-width atom: thirty groups each offering two identical ways to match one character, so 2^30 combinations. 240 characters of pattern; PCRE exhausts its backtrack limit and Node 22 takes 50.2s."
   }
 ]

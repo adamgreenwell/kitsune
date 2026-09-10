@@ -377,6 +377,80 @@ describe('rule 3 — an unbounded repetition must divide its subject one way onl
     });
 });
 
+describe('ambiguity does not need a quantifier', function (): void {
+    it('refuses ambiguous alternations whose combinations multiply', function (string $pattern): void {
+        /*
+         * ⚠️ A DIFFERENT AXIS FROM EVERY RULE ABOVE, which review found. `^` then thirty copies of
+         * `(?:a|a)` then `b$` has no repetition anywhere and no variable-width atom, so nothing looked
+         * at it — and each group offers two identical ways to match one character, so thirty offer
+         * 2^30. On a 31-character failing subject, PCRE 10.48 exhausts its backtrack limit and Node
+         * 22.23.2 takes 50.2 SECONDS. The pattern is 240 characters.
+         *
+         * ⚠️ A PRODUCT, NOT A COUNT, and measured to be exactly that — about 45 ns per combination on
+         * Node, linearly: 3 ms at 2^16, 47 ms at 2^20, 3.1 s at 2^26. So the bound is on the product.
+         */
+        expect(Pattern::unpublishable($pattern))
+            ->not->toBeNull("[{$pattern}] multiplies its ambiguous alternations past the bound");
+    })->with([
+        '^'.str_repeat('(?:a|a)', 30).'b$',
+        '^'.str_repeat('(?:a|a)', 18).'b$',
+        '^'.str_repeat('(?:a|ab)', 20).'c$',
+    ]);
+
+    it('publishes a pattern whose ambiguity stays under the bound', function (string $pattern): void {
+        /*
+         * ⚠️ ONE AMBIGUOUS ALTERNATION IS HARMLESS, and refusing it would cost a shape people write:
+         * `(?:https|http|ftp)` has `http` as a prefix of `https`, so it IS ambiguous — and a product of
+         * three is nothing. Sixteen binary ones are still only 65,536 combinations, at 3 ms.
+         *
+         * ⚠️ AND PREFIX-FREE BRANCHES DO NOT COUNT AT ALL, however many there are: at most one can
+         * match at a position, so thirty copies of `(?:a|b)` are linear rather than 2^30.
+         */
+        expect(Pattern::unpublishable($pattern))->toBeNull("[{$pattern}] is affordable");
+    })->with([
+        '^(?:a|a)b$',
+        '^'.str_repeat('(?:a|a)', 16).'b$',
+        '^'.str_repeat('(?:a|b)', 30).'c$',
+        '^(?:https|http|ftp)://[a-z]+$',
+    ]);
+});
+
+describe('a character class means the same thing in both dialects', function (): void {
+    it('refuses a class whose first member is a closing bracket', function (string $pattern): void {
+        /*
+         * ⚠️ PCRE READS A LITERAL, ECMASCRIPT READS AN EMPTY CLASS — so the dialects disagree about
+         * what the pattern IS rather than about what it matches. `[]]` was already refused as "a
+         * closing bracket nothing opened", so the scan caught the shape where nothing rebalanced it
+         * and missed the shape where something did. Review found it. Measured on PCRE 10.48 with Node
+         * 22.23.2, both handed the same source: `[]a[]` compiles in BOTH, PCRE matches `a`, and Node
+         * reads an empty class then `a` then another empty class, so it can never match.
+         */
+        expect(Pattern::unpublishable($pattern))
+            ->not->toBeNull("[{$pattern}] opens a class with a closing bracket");
+    })->with(['[]a[]', '[^]a]', '[]]', '^[]$']);
+
+    it('refuses a set escape used as a range endpoint', function (string $pattern): void {
+        /*
+         * ⚠️ THE COST OF ADMITTING A CONSTRUCT BY REWRITING IT, which review found. `delimit()` splices
+         * `\s` into a character list, so PCRE compiles `[\b-\s]` and `compiles()` reports true —
+         * while ECMAScript under `u` refuses a character-set escape as a range endpoint, so the raw
+         * PUBLISHED pattern does not compile for a consumer at all. Measured: PCRE matches U+0008,
+         * Node throws at construction.
+         *
+         * A rewrite is only equivalent where the syntax around it is equivalent too, and inside a range
+         * it is not. Both ends are checked, because `[\s-x]` inverts the same mistake.
+         */
+        expect(Pattern::unpublishable($pattern))
+            ->not->toBeNull("[{$pattern}] puts a set at one end of a range");
+    })->with(['[\b-\s]', '[\s-x]', '[a-\s]', '[\d-x]']);
+
+    it('leaves the ordinary class shapes alone', function (string $pattern): void {
+        // ⚠️ The cost of both rules, bounded: an escaped `]`, a trailing or leading `-`, a set beside
+        // a range rather than inside one, and a range of real character escapes.
+        expect(Pattern::unpublishable($pattern))->toBeNull("[{$pattern}] is an ordinary class");
+    })->with(['[\]]', '^[a-z-]+$', '^[-a-z]+$', '[\x41-\x5A]', '^[\s]+$', '^[a-z\s]+$', '^[^,]+$']);
+});
+
 describe('rule 5 — a capturing group in a lookbehind must be fixed length', function (): void {
     /*
      * ⚠️ MEASUREMENT PLACED THIS LINE, rather than a blanket ban on captures in lookbehinds. With

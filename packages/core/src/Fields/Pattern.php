@@ -60,9 +60,32 @@ final class Pattern
      * `TextType` bounds, and is what real patterns are made of, while three is cubic and already
      * 490 ms at a length an org can configure.
      */
+    /**
+     * The escapes that stand for a SET of characters rather than one character.
+     *
+     * ⚠️ These are the ones a range cannot use as an endpoint. `\s` is here although the grammar
+     * admits it — it is admitted by REWRITING, and a rewrite is only equivalent where the syntax
+     * around it is (see `rangeEndpointRefusal()`). The others are refused elsewhere for portability
+     * and are listed so this answer does not depend on the order the checks happen to run in.
+     */
+    private const CLASS_SET_ESCAPES = [
+        's' => true, 'S' => true, 'd' => true, 'D' => true, 'w' => true, 'W' => true,
+        'h' => true, 'H' => true, 'v' => true, 'V' => true, 'R' => true, 'N' => true,
+        'p' => true, 'P' => true,
+    ];
+
     private const RUN_INSIDE_REPETITION = 1;
 
     private const RUN_AT_TOP_LEVEL = 2;
+
+    /**
+     * How many ways a pattern's ambiguous alternations may combine before it is refused.
+     *
+     * ⚠️ MEASURED, at about 45 ns per combination on Node 22.23.2 — 3 ms at 2^16, 47 ms at 2^20 and
+     * 3.1 s at 2^26. 65,536 leaves an order of magnitude for ADR-027's 1 vCPU floor while keeping
+     * sixteen ambiguous binary alternations publishable, which is far more than any real pattern has.
+     */
+    private const MAX_AMBIGUITY_PRODUCT = 65536;
 
     private const DELIMITERS = ['/', '#', '~', '%', '!'];
 
@@ -644,6 +667,23 @@ final class Pattern
                     return self::DIVERGENT_OUTSIDE_CLASS[$escaped];
                 }
 
+                /*
+                 * ⚠️ A SET ESCAPE CANNOT BE A RANGE ENDPOINT, and the normalisation hid it — review
+                 * found this. `delimit()` splices `\s` into a character list, so PCRE compiles
+                 * `[\b-\s]` happily and `compiles()` reports true; ECMAScript under `u` REJECTS a
+                 * character-set escape as a range endpoint, so the raw published pattern does not
+                 * compile for a consumer at all. Measured on PCRE 10.48 with Node 22.23.2, both handed
+                 * the same source: PCRE matches U+0008, Node throws at construction.
+                 *
+                 * ⚠️ THIS IS THE COST OF ADMITTING A CONSTRUCT BY REWRITING IT. `\s` is the only
+                 * escape the grammar admits that way (§4), and a rewrite is only equivalent where the
+                 * SYNTAX around it is equivalent too — inside a range it is not. Both sides are
+                 * checked, because `[\s-x]` inverts the same mistake.
+                 */
+                if ($inClass && ($reason = self::rangeEndpointRefusal($pattern, $i, $escaped)) !== null) {
+                    return $reason;
+                }
+
                 // ⚠️ Three families where the LETTER is shared and the form is not,
                 // so a lookup table cannot answer them.
                 if (($reason = self::escapeFormRefusal($pattern, $i, $escaped, $inClass, $spans)) !== null) {
@@ -714,6 +754,29 @@ final class Pattern
 
             if ($char === '[') {
                 $inClass = true;
+
+                /*
+                 * ⚠️ A `]` IN FIRST POSITION IS A LITERAL TO PCRE AND AN EMPTY CLASS TO ECMASCRIPT,
+                 * which review found — and `[]]` was already refused as "a closing bracket nothing
+                 * opened", so this scan caught the shape where nothing rebalanced it and missed the
+                 * shape where something did. Measured on PCRE 10.48 with Node 22.23.2, both handed
+                 * the same source: `[]a[]` compiles in BOTH, PCRE matches `a`, and Node reads an empty
+                 * class, then `a`, then another empty class — so it can never match.
+                 *
+                 * ⚠️ FIRST POSITION IS AFTER AN OPTIONAL `^`, because `[^]a]` is the same trick
+                 * negated; that one the old scan happened to refuse for the other reason.
+                 */
+                $opens = mb_substr($pattern, $i + 1, 1) === '^' ? $i + 2 : $i + 1;
+
+                if (mb_substr($pattern, $opens, 1) === ']') {
+                    return sprintf(
+                        'a character class whose first member is `]` — as in `%s`. PCRE reads that as a '
+                        .'literal `]` inside the class; ECMAScript under `u` reads `[]` as an EMPTY '
+                        .'class, which matches nothing, so the two dialects disagree about what the '
+                        .'pattern IS rather than about what it matches. Write it as `\]`',
+                        self::excerpt($pattern, $i, min($length - 1, $opens + 1)),
+                    );
+                }
 
                 continue;
             }
@@ -1059,6 +1122,46 @@ final class Pattern
          * `RUN_AT_TOP_LEVEL` carries: here the cost is a polynomial of degree k, while inside a
          * repetition it is exponential.
          */
+        /*
+         * ⚠️ AMBIGUITY DOES NOT NEED A QUANTIFIER, which review found — and this is a different axis
+         * from every rule above. `^` then thirty copies of `(?:a|a)` then `b$` has no repetition
+         * anywhere and no variable-width atom for the run check to see, so nothing looked at it. Each
+         * group offers two identical ways to match one character, and thirty of them offer 2^30: on a
+         * 31-character failing subject, PCRE 10.48 exhausts its backtrack limit and Node 22.23.2 takes
+         * 50.2 SECONDS. The pattern is 240 characters.
+         *
+         * ⚠️ A PRODUCT, NOT A COUNT, because the cost is the product and it is measured to be exactly
+         * that. Node spends about 45 ns per combination, linearly:
+         *
+         *   2^16   65,536 combinations     3 ms
+         *   2^18  262,144                12 ms
+         *   2^20  1,048,576              47 ms
+         *   2^26  67,108,864           3,074 ms
+         *
+         * So the bound is on the product and `MAX_AMBIGUITY_PRODUCT` is where it sits, with room for
+         * ADR-027's floor. One ambiguous alternation is harmless and stays publishable; enough of them
+         * to matter is what is refused.
+         *
+         * ⚠️ ONLY AMBIGUOUS ALTERNATIONS COUNT. `(?:cat|dog)` offers two ways to match but at most one
+         * can succeed at a position, so a thousand of them are still linear — the product that matters
+         * is over branches that can BOTH match, which is what `everyAlternationIsUnambiguous()`
+         * already answers for a repetition body.
+         */
+        $product = self::ambiguityProduct($frames);
+
+        if ($product > self::MAX_AMBIGUITY_PRODUCT) {
+            return sprintf(
+                'ambiguous alternations whose combinations multiply to more than %s — this pattern '
+                .'reaches %s. Each one offers more than one way to match the same text, and a sequence '
+                .'of them offers the product: a failing subject is retried in every combination. '
+                .'Measured, thirty copies of `(?:a|a)` take ECMAScript 50 seconds and exhaust PCRE\'s '
+                .'backtrack limit, on a 240-character pattern. Make the branches distinct — none a '
+                .'prefix of another — so at most one can match at a position',
+                number_format(self::MAX_AMBIGUITY_PRODUCT),
+                $product >= PHP_INT_MAX ? 'the limit of what can be counted' : number_format($product),
+            );
+        }
+
         if (self::atomRunExceeds($pattern, self::RUN_AT_TOP_LEVEL)) {
             return sprintf(
                 'more than %d variable-width atoms in a row with nothing between them that forces '
@@ -1074,6 +1177,55 @@ final class Pattern
         }
 
         return null;
+    }
+
+    /**
+     * How many ways this pattern's ambiguous alternations can combine, saturating at PHP_INT_MAX.
+     *
+     * ⚠️ TOP-LEVEL FRAMES ONLY, and that is not an oversight: an alternation nested inside another
+     * group is inside a frame this already counts, and `everyAlternationIsUnambiguous()` reads a body
+     * to any depth — so counting the outer frame counts the nest. Counting both would multiply the
+     * same ambiguity twice and refuse patterns that are fine.
+     *
+     * ⚠️ SATURATES RATHER THAN OVERFLOWING. Thirty binary groups is 2^30, and a pattern at the length
+     * limit could nominally reach 2^250 — which as a float would compare fine and as an int would wrap
+     * negative and compare as SMALL. Saturating keeps the comparison honest at any size.
+     *
+     * @param  list<array{open:int, close:int, kind:string, body:string, quantifier:string, inLookbehind:bool}>  $frames
+     */
+    private static function ambiguityProduct(array $frames): int
+    {
+        $product = 1;
+        $covered = [];
+
+        foreach ($frames as $frame) {
+            // Skip a frame that sits inside one already counted.
+            foreach ($covered as [$open, $close]) {
+                if ($frame['open'] > $open && $frame['close'] < $close) {
+                    continue 2;
+                }
+            }
+
+            $branches = self::topLevelBranches($frame['body']);
+
+            if (count($branches) < 2) {
+                continue;
+            }
+
+            $covered[] = [$frame['open'], $frame['close']];
+
+            if (self::everyAlternationIsUnambiguous($frame['body'])) {
+                continue;
+            }
+
+            if ($product > intdiv(PHP_INT_MAX, count($branches))) {
+                return PHP_INT_MAX;
+            }
+
+            $product *= count($branches);
+        }
+
+        return $product;
     }
 
     /**
@@ -2251,6 +2403,48 @@ final class Pattern
      * the same positional split the digit escapes have: ECMAScript allows `\-`
      * only as a ClassEscape, and PCRE takes it anywhere. Measured, not assumed.
      */
+    /**
+     * Whether this in-class escape sits at either end of a range, which ECMAScript refuses.
+     *
+     * ⚠️ ONLY THE ESCAPES THAT ARE SETS, because a range needs single characters at both ends.
+     * `[\x41-\x5A]` is fine — those are characters. `\s` and friends are sets, and a set has no
+     * position in a code point ordering.
+     *
+     * ⚠️ AND ONLY INSIDE A CLASS, since outside one there are no ranges and `-` is a literal.
+     *
+     * @return string|null the reason, or null when the escape is not a range endpoint
+     */
+    private static function rangeEndpointRefusal(string $pattern, int $at, string $escaped): ?string
+    {
+        // `$at` is the index of the escaped LETTER, the scanner having already stepped over the
+        // backslash — so the character before the escape is two back.
+        if (! isset(self::CLASS_SET_ESCAPES[$escaped])) {
+            return null;
+        }
+
+        $before = mb_substr($pattern, $at - 2, 1);
+        $after = mb_substr($pattern, $at + 1, 1);
+
+        // A `-` immediately before the escape makes it the END of a range; one immediately after
+        // makes it the START, unless that `-` is itself the class's closing literal.
+        $isEnd = $before === '-';
+        $isStart = $after === '-' && mb_substr($pattern, $at + 2, 1) !== ']';
+
+        if (! $isEnd && ! $isStart) {
+            return null;
+        }
+
+        return sprintf(
+            'the set escape `\%s` used as a range endpoint — as in `%s`. A range needs a single '
+            .'character at each end, and `\%s` is a SET; ECMAScript under `u` refuses to compile it '
+            .'and PCRE accepts it, so the published pattern does not compile for a consumer at all. '
+            .'Name the endpoints as characters, or put the set beside the range rather than inside it',
+            $escaped,
+            self::excerpt($pattern, max(0, $at - 3), min(mb_strlen($pattern) - 1, $at + 2)),
+            $escaped,
+        );
+    }
+
     private static function punctuationRefusal(string $escaped, bool $inClass): ?string
     {
         if ($escaped === '' || preg_match('/^[A-Za-z0-9]$/', $escaped) === 1) {
