@@ -66,6 +66,20 @@ class DatabaseSeeder extends Seeder
             'slug' => 'golfdom-ar', 'name' => 'Golfdom AR', 'locale' => 'ar',
             'base_url' => '/golfdom-ar',
         ]);
+
+        /*
+         * ⚠️ A NESTED PREFIX, because `Site::MAX_PREFIX_SEGMENTS` is 4 and nothing exercised more
+         * than one. The skeleton's public route matched a single segment for three revisions of this
+         * branch: a site at `/news/fr` saved, was resolvable, and could never be REACHED — and the
+         * suite could not see it, because no fixture had a prefix deeper than one segment.
+         *
+         * Hebrew rather than Arabic so the assertion cannot pass by matching the other RTL site.
+         */
+        $nested = Site::create([
+            'org_id' => $orgA->id, 'site_group_id' => $group->id, 'handle' => 'golfdom-nested',
+            'slug' => 'golfdom-nested', 'name' => 'Golfdom Nested', 'locale' => 'he',
+            'base_url' => '/news/fr',
+        ]);
         $context->setOrg($orgB);
 
         $user = User::create(['name' => 'Alpha User', 'email' => 'alpha@kitsune.test', 'password' => Hash::make('password')]);

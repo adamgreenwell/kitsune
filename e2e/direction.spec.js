@@ -43,6 +43,57 @@ function valueElement(page, text) {
     return page.getByText(text, { exact: true }).first();
 }
 
+/*
+ * The public route reaches every prefix the model can store — issue #38, and three failed attempts.
+ *
+ * ⚠️ THIS IS THE TEST THAT WOULD HAVE CAUGHT THE THIRD ONE. The skeleton's site route matched a
+ * single path segment while `Site::MAX_PREFIX_SEGMENTS` is 4, so a site at `/news/fr` saved, was
+ * resolvable, and returned 404. Widening it to a multi-segment pattern then shadowed Filament's
+ * `/admin/{tenant}` and broke the dashboard — and the unit test written for the widening asserted
+ * that the route file still contained the phrase "declaration order", which stayed true while the
+ * admin was broken.
+ *
+ * A string is not a behaviour. These two assertions are behaviours: a nested prefix resolves, and
+ * the admin still answers.
+ */
+test.describe('the public route reaches what the model stores', () => {
+    test('a nested path prefix resolves and is served in its own locale', async ({ page }) => {
+        // Hebrew, so this cannot pass by matching the Arabic single-segment site.
+        const response = await page.goto('/news/fr');
+
+        expect(response?.status()).toBe(200);
+        expect(await resolvedDirection(page.locator('html'))).toBe('rtl');
+    });
+
+    test('a prefix nobody claims is still refused', async ({ page }) => {
+        // ⚠️ `Route::fallback()` matches every unmatched URL, so the 404 has to come from the route
+        // body. Without it the placeholder would render for every wrong URL in the application.
+        const response = await page.goto('/news');
+
+        expect(response?.status()).toBe(404);
+    });
+
+    test('the admin dashboard is not shadowed by the public route', async ({ page }) => {
+        /*
+         * ⚠️ THE DASHBOARD SPECIFICALLY, and the first version of this test used
+         * `/admin/golfdom/c/article` and proved nothing — it passed against the shadowing route too.
+         * The URL that broke is `/admin/golfdom`: two segments, matched by a two-segment public
+         * pattern, and the panel's dashboard route is the one that loses. A deeper resource URL was
+         * still reached, which is why picking it made the test vacuous.
+         *
+         * Verified by reverting: with `->get('/{site}')->where('site', '…{0,3}')` this fails and the
+         * fallback passes. A fallback cannot shadow anything, because it runs only when nothing else
+         * matched — at any depth, including panel routes added later.
+         */
+        const response = await page.goto(`/admin/${SITE}`);
+
+        expect(response?.status()).toBe(200);
+
+        // The panel's own chrome, which the public placeholder does not render.
+        await expect(page.locator('.fi-sidebar, .fi-topbar').first()).toBeVisible();
+    });
+});
+
 test.describe('a field value carries its own direction', () => {
     test('an RTL title renders RTL inside an LTR admin', async ({ page }) => {
         // ⚠️ The LTR admin is the interesting case: the chrome says `ltr`, and without

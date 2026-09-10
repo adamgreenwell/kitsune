@@ -72,29 +72,41 @@ Route::middleware([ResolveSiteFromRequest::class, SetSiteLocale::class])->get('/
  * be proved before — that a public request resolves a Site and is served in that site's
  * locale, per request, without touching APP_LOCALE.
  */
-Route::middleware([ResolveSiteFromRequest::class, SetSiteLocale::class])
-    ->get('/{site}', function () {
-        // ⚠️ 404 HERE rather than in the middleware. The middleware resolves identity and
-        // reports absence by leaving Context empty, because most public routes are not
-        // site-scoped and it must be attachable to them. A route that REQUIRES a site is
-        // the thing entitled to refuse.
-        abort_if(app(Context::class)->site() === null, 404);
+/*
+ * ⚠️ A FALLBACK, NOT A PARAMETERISED PATH, and three attempts got here.
+ *
+ * `/{site}` matched ONE segment while `Site::MAX_PREFIX_SEGMENTS` is 4 and the resolver builds
+ * candidates to that depth — so `base_url=https://example.test/news/fr` saved, was resolvable, and
+ * could never be reached. Widening it to `{site}` with a multi-segment pattern fixed that and broke
+ * the admin: `/admin/golfdom` matches a two-segment pattern, this file's routes are registered
+ * BEFORE Filament's panel routes, and the dashboard started returning 404. The browser suite caught
+ * it; the unit test I wrote for the widening did not, because it asserted the file still contained
+ * the phrase "declaration order" rather than asserting that the admin still resolved.
+ *
+ * A fallback removes the question. It runs only when no other route matched, so it cannot shadow
+ * the panel, or anything a host application adds later, at any depth — and it needs no vocabulary
+ * and no depth of its own, which is the pair that has now drifted from the model twice.
+ *
+ * ⚠️ `{site}` WAS ONLY EVER A PLACEHOLDER. `ResolveSiteFromRequest` matches on the canonical host
+ * and path prefix a site's `base_url` declares (ADR-021) and reads the request path itself, so
+ * removing the parameter removes nothing the resolver used.
+ */
+// ⚠️ `Route::fallback()` FIRST, then the middleware: `fallback` lives on the Router rather than on
+// `RouteRegistrar`, so `Route::middleware(...)->fallback(...)` is a BadMethodCallException at boot.
+Route::fallback(function () {
+    // ⚠️ 404 HERE rather than in the middleware. The middleware resolves identity and
+    // reports absence by leaving Context empty, because most public routes are not
+    // site-scoped and it must be attachable to them. A route that REQUIRES a site is
+    // the thing entitled to refuse.
+    abort_if(app(Context::class)->site() === null, 404);
 
-        return response()->view('welcome', [
-            'version' => Kitsune::version(),
-            'phase' => 'Phase 0 — foundations',
-            // Resolved from the SITE's locale by the middleware above, so two sites with
-            // different locales are served correctly from one process.
-            'direction' => Kitsune::textDirection(),
-        ]);
-    })
-    /*
-     * ⚠️ THE SAME VOCABULARY `Site::canonicalPrefix()` ACCEPTS, and narrower was a shipped 404.
-     * The model admits `[A-Za-z0-9._~-]` and folds case, so `/.well-known` and `/v1.2` are valid
-     * one-segment prefixes — and this constraint excluded `.`, `_`, `~` and uppercase, so such a
-     * site saved successfully and its public URL returned 404 in the skeleton. Found by review.
-     *
-     * Two grammars for one thing is one grammar that drifts; if the model's changes, this must.
-     */
-    ->where('site', '[A-Za-z0-9._~-]+')
+    return response()->view('welcome', [
+        'version' => Kitsune::version(),
+        'phase' => 'Phase 0 — foundations',
+        // Resolved from the SITE's locale by the middleware above, so two sites with
+        // different locales are served correctly from one process.
+        'direction' => Kitsune::textDirection(),
+    ]);
+})
+    ->middleware([ResolveSiteFromRequest::class, SetSiteLocale::class])
     ->name('site.home');

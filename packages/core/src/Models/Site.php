@@ -81,6 +81,18 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
      */
     public const MAX_PREFIX_SEGMENTS = 4;
 
+    /**
+     * The characters one path-prefix segment may hold.
+     *
+     * ⚠️ NAMED SO THE SKELETON'S ROUTE CAN CITE IT RATHER THAN COPY IT. That route and
+     * `canonicalPrefix()` have now been reconciled by hand twice — once when the route's
+     * constraint was narrower than the model's vocabulary, so `/.well-known` saved and 404'd, and
+     * once when it accepted one segment while the model accepted four. Both were storage admitting
+     * an address the front door could not deliver, and both were found by review rather than by a
+     * test, because two literals cannot disagree until someone compares them.
+     */
+    public const PREFIX_SEGMENT_PATTERN = '[A-Za-z0-9._~-]+';
+
     /** The URL strategies ADR-021 defines. Anything else is a typo, not a fourth strategy. */
     private const STRATEGIES = ['path', 'subdomain', 'domain'];
 
@@ -808,7 +820,7 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
                 ));
             }
 
-            if (preg_match('/^[A-Za-z0-9._~-]+$/', $segment) !== 1) {
+            if (preg_match('/^'.self::PREFIX_SEGMENT_PATTERN.'$/', $segment) !== 1) {
                 throw new RuntimeException(sprintf(
                     'Refusing the path prefix segment [%s]: a prefix may use only letters, '
                     .'digits, and - . _ ~ so that it matches the form a browser actually '
