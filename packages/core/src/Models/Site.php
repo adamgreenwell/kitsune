@@ -189,14 +189,16 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
      * saving hosts A then B and B then A each hold their first mutex and block on the second, on
      * completely distinct rows and prefixes.
      *
-     * ⚠️ THIS METHOD CANNOT FIX THAT, and saying so is the point rather than an excuse. Ordered
-     * acquisition needs to cover every resource a transaction will take, and a per-save method
-     * cannot see the saves that come after it. So it is a CONTRACT: a caller who wraps several site
-     * saves in one transaction must order them by the hostname each will claim — the same order this
-     * method uses within one save — or accept that two such batches can deadlock. Documented in
-     * ADR-021 rather than left as a surprise, and a batch helper that enforces it is deliberately not
-     * added here: a new public API surface is on CONTRIBUTING's won't-merge list before v1.2, and a
-     * contract is the smaller half of the remedy until then.
+     * ⚠️ THIS METHOD CANNOT FIX THAT, and the CONTRACT I wrote instead was unsound — review
+     * disproved it with a counter-example. It said a caller must order its saves "by the hostname each
+     * will claim", and because every save also locks its ORIGIN, destination order is not an order over
+     * the union: `a→d` then `b→e` against `b→c` then `a→f` obeys it and deadlocks on Postgres. There is
+     * no ordering of the SAVES that fixes it, because each save locks a non-contiguous pair.
+     *
+     * So the answer is `saveAllInHostOrder()`, which acquires the union before any save. It is new
+     * public surface, which CONTRIBUTING freezes before v1.2 and which is why the contract was tried
+     * first — but a contract asking callers to do something they have no supported door for is a wish
+     * rather than a contract, and `site_host_claims` is deliberately below Eloquent.
      */
     public function save(array $options = []): bool
     {
@@ -217,6 +219,77 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
     {
         $hosts = $this->contendedHosts();
 
+        self::lockClaims($hosts);
+        $this->refuseStaleOrigin($hosts);
+    }
+
+    /**
+     * Saves several sites under ONE globally ordered set of host mutexes.
+     *
+     * ⚠️ THE CONTRACT I WROTE LAST ROUND WAS UNSOUND, and review disproved it with a counter-example
+     * rather than an argument. It said a caller batching site saves must order them "by the hostname
+     * each will claim" — by DESTINATION — and every save also locks its ORIGIN, so destination order
+     * is not an order over the union. Staged as two real sessions, both obeying that contract:
+     *
+     *     TX1  a.test -> d.test, then b.test -> e.test      (d < e)
+     *     TX2  b.test -> c.test, then a.test -> f.test      (c < f)
+     *
+     *   PostgreSQL 17  ERROR: deadlock detected
+     *
+     * TX1 holds `a` and wants `b`; TX2 holds `b` and wants `a`. There is no ordering of the SAVES
+     * that fixes it, because each save locks a non-contiguous pair — which is why a contract was the
+     * wrong shape of answer and this is the right one.
+     *
+     * ⚠️ THE UNION, ACQUIRED BEFORE ANY SAVE. Every host either save will touch is locked in hostname
+     * order first, so two batches whose host sets intersect queue on the lowest shared hostname
+     * instead of deadlocking. Re-measured with the union held: both transactions commit and both moves
+     * land. Each `save()` then re-locks hosts this transaction already holds, which is a no-op.
+     *
+     * ⚠️ NEW PUBLIC SURFACE, AND I DECLINED IT LAST ROUND. `CONTRIBUTING.md` lists a new public API
+     * before v1.2 among the things that will not merge, so the first answer was the contract — and the
+     * contract does not close. A method here is the smaller half of what is left: ordered acquisition
+     * has to cover every resource a transaction will take, a per-save method cannot see the saves that
+     * follow it, and a caller has no supported way to reach `site_host_claims` itself. Asking callers
+     * to do something they have no door for is not a contract, it is a wish.
+     *
+     * @param  iterable<Site>  $sites
+     */
+    public static function saveAllInHostOrder(iterable $sites): void
+    {
+        // Materialised because it is walked twice, and a generator would be empty the second time.
+        $sites = is_array($sites) ? $sites : iterator_to_array($sites);
+
+        DB::transaction(function () use ($sites): void {
+            $hosts = [];
+
+            foreach ($sites as $site) {
+                foreach ($site->contendedHosts() as $host) {
+                    $hosts[] = $host;
+                }
+            }
+
+            $hosts = array_values(array_unique($hosts));
+            sort($hosts);
+
+            self::lockClaims($hosts);
+
+            foreach ($sites as $site) {
+                $site->save();
+            }
+        });
+    }
+
+    /**
+     * Takes the durable per-host mutex for each of these hostnames, in the order given.
+     *
+     * ⚠️ THE ORDER IS THE CALLER'S RESPONSIBILITY and both callers sort: `contendedHosts()` for one
+     * save, `saveAllInHostOrder()` for a batch. Sorting here as well would hide which of them is the
+     * one that has to be right.
+     *
+     * @param  list<string>  $hosts
+     */
+    private static function lockClaims(array $hosts): void
+    {
         foreach ($hosts as $host) {
             /*
              * ⚠️ UPSERT THEN LOCK, in that order, and both are required. The row may not exist — the
@@ -246,8 +319,6 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
                 ->lockForUpdate()
                 ->first();
         }
-
-        $this->refuseStaleOrigin($hosts);
     }
 
     /**

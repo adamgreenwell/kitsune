@@ -591,3 +591,81 @@ it('allows a save on a site whose row genuinely has no host', function (): void 
         ->and($site->canonical_host)->toBe('stale-firsturl.test')
         ->and($site->path_prefix)->toBe('/news');
 })->skip(fn (): bool => ! lockingEngine(), 'a second connection to SQLite :memory: is a different database');
+
+it('locks the whole union before saving a batch, in hostname order', function (): void {
+    /*
+     * ⚠️ THE CONTRACT WAS UNSOUND AND REVIEW DISPROVED IT WITH A COUNTER-EXAMPLE. It said a caller
+     * batching site saves must order them by the hostname each will CLAIM — by destination — and every
+     * save also locks its ORIGIN, so destination order is not an order over the union. Staged as two
+     * real sessions, both obeying that contract:
+     *
+     *     TX1  a.test -> d.test, then b.test -> e.test      (d < e)
+     *     TX2  b.test -> c.test, then a.test -> f.test      (c < f)
+     *
+     *   PostgreSQL 17  ERROR: deadlock detected
+     *
+     * TX1 holds `a` and wants `b`; TX2 holds `b` and wants `a`. No ordering of the SAVES fixes it,
+     * because each save locks a non-contiguous pair — which is why a contract was the wrong shape of
+     * answer. Re-measured with the union pre-acquired: both commit and both moves land.
+     */
+    $one = Site::create([
+        'org_id' => $this->org->id, 'handle' => 'batchone', 'slug' => 'batchone', 'name' => 'One',
+        'locale' => 'en', 'url_strategy' => 'domain', 'base_url' => 'https://bbb-batch.test',
+    ]);
+
+    $two = Site::create([
+        'org_id' => $this->org->id, 'handle' => 'batchtwo', 'slug' => 'batchtwo', 'name' => 'Two',
+        'locale' => 'en', 'url_strategy' => 'domain', 'base_url' => 'https://ddd-batch.test',
+    ]);
+
+    $locked = [];
+
+    DB::listen(function ($query) use (&$locked): void {
+        if (preg_match('/^\s*select\b/i', $query->sql) === 1 && str_contains($query->sql, 'site_host_claims')) {
+            $locked[] = (string) ($query->bindings[0] ?? '');
+        }
+    });
+
+    // A move that crosses: one goes to a host sorting BEFORE the other's origin.
+    $one->base_url = 'https://eee-batch.test';
+    $two->base_url = 'https://aaa-batch.test';
+
+    Site::saveAllInHostOrder([$one, $two]);
+
+    /*
+     * ⚠️ THE UNION FIRST AND IN ORDER, then whatever each save re-locks — which is a no-op on a row
+     * this transaction already holds. The assertion is on the leading four rather than on the whole
+     * list, because the per-save locks that follow are the no-ops and pinning them would be pinning
+     * an implementation detail of `save()` rather than the ordering this method exists for.
+     */
+    expect(array_slice($locked, 0, 4))
+        ->toBe(['aaa-batch.test', 'bbb-batch.test', 'ddd-batch.test', 'eee-batch.test'],
+            'the batch did not acquire its whole host union in hostname order');
+
+    expect($one->fresh()->canonical_host)->toBe('eee-batch.test')
+        ->and($two->fresh()->canonical_host)->toBe('aaa-batch.test');
+});
+
+it('saves a batch of creates, which have no origin to add to the union', function (): void {
+    /*
+     * ⚠️ THE BOUND ON THE UNION. A create claims one host and vacates none, so the union of a batch of
+     * creates is just their destinations — and the helper must not invent an origin for a row that has
+     * none, which is what `contendedHosts()` returning only non-null hosts gives it.
+     */
+    $one = new Site([
+        'org_id' => $this->org->id, 'handle' => 'newone', 'slug' => 'newone', 'name' => 'New One',
+        'locale' => 'en', 'url_strategy' => 'domain', 'base_url' => 'https://zzz-new.test',
+    ]);
+
+    $two = new Site([
+        'org_id' => $this->org->id, 'handle' => 'newtwo', 'slug' => 'newtwo', 'name' => 'New Two',
+        'locale' => 'en', 'url_strategy' => 'domain', 'base_url' => 'https://yyy-new.test',
+    ]);
+
+    Site::saveAllInHostOrder([$one, $two]);
+
+    expect($one->exists)->toBeTrue()
+        ->and($two->exists)->toBeTrue()
+        ->and($one->canonical_host)->toBe('zzz-new.test')
+        ->and($two->canonical_host)->toBe('yyy-new.test');
+});

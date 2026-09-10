@@ -780,7 +780,18 @@ entries
 >
 > A row on no host is reached by nothing — `refuseOverlappingClaim()` finds rivals by `canonical_host` equality, which a NULL never satisfies, so the only save that ever locks such a row is a save of that row. Passing there is the invariant holding rather than an exemption from it, and it is what stops the check from becoming "an admin-only site cannot be given a URL".
 >
-> **Ordering across a caller's whole transaction is a contract, not a mechanism.** Every mutex is held until the *outer* commit, and the order several saves run in is the caller's — so two batches saving hosts A then B and B then A each hold their first mutex and block on the second, on distinct rows and prefixes. Ordered acquisition has to cover every resource a transaction will take, and a per-save method cannot see the saves that follow it. **A caller who wraps several site saves in one transaction must order them by the hostname each will claim.** A batch helper that enforced it is deliberately not added before v1.2, because a new public API surface is on `CONTRIBUTING.md`'s won't-merge list; the contract is the smaller half of the remedy until then.
+> **Ordering across a caller's whole transaction needs a mechanism, and the contract that stood here instead was unsound.** Every mutex is held until the *outer* commit and the order several saves run in is the caller's, so this ADR said a caller batching site saves must order them **by the hostname each will claim**. Review disproved it with a counter-example rather than an argument: every save also locks its **origin**, so destination order is not an order over the union. Staged as two real sessions, both obeying that contract —
+>
+> ```
+> TX1  a.test → d.test, then b.test → e.test     (d < e)
+> TX2  b.test → c.test, then a.test → f.test     (c < f)
+> ```
+>
+> — **PostgreSQL 17 reports `deadlock detected`**: TX1 holds `a` and wants `b` while TX2 holds `b` and wants `a`. There is no ordering of the *saves* that fixes it, because each save locks a non-contiguous pair.
+>
+> **`Site::saveAllInHostOrder()` acquires the union before any save**, in hostname order, so two batches whose host sets intersect queue on the lowest shared hostname. Re-measured with the union held: both transactions commit and both moves land. Each `save()` then re-locks hosts the transaction already holds, which is a no-op.
+>
+> It is new public surface, which `CONTRIBUTING.md` freezes before v1.2 and which is why a contract was tried first. A contract asking callers to do something they have **no supported door for** is a wish rather than a contract — `site_host_claims` is deliberately below Eloquent, so a caller cannot pre-acquire the union by hand.
 >
 > This ADR previously said nested saves were safe, on the strength of a nested save re-locking nothing. That much is true and does not imply the rest.
 >
