@@ -121,6 +121,21 @@ final class RichTextType extends BaseFieldType
     private const FLOW_CONTAINER_TAGS = ['figure', 'blockquote', 'li', 'figcaption'];
 
     /**
+     * The largest value whose sanitised copy is worth holding between a conversion and its loss check.
+     *
+     * ⚠️ A CAP BECAUSE THE READ IS NOT GUARANTEED. `sanitize()` releases the memo when the loss check
+     * asks for it, which retains nothing in the ordinary case — and `toStorage()` is a published
+     * contract that `fromApi()` also reaches, so an importer or queue worker can convert with no loss
+     * check after it and leave one behind. `FieldTypeRegistry` is a singleton, so "left behind" means
+     * for the life of the process.
+     *
+     * 256 KB caps the worst case at half a megabyte per worker — a rounding error against ADR-027's
+     * 1 GB floor — while covering every body a person types. Past it the loss check parses again, which
+     * measured 17.9 ms at 786 KB: slower than the memo and far cheaper than retaining 1.5 MB for ever.
+     */
+    private const MEMO_LIMIT = 262144;
+
+    /**
      * The value `sanitize()` was handed for the conversion in flight, and what it returned.
      *
      * ⚠️ HELD FOR ONE READ AND THEN RELEASED, because `FieldTypeRegistry` is a SINGLETON and this
@@ -316,7 +331,22 @@ final class RichTextType extends BaseFieldType
                  * so a child under it must resolve from ITS OWN content, which is `auto` again and is
                  * exactly what issue #39 is about.
                  */
-                $element->setAttribute('dir', self::nearestDirection($element) ?? 'auto');
+                /*
+                 * ⚠️ AND THE FIX FOR THAT WROTE THE ANCESTOR'S DIRECTION ONTO THE CHILD, which review
+                 * then found is a one-way door. A materialised `dir="rtl"` is indistinguishable from an
+                 * author's, so editing the FIGURE to `ltr` and saving again left the caption `rtl`
+                 * forever — measured, and no later save can undo it, because the value now looks like a
+                 * choice to respect.
+                 *
+                 * So a child under a FIXED ancestor gets nothing at all. Inheritance was already giving
+                 * the right answer, exactly as it was for the wrapper one rule along, and the answer is
+                 * again to write nothing rather than to write the right thing.
+                 */
+                if (self::nearestDirection($element) !== null) {
+                    continue;
+                }
+
+                $element->setAttribute('dir', 'auto');
             }
         }
 
@@ -470,11 +500,25 @@ final class RichTextType extends BaseFieldType
 
         $clean = $this->serialize($document);
 
-        if ($this->memoArmed) {
+        /*
+         * ⚠️ AND CAPPED, because "released on read" only bounds the case where the read HAPPENS. Review
+         * found the case where it does not: `toStorage()` is the published contract and
+         * `BaseFieldType::fromApi()` delegates to it, so an importer or a queue worker can convert a
+         * body with no revision loss check after it — measured, 42 KB left on the singleton by one
+         * standalone conversion, and it would have been megabytes for a large body.
+         *
+         * A cap is the honest trade rather than a guess: below it a conversion saves a parse and the
+         * worst case is `2 × MEMO_LIMIT` per worker; above it the loss check parses again, which is
+         * 17.9 ms at 786 KB and the price of not retaining 1.5 MB indefinitely. `MEMO_LIMIT` puts that
+         * boundary where the retention is a rounding error against ADR-027's 1 GB floor.
+         */
+        if ($this->memoArmed && mb_strlen($html) <= self::MEMO_LIMIT) {
             $this->memoInput = $html;
             $this->memoOutput = $clean;
-            $this->memoArmed = false;
         }
+
+        // Disarmed either way, so an abandoned arming cannot be handed to a later caller.
+        $this->memoArmed = false;
 
         return $clean;
     }
@@ -558,7 +602,26 @@ final class RichTextType extends BaseFieldType
             }
         }
 
-        $own = self::ownDirection($wrapper);
+        /*
+         * ⚠️ TWO QUESTIONS, NOT ONE, and collapsing them put the original defect straight back. They
+         * look like the same thing and are not:
+         *
+         *   `$carries`  does this container hold ANY direction, so it can serve ONE run itself?
+         *   `$fixed`    is a FIXED direction in force, so a wrapper needs no `auto` of its own?
+         *
+         * A container whose own direction is `auto` answers YES to the first and NO to the second —
+         * `auto` resolves from the container's whole content, which is right for one run and wrong for
+         * three. Using one value for both made `<blockquote>English<p>عربي</p>עברית</blockquote>` give
+         * its wrappers nothing, so all three inherited the blockquote's `auto` and resolved from
+         * `English`: the round-two finding, reintroduced by the round-four fix.
+         *
+         * ⚠️ `$fixed` LOOKS THROUGH TO AN ANCESTOR because a container no longer carries a materialised
+         * copy of one. `<figure dir="rtl"><figcaption>A<p>x</p>B</figcaption>` leaves the caption
+         * undirected so an ancestor edit can still reach it, and a wrapper inside must inherit that
+         * `rtl` rather than stamp `auto` over it.
+         */
+        $carries = self::ownDirection($wrapper);
+        $fixed = $carries !== null && $carries !== 'auto' ? $carries : self::nearestDirection($wrapper);
 
         /*
          * ⚠️ A WRAPPER IS ONLY CORRECT WHERE NOTHING ELSE CAN CARRY THE DIRECTION, and wrapping
@@ -584,13 +647,31 @@ final class RichTextType extends BaseFieldType
          * for the multi-run case, where wrappers are unavoidable and must each carry the author's
          * choice rather than re-deriving one.
          */
-        if (count($wrappable) < 2 && $own !== null) {
+        /*
+         * ⚠️ ANY DIRECTION IN FORCE, OWN OR INHERITED. `$carries` alone was not enough once a container
+         * stopped materialising its ancestor's: `<figure dir="rtl"><figcaption>ACME مرحبا</figcaption>`
+         * leaves the caption undirected, so a skip keyed on the caption's OWN direction read null and
+         * wrapped a single run in a paragraph for nothing — the round-two finding, reintroduced from the
+         * other side. One run and a direction reaching it needs no wrapper, wherever that direction
+         * comes from.
+         */
+        if (count($wrappable) < 2 && ($carries ?? $fixed) !== null) {
             return;
         }
 
         foreach ($wrappable as $run) {
             $paragraph = $document->createElement('p');
-            $paragraph->setAttribute('dir', $own ?? 'auto');
+
+            /*
+             * ⚠️ ONLY WHERE NOTHING ELSE CAN CARRY IT, which is the same rule as the block pass, and
+             * making the two identical is what removed the last inconsistency. A wrapper under a
+             * container that establishes a direction inherits it, exactly as the author's own `<p>`
+             * beside it does — so stamping the value here would materialise it on half the children and
+             * not the other half, and re-close the ancestor edit for that half.
+             */
+            if ($fixed === null) {
+                $paragraph->setAttribute('dir', 'auto');
+            }
 
             $wrapper->insertBefore($paragraph, $run[0]);
 
@@ -622,7 +703,12 @@ final class RichTextType extends BaseFieldType
             $direction = self::ownDirection($ancestor);
 
             if ($direction !== null) {
-                return $direction;
+                // ⚠️ `auto` STOPS THE WALK AND REPORTS NOTHING. It is the nearest direction, so nothing
+                // above it reaches the child — and it is not a direction to inherit, because it means
+                // "resolve from content" and the child's content is its own. Both halves are needed:
+                // walking past it would give a child a direction the browser never would, and returning
+                // it would make the caller read `auto` as a decision.
+                return $direction === 'auto' ? null : $direction;
             }
         }
 

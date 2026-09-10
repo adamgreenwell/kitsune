@@ -255,22 +255,30 @@ it('does not override an explicit direction on the container', function (): void
         ->toBe('<blockquote dir="rtl">ACME مرحبا</blockquote>');
 });
 
-it('carries an explicit container direction into wrappers it cannot avoid', function (): void {
+it('wraps without a direction where the container establishes one', function (): void {
     /*
-     * ⚠️ WHERE PROPAGATION STILL EARNS ITS PLACE. With more than one run the wrappers are
-     * unavoidable, and each must carry the author's choice rather than re-deriving one from its own
-     * text — `ACME` and `مرحبا` would resolve opposite ways under `auto`, inside a container the
-     * author declared `rtl`.
+     * ⚠️ THIS TEST HAS BEEN WRONG TWICE, IN OPPOSITE DIRECTIONS, and both are recorded because the
+     * defect travelled the same way each time.
      *
-     * ⚠️ THIS TEST ASSERTED `dir="auto"` ON THE AUTHOR'S OWN `<p>`, and that expectation was the very
-     * defect the next round of review found. The reasoning was "it is their markup, not a wrapper
-     * this added, and the block pass already gave it one" — true about ownership and wrong about the
-     * value: a `<p>` with no direction of its own inside a container declared `rtl` inherits `rtl`,
-     * and stamping `auto` there overrode the author exactly as it did on a `figcaption`. The wrapper
-     * rule and the block rule now give the same answer because they are the same rule.
+     * It first asserted `dir="auto"` on the author's own `<p>`, reasoning "it is their markup, not a
+     * wrapper this added" — true about ownership and wrong about the value, since a `<p>` with no
+     * direction inside a container declared `rtl` inherits `rtl`. Review found that.
+     *
+     * It then asserted `dir="rtl"` on the wrappers AND on that `<p>`, propagating the container's
+     * choice. Review found that too: a materialised direction is indistinguishable from an author's,
+     * so editing the container to `ltr` could never reach the children again.
+     *
+     * ⚠️ SO NEITHER PASS WRITES A DIRECTION IT DOES NOT HAVE TO. The wrappers and the author's `<p>`
+     * are treated identically — both inherit — which is the only version where an ancestor edit still
+     * propagates and the only version where the two passes cannot disagree.
      */
     expect(storedBody('<blockquote dir="rtl">ACME<p>x</p>مرحبا</blockquote>'))
-        ->toBe('<blockquote dir="rtl"><p dir="rtl">ACME</p><p dir="rtl">x</p><p dir="rtl">مرحبا</p></blockquote>');
+        ->toBe('<blockquote dir="rtl"><p>ACME</p><p>x</p><p>مرحبا</p></blockquote>');
+
+    // ⚠️ And where nothing establishes a direction, each run still gets its own `auto` — the case
+    // issue #39 is about, and the one a blanket "write nothing" would have broken.
+    expect(storedBody('English<p>عربي</p>עברית'))
+        ->toBe('<p dir="auto">English</p><p dir="auto">عربي</p><p dir="auto">עברית</p>');
 });
 
 it('does not let a dir that establishes no direction suppress a wrapper', function (string $invalid): void {
@@ -366,61 +374,6 @@ it('is idempotent, so a re-save does not accumulate attributes', function (): vo
     expect(storedBody($once))->toBe($once);
 });
 
-it('inherits a fixed direction rather than overriding it with auto', function (string $html, string $expected): void {
-    /*
-     * ⚠️ THE SAME MISTAKE, A THIRD TIME, ONE STEP FURTHER OUT — and that is the part worth recording.
-     * Round one stamped `auto` on a block that had its own direction; round two stamped it on a
-     * WRAPPER inside a directed container; this is the block pass stamping it on a CHILD of one.
-     * `<figure dir="rtl"><figcaption>ACME مرحبا</figcaption></figure>` gave the caption `auto`, and
-     * `auto` resolves from `ACME` — an explicit `rtl` beaten by a default, with inheritance having
-     * been right all along.
-     *
-     * ⚠️ A FIXED ancestor is inherited and an `auto` one is not, which is the whole rule. `ltr` and
-     * `rtl` are decisions and reach every descendant that states none. `auto` is not a direction but
-     * an instruction to resolve from content, so a child under it must resolve from its OWN content
-     * — which is `auto` again, and is what issue #39 is about.
-     */
-    expect(storedBody($html))->toBe($expected);
-})->with([
-    [
-        '<figure dir="rtl"><figcaption>ACME مرحبا</figcaption></figure>',
-        '<figure dir="rtl"><figcaption dir="rtl">ACME مرحبا</figcaption></figure>',
-    ],
-    [
-        '<blockquote dir="rtl"><p>ACME مرحبا</p></blockquote>',
-        '<blockquote dir="rtl"><p dir="rtl">ACME مرحبا</p></blockquote>',
-    ],
-    [
-        '<figure dir="ltr"><figcaption>عربي ACME</figcaption></figure>',
-        '<figure dir="ltr"><figcaption dir="ltr">عربي ACME</figcaption></figure>',
-    ],
-    // ⚠️ Two levels down, so the walk cannot be a parent-only check.
-    [
-        '<figure dir="rtl"><figcaption><p>ACME مرحبا</p></figcaption></figure>',
-        '<figure dir="rtl"><figcaption dir="rtl"><p dir="rtl">ACME مرحبا</p></figcaption></figure>',
-    ],
-    /*
-     * ⚠️ A child under `auto` gets `auto`, and the two readings of why COINCIDE — "inherit the
-     * ancestor's auto" and "resolve from your own content" produce the same attribute. The first
-     * implementation had a branch distinguishing them; reverting it changed nothing, so the branch
-     * was asserting something it could not act on and is gone. The guarantee is still worth pinning.
-     */
-    [
-        '<figure dir="auto"><figcaption>ACME مرحبا</figcaption></figure>',
-        '<figure dir="auto"><figcaption dir="auto">ACME مرحبا</figcaption></figure>',
-    ],
-    // No ancestor direction at all, which is the ordinary case and must be unchanged.
-    [
-        '<figure><figcaption>ACME مرحبا</figcaption></figure>',
-        '<figure><figcaption dir="auto">ACME مرحبا</figcaption></figure>',
-    ],
-    // A child that states its own direction outranks the ancestor, as it always did.
-    [
-        '<figure dir="rtl"><figcaption dir="ltr">ACME مرحبا</figcaption></figure>',
-        '<figure dir="rtl"><figcaption dir="ltr">ACME مرحبا</figcaption></figure>',
-    ],
-]);
-
 it('sanitizes a repeated value once, and does not serve a different one from the memo', function (): void {
     /*
      * ⚠️ THE SAME VALUE WAS PARSED THREE TIMES PER WRITE, which review found. `castToStorage()`
@@ -509,4 +462,105 @@ it('retains no user HTML once the conversion and its loss check are done', funct
     $type->sanitize($html);
 
     expect($held())->toBe(0, 'an empty value handed its arming to an unrelated call');
+});
+
+it('leaves a child undirected so an ancestor edit can still reach it', function (): void {
+    /*
+     * ⚠️ THE FIX FOR THE LAST ROUND WAS A ONE-WAY DOOR, which review found. Writing the ancestor's
+     * direction onto the child stopped `auto` overriding it — and a materialised `dir="rtl"` is
+     * indistinguishable from an author's, so editing the FIGURE to `ltr` and saving again left the
+     * caption `rtl` for ever. Measured: no later save could undo it, because the value now looked like
+     * a choice to respect.
+     *
+     * A child under a FIXED ancestor gets nothing at all now. Inheritance was already giving the right
+     * answer — the same conclusion as the wrapper one rule along, and the same answer: write nothing
+     * rather than write the right thing.
+     */
+    expect(storedBody('<figure dir="rtl"><figcaption>ACME مرحبا</figcaption></figure>'))
+        ->toBe('<figure dir="rtl"><figcaption>ACME مرحبا</figcaption></figure>');
+
+    // ⚠️ THE POINT OF IT: the same stored HTML, with only the ancestor edited, and the caption follows.
+    expect(storedBody('<figure dir="ltr"><figcaption>ACME مرحبا</figcaption></figure>'))
+        ->toBe('<figure dir="ltr"><figcaption>ACME مرحبا</figcaption></figure>');
+
+    // Two levels, so the walk is not a parent-only check.
+    expect(storedBody('<figure dir="rtl"><figcaption><p>ACME مرحبا</p></figcaption></figure>'))
+        ->toBe('<figure dir="rtl"><figcaption><p>ACME مرحبا</p></figcaption></figure>');
+
+    // ⚠️ And an `auto` ancestor is still not inherited: the child resolves from its own content.
+    expect(storedBody('<figure dir="auto"><figcaption>ACME مرحبا</figcaption></figure>'))
+        ->toBe('<figure dir="auto"><figcaption dir="auto">ACME مرحبا</figcaption></figure>');
+
+    // No ancestor direction at all, which is the ordinary case.
+    expect(storedBody('<figure><figcaption>ACME مرحبا</figcaption></figure>'))
+        ->toBe('<figure><figcaption dir="auto">ACME مرحبا</figcaption></figure>');
+});
+
+it('does not override an inherited direction when it wraps a run', function (): void {
+    /*
+     * ⚠️ THE TWO PASSES HAVE TO AGREE ABOUT WHAT DIRECTION IS IN FORCE. A container no longer carries a
+     * materialised copy of its ancestor's, so asking only `ownDirection()` in the wrapper pass would
+     * read null for this caption, wrap both runs in `dir="auto"`, and override the `rtl` it inherits —
+     * undoing the finding above one rule along, which is exactly how this defect has travelled.
+     */
+    expect(storedBody('<figure dir="rtl"><figcaption>ACME<p>x</p>مرحبا</figcaption></figure>'))
+        ->toBe('<figure dir="rtl"><figcaption><p>ACME</p><p>x</p><p>مرحبا</p></figcaption></figure>');
+});
+
+it('bounds what a conversion with no loss check can leave behind', function (): void {
+    /*
+     * ⚠️ "RELEASED ON READ" ONLY BOUNDS THE CASE WHERE THE READ HAPPENS, and review found the case
+     * where it does not: `toStorage()` is the published contract and `BaseFieldType::fromApi()`
+     * delegates to it, so an importer or a queue worker can convert a body with no revision loss check
+     * after it. Measured, 42 KB left on the singleton by one standalone conversion — and megabytes for
+     * a large body, since `FieldTypeRegistry` is a singleton and "left behind" means for the life of
+     * the process.
+     *
+     * ⚠️ A CAP BOUNDS IT RATHER THAN ELIMINATING IT, and that is the honest description. Guaranteeing
+     * consumption would need either `Entry` to know about the memo or a public method to ask about the
+     * loss — the surface this branch's first two rounds were about. Below the cap a conversion saves a
+     * parse and the worst case is `2 × MEMO_LIMIT` per worker; above it the loss check parses again,
+     * which measured 17.9 ms at 786 KB.
+     */
+    $type = new RichTextType;
+    $klass = RichTextType::class;
+
+    $held = function () use ($type, $klass): int {
+        $bytes = 0;
+
+        foreach (['memoInput', 'memoOutput'] as $name) {
+            $value = (new ReflectionProperty($klass, $name))->getValue($type);
+            $bytes += is_string($value) ? mb_strlen($value) : 0;
+        }
+
+        return $bytes;
+    };
+
+    $armed = new ReflectionProperty($klass, 'memoArmed');
+    $limit = (new ReflectionClass($klass))->getConstant('MEMO_LIMIT');
+
+    // A body past the cap: the conversion caches nothing, so an abandoned one holds nothing.
+    $huge = str_repeat('<p>Body</p>', (int) ceil($limit / 11) + 100);
+
+    expect(mb_strlen($huge))->toBeGreaterThan($limit);
+
+    $armed->setValue($type, true);
+    $type->sanitize($huge);
+
+    expect($held())->toBe(0, 'a body past the cap was cached anyway');
+
+    // ⚠️ And the arming does not survive to be handed to the next caller.
+    $small = '<p>Small</p>';
+    $type->sanitize($small);
+
+    expect($held())->toBe(0, 'the abandoned arming cached an unrelated value');
+
+    // Below the cap the memo still does its job, bounded by the cap itself.
+    $armed->setValue($type, true);
+    $clean = $type->sanitize($small);
+
+    expect($held())->toBeGreaterThan(0)
+        ->and($held())->toBeLessThanOrEqual(2 * $limit)
+        ->and($type->sanitize($small))->toBe($clean)
+        ->and($held())->toBe(0, 'the read did not release it');
 });
