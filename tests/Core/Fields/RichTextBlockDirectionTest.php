@@ -564,3 +564,45 @@ it('bounds what a conversion with no loss check can leave behind', function (): 
         ->and($type->sanitize($small))->toBe($clean)
         ->and($held())->toBe(0, 'the read did not release it');
 });
+
+it('lets a later ancestor choice reach a block this implementation already stamped', function (): void {
+    /*
+     * ⚠️ THE FOURTH FACE OF ONE DEFECT, and by now the sentence matters more than the case: `auto` is
+     * this implementation's default and a fixed direction is a decision. The first save stamps
+     * `dir="auto"` on a block with nothing in force; the author then declares `dir="rtl"` on the figure
+     * and saves the stored HTML again, and the caption's `auto` — which this wrote, not them — reads as
+     * a choice to respect and resolves from `ACME` for ever. Review found it.
+     *
+     * ⚠️ THE COST IS REAL AND STATED: a generated `auto` cannot be told from an author's, so somebody
+     * who deliberately writes `dir="auto"` on one block inside a `dir="rtl"` container loses it. Marking
+     * generated attributes would need one outside ALLOWED_ATTRIBUTES, which is §6's published contract —
+     * a bigger change than the defect.
+     */
+    $stamped = storedBody('<figure><figcaption>ACME مرحبا</figcaption></figure>');
+
+    expect($stamped)->toBe('<figure><figcaption dir="auto">ACME مرحبا</figcaption></figure>');
+
+    // The author sets a direction on the ancestor and saves what was stored.
+    expect(storedBody(str_replace('<figure>', '<figure dir="rtl">', $stamped)))
+        ->toBe('<figure dir="rtl"><figcaption>ACME مرحبا</figcaption></figure>');
+
+    /*
+     * ⚠️ TWO GENERATED `auto`s DEEP, which is why the removal walk looks THROUGH an `auto` rather than
+     * stopping at it — both were written by this implementation, so neither may block the other from
+     * yielding, whichever order the elements are visited in.
+     */
+    expect(storedBody('<figure dir="rtl"><figcaption dir="auto"><p dir="auto">ACME مرحبا</p></figcaption></figure>'))
+        ->toBe('<figure dir="rtl"><figcaption><p>ACME مرحبا</p></figcaption></figure>');
+
+    // ⚠️ And an author's FIXED direction on the child still outranks the ancestor, as it always has.
+    expect(storedBody('<figure dir="rtl"><figcaption dir="ltr">ACME مرحبا</figcaption></figure>'))
+        ->toBe('<figure dir="rtl"><figcaption dir="ltr">ACME مرحبا</figcaption></figure>');
+
+    // ⚠️ With no fixed ancestor there is nothing to yield to, so the stamp stays — the #39 case.
+    expect(storedBody('<figure dir="auto"><figcaption>ACME مرحبا</figcaption></figure>'))
+        ->toBe('<figure dir="auto"><figcaption dir="auto">ACME مرحبا</figcaption></figure>');
+
+    // ⚠️ Idempotent: saving the yielded form again must not re-stamp what it just removed.
+    expect(storedBody('<figure dir="rtl"><figcaption>ACME مرحبا</figcaption></figure>'))
+        ->toBe('<figure dir="rtl"><figcaption>ACME مرحبا</figcaption></figure>');
+});

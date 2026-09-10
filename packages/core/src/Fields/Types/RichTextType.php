@@ -310,6 +310,35 @@ final class RichTextType extends BaseFieldType
         libxml_clear_errors();
         libxml_use_internal_errors($previous);
 
+        /*
+         * ⚠️ A GENERATED `auto` MUST NOT BLOCK A LATER ANCESTOR CHOICE, and this pass runs FIRST for
+         * that reason — review found the fourth face of the same defect. The first save stamps
+         * `dir="auto"` on a block with nothing in force; the author then declares `dir="rtl"` on the
+         * figure and saves the stored HTML again, and the caption's `auto` — which this implementation
+         * wrote, not them — reads as a choice to respect and resolves from `ACME` for ever.
+         *
+         * `auto` is the default here and a fixed direction is a decision. That is the same sentence as
+         * the two rules below: `auto` does not inherit to a child, and `auto` does not suppress a
+         * wrapper's own. This is it applied to a block that already carries one.
+         *
+         * ⚠️ IT CANNOT BE DISTINGUISHED FROM AN AUTHOR'S `auto`, and the cost is stated rather than
+         * hidden: somebody who deliberately writes `dir="auto"` on one block inside a `dir="rtl"`
+         * container loses it. Marking generated attributes would need an attribute outside
+         * ALLOWED_ATTRIBUTES, which is §6's published contract — a bigger change than the defect.
+         *
+         * ⚠️ AND IT RUNS BEFORE THE STAMPING PASS, so that pass's "stop at the nearest direction" is
+         * true when it looks: after this, no generated `auto` stands between a block and a fixed
+         * ancestor. The walk here skips `auto` ancestors for the same reason it is removing one — each
+         * of them may be generated too, so none of them may block.
+         */
+        foreach (self::BLOCK_TAGS as $tag) {
+            foreach (iterator_to_array($document->getElementsByTagName($tag)) as $element) {
+                if (self::ownDirection($element) === 'auto' && self::fixedAncestorDirection($element) !== null) {
+                    $element->removeAttribute('dir');
+                }
+            }
+        }
+
         foreach (self::BLOCK_TAGS as $tag) {
             foreach (iterator_to_array($document->getElementsByTagName($tag)) as $element) {
                 // No `instanceof` guard: `getElementsByTagName()` yields elements by definition,
@@ -679,6 +708,32 @@ final class RichTextType extends BaseFieldType
                 $paragraph->appendChild($node);
             }
         }
+    }
+
+    /**
+     * The nearest FIXED direction above this element, looking through any `auto` on the way.
+     *
+     * ⚠️ DIFFERENT FROM `nearestDirection()` ON PURPOSE, and the difference is the point rather than an
+     * inconsistency. That one stops at the nearest direction of any kind, because for STAMPING a block
+     * the effective direction is what matters and an `auto` above means "resolve from content". This one
+     * is asked whether a generated `auto` should yield, and every `auto` between may be generated too —
+     * so none of them may block, and the walk passes through them.
+     *
+     * `<figure dir="rtl"><figcaption dir="auto"><p dir="auto">` needs that: both `auto`s were written by
+     * this implementation, and stopping at the first would leave the inner one standing whichever order
+     * the elements happened to be visited in.
+     */
+    private static function fixedAncestorDirection(DOMNode $element): ?string
+    {
+        for ($ancestor = $element->parentNode; $ancestor !== null; $ancestor = $ancestor->parentNode) {
+            $direction = self::ownDirection($ancestor);
+
+            if ($direction !== null && $direction !== 'auto') {
+                return $direction;
+            }
+        }
+
+        return null;
     }
 
     /**
