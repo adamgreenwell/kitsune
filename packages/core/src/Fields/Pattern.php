@@ -910,6 +910,43 @@ final class Pattern
                         self::excerpt($pattern, $frame['open'], $frame['close']),
                     );
                 }
+
+                /*
+                 * ⚠️ AND A FIXED-WIDTH CAPTURE UNDER A REPETITION IS NOT FIXED EITHER, which review
+                 * found next. A width is a property of one iteration; which iteration's text REMAINS
+                 * captured is a property of the traversal, and the two engines traverse a lookbehind
+                 * in opposite directions. Measured on PCRE 10.48 with Node 22.23.2, both readers
+                 * handed identical source text:
+                 *
+                 *              aba    abb    aa     ab     aabaa  abab
+                 *   ([ab]){1,2}  PCRE  no     MATCH  MATCH  no     MATCH  no
+                 *                Node  MATCH  no     MATCH  no     no     MATCH
+                 *   ([ab]){2}    PCRE  no     MATCH  no     no     MATCH  no
+                 *                Node  MATCH  no     no     no     no     MATCH
+                 *
+                 * `{2}` is a FIXED repetition of a FIXED-width body and diverges on three of six
+                 * subjects, so this is not the variable-width rule with a wider net — it is a second
+                 * property. `([ab]){1}` and `([ab][ab])` agree everywhere and stay published.
+                 *
+                 * ⚠️ AN ANCESTOR'S REPETITION COUNTS TOO, because `(?:([ab])){1,2}` measures exactly
+                 * like `([ab]){1,2}` — the capture is written once and still runs twice. The frame
+                 * list is searched rather than the stack, since a group's quantifier is not known
+                 * until after it closes.
+                 */
+                $repeated = self::repeatingAncestor($frames, $frame);
+
+                if ($repeated !== null) {
+                    return sprintf(
+                        'the capturing group `%s` inside a lookbehind, repeated by `%s` — a width is '
+                        .'a property of one iteration, but which iteration stays captured is a '
+                        .'property of the traversal, and the two engines walk a lookbehind in '
+                        .'opposite directions. Measured, `(?<=([ab]){2})\\1$` matches `aba` in '
+                        .'ECMAScript and `abb` in PCRE. Repeat something outside the lookbehind, or '
+                        .'write the repetition out',
+                        self::excerpt($pattern, $frame['open'], $frame['close']),
+                        $repeated,
+                    );
+                }
             }
 
             if (! self::isUnbounded($frame['quantifier'])) {
@@ -1099,7 +1136,9 @@ final class Pattern
 
         $delimiter = self::leadingLiteral($body);
 
-        return $delimiter !== null && ! self::variableAtomCanMatch($body, $delimiter);
+        return $delimiter !== null
+            && ! self::variableAtomCanMatch($body, $delimiter)
+            && self::variableAtomsAreSeparated($body);
     }
 
     /**
@@ -1159,40 +1198,18 @@ final class Pattern
         $length = mb_strlen($body);
 
         for ($i = 0; $i < $length; $i++) {
-            $char = mb_substr($body, $i, 1);
-            $atom = $char;
+            $token = self::atomAt($body, $i);
 
-            if ($char === '\\') {
-                // The whole escape is the atom: `\x61` is one character, not `\x` then `61`.
-                $span = self::escapeSpan($body, $i);
-                $atom = mb_substr($body, $i, $span);
-                $i += $span - 1;
-            } elseif ($char === '[') {
-                $closes = self::classEndsAt($body, $i);
-
-                if ($closes === null) {
-                    return true;
-                }
-
-                $atom = mb_substr($body, $i, $closes - $i + 1);
-                $i = $closes;
-            } elseif ($char === '(') {
-                $closes = self::groupEndsAt($body, $i);
-
-                if ($closes === null) {
-                    return true;
-                }
-
-                $atom = mb_substr($body, $i, $closes - $i + 1);
-                $i = $closes;
-            } elseif ($char === '^' || $char === '$') {
-                continue;
+            if ($token === null) {
+                return true;
             }
 
-            $quantifier = self::quantifierAt($body, $i + 1);
+            $atom = $token['atom'];
+            $quantifier = $token['quantifier'];
+            $i = $token['after'] - 1;
 
-            if ($quantifier !== '') {
-                $i += mb_strlen($quantifier);
+            if ($atom === '^' || $atom === '$') {
+                continue;
             }
 
             if (str_starts_with($atom, '(')) {
@@ -1247,6 +1264,303 @@ final class Pattern
         }
 
         return false;
+    }
+
+    /**
+     * The quantifier that makes this capture run more than once, or null when nothing does.
+     *
+     * ⚠️ THE CAPTURE ITSELF FIRST, THEN ITS ANCESTORS INSIDE THE LOOKBEHIND. `([ab]){1,2}` repeats
+     * itself; `(?:([ab])){1,2}` has the capture written once and run twice, and the two measure
+     * identically — so a rule that read only the capture's own quantifier would take the first and
+     * leave the second, which is the shape review actually asked about.
+     *
+     * ⚠️ ONLY ANCESTORS WITH `inLookbehind` SET, which is what confines this to the lookbehind
+     * without having to find it. A group nested in the lookbehind carries the flag; the lookbehind
+     * itself does not, and a repetition OUTSIDE it re-runs the whole assertion rather than
+     * reallocating a capture within one traversal.
+     *
+     * @param  list<array{open:int, close:int, kind:string, body:string, quantifier:string, inLookbehind:bool}>  $frames
+     * @param  array{open:int, close:int, kind:string, body:string, quantifier:string, inLookbehind:bool}  $capture
+     */
+    private static function repeatingAncestor(array $frames, array $capture): ?string
+    {
+        if (self::repeatsMoreThanOnce($capture['quantifier'])) {
+            return $capture['quantifier'];
+        }
+
+        foreach ($frames as $frame) {
+            $encloses = $frame['open'] < $capture['open'] && $frame['close'] > $capture['close'];
+
+            if ($encloses && $frame['inLookbehind'] && self::repeatsMoreThanOnce($frame['quantifier'])) {
+                return $frame['quantifier'];
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Whether this quantifier can run its atom twice.
+     *
+     * ⚠️ NOT `isVariableWidth()`, AND THAT DISTINCTION IS THE FINDING. `{2}` is fixed width and
+     * still runs twice, so it reallocates which iteration stays captured — measured divergent on
+     * three of six subjects. `?` and `{0,1}` run it at most once and are left alone: they make the
+     * lookbehind variable-length, which is the other rule's business, and they cannot reallocate
+     * anything because there is only ever one iteration to keep.
+     */
+    private static function repeatsMoreThanOnce(string $quantifier): bool
+    {
+        if ($quantifier === '' || $quantifier === '?' || $quantifier === '??') {
+            return false;
+        }
+
+        if (preg_match('/^\{([0-9]+)(?:,([0-9]*))?\}\??$/', $quantifier, $bound) === 1) {
+            // `{n}` runs n times; `{n,m}` up to m; `{n,}` without limit.
+            $upper = array_key_exists(2, $bound)
+                ? ($bound[2] === '' ? PHP_INT_MAX : (int) $bound[2])
+                : (int) $bound[1];
+
+            return $upper >= 2;
+        }
+
+        // `*`, `+` and their lazy forms.
+        return true;
+    }
+
+    /**
+     * The atom that begins at `$at`, with any quantifier attached to it, or null if unparseable.
+     *
+     * ⚠️ ONE SCANNER FOR TWO QUESTIONS, deliberately. "Can a variable atom eat the delimiter" and
+     * "is every variable atom separated from the next" walk the same syntax and differ only in what
+     * they do with each atom — and this project has already spent time on what two copies of one
+     * rule cost. Escape spans, class ends and group ends are the parts that would drift, so they
+     * live here once.
+     *
+     * @return array{atom: string, quantifier: string, after: int}|null
+     */
+    private static function atomAt(string $body, int $at): ?array
+    {
+        $char = mb_substr($body, $at, 1);
+        $atom = $char;
+        $ends = $at;
+
+        if ($char === '\\') {
+            // The whole escape is the atom: `\x61` is one character, not `\x` then `61`.
+            $ends = $at + self::escapeSpan($body, $at) - 1;
+            $atom = mb_substr($body, $at, $ends - $at + 1);
+        } elseif ($char === '[' || $char === '(') {
+            $closes = $char === '['
+                ? self::classEndsAt($body, $at)
+                : self::groupEndsAt($body, $at);
+
+            if ($closes === null) {
+                return null;
+            }
+
+            $ends = $closes;
+            $atom = mb_substr($body, $at, $closes - $at + 1);
+        }
+
+        $quantifier = self::quantifierAt($body, $ends + 1);
+
+        return [
+            'atom' => $atom,
+            'quantifier' => $quantifier,
+            'after' => $ends + 1 + mb_strlen($quantifier),
+        ];
+    }
+
+    /**
+     * Whether every variable-width atom in the body is separated from the next by a literal.
+     *
+     * ⚠️ FORCING THE SPLIT BETWEEN ITERATIONS IS NOT ENOUGH, and review found the gap by putting
+     * the ambiguity entirely BETWEEN non-delimiter atoms. `^(?:,a*a*)*X$` satisfies the delimiter
+     * proof exactly — neither `a*` can match a comma, so every iteration must begin at one and none
+     * can consume one — and each `,aa` segment still has three ways to divide `aa` between the two
+     * stars. The iteration boundaries are forced; what happens inside them is not. Measured on
+     * Node 22.23.2, subject `,aa` repeated then a failing `Y`:
+     *
+     *     n=12  9 ms      n=16  723 ms      n=20  58.8 SECONDS
+     *
+     * ⚠️ THE LEFT ATOM IS THE ONE THAT MATTERS, and that is an argument rather than a convenience.
+     * For `A+ s B+` with `s` a required literal: if `A` cannot match `s` then `A+` must stop at the
+     * FIRST `s`, so the division is forced whatever `B` can match. If `A` CAN match `s`, then `A+`
+     * may swallow one `s` and leave a later one, which is the ambiguity. So the separator has to be
+     * unmatchable by the atom on its left.
+     *
+     * ⚠️ NOT "AT MOST ONE VARIABLE ATOM", which would have been simpler and would have refused a
+     * shape that measures flat. Both of these have two:
+     *
+     *     ^(?:,[^,]+-[^,]+)*X$     `[^,]` matches `-`      n=24 610 ms and climbing — refused
+     *     ^(?:,[^,-]+-[^,-]+)*X$   `[^,-]` does not        n=24 0 ms, linear — accepted
+     *
+     * The rule that separates those two is the rule this project already uses one level up, so it
+     * is the same proof applied to internal separators rather than a second idea bolted on.
+     *
+     * ⚠️ FAILS CLOSED on an unparseable atom, like everything else in the exemption.
+     */
+    private static function variableAtomsAreSeparated(string $body): bool
+    {
+        $length = mb_strlen($body);
+
+        // The last variable-width atom seen, and whether a literal it cannot match has followed it.
+        $pending = null;
+
+        for ($i = 0; $i < $length; $i++) {
+            $token = self::atomAt($body, $i);
+
+            if ($token === null) {
+                return false;
+            }
+
+            $atom = $token['atom'];
+            $i = $token['after'] - 1;
+
+            if ($atom === '^' || $atom === '$') {
+                continue;
+            }
+
+            /*
+             * ⚠️ A GROUP IS READ THROUGH exactly as it is by the delimiter check, because `,(?:a*)a*`
+             * is `,a*a*` with brackets — the shape the previous round of review found one rule along.
+             * A group carrying a variable-width quantifier is opaque and fails closed.
+             */
+            if (str_starts_with($atom, '(')) {
+                if (self::isVariableWidth($token['quantifier'])) {
+                    return false;
+                }
+
+                $prefix = self::framePrefixLength($atom, 0, self::frameKindAt($atom, 0));
+                $inner = mb_substr($atom, $prefix, mb_strlen($atom) - $prefix - 1);
+
+                if (! self::variableAtomsAreSeparated($inner)) {
+                    return false;
+                }
+
+                /*
+                 * A required group whose own contents are separated still counts as an atom of
+                 * unknown separating power, so it neither separates a pending atom nor becomes one.
+                 * Conservative, and it only costs a bracket pair the author can remove.
+                 */
+                if (self::variableAtomCanMatchAnything($inner)) {
+                    $pending = $inner;
+                }
+
+                continue;
+            }
+
+            if (self::isVariableWidth($token['quantifier'])) {
+                // Two in a row with nothing between them is `a*a*`, which is the whole finding.
+                if ($pending !== null) {
+                    return false;
+                }
+
+                $pending = $atom;
+
+                continue;
+            }
+
+            // A required, unquantified single character is the only thing that can separate.
+            if ($pending === null || $token['quantifier'] !== '') {
+                continue;
+            }
+
+            $character = self::literalCharacter($atom);
+
+            if ($character !== null && ! self::atomMatches($pending, $character)) {
+                $pending = null;
+            }
+        }
+
+        return true;
+    }
+
+    /** Whether this subpattern holds any variable-width atom at all. */
+    private static function variableAtomCanMatchAnything(string $body): bool
+    {
+        $length = mb_strlen($body);
+
+        for ($i = 0; $i < $length; $i++) {
+            $token = self::atomAt($body, $i);
+
+            if ($token === null) {
+                return true;
+            }
+
+            $i = $token['after'] - 1;
+
+            if (self::isVariableWidth($token['quantifier'])) {
+                return true;
+            }
+
+            if (str_starts_with($token['atom'], '(')) {
+                $prefix = self::framePrefixLength($token['atom'], 0, self::frameKindAt($token['atom'], 0));
+
+                if (self::variableAtomCanMatchAnything(
+                    mb_substr($token['atom'], $prefix, mb_strlen($token['atom']) - $prefix - 1),
+                )) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * The single character this atom is, or null when it is a set, a group or anything wider.
+     *
+     * ⚠️ A CLASS IS NOT A SEPARATOR even when it happens to hold one character, because deciding
+     * that requires parsing class syntax — the thing `variableAtomCanMatch()` delegates to PCRE
+     * rather than doing by hand. `[,]` is therefore refused where `,` is accepted: conservative, and
+     * the author can write the character.
+     */
+    private static function literalCharacter(string $atom): ?string
+    {
+        if (mb_strlen($atom) === 1) {
+            return in_array($atom, ['[', '(', '.', '^', '$', '|', '*', '+', '?'], true) ? null : $atom;
+        }
+
+        if (! str_starts_with($atom, '\\')) {
+            return null;
+        }
+
+        $letter = mb_substr($atom, 1, 1);
+
+        // `\d`, `\w`, `\s` and friends are sets; `\.` and `\x41` are characters.
+        if (mb_strlen($atom) === 2) {
+            return preg_match('/^[A-Za-z0-9]$/', $letter) === 1 ? null : $letter;
+        }
+
+        if ($letter === 'x' && preg_match('/^[0-9A-Fa-f]{2}$/', mb_substr($atom, 2, 2)) === 1) {
+            $decoded = pack('H*', mb_substr($atom, 2, 2));
+
+            /*
+             * ⚠️ VALID UTF-8 ONLY. `\xE9` is one BYTE and not a character: probed with `/u` against
+             * an invalid subject `preg_match()` returns false, which `atomMatches()` would read as
+             * "it matches" — failing closed, but for the wrong reason and silently. Above 0x7F the
+             * portable spelling is the character itself, so returning null costs nothing.
+             */
+            return mb_check_encoding($decoded, 'UTF-8') ? $decoded : null;
+        }
+
+        return null;
+    }
+
+    /**
+     * Whether this atom matches exactly this one character.
+     *
+     * ⚠️ THE NORMALISED ATOM, for the reason `variableAtomCanMatch()` records at length: `delimit()`
+     * compiles a rewritten `\s`, and probing the published text asks about a class that is never
+     * compiled. One helper so the two questions cannot answer differently.
+     */
+    private static function atomMatches(string $atom, string $character): bool
+    {
+        if ($atom === '.') {
+            return true;
+        }
+
+        return @preg_match('/^'.self::withEcmaScriptDot($atom).'$/uD', $character) !== 0;
     }
 
     /**

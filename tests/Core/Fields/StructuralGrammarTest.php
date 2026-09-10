@@ -211,6 +211,51 @@ describe('rule 3 — an unbounded repetition must divide its subject one way onl
         '^(?:,(?:,*))*X$',
     ]);
 
+    it('does not exempt ambiguity between the non-delimiter atoms', function (string $pattern): void {
+        /*
+         * ⚠️ FORCING THE SPLIT BETWEEN ITERATIONS IS NOT ENOUGH, which review found by putting the
+         * ambiguity entirely BETWEEN non-delimiter atoms. `^(?:,a*a*)*X$` satisfies the delimiter
+         * proof exactly — neither `a*` can match a comma, so every iteration must begin at one and
+         * none can consume one — and each `,aa` segment still has three ways to divide `aa` between
+         * the two stars. The boundaries are forced; what happens inside them was never checked.
+         * Measured on Node 22.23.2, `,aa` repeated then a failing `Y`:
+         *
+         *   n=12  9 ms      n=16  723 ms      n=20  58.8 SECONDS
+         *
+         * ⚠️ THE LEFT ATOM IS THE ONE THAT MATTERS. For `A+ s B+` with `s` a required literal: if
+         * `A` cannot match `s` then `A+` must stop at the FIRST `s` and the division is forced
+         * whatever `B` can match. If `A` can, it may swallow one `s` and leave a later one — the
+         * ambiguity. So a separator has to be unmatchable by the atom on its left, which is the
+         * delimiter proof applied one level in rather than a second idea.
+         */
+        expect(Pattern::unpublishable($pattern))
+            ->not->toBeNull("[{$pattern}] repeats a body that can match one segment two ways");
+    })->with([
+        '^(?:,a*a*)*X$',
+        // The same body with a bracket pair, which is where the previous round's fix had to reach.
+        '^(?:,(?:a*)a*)*X$',
+        '^(?:,a+a+)*X$',
+        '^(?:,a*b?)*X$',
+        // Two atoms with a separator the LEFT one can consume: measured n=24 610 ms and climbing.
+        '^(?:,[^,]+-[^,]+)*X$',
+    ]);
+
+    it('still exempts two atoms a separator genuinely divides', function (string $pattern): void {
+        /*
+         * ⚠️ "AT MOST ONE VARIABLE ATOM" WOULD HAVE BEEN SIMPLER AND WOULD REFUSE THESE, and the
+         * first of them measures FLAT — n=24 at 0 ms — because `[^,-]` can match neither the comma
+         * nor the hyphen, so both boundaries are forced. Refusing a shape that measures linear is
+         * the expressiveness cost this project reports rather than accepts by default, so the rule
+         * is the precise one.
+         */
+        expect(Pattern::unpublishable($pattern))->toBeNull("[{$pattern}] divides one way");
+    })->with([
+        '^(?:,[^,-]+-[^,-]+)*X$',
+        // One variable atom with a required literal in front of it: forced by the delimiter alone.
+        '^(?:,a[^,]+)*X$',
+        '^(?:,ab)*X$',
+    ]);
+
     it('tests delimiter membership against the pattern that is compiled', function (): void {
         /*
          * ⚠️ THE PROBE COMPILED A CLASS THAT IS NEVER COMPILED. `delimit()` rewrites `\s` to the
@@ -284,6 +329,68 @@ describe('rule 5 — a capturing group in a lookbehind must be fixed length', fu
             ->and(Pattern::unpublishable('(?<=([ab]))\1$'))->toBeNull()
             ->and(Pattern::unpublishable('(?<=(a{2}))\1$'))->toBeNull()
             ->and(Pattern::unpublishable('(?<=([ab]{2})([bc]{2}))\2\1$'))->toBeNull();
+    });
+
+    it('refuses a capture that a repetition runs more than once', function (string $pattern): void {
+        /*
+         * ⚠️ A FIXED WIDTH IS NOT ENOUGH IF THE CAPTURE RUNS TWICE, which review found after the
+         * width rule. A width is a property of one iteration; WHICH iteration's text remains
+         * captured is a property of the traversal, and the engines traverse a lookbehind in
+         * opposite directions. Measured on PCRE 10.48 with Node 22.23.2, both readers handed
+         * identical source text — the earlier attempt at this table was wrong for handing PHP
+         * `\\1` through a shell, which is a literal backslash rather than a backreference, and
+         * is the instrument error `tools/pattern-parity/README.md` records:
+         *
+         *                    aba    abb    aa     ab     aabaa  abab
+         *   ([ab]){1,2} PCRE  no     MATCH  MATCH  no     MATCH  no
+         *               Node  MATCH  no     MATCH  no     no     MATCH
+         *   ([ab]){2}   PCRE  no     MATCH  no     no     MATCH  no
+         *               Node  MATCH  no     no     no     no     MATCH
+         *
+         * ⚠️ `{2}` IS THE CASE THAT MAKES THIS A SECOND RULE rather than a wider net on the first.
+         * It is a fixed repetition of a fixed-width body — the width rule passes it — and it
+         * diverges on three of six subjects.
+         *
+         * ⚠️ AND AN ANCESTOR'S REPETITION COUNTS, because `(?:([ab])){1,2}` measures exactly like
+         * `([ab]){1,2}`: the capture is written once and still runs twice.
+         */
+        expect(Pattern::unpublishable($pattern))
+            ->not->toBeNull("[{$pattern}] repeats a capture inside a lookbehind");
+    })->with([
+        '(?<=([ab]){1,2})\1$',
+        '(?<=([ab]){2})\1$',
+        '(?<=(?:([ab])){1,2})\1$',
+        '(?<=([ab])+)\1$',
+        '(?<=([ab])*)\1$',
+        '(?<=(?<x>[ab]){2})\k<x>$',
+        // Two groups deep, so the search for a repeating ancestor cannot be a parent-only check.
+        '(?<=(?:(?:([ab])){2}))\1$',
+    ]);
+
+    it('still publishes a capture that runs exactly once', function (): void {
+        /*
+         * ⚠️ `{1}` IS NOT A REPETITION, and this is where the line has to be drawn precisely rather
+         * than by refusing every quantifier. `([ab]){1}` agrees with `([ab][ab])` and with the two
+         * adjacent fixed captures on all six subjects measured above — there is only ever one
+         * iteration, so there is nothing to reallocate.
+         */
+        expect(Pattern::unpublishable('(?<=([ab]){1})\1$'))->toBeNull()
+            ->and(Pattern::unpublishable('(?<=([ab][ab]))\1$'))->toBeNull();
+    });
+
+    it('leaves a repetition OUTSIDE the lookbehind alone', function (): void {
+        /*
+         * ⚠️ A repetition outside re-runs the whole assertion rather than reallocating a capture
+         * within one traversal, so it is not this rule's business.
+         *
+         * ⚠️ MEASURED ON SUBJECTS THAT ACTUALLY MATCH, because the first version of this
+         * measurement used `^(?:(?<=(ab))c){1,2}$` — anchored at `^`, so the lookbehind can never
+         * succeed and the pattern matches nothing at all. Both engines "agreed" that nothing
+         * happened, which is not agreement about the construct. `^(?:ab(?<=(ab))){1,2}\1$` matches
+         * `abab` and `ababab` in BOTH engines and rejects `a`, `aa`, `aaa`, `ab` and `abababab` in
+         * both.
+         */
+        expect(Pattern::unpublishable('^(?:ab(?<=(ab))){1,2}\1$'))->toBeNull();
     });
 
     it('leaves a variable-length capture alone OUTSIDE a lookbehind', function (): void {

@@ -856,5 +856,35 @@
     "pattern": "^(?:\uFEFF\\s?)*X$",
     "subject": "\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFFY",
     "why": "PCRE's `\\s` excludes U+FEFF and ECMAScript's includes it. The membership probe compiled the raw `\\s` rather than the class `delimit()` rewrites it to, so the optional atom was declared unable to reach the delimiter. Node 22 spends 17.2s here."
+  },
+  {
+    "id": "lookbehind-capture-repeated-variable",
+    "pattern": "(?<=([ab]){1,2})\\1$",
+    "subject": "aba",
+    "why": "A fixed-width capture under a repetition inside a lookbehind. The width rule passed it, but which iteration stays captured is a property of the traversal and the engines walk a lookbehind in opposite directions. PCRE says no on `aba` and MATCH on `abb`; Node is the reverse."
+  },
+  {
+    "id": "lookbehind-capture-repeated-fixed",
+    "pattern": "(?<=([ab]){2})\\1$",
+    "subject": "aba",
+    "why": "The same defect with a FIXED repetition, which is what makes it a second rule rather than a wider net on the width rule: `{2}` of a one-character class is fixed in every sense and still diverges."
+  },
+  {
+    "id": "lookbehind-capture-once",
+    "pattern": "(?<=([ab]){1})\\1$",
+    "subject": "aa",
+    "why": "The other side of that line, kept so the rule cannot become `refuse every quantifier`. `{1}` runs the capture once, so there is nothing to reallocate, and the engines agree on all six subjects measured."
+  },
+  {
+    "id": "ambiguous-body-inside-delimited",
+    "pattern": "^(?:,a*a*)*X$",
+    "subject": ",aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aaY",
+    "why": "The delimiter proof forced the split BETWEEN iterations and never asked about the body. Neither star can match a comma, so the exemption was granted, and each `,aa` segment still divides three ways. Node 22 takes 58.8s at 20 segments."
+  },
+  {
+    "id": "separated-body-inside-delimited",
+    "pattern": "^(?:,[^,-]+-[^,-]+)*X$",
+    "subject": ",a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-bY",
+    "why": "Two variable atoms and a separator NEITHER can match, so both boundaries are forced. Measured flat at 24 segments, and kept because `at most one variable atom` would have been simpler and would refuse it."
   }
 ]

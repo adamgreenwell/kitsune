@@ -207,7 +207,7 @@ A named capture may use a name in **any script** — `(?<é>`, `(?<日本>`, `(?
 >
 > A denylist **fails open**: a construct nobody anticipated is accepted and published wrong, silently. An allowlist fails closed — an unknown construct is refused because it was never admitted, not because someone remembered it. Rule 3 says `apiSchema()` may only publish a constraint the consumer can enforce; a grammar makes that enforceable *by construction* rather than by enumeration.
 >
-> **Fresh evidence, measured 2026-09-10.** 143 candidate constructs, enumerated from six independent angles, run through one shared case file so PCRE and ECMAScript are asked the same question. At production fidelity — PCRE compiling `Pattern::delimit()`'s output, ECMAScript compiling the published source — **two constructs the screen accepted diverged, and a third made neither engine answer at all**. Both divergences are now refused by the structural rules below, so the current count is zero:
+> **Fresh evidence, measured 2026-09-10.** 148 candidate constructs, enumerated from six independent angles, run through one shared case file so PCRE and ECMAScript are asked the same question. At production fidelity — PCRE compiling `Pattern::delimit()`'s output, ECMAScript compiling the published source — **two constructs the screen accepted diverged, and a third made neither engine answer at all**. Both divergences are now refused by the structural rules below, so the current count is zero:
 >
 > | Pattern | PCRE | ECMAScript |
 > |---|---|---|
@@ -274,10 +274,27 @@ A named capture may use a name in **any script** — `(?<é>`, `(?<日本>`, `(?
 >
 >     ⚠️ **A required group is transparent, and a bracket pair was enough to hide the same defect.** The scan jumped from a group's `(` to its `)` and asked only about the group's own quantifier, so `^(?:,(?:,?))*X$` — the line above with brackets around the optional comma — was exempted. **Node 22 spends 10.5 s** on the same 40-delimiter subject. The proof reads through any group that carries no unbounded quantifier, at any depth; a group that *is* unbounded-quantified still fails closed unread, because repeating a body without limit can consume the delimiter however the body is written.
 >
+>     ⚠️ **Forcing the split between iterations is not enough, and the body has to divide one way too.** Review found it by putting the ambiguity entirely *between* the non-delimiter atoms. `^(?:,a*a*)*X$` satisfies the proof exactly — neither `a*` can match a comma, so every iteration must begin at one and none can consume one — and each `,aa` segment still divides three ways between the two stars. **Node 22: 9 ms at 12 segments, 723 ms at 16, 58.8 SECONDS at 20.** The boundaries were forced; what happened inside them was never asked.
+>
+>     The added condition is the same proof one level in: **every variable-width atom must be separated from the next by a required literal the atom on its LEFT cannot match.** That is the precise condition rather than a convenient one — for `A+ s B+`, if `A` cannot match `s` then `A+` must stop at the *first* `s` and the division is forced whatever `B` can match; if `A` can, it may swallow one and leave a later one. So `^(?:,[^,]+-[^,]+)*X$` is refused (`[^,]` matches `-`, measured 610 ms at 24 segments and climbing) while `^(?:,[^,-]+-[^,-]+)*X$` is **published** (measured flat at 24 segments). The simpler rule "at most one variable-width atom" would have refused the second, which is why it is not the rule.
+>
 >     ⚠️ **Membership is tested against the pattern that is actually compiled**, which is not the one the author wrote. `delimit()` rewrites `.`, `\s` and `\S` to explicit ECMAScript-equivalent classes, and the two dialects disagree on three code points — so probing the raw text asks about a class that is never compiled. PCRE's `\s` excludes U+FEFF, so `^(?:<U+FEFF>\s?)*X$` was told its optional atom could not reach the delimiter and was exempted; **ECMAScript's `\s` includes the BOM, and Node 22 takes 17.2 s** on 40 of them. The same normalisation settles the opposite direction: `<U+FEFF>\S?` cannot consume a BOM in *either* dialect once compiled, so it stays exempt.
 >
 >     ⚠️ **Conservative where it cannot be sure.** `(?:a|[b-z])+` has disjoint branches and is refused, because deciding whether two character classes overlap is more analysis than belongs on an authoring request. The message names the portable ways out, and the harness reports the cost rather than hiding it.
 > 4. **A capturing group inside a lookbehind must be fixed length.** Also found by review, and measurement placed the line rather than a blanket ban: with a fixed width the engines agree, including two adjacent captures — `(?<=([ab]{2})([bc]{2}))\2\1$` matches in both. Make either variable and they part company, because the engines traverse a lookbehind in **opposite directions** and allocate the variable part to different groups. `(?<=(a+))\1$` on `aaaa`: PCRE errors, ECMAScript matches. `(?<=([ab]{1,2})([bc]{1,2}))\2\1$` on `abcbca`: PCRE says no, ECMAScript says yes.
+>
+>     ⚠️ **And a fixed-width capture under a repetition is not fixed either.** Found by review after the width rule. A width is a property of one iteration; *which* iteration's text remains captured is a property of the traversal, and the engines traverse a lookbehind in opposite directions. Measured on PCRE 10.48 with Node 22.23.2:
+>
+>     | | `aba` | `abb` | `aa` | `ab` | `aabaa` | `abab` |
+>     |---|---|---|---|---|---|---|
+>     | `([ab]){1,2}` PCRE | no | **match** | match | no | **match** | no |
+>     | `([ab]){1,2}` Node | **match** | no | match | no | no | **match** |
+>     | `([ab]){2}` PCRE | no | **match** | no | no | **match** | no |
+>     | `([ab]){2}` Node | **match** | no | no | no | no | **match** |
+>
+>     `{2}` is a **fixed** repetition of a **fixed-width** body — the width rule passes it — and it diverges on three of six subjects, which is what makes this a second property rather than a wider net on the first. An **ancestor's** repetition counts too, because `(?:([ab])){1,2}` measures identically: the capture is written once and still runs twice. `([ab]){1}` runs it once, has nothing to reallocate, agrees everywhere, and stays published.
+>
+>     ⚠️ **The first version of that table was my instrument, not the engines.** `php -r "… \\\\1 …"` through a shell is a literal backslash followed by `1` rather than a backreference, so PCRE was handed a different pattern from Node and reported `no` for every subject. It is the identical error `tools/pattern-parity/README.md` opens with, and the fix is the same: both readers get identical source text, from files rather than from a shell.
 >
 >     ⚠️ `(?<=(a{1,2}))\1$` and `(?<=(a?))\1$` *agree* on the subjects tried and are refused anyway. That agreement is subject-dependent luck rather than a property of the construct, and a rule that admitted them would be drawing its line at whichever subjects happened to get measured.
 >
@@ -285,7 +302,7 @@ A named capture may use a name in **any script** — `(?<é>`, `(?<日本>`, `(?
 >
 > ### What this costs
 >
-> Measured, so it is a number rather than a worry: of 143 candidates, **two** are refused today that both engines agree on — `\p{Lower}` and `\p{Alpha}`, POSIX-style aliases missing from the property allowlist. Widening a list is a reviewable, testable act; a denylist's gaps are found by accident. **Both are now on it, and `\p{Upper}` with them** — the obvious third of the family, added at the same time so the allowlist does not carry an arbitrary subset.
+> Measured, so it is a number rather than a worry: of 148 candidates, **two** are refused today that both engines agree on — `\p{Lower}` and `\p{Alpha}`, POSIX-style aliases missing from the property allowlist. Widening a list is a reviewable, testable act; a denylist's gaps are found by accident. **Both are now on it, and `\p{Upper}` with them** — the obvious third of the family, added at the same time so the allowlist does not carry an arbitrary subset.
 >
 > ⚠️ **Added on a set comparison, not on compiling**, because compiling proves only that a name is accepted. Each alias was compared with its canonical spelling across all 1,114,112 codepoints in *both* engines and is exactly equal: `Lower`/`Lowercase` 2,595 members, `Alpha`/`Alphabetic` 147,421, `Upper`/`Uppercase` 2,006. `\p{Space}` is the reason this is measured one name at a time rather than adopted as a family — **PCRE compiles it and ECMAScript rejects the name**, so it stays out.
 >
