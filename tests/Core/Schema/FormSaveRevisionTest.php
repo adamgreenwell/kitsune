@@ -145,3 +145,44 @@ it('files nothing when a save changed no relations at all', function (): void {
 
     expect($entry->revisions()->count())->toBe($count, 'a no-op save filed a revision');
 });
+
+it('leaves a revision alone when it describes a state this save did not produce', function (): void {
+    /*
+     * ⚠️ THE CONCURRENCY CASE, and the reason identity is judged by STATE rather than by id.
+     * Two editors saving the same entry means another request can file a revision between this
+     * one capturing "the newest before my write" and reconciling. An id comparison alone would
+     * then complete SOMEBODY ELSE'S revision — overwriting their relation state and leaving this
+     * save unrecorded.
+     *
+     * ⚠️ Carrying the created id forward instead does NOT work, which is worth a test comment
+     * because it is the obvious fix: for a create the revision is filed by `AuditedBuilder`, on an
+     * instance it constructs rather than the one the page holds, so a property set in
+     * `recordRevision()` is null by the time the page reconciles. Measured.
+     */
+    $entry = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Source']);
+    formSave($entry, null, [[$this->authors, [$this->target->id]]]);
+
+    $before = $entry->revisions()->max('id');
+
+    // Another request's save lands in the window: a newer revision describing a DIFFERENT title.
+    $intruder = $entry->revisions()->create([
+        'entry_type_id' => $entry->entry_type_id,
+        'title' => 'Saved by somebody else',
+        'slug' => $entry->slug,
+        'status' => $entry->status,
+        'values' => $entry->values,
+        'relation_state' => ['999' => [1, 2, 3]],
+    ]);
+
+    formSave($entry, $before, [[$this->authors, []]]);
+
+    // The intruder is untouched, because its snapshot is not the state this save produced.
+    expect($intruder->fresh()->relation_state)->toBe(['999' => [1, 2, 3]])
+        ->and($intruder->fresh()->title)->toBe('Saved by somebody else');
+
+    // And this save is still recorded rather than silently lost.
+    $mine = $entry->revisions()->where('id', '>', $intruder->getKey())->orderByDesc('id')->first();
+
+    expect($mine)->not->toBeNull('this save left no revision of its own')
+        ->and($mine->relation_state)->toBe([]);
+});

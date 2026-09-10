@@ -413,16 +413,39 @@ class Entry extends Model implements RequiresModelSave
 
         $latest = $this->revisions()->orderByDesc('id')->first();
 
-        // The entry write filed a revision of its own, so complete it rather than adding a second.
-        if ($latest !== null && (int) $latest->getKey() !== (int) ($revisionIdBeforeSave ?? 0)) {
+        /*
+         * ⚠️ IT IS NOT ENOUGH THAT THE NEWEST REVISION IS NEWER THAN THE ONE BEFORE MY WRITE, and
+         * review found why: two editors saving the same entry concurrently means another request
+         * can file a revision in that window, and an id comparison alone would then complete
+         * SOMEBODY ELSE'S revision — overwriting their relation state and leaving this save
+         * unrecorded. The entry write and each relation sync are separate transactions, so the
+         * window is real rather than theoretical.
+         *
+         * ⚠️ AND CARRYING THE ID FORWARD DOES NOT WORK EITHER, which is worth recording because
+         * it is the obvious fix and I measured it failing. For a create the revision is filed by
+         * `AuditedBuilder`, on an instance it constructs — not on the object the page holds — so a
+         * property set in `recordRevision()` is simply null by the time the page reconciles.
+         *
+         * So the rule is about STATE rather than identity: complete the newest revision only if it
+         * already describes the entry as this save left it. A revision describing anything else
+         * belongs to another write and is left alone. If a concurrent save happened to produce an
+         * identical snapshot, completing it is harmless — the entry state it records is the same.
+         */
+        $describesThisSave = $latest !== null
+            && (int) $latest->getKey() !== (int) ($revisionIdBeforeSave ?? 0)
+            && $this->revisionDescribesCurrentState($latest);
+
+        if ($describesThisSave) {
+            /** @var EntryRevision $mine */
+            $mine = $latest;
             $current = $this->relationState();
 
-            if ($latest->relation_state === $current) {
+            if ($mine->relation_state === $current) {
                 return false;
             }
 
-            $latest->relation_state = $current;
-            $latest->save();
+            $mine->relation_state = $current;
+            $mine->save();
 
             return true;
         }
@@ -433,6 +456,38 @@ class Entry extends Model implements RequiresModelSave
          * against `$relationsBefore`, so a sync that changed nothing files nothing.
          */
         return $this->recordRevisionForRelationChange($relationsBefore);
+    }
+
+    /**
+     * Whether a revision's snapshot already describes this entry as it now stands.
+     *
+     * ⚠️ Compares the SAME columns `versionedState()` does, and for the same reason: a raw
+     * comparison is what makes `!==` mean "different data" rather than "different object". A JSON
+     * column's raw string is not its value — MySQL returns its own key order — so `values` is
+     * decoded and key-sorted before comparison, exactly as `versionedState()` does.
+     */
+    private function revisionDescribesCurrentState(EntryRevision $revision): bool
+    {
+        foreach (self::VERSIONED_COLUMNS as $column) {
+            $mine = $this->getAttribute($column);
+            $theirs = $revision->getAttribute($column);
+
+            if (is_array($mine) || is_array($theirs)) {
+                if (self::keySorted((array) $mine) !== self::keySorted((array) $theirs)) {
+                    return false;
+                }
+
+                continue;
+            }
+
+            // Loose on purpose for scalars: a revision round-trips through the database, so an
+            // integer status can come back as a numeric string without the state having changed.
+            if ((string) $mine !== (string) $theirs) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**
