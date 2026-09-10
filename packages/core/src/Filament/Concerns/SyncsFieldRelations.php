@@ -17,6 +17,7 @@ use Kitsune\Core\Filament\Schemas\FieldValueRenderer;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Field;
+use Kitsune\Core\Schema\RecordedRevisions;
 
 /**
  * Carries relation fields between the form and `entry_relations`.
@@ -88,6 +89,8 @@ trait SyncsFieldRelations
      */
     protected function mutateFormDataBeforeSave(array $data): array
     {
+        $this->rememberRevisionBeforeWrite();
+
         return $this->withoutRelationState($this->mutateEntryDataBeforeSave($data));
     }
 
@@ -97,6 +100,8 @@ trait SyncsFieldRelations
      */
     protected function mutateFormDataBeforeCreate(array $data): array
     {
+        $this->rememberRevisionBeforeWrite();
+
         return $this->withoutRelationState($this->mutateEntryDataBeforeCreate($data));
     }
 
@@ -182,6 +187,65 @@ trait SyncsFieldRelations
         /** @var array<string, mixed> $state */
         $state = (array) data_get($this->form->getRawState(), FieldValueRenderer::RELATION_STATE_PREFIX, []);
 
+        /*
+         * ⚠️ THE BEFORE-STATE IS READ INSIDE THE LOCK now, not here, and review found why. Reading it
+         * before the transaction opened meant a relations-only save could read X, another request
+         * change the relations to Y, and this one write X back — the comparison then saw no change,
+         * filed nothing, and history kept a revision describing Y over a live entry holding X.
+         */
+        /*
+         * ⚠️ SUSPENDED ACROSS EVERY FIELD, then ONE revision reconciled after. A form save was
+         * filing 1 + N revisions, one per relation field — measured `created=1
+         * afterRelationSync=2 afterSecondField=3` (issue #59). Each write path files one
+         * legitimately; what is new is that a form save performs both, because relation state is
+         * written after the entry exists (ADR-015). The result was phantom history — an
+         * intermediate snapshot the author never saved — and a bounded 50-version budget spent at
+         * twice the rate or worse.
+         */
+        /*
+         * ⚠️ ONE CALL, because the sync and the reconcile have to be one locked unit: the reconcile
+         * reads the relation state back, and a concurrent save landing between them made this
+         * save's revision record the OTHER save's relations. Measured — `A chose [1]; B chose [2];
+         * A's revision recorded [2]`.
+         *
+         * ⚠️ The transaction lives on `Entry` rather than here so that it can be tested. This
+         * method needs a Filament form to reach, and a test that rebuilt the transaction shape
+         * itself would assert a property of its own code — which is exactly how the first version
+         * of that test came to pass whatever this did.
+         */
+        $record->writeRelationsAndReconcile(
+            fn () => $this->syncEachRelationField($record, $state),
+        );
+    }
+
+    /**
+     * Opens the register's window, so this save's revision is the only one recorded.
+     *
+     * ⚠️ Called from the `mutateFormDataBefore*` hooks because those are the last point that runs
+     * BEFORE the entry write, and the register has to be open by the time `recordRevision()` runs.
+     *
+     * ⚠️ OPENING IS THE POINT, not clearing, and review is the reason it is stated that way.
+     * `recordRevision()` is the single place every revision is created — API, importer, queue,
+     * console — so registering unconditionally meant a long-lived worker held one array element per
+     * entry it ever revised, with nothing that would ever come back for them. Only a form save has a
+     * reconciler, so only a form save opens the window.
+     *
+     * ⚠️ A CREATE STILL OPENS IT, with nothing to clear: the entry has no key until it is inserted,
+     * so no stale note for it can exist, but `recordRevision()` needs permission to file the note it
+     * makes with the real key a moment later.
+     */
+    private function rememberRevisionBeforeWrite(): void
+    {
+        $record = $this->getRecord();
+
+        app(RecordedRevisions::class)->open(
+            $record instanceof Entry && $record->exists ? (int) $record->getKey() : null,
+        );
+    }
+
+    /** @param  array<string, mixed>  $state */
+    private function syncEachRelationField(Entry $record, array $state): void
+    {
         foreach ($this->relationFields() as $field) {
             $handle = $field->fieldStorage->handle;
 

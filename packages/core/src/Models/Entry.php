@@ -22,6 +22,7 @@ use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Fields\FieldTypeRegistry;
 use Kitsune\Core\Fields\StorageStrategy;
 use Kitsune\Core\Relations\GuardedBelongsToMany;
+use Kitsune\Core\Schema\RecordedRevisions;
 use Kitsune\Core\Schema\RevisionWrites;
 use Kitsune\Core\Tenancy\Attributes\SiteScoped;
 use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
@@ -379,6 +380,191 @@ class Entry extends Model implements RequiresModelSave
     }
 
     /**
+     * Writes this entry's relations and reconciles the save's single revision, as one unit.
+     *
+     * ⚠️ ONE TRANSACTION AND ONE LOCK ACROSS BOTH HALVES, because the reconcile READS the relation
+     * state back and a concurrent save can change it in between. Measured before this existed, with
+     * a second save's sync landing in the window:
+     *
+     *     A chose [1]; B chose [2]; A's revision recorded [2]  => MIS-RECORDED
+     *
+     * `versioned()` locks the entry for each individual sync, so the writes themselves serialise —
+     * but that lock is released when its transaction commits, and a reconcile outside it re-reads
+     * whatever the last writer left. A's own revision then asserted B's relations: not a lost
+     * write, but a false record of what an author did, which for a history is the same damage.
+     *
+     * Holding the lock here covers every field's sync AND the reconcile, which is the only span
+     * over which "the relations as THIS save left them" is a meaningful thing to read.
+     * `versioned()`'s own transaction nests as a savepoint and its lock is a no-op inside this one.
+     *
+     * ⚠️ ON THE MODEL RATHER THAN IN `SyncsFieldRelations`, so it can be tested. The trait's method
+     * needs a Filament form to reach, and a test that reproduced the transaction shape itself would
+     * assert a property of its own code rather than of this — which is how the first version of that
+     * test came to pass whatever the trait did.
+     *
+     * @param  callable():void  $sync
+     */
+    public function writeRelationsAndReconcile(callable $sync): void
+    {
+        DB::transaction(function () use ($sync): void {
+            // withoutGlobalScopes, as in `versioned()`: this is a lock rather than a read that
+            // reaches a caller, and a scoped query that matched nothing would take no lock at all.
+            self::query()->withoutGlobalScopes()->whereKey($this->getKey())->lockForUpdate()->get();
+
+            /*
+             * ⚠️ READ INSIDE THE LOCK, and it used to be passed in from outside — which review found.
+             * A relations-only save read this before the transaction opened, so: it read X, another
+             * request changed the relations to Y, and this request then wrote X back. The fallback
+             * comparison saw final X equal to the before-state, filed nothing, and history was left
+             * with a revision describing Y while the live entry held X.
+             *
+             * The whole point of the lock is that the relations do not move under this save, and a
+             * before-state read outside it is a value from before that guarantee started. So the
+             * parameter is gone rather than documented: a caller cannot pass a stale one if there is
+             * nothing to pass.
+             */
+            $relationsBefore = $this->relationState();
+
+            RevisionWrites::suspend($sync);
+
+            $this->reconcileRevisionAfterRelationSync($relationsBefore);
+        });
+    }
+
+    /**
+     * Makes ONE revision represent a form save, after its relations have been written.
+     *
+     * ⚠️ A FORM SAVE WAS FILING 1 + N REVISIONS, one per relation field (issue #59). Measured:
+     * `created=1  afterRelationSync=2  afterSecondField=3`. Two write paths each legitimately
+     * file one — the entry write through the model event, and `GuardedBelongsToMany::sync()`
+     * through `recordRevisionForRelationChange()` — and neither is wrong alone. What is new is
+     * that a FORM save does both, because relation state is written after the entry exists
+     * (ADR-015). The cost is phantom history and a 50-version budget consumed at 2x or worse.
+     *
+     * ⚠️ SUPPRESSING THE SYNC'S REVISION ALONE IS NOT THE FIX, and this method exists because
+     * both obvious answers are wrong:
+     *
+     * - `entry_revisions` has a `relation_state` column, so a revision DOES capture relations.
+     *   The entry write's snapshot is taken BEFORE they are written, so keeping only that one
+     *   leaves history asserting "no relations" for the save that added them.
+     * - Suspending both and always filing one at the end loses the change entirely on an edit
+     *   where relations are the ONLY thing that changed: the entry write is not dirty, so it
+     *   files nothing, and the sync's revision was the sole record.
+     *
+     * So the reconciler asks the WRITER which revision it filed, rather than inferring it: if this
+     * save filed one, its relation state is completed in place — the same operation `redactField()`
+     * already performs on a revision, so mutating one is precedented rather than a new liberty. If
+     * it filed none, relations were the only change and one is recorded now.
+     *
+     * @param  array<string, list<int>>  $relationsBefore
+     */
+    public function reconcileRevisionAfterRelationSync(array $relationsBefore): bool
+    {
+        if (RevisionWrites::suspended()) {
+            return false;
+        }
+
+        /*
+         * ⚠️ THE REGISTER, NOT A GUESS, and review is the reason. Two guesses were tried and both
+         * are wrong:
+         *
+         * - An id comparison — "the newest revision is newer than the one before my write" — completes
+         *   SOMEBODY ELSE'S revision when a concurrent save files one in that window. The entry write
+         *   and each relation sync are separate transactions, so the window is real.
+         * - A STATE comparison — "the newest revision already describes the entry as this save left
+         *   it" — replaced it, and review found the hole: the comparison covers `VERSIONED_COLUMNS`
+         *   and CANNOT cover `relation_state`, because the relations are what is being written. Two
+         *   editors saving the same title and different relations both concluded the newest revision
+         *   was theirs; the second overwrote the first's relation snapshot, and one save disappeared
+         *   from history. The docblock here claimed that case was "harmless". It was not.
+         *
+         * `RecordedRevisions` holds what this process actually wrote, so a concurrent request's
+         * revision can never be mistaken for this one's — there is nothing to infer.
+         */
+        $mine = app(RecordedRevisions::class)->take((int) $this->getKey());
+
+        if ($mine !== null) {
+            $revision = $this->revisions()->whereKey($mine)->first();
+
+            /*
+             * ⚠️ Null is possible and is not an error: `pruneRevisions()` runs in the same write and
+             * a 50-version budget can retire the revision just filed. Falling through records the
+             * relation change on its own, which is the honest answer when the snapshot is gone.
+             */
+            /*
+             * ⚠️ OWNING IT IS NOT ENOUGH — IT MUST STILL BE THE NEWEST, which review found. Save A
+             * files its scalar revision; save B then completes a NEWER scalar-and-relation revision;
+             * A finally syncs its relations. Completing A's older revision then leaves history ending
+             * with B's, claiming B's relations, while A's later relation write is what is live. The
+             * newest revision has to describe the newest state.
+             *
+             * Overtaken, this falls through and records a revision for the current state instead —
+             * which is the same answer as "relations were the only change", because from history's
+             * point of view that is exactly what this save now is.
+             */
+            $newest = $this->revisions()->max('id');
+
+            if ($revision instanceof EntryRevision && (int) $newest === (int) $mine) {
+                $current = $this->relationState();
+
+                if ($revision->relation_state === $current) {
+                    return false;
+                }
+
+                $revision->relation_state = $current;
+                $revision->save();
+
+                return true;
+            }
+        }
+
+        /*
+         * Nothing was filed, so the relations were the only change — and this is the case that
+         * makes blanket suppression wrong. `recordRevisionForRelationChange()` still compares
+         * against `$relationsBefore`, so a sync that changed nothing files nothing.
+         *
+         * ⚠️ FROM THE LOCKED ROW, NOT FROM THIS INSTANCE, which review found — and it is the same
+         * defect as the overtaken check above, one layer down. `recordRevision()` snapshots
+         * `$this->getAttribute(...)`, and on the overtaken path `$this` is precisely the save whose
+         * scalars are no longer live: A wrote the title `A`, B overwrote it with `B` and filed a
+         * newer revision, and A then fell through to here still holding `A`. History ended with a
+         * revision claiming A's title and A's relations over a row holding B's title — a state that
+         * never existed, and one "restore the latest version" would have reverted B's title to.
+         *
+         * The reload is what `RecordsRelationRevisions::versioned()` already does at its own call
+         * site: it loads the entries inside the lock and records from those instances, so nothing
+         * there is stale. This is the path that skipped it.
+         */
+        $this->syncScalarsFromLockedRow();
+
+        return $this->recordRevisionForRelationChange($relationsBefore);
+    }
+
+    /**
+     * Replace this instance's attributes with the row as it currently stands.
+     *
+     * ⚠️ Attributes only. `relationState()` reads the pivot table directly and `$retainedOriginals`
+     * is a plain property, so this save's pre-sanitization originals survive a reload that its
+     * scalars do not — which is right both ways round: the originals belong to this write, and the
+     * scalars belong to whoever wrote them last.
+     *
+     * ⚠️ withoutGlobalScopes, as everywhere else in this transaction: the row is being read to
+     * describe it, not to hand it to a caller, and a scoped query that matched nothing would leave
+     * the stale attributes in place — failing open on exactly the case this exists for.
+     */
+    private function syncScalarsFromLockedRow(): void
+    {
+        $live = self::query()->withoutGlobalScopes()->whereKey($this->getKey())->first();
+
+        // ⚠️ Gone is not an error and not a reason to write A's stale values either: a hard delete
+        // in this window means there is no row for a revision to describe, and the comparison in
+        // `recordRevisionForRelationChange()` is what decides whether to file one.
+        if ($live instanceof self) {
+            $this->setRawAttributes($live->getAttributes(), sync: true);
+        }
+    }
+
+    /**
      * The values a revision would record, as they currently stand.
      *
      * ⚠️ RAW originals rather than accessor values. `published_at` casts to a
@@ -486,7 +672,7 @@ class Entry extends Model implements RequiresModelSave
             $snapshot[$attribute] = $this->getAttribute($attribute);
         }
 
-        $this->revisions()->create([
+        $revision = $this->revisions()->create([
             ...$snapshot,
             'values' => $this->values,
             // The third storage strategy. Kept OUT of the snapshot list because
@@ -503,6 +689,14 @@ class Entry extends Model implements RequiresModelSave
             'unsanitized_values' => $this->retainedOriginals === [] ? null : $this->retainedOriginals,
             'author_id' => $this->author_id,
         ]);
+
+        /*
+         * ⚠️ NOTED FOR THE RECONCILER, because this is the only place that KNOWS. A form save
+         * writes the entry and then its relations (ADR-015), and the second half has to tell a
+         * revision this save filed from one that was already there. Inferring it does not work —
+         * see `RecordedRevisions` for the two attempts and why each failed.
+         */
+        app(RecordedRevisions::class)->note((int) $this->getKey(), (int) $revision->getKey());
 
         // Cleared HERE rather than left to expire. Carrying them forward would attach
         // this save's originals to a later revision — a false record of what an author
