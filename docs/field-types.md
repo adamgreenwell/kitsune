@@ -199,6 +199,56 @@ A named capture may use a name in **any script** — `(?<é>`, `(?<日本>`, `(?
 
 ⚠️ Those rows are the ones to read twice, because both engines *compile* every one of them. A backreference is portable exactly when its group **must** participate — existence is not enough, and neither is opening earlier in the pattern.
 
+---
+
+> ⚠️ **Amended — rule 3 is enforced by a published grammar, not by screening divergences.** Decided under [#44](https://github.com/adamgreenwell/kitsune/issues/44). The table above stays as the **evidence**, because it is what the decision rests on; it is no longer the mechanism.
+>
+> **Why the shape changed.** Every row above was found by a reviewer noticing the next case — nine consecutive rounds of it. The two parts of the screen that **stopped** producing findings are the two that switched from listing offenders to listing what is allowed: the group prefixes and the Unicode property names. Neither has produced a finding since. Everything still enumerating divergences kept producing them.
+>
+> A denylist **fails open**: a construct nobody anticipated is accepted and published wrong, silently. An allowlist fails closed — an unknown construct is refused because it was never admitted, not because someone remembered it. Rule 3 says `apiSchema()` may only publish a constraint the consumer can enforce; a grammar makes that enforceable *by construction* rather than by enumeration.
+>
+> **Fresh evidence, measured 2026-09-09.** 103 candidate constructs, enumerated from six independent angles, run through one shared case file so PCRE and ECMAScript are asked the same question. At production fidelity — PCRE compiling `Pattern::delimit()`'s output, ECMAScript compiling the published source — **three constructs the screen accepts today still diverge**:
+>
+> | Pattern | PCRE | ECMAScript |
+> |---|---|---|
+> | `^(?=a)+a$` | compiles, matches | **refuses to compile** under `u` — *"Invalid quantifier"* |
+> | `(?<=(a\|aa))b\1$` | no match | **match** — PCRE orders lookbehind branches by length, ECMAScript by written order |
+> | `^([a-zA-Z0-9]+\.?)+@x\.com$` | **errors** — backtrack limit exhausted | completes |
+>
+> ⚠️ Two apparent findings were **my instrument, not the code**, and are recorded because they change how this must be measured: comparing with `/u` instead of `/uD` invented three `$` divergences, and comparing *raw source* in both engines invented four more — `delimit()` already rewrites `.` and `\s` to explicit ECMAScript-equivalent classes. Raw-vs-raw reported 7 divergences; true fidelity reports 3.
+>
+> ### The grammar
+>
+> A pattern is accepted when **every construct in it appears below**. Anything else is refused with the reason, whether or not anyone anticipated it.
+>
+> | Permitted | Notes |
+> |---|---|
+> | literal characters | a metacharacter must be escaped, from the portable punctuation set |
+> | `[...]`, `[^...]`, ranges `a-z` | with permitted escapes inside |
+> | `.` and `\s` `\S` | permitted **because `delimit()` normalises them** server-side to explicit ECMAScript-equivalent classes. They are the only constructs admitted by rewriting rather than by agreeing |
+> | `\p{...}` `\P{...}` | names from the published category, property and prefix allowlists |
+> | `^` `$` | `$` is portable only because `D` is set; it cannot be expressed in the published pattern and must never be dropped |
+> | `*` `+` `?` `{n}` `{n,}` `{n,m}` and lazy forms | upper bound **at most 65535** — measured: PCRE refuses to compile above it, ECMAScript allows far more |
+> | `(?:...)` `(...)` `(?=...)` `(?!...)` `(?<=...)` `(?<!...)` `(?<name>...)` | the existing group allowlist, unchanged |
+> | `\|` | alternation |
+> | `\1` `\k<name>` | only where the group **must** participate — see the rows above |
+> | `\t` `\n` `\r` `\f` `\xHH` | `\v` is excluded: vertical whitespace here, the letter `v` there |
+>
+> ### Three rules the construct list cannot express
+>
+> ⚠️ **An allowlist of constructs is necessary and not sufficient**, and the third row of the divergence table above is why.
+>
+> 1. **No quantifier on an assertion.** `(?=a)+` is built from two permitted constructs and does not compile under ECMAScript `u`. Checked against **`u`-mode specifically**, because Annex B makes the unflagged dialect more permissive than the flagged one.
+> 2. **A lookbehind's alternatives must be equal length.** PCRE orders them by length, ECMAScript by written order, so a differing-length alternation changes which group captured what.
+> 3. **No unbounded quantifier over a group containing one.** `([a-zA-Z0-9]+\.?)+` is entirely permitted constructs and exhausts PCRE's backtrack limit on adversarial input — where `preg_match()` returns `false` rather than a verdict. This is **not a portability problem**; it is catastrophic backtracking, and ADR-027's 1 vCPU floor is why it cannot be left to the consumer.
+>
+> ### What this costs
+>
+> Measured, so it is a number rather than a worry: of 103 candidates, **two** are refused today that both engines agree on — `\p{Lower}` and `\p{Alpha}`, POSIX-style aliases missing from the property allowlist. Widening a list is a reviewable, testable act; a denylist's gaps are found by accident. Those two are added.
+>
+> ⚠️ **Migration is not optional.** Patterns already authored were accepted by the screen, not by the grammar, so any that fall outside it must be found before this lands — a pattern that saved yesterday and is refused today is a broken install, not a fixed one.
+
+
 The same applies to `\k<name>`: a named reference is a backreference. And optionality is **inherited** — `^((a))?\2$` and `^(?:(a))?\1$` both diverge, because the enclosing group carries the quantifier while the capture itself carries none, and the enclosing group need not be a capturing one.
 
 Participation is decided against the group's **own closing parenthesis**, not against nesting. `^((a)\2)$` and `^(a(b))\2$` sit inside an outer group that has not closed and **agree** in both engines, so refusing them would be a false refusal.
