@@ -645,6 +645,86 @@ it('does not call two different numeric-looking strings the same value', functio
         ->toBe('0e1', 'a loose comparison called 0e1 and 0e2 the same value');
 });
 
+it('does not let a proof outlive the attempt that armed it', function (): void {
+    /*
+     * ⚠️ VALUE EQUALITY CANNOT SEE THIS, which is the point and is why it needed a second mechanism
+     * rather than a stricter comparison. Validity changed while every snapshotted value stayed
+     * identical — because what changed is the WORLD, not the row. Review found it.
+     *
+     * Measured end to end before the fix:
+     *
+     *   1. a Site create names another org, passes refuseOverlappingClaim() because no rival holds the
+     *      host yet, and arms the proof in its `saving` listener
+     *   2. EnforcesScope's `creating` guard refuses it — and `creating` fires INSIDE performInsert(),
+     *      which is why the try/finally lives there
+     *   3. a rival org claims the same host at `/`
+     *   4. the SAME INSTANCE, retried with saveQuietly(), runs no listener at all — so neither the
+     *      overlap check nor the scope guard is consulted — and the proof still described these exact
+     *      values, so the builder allowed it: `/` and `/news` both landed on one hostname
+     */
+    $theirs = Org::create(['name' => 'Theirs', 'slug' => 'theirs-proof']);
+    $third = Org::create(['name' => 'Third', 'slug' => 'third-proof']);
+
+    $site = new Site([
+        'org_id' => $theirs->id, 'handle' => 'sneak', 'slug' => 'sneak', 'name' => 'Sneak',
+        'locale' => 'en', 'url_strategy' => 'domain', 'base_url' => 'https://sneak.test/news',
+    ]);
+
+    // Attempt one: refused by the scope guard, which runs after the listener that arms the proof.
+    expect(fn () => $site->save())->toThrow(RuntimeException::class, 'Refusing to write')
+        ->and($site->guardedColumnsAreDerived())
+        ->toBeFalse('the proof outlived the attempt that armed it');
+
+    // A third org now claims the same host at the root, which overlaps `/news`.
+    app(Context::class)->setOrg($third);
+
+    Site::create([
+        'org_id' => $third->id, 'handle' => 'rival', 'slug' => 'rival', 'name' => 'Rival',
+        'locale' => 'en', 'url_strategy' => 'domain', 'base_url' => 'https://sneak.test',
+    ]);
+
+    app(Context::class)->setOrg($this->org);
+
+    /*
+     * ⚠️ THE RETRY IS QUIET, so nothing re-derives and nothing re-checks. The builder has only the
+     * proof to go on, and the proof must be gone — a save that did not happen cannot vouch for one
+     * that is happening now.
+     */
+    expect(fn () => $site->saveQuietly())->toThrow(RuntimeException::class, 'cannot be written by')
+        ->and(DB::table('sites')->where('canonical_host', 'sneak.test')->count())
+        ->toBe(1, 'the overlapping claim was written on a proof from an aborted attempt');
+});
+
+it('lets the reviewable escape hatch through the detached-key guard', function (): void {
+    /*
+     * ⚠️ THE REFUSAL NAMED A REMEDY THAT THE REFUSAL ITSELF DEFEATED, which review found — worse than
+     * no message. `guardScopeKeys()` stands down under `ScopeWrites::suspended()`, and its comment says
+     * "the reviewable escape hatch stands BOTH enforcers down, not one"; the no-context branch added
+     * last round was a third enforcer, running in front of it, telling the caller to use a hatch it
+     * would not honour.
+     *
+     * Provisioning with no `Context` is the documented reason that hatch exists.
+     */
+    app(Context::class)->forget();
+
+    // `Org` is the root of the hierarchy and carries no scope of its own, so it needs no hatch.
+    $org = Org::create(['name' => 'Provisioned', 'slug' => 'provisioned']);
+
+    $id = Site::withoutScopeBecause(
+        'provisioning: a console command establishes the first site before any context exists',
+        fn ($query) => $query->insertGetId(siteRow($org->id, 'provisioned')),
+    );
+
+    expect($id)->toBeGreaterThan(0)
+        ->and((int) DB::table('sites')->where('id', $id)->value('org_id'))->toBe($org->id);
+
+    // And without the hatch it is still refused, so the stand-down is about the hatch and not the row.
+    expect(fn () => Site::query()->insertGetId(siteRow($org->id, 'unhatched')))
+        ->toThrow(RuntimeException::class, 'from no scope at all');
+
+    app(Context::class)->setOrg($this->org);
+});
+
 it('refuses updateOrInsert, which no guard on this builder can reach', function (): void {
     /*
      * ⚠️ FORWARDED WHOLE TO THE QUERY BUILDER, so neither the insert overrides nor the update one runs

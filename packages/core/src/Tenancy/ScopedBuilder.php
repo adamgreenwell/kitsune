@@ -227,6 +227,20 @@ class ScopedBuilder extends Builder
      */
     private function refuseDetachedScopeKeys(array $values): void
     {
+        /*
+         * ⚠️ THE ESCAPE HATCH STANDS THIS DOWN TOO, and review found it did not — while the refusal
+         * below names that hatch as the remedy. `guardScopeKeys()`'s own check says "the reviewable
+         * escape hatch stands BOTH enforcers down, not one", and this was a third enforcer running in
+         * front of it: `Site::withoutScopeBecause('provisioning', fn ($q) => $q->insertGetId([...]))`
+         * threw from the no-context branch before the suspension was ever consulted.
+         *
+         * A guard whose message recommends a remedy that the guard itself defeats is worse than no
+         * message — provisioning is the documented reason the hatch exists.
+         */
+        if (ScopeWrites::suspended()) {
+            return;
+        }
+
         $model = $this->getModel();
         $detached = [];
 

@@ -10,6 +10,8 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Tenancy\Concerns;
 
+use Illuminate\Database\Eloquent\Builder;
+
 /**
  * Lets a `RequiresModelSave` model tell the builder its guarded columns have been derived.
  *
@@ -51,6 +53,12 @@ trait DerivesGuardedColumns
      * without deriving again and the proof no longer describes the write, whatever happened to the
      * save that made it.
      *
+     * ⚠️ AND VALUES ARE NOT ENOUGH ON THEIR OWN, which the next round of review established: validity
+     * can change while every snapshotted value stays identical, because a rival claiming the same
+     * hostname changes the WORLD rather than the row. So the snapshot answers "do these columns still
+     * hold what was derived", and `performInsert()`/`performUpdate()` answer "and was that derivation
+     * part of THIS attempt" — two questions, and neither mechanism can ask the other's.
+     *
      * @var array<string, mixed>|null
      */
     private ?array $guardedColumnsDerived = null;
@@ -62,6 +70,54 @@ trait DerivesGuardedColumns
         static::saved(function (self $model): void {
             $model->guardedColumnsDerived = null;
         });
+    }
+
+    /**
+     * ⚠️ THE PROOF IS CONSUMED BY THE ATTEMPT, HOWEVER THE ATTEMPT ENDS, and review found that value
+     * equality could not express this: validity can change while every snapshotted value stays
+     * identical, because what changed is the WORLD rather than the row.
+     *
+     * Measured. A `Site` create names another org, passes `refuseOverlappingClaim()` because no rival
+     * holds the host yet, arms the proof in its `saving` listener, and is then refused by
+     * `EnforcesScope`'s `creating` guard. A rival now claims the same host at `/`. Retrying THE SAME
+     * INSTANCE through `saveQuietly()` runs no listener at all — so neither the overlap check nor the
+     * scope guard is consulted — and the proof still describes these exact values, so the builder
+     * accepted the write and both `/` and `/news` landed on one hostname.
+     *
+     * ⚠️ `performInsert()` AND `performUpdate()` RATHER THAN `save()`, and the difference is what makes
+     * this hold. `fireModelEvent('creating')` is inside `performInsert()`, so a guard that throws there
+     * throws inside this `try`. And a trait's `save()` would be SILENTLY shadowed by a model that
+     * defines its own — `Site` does, on another branch — which is the kind of collision this codebase
+     * has spent rounds on. These two are not overridden by any model, and `Site::save()`'s
+     * `parent::save()` still routes through them.
+     *
+     * ⚠️ IT ALSO COVERS THE ORDINARY CASE, which makes the `saved` listener above redundant rather than
+     * wrong: a completed write clears here too. The listener stays because a save with nothing dirty
+     * never reaches either method and still fires `saved`.
+     *
+     * @param  Builder<static>  $query
+     */
+    protected function performInsert(Builder $query)
+    {
+        try {
+            return parent::performInsert($query);
+        } finally {
+            $this->guardedColumnsDerived = null;
+        }
+    }
+
+    /**
+     * See `performInsert()`: the proof belongs to one attempt, and an update's guards can abort too.
+     *
+     * @param  Builder<static>  $query
+     */
+    protected function performUpdate(Builder $query)
+    {
+        try {
+            return parent::performUpdate($query);
+        } finally {
+            $this->guardedColumnsDerived = null;
+        }
     }
 
     public function guardedColumnsAreDerived(): bool
