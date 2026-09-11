@@ -17,17 +17,23 @@ use DOMNode;
 /**
  * Gives every text-bearing block inside a rich text value its own direction.
  *
- * @internal Not part of the field-type contract, and not a seam a plugin may bind to. Review is right
- *           that a tag is not a visibility — this codebase has already rejected `@internal` twice for
- *           exactly that reason — so the tag is the weaker half and the namespace is the other: nothing
- *           a plugin imports lives in `Fields\Internal`, and no plugin-facing class mentions this one.
- *           `Entry` applies it from a PRIVATE method, which is the construction
- *           `conversionLostSomething()` settled on as *"the first version a plugin cannot reach"*.
+ * ⚠️ A TRAIT OF PRIVATE METHODS, NOT A CLASS OF PUBLIC STATICS, and review raised that twice before I
+ * took it. My argument was that this is permanent rather than a stopgap, so binding to it springs no
+ * compatibility trap — which answers a different objection from the one being made. CONTRIBUTING's
+ * freeze is about the SURFACE, not about what the surface is used for, and an autoloadable class with
+ * public statics is surface whatever its intentions.
  *
- *           What that still does not prevent is a plugin calling this class by name. PHP has no
- *           package-private, so the remaining options are 600 lines of DOM walking inside `Entry` or
- *           this — and unlike the stopgaps that reasoning was written for, this is not due for removal
- *           at v1.2, so binding to it creates no compatibility trap to spring.
+ * There is now no callable API at all: every method is private, so the only way to reach one is to use
+ * the trait, which copies the methods into a class of your own rather than binding to these. That is
+ * the strongest construction PHP offers without package-private, and it matches what
+ * `conversionLostSomething()` settled on after three worse homes — *"the first version a plugin cannot
+ * reach at all"*.
+ *
+ * ⚠️ THE COST IS THAT ITS TWO USERS CARRY METHODS THEY DO NOT CALL. `RichTextType` needs only the
+ * serialiser and `Entry` needs only the entry point, and both get all sixteen. The alternative was two
+ * copies of a DOM serialiser, which is the drift this file was extracted to remove — a private method
+ * nobody calls is inert, and a second copy of a serialiser is a bug waiting for one of them to be
+ * fixed.
  *
  * ⚠️ IT LIVES HERE RATHER THAN IN `RichTextType` BECAUSE ADR-029 SAYS IT MUST, and review found the
  * ADR claiming a guarantee this implementation did not keep. That ADR's own test is: *"can a new field
@@ -53,7 +59,7 @@ use DOMNode;
  * `castToStorage()` records: threading a presentation concern through the sanitiser means every future
  * direction change edits security expectations, and a reviewer cannot tell which half is which.
  */
-final class BlockDirection
+trait StampsBlockDirection
 {
     /**
      * The only values that establish a direction.
@@ -165,7 +171,7 @@ final class BlockDirection
      * everything but markup, and it is wrapped in one so that it has somewhere to carry a direction.
      * That is a reshape, and it is confined to the case where the alternative is no direction at all.
      */
-    public static function stampedInto(string $html): string
+    private static function stampedInto(string $html): string
     {
         if (trim($html) === '') {
             return $html;
@@ -710,7 +716,7 @@ final class BlockDirection
      * unwraps it because `div` is not an allowed tag, and `withBlockDirection()` runs on output that
      * has already been through that.
      */
-    public static function serialize(DOMNode $parent): string
+    private static function serialize(DOMNode $parent): string
     {
         $document = $parent instanceof DOMDocument ? $parent : $parent->ownerDocument;
 

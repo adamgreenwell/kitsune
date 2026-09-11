@@ -21,7 +21,7 @@ use Kitsune\Core\Audit\AuditedBuilder;
 use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Fields\FieldType;
 use Kitsune\Core\Fields\FieldTypeRegistry;
-use Kitsune\Core\Fields\Internal\BlockDirection;
+use Kitsune\Core\Fields\Internal\StampsBlockDirection;
 use Kitsune\Core\Fields\StorageStrategy;
 use Kitsune\Core\Fields\ValueDirection;
 use Kitsune\Core\Relations\GuardedBelongsToMany;
@@ -60,6 +60,7 @@ class Entry extends Model implements RequiresModelSave
 {
     use EnforcesScope;
     use SoftDeletes;
+    use StampsBlockDirection;
 
     /**
      * Mirrors the column default, so the in-memory model is not lying.
@@ -512,12 +513,12 @@ class Entry extends Model implements RequiresModelSave
 
         if (is_array($stored)) {
             return array_map(
-                static fn (mixed $one): mixed => is_string($one) ? BlockDirection::stampedInto($one) : $one,
+                static fn (mixed $one): mixed => is_string($one) ? self::stampedInto($one) : $one,
                 $stored,
             );
         }
 
-        return is_string($stored) ? BlockDirection::stampedInto($stored) : $stored;
+        return is_string($stored) ? self::stampedInto($stored) : $stored;
     }
 
     private function recordRevision(): void

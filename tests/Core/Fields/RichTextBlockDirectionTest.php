@@ -12,6 +12,7 @@ use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Fields\Control;
 use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Fields\FieldTypeRegistry;
+use Kitsune\Core\Fields\Internal\StampsBlockDirection;
 use Kitsune\Core\Fields\Types\BaseFieldType;
 use Kitsune\Core\Fields\Types\RichTextType;
 use Kitsune\Core\Models\Entry;
@@ -605,6 +606,40 @@ it('retains nothing between calls, because there is no cache to retain in', func
 
     expect($clean)->toBe('<p>مرحبا</p>')
         ->and($type->sanitize($clean))->toBe($clean, 'sanitising twice is not idempotent');
+});
+
+it('exposes no surface a plugin could bind to for the direction pass', function (): void {
+    /*
+     * ⚠️ RAISED TWICE BEFORE I TOOK IT, and my argument answered a different objection. I said the
+     * helper is permanent rather than a stopgap, so binding to it springs no compatibility trap —
+     * CONTRIBUTING's freeze is about the SURFACE, not about what the surface is used for, and an
+     * autoloadable class with public statics is surface whatever its intentions.
+     *
+     * There is no callable API at all now: a trait whose every method is private. The only way to reach
+     * one is to `use` the trait, which COPIES the methods into a class of your own rather than binding
+     * to these — the strongest construction PHP offers without package-private, and the one
+     * `conversionLostSomething()` settled on after three worse homes.
+     *
+     * ⚠️ ASSERTED AS A COUNT OF ZERO rather than by naming the methods, because the failure mode is a
+     * method being ADDED as public later — which a list of known names cannot see.
+     */
+    $trait = new ReflectionClass(StampsBlockDirection::class);
+
+    $public = array_filter(
+        $trait->getMethods(ReflectionMethod::IS_PUBLIC),
+        static fn (ReflectionMethod $method): bool => $method->class === $trait->getName(),
+    );
+
+    expect($trait->isTrait())->toBeTrue()
+        ->and($public)->toBe([], 'the direction pass grew a public method a plugin can bind to')
+        ->and(class_exists('Kitsune\\Core\\Fields\\BlockDirection'))
+        ->toBeFalse('the autoloadable helper class is back');
+
+    // ⚠️ And `BaseFieldType` carries none of it either, which was the concrete load-time break.
+    $base = new ReflectionClass(BaseFieldType::class);
+
+    expect($base->hasMethod('withValueDirection'))
+        ->toBeFalse('the plugin-facing base class grew the direction hook again');
 });
 
 it('gives per-block direction to any type whose control is rich text', function (): void {

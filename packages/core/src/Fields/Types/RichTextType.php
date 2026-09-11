@@ -17,7 +17,7 @@ use DOMNode;
 use DOMProcessingInstruction;
 use Kitsune\Core\Fields\Control;
 use Kitsune\Core\Fields\FieldConfig;
-use Kitsune\Core\Fields\Internal\BlockDirection;
+use Kitsune\Core\Fields\Internal\StampsBlockDirection;
 
 /**
  * User-supplied HTML rendered on public pages — the ONLY field type in v1
@@ -35,6 +35,8 @@ use Kitsune\Core\Fields\Internal\BlockDirection;
  */
 final class RichTextType extends BaseFieldType
 {
+    use StampsBlockDirection;
+
     /** Never permitted regardless of settings. */
     public const FORBIDDEN_TAGS = ['script', 'style', 'iframe', 'object', 'embed', 'form'];
 
@@ -242,7 +244,7 @@ final class RichTextType extends BaseFieldType
          * in the value's size, and `FieldTypeRegistry` is a singleton so anything kept here is kept
          * for the life of the process.
          */
-        return BlockDirection::serialize($document);
+        return self::serialize($document);
     }
 
     /**
