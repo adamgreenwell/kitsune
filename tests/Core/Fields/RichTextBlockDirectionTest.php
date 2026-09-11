@@ -733,6 +733,39 @@ it('gives per-block direction to any type whose control is rich text', function 
 
     expect($out['module_body'])
         ->toBe('<p dir="auto">hello</p><p dir="auto">world</p>', 'a stray close tag lost content');
+
+    /*
+     * ⚠️ AND A BLOCK THIS VOCABULARY DOES NOT KNOW IS NEITHER WRAPPED NOR LEFT UNDIRECTED, which review
+     * found as one bug wearing two faces. The run pass treated anything that is not a known CONTAINER as
+     * inline — safe for `RichTextType`, every element of whose output is in `ALLOWED_TAGS`, and wrong for
+     * a module type. Measured:
+     *
+     *   <div>مرحبا</div>   ->  <p dir="auto"><div>مرحبا</div></p>
+     *   <h1>مرحبا</h1>     ->  <p dir="auto"><h1>مرحبا</h1></p>
+     *
+     * A browser reparsing that ejects the block from the paragraph, so the element actually bearing the
+     * text ends up with no direction — the invalid markup and the missed guarantee are the same defect.
+     *
+     * ⚠️ "NOT A KNOWN BLOCK" IS NOT A DEFINITION OF INLINE. `PHRASING_TAGS` is an allowlist now, so an
+     * unrecognised element is a run boundary — and it is STAMPED rather than wrapped, because `dir` is a
+     * global attribute valid on any element while a `<p>` is valid only in some places. The one safe
+     * thing to do to markup whose content model this pass cannot parse is exactly the thing needed.
+     */
+    foreach ([
+        '<div>مرحبا</div>' => '<div dir="auto">مرحبا</div>',
+        '<h1>مرحبا</h1>' => '<h1 dir="auto">مرحبا</h1>',
+        '<section><div>مرحبا</div></section>' => '<section><div dir="auto">مرحبا</div></section>',
+    ] as $submitted => $expected) {
+        $module = Entry::create([
+            'entry_type_id' => $this->type->id,
+            'title' => 'Module block',
+            'values' => ['module_body' => $submitted],
+        ]);
+
+        $row = json_decode((string) DB::table('entries')->where('id', $module->getKey())->value('values'), true);
+
+        expect($row['module_body'])->toBe($expected, "[{$submitted}] was reshaped or left undirected");
+    }
 });
 
 it('does not retain an original for a clean save, whatever the field holds', function (): void {

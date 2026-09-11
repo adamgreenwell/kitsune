@@ -127,6 +127,30 @@ trait StampsBlockDirection
     private const LIST_TAGS = ['ul', 'ol'];
 
     /**
+     * The tags that may join a loose run, because a `<p>` may legally contain them.
+     *
+     * ⚠️ AN ALLOWLIST, AND REVIEW FOUND WHY IT HAD TO BE. The run pass treated anything that is not a
+     * known CONTAINER as inline, which is safe for `RichTextType`'s output — every element there is in
+     * `ALLOWED_TAGS` — and wrong for a module type returning `Control::RichText`, whose output this pass
+     * now also handles. Measured on a module path:
+     *
+     *   <div>مرحبا</div>      ->  <p dir="auto"><div>مرحبا</div></p>
+     *   <h1>مرحبا</h1>        ->  <p dir="auto"><h1>مرحبا</h1></p>
+     *
+     * A browser reparsing that ejects the block from the paragraph, which leaves the element that
+     * actually bears the text with no direction at all — so the invalid markup and the missed guarantee
+     * are the same bug.
+     *
+     * ⚠️ "NOT A KNOWN BLOCK" IS NOT A DEFINITION OF INLINE, which is the lesson: an allowlist answers
+     * for markup nobody enumerated, and a denylist cannot. It is the same argument `sanitize()`'s own
+     * allowlist rests on, applied to content model rather than to safety.
+     *
+     * These are exactly the phrasing members of `RichTextType::ALLOWED_TAGS`, so for core's output the
+     * behaviour is unchanged by construction rather than by testing.
+     */
+    private const PHRASING_TAGS = ['a', 'br', 'code', 'em', 's', 'strong', 'u', 'img'];
+
+    /**
      * Every tag this implementation can stamp a direction ON, and therefore every tag it must be able
      * to take one back OFF.
      *
@@ -353,6 +377,41 @@ trait StampsBlockDirection
             }
         }
 
+        /*
+         * ⚠️ AND AN ELEMENT THIS VOCABULARY DOES NOT KNOW STILL GETS A DIRECTION, which is the other
+         * half of the same finding. Leaving a module's `<div>` or `<h1>` unwrapped stops the invalid
+         * markup; it does not give the text inside it a direction, and ADR-029's guarantee is about the
+         * direction rather than about the markup.
+         *
+         * ⚠️ STAMPED RATHER THAN WRAPPED, because `dir` is a GLOBAL attribute — valid on any element —
+         * while a `<p>` is valid only in specific places. So the one thing that is safe to do to markup
+         * this pass cannot parse the content model of is exactly the thing needed.
+         *
+         * ⚠️ IT BEARS TEXT DIRECTLY OR IT IS SKIPPED, so this is per block rather than per element:
+         * `<section><div>x</div></section>` stamps the `div`, which holds the text, and leaves the
+         * `section` alone. A wrapper carrying no text of its own resolves from nothing.
+         *
+         * ⚠️ AND FOR CORE'S OUTPUT THIS BRANCH NEVER FIRES, by construction rather than by testing:
+         * every element `RichTextType` emits is in `ALLOWED_TAGS`, and every one of those is in one of
+         * the three lists above. Only a module type's output reaches here, which is the blast radius the
+         * finding is about.
+         */
+        foreach (iterator_to_array($document->getElementsByTagName('*')) as $element) {
+            $tag = strtolower($element->nodeName);
+
+            if ($element === $wrapper || $tag === 'meta' || self::isKnownTag($tag)) {
+                continue;
+            }
+
+            if (self::ownDirection($element) !== null || self::nearestDirection($element) !== null) {
+                continue;
+            }
+
+            if (self::bearsTextDirectly($element)) {
+                $element->setAttribute('dir', 'auto');
+            }
+        }
+
         self::wrapLooseRuns($document, $wrapper);
 
         /*
@@ -427,8 +486,13 @@ trait StampsBlockDirection
         $current = [];
 
         foreach (iterator_to_array($wrapper->childNodes) as $child) {
+            /*
+             * ⚠️ NOT A KNOWN PHRASING TAG MAKES IT A BOUNDARY, and an unknown element used to join the
+             * run instead. See `PHRASING_TAGS`: a module's `<div>` or `<h1>` was wrapped in a `<p>`,
+             * producing markup a browser takes apart.
+             */
             $isBlock = $child instanceof DOMElement
-                && in_array(strtolower($child->nodeName), self::CONTAINER_TAGS, true);
+                && ! in_array(strtolower($child->nodeName), self::PHRASING_TAGS, true);
 
             if ($isBlock) {
                 $runs[] = $current;
@@ -655,6 +719,32 @@ trait StampsBlockDirection
         $direction = strtolower($container->getAttribute('dir'));
 
         return in_array($direction, self::DIRECTIONS, true) ? $direction : null;
+    }
+
+    /** Whether this tag is one the rich text vocabulary names, and therefore one the passes above cover. */
+    private static function isKnownTag(string $tag): bool
+    {
+        return in_array($tag, self::CONTAINER_TAGS, true)
+            || in_array($tag, self::LIST_TAGS, true)
+            || in_array($tag, self::PHRASING_TAGS, true);
+    }
+
+    /**
+     * Whether this element holds text of its own, rather than only elements that hold text.
+     *
+     * ⚠️ DIRECT CHILDREN ONLY, which is what makes the stamp per BLOCK. `textContent` would be true for
+     * every ancestor up to the document, so a wrapper with no words of its own would resolve a direction
+     * from its descendants' — the single-`dir`-on-the-field failure this whole pass exists to avoid.
+     */
+    private static function bearsTextDirectly(DOMNode $element): bool
+    {
+        foreach ($element->childNodes as $child) {
+            if ($child->nodeType === XML_TEXT_NODE && trim($child->textContent) !== '') {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

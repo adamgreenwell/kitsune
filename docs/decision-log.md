@@ -1279,6 +1279,12 @@ So the closed vocabulary reached every control and the cross-cutting rule reache
 
 **A consequence worth having:** with direction applied after the conversion rather than inside it, a conversion is lossy-only again — so the `RichTextType`-by-identity special case in `Entry`'s revision loss check is gone, along with the comment calling it *"the price of freezing the contract before v1.2 and the first thing to undo when it opens."* Moving the seam undid it early.
 
+**And the guarantee now holds for markup this vocabulary does not know, which it did not at first.** The pass treated anything that was not a recognised container as inline — safe while its only caller was `RichTextType`, every element of whose output is in `ALLOWED_TAGS`, and wrong for the module output the seam exists to cover. A module emitting `<div>مرحبا</div>` got `<p dir="auto"><div>…</div></p>`, which a browser takes apart, leaving the element that bears the text with no direction at all: the invalid markup and the missed guarantee were the same defect.
+
+*"Not a known block"* is not a definition of inline. Phrasing content is an allowlist now, so an unrecognised element is a run boundary — and it is **stamped rather than wrapped**, because `dir` is a global attribute valid on any element while a `<p>` is valid only in some places. The one thing that is safe to do to markup whose content model this pass cannot parse is exactly the thing the guarantee needs.
+
+So the ADR is **not** amended to constrain what a `Control::RichText` type may emit, which was the alternative. A guarantee that holds only for the vocabulary core happens to ship is the kind of guarantee invariant 14 forbids publishing.
+
 | Rejected | Why it lost |
 |---|---|
 | Amend this ADR to scope the guarantee to renderer-side direction | It concedes the load-bearing claim. The argument here is that *"issue #39 has already shipped that attribute three times and been short of complete twice, both times because the reach of a correct rule depended on somebody enumerating call sites"* — and the branch that prompted this amendment was the **sixth** round of that same failure. The ADR was the side that was right. |
