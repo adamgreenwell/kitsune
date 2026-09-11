@@ -766,6 +766,36 @@ describe('an assertion consumes nothing, so it cannot divide a run', function ()
     });
 });
 
+describe('a group bounded at zero repetitions is not there', function (): void {
+    /*
+     * ⚠️ AN UPGRADE HAZARD RATHER THAN A HOLE, which is why it is a refusal being removed. Review found
+     * `^a*a*(?:a*){0}b$` REFUSED while `^a*a*b$` — the same regular expression — is deliberately
+     * admitted. A `{0}` group never runs, so it can neither fill a variable-atom run nor cost anything,
+     * and on an upgrade `kitsune:audit-patterns --strict` would have blocked a deploy over a pattern
+     * that saved yesterday. §4 calls that a broken install rather than a fixed one.
+     */
+    it('accepts a pattern a zero-repeat group only appears to lengthen', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))->toBeNull("[{$pattern}] is `^a*a*b$` with dead markup");
+    })->with([
+        '^a*a*(?:a*){0}b$',
+        '^a*(?:a*){0}a*b$',
+        '^a*(?:a*){0,0}b$',
+        '^a*a*(?:a|a){0}b$',
+    ]);
+
+    it('still refuses what the group would have cost if it ran', function (string $pattern): void {
+        /*
+         * ⚠️ ONLY AN UPPER BOUND OF ZERO, or the skip would swallow `{0,}` — which is zero-or-MORE and
+         * is exactly the unbounded repetition rule 3 exists for. And the genuine three-atom run has to
+         * stay refused, or this would have bought its acceptance with a `{0}` somewhere else.
+         */
+        expect(Pattern::unpublishable($pattern))->not->toBeNull("[{$pattern}] runs and must be priced");
+    })->with([
+        '^a*(?:a*){0,}a*b$',
+        '^a*a*a*b$',
+    ]);
+});
+
 describe('a backreference is not a character this proof can read', function (): void {
     /*
      * ⚠️ TWO DEFECTS IN ONE ATOM, both found by review and both about the SCAN rather than the rules.

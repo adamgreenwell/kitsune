@@ -1355,7 +1355,9 @@ final class Pattern
 
             $i = $token['after'] - 1;
 
-            if (! str_starts_with($token['atom'], '(')) {
+            // ⚠️ A group bounded at zero repetitions costs nothing, because it never runs — the same
+            // reason the atom traversal skips it.
+            if (! str_starts_with($token['atom'], '(') || self::neverRuns($token['quantifier'])) {
                 continue;
             }
 
@@ -1780,6 +1782,25 @@ final class Pattern
      * lookbehind variable-length, which is the other rule's business, and they cannot reallocate
      * anything because there is only ever one iteration to keep.
      */
+    /**
+     * Whether this quantifier bounds its atom at zero repetitions, so the atom never runs at all.
+     *
+     * ⚠️ ONLY AN UPPER BOUND OF ZERO. `{0,}` is zero-or-more and runs; `{0}` and `{0,0}` do not, in
+     * either greediness. Review found `^a*a*(?:a*){0}b$` REFUSED while `^a*a*b$` — the same regular
+     * expression — is deliberately admitted, which on an upgrade is `kitsune:audit-patterns --strict`
+     * blocking a deploy over a pattern that saved yesterday. §4 calls that a broken install rather than
+     * a fixed one.
+     */
+    private static function neverRuns(string $quantifier): bool
+    {
+        if (preg_match('/^\{0(?:,([0-9]*))?\}\??$/', $quantifier, $bound) !== 1) {
+            return false;
+        }
+
+        // `{0}` is exactly zero; `{0,m}` is zero only when m is zero; `{0,}` is unbounded and runs.
+        return ! array_key_exists(1, $bound) || $bound[1] === '0';
+    }
+
     private static function repeatsMoreThanOnce(string $quantifier): bool
     {
         if ($quantifier === '' || $quantifier === '?' || $quantifier === '??') {
@@ -2057,7 +2078,12 @@ final class Pattern
             $quantifier = $token['quantifier'];
             $i = $token['after'] - 1;
 
-            if ($atom === '^' || $atom === '$') {
+            /*
+             * ⚠️ AN ANCHOR CONSUMES NOTHING AND A `{0}` GROUP RUNS NEVER, so neither can fill a run or
+             * divide one. The second was review's finding: `(?:a*){0}` read as a variable atom between
+             * two others, refusing a pattern identical to one that is deliberately admitted.
+             */
+            if ($atom === '^' || $atom === '$' || self::neverRuns($quantifier)) {
                 continue;
             }
 
