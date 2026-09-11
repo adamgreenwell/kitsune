@@ -1045,3 +1045,45 @@ it('caps a text field length, which is what the pattern screen\'s bound rests on
     expect(app(FieldTypeRegistry::class)->get('textarea')->validateSettings(['maxLength' => 65535]))
         ->toBeNull();
 });
+
+it('stops at the length rule rather than running the pattern on an oversized value', function (): void {
+    /*
+     * ⚠️ THE CEILING BOUNDS CONFIGURATION, NOT THE VALUE, which review found is the half it does not
+     * cover. `MAX_CONFIGURABLE_LENGTH` limits what an org may configure; it says nothing about the
+     * untrusted value a request submits, and without `bail` Laravel runs every rule — so a
+     * 100,000-character value was handed to the regex even though `max` had already failed. Measured
+     * before the fix: the pattern closure ran.
+     *
+     * The pattern screen permits shapes whose cost grows with the SQUARE of the value length on the
+     * strength of that length being bounded, so evaluating one on a value already known to exceed the
+     * bound is the exact case the bound exists to prevent.
+     */
+    $type = app(FieldTypeRegistry::class)->get('text');
+    $rules = $type->validationRules(configFor('text', ['maxLength' => 32, 'pattern' => '^[a-z]+$']));
+
+    $bail = array_search('bail', $rules, true);
+    $max = array_search('max:32', $rules, true);
+
+    /*
+     * ⚠️ ASSERTED AS "BEFORE THE LENGTH RULE" RATHER THAN "FIRST", because first is not the property
+     * that matters and my first version asserted it and failed: `validationRules()` prepends its own
+     * rules around the scalar ones, so `bail` sits at index 1. What has to hold is that it precedes the
+     * length rule and the pattern closure, since `bail` stops the rules that come after it.
+     */
+    expect($bail)->not->toBeFalse()
+        ->and($max)->not->toBeFalse()
+        ->and($bail)->toBeLessThan($max)
+        ->and($bail)->toBeLessThan(count($rules) - 1);
+
+    // And the pattern rule is still there for a value inside the ceiling.
+    expect(validate('text', ['f' => 'abc'], ['maxLength' => 32, 'pattern' => '^[a-z]+$'])->fails())
+        ->toBeFalse()
+        ->and(validate('text', ['f' => 'ABC'], ['maxLength' => 32, 'pattern' => '^[a-z]+$'])->fails())
+        ->toBeTrue();
+
+    // ⚠️ An over-long value reports the LENGTH and nothing else, which is what proves it stopped.
+    $failed = validate('text', ['f' => str_repeat('a', 64)], ['maxLength' => 32, 'pattern' => '^[a-z]+$']);
+
+    expect($failed->fails())->toBeTrue()
+        ->and($failed->errors()->get('f'))->toHaveCount(1);
+});

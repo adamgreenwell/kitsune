@@ -1172,7 +1172,7 @@ final class Pattern
          * is over branches that can BOTH match, which is what `everyAlternationIsUnambiguous()`
          * already answers for a repetition body.
          */
-        $product = self::ambiguityProduct($frames);
+        $product = self::ambiguityCost($pattern);
 
         if ($product > self::MAX_AMBIGUITY_PRODUCT) {
             return sprintf(
@@ -1205,66 +1205,121 @@ final class Pattern
     }
 
     /**
-     * How many ways this pattern's ambiguous alternations can combine, saturating at PHP_INT_MAX.
+     * How many ways this pattern can match one position, saturating at PHP_INT_MAX.
      *
-     * ⚠️ TOP-LEVEL FRAMES ONLY, and that is not an oversight: an alternation nested inside another
-     * group is inside a frame this already counts, and `everyAlternationIsUnambiguous()` reads a body
-     * to any depth — so counting the outer frame counts the nest. Counting both would multiply the
-     * same ambiguity twice and refuse patterns that are fine.
+     * ⚠️ A RECURSIVE COST MODEL, AFTER TWO FLAT ONES WERE WRONG IN OPPOSITE DIRECTIONS. Review found
+     * both, and the second was the fix for the first:
      *
-     * ⚠️ SATURATES RATHER THAN OVERFLOWING. Thirty binary groups is 2^30, and a pattern at the length
-     * limit could nominally reach 2^250 — which as a float would compare fine and as an int would wrap
-     * negative and compare as SMALL. Saturating keeps the comparison honest at any size.
+     *   - A flat walk over `frames()` multiplied every level of a nest, because a child arrives before
+     *     its parent. Seventeen nestings of `(?:<previous>|a)` were refused as 131,072 combinations,
+     *     and 100,000 Node matches complete in 3 ms.
+     *   - Sorting outermost-first and skipping covered children then UNDERCOUNTED: an ambiguous outer
+     *     alternation suppressed its children while contributing only its own branch count.
+     *     `^(?:` + 28 × `(?:a|a)` + `|` + 28 × `a` + `)$` was read as 2 and is 2^28 — 231 characters,
+     *     and Node spends 10.8 SECONDS on a 29-character subject.
      *
-     * @param  list<array{open:int, close:int, kind:string, body:string, quantifier:string, inLookbehind:bool}>  $frames
+     * A flat product cannot express either shape, because the cost of a group depends on the cost of
+     * what is inside it. Two rules do:
+     *
+     *   SEQUENCE     the product of its parts — each choice multiplies the ones beside it
+     *   ALTERNATION  ambiguous: the SUM of its branches, because every branch must be tried
+     *                prefix-free: the MAX, because at most one can match at a position
+     *
+     * ⚠️ AND THE SUM IS WHAT MAKES NESTING CHEAP AGAIN. `(?:X|a)` costs `cost(X) + 1`, so seventeen
+     * nestings cost 18 rather than 2^17 — the harmless case falls out of the model instead of needing a
+     * containment rule to rescue it. Every earlier case still lands where measurement puts it: thirty
+     * sequential `(?:a|a)` multiply to 2^30, thirty `(?:a|b)` stay at 1, and the nested-in-a-branch case
+     * above reaches 2^28.
+     *
+     * ⚠️ SATURATES RATHER THAN OVERFLOWING. A pattern at the length limit could nominally reach 2^250,
+     * which as an int wraps negative and would compare as SMALL.
      */
-    private static function ambiguityProduct(array $frames): int
+    private static function ambiguityCost(string $body, int $depth = 0): int
     {
-        $product = 1;
-        $covered = [];
+        // The length limit caps nesting at 250; this is the belt to that brace.
+        if ($depth > 64) {
+            return PHP_INT_MAX;
+        }
 
-        /*
-         * ⚠️ OUTERMOST FIRST, AND WITHOUT THIS THE SKIP BELOW DID NOTHING — review found it. `frames()`
-         * appends a group as it CLOSES, so a child arrives before its parent: the containment test ran
-         * with `$covered` still empty for the child, counted it, then counted the parent too and
-         * multiplied every level. Seventeen nestings of `(?:<previous>|a)` were reported as 131,072
-         * combinations and refused, although the expression has eighteen alternative paths and 100,000
-         * Node matches complete in 3 ms.
-         *
-         * ⚠️ A GROUP WITH NO TOP-LEVEL ALTERNATION STILL DOES NOT COVER ITS CHILDREN, which is what
-         * keeps the dangerous shape caught: thirty sequential `(?:a|a)` inside one wrapping group are
-         * each counted, because the wrapper contributes no branches of its own.
-         */
-        usort($frames, static fn (array $a, array $b): int => $a['open'] <=> $b['open']);
+        $branches = self::topLevelBranches($body);
 
-        foreach ($frames as $frame) {
-            // Skip a frame that sits inside one already counted.
-            foreach ($covered as [$open, $close]) {
-                if ($frame['open'] > $open && $frame['close'] < $close) {
-                    continue 2;
-                }
-            }
+        if (count($branches) > 1) {
+            $costs = array_map(
+                static fn (string $branch): int => self::ambiguityCost($branch, $depth + 1),
+                $branches,
+            );
 
-            $branches = self::topLevelBranches($frame['body']);
+            // ⚠️ Prefix-free branches cannot both match at a position, so the cost is the worst single
+            // branch rather than all of them. Ambiguous ones are all tried, so they add up.
+            return self::everyAlternationIsUnambiguous($body)
+                ? max($costs)
+                : self::saturatingSum($costs);
+        }
 
-            if (count($branches) < 2) {
-                continue;
-            }
+        return self::sequenceCost($body, $depth);
+    }
 
-            $covered[] = [$frame['open'], $frame['close']];
+    /**
+     * The cost of a branch with no top-level alternation: the product of the groups inside it.
+     *
+     * ⚠️ ONLY GROUPS CONTRIBUTE, because only a group can hold an alternation. A class or a literal
+     * offers one way to match one position, which is a factor of one — the quantifier rules are what
+     * look at repetition, and doubling up here would count the same construct twice.
+     */
+    private static function sequenceCost(string $body, int $depth): int
+    {
+        $length = mb_strlen($body);
+        $cost = 1;
 
-            if (self::everyAlternationIsUnambiguous($frame['body'])) {
-                continue;
-            }
+        for ($i = 0; $i < $length; $i++) {
+            $token = self::atomAt($body, $i);
 
-            if ($product > intdiv(PHP_INT_MAX, count($branches))) {
+            if ($token === null) {
                 return PHP_INT_MAX;
             }
 
-            $product *= count($branches);
+            $i = $token['after'] - 1;
+
+            if (! str_starts_with($token['atom'], '(')) {
+                continue;
+            }
+
+            $prefix = self::framePrefixLength($token['atom'], 0, self::frameKindAt($token['atom'], 0));
+            $inner = mb_substr($token['atom'], $prefix, mb_strlen($token['atom']) - $prefix - 1);
+
+            $cost = self::saturatingProduct($cost, self::ambiguityCost($inner, $depth + 1));
+
+            if ($cost === PHP_INT_MAX) {
+                return PHP_INT_MAX;
+            }
         }
 
-        return $product;
+        return $cost;
+    }
+
+    /** @param  list<int>  $costs */
+    private static function saturatingSum(array $costs): int
+    {
+        $total = 0;
+
+        foreach ($costs as $cost) {
+            if ($cost >= PHP_INT_MAX - $total) {
+                return PHP_INT_MAX;
+            }
+
+            $total += $cost;
+        }
+
+        return $total;
+    }
+
+    private static function saturatingProduct(int $a, int $b): int
+    {
+        if ($a === 0 || $b === 0) {
+            return 0;
+        }
+
+        return $a > intdiv(PHP_INT_MAX, $b) ? PHP_INT_MAX : $a * $b;
     }
 
     /**

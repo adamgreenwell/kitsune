@@ -143,6 +143,22 @@ final class TextType extends BaseFieldType
     protected function scalarValidationRules(FieldConfig $config): array
     {
         $rules = [];
+
+        /*
+         * ⚠️ `bail` SO THE LENGTH RULE SHORT-CIRCUITS THE PATTERN, which review found was missing and
+         * which is the half the configuration ceiling does not cover. `MAX_CONFIGURABLE_LENGTH` bounds
+         * what an ORG MAY CONFIGURE; it says nothing about the untrusted value a request submits, and
+         * without `bail` Laravel runs every rule — so a 100,000-character value was handed to the regex
+         * even though `max` had already failed on it. Measured: the closure ran.
+         *
+         * The pattern screen permits shapes whose cost grows with the SQUARE of the value length on the
+         * strength of that length being bounded, so evaluating one on a value already known to exceed
+         * the bound is the exact case the bound exists to prevent.
+         *
+         * ⚠️ AND IT STILL RUNS WHEN THE LENGTH PASSES, which is the point of putting `bail` first rather
+         * than dropping the rule: a value inside the ceiling is checked against the pattern as before.
+         */
+        $rules[] = 'bail';
         $rules[] = 'string';
         $rules[] = 'max:'.$this->length($config);
 

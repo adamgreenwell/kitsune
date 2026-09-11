@@ -12,6 +12,7 @@ namespace Kitsune\Core\Console;
 
 use Illuminate\Console\Command;
 use Kitsune\Core\Fields\Pattern;
+use Kitsune\Core\Fields\Types\TextType;
 use Kitsune\Core\Models\FieldStorage;
 
 /**
@@ -57,6 +58,7 @@ final class AuditPatternsCommand extends Command
          * Rows are emitted inside the chunk and only the count is carried.
          */
         $unpublishable = 0;
+        $overLong = 0;
         $examined = 0;
 
         /*
@@ -71,8 +73,33 @@ final class AuditPatternsCommand extends Command
          */
         FieldStorage::query()
             ->whereNotNull('settings')
-            ->chunkById(200, function ($rows) use (&$unpublishable, &$examined): void {
+            ->chunkById(200, function ($rows) use (&$unpublishable, &$overLong, &$examined): void {
                 foreach ($rows as $storage) {
+                    /*
+                     * ⚠️ THE LENGTH CEILING IS AN UPGRADE HAZARD TOO, which review found: this command
+                     * asked `Pattern::unpublishable()` and nothing else, so an installation carrying a
+                     * text field configured above `TextType::MAX_CONFIGURABLE_LENGTH` passed the audit
+                     * and then had the next save of that field refused — a field the author had not
+                     * touched. That is exactly the failure the command exists to prevent, one setting
+                     * along, and §4 says a pattern that saved yesterday and is refused today is a
+                     * broken install rather than a fixed one.
+                     *
+                     * ⚠️ REPORTED SEPARATELY, because the remedies differ. An unpublishable pattern has
+                     * to be rewritten by somebody who knows what the field should accept; an over-long
+                     * `maxLength` is lowered, and the operator needs to know it may truncate what
+                     * authors have already stored. Folding them into one count would name one remedy
+                     * for two problems.
+                     */
+                    $maxLength = $storage->settings['maxLength'] ?? null;
+
+                    if (is_numeric($maxLength) && (int) $maxLength > TextType::MAX_CONFIGURABLE_LENGTH) {
+                        $overLong++;
+
+                        $this->line("  <comment>field_storage #{$storage->getKey()}</comment> <info>{$storage->handle}</info> (org {$storage->org_id})");
+                        $this->line('    maxLength: '.(int) $maxLength.' — the limit is '.TextType::MAX_CONFIGURABLE_LENGTH);
+                        $this->newLine();
+                    }
+
                     $pattern = $storage->settings['pattern'] ?? null;
 
                     if (! is_string($pattern) || $pattern === '') {
@@ -101,16 +128,25 @@ final class AuditPatternsCommand extends Command
          */
         $this->line("examined <info>{$examined}</info> stored pattern".($examined === 1 ? '' : 's'));
 
-        if ($unpublishable === 0) {
-            $this->info('Every stored pattern satisfies the published grammar.');
+        if ($unpublishable === 0 && $overLong === 0) {
+            $this->info('Every stored pattern satisfies the published grammar, and every configured length is within its limit.');
 
             return self::SUCCESS;
         }
 
-        $this->warn("{$unpublishable} stored pattern".($unpublishable === 1 ? ' is' : 's are').' unpublishable.');
-        $this->line('Each must be rewritten before the next save of its field, which will otherwise');
-        $this->line('be refused for a pattern the author did not touch. There is no automatic repair:');
-        $this->line('a pattern says what a field accepts, and only its owner knows what that should be.');
+        if ($unpublishable > 0) {
+            $this->warn("{$unpublishable} stored pattern".($unpublishable === 1 ? ' is' : 's are').' unpublishable.');
+            $this->line('Each must be rewritten before the next save of its field, which will otherwise');
+            $this->line('be refused for a pattern the author did not touch. There is no automatic repair:');
+            $this->line('a pattern says what a field accepts, and only its owner knows what that should be.');
+        }
+
+        if ($overLong > 0) {
+            $this->warn("{$overLong} field".($overLong === 1 ? ' is' : 's are').' configured longer than the limit allows.');
+            $this->line('Each must be lowered before the next save of its field, which will otherwise be');
+            $this->line('refused for a setting the author did not touch. Lowering it may truncate values');
+            $this->line('authors have already stored, so check the longest before you choose the number.');
+        }
 
         return $this->option('strict') ? self::FAILURE : self::SUCCESS;
     }

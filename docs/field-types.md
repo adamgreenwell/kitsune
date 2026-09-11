@@ -207,7 +207,7 @@ A named capture may use a name in **any script** — `(?<é>`, `(?<日本>`, `(?
 >
 > A denylist **fails open**: a construct nobody anticipated is accepted and published wrong, silently. An allowlist fails closed — an unknown construct is refused because it was never admitted, not because someone remembered it. Rule 3 says `apiSchema()` may only publish a constraint the consumer can enforce; a grammar makes that enforceable *by construction* rather than by enumeration.
 >
-> **Fresh evidence, measured 2026-09-10.** 157 candidate constructs, enumerated from six independent angles, run through one shared case file so PCRE and ECMAScript are asked the same question. At production fidelity — PCRE compiling `Pattern::delimit()`'s output, ECMAScript compiling the published source — **two constructs the screen accepted diverged, and a third made neither engine answer at all**. Both divergences are now refused by the structural rules below, so the current count is zero:
+> **Fresh evidence, measured 2026-09-10.** 158 candidate constructs, enumerated from six independent angles, run through one shared case file so PCRE and ECMAScript are asked the same question. At production fidelity — PCRE compiling `Pattern::delimit()`'s output, ECMAScript compiling the published source — **two constructs the screen accepted diverged, and a third made neither engine answer at all**. Both divergences are now refused by the structural rules below, so the current count is zero:
 >
 > | Pattern | PCRE | ECMAScript |
 > |---|---|---|
@@ -301,7 +301,19 @@ A named capture may use a name in **any script** — `(?<é>`, `(?<日本>`, `(?
 >
 >     ⚠️ **Ambiguity does not need a quantifier, and this is a different axis from every rule above.** Found by review. `^` then thirty copies of `(?:a|a)` then `b$` has no repetition anywhere and no variable-width atom, so nothing looked at it — each group offers two identical ways to match one character, and thirty offer 2³⁰. **PCRE exhausts its backtrack limit and Node 22 takes 50.2 s**, on a 240-character pattern.
 >
->     A **product**, not a count, because the cost is measured to be exactly that — about 45 ns per combination on Node, linearly: 3 ms at 2¹⁶, 47 ms at 2²⁰, 3.1 s at 2²⁶. The bound is therefore on the product (`MAX_AMBIGUITY_PRODUCT`, 65,536), which leaves an order of magnitude for ADR-027's floor while keeping sixteen ambiguous binary alternations publishable. Only **ambiguous** alternations count: thirty copies of `(?:a|b)` are linear, because at most one branch can match at a position.
+>     A **product**, not a count, because the cost is measured to be exactly that — about 45 ns per combination on Node, linearly: 3 ms at 2¹⁶, 47 ms at 2²⁰, 3.1 s at 2²⁶. The bound is therefore on the cost (`MAX_AMBIGUITY_PRODUCT`, 65,536), which leaves an order of magnitude for ADR-027's floor while keeping sixteen ambiguous binary alternations publishable. Only **ambiguous** alternations count: thirty copies of `(?:a|b)` are linear, because at most one branch can match at a position.
+>
+>     ⚠️ **It took two flat models, wrong in opposite directions, before the cost was computed recursively** — and the second was the fix for the first. A flat walk over the frame list multiplied every level of a nest, because a child frame is recorded before its parent, so seventeen nestings of `(?:<previous>|a)` were refused as 131,072 combinations where 100,000 Node matches take **3 ms**. Sorting outermost-first and skipping covered children then *under*counted: an ambiguous outer alternation suppressed its children and contributed only its own branch count, so `^(?:` + 28 × `(?:a|a)` + `|` + 28 × `a` + `)$` read as **2** where the cost is **2²⁸** — 231 characters, and Node spends **10.8 s** on a 29-character subject.
+>
+>     A flat product cannot express either shape, because the cost of a group depends on what is inside it. Two rules do, and both cases then fall out rather than needing a rule of their own:
+>
+>     | | cost |
+>     |---|---|
+>     | a **sequence** | the **product** of its parts — each choice multiplies the ones beside it |
+>     | an **ambiguous** alternation | the **sum** of its branches — every branch must be tried |
+>     | a **prefix-free** alternation | the **max** — at most one branch can match at a position |
+>
+>     The sum is what makes nesting cheap again: `(?:X|a)` costs `cost(X) + 1`, so seventeen nestings cost 18 rather than 2¹⁷.
 >
 >     ⚠️ **Only a required literal the left atom cannot match ends a run, and a fixed width does not.** `a*[a-z]{2}a*` looks divided and is not: the middle atom is two characters wide but its *position* is still free. The argument is the delimiter proof's, and it is about distinguishability rather than width.
 >
@@ -329,7 +341,7 @@ A named capture may use a name in **any script** — `(?<é>`, `(?<日本>`, `(?
 >
 > ### What this costs
 >
-> Measured, so it is a number rather than a worry: of 157 candidates, **two** are refused today that both engines agree on — `\p{Lower}` and `\p{Alpha}`, POSIX-style aliases missing from the property allowlist. Widening a list is a reviewable, testable act; a denylist's gaps are found by accident. **Both are now on it, and `\p{Upper}` with them** — the obvious third of the family, added at the same time so the allowlist does not carry an arbitrary subset.
+> Measured, so it is a number rather than a worry: of 158 candidates, **two** are refused today that both engines agree on — `\p{Lower}` and `\p{Alpha}`, POSIX-style aliases missing from the property allowlist. Widening a list is a reviewable, testable act; a denylist's gaps are found by accident. **Both are now on it, and `\p{Upper}` with them** — the obvious third of the family, added at the same time so the allowlist does not carry an arbitrary subset.
 >
 > ⚠️ **Added on a set comparison, not on compiling**, because compiling proves only that a name is accepted. Each alias was compared with its canonical spelling across all 1,114,112 codepoints in *both* engines and is exactly equal: `Lower`/`Lowercase` 2,595 members, `Alpha`/`Alphabetic` 147,421, `Upper`/`Uppercase` 2,006. `\p{Space}` is the reason this is measured one name at a time rather than adopted as a family — **PCRE compiles it and ECMAScript rejects the name**, so it stays out.
 >

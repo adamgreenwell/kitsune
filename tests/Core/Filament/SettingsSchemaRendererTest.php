@@ -354,3 +354,71 @@ it('refuses a maxLength on a NUMERIC descriptor, which renders the same componen
     expect(fn () => SettingsSchemaRenderer::for($type))
         ->toThrow(RuntimeException::class, 'cannot express a string length');
 });
+
+it('applies a published maximum to the rendered numeric input', function (): void {
+    /*
+     * ⚠️ THE SECOND PUBLISHED KEY THIS RENDERER IGNORED, and I created it. `TextType` grew a `maximum`
+     * on its `maxLength` descriptor — published, per invariant 14, because `validateSettings()` enforces
+     * it — and the renderer consumed no such key, so the form imposed nothing and an author met the
+     * ceiling only when the save was refused. Review caught it.
+     *
+     * That is the identical defect `withLength()` exists to have fixed, recreated by the same reasoning
+     * that fixed it: a key published because it was enforced, and nothing rendering it. Its docblock
+     * claimed the enumeration was complete; the enumeration has been re-run rather than re-asserted.
+     */
+    $components = SettingsSchemaRenderer::for(new TextType);
+    $length = null;
+
+    foreach ($components as $component) {
+        if (str_ends_with((string) $component->getName(), 'maxLength')) {
+            $length = $component;
+        }
+    }
+
+    expect($length)->not->toBeNull('the maxLength descriptor rendered no component')
+        ->and($length->getMaxValue())->toBe(TextType::MAX_CONFIGURABLE_LENGTH);
+});
+
+it('still refuses an over-long configuration on the server', function (): void {
+    /*
+     * ⚠️ THE HALF THAT MATTERS, asserted alongside the attribute for the reason the `maxLength` pair
+     * above records: `max` is an HTML attribute a client can ignore (invariant 6), so it is a courtesy
+     * to the author and never the enforcement.
+     */
+    expect((new TextType)->validateSettings(['maxLength' => TextType::MAX_CONFIGURABLE_LENGTH + 1]))
+        ->toContain('limited to');
+});
+
+it('refuses a maximum on a descriptor that cannot express one', function (): void {
+    /*
+     * ⚠️ Fails closed, matching `withLength()` and this class's posture on an unknown descriptor type.
+     * A digit count and a value bound are not interchangeable, and `integer`, `number` and `string`
+     * descriptors all render the same `TextInput` — so applying "a maximum of some kind" is the
+     * conflation `withLength()` already fails closed to avoid.
+     */
+    $type = new class extends BaseFieldType
+    {
+        public static function handle(): string
+        {
+            return 'maxprobe';
+        }
+
+        public static function label(): string
+        {
+            return 'Max probe';
+        }
+
+        public function control(): Control
+        {
+            return Control::Line;
+        }
+
+        public function settingsSchema(): array
+        {
+            return ['enabled' => ['type' => 'boolean', 'default' => false, 'maximum' => 10]];
+        }
+    };
+
+    expect(fn () => SettingsSchemaRenderer::for($type))
+        ->toThrow(RuntimeException::class, 'cannot express a numeric bound');
+});

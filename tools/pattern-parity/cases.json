@@ -940,5 +940,11 @@
     "pattern": "^(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:a|a)|a)|a)|a)|a)|a)|a)|a)|a)|a)|a)|a)|a)|a)|a)|a)|a)$",
     "subject": "a",
     "why": "Seventeen nestings of `(?:<previous>|a)`. The ambiguity product multiplied every level, because frames() appends a group as it CLOSES so a child arrives before its parent and the containment skip had nothing recorded yet. Eighteen alternative paths, and 100,000 Node matches in 3ms — kept so the fix cannot become `refuse nesting`."
+  },
+  {
+    "id": "ambiguity-nested-in-a-branch",
+    "pattern": "^(?:(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)|aaaaaaaaaaaaaaaaaaaaaaaaaaaa)$",
+    "subject": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "why": "An ambiguous outer alternation enclosing 28 ambiguous groups. A flat product sorted outermost-first suppressed the children and counted only the outer branch count, reading 2 where the cost is 2^28. 231 characters, and Node spends 10.8s on a 29-character subject."
   }
 ]

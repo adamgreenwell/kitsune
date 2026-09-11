@@ -9,6 +9,7 @@
 declare(strict_types=1);
 
 use Illuminate\Support\Facades\DB;
+use Kitsune\Core\Fields\Types\TextType;
 use Kitsune\Core\Models\FieldStorage;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Tenancy\Context;
@@ -34,6 +35,28 @@ beforeEach(function (): void {
 });
 
 afterEach(fn () => app(Context::class)->forget());
+
+/**
+ * A field storage row carrying a configured length, written past the settings guard.
+ *
+ * ⚠️ Below Eloquent for the reason `storedPattern()` gives, and here the reason IS the subject: the
+ * settings guard refuses to create a field wider than the ceiling, so such a row can only exist
+ * because it predates it — which is the state an upgraded installation is in and the only state this
+ * audit matters in.
+ */
+function storedLength(int $orgId, string $handle, int $maxLength): FieldStorage
+{
+    $storage = FieldStorage::create([
+        'org_id' => $orgId, 'handle' => $handle, 'type' => 'text',
+        'pii_class' => 'none', 'cardinality' => 1,
+    ]);
+
+    DB::table('field_storage')
+        ->where('id', $storage->getKey())
+        ->update(['settings' => json_encode(['maxLength' => $maxLength])]);
+
+    return $storage->refresh();
+}
 
 /** A field storage row carrying a pattern, written past the settings guard. */
 function storedPattern(int $orgId, string $handle, string $pattern): FieldStorage
@@ -67,7 +90,7 @@ it('reports nothing when every stored pattern is publishable', function (): void
 
     $this->artisan('kitsune:audit-patterns')
         ->expectsOutputToContain('examined 2 stored patterns')
-        ->expectsOutputToContain('Every stored pattern satisfies the published grammar.')
+        ->expectsOutputToContain('Every stored pattern satisfies the published grammar')
         ->assertSuccessful();
 });
 
@@ -167,5 +190,46 @@ it('prints each row as it walks, so a long report is not lost on failure', funct
         ->expectsOutputToContain('first')
         ->expectsOutputToContain('second')
         ->expectsOutputToContain('2 stored patterns are unpublishable.')
+        ->assertSuccessful();
+});
+
+it('names a field configured longer than the limit allows', function (): void {
+    /*
+     * ⚠️ THE LENGTH CEILING IS AN UPGRADE HAZARD TOO, which review found: this command asked
+     * `Pattern::unpublishable()` and nothing else, so an installation carrying a text field configured
+     * above `TextType::MAX_CONFIGURABLE_LENGTH` passed the audit and then had the next save of that
+     * field refused — a field the author had not touched. That is the failure the command exists to
+     * prevent, one setting along, and §4 is explicit that a field which saved yesterday and is refused
+     * today is a broken install rather than a fixed one.
+     *
+     * ⚠️ COUNTED SEPARATELY FROM AN UNPUBLISHABLE PATTERN, because the remedies differ: a pattern has
+     * to be rewritten by somebody who knows what the field should accept, and a length is lowered — at
+     * the risk of truncating what authors have already stored, which the operator has to be told.
+     */
+    /*
+     * ⚠️ STAGED BELOW ELOQUENT, for the reason `storedPattern()` records at length — and here it is not
+     * merely convenient, it is the shape of the problem. The settings guard REFUSES to create a field
+     * this wide, which is correct and is exactly why the audit is needed: the row can only exist because
+     * it predates the ceiling. An upgraded installation is in precisely this state.
+     */
+    $wide = storedLength($this->org->id, 'wide', 65535);
+
+    $this->artisan('kitsune:audit-patterns')
+        ->expectsOutputToContain('wide')
+        ->expectsOutputToContain('maxLength: 65535')
+        ->expectsOutputToContain('1 field is configured longer than the limit allows')
+        ->assertSuccessful();
+
+    // ⚠️ And --strict is a deployment gate, so it has to fail on this as well as on a pattern.
+    $this->artisan('kitsune:audit-patterns', ['--strict' => true])->assertFailed();
+
+    expect($wide->refresh()->settings['maxLength'])->toBe(65535);
+});
+
+it('stays silent about a length inside the limit', function (): void {
+    storedLength($this->org->id, 'narrow', TextType::MAX_CONFIGURABLE_LENGTH);
+
+    $this->artisan('kitsune:audit-patterns', ['--strict' => true])
+        ->expectsOutputToContain('every configured length is within its limit')
         ->assertSuccessful();
 });
