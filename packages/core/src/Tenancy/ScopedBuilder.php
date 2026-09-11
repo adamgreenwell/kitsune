@@ -386,6 +386,76 @@ class ScopedBuilder extends Builder
     }
 
     /**
+     * ⚠️ REFUSED OUTRIGHT, because nothing this class does runs on it.
+     *
+     * `updateOrInsert()` is forwarded WHOLE to the query builder — the repository already says so in
+     * `AuditedBuilder::updateOrInsert()`, and review found the lesson had not travelled here. Neither
+     * the `insert()` override nor the `update()` one sees it, and it has THREE consequences rather than
+     * the two that are obvious. Measured, all three:
+     *
+     *   unmatched predicate   a `sites` row with `base_url = https://planted.test` and
+     *                         `canonical_host = NULL` — a site declaring a public address and
+     *                         reachable at none, which is the sentence `RequiresModelSave` exists for
+     *   matched predicate     `entry_types.handle` moved to `admin`, a handle ADR-012 RESERVES because
+     *                         it collides with a registered route
+     *   either way            THE GLOBAL SCOPE IS NEVER APPLIED. On the same row in the same org
+     *                         context, `update()` reported 0 rows affected and `updateOrInsert()`
+     *                         renamed another org's site. Scopes are applied by the Eloquent builder;
+     *                         a call forwarded past it is unscoped.
+     *
+     * ⚠️ AND NOT CONDITIONAL ON `ScopeWrites::suspended()` or on `RequiresModelSave`, unlike every
+     * other guard here. Those relax a check that RAN; there is no check to relax, because the method is
+     * not wired to this builder at all — and the third consequence has nothing to do with derived
+     * columns, so a model with none is no safer. `firstOrNew()` then `save()` is the same operation
+     * through the door that has the guards, and `DB::table()` remains the stated boundary for a caller
+     * who means to step below Eloquent.
+     *
+     * ⚠️ FOUR OTHER BUILDERS ALREADY REFUSE IT — `AuditedBuilder`, `AppendOnlyBuilder`,
+     * `GuardedRelationBuilder`, `GuardedStorageBuilder`. This was the fifth and the only one missing,
+     * which is why the fix came with a sweep of every write method on the query builder rather than
+     * this one method.
+     *
+     * @param  array<string, mixed>  $attributes
+     * @param  array<string, mixed>  $values
+     * @return bool
+     */
+    public function updateOrInsert(array $attributes, array|callable $values = [])
+    {
+        throw new RuntimeException(sprintf(
+            'updateOrInsert() cannot be used on %s: Laravel forwards it whole to the query builder, so '
+            .'neither the insert guards nor the update guards on this builder run — and the global '
+            .'scope is not applied either, so it can write another org\'s row. Measured, it planted a '
+            .'site with a public URL and no canonical host, moved an entry type onto a reserved '
+            .'handle, and renamed a rival org\'s site that a scoped update could not see. Use '
+            .'firstOrNew() and save().',
+            $this->getModel()::class,
+        ));
+    }
+
+    /**
+     * ⚠️ AND `truncate()`, which the same sweep found — the worse of the two.
+     *
+     * A global scope constrains a WHERE clause and `TRUNCATE` has none, so there is nothing for it to
+     * narrow. Measured: two sites in two orgs, one org's context, `Site::query()->truncate()` left ZERO
+     * rows. It also bypasses the cascade refusal that `delete()` and `forceDelete()` route through, so
+     * every referenced entry goes with it.
+     *
+     * ⚠️ THE RULE THE SWEEP PRODUCED, rather than a list of methods to copy: `truncate()` belongs
+     * wherever `delete()` is guarded. The three builders that override it all guard deletion;
+     * `GuardedStorageBuilder` guards CREATION only and correctly has no override, because truncating
+     * creates nothing. This builder guards deletion, so the absence was a gap rather than a decision.
+     */
+    public function truncate(): void
+    {
+        throw new RuntimeException(sprintf(
+            'truncate() cannot be used on %s: it has no WHERE clause for the org scope to narrow, so '
+            .'it removes every row in every org — measured, two sites in two orgs left zero — and it '
+            .'bypasses the cascade refusal that delete() routes through. Delete through the model.',
+            $this->getModel()::class,
+        ));
+    }
+
+    /**
      * ⚠️ Deletion is guarded HERE as well as in the model event.
      *
      * `Site::query()->delete()`, `deleteQuietly()` and anything inside

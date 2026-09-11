@@ -645,6 +645,100 @@ it('does not call two different numeric-looking strings the same value', functio
         ->toBe('0e1', 'a loose comparison called 0e1 and 0e2 the same value');
 });
 
+it('refuses updateOrInsert, which no guard on this builder can reach', function (): void {
+    /*
+     * ⚠️ FORWARDED WHOLE TO THE QUERY BUILDER, so neither the insert overrides nor the update one runs
+     * — which `AuditedBuilder::updateOrInsert()` has said in a docblock since #60 and this builder had
+     * not learned. Review found it, and it has THREE consequences rather than the two that are obvious.
+     * All three were measured before the fix.
+     */
+    $site = Site::query()->getModel();
+
+    expect($site)->toBeInstanceOf(Site::class);
+
+    /*
+     * ⚠️ ONE — the unmatched predicate INSERTS, with the derived columns exactly as the caller left
+     * them: `base_url = https://planted.test` and `canonical_host = NULL`. A site declaring a public
+     * address and reachable at none is the sentence `RequiresModelSave` exists for.
+     */
+    expect(fn () => Site::query()->updateOrInsert(
+        ['handle' => 'planted'],
+        ['org_id' => $this->org->id, 'slug' => 'planted', 'name' => 'Planted', 'locale' => 'en',
+            'url_strategy' => 'domain', 'base_url' => 'https://planted.test',
+            'created_at' => now(), 'updated_at' => now()],
+    ))->toThrow(RuntimeException::class, 'updateOrInsert() cannot be used');
+
+    expect(DB::table('sites')->where('handle', 'planted')->exists())->toBeFalse();
+
+    /*
+     * ⚠️ TWO — the matched predicate UPDATES, past the per-row checks. `handle` is one of `EntryType`'s
+     * guarded columns because ADR-012 RESERVES some of them, and `admin` is reserved: it collides with
+     * a registered route. Measured moving to it through this door.
+     */
+    $type = EntryType::create([
+        'org_id' => $this->org->id, 'handle' => 'page', 'name' => 'Page', 'plural_name' => 'Pages',
+    ]);
+
+    expect(fn () => EntryType::query()->updateOrInsert(['id' => $type->getKey()], ['handle' => 'admin']))
+        ->toThrow(RuntimeException::class, 'updateOrInsert() cannot be used');
+
+    expect((string) DB::table('entry_types')->where('id', $type->getKey())->value('handle'))->toBe('page');
+});
+
+it('refuses updateOrInsert before it can write another org\'s row', function (): void {
+    /*
+     * ⚠️ THREE, AND THE ONE THE FINDING DID NOT NAME: the global scope is never applied. Scopes are
+     * applied by the ELOQUENT builder, and a call forwarded past it is unscoped — so this is not a
+     * guard that failed but a boundary that was never consulted.
+     *
+     * The two lines below are the whole proof, on the same row in the same org context:
+     *
+     *   Site::query()->whereKey($rival)->update([…])          0 rows affected
+     *   Site::query()->updateOrInsert(['id' => $rival], […])  the rival's site renamed
+     *
+     * ⚠️ Checked on `Site` and not on `EntryType`, and my first attempt used `EntryType` and proved
+     * nothing: it is `#[Unscoped]` by declaration, because a global type must be visible from every
+     * org. An ordinary scoped update reaches another org's row there LEGITIMATELY, so the comparison
+     * that makes this a finding is unavailable on that model.
+     */
+    $theirs = Org::create(['name' => 'Theirs', 'slug' => 'theirs-uoi']);
+    app(Context::class)->setOrg($theirs);
+
+    $rival = Site::create(['org_id' => $theirs->id, 'handle' => 'rival', 'slug' => 'rival', 'name' => 'Rival']);
+
+    app(Context::class)->setOrg($this->org);
+
+    expect(Site::query()->whereKey($rival->getKey())->update(['name' => 'Scoped']))
+        ->toBe(0, 'the org scope did not hide the rival row, so this test cannot show a bypass')
+        ->and(fn () => Site::query()->updateOrInsert(['id' => $rival->getKey()], ['name' => 'Stolen']))
+        ->toThrow(RuntimeException::class, 'another org')
+        ->and((string) DB::table('sites')->where('id', $rival->getKey())->value('name'))
+        ->toBe('Rival');
+});
+
+it('refuses truncate, which has no WHERE clause for a scope to narrow', function (): void {
+    /*
+     * ⚠️ THE SAME SWEEP FOUND THIS AND IT IS WORSE. A global scope constrains a WHERE clause and
+     * `TRUNCATE` has none, so there is nothing to narrow: measured, two sites in two orgs and one org's
+     * context left ZERO rows. It also bypasses the cascade refusal `delete()` and `forceDelete()` route
+     * through, so every referenced entry goes with it.
+     *
+     * ⚠️ The sweep produced a rule rather than a list: `truncate()` belongs wherever `delete()` is
+     * guarded. Three sibling builders override it and all three guard deletion; `GuardedStorageBuilder`
+     * guards creation only and correctly has none, because truncating creates nothing.
+     */
+    $theirs = Org::create(['name' => 'Theirs', 'slug' => 'theirs-trunc']);
+    app(Context::class)->setOrg($theirs);
+    Site::create(['org_id' => $theirs->id, 'handle' => 'theirs', 'slug' => 'theirs', 'name' => 'Theirs']);
+
+    app(Context::class)->setOrg($this->org);
+    Site::create(['org_id' => $this->org->id, 'handle' => 'mine', 'slug' => 'mine', 'name' => 'Mine']);
+
+    expect(fn () => Site::query()->truncate())
+        ->toThrow(RuntimeException::class, 'every row in every org')
+        ->and(DB::table('sites')->count())->toBe(2);
+});
+
 it('guards a reserved handle on a quiet or detached entry-type write', function (): void {
     /*
      * ⚠️ BOTH OTHER GUARDED COLUMNS ARE NULLABLE ON A GLOBAL TYPE, which review found is the gap: a
