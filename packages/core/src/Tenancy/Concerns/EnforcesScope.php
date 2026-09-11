@@ -200,17 +200,31 @@ trait EnforcesScope
      * Legitimate uses exist — provisioning, cross-org admin tooling, the
      * migration framework. Every one of them should be reviewable by
      * searching for this method.
+     *
+     * ⚠️ `$connection` EXISTS BECAUSE THE QUERY IS BUILT HERE, NOT BY THE CALLER, which review found
+     * matters: a static `static::withoutGlobalScopes()` makes a fresh model, and a fresh model is on
+     * the DEFAULT connection whatever connection the caller's instance is on. `Site::save()` takes its
+     * mutex on the instance's connection and then asked this for the rival set, which answered from an
+     * unrelated database — so a second claimant could wait correctly on the right mutex and commit an
+     * overlapping cross-org prefix because it looked for rivals somewhere else.
+     *
+     * Pass `$model->getConnectionName()`, which is null for the default one and so costs nothing at
+     * every other call site. It cannot be set AFTER the builder exists: the base query captures a
+     * connection object at construction, so the connection has to be chosen while the model is made —
+     * which is what `Model::on()` is for.
      */
-    public static function withoutScopeBecause(string $reason, callable $callback): mixed
+    public static function withoutScopeBecause(string $reason, callable $callback, ?string $connection = null): mixed
     {
         if (trim($reason) === '') {
             throw new \InvalidArgumentException('withoutScopeBecause() requires a reason.');
         }
 
-        return ScopeWrites::suspend(fn () => $callback(static::withoutGlobalScopes([
-            SiteScope::class,
-            OrgScope::class,
-            OrgMembershipScope::class,
-        ])));
+        $scopes = [SiteScope::class, OrgScope::class, OrgMembershipScope::class];
+
+        return ScopeWrites::suspend(fn () => $callback(
+            $connection === null
+                ? static::withoutGlobalScopes($scopes)
+                : static::on($connection)->withoutGlobalScopes($scopes),
+        ));
     }
 }

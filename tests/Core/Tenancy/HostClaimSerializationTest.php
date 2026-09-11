@@ -663,6 +663,89 @@ it('allows a save on a site whose row genuinely has no host', function (): void 
         ->and($site->path_prefix)->toBe('/news');
 })->skip(fn (): bool => ! lockingEngine(), 'a second connection to SQLite :memory: is a different database');
 
+it('looks for rivals on the connection it took the mutex on', function (): void {
+    /*
+     * ⚠️ THE MUTEX AND THE RIVAL LOOKUP WERE ON DIFFERENT CONNECTIONS, which review found. `save()`
+     * takes its mutex and opens its transaction on `$this->getConnection()`; `refuseOverlappingClaim()`
+     * asked `withoutScopeBecause()`, which builds its query from a STATIC call — and a static call makes
+     * a fresh model, which is on the DEFAULT connection. So a second claimant could queue correctly on
+     * the right host mutex, ask an unrelated database whether a rival held the host, be told no, and
+     * commit the overlapping cross-org prefix the whole mechanism exists to prevent.
+     *
+     * ⚠️ ASSERTED ON WHICH CONNECTION RAN THE QUERY, NOT ON WHAT IT RETURNED, and that is a decision
+     * rather than a convenience. Both connections here point at the SAME database, so no committed
+     * rival can be visible to one and not the other — and a data-based version would discriminate only
+     * on the engines whose default snapshot happens to hide it. Under MySQL's REPEATABLE READ the
+     * buggy lookup misses a rival committed after `RefreshDatabase` opened its transaction; under
+     * Postgres at READ COMMITTED it sees it and the test would pass with the bug in place. A proof that
+     * holds on one engine and not the next is exactly what invariant 5 forbids.
+     *
+     * The connection is the property at issue, so the query log is the honest instrument.
+     */
+    $name = 'rivallookup';
+    $default = (string) config('database.default');
+
+    config(['database.connections.'.$name => config("database.connections.{$default}")]);
+
+    $connection = DB::connection($name);
+
+    try {
+        $orgId = (int) $connection->table('orgs')->insertGetId([
+            'name' => 'Rival Lookup', 'slug' => 'rival-lookup-org', 'created_at' => now(), 'updated_at' => now(),
+        ]);
+
+        // The context has to point at THIS connection's org, or the scope guard refuses first — the
+        // same trap the isolation test below records.
+        app(Context::class)->setOrg(Org::on($name)->findOrFail($orgId));
+
+        /*
+         * ⚠️ FILTERED BY `connectionName`, AND THE FIRST VERSION WAS NOT — which made this test pass
+         * with the defect in place on Postgres. `Connection::listen()` registers on the APPLICATION
+         * event dispatcher rather than on the connection, so a listener taken from one connection object
+         * is told about queries on every one of them. Collecting them all and asserting "a locking read
+         * on sites happened" is true whichever connection ran it, which is the whole question.
+         */
+        $seen = [];
+        $connection->listen(function ($query) use (&$seen, $name): void {
+            if ($query->connectionName === $name) {
+                $seen[] = strtolower((string) $query->sql);
+            }
+        });
+
+        $site = new Site([
+            'org_id' => $orgId, 'handle' => 'rivallook', 'slug' => 'rivallook', 'name' => 'Rival Look',
+            'locale' => 'en', 'url_strategy' => 'domain', 'base_url' => 'https://rival-look.test/news',
+        ]);
+        $site->setConnection($name);
+
+        expect($site->save())->toBeTrue();
+
+        $rivalReads = array_values(array_filter(
+            $seen,
+            static fn (string $sql): bool => str_contains($sql, 'from "sites"')
+                || str_contains($sql, 'from `sites`'),
+        ));
+
+        expect($rivalReads)->not->toBeEmpty(
+            'the rival lookup did not run on the connection the mutex was taken on',
+        );
+
+        // ⚠️ And it is the LOCKING read, not some other select on the table — the clause is what makes
+        // it a current read on the MySQL engines, which is the property the previous round bought.
+        expect(implode(' | ', $rivalReads))->toContain('for update');
+    } finally {
+        app(Context::class)->forget();
+
+        try {
+            $connection->table('sites')->where('org_id', $orgId ?? 0)->delete();
+            $connection->table('site_host_claims')->where('canonical_host', 'rival-look.test')->delete();
+            $connection->table('orgs')->where('slug', 'rival-lookup-org')->delete();
+        } catch (Throwable) {
+            // The cleanup is best-effort: a failed assertion above is the finding, not this.
+        }
+    }
+})->skip(fn (): bool => ! lockingEngine(), 'a second connection to SQLite :memory: is a different database');
+
 it('refuses a save inside a REPEATABLE READ transaction, and only that transaction', function (): void {
     /*
      * ⚠️ `lockForUpdate()` DOES NOT ESCAPE A POSTGRES SNAPSHOT. Under MySQL and MariaDB's REPEATABLE
@@ -753,6 +836,40 @@ it('refuses a save inside a REPEATABLE READ transaction, and only that transacti
          */
         expect($connection->table('site_host_claims')->where('canonical_host', 'iso-ok.test')->exists())
             ->toBeTrue('the host mutex was taken on a different connection from the write');
+
+        /*
+         * ⚠️ AND A SITE THAT CLAIMS NO HOSTNAME MUST SAVE AT REPEATABLE READ, which review found this
+         * check refusing. An admin-only site has no `base_url`, so `contendedHosts()` filters the nulls
+         * and returns `[]`: no mutex is taken, and `refuseOverlappingClaim()` returns before it reads
+         * anything. There is no rival lookup for a stale snapshot to spoil, so the requirement does not
+         * apply — and refusing anyway made a valid create depend on the isolation level for a property
+         * it does not use, with a reason about a lookup that never runs.
+         *
+         * ⚠️ BACK AT REPEATABLE READ DELIBERATELY, because at READ COMMITTED this passes whether the
+         * guard is ordered correctly or not.
+         */
+        $connection->statement('SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL REPEATABLE READ');
+
+        $admin = new Site([
+            'org_id' => $orgId, 'handle' => 'isoadmin', 'slug' => 'isoadmin', 'name' => 'Iso Admin',
+            'locale' => 'en', 'url_strategy' => 'domain', 'base_url' => null,
+        ]);
+        $admin->setConnection($name);
+
+        expect($admin->save())->toBeTrue('an admin-only site was refused for an isolation level it does not use')
+            ->and($admin->canonical_host)->toBeNull();
+
+        // And a claiming save on that same connection is still refused, so the skip is about the site
+        // rather than about the level.
+        $claims = new Site([
+            'org_id' => $orgId, 'handle' => 'isoclaim', 'slug' => 'isoclaim', 'name' => 'Iso Claim',
+            'locale' => 'en', 'url_strategy' => 'domain', 'base_url' => 'https://iso-claim.test',
+        ]);
+        $claims->setConnection($name);
+
+        expect(fn () => $claims->save())->toThrow(RuntimeException::class, 'REPEATABLE READ');
+
+        $connection->statement('SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL READ COMMITTED');
     } finally {
         try {
             $connection->table('sites')->where('org_id', $orgId ?? 0)->delete();

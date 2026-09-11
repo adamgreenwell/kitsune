@@ -235,9 +235,25 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
      */
     private function lockHostClaim(): void
     {
-        $this->refuseUnusableIsolation();
-
         $hosts = $this->contendedHosts();
+
+        /*
+         * ⚠️ NOTHING CLAIMED MEANS NOTHING TO SERIALISE, and review found the isolation refusal
+         * standing in front of that. An admin-only site — no `base_url`, so no `canonical_host` —
+         * contends for no hostname: `contendedHosts()` filters the nulls and returns `[]`, no mutex is
+         * taken, and `refuseOverlappingClaim()` returns before it reads anything. There is no rival
+         * lookup for a stale snapshot to spoil.
+         *
+         * So the check belongs AFTER this and behind this guard. Refusing such a save on PostgreSQL at
+         * REPEATABLE READ made a valid create depend on the database's isolation level for a property
+         * it does not use — which is both a false refusal and a misleading one, since the reason it
+         * gives is about a lookup that never runs.
+         */
+        if ($hosts === []) {
+            return;
+        }
+
+        $this->refuseUnusableIsolation();
 
         $this->lockClaims($hosts);
         $this->refuseStaleOrigin($hosts);
@@ -256,8 +272,10 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
      * So the whole mutex design rests on one requirement — the rival lookup must see rivals that
      * committed while this save queued — and Postgres satisfies it at READ COMMITTED, which is its
      * default and Laravel's. This makes the requirement enforceable rather than assumed: it is
-     * checked once per connection, and a save under Postgres REPEATABLE READ is refused with the
-     * reason rather than silently permitting the cross-org claim the mutex exists to prevent.
+     * checked for each save that contends for a hostname — the level is a property of the TRANSACTION,
+     * which is why a per-connection cache was rejected and measured wrong in both directions — and a
+     * save under Postgres REPEATABLE READ is refused with the reason rather than silently permitting
+     * the cross-org claim the mutex exists to prevent.
      *
      * ⚠️ NOT A SECOND CONNECTION, which was the other candidate. A fresh connection has a fresh
      * snapshot and would work — and it costs a connection per site save, cannot see this transaction's
@@ -629,6 +647,17 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
                 ->when($site->exists, fn ($q) => $q->whereKeyNot($site->getKey()))
                 ->lockForUpdate()
                 ->get(['id', 'org_id', 'base_url', 'path_prefix']),
+            /*
+             * ⚠️ THE SAVED INSTANCE'S CONNECTION, which review found this read was not using. The
+             * mutex, the transaction and `parent::save()` are all on `$site->getConnection()`; this
+             * lookup was built by a static call, and a static call makes a fresh model on the DEFAULT
+             * connection. So a `Site::on('secondary')` save could queue correctly on the right host
+             * mutex, ask an unrelated database whether a rival held the host, be told no, and commit
+             * the overlapping cross-org prefix the mutex exists to prevent.
+             *
+             * Null for the default connection, so this is the same query it always was there.
+             */
+            connection: $site->getConnectionName(),
         );
 
         /*
