@@ -424,62 +424,6 @@ it('sanitizes a repeated value once, and does not serve a different one from the
         ->and($type->sanitize($lossy))->toBe($first);
 });
 
-it('retains no user HTML once the conversion and its loss check are done', function (): void {
-    /*
-     * ⚠️ `FieldTypeRegistry` IS A SINGLETON, so this instance lives as long as the application — and
-     * review found what the first memo cost: under Octane, a queue worker or a long import it pinned
-     * the last submitted body AND its sanitised copy across requests, a substantial fraction of
-     * ADR-027's 1 GB floor held for nobody until another value replaced it.
-     *
-     * ⚠️ ASSERTED BY READING THE PRIVATE PROPERTIES, which is unusual and is the honest instrument
-     * here: the difference between "cached" and "released" has no other observable consequence, and
-     * asserting it through timing would be a test that passes on a fast machine. The property IS the
-     * subject.
-     *
-     * Measured on a 199 KB value: 398 KB held between the two sanitises, 0 KB after the second.
-     */
-    $type = new RichTextType;
-    $klass = RichTextType::class;
-
-    $held = function () use ($type, $klass): int {
-        $bytes = 0;
-
-        foreach (['memoInput', 'memoOutput'] as $name) {
-            $value = (new ReflectionProperty($klass, $name))->getValue($type);
-            $bytes += is_string($value) ? mb_strlen($value) : 0;
-        }
-
-        return $bytes;
-    };
-
-    $armed = new ReflectionProperty($klass, 'memoArmed');
-    $html = str_repeat('<p>Body text</p>', 200);
-
-    // What a conversion does: arm, then sanitise.
-    $armed->setValue($type, true);
-    $clean = $type->sanitize($html);
-
-    expect($held())->toBeGreaterThan(0, 'the conversion cached nothing, so the loss check will reparse');
-
-    // What the revision's loss check does: ask the same question once.
-    expect($type->sanitize($html))->toBe($clean, 'the memo returned different bytes')
-        ->and($held())->toBe(0, 'the singleton is still holding the submitted body');
-
-    // ⚠️ A `sanitize()` OUTSIDE a conversion caches nothing at all, because `sanitize()` is public
-    // and §6's contract — a memo filled by every caller leaves a body behind whenever nobody returns.
-    $type->sanitize($html);
-
-    expect($held())->toBe(0, 'an unarmed sanitize cached a value nobody will read')
-        ->and($type->sanitize($html))->toBe($clean, 'a reparse after release returned the wrong bytes');
-
-    // ⚠️ And an empty value disarms rather than passing the arming to the next caller.
-    $armed->setValue($type, true);
-    $type->sanitize('   ');
-    $type->sanitize($html);
-
-    expect($held())->toBe(0, 'an empty value handed its arming to an unrelated call');
-});
-
 it('leaves a child undirected so an ancestor edit can still reach it', function (): void {
     /*
      * ⚠️ THE FIX FOR THE LAST ROUND WAS A ONE-WAY DOOR, which review found. Writing the ancestor's
@@ -633,6 +577,36 @@ it('lets a generated list direction yield to an ancestor choice made later', fun
         ->toBe('<blockquote dir="rtl"><p>ACME עברית</p></blockquote>');
 });
 
+it('retains nothing between calls, because there is no cache to retain in', function (): void {
+    /*
+     * ⚠️ THREE FINDINGS ON THIS BRANCH WERE ABOUT THE MEMO THAT USED TO BE HERE — what it could hold,
+     * for how long, and which paths forgot to release it. The three tests they produced are replaced by
+     * this one, because the mechanism is gone rather than fixed again.
+     *
+     * It existed because one write parsed the same value TWICE: `castToStorage()` sanitised and stamped
+     * directions, then `Entry` asked whether sanitising had removed anything, which sanitised again. The
+     * direction pass moved to `Entry` (ADR-029) and the loss check became a plain comparison, so
+     * `sanitize()` runs once per write and the memo had no consumer left — it armed, filled and was
+     * never read, which is retention with the benefit removed. Review found the leftover.
+     *
+     * ⚠️ ASSERTED AS "NO STATE AT ALL" RATHER THAN "THE STATE IS EMPTY", which is the stronger claim and
+     * the one that cannot rot: a cache that exists can be forgotten about again, and every one of those
+     * three findings was a path that forgot. `FieldTypeRegistry` is a singleton, so anything this class
+     * keeps is kept for the life of the process.
+     */
+    $properties = (new ReflectionClass(RichTextType::class))->getProperties();
+
+    expect(array_map(static fn (ReflectionProperty $p): string => $p->getName(), $properties))
+        ->toBe([], 'RichTextType holds instance state again, which on a singleton is process-lifetime retention');
+
+    // And the conversion still works without one, which is the half a property assertion cannot show.
+    $type = new RichTextType;
+    $clean = $type->sanitize('<p>مرحبا</p><script>alert(1)</script>');
+
+    expect($clean)->toBe('<p>مرحبا</p>')
+        ->and($type->sanitize($clean))->toBe($clean, 'sanitising twice is not idempotent');
+});
+
 it('gives per-block direction to any type whose control is rich text', function (): void {
     /*
      * ⚠️ ADR-029'S OWN TEST, WHICH THIS BRANCH WAS FAILING: *"can a new field type be added without text
@@ -698,6 +672,32 @@ it('gives per-block direction to any type whose control is rich text', function 
 
     expect($stored['module_body'])
         ->toBe('<p dir="auto">Hello world</p><p dir="auto">مرحبا بالعالم</p>');
+
+    /*
+     * ⚠️ AND A STRAY `</div>` LOSES NOTHING, which review found this pass doing as soon as it stopped
+     * running only on `RichTextType`'s output. The shared pass parses inside a `<div>` wrapper — without
+     * it libxml wraps loose top-level text in an implied `<p>` and reshapes the content — and then
+     * serialises that wrapper's CHILDREN. A stray close tag, which is ordinary in pasted markup, closes
+     * the wrapper early, so everything after it becomes a SIBLING and was silently dropped. Measured:
+     *
+     *   hello</div>world              ->  <p dir="auto">hello</p>
+     *   <p>one</p></div><p>two</p>    ->  <p dir="auto">one</p>
+     *
+     * ⚠️ IT IS THE SAME BUG `sanitize()` RECORDS HAVING HAD, and it came back because the assumption
+     * that made it safe — `div` is not in ALLOWED_TAGS, so the sanitiser canonicalises first — was true
+     * of the only caller the pass used to have. This type returns its input unchanged, which is exactly
+     * what a module may do.
+     */
+    $escaped = Entry::create([
+        'entry_type_id' => $this->type->id,
+        'title' => 'Escaped',
+        'values' => ['module_body' => 'hello</div>world'],
+    ]);
+
+    $out = json_decode((string) DB::table('entries')->where('id', $escaped->getKey())->value('values'), true);
+
+    expect($out['module_body'])
+        ->toBe('<p dir="auto">hello</p><p dir="auto">world</p>', 'a stray close tag lost content');
 });
 
 it('does not retain an original for a clean save, whatever the field holds', function (): void {
@@ -734,138 +734,6 @@ it('does not retain an original for a clean save, whatever the field holds', fun
 
     expect(DB::table('entry_revisions')->where('entry_id', $lossy->getKey())->value('unsanitized_values'))
         ->not->toBeNull('the sanitiser removed a script tag and no original was kept');
-});
-
-it('bounds what a conversion with no loss check can leave behind', function (): void {
-    /*
-     * ⚠️ "RELEASED ON READ" ONLY BOUNDS THE CASE WHERE THE READ HAPPENS, and review found the case
-     * where it does not: `toStorage()` is the published contract and `BaseFieldType::fromApi()`
-     * delegates to it, so an importer or a queue worker can convert a body with no revision loss check
-     * after it. Measured, 42 KB left on the singleton by one standalone conversion — and megabytes for
-     * a large body, since `FieldTypeRegistry` is a singleton and "left behind" means for the life of
-     * the process.
-     *
-     * ⚠️ A CAP BOUNDS IT RATHER THAN ELIMINATING IT, and that is the honest description. Guaranteeing
-     * consumption would need either `Entry` to know about the memo or a public method to ask about the
-     * loss — the surface this branch's first two rounds were about. Below the cap a conversion saves a
-     * parse and the worst case is `2 × MEMO_LIMIT` per worker; above it the loss check parses again,
-     * which measured 17.9 ms at 786 KB.
-     */
-    $type = new RichTextType;
-    $klass = RichTextType::class;
-
-    $held = function () use ($type, $klass): int {
-        $bytes = 0;
-
-        foreach (['memoInput', 'memoOutput'] as $name) {
-            $value = (new ReflectionProperty($klass, $name))->getValue($type);
-            $bytes += is_string($value) ? mb_strlen($value) : 0;
-        }
-
-        return $bytes;
-    };
-
-    $armed = new ReflectionProperty($klass, 'memoArmed');
-    $limit = (new ReflectionClass($klass))->getConstant('MEMO_LIMIT');
-
-    // A body past the cap: the conversion caches nothing, so an abandoned one holds nothing.
-    $huge = str_repeat('<p>Body</p>', (int) ceil($limit / 11) + 100);
-
-    expect(mb_strlen($huge))->toBeGreaterThan($limit);
-
-    $armed->setValue($type, true);
-    $type->sanitize($huge);
-
-    expect($held())->toBe(0, 'a body past the cap was cached anyway');
-
-    // ⚠️ And the arming does not survive to be handed to the next caller.
-    $small = '<p>Small</p>';
-    $type->sanitize($small);
-
-    expect($held())->toBe(0, 'the abandoned arming cached an unrelated value');
-
-    // Below the cap the memo still does its job, bounded by the cap itself.
-    $armed->setValue($type, true);
-    $clean = $type->sanitize($small);
-
-    expect($held())->toBeGreaterThan(0)
-        ->and($held())->toBeLessThanOrEqual(2 * $limit)
-        ->and($type->sanitize($small))->toBe($clean)
-        ->and($held())->toBe(0, 'the read did not release it');
-
-    /*
-     * ⚠️ AND AN UNCACHED CONVERSION RELEASES WHAT IT DID NOT REPLACE, which review found it did not. A
-     * release was conditional on having something to put in its place: a conversion that missed the
-     * cache and was then over the cap — or unarmed — left the previous body standing. Measured, a
-     * standalone conversion cached a 53-byte body and an ordinary write of a DIFFERENT body above the
-     * cap left it in place through both of its parses, for the worker's lifetime.
-     *
-     * Whatever is held at this point describes a value nobody is asking about any more.
-     */
-    $armed->setValue($type, true);
-    $type->sanitize($small);
-
-    expect($held())->toBeGreaterThan(0, 'nothing was cached to go stale');
-
-    $armed->setValue($type, true);
-    $type->sanitize($huge);
-
-    expect($held())->toBe(0, 'an over-cap conversion left the previous body on the singleton');
-
-    /*
-     * ⚠️ AND THE CACHE HIT SPENDS THE ARMING, which review found it did not — releasing the strings
-     * while leaving the memo armed hands the retention to the next call instead of ending it.
-     *
-     * The sequence is a standalone conversion leaving an entry behind, as the case above establishes it
-     * can, and then an ordinary write of the SAME html: `castToStorage()` arms, `sanitize()` serves the
-     * old entry from cache and clears it, and the loss check then finds nothing cached, reparses, and —
-     * still armed — caches again. Measured on exactly that sequence, both properties were populated
-     * when the write finished, and every later write of that html left them populated too.
-     */
-    $armed->setValue($type, true);
-    $type->sanitize($small);
-
-    expect($held())->toBeGreaterThan(0, 'the standalone conversion cached nothing to hit');
-
-    // The ordinary write: armed, then the cache hit, then the loss check's reparse.
-    $armed->setValue($type, true);
-
-    expect($type->sanitize($small))->toBe($clean)
-        ->and($held())->toBe(0)
-        ->and($type->sanitize($small))->toBe($clean)
-        ->and($held())->toBe(0, 'the cache hit left the memo armed, so the reparse cached it again');
-});
-
-it('leaves nothing held after an ordinary write of html a standalone conversion primed', function (): void {
-    /*
-     * ⚠️ THE SAME FINDING THROUGH THE REAL PATH, because the reflection above drives `sanitize()`
-     * directly and the claim is about what an ORDINARY COMPLETED WRITE leaves on the singleton. This
-     * one arms nothing by hand: `toStorage()` is the published contract, `Entry::create()` is the
-     * production path, and the registry is the singleton both share.
-     */
-    $type = app(FieldTypeRegistry::class)->get('rich_text');
-    $html = '<p>مرحبا</p>';
-
-    $held = function () use ($type): int {
-        $bytes = 0;
-
-        foreach (['memoInput', 'memoOutput'] as $name) {
-            $value = (new ReflectionProperty(RichTextType::class, $name))->getValue($type);
-            $bytes += is_string($value) ? mb_strlen($value) : 0;
-        }
-
-        return $bytes;
-    };
-
-    // A conversion with no loss check after it, which the bound above says may leave an entry behind.
-    $type->toStorage($html, new FieldConfig($this->bodyStorage));
-
-    expect($held())->toBeGreaterThan(0, 'the standalone conversion left nothing to release');
-
-    // And now the ordinary write of that same html, which must end holding nothing.
-    storedBody($html);
-
-    expect($held())->toBe(0, 'an ordinary completed write kept the memo on the singleton');
 });
 
 it('lets a later ancestor choice reach a block this implementation already stamped', function (): void {

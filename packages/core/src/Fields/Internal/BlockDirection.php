@@ -312,6 +312,41 @@ final class BlockDirection
             return $html;
         }
 
+        /*
+         * ⚠️ ANYTHING THE INPUT PUSHED OUTSIDE THE WRAPPER IS PUT BACK, and review found this pass
+         * losing it silently. A stray `</div>` — ordinary in pasted markup — closes the parsing wrapper
+         * early, so every node after it is a sibling of the wrapper rather than a child. This method
+         * serialises the wrapper's CHILDREN, so `hello</div>world` was stored as `<p dir="auto">hello</p>`
+         * and `world` was gone. Measured, along with `<p>one</p></div><p>two</p>` losing its second
+         * paragraph.
+         *
+         * ⚠️ IT IS THE SAME BUG `sanitize()` RECORDS HAVING HAD, and it came back because this pass
+         * stopped running only on that method's output. `RichTextType` canonicalises first — `div` is
+         * not in ALLOWED_TAGS, so no `div` can survive — and the comment above still says so, which was
+         * true of the only caller there used to be. A module type whose control is `Control::RichText`
+         * may emit anything, and the one in the test returns its input unchanged.
+         *
+         * ⚠️ RESTORING THE INVARIANT RATHER THAN TEACHING THE SERIALISER, because every pass below
+         * assumes the wrapper holds the document: `wrapLooseRuns()` is given it as the container to
+         * insert into, and a loose run outside it would be wrapped by nothing. Moving the escapees back
+         * in — in document order, so nothing is reordered — makes that assumption true again instead of
+         * making each pass defend itself.
+         *
+         * ⚠️ THE WRAPPER'S PARENT, NOT THE DOCUMENT'S CHILDREN, and my first version used the latter and
+         * changed nothing. Under `LIBXML_HTML_NOIMPLIED` the charset `<meta>` becomes the document
+         * ELEMENT, so the wrapper and everything that escaped it are both children of the meta — which
+         * this file's serialisation docblock already says, one method along.
+         */
+        $outside = $wrapper->parentNode;
+
+        if ($outside !== null) {
+            foreach (iterator_to_array($outside->childNodes) as $node) {
+                if ($node !== $wrapper) {
+                    $wrapper->appendChild($node);
+                }
+            }
+        }
+
         self::wrapLooseRuns($document, $wrapper);
 
         /*
