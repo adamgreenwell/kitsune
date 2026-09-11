@@ -1330,6 +1330,41 @@ class Entry extends Model implements RequiresModelSave
             }
         }
 
+        /*
+         * ⚠️ AND A SITE MOVE RE-RUNS THE RE-ENTRY VETO, which review found only the `saving` listener
+         * doing. That listener is suppressed by a quiet write, and the restamp branch above runs only
+         * when a TYPE column moves — so `$entry->site_id = $home; $entry->saveQuietly()` came back into
+         * a site carrying a type the relation there forbids, and nothing rechecked it.
+         *
+         * Measured end to end: a `person`-only field relates to Alice from site A, Alice moves to site B
+         * where that pivot is invisible, her type becomes `article` there legitimately, and the quiet
+         * move home was ALLOWED — the relation resurfaced naming a target it refuses, which is the
+         * sequence `a target that leaves a site and comes back is rechecked` exists to close.
+         *
+         * ⚠️ `visibleOnly: false` HERE, unlike the type check above, and that asymmetry is the whole
+         * point of the re-entry rule: on the way IN every relation in the org counts, because they are
+         * all about to be visible again. Filtering to visible sources is right for a type change —
+         * otherwise one site could freeze another's records — and wrong for a move that makes them
+         * visible.
+         */
+        if ($this->exists && array_key_exists('site_id', $values)) {
+            $handle = (string) ($values['type_handle'] ?? $this->getAttribute('type_handle'));
+
+            if (($field = EntryRelation::forbidsTypeChange(
+                (int) $this->getKey(),
+                $handle,
+                (int) $this->getAttribute('org_id'),
+                visibleOnly: false,
+            )) !== null) {
+                throw new RuntimeException(
+                    "Entry {$this->getKey()} cannot move here: field [{$field}] relates to it and does "
+                    ."not accept a [{$handle}]. Its relation is invisible from where it is now, so "
+                    .'moving it back would resurface a target that field refuses (ADR-020). Detach the '
+                    .'relation first.'
+                );
+            }
+        }
+
         $this->noteGuardedColumnsDerived();
 
         $registry = app(FieldTypeRegistry::class);

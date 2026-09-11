@@ -1298,6 +1298,57 @@ describe('a target that leaves a site and comes back is rechecked', function ():
             ->toThrow(RuntimeException::class, 'does not accept');
     });
 
+    it('refuses a QUIET move back, which the listener cannot see', function (): void {
+        /*
+         * ⚠️ THE VETO WAS A `saving` LISTENER AND A QUIET WRITE SUPPRESSES IT, which review found — and
+         * the builder's restamp branch runs only when a TYPE column moves, so a write whose only dirty
+         * column is `site_id` reached neither. Measured: the quiet move home was ALLOWED and the
+         * relation resurfaced naming a target it refuses.
+         *
+         * ⚠️ `visibleOnly: false` at the builder too, and that asymmetry is the re-entry rule itself: on
+         * the way IN every relation in the org counts, because they are all about to be visible again.
+         * The type check uses the default for the opposite reason — otherwise one site could freeze
+         * another site's records.
+         */
+        $otherSite = Site::create([
+            'org_id' => $this->org->id, 'handle' => 'q', 'slug' => 'reentry-quiet', 'name' => 'Q',
+        ]);
+        $article = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'article', 'name' => 'A', 'plural_name' => 'As',
+        ]);
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'person', 'type' => 'relation',
+            'pii_class' => 'personal', 'cardinality' => 1,
+            'settings' => ['targetTypes' => [$this->type->handle]],
+        ]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id, 'label' => 'Person',
+        ]);
+
+        $alice = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Alice']);
+        $visit = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Visit']);
+        $visit->related()->attach($alice->id, ['field_storage_id' => $storage->id]);
+
+        Entry::withoutScopeBecause(
+            'fixture: an operator moves the target to another site',
+            fn () => $alice->forceFill(['site_id' => $otherSite->id])->save(),
+        );
+
+        app(Context::class)->setSite($otherSite);
+
+        Entry::query()->findOrFail($alice->id)->update(['entry_type_id' => $article->id]);
+
+        app(Context::class)->setSite($this->site);
+
+        $back = Entry::query()->withoutGlobalScopes()->findOrFail($alice->id);
+        $back->site_id = $this->site->id;
+
+        expect(fn () => $back->saveQuietly())
+            ->toThrow(RuntimeException::class, 'does not accept')
+            ->and((int) DB::table('entries')->where('id', $alice->id)->value('site_id'))
+            ->toBe($otherSite->id, 'a quiet move resurfaced a relation the field refuses');
+    });
+
     it('allows the move back when the relation is still valid', function (): void {
         $otherSite = Site::create([
             'org_id' => $this->org->id, 'handle' => 'f', 'slug' => 'reentry-ok', 'name' => 'F',
