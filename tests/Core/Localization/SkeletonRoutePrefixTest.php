@@ -39,9 +39,19 @@ it('claims no path shape of its own', function () use ($routeSource): void {
      */
     $source = $routeSource();
 
+    /*
+     * ⚠️ ONE NEEDLE PER ASSERTION AND NO MESSAGE, because `toContain()` is VARIADIC over needles rather
+     * than taking a failure message — and the first version of these two passed the message as a second
+     * needle. `not->toContain()` over two needles passes when EITHER is absent, so the prose was always
+     * absent and both assertions could never fail. Found by making the same mistake a third time on
+     * another branch and then sweeping for it. The reasoning belongs in a comment, where it cannot be
+     * mistaken for an argument.
+     */
     expect($source)->toContain('Route::fallback(')
-        ->and($source)->not->toContain("->get('/{site}'", 'the site route is a parameterised path again')
-        ->and($source)->not->toContain("->where('site'", 'the site route carries a path grammar again');
+        // A parameterised path: the shape every previous failure came from.
+        ->and($source)->not->toContain("->get('/{site}'")
+        // A path grammar on that parameter, which is the same mistake spelled differently.
+        ->and($source)->not->toContain("->where('site'");
 });
 
 it('registers the fallback with the middleware that resolves a site', function () use ($routeSource): void {
