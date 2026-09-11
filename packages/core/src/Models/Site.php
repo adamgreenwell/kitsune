@@ -12,6 +12,7 @@ namespace Kitsune\Core\Models;
 
 use Filament\Facades\Filament;
 use Filament\Models\Contracts\HasTenants;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Kitsune\Core\Tenancy\Attributes\OrgScoped;
@@ -19,6 +20,7 @@ use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tenancy\Contracts\RefusesCascadingDeletes;
 use Kitsune\Core\Tenancy\Contracts\RequiresModelSave;
+use Kitsune\Core\Tenancy\ScopeWrites;
 use RuntimeException;
 
 /**
@@ -159,6 +161,465 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
     }
 
     /**
+     * Serialises the save against every other claimant of the same hostname — issue #61.
+     *
+     * ⚠️ THE OVERLAP CHECK IS A CHECK-THEN-ACT AND THIS IS WHAT MAKES IT ATOMIC.
+     * `refuseOverlappingClaim()` reads the rival claims for a host and compares prefixes in PHP,
+     * because "one prefix contains the other" is not an equality any unique index can express — so two
+     * orgs creating `example.test/` and `example.test/news` at the same moment could both complete
+     * the read before either insert committed. The derived index keys differ, the unique constraint
+     * accepted both, and the resolver's longest-prefix rule then served one org's URL from the other.
+     *
+     * ⚠️ THE TRANSACTION HAS TO BE OPENED HERE, which is why this is an override rather than more
+     * work in the `saving` hook. A lock taken in a hook is only meaningful if the CALLER wrapped the
+     * save in a transaction, and a hook cannot make that true — `Site::create()` outside one is the
+     * ordinary case. A `lockForUpdate()` in the hook would have looked like serialisation while
+     * working only sometimes, which is worse than not having it.
+     *
+     * ⚠️ AND THERE IS NOTHING ON `sites` TO LOCK when both claims are new, which is why
+     * `site_host_claims` exists. Locking the existing rows for a host serialises only the case where
+     * a rival is already there — the sequential one, already closed. Postgres takes no gap lock, and
+     * depending on MySQL's would make correctness engine-specific (invariant 5).
+     *
+     * ⚠️ A NESTED SAVE RE-LOCKS NOTHING, WHICH IS NOT THE SAME AS BEING SAFE — and this docblock
+     * claimed the second on the strength of the first. `DB::transaction()` inside an outer
+     * transaction is a savepoint, and re-locking a row this transaction already holds is a no-op, so
+     * one host costs one lock however many saves touch it. What does NOT follow, and what review
+     * pointed out, is that a caller wrapping SEVERAL sites in one transaction is safe: every mutex
+     * is held until the OUTER commit, and the order those saves run in is the caller's. Two batches
+     * saving hosts A then B and B then A each hold their first mutex and block on the second, on
+     * completely distinct rows and prefixes.
+     *
+     * ⚠️ THIS METHOD CANNOT FIX THAT, and the CONTRACT I wrote instead was unsound — review
+     * disproved it with a counter-example. It said a caller must order its saves "by the hostname each
+     * will claim", and because every save also locks its ORIGIN, destination order is not an order over
+     * the union: `a→d` then `b→e` against `b→c` then `a→f` obeys it and deadlocks on Postgres. There is
+     * no ordering of the SAVES that fixes it, because each save locks a non-contiguous pair.
+     *
+     * ⚠️ SO IT IS A KNOWN LIMITATION, DEFERRED, and this is the third answer to the same finding —
+     * the first two are recorded because each was wrong in a way worth keeping. A CONTRACT was tried
+     * ("order your saves by the hostname each claims") and review disproved it. A public
+     * `saveAllInHostOrder()` was tried next, which acquires the union before any save and does work —
+     * and review held it to `CONTRIBUTING.md`, correctly: new public API before v1.2 is on the
+     * won't-merge list, and my argument that callers "have no door" is weak when there is no caller.
+     * Nothing in this repository batches site saves.
+     *
+     * What is left is honest rather than fixed: a caller who wraps several site MOVES in one
+     * transaction can deadlock, the failure is loud and retryable rather than silent, and the
+     * mechanism lands with the v1.2 API. ADR-021 carries the counter-example so nobody has to
+     * rediscover it, and issue #71 carries the remaining work rather than a docblock.
+     */
+    public function save(array $options = []): bool
+    {
+        /*
+         * ⚠️ THE MODEL'S OWN CONNECTION, NOT THE DEFAULT ONE, and a test written for the isolation
+         * check is what surfaced it. `DB::transaction()` and `DB::table()` both resolve the DEFAULT
+         * connection, so a `Site` on any other one took its mutex and opened its transaction on one
+         * connection while `parent::save()` wrote through another — the serialisation and the write in
+         * different transactions entirely, which is the whole mechanism defeated rather than weakened.
+         *
+         * Nothing in this repository puts a Site on a second connection, so this was latent rather
+         * than live. It is the same class as every other finding on this branch: a guard that holds on
+         * the path it was written for and not on the one beside it.
+         */
+        return (bool) $this->getConnection()->transaction(function () use ($options): bool {
+            $this->lockHostClaim();
+
+            return parent::save($options);
+        });
+    }
+
+    /**
+     * Takes the durable per-host mutex for every hostname this save contends for.
+     *
+     * ⚠️ WHICH HOSTS, AND WHY THE ORDER MATTERS, is `contendedHosts()` — it carries the measured
+     * deadlock that made this a loop rather than a single lock. This method is the lock itself.
+     */
+    private function lockHostClaim(): void
+    {
+        $hosts = $this->contendedHosts();
+
+        /*
+         * ⚠️ NOTHING CLAIMED MEANS NOTHING TO SERIALISE, and review found the isolation refusal
+         * standing in front of that. An admin-only site — no `base_url`, so no `canonical_host` —
+         * contends for no hostname: `contendedHosts()` filters the nulls and returns `[]`, no mutex is
+         * taken, and `refuseOverlappingClaim()` returns before it reads anything. There is no rival
+         * lookup for a stale snapshot to spoil.
+         *
+         * So the check belongs AFTER this and behind this guard. Refusing such a save on PostgreSQL at
+         * REPEATABLE READ made a valid create depend on the database's isolation level for a property
+         * it does not use — which is both a false refusal and a misleading one, since the reason it
+         * gives is about a lookup that never runs.
+         */
+        if ($hosts === []) {
+            return;
+        }
+
+        $this->refuseUnusableIsolation();
+
+        $this->lockClaims($hosts);
+        $this->refuseStaleOrigin($hosts);
+    }
+
+    /**
+     * Refuse a save whose rival lookup cannot see a rival that committed while it queued.
+     *
+     * ⚠️ `lockForUpdate()` DOES NOT ESCAPE A POSTGRES SNAPSHOT, which review found — and the previous
+     * round added that clause believing it did. Under MySQL and MariaDB's REPEATABLE READ a locking
+     * read IS a current read, which is measured and is why the clause is there. PostgreSQL is
+     * different: at REPEATABLE READ a row INSERTED after the transaction's snapshot is simply
+     * invisible, `FOR UPDATE` or not. Measured on PostgreSQL 17 — a session took a snapshot, a rival
+     * committed `x.test/`, and the locking read returned only the pre-snapshot `x.test/other`.
+     *
+     * So the whole mutex design rests on one requirement — the rival lookup must see rivals that
+     * committed while this save queued — and Postgres satisfies it at READ COMMITTED, which is its
+     * default and Laravel's. This makes the requirement enforceable rather than assumed: it is
+     * checked for each save that contends for a hostname — the level is a property of the TRANSACTION,
+     * which is why a per-connection cache was rejected and measured wrong in both directions — and a
+     * save under Postgres REPEATABLE READ is refused with the reason rather than silently permitting
+     * the cross-org claim the mutex exists to prevent.
+     *
+     * ⚠️ NOT A SECOND CONNECTION, which was the other candidate. A fresh connection has a fresh
+     * snapshot and would work — and it costs a connection per site save, cannot see this transaction's
+     * own mutex, and on SQLite `:memory:` is a different database entirely. Checking a precondition is
+     * smaller than working around it.
+     *
+     * ⚠️ SERIALIZABLE IS NOT REFUSED. Postgres aborts a SERIALIZABLE transaction whose read has been
+     * invalidated, so the requirement is met by a different mechanism — a loud failure rather than a
+     * stale read. Only the middle level is unsafe, which is why the check names it rather than
+     * demanding READ COMMITTED.
+     *
+     * ⚠️ INVARIANT 5 IS NOT BROKEN BY THIS. The correctness requirement is one sentence and the same on
+     * every engine; what differs is how each satisfies it, and this refuses a configuration that
+     * satisfies it on none.
+     */
+    private function refuseUnusableIsolation(): void
+    {
+        $connection = $this->getConnection();
+
+        if ($connection->getDriverName() !== 'pgsql') {
+            return;
+        }
+
+        /*
+         * ⚠️ ASKED EVERY TIME, BECAUSE THE ANSWER IS A PROPERTY OF THE TRANSACTION AND NOT OF THE
+         * CONNECTION — review found the cache was wrong in BOTH directions. A long-lived connection
+         * first seen at READ COMMITTED had that recorded for ever, so a later
+         * `BEGIN ISOLATION LEVEL REPEATABLE READ` on the same connection skipped the check entirely;
+         * and one first seen at REPEATABLE READ would have refused every valid save afterwards.
+         *
+         * Measured on PostgreSQL 17, one connection:
+         *
+         *   in a plain transaction              read committed
+         *   in a REPEATABLE READ transaction    repeatable read
+         *   outside a transaction again         read committed
+         *
+         * ⚠️ AND NO CHEAPER KEY EXISTS. `DB::transactionLevel()` counts savepoints and does not
+         * identify a transaction, and `txid_current()` costs a query AND assigns a real transaction id
+         * as a side effect, which is worse than the query it would save. So the probe runs per save:
+         * measured at 0.82 ms, against a save that already opens a transaction and takes a row lock,
+         * and only on the engine that needs it.
+         */
+        $level = $connection->selectOne('SHOW transaction_isolation');
+
+        $isolation = is_object($level) ? strtolower((string) ($level->transaction_isolation ?? '')) : '';
+
+        if ($isolation !== 'repeatable read') {
+            return;
+        }
+
+        throw new RuntimeException(
+            'Refusing to save a site: this PostgreSQL connection is at REPEATABLE READ, where a rival '
+            .'claim committed while this save queued for the hostname mutex is invisible to the overlap '
+            .'check — measured, `FOR UPDATE` does not escape the snapshot for a row inserted after it. '
+            .'Two orgs could then hold overlapping URLs on one hostname, which is the cross-org theft '
+            ."the mutex exists to prevent (ADR-021). Use READ COMMITTED, which is PostgreSQL's default "
+            ."and Laravel's, or SERIALIZABLE, which aborts rather than reading stale."
+        );
+    }
+
+    /**
+     * Takes the durable per-host mutex for each of these hostnames, in the order given.
+     *
+     * ⚠️ THE ORDER IS THE CALLER'S RESPONSIBILITY, and `contendedHosts()` is the caller that sorts.
+     * Sorting here as well would hide which of the two is the one that has to be right — and the
+     * separation is kept rather than collapsed because the batch mechanism this was extracted for lands
+     * at v1.2, where a second caller will need exactly this shape.
+     *
+     * @param  list<string>  $hosts
+     */
+    private function lockClaims(array $hosts): void
+    {
+        foreach ($hosts as $host) {
+            /*
+             * ⚠️ UPSERT THEN LOCK, in that order, and both are required. The row may not exist — the
+             * first claimant of a hostname creates it — and two concurrent first claimants must not
+             * both proceed. One of them creates it and the other continues without an error, and the
+             * `SELECT … FOR UPDATE` that follows is what they then queue on.
+             *
+             * ⚠️ `upsert()` RATHER THAN `insertOrIgnore()`, BECAUSE THE LOCK IT TAKES IS THE POINT and
+             * review found the difference. On MySQL and MariaDB, `INSERT IGNORE` hitting an existing
+             * key takes a SHARED lock on that unique-index record — so both transactions get it, both
+             * then ask `FOR UPDATE` to upgrade to exclusive, and neither can while the other holds S.
+             * Measured: `ERROR 1213 Deadlock found`, and `DB::transaction()` takes one attempt, so an
+             * otherwise-valid save surfaced as a database exception instead of queueing.
+             *
+             * `INSERT … ON DUPLICATE KEY UPDATE` — which is what `upsert()` compiles to there — takes
+             * the record EXCLUSIVELY, so the second transaction queues on the insert itself and never
+             * reaches a conversion. Re-measured with the same two sessions: both commit. The update
+             * writes the key back to itself, because there is nothing else on the row to change and the
+             * lock is the whole purpose of the statement.
+             *
+             * ⚠️ `DB::table()`, DELIBERATELY BELOW ELOQUENT. This row is a mutex rather than a
+             * record: it has no model, no scope and no events, and giving it any of those would
+             * invite somebody to read it as a claim. It is also written on every site save, so the
+             * cheapest path is the right one.
+             */
+            $this->getConnection()->table('site_host_claims')->upsert(
+                [['canonical_host' => $host, 'created_at' => now()]],
+                ['canonical_host'],
+                ['canonical_host'],
+            );
+
+            /*
+             * ⚠️ SQLITE COMPILES `FOR UPDATE` TO NOTHING, and that is not a hole: SQLite serialises
+             * writers at the database level, so a second writer waits on the transaction itself. The
+             * engines where this lock does the work are Postgres and MySQL, which is why the test
+             * for it runs on all three rather than on the default.
+             */
+            $this->getConnection()->table('site_host_claims')
+                ->where('canonical_host', $host)
+                ->lockForUpdate()
+                ->first();
+        }
+    }
+
+    /**
+     * Refuse a save whose row has moved hosts since this instance was loaded.
+     *
+     * ⚠️ THE ORIGIN CAME FROM THE INSTANCE, AND THAT REOPENED THE CYCLE — review found it, and the
+     * proof in `contendedHosts()` is what it broke. That proof rests on "every site row this
+     * transaction touches sits at a host whose mutex it holds", and the row's host was read from
+     * `getRawOriginal()`: if another transaction moved the row after this instance was loaded, the
+     * mutex set is computed for a host the row has left. Two such saves take DISJOINT mutex sets,
+     * serialise against nothing, and their rival reads then acquire each other's rows. Staged as two
+     * real sessions — row 1 believed at `a.test` but actually at `b.test`, moving to `c.test`, against
+     * row 2 believed at `d.test` but actually at `c.test`, moving to `b.test`:
+     *
+     *   PostgreSQL 17  ERROR: deadlock detected
+     *
+     * ⚠️ DETECTED RATHER THAN REPAIRED, which is the honest fix and a better one on its own terms.
+     * Re-deriving the mutex set from the committed host needs the host read BEFORE the lock that
+     * makes it stable, so it can go stale again between the two — a loop with no guaranteed end. And
+     * an instance whose row has moved is a save about to overwrite a change it never saw: silently
+     * proceeding is a lost update, so the refusal is the correct answer to the question the caller
+     * actually asked. Re-measured with this check in place, the same two sessions both stop with
+     * their own message and neither deadlocks; the legitimate swap that motivated `contendedHosts()`
+     * still commits on both sides.
+     *
+     * ⚠️ A LOCKING READ, for the reason `refuseOverlappingClaim()` records: under MySQL and
+     * MariaDB's REPEATABLE READ a plain read answers from the transaction's snapshot, so a move that
+     * committed while this save queued for the mutex would be invisible — and invisible is exactly
+     * the state this exists to catch. The lock it takes on the row is one `parent::save()` is about
+     * to take anyway, so it adds no lock the transaction did not already need.
+     *
+     * ⚠️ AND WHEN IT PASSES, THE INVARIANT IS RESTORED: the row demonstrably sits at a host in
+     * `$hosts`, which this transaction holds the mutex for — or on no host at all, which nothing
+     * else can lock. That is what makes the check part of the
+     * proof rather than a guard beside it.
+     *
+     * @param  list<string>  $hosts
+     */
+    private function refuseStaleOrigin(array $hosts): void
+    {
+        if (! $this->exists) {
+            // A create has no row yet, so there is no earlier state it could have missed.
+            return;
+        }
+
+        /*
+         * ⚠️ QUERIED WHATEVER THIS INSTANCE BELIEVES, AND THE FIRST VERSION SKIPPED ON NULL — review
+         * found the bypass my own fix introduced. It returned early when the loaded `canonical_host`
+         * was null, on the reasoning that an admin-only site claims no host and so has no origin to be
+         * stale about. True of the INSTANCE and not of the ROW: another transaction can give that row
+         * a host, and the stale save then locks only its destination while its row sits somewhere
+         * else — which is the same disjoint-mutex cycle, reached through the one path that skipped the
+         * check. What this instance believes cannot decide whether the row is worth reading.
+         *
+         * ⚠️ A MISSING ROW AND A PRESENT ROW WITH A NULL HOST ARE DIFFERENT ANSWERS, so this selects a
+         * row rather than a value: `value()` returns null for both, and they need opposite handling.
+         */
+        $row = $this->getConnection()->table('sites')
+            ->where('id', $this->getKey())
+            ->lockForUpdate()
+            ->first(['canonical_host']);
+
+        // Gone is not stale: the row was hard-deleted, and `parent::save()` will find nothing to
+        // update. Refusing here would replace that with a message about the wrong thing.
+        if ($row === null) {
+            return;
+        }
+
+        $believed = $this->getRawOriginal('canonical_host');
+        $committed = $row->canonical_host;
+
+        /*
+         * ⚠️ A ROW ON NO HOST IS REACHED BY NOTHING, so it needs no mutex and cannot be in a cycle.
+         * `refuseOverlappingClaim()` finds rivals by `canonical_host` equality, which a NULL never
+         * satisfies — so the only save that ever locks such a row is a save of that row. Returning
+         * here is the invariant holding rather than an exemption from it.
+         */
+        if ($committed === null) {
+            return;
+        }
+
+        /*
+         * ⚠️ THE TEST IS THE INVARIANT ITSELF, not `$committed !== $believed`, and the difference is
+         * deliberate. If another save moved the row to the very host this one is moving it TO, the
+         * mutex is already held and the lock discipline is intact — so that case is not this
+         * method's business even though the instance is stale. Policing lost updates in general is a
+         * separate decision about `Site`, not a consequence of the locking proof, and answering it
+         * here would smuggle one in.
+         */
+        if (in_array($committed, $hosts, true)) {
+            return;
+        }
+
+        throw new RuntimeException(sprintf(
+            'Refusing to save site [%s]: it was loaded while it answered on [%s] and it now answers '
+            .'on [%s], so another save moved it after this one read it. This save holds the host '
+            .'mutexes for the addresses it believed, not for the one the row is actually on, and '
+            .'proceeding would write a URL claim under the wrong locks (ADR-021). Reload the site '
+            .'and try again.',
+            $this->getAttribute('handle') ?? $this->getKey(),
+            match ($believed) {
+                null => 'no host at all', '' => 'any host', default => $believed
+            },
+            $committed === '' ? 'any host' : $committed,
+        ));
+    }
+
+    /**
+     * Every hostname this save contends for, in one globally agreed order.
+     *
+     * ⚠️ BOTH HOSTS, NOT ONLY THE DESTINATION, AND THE DEADLOCK IS MEASURED. Review found it: two
+     * same-org sites moving across each other's hosts deadlock even with disjoint prefixes, because
+     * each locks a mutex the other does not hold and then needs a site row the other does.
+     *
+     *     site 1 at a.test/x -> b.test/x        site 2 at b.test/y -> a.test/y
+     *     TX1 locks mutex(b.test), then site 2  TX2 locks mutex(a.test), then site 1
+     *     TX1 UPDATEs site 1 — held by TX2      TX2 UPDATEs site 2 — held by TX1
+     *
+     *   PostgreSQL 17  ERROR: deadlock detected — while updating tuple in relation "sites"
+     *   MySQL 8.4      ERROR 1213 (40001): Deadlock found when trying to get lock
+     *
+     * `DB::transaction()` takes one attempt, so one otherwise-valid save surfaces as an exception.
+     * Measured again with both mutexes held in sorted order: both transactions commit and the sites
+     * complete the swap.
+     *
+     * ⚠️ SORTED, WHICH IS THE WHOLE MECHANISM. Ordered acquisition is what makes a lock cycle
+     * impossible, and it only works if EVERY transaction agrees on the order — so the order comes
+     * from the hostnames themselves rather than from origin-then-destination, which is exactly the
+     * per-transaction order that deadlocked.
+     *
+     * ⚠️ AND IT IS A PROOF, not two passing runs. With both mutexes held, every site row a
+     * transaction touches belongs to a host whose mutex it holds: its own row sits at its ORIGINAL
+     * host, and the rival rows `refuseOverlappingClaim()` locks sit at its DESTINATION host. Two
+     * transactions whose row sets intersect must therefore intersect in mutexes too, and mutex
+     * acquisition is globally ordered.
+     *
+     * ⚠️ THE ORIGINAL HOST IS LOCKED EVEN WHEN THE SAVE REMOVES THE URL ENTIRELY. Nothing needs
+     * checking for a site that claims no address, but the save still UPDATEs a row sitting at the
+     * old host — which a rival claiming that host may hold. Dropping the lock there would reopen the
+     * cycle for the one case that looks like it does not need it.
+     *
+     * ⚠️ ONE LOCKING READ PER HOST, rather than one `whereIn(...)->orderBy(...)`. The `IN` form also
+     * passed both engines, but row-lock order relative to a sort is the planner's business and not
+     * contractual. Issuing a statement per host in sorted order makes the acquisition order this
+     * method's.
+     *
+     * ⚠️ DERIVED HERE RATHER THAN READ, because the lock has to be taken BEFORE the `saving` hook
+     * derives anything — that hook runs inside `parent::save()`, by which time it is too late to
+     * serialise. `deriveUrlParts()` is the same static the hook calls, so the two cannot disagree,
+     * and calling it twice is a string operation rather than a query.
+     *
+     * ⚠️ REFUSALS ARE LEFT TO THE HOOK. If `base_url` is malformed this derivation throws, and it
+     * throws the same message the hook would — the transaction rolls back and the caller sees the
+     * refusal it would have seen anyway. Catching it here to "try again later" would swap a clear
+     * refusal for a lock nobody needed.
+     *
+     * ⚠️ A SITE WITH NO PUBLIC URL AND NO PREVIOUS ONE LOCKS NOTHING. `[null, null]` is the
+     * representation for an admin-only site, which claims no address and contends with nobody.
+     *
+     * ⚠️ THE ORIGINAL IS THE LOADED VALUE, so a host changed by another process after this instance
+     * was read is not the one locked. That is the same boundary `refuseOverlappingClaim()` already
+     * works within — it excludes `$site->getKey()` from its own rival read — and reading the
+     * committed host instead would need a query whose own ordering this method exists to establish.
+     *
+     * @return list<string>
+     */
+    private function contendedHosts(): array
+    {
+        [$destination] = self::deriveUrlParts($this->base_url, $this->url_strategy);
+
+        $origin = $this->exists ? $this->getRawOriginal('canonical_host') : null;
+
+        $hosts = array_values(array_unique(array_filter(
+            [$destination, is_string($origin) ? $origin : null],
+            static fn (?string $host): bool => $host !== null,
+        )));
+
+        sort($hosts);
+
+        return $hosts;
+    }
+
+    /**
+     * Every other org's claim on this site's hostname, read for update on the SITE'S OWN connection.
+     *
+     * ⚠️ NOT `withoutScopeBecause()`, AND THAT IS WHY THIS METHOD EXISTS. That hatch builds its own
+     * query from a STATIC call, and a static call makes a fresh model — which is on the DEFAULT
+     * connection whatever connection the instance is on. So the mutex, the transaction and
+     * `parent::save()` ran on `$site->getConnection()` while this lookup asked an unrelated database: a
+     * second claimant could queue correctly on the right host mutex, be told no rival held the host, and
+     * commit the overlapping cross-org prefix. Review found it.
+     *
+     * ⚠️ AN OPTIONAL `$connection` ON THE HATCH WAS THE FIRST FIX AND REVIEW REJECTED IT, correctly —
+     * it is a public extension point, and `CONTRIBUTING.md` lists new public API before v1.2 among the
+     * things that will not merge. One caller needing a connection is not a reason for every caller to
+     * inherit an argument, so the crossing is built here, where the instance is.
+     *
+     * ⚠️ STILL AUDITABLE, which was the hatch's actual purpose. `ScopeWrites::suspend()` is the
+     * greppable marker for a crossing that builds its own query, and the hatch's docblock names it as
+     * the second thing to search for. The reason is the sentence it always was: the question is whether
+     * ANOTHER org holds an overlapping claim, which a query scoped to the current org cannot ask.
+     *
+     * ⚠️ `newQueryWithoutScopes()` REMOVES EVERY GLOBAL SCOPE, and for this model that is exactly
+     * the hatch's three — a `Site` carries `OrgScope` and nothing else, measured, with no soft deletes
+     * to lose. That is an assumption rather than a guarantee, so a test pins it: adding a global scope
+     * to `Site` fails that test rather than quietly widening what this read can see.
+     *
+     * ⚠️ A LOCKING READ, SO IT CANNOT REUSE A CALLER'S SNAPSHOT. Holding the host mutex makes the
+     * rival set stable from here on, and that is worthless if this read answers from an OLDER point in
+     * time — which under MySQL and MariaDB's REPEATABLE READ it can, because a nested `transaction()` is
+     * only a savepoint and the snapshot belongs to the OUTER transaction. `lockForUpdate()` forces a
+     * current read on both MySQL engines, which is the property being bought rather than the lock
+     * itself; the mutex is what serialises. Postgres reads the latest committed row under READ COMMITTED
+     * anyway and SQLite has one writer, so the clause costs them nothing and removes an engine-specific
+     * hole invariant 5 exists to prevent.
+     *
+     * @return Collection<int, self>
+     */
+    private static function rivalClaimsOnThisConnection(self $site): Collection
+    {
+        return ScopeWrites::suspend(fn () => $site->newQueryWithoutScopes()
+            ->where('canonical_host', $site->canonical_host)
+            ->when($site->exists, fn ($query) => $query->whereKeyNot($site->getKey()))
+            ->lockForUpdate()
+            ->get(['id', 'org_id', 'base_url', 'path_prefix']));
+    }
+
+    /**
      * Refuses a public URL that OVERLAPS one another org already holds.
      *
      * ⚠️ THE UNIQUE INDEX IS NOT ENOUGH, AND SAYING IT WAS WAS WRONG. It compares the pair
@@ -184,19 +645,22 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
      * exclusively — and the resolver already prefers a host-specific claim, so a specific claim
      * shadowing a promiscuous one is the intended precedence rather than theft.
      *
-     * ⚠️ NOT SERIALIZED, AND THAT IS A KNOWN GAP RATHER THAN AN OVERSIGHT — issue #61. This
-     * reads before the row is written, so two orgs creating `example.test/` and
-     * `example.test/news` CONCURRENTLY can both pass it: the derived index keys differ, so the
-     * unique constraint accepts both, and the theft above is recreated. Closing it needs a
-     * durable per-host claim row to lock plus a transactional save, because there is no existing
-     * row to lock when both claims are new — a schema change and a decision, not a patch.
+     * ⚠️ THIS IS A CHECK-THEN-ACT, AND `save()` IS WHAT MAKES IT ATOMIC — issue #61, now closed.
+     * The read here happens before the row is written, so two orgs creating `example.test/` and
+     * `example.test/news` CONCURRENTLY could both pass it: the derived index keys differ, the
+     * unique constraint accepted both, and the theft above was recreated. `Site::save()` now takes
+     * a durable per-host mutex inside a transaction before this runs, so the second claimant of a
+     * hostname queues behind the first and sees its committed row.
      *
-     * What this does close is the case where a rival claim ALREADY EXISTS, which is every
-     * sequential path including the one review demonstrated. The exact-match unique index still
-     * prevents identical pairs at the database level regardless of timing. A `lockForUpdate()`
-     * here would look like serialization without being it: a lock taken in a `saving` hook is
-     * only meaningful if the caller wrapped the save in a transaction, and a hook cannot make
-     * that true.
+     * ⚠️ A `lockForUpdate()` HERE WOULD NOT HAVE DONE IT, which is why the fix is a schema change
+     * and an override rather than a line in this method. A lock taken in a `saving` hook is only
+     * meaningful if the CALLER wrapped the save in a transaction, and a hook cannot make that true —
+     * `Site::create()` outside one is the ordinary case. And when both claims are new there is
+     * nothing on `sites` to lock: Postgres takes no gap lock, and depending on MySQL's would make
+     * correctness engine-specific (invariant 5). See `lockHostClaim()` and `site_host_claims`.
+     *
+     * The exact-match unique index remains the database-level backstop for identical pairs,
+     * regardless of timing.
      *
      * @throws RuntimeException when another org already holds an overlapping claim
      */
@@ -207,14 +671,22 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
             return;
         }
 
-        $rivals = self::withoutScopeBecause(
-            'cross-org URL claims: the question is whether ANOTHER org holds an overlapping '
-            .'claim, which a query scoped to the current org cannot ask',
-            fn ($query) => $query
-                ->where('canonical_host', $site->canonical_host)
-                ->when($site->exists, fn ($q) => $q->whereKeyNot($site->getKey()))
-                ->get(['id', 'org_id', 'base_url', 'path_prefix']),
-        );
+        /*
+         * ⚠️ A LOCKING READ, SO IT CANNOT REUSE A CALLER'S SNAPSHOT. Holding the host mutex makes the
+         * rival set stable from here on, and that is worthless if this read answers from an OLDER
+         * point in time — which under MySQL and MariaDB's REPEATABLE READ it can. If a caller wrapped
+         * this save in a transaction that had already read anything, `lockHostClaim()`'s nested
+         * `DB::transaction()` is only a savepoint and the snapshot belongs to the OUTER transaction.
+         * A rival committing while this save queued for the mutex would then be invisible to an
+         * ordinary read, and `/` and `/news` could coexist across orgs after all.
+         *
+         * `lockForUpdate()` forces a current read on both MySQL engines, which is the property being
+         * bought here rather than the lock itself — the mutex is what serialises. Postgres reads the
+         * latest committed row under READ COMMITTED anyway, and SQLite has one writer; the clause
+         * costs them nothing and removes an engine-specific hole invariant 5 exists to prevent.
+         * Found by review.
+         */
+        $rivals = self::rivalClaimsOnThisConnection($site);
 
         /*
          * ⚠️ THE EFFECTIVE ORG, NOT `$site->org_id`, and review found why. `EnforcesScope` stamps

@@ -230,6 +230,8 @@ Drupal spent ~a decade proving a runtime schema engine *without* opinionated sta
 - [ ] Blueprint format: portable bundle of entity types, fields, roles, permissions, settings, seed content
 - [ ] Apply/install flow, idempotent and reversible
 - [ ] First-party: **Blog**, **Marketing Site**, **DAM Starter**
+
+  The **Marketing Site** blueprint has a named first user: `kitsunecms.org` itself, per [ADR-030](decision-log.md). The project's site waits for that blueprint rather than being stood up on a static generator, so its gaps land on the maintainer before they land on anyone else. **This line is the trigger, not a tag:** ADR-030 moves the site when the blueprint applies cleanly and idempotently to a fresh install at the floor, and the result is editable through the admin. The site is also the first thing to stand on ADR-027's resource floor for real, and it runs the **self-host** path rather than KaaS deliberately.
 - [ ] Blueprints are a **kernel primitive**, not a module
 
 **Done when:** fresh install to working blog is one click, under 60 seconds.
@@ -239,7 +241,7 @@ Drupal spent ~a decade proving a runtime schema engine *without* opinionated sta
 *6–8 weeks.*
 
 - [ ] Security review, especially every tenancy boundary
-- [ ] Documentation site
+- [ ] Documentation site — explicitly *not* settled by [ADR-030](decision-log.md), which covers the marketing site only. Search, versioning and deep cross-linking may or may not be a Kitsune workload; that wants evidence rather than symmetry
 - [ ] Semantic versioning commitment and published upgrade policy
 - [ ] Staffed security disclosure process
 - [ ] **One-command self-host installer** (ADR-026) — paste one command on a fresh Ubuntu LTS box, end at the onboarding screen:

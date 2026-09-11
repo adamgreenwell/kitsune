@@ -200,6 +200,17 @@ trait EnforcesScope
      * Legitimate uses exist — provisioning, cross-org admin tooling, the
      * migration framework. Every one of them should be reviewable by
      * searching for this method.
+     *
+     * ⚠️ AND FOR `ScopeWrites::suspend()`, which is the other half of that audit. This method is the
+     * ONLY place that suspends for a query it also builds; a caller that must build its own — because
+     * the query has to be on a particular connection, which a static call cannot be — suspends
+     * directly. `Site::rivalClaimsOnThisConnection()` is the one such caller, and it says why.
+     *
+     * ⚠️ A `$connection` PARAMETER WAS ADDED HERE AND REVERTED, which review was right about: this is a
+     * public extension point and `CONTRIBUTING.md` lists new public API before v1.2 among the things
+     * that will not merge. The need was real — a static call makes a fresh model on the DEFAULT
+     * connection — and the answer is for the one caller that needs it to build its own query rather
+     * than for every caller to inherit an argument.
      */
     public static function withoutScopeBecause(string $reason, callable $callback): mixed
     {
