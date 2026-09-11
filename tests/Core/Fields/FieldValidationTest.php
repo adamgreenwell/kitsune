@@ -1037,6 +1037,26 @@ it('caps a text field length, which is what the pattern screen\'s bound rests on
             'pattern' => '^[a-z]+$',
         ]))->toContain('limited to');
 
+    /*
+     * ⚠️ AND A VALUE THAT IS NOT A WHOLE NUMBER IS REFUSED BEFORE THE CEILING IS APPLIED, which review
+     * found the guard missing: it CHECKED with `is_numeric()` and the rule SPENDS with `(int)`, and
+     * those two disagree. `is_numeric('100000x')` is false, so the ceiling stood aside — while
+     * `length()` casts the same string to 100000, so `max:` and an accepted quadratic pattern then ran
+     * on 100,000-character values. A trailing letter defeated the bound the pattern rules rest on.
+     *
+     * Settings arrive from `FieldStorage` and from a module, not only from the Filament numeric
+     * control, so "the UI would not send that" is not a guard.
+     *
+     * The test is the one the cast makes: a value is acceptable exactly when casting loses nothing.
+     */
+    expect($type->validateSettings(['maxLength' => '100000x']))->toContain('whole number')
+        ->and($type->validateSettings(['maxLength' => '1e3']))->toContain('whole number')
+        ->and($type->validateSettings(['maxLength' => 10.5]))->toContain('whole number')
+        ->and($type->validateSettings(['maxLength' => 'lots']))->toContain('whole number')
+        // ⚠️ And a numeric STRING still passes, because casting it loses nothing — a form sends one.
+        ->and($type->validateSettings(['maxLength' => '100']))->toBeNull()
+        ->and($type->validateSettings(['maxLength' => 100]))->toBeNull();
+
     // ⚠️ And published, because invariant 14 is that an enforced constraint which is not published is
     // one a consumer gets wrong.
     expect($type->settingsSchema()['maxLength']['maximum'])->toBe(TextType::MAX_CONFIGURABLE_LENGTH);

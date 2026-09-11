@@ -1000,5 +1000,11 @@
     "pattern": "^a*a*(?:a*){00}b$",
     "subject": "aaaaaaaaaaaaaaaaaaaa",
     "why": "The same upgrade hazard as `{0}`, one spelling along. Both engines accept a zero-padded bound and neither ever runs the group, but the first fix recognised a single leading zero only — so `{00}` and `{00,00}` were still refused as three adjacent variable-width atoms while `^a*a*b$` is admitted. The bound is parsed numerically now, which is what `repeatsMoreThanOnce()` beside it already did."
+  },
+  {
+    "id": "zero-repeat-group-with-assertion",
+    "pattern": "(?:a|(?=a)){0}",
+    "subject": "b",
+    "why": "A live divergence, found inside the `{0}` skip added a round earlier. At production fidelity on PCRE 10.48 and Node 22.23.2, PCRE does not match `b` OR the empty string while ECMAScript matches both — so a generated client would accept every value this server rejects, which is what rule 3 forbids. It is narrow: `(?:(?=a)|a){0}` agrees, `(?:a|(?<=a)){0}` agrees, and `(?:a){0}` and `a{0}` agree. PCRE stops matching only when a dead group's alternation ENDS in a positive lookahead. The rule refuses any assertion in a zero-repeat group, which is wider than the quirk on purpose — a shape a reader can check, and a dead group holding an assertion is not a pattern anybody wrote deliberately."
   }
 ]

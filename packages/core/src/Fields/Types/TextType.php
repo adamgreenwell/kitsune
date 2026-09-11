@@ -227,6 +227,32 @@ final class TextType extends BaseFieldType
          */
         $maxLength = $settings['maxLength'] ?? null;
 
+        /*
+         * ⚠️ A VALUE THAT IS NOT A WHOLE NUMBER IS REFUSED OUTRIGHT, because the ceiling below was
+         * checked with `is_numeric()` and SPENT with `(int)`, and those two disagree. Review found the
+         * gap: `is_numeric('100000x')` is false, so the guard stood aside — and `length()` casts the
+         * same string to 100000, so `max:` and an accepted quadratic pattern then ran on
+         * 100,000-character values. The 5,000-character bound the pattern rules rest on was defeated by
+         * a trailing letter.
+         *
+         * Settings reach this from `FieldStorage` and from a module, not only from the Filament numeric
+         * control, so "the UI would not send that" is not a guard.
+         *
+         * ⚠️ THE TEST IS THE ONE THE CAST MAKES, which is the point: a value is acceptable exactly when
+         * casting it loses nothing. `'100'` passes because `(string) (int) '100'` is `'100'`; `'100x'`,
+         * `'1e3'` and `10.5` do not, and each would have been spent as a different number than it reads
+         * as.
+         */
+        if ($maxLength !== null && (! is_numeric($maxLength) || (string) (int) $maxLength !== trim((string) $maxLength))) {
+            return sprintf(
+                'maxLength must be a whole number, and this is [%s]. It would be read as %s when the '
+                .'length rule is built, which is not what it says — and the pattern rules rest on that '
+                .'number bounding the value they run against.',
+                is_scalar($maxLength) ? (string) $maxLength : gettype($maxLength),
+                number_format((int) $maxLength),
+            );
+        }
+
         if (is_numeric($maxLength) && (int) $maxLength > self::MAX_CONFIGURABLE_LENGTH) {
             return sprintf(
                 'A text field is limited to %s characters, and this asks for %s. The pattern screen '

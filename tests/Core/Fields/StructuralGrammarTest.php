@@ -766,6 +766,45 @@ describe('an assertion consumes nothing, so it cannot divide a run', function ()
     });
 });
 
+describe('a zero-repeat group may not hold an assertion', function (): void {
+    /*
+     * ⚠️ A DIVERGENCE RATHER THAN A COST, and review found it inside the `{0}` skip added the round
+     * before. Measured at production fidelity on PCRE 10.48 and Node 22.23.2:
+     *
+     *   (?:a|(?=a)){0}     PCRE no match on "b" AND on ""     ECMAScript matches both
+     *   (?:a|(?=z)){0}     PCRE no match                       ECMAScript matches
+     *   (?:(?=a)|a){0}     both match           <- the ORDER matters
+     *   (?:a|(?<=a)){0}    both match           <- lookAHEAD only
+     *   (?:a){0}, a{0}     both match
+     *
+     * PCRE stops matching when a dead group's alternation ends in a positive lookahead; ECMAScript
+     * skips the group outright. A generated client would accept every value this server rejects, which
+     * is what rule 3 of the field-type contract forbids.
+     */
+    it('refuses the shape both engines disagree about', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))->toContain('bounded at zero repetitions');
+    })->with([
+        '(?:a|(?=a)){0}',
+        '^(?:a|(?=a)){0}$',
+        '(?:a|(?=a)){0,0}',
+        '(?:(?=a)|a){0}',
+    ]);
+
+    it('leaves a dead group with no assertion alone', function (string $pattern): void {
+        /*
+         * ⚠️ THE RULE IS WIDER THAN THE QUIRK AND THIS IS WHERE THAT STOPS. Encoding "an alternation
+         * whose last branch is a positive lookahead" would be a shape nobody can check by reading it,
+         * so any assertion in a dead group is refused — but a dead group WITHOUT one still publishes,
+         * which is the upgrade hazard the `{0}` skip exists for.
+         */
+        expect(Pattern::unpublishable($pattern))->toBeNull("[{$pattern}] has no assertion to disagree about");
+    })->with([
+        '^a*a*(?:a*){0}b$',
+        '^a*a*(?:a|b){0}b$',
+        '^a*a*(?:ab){0}b$',
+    ]);
+});
+
 describe('a group bounded at zero repetitions is not there', function (): void {
     /*
      * ⚠️ AN UPGRADE HAZARD RATHER THAN A HOLE, which is why it is a refusal being removed. Review found

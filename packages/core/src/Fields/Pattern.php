@@ -1125,6 +1125,37 @@ final class Pattern
              * published with the reasoning "a bounded outer quantifier caps the exponent, so the
              * ambiguity costs nothing". It caps the exponent and not the base.
              */
+            /*
+             * ⚠️ A ZERO-REPEAT GROUP HOLDING AN ASSERTION IS REFUSED, and this is a DIVERGENCE rather
+             * than a cost — review found it in the skip added for `{0}` the round before. Measured at
+             * production fidelity on PCRE 10.48 and Node 22.23.2:
+             *
+             *   (?:a|(?=a)){0}      PCRE no match on "b" AND on ""      ECMAScript matches both
+             *   (?:a|(?=z)){0}      PCRE no match                        ECMAScript matches
+             *   (?:(?=a)|a){0}      both match            <- order matters
+             *   (?:a|(?<=a)){0}     both match            <- lookAHEAD only
+             *   (?:a){0}, a{0}      both match
+             *
+             * So PCRE stops matching when a dead group's alternation ENDS in a positive lookahead,
+             * while ECMAScript skips the group outright. A generated client would accept every value
+             * the server rejects, which is exactly what rule 3 of the field-type contract forbids.
+             *
+             * ⚠️ THE RULE IS WIDER THAN THE QUIRK, deliberately. Encoding "an alternation whose last
+             * branch is a positive lookahead" would be a shape nobody can check by reading it, and the
+             * `{0}` allowance exists only so dead markup does not fail an upgrade — a dead group that
+             * also contains an assertion is not a pattern anybody wrote on purpose.
+             */
+            if (self::neverRuns($frame['quantifier']) && self::containsAssertion($frame['body'])) {
+                return sprintf(
+                    'the assertion inside `%s`, a group bounded at zero repetitions — the two engines '
+                    .'disagree about whether such a group runs at all. Measured, `(?:a|(?=a)){0}` '
+                    .'matches every subject under ECMAScript and none under PCRE, so the published '
+                    .'schema would accept values this server rejects. Remove the dead group, or take '
+                    .'the assertion out of it',
+                    self::excerpt($pattern, $frame['open'], $frame['close']),
+                );
+            }
+
             if (! self::repeatsMoreThanOnce($frame['quantifier'])) {
                 continue;
             }
@@ -1786,6 +1817,25 @@ final class Pattern
      * lookbehind variable-length, which is the other rule's business, and they cannot reallocate
      * anything because there is only ever one iteration to keep.
      */
+    /**
+     * Whether this subpattern holds an assertion at any depth.
+     *
+     * ⚠️ PARSED, NOT SEARCHED FOR. `str_contains($body, '(?=')` would be a pattern matching a pattern,
+     * which is the failure `sanitize()`'s allowlist docblock describes in another file — a literal
+     * `(?=` inside a character class is not an assertion, and an escaped one is not either. `frames()`
+     * already yields every nested frame with its kind.
+     */
+    private static function containsAssertion(string $body): bool
+    {
+        foreach (self::frames($body) as $frame) {
+            if (self::isAssertionKind($frame['kind'])) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     /**
      * Whether this quantifier bounds its atom at zero repetitions, so the atom never runs at all.
      *
