@@ -1349,6 +1349,43 @@ describe('a target that leaves a site and comes back is rechecked', function ():
             ->toBe($otherSite->id, 'a quiet move resurfaced a relation the field refuses');
     });
 
+    it('refuses a BULK move back, which has no row to check', function (): void {
+        /*
+         * ⚠️ THE THIRD DOOR INTO ONE STATE, after the ordinary save and the quiet one. A bulk update runs
+         * `convertFieldValuesForWrite()` on the builder's FRESH PROTOTYPE, so `$this->exists` is false and
+         * the re-entry veto has no entry to ask about. Measured: a relation in site B, its target moved to
+         * site A and retyped there legitimately, then
+         * `Entry::query()->whereKey($id)->update(['site_id' => null])` made it org-shared and visible in
+         * site B again with the invalid relation attached — ALLOWED, one row.
+         *
+         * ⚠️ REFUSED RATHER THAN CHECKED ROW BY ROW, which is the honest trade: validating every affected
+         * row means a query per row inside a statement whose purpose is to avoid them, and the shape has
+         * no legitimate caller. `site_id` is on `columnsRequiringModelSave()` now, beside `values` and
+         * `type_handle`, which are there for the same reason — a guard that needs the row cannot run
+         * without one.
+         */
+        $alice = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Alice']);
+
+        /*
+         * ⚠️ `null`, NOT ANOTHER SITE'S ID, and my first version used the latter and tested the wrong
+         * guard: moving to a site the context is not scoped to is refused by `guardScopeKeys()` before
+         * the bulk-column check is reached, so the assertion passed for a reason unrelated to this fix.
+         * `null` means ORG-SHARED, which the scope guard permits — and which is exactly the shape
+         * review's scenario used to make an entry visible in the site holding the stale relation.
+         */
+        expect(fn () => Entry::query()->whereKey($alice->getKey())->update(['site_id' => null]))
+            ->toThrow(RuntimeException::class, 'cannot be written in bulk')
+            ->and((int) DB::table('entries')->where('id', $alice->getKey())->value('site_id'))
+            ->toBe($this->site->id, 'a bulk update made an entry org-shared without rechecking relations');
+
+        // ⚠️ And an ORDINARY move still works, or this would have refused the operation rather than the
+        // shape — the veto runs on that path and has a row to run against.
+        $alice->site_id = null;
+
+        expect($alice->save())->toBeTrue()
+            ->and(DB::table('entries')->where('id', $alice->getKey())->value('site_id'))->toBeNull();
+    });
+
     it('allows the move back when the relation is still valid', function (): void {
         $otherSite = Site::create([
             'org_id' => $this->org->id, 'handle' => 'f', 'slug' => 'reentry-ok', 'name' => 'F',

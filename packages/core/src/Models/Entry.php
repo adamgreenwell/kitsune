@@ -301,6 +301,25 @@ class Entry extends Model implements RequiresModelSave
             'values' => 'every value is converted through its field type on save, and rich text is '
                 .'sanitized there — a bulk write dispatches nothing, so it would store what it was '
                 .'handed.',
+
+            /*
+             * ⚠️ `site_id` BECAUSE THE RE-ENTRY VETO CANNOT RUN PER ROW, which review found. A move INTO
+             * a site has to recheck every relation pointing at the entry with `visibleOnly: false` — on
+             * the way in they are all about to be visible again — and a bulk update runs on the builder's
+             * fresh prototype, where there is no entry to ask about.
+             *
+             * Measured: a relation in site B, its target moved to site A and retyped there legitimately,
+             * then `Entry::query()->whereKey($id)->update(['site_id' => null])` made it org-shared and
+             * visible in site B again with the invalid relation still attached. ALLOWED, one row.
+             *
+             * ⚠️ REFUSED RATHER THAN CHECKED ROW BY ROW, and that is the honest trade: validating every
+             * affected row means a query per row inside a statement whose whole purpose is to avoid them,
+             * and the shape has no legitimate caller — `EnforcesScope` already guards an instance move,
+             * erasure and restore go through instance saves, and `ScopeWrites::suspended()` covers the
+             * internal paths.
+             */
+            'site_id' => 'moving an entry into a site has to recheck every relation pointing at it, '
+                .'including ones invisible from where it is now — and a bulk write has no row to check.',
         ];
     }
 
