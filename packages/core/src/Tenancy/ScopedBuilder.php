@@ -15,6 +15,7 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
+use Kitsune\Core\Tenancy\Attributes\Unscoped;
 use Kitsune\Core\Tenancy\Contracts\RefusesCascadingDeletes;
 use Kitsune\Core\Tenancy\Contracts\RequiresModelSave;
 use RuntimeException;
@@ -242,6 +243,38 @@ class ScopedBuilder extends Builder
         }
 
         $model = $this->getModel();
+
+        /*
+         * ⚠️ THE MODEL BEHIND THE BUILDER IS EVIDENCE A CALLER CAN MANUFACTURE, which review found and
+         * which invalidates the whole comparison below as an authorisation. `getModel()` and
+         * `setModel()` are public, so:
+         *
+         *     $query = Site::query();
+         *     $query->getModel()->org_id = $victim->id;
+         *     $query->insertGetId(['org_id' => $victim->id, … ]);   // and no URL columns
+         *
+         * makes every key match, empties `$detached`, and returns before anything else looks. Measured
+         * from an org's own context: the row was written and the victim org owned it.
+         *
+         * ⚠️ SO THE CONTEXT IS ASKED FIRST, BECAUSE THE CONTEXT IS NOT FORGEABLE — it is application
+         * state reached through the container, and the audited way to stand it down is the suspension
+         * checked above. `guardScopeKeys()` compares the written keys against it and refuses a write
+         * that names another scope, whatever the model behind the query says.
+         *
+         * ⚠️ AND WHETHER TO ASK IS READ FROM THE CLASS, NOT FROM THE INSTANCE. `ScopeResolver::for()`
+         * returns the scope a model DECLARES with an attribute, which cannot change at runtime, so this
+         * decision has no mutable input at all. A declared scope means its keys are enforced — and
+         * `EnforcesScope`'s own `creating` listener already applies exactly this rule, so nothing
+         * legitimate changes: what changes is that a QUIET or hand-rolled write can no longer skip it.
+         *
+         * `#[Unscoped]` is left alone deliberately. `EntryType::create(['org_id' => $theirs->id])` is a
+         * settled shape with a test of its own — a global type must be creatable for another org — and
+         * the comparison below is what keeps a hand-rolled insert on those models honest.
+         */
+        if (ScopeResolver::for($model::class) !== Unscoped::class) {
+            $this->guardScopeKeys($values);
+        }
+
         $detached = [];
 
         foreach ($values as $column => $value) {

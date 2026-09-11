@@ -289,14 +289,35 @@ describe('a quiet write is not a guarded write', function (): void {
 
         $rival = Org::create(['name' => 'Rival', 'slug' => 'rival-org']);
 
+        /*
+         * ⚠️ REFUSED EARLIER THAN IT USED TO BE, and the message assertion moved with it rather than
+         * being loosened. `refuseDetachedScopeKeys()` now asks the Context about every scope key on a
+         * declared-scope model — because the model behind the builder is evidence a caller can forge —
+         * so a quiet create naming ANOTHER org is refused for the more fundamental reason before the
+         * derived columns are reached. The outcome is the one that matters and is unchanged.
+         */
         expect(fn () => Site::query()->createQuietly([
             'org_id' => $rival->id, 'handle' => 'thief', 'slug' => 'thief', 'name' => 'Thief',
             'locale' => 'en', 'url_strategy' => 'domain', 'base_url' => 'https://steal.test/news',
             'canonical_host' => 'steal.test', 'path_prefix' => '/news',
-        ]))->toThrow(RuntimeException::class, 'checks that derive and validate it did not run');
+        ]))->toThrow(RuntimeException::class, 'from a context scoped to');
 
         expect(Site::withoutGlobalScopes()->where('canonical_host', 'steal.test')->count())
             ->toBe(1, 'the quiet create landed a second claim on a host another org holds');
+
+        /*
+         * ⚠️ AND THE SAME WRITE INSIDE ITS OWN ORG, so the guard this test is named for is still the one
+         * being tested. With the scope keys beyond reproach, supplying the derived columns by hand is
+         * the only thing left wrong with it — `refuseOverlappingClaim()` permits one org arranging its
+         * own sites, so nothing else can account for the refusal.
+         */
+        expect(fn () => Site::query()->createQuietly([
+            'org_id' => $this->org->id, 'handle' => 'sibling', 'slug' => 'sibling', 'name' => 'Sibling',
+            'locale' => 'en', 'url_strategy' => 'domain', 'base_url' => 'https://steal.test/blog',
+            'canonical_host' => 'steal.test', 'path_prefix' => '/blog',
+        ]))->toThrow(RuntimeException::class, 'checks that derive and validate it did not run');
+
+        expect(Site::withoutGlobalScopes()->where('canonical_host', 'steal.test')->count())->toBe(1);
     });
 
     it('refuses a quiet update that moves a derived column', function (): void {
@@ -645,37 +666,100 @@ it('does not call two different numeric-looking strings the same value', functio
         ->toBe('0e1', 'a loose comparison called 0e1 and 0e2 the same value');
 });
 
+it('does not take the builder\'s own model as proof of a scope key', function (): void {
+    /*
+     * ⚠️ THE EVIDENCE WAS FORGEABLE, which review found and which invalidated the comparison as an
+     * authorisation rather than merely weakening it. `getModel()` and `setModel()` are public Laravel
+     * API, so a caller can make every scope key on the builder's model match the row it is writing:
+     *
+     *     $query = Site::query();
+     *     $query->getModel()->org_id = $victim->id;
+     *     $query->insertGetId(['org_id' => $victim->id, … ]);   // and no URL columns to guard
+     *
+     * `$detached` comes out empty, the method returns before anything else looks, and the row is
+     * written. Measured from an org's own context: ALLOWED, and the victim org owned the row.
+     *
+     * ⚠️ THE ANSWER IS THAT NEITHER INPUT TO THE DECISION IS MUTABLE NOW. Whether to check is read from
+     * the CLASS — `ScopeResolver::for()` returns the scope a model declares with an attribute, which
+     * cannot change at runtime — and what to check against is the Context, which is application state
+     * reached through the container with an audited way to stand it down.
+     */
+    $victim = Org::create(['name' => 'Victim', 'slug' => 'victim-forged']);
+
+    $query = Site::query();
+    $query->getModel()->org_id = $victim->id;
+
+    expect(fn () => $query->insertGetId([
+        'org_id' => $victim->id, 'handle' => 'planted', 'slug' => 'planted', 'name' => 'Planted',
+        'locale' => 'en', 'created_at' => now(), 'updated_at' => now(),
+    ]))->toThrow(RuntimeException::class, 'from a context scoped to')
+        ->and(DB::table('sites')->where('org_id', $victim->id)->count())
+        ->toBe(0, 'a forged builder model planted a row under another org');
+
+    /*
+     * ⚠️ AND AN `#[Unscoped]` MODEL IS LEFT ALONE, because naming another org there is a settled shape
+     * with a test of its own — a global entry type must be creatable for any org. The check is keyed on
+     * what the model DECLARES, so this is a consequence of the rule rather than an exception to it.
+     */
+    $type = EntryType::create([
+        'org_id' => $victim->id, 'handle' => 'global', 'name' => 'Global', 'plural_name' => 'Globals',
+    ]);
+
+    expect($type->exists)->toBeTrue()->and($type->org_id)->toBe($victim->id);
+});
+
 it('does not let a proof outlive the attempt that armed it', function (): void {
     /*
      * ⚠️ VALUE EQUALITY CANNOT SEE THIS, which is the point and is why it needed a second mechanism
      * rather than a stricter comparison. Validity changed while every snapshotted value stayed
      * identical — because what changed is the WORLD, not the row. Review found it.
      *
-     * Measured end to end before the fix:
+     * ⚠️ THE ABORT IS A LISTENER THAT THROWS, AND THE FIRST VERSION USED A UNIQUE-INDEX VIOLATION —
+     * which was GATE RED on PostgreSQL. A failed statement there poisons the whole transaction, so every
+     * assertion after it died with "current transaction is aborted" while SQLite and MySQL rolled back
+     * only the statement. Staging a failure with the DATABASE makes the test about the engine's error
+     * semantics; staging it with a listener asks the question this test is actually asking, identically
+     * everywhere. Invariant 5.
      *
-     *   1. a Site create names another org, passes refuseOverlappingClaim() because no rival holds the
-     *      host yet, and arms the proof in its `saving` listener
-     *   2. EnforcesScope's `creating` guard refuses it — and `creating` fires INSIDE performInsert(),
-     *      which is why the try/finally lives there
-     *   3. a rival org claims the same host at `/`
-     *   4. the SAME INSTANCE, retried with saveQuietly(), runs no listener at all — so neither the
-     *      overlap check nor the scope guard is consulted — and the proof still described these exact
-     *      values, so the builder allowed it: `/` and `/news` both landed on one hostname
+     * ⚠️ AND NOT THE SCOPE GUARD EITHER, although that is where review's scenario put it: since this
+     * round it refuses the quiet retry too, so it would mask the mechanism under test. Everything here
+     * is inside ONE org, so `refuseDetachedScopeKeys()` is satisfied and `refuseOverlappingClaim()`
+     * permits an org arranging its own sites — the consumed proof is the only thing left that can
+     * account for the refusal.
+     *
+     * The sequence:
+     *
+     *   1. a guard later than the arming listener refuses the save, which is exactly the shape review
+     *      described — and it throws from inside performInsert(), which is why the try/finally lives
+     *      there rather than around save()
+     *   2. the guard stands down, so the row could now be written
+     *   3. another org claims the same host at `/`, which overlaps `/news`
+     *   4. the SAME INSTANCE retried with saveQuietly() runs no listener at all — so neither the overlap
+     *      check nor anything else is consulted — and the proof still described these exact values, so
+     *      the builder allowed it and both prefixes landed on one hostname
      */
-    $theirs = Org::create(['name' => 'Theirs', 'slug' => 'theirs-proof']);
-    $third = Org::create(['name' => 'Third', 'slug' => 'third-proof']);
+    $refusing = true;
+
+    Site::creating(function () use (&$refusing): void {
+        if ($refusing) {
+            throw new RuntimeException('a guard later than the arming listener refused this save');
+        }
+    });
 
     $site = new Site([
-        'org_id' => $theirs->id, 'handle' => 'sneak', 'slug' => 'sneak', 'name' => 'Sneak',
+        'org_id' => $this->org->id, 'handle' => 'sneak', 'slug' => 'sneak', 'name' => 'Sneak',
         'locale' => 'en', 'url_strategy' => 'domain', 'base_url' => 'https://sneak.test/news',
     ]);
 
-    // Attempt one: refused by the scope guard, which runs after the listener that arms the proof.
-    expect(fn () => $site->save())->toThrow(RuntimeException::class, 'Refusing to write')
+    // Attempt one: arms the proof on `saving`, then the later guard refuses it on `creating`.
+    expect(fn () => $site->save())->toThrow(RuntimeException::class, 'later than the arming listener')
         ->and($site->guardedColumnsAreDerived())
         ->toBeFalse('the proof outlived the attempt that armed it');
 
+    $refusing = false;
+
     // A third org now claims the same host at the root, which overlaps `/news`.
+    $third = Org::create(['name' => 'Third', 'slug' => 'third-proof']);
     app(Context::class)->setOrg($third);
 
     Site::create([
@@ -686,9 +770,9 @@ it('does not let a proof outlive the attempt that armed it', function (): void {
     app(Context::class)->setOrg($this->org);
 
     /*
-     * ⚠️ THE RETRY IS QUIET, so nothing re-derives and nothing re-checks. The builder has only the
-     * proof to go on, and the proof must be gone — a save that did not happen cannot vouch for one
-     * that is happening now.
+     * ⚠️ THE RETRY IS QUIET, so nothing re-derives and nothing re-checks. The builder has only the proof
+     * to go on, and the proof must be gone — a save that did not happen cannot vouch for one that is
+     * happening now.
      */
     expect(fn () => $site->saveQuietly())->toThrow(RuntimeException::class, 'cannot be written by')
         ->and(DB::table('sites')->where('canonical_host', 'sneak.test')->count())

@@ -1268,11 +1268,31 @@ describe('a target that leaves a site and comes back is rechecked', function ():
         $visit = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Visit']);
         $visit->related()->attach($alice->id, ['field_storage_id' => $storage->id]);
 
-        // Away, changed while the pivot is invisible, and now back.
-        Entry::withoutScopeBecause('fixture: moving the target between sites', function () use ($alice, $otherSite, $article) {
-            $alice->forceFill(['site_id' => $otherSite->id])->saveQuietly();
-            $alice->forceFill(['entry_type_id' => $article->id, 'type_handle' => 'article'])->saveQuietly();
-        });
+        /*
+         * Away, changed while the pivot is invisible, and now back.
+         *
+         * ⚠️ THE TYPE CHANGE IS AN ORDINARY UPDATE IN THE OTHER SITE'S CONTEXT, and it used to be a
+         * `saveQuietly()` here. The quiet shortcut is refused now — the relation veto moved to the
+         * builder, where a suppressed listener cannot skip it — so keeping it would have made this
+         * fixture fail for the right reason and the test unrunnable for the wrong one.
+         *
+         * ⚠️ AND REWRITING IT MADE THE TEST BETTER RATHER THAN MERELY GREEN, which is the reason to
+         * prefer it over staging the row below Eloquent: the sequence is reachable exactly as written,
+         * measured. The move needs the hatch because `EnforcesScope` guards a `site_id` change, and the
+         * type change needs nothing — from site B, site A's pivot is invisible, so the veto has no
+         * relation to consult and allows it. That is the hole this test exists to close, now demonstrated
+         * with the writes a real operator would make instead of a shortcut.
+         */
+        Entry::withoutScopeBecause(
+            'fixture: an operator moves the target to another site',
+            fn () => $alice->forceFill(['site_id' => $otherSite->id])->save(),
+        );
+
+        app(Context::class)->setSite($otherSite);
+
+        Entry::query()->findOrFail($alice->id)->update(['entry_type_id' => $article->id]);
+
+        app(Context::class)->setSite($this->site);
 
         expect(fn () => $alice->fresh()->update(['site_id' => $this->site->id]))
             ->toThrow(RuntimeException::class, 'does not accept');
@@ -1332,6 +1352,54 @@ describe('a denormalised handle is derived, never accepted', function (): void {
         $alice->update(['type_handle' => 'article']);
 
         expect($alice->fresh()->type_handle)->toBe($this->type->handle);
+    });
+
+    it('runs the relation veto on a quiet type change too', function (): void {
+        /*
+         * ⚠️ THE VETO WAS A `saving` LISTENER AND A QUIET WRITE SUPPRESSES IT, which review found — and
+         * the builder then restamped the forbidden handle and armed the derived proof, so `ScopedBuilder`
+         * accepted the write with the invalid pivot still attached. Nothing downstream rechecks
+         * `targetTypes`: not `subjectValue()`, not the relational `whereSubjectIs()` branch.
+         *
+         * Measured before the fix: the ordinary update was refused and `saveQuietly()` was ALLOWED, the
+         * entry became an `article`, and the pivot from a `person`-only field stayed.
+         */
+        $other = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'article', 'name' => 'A', 'plural_name' => 'As',
+        ]);
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'author', 'type' => 'relation',
+            'pii_class' => 'personal', 'cardinality' => 1,
+            'settings' => ['targetTypes' => [$this->type->handle]],
+        ]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id, 'label' => 'Author',
+        ]);
+
+        $alice = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Alice']);
+        $visit = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Visit']);
+        $visit->related()->attach($alice->id, ['field_storage_id' => $storage->id]);
+
+        $alice->entry_type_id = $other->id;
+
+        expect(fn () => $alice->saveQuietly())
+            ->toThrow(RuntimeException::class, 'does not accept that type')
+            ->and((string) DB::table('entries')->where('id', $alice->id)->value('type_handle'))
+            ->toBe($this->type->handle, 'a quiet type change moved a related entry to a forbidden type');
+
+        /*
+         * ⚠️ AND A FORGED HANDLE ALONE IS CORRECTED RATHER THAN REFUSED, which is the established
+         * behaviour and not a gap — I expected a refusal here and the code is right. The column is
+         * DERIVED from `entry_type_id`, so whatever a caller writes, the type it points at is the truth:
+         * the restamp puts the real handle back, the veto is then asked about a type the field accepts,
+         * and there is nothing to refuse. The state this test guards cannot be reached that way.
+         */
+        $alice->refresh();
+        $alice->type_handle = 'article';
+
+        expect($alice->saveQuietly())->toBeTrue()
+            ->and((string) DB::table('entries')->where('id', $alice->id)->value('type_handle'))
+            ->toBe($this->type->handle, 'a forged handle survived a quiet write');
     });
 
     it('still restamps when the type id changes, as before', function (): void {

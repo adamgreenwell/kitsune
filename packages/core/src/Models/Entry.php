@@ -1257,10 +1257,21 @@ class Entry extends Model implements RequiresModelSave
          * is derived from `entry_type_id`, so whatever a caller wrote, the type it points at is the
          * truth; recomputing it twice is one query on a write that is already resolving the schema.
          *
-         * The relation check that `saving` performs alongside the restamp is NOT duplicated, and that
-         * is why the flag says "derived" rather than "the hook ran": refusing a type change that
-         * breaks a relation pointing AT this entry is a rule about relations, not about whether a
-         * guarded column holds a derived value.
+         * ⚠️ AND THE RELATION VETO IS DUPLICATED HERE, WHICH THIS COMMENT USED TO DENY. It said the
+         * check belongs to relations rather than to guarded columns — true of what the FLAG means, and
+         * review found the consequence it ignored: the flag then licenses the write. Measured, an entry
+         * targeted by a `person`-only field was moved to `article` with `saveQuietly()`; the ordinary
+         * path refused it, the quiet path wrote it, and the pivot stayed attached with no relational
+         * read ever rechecking `targetTypes`.
+         *
+         * §6 says a guard belongs at the builder, and this is the builder. The `saving` listener stays
+         * because it also covers a `site_id` move, which never reaches here.
+         *
+         * ⚠️ IT COSTS ONE QUERY ON A TYPE-CHANGING WRITE, paid on the ordinary path too, and that is
+         * stated rather than optimised away. `withoutEvents()` installs a NULL DISPATCHER rather than no
+         * dispatcher, so "did the listener already run" is not a question this code can ask — and a
+         * guard that runs only when it thinks it is needed is the shape every finding on this branch has
+         * had. A type change already resolves the type and its fields, and is rare.
          */
         if (array_key_exists('type_handle', $values) || array_key_exists('entry_type_id', $values)) {
             /*
@@ -1282,6 +1293,24 @@ class Entry extends Model implements RequiresModelSave
 
             if ($handle !== null) {
                 $values['type_handle'] = $handle;
+
+                /*
+                 * The veto itself. On an insert there is no row for a relation to point at, so there is
+                 * nothing to refuse — `forbidsTypeChange()` is asked only for a row that exists.
+                 */
+                if ($this->exists
+                    && ($field = EntryRelation::forbidsTypeChange(
+                        (int) $this->getKey(),
+                        $handle,
+                        (int) $this->getAttribute('org_id'),
+                    )) !== null) {
+                    throw new RuntimeException(
+                        "Entry {$this->getKey()} cannot become a [{$handle}]: field [{$field}] relates "
+                        .'to it and does not accept that type. Detach the relation first — leaving it '
+                        .'would point a configured field at something it refuses, and a subject '
+                        .'identifier at the wrong kind of record (ADR-020).'
+                    );
+                }
 
                 /*
                  * ⚠️ ON THE INSTANCE TOO, and review found this missing — correcting only the SQL
