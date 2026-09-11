@@ -416,7 +416,17 @@ class ScopedBuilder extends Builder
              * `values` before delegating here, so it no longer equals the attribute it came from and
              * comparing them refused every audited create.
              */
-            if ($model->guardedColumnsAreDerived()) {
+            /*
+             * ⚠️ AND THROUGH THIS BUILDER, which review found this branch not asking. The proof says the
+             * guards ran; it does not say WHICH write they ran for. A `creating` or `updating` observer
+             * can call `$site->newQuery()->insertGetId([…])` after the arming listener, and that new
+             * builder wraps the same model — so the proof was true for a nested hand-written insert.
+             *
+             * `refuseBulkCreate()` was taught this one round ago and this branch was not, which is the
+             * asymmetry rather than the mechanism: both questions are "is this write the save", and both
+             * ask the model for the builder it is being saved through.
+             */
+            if ($model->isPerformingModelSave($this) && $model->guardedColumnsAreDerived()) {
                 continue;
             }
 

@@ -736,12 +736,23 @@ it('does not let a nested write borrow the save it is nested inside', function (
 
         $nested = true;
 
-        $saving->newQuery()->insert([
+        /*
+         * ⚠️ BOTH SPELLINGS, because review found the second one unguarded a round after the first.
+         * `refuseBulkCreate()` learned to ask which builder the save is going through and
+         * `refuseDetachedInsert()` did not, so `insertGetId()` still accepted the proof from the outer
+         * save. Two questions, one mechanism, and they have to be asked by every door.
+         */
+        $row = [
             'org_id' => $orgId, 'handle' => 'thief', 'slug' => 'thief', 'name' => 'Thief',
             'locale' => 'en', 'url_strategy' => 'domain', 'base_url' => 'https://steal.test/news',
             'canonical_host' => 'steal.test', 'path_prefix' => '/news',
             'created_at' => now(), 'updated_at' => now(),
-        ]);
+        ];
+
+        expect(fn () => $saving->newQuery()->insertGetId($row))
+            ->toThrow(RuntimeException::class, 'cannot be written by insertGetId()');
+
+        $saving->newQuery()->insert($row);
     });
 
     expect(fn () => Site::create([
