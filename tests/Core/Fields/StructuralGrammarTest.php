@@ -766,6 +766,49 @@ describe('an assertion consumes nothing, so it cannot divide a run', function ()
     });
 });
 
+describe('a backreference is not a character this proof can read', function (): void {
+    /*
+     * ⚠️ TWO DEFECTS IN ONE ATOM, both found by review and both about the SCAN rather than the rules.
+     *
+     * First, only the leading digit of a numeric reference was consumed, so `\10?` scanned as `\1`
+     * followed by a separate `0?` — and the delimiter proof read a required comma then an optional zero,
+     * which looks divided.
+     *
+     * Second, and the one that mattered even after the digits were fixed: the proof PROBES an atom
+     * against the delimiter, and probing a backreference in isolation answers a different question. The
+     * two spellings answered it by accident in opposite directions:
+     *
+     *   /^\1$/uD    PCRE cannot compile a reference to a group that is not there, so preg_match()
+     *               returns FALSE and the test failed closed — correct, by luck
+     *   /^\10$/uD   PCRE reads it as an OCTAL escape instead, compiles, does not match `,`, and the
+     *               same test concluded the atom cannot consume the delimiter
+     *
+     * Measured on Node 22.23.2, 40 commas and no `X`: 1,555 ms for the published pattern and 1,470 ms
+     * for `^(?:,,?)*X$` written out, which was already refused. Same cost, opposite verdict.
+     */
+    it('refuses a repetition a multi-digit reference appeared to delimit', function (): void {
+        $pattern = '^()()()()()()()()()(,)(?:,\\10?)*X$';
+
+        expect(mb_strlen($pattern))->toBe(34, 'the pattern under measurement is not the one reported')
+            ->and(Pattern::unpublishable($pattern))->not->toBeNull()
+            ->and(Pattern::unpublishable('^(,)(?:,\\1?)*X$'))
+            ->not->toBeNull('the single-digit spelling was already refused and must stay so');
+    });
+
+    it('leaves a required backreference alone', function (string $pattern): void {
+        /*
+         * ⚠️ ONLY A VARIABLE-WIDTH ONE FAILS CLOSED, or the grammar would lose backreferences entirely.
+         * A required reference has no quantifier, so the proof has already moved past it — and these are
+         * the shapes a field pattern actually uses one for.
+         */
+        expect(Pattern::unpublishable($pattern))->toBeNull("[{$pattern}] is an ordinary backreference");
+    })->with([
+        '^(a)\\1$',
+        '^(a)(b)\\2\\1$',
+        '^(?<word>[a-z]+)-\\k<word>$',
+    ]);
+});
+
 describe('a group separates a run only if every branch does', function (): void {
     /*
      * ⚠️ THE FIRST BRANCH WAS TAKEN FOR THE GROUP, which review found. `^a*(?:b|a)*a*c$` read as

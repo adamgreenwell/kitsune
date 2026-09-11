@@ -1575,6 +1575,24 @@ final class Pattern
     }
 
     /**
+     * Whether this atom refers to what another group matched, rather than naming characters itself.
+     *
+     * ⚠️ THE THREE SPELLINGS, and a character test rather than a pattern — my first version WAS a
+     * regular expression and it did not compile, which is a poor way to write a guard whose whole job
+     * is to fail closed. `\1` is numeric, `\k<name>` is the named form and `\g{1}` the relative one.
+     */
+    private static function isBackreference(string $atom): bool
+    {
+        if (! str_starts_with($atom, '\\')) {
+            return false;
+        }
+
+        $after = mb_substr($atom, 1, 1);
+
+        return $after === 'k' || $after === 'g' || ($after >= '0' && $after <= '9');
+    }
+
+    /**
      * The body's first character when it is a required, unquantified literal, else null.
      *
      * ⚠️ A QUANTIFIER ON IT DISQUALIFIES IT, even `{2,}`, because the proof needs each iteration to
@@ -1677,6 +1695,28 @@ final class Pattern
 
             // `.` matches almost everything, including every delimiter this proof admits.
             if ($atom === '.') {
+                return true;
+            }
+
+            /*
+             * ⚠️ A BACKREFERENCE FAILS CLOSED, because its payload is whatever its GROUP matched and
+             * that is not visible in the atom. Probing one in isolation answers a different question,
+             * and review found the two spellings answering it by accident in opposite directions:
+             *
+             *   /^\1$/uD    PCRE cannot compile a reference to a group that is not there, so
+             *               `preg_match()` returns FALSE and the `!== 0` test below failed closed
+             *   /^\10$/uD   PCRE reads it as an OCTAL escape instead, compiles, does not match `,`
+             *               and the same test concluded the atom cannot consume the delimiter
+             *
+             * So `^()()()()()()()()()(,)(?:,\10?)*X$` was published at 34 characters. Group 10 is
+             * `(,)`, making the body `(?:,,?)` — whose second comma is optional and therefore no
+             * delimiter — and Node 22.23.2 spends 1,555 ms on 40 commas and no `X`, against 1,470 ms
+             * for `^(?:,,?)*X$`, which is refused. Same cost, opposite verdict.
+             *
+             * Only a VARIABLE-WIDTH one reaches here: a required backreference has already continued
+             * above, so `^(a)(b)\2\1$` and its kind are untouched.
+             */
+            if (self::isBackreference($atom)) {
                 return true;
             }
 
@@ -2218,6 +2258,25 @@ final class Pattern
             $closes = mb_strpos($text, '>', $at + 2);
 
             return $closes === false ? 2 : $closes - $at + 1;
+        }
+
+        /*
+         * ⚠️ EVERY DIGIT OF A NUMERIC REFERENCE, and review found only the first being taken. A
+         * two-digit backreference then scanned as `\1` followed by a separate `0?`:
+         *
+         *   ^()()()()()()()()()(,)(?:,\10?)*X$     34 characters, PUBLISHED
+         *
+         * The delimiter proof read a required `,` followed by an optional `0`, so the repetition looked
+         * divided. Both engines read `\10` as group 10 — which is `(,)` — making the body `(?:,,?)`,
+         * whose second comma is optional and therefore no delimiter at all. Measured on Node 22.23.2
+         * with 40 commas and no `X`: 1,555 ms for this pattern and 1,470 ms for `^(?:,,?)*X$` written
+         * out, which IS refused. Same cost, opposite verdict, which is the whole finding.
+         *
+         * `\1?` alone was already refused. Only the multi-digit spelling escaped the scanner, which is
+         * the kind of gap that survives because the single-digit case is the one anybody tests.
+         */
+        if (preg_match('/^[0-9]+/', mb_substr($text, $at + 1), $digits) === 1) {
+            return 1 + mb_strlen($digits[0]);
         }
 
         return 2;

@@ -18,7 +18,7 @@ use Kitsune\Core\Models\FieldStorage;
 /**
  * Report every stored `pattern` setting the published grammar would refuse.
  *
- * ⚠️ ADR-030 CALLS THIS MIGRATION MANDATORY AND IT DID NOT EXIST, which review found by looking
+ * ⚠️ ADR-031 CALLS THIS MIGRATION MANDATORY AND IT DID NOT EXIST, which review found by looking
  * for it. The document said *"Migration is not optional. Patterns already authored were accepted
  * by the screen, not by the grammar, so any outside it must be found before this lands"* — and
  * there was no command, no migration and nothing that ran `unpublishable()` over stored rows. A
@@ -42,7 +42,7 @@ final class AuditPatternsCommand extends Command
     protected $signature = 'kitsune:audit-patterns
         {--strict : Exit non-zero when any stored pattern is unpublishable, for use as a deployment gate}';
 
-    protected $description = 'Report stored field patterns the published grammar refuses (ADR-030)';
+    protected $description = 'Report stored field patterns the published grammar refuses (ADR-031)';
 
     public function handle(): int
     {

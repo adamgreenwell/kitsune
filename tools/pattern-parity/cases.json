@@ -976,5 +976,11 @@
     "pattern": "^a*(?:b|a)*a*c$",
     "subject": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "why": "A repeated group's leading literal was taken from its FIRST branch, so this read as beginning with `b` — a character `a*` cannot match — and the variable-atom run reset. Its `a` branch means all three quantified atoms consume the same input. Node spends 490 ms on a failing 1,000-character value and 3.9 s on 2,000, cubic. The proof is that deleting the other branch changes nothing: `^a*(?:a)*a*c$` measures 488.5 ms and 3,877.2 ms on the same subjects, so the `b` branch never separated anything. Every branch must be unmatchable by the preceding atom now, and a branch with no leading literal proves nothing at all."
+  },
+  {
+    "id": "multi-digit-backreference-delimiter",
+    "pattern": "^()()()()()()()()()(,)(?:,\\10?)*X$",
+    "subject": ",,,,,,,,,,,,,,,,,,,,Y",
+    "why": "Two defects in one atom, both about the SCAN. Only the leading digit of a numeric reference was consumed, so `\\10?` read as `\\1` then a separate `0?` — a required comma followed by an optional zero, which looks divided. And the delimiter proof PROBES an atom against the delimiter, which is meaningless for a backreference: `/^\\1$/uD` fails to compile so PCRE returned false and the test failed closed by luck, while `/^\\10$/uD` compiles as an OCTAL escape, does not match `,`, and the test concluded the atom cannot consume the delimiter. Group 10 is `(,)`, so the body is `(?:,,?)`. Node spends 1,555 ms on 40 commas and no `X` against 1,470 ms for `^(?:,,?)*X$` written out, which was already refused — same cost, opposite verdict. A variable-width backreference fails closed now; a required one is untouched."
   }
 ]

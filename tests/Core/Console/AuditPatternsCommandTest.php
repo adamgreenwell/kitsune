@@ -15,9 +15,9 @@ use Kitsune\Core\Models\Org;
 use Kitsune\Core\Tenancy\Context;
 
 /**
- * The migration ADR-030 calls mandatory, which did not exist until review looked for it.
+ * The migration ADR-031 calls mandatory, which did not exist until review looked for it.
  *
- * ⚠️ THE DOCUMENT REQUIRED THIS AND NOTHING IMPLEMENTED IT. `field-types.md` §3 and ADR-030 both
+ * ⚠️ THE DOCUMENT REQUIRED THIS AND NOTHING IMPLEMENTED IT. `field-types.md` §3 and ADR-031 both
  * said *"Migration is not optional. Patterns already authored were accepted by the screen, not by
  * the grammar, so any outside it must be found before this lands"* — and there was no command, no
  * migration, and nothing that ran `unpublishable()` over stored rows. A published requirement with
