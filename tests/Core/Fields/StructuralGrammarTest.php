@@ -766,6 +766,51 @@ describe('an assertion consumes nothing, so it cannot divide a run', function ()
     });
 });
 
+describe('a group separates a run only if every branch does', function (): void {
+    /*
+     * ⚠️ THE FIRST BRANCH WAS TAKEN FOR THE GROUP, which review found. `^a*(?:b|a)*a*c$` read as
+     * beginning with `b` — a character `a*` cannot match — so the run reset and the pattern published,
+     * although its `a` branch means all three quantified atoms consume the same input.
+     *
+     * ⚠️ AND THE PROOF IS THAT DELETING THE OTHER BRANCH CHANGES NOTHING, which is the same instrument
+     * the assertion finding used. Node 22.23.2, n `a` and no `c`:
+     *
+     *   ^a*(?:b|a)*a*c$    n=500  61.9 ms    n=1000  490.1 ms    n=2000  3,924.7 ms
+     *   ^a*(?:a)*a*c$      n=500  62.2 ms    n=1000  488.5 ms    n=2000  3,877.2 ms
+     *
+     * Identical, and cubic — eight times per doubling. The `b` branch contributes nothing to the cost,
+     * so reading it as the group's lead was reading a separator the engine does not have.
+     */
+    it('refuses a run a single branch appeared to separate', function (): void {
+        expect(Pattern::unpublishable('^a*(?:b|a)*a*c$'))
+            ->toContain('variable-width atoms in a row');
+    });
+
+    it('still accepts a group every branch of which separates', function (string $pattern): void {
+        /*
+         * ⚠️ THE OTHER HALF, or the fix would be a ban on alternation inside a repeated group. `b` and
+         * `c` are both unmatchable by `a*`, so the boundary is forced whichever branch runs — and the
+         * ordinary delimited list is the shape this whole rule exists to keep publishable.
+         */
+        expect(Pattern::unpublishable($pattern))->toBeNull("[{$pattern}] is separated by every branch");
+    })->with([
+        '^a*(?:b|c)*a*d$',
+        '^[^,]+(?:,[^,]+)*$',
+        '^[a-z]+(?:-[a-z]+)*$',
+    ]);
+
+    it('treats a branch with no leading literal as no separator at all', function (): void {
+        /*
+         * ⚠️ NULL RATHER THAN A SHORTER LIST, because a branch that can begin with anything separates
+         * nothing — and a list missing that branch would look like proof the group is delimited. Both
+         * of these are already refused by the repetition rule, which is why the assertion is on
+         * `branchLeads()`'s contract through a shape that reaches the run check instead.
+         */
+        expect(Pattern::unpublishable('^a*(?:[a-z]|b)*a*c$'))
+            ->not->toBeNull('a class branch was read as a separator');
+    });
+});
+
 describe('a quantified branch costs what it costs', function (): void {
     /*
      * ⚠️ A SEQUENCE'S COST COUNTED ONLY THE GROUPS INSIDE IT, so a branch whose expense is a

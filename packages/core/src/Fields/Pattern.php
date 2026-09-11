@@ -1517,6 +1517,64 @@ final class Pattern
     }
 
     /**
+     * Every top-level branch's leading required literal, or null when any branch has none.
+     *
+     * ⚠️ EVERY BRANCH, BECAUSE ONE IS NOT A SEPARATOR — review found the first branch being taken for
+     * the group. `^a*(?:b|a)*a*c$` read as beginning with `b`, which `a*` cannot match, so the run reset
+     * and the pattern published; its `a` branch means all three quantified atoms consume the same input.
+     * Node 24 spent about 1.9 seconds on a failing 2,000-character value and more than 20 seconds at the
+     * permitted 5,000.
+     *
+     * ⚠️ NULL RATHER THAN A SHORTER LIST when a branch has no leading literal, because a branch that can
+     * begin with anything is a branch that separates nothing — and a list missing that branch would look
+     * like proof the group is delimited. `(?:a|)` returns null for the same reason: an empty branch
+     * matches no character, so it cannot force a boundary.
+     *
+     * A body with no top-level alternation is one branch, so this is the single-lead case unchanged.
+     *
+     * @return list<string>|null
+     */
+    private static function branchLeads(string $body): ?array
+    {
+        $leads = [];
+
+        foreach (self::topLevelBranches($body) as $branch) {
+            $lead = self::leadingLiteral($branch);
+
+            if ($lead === null) {
+                return null;
+            }
+
+            $leads[] = $lead;
+        }
+
+        return $leads === [] ? null : $leads;
+    }
+
+    /**
+     * Whether this atom's own leading literals force a boundary after `$previous`.
+     *
+     * ⚠️ ALL OR NOTHING. The preceding atom must be unable to match EVERY way this one can begin; one
+     * branch it can match is one way the two can consume the same input, which is the whole hazard.
+     *
+     * @param  list<string>|null  $leads
+     */
+    private static function separates(?string $previous, ?array $leads): bool
+    {
+        if ($previous === null || $leads === null) {
+            return false;
+        }
+
+        foreach ($leads as $lead) {
+            if (self::atomMatches($previous, $lead)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
      * The body's first character when it is a required, unquantified literal, else null.
      *
      * ⚠️ A QUANTIFIER ON IT DISQUALIFIES IT, even `{2,}`, because the proof needs each iteration to
@@ -1839,7 +1897,7 @@ final class Pattern
     }
 
     /**
-     * @param  list<array{atom: string, quantifier: string, variable: bool, lead: string|null, assertion: bool}>|null  $atoms
+     * @param  list<array{atom: string, quantifier: string, variable: bool, leads: list<string>|null, assertion: bool}>|null  $atoms
      */
     private static function runExceeds(?array $atoms, int $limit): bool
     {
@@ -1870,11 +1928,7 @@ final class Pattern
                  * boundary is forced by the group's own leading literal rather than by anything
                  * between them.
                  */
-                $lead = $atom['lead'];
-
-                $run = $previous !== null && $lead !== null && ! self::atomMatches($previous, $lead)
-                    ? 1
-                    : $run + 1;
+                $run = self::separates($previous, $atom['leads']) ? 1 : $run + 1;
 
                 if ($run > $limit) {
                     return true;
@@ -1914,7 +1968,7 @@ final class Pattern
      * A group that repeats stays whole too, and is variable when anything inside it is — `(?:a*){2}`
      * is `a*a*` and must not read as one fixed atom.
      *
-     * @return list<array{atom: string, quantifier: string, variable: bool, lead: string|null, assertion: bool}>|null
+     * @return list<array{atom: string, quantifier: string, variable: bool, leads: list<string>|null, assertion: bool}>|null
      */
     private static function flatAtoms(string $sequence, int $depth = 0): ?array
     {
@@ -1930,7 +1984,7 @@ final class Pattern
      * recursion reaches each group's body — `^(?:a*a*b)$` would pay twice for the one run it has, and
      * be refused while `^a*a*b$` is published.
      *
-     * @return list<array{atom: string, quantifier: string, variable: bool, lead: string|null, assertion: bool}>|null
+     * @return list<array{atom: string, quantifier: string, variable: bool, leads: list<string>|null, assertion: bool}>|null
      */
     private static function ownAtoms(string $sequence): ?array
     {
@@ -1939,7 +1993,7 @@ final class Pattern
 
     /**
      * @param  bool  $splice  Whether a required group that runs at most once is read through.
-     * @return list<array{atom: string, quantifier: string, variable: bool, lead: string|null, assertion: bool}>|null
+     * @return list<array{atom: string, quantifier: string, variable: bool, leads: list<string>|null, assertion: bool}>|null
      */
     private static function atomList(string $sequence, bool $splice, int $depth): ?array
     {
@@ -1972,7 +2026,7 @@ final class Pattern
                     'atom' => $atom,
                     'quantifier' => $quantifier,
                     'variable' => self::isVariableWidth($quantifier),
-                    'lead' => null,
+                    'leads' => null,
                     'assertion' => false,
                 ];
 
@@ -2000,7 +2054,7 @@ final class Pattern
                     'atom' => $atom,
                     'quantifier' => $quantifier,
                     'variable' => false,
-                    'lead' => null,
+                    'leads' => null,
                     'assertion' => true,
                 ];
 
@@ -2027,7 +2081,7 @@ final class Pattern
                 'variable' => self::isVariableWidth($quantifier) || self::variableAtomCanMatchAnything($inner),
                 // A repeated group begins where its body begins, so its body's leading literal is
                 // what a preceding atom would have to run into.
-                'lead' => self::leadingLiteral($inner),
+                'leads' => self::branchLeads($inner),
                 'assertion' => false,
             ];
         }

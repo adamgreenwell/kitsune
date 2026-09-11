@@ -970,5 +970,11 @@
     "pattern": "^(?:a*a*b|c*c*d|e*e*f|g*g*h|i*i*j|k*k*l|m*m*n|o*o*p|q*q*r)$",
     "subject": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "why": "The over-refusal the bound above carries, recorded rather than left to be found later. These nine branches cost ONE quadratic — 35.8 ms, because eight of them fail on their first atom — but `branchesAreUnambiguousLiterals()` exempts plain literal text only, on purpose, so a branch carrying a quantifier sums whether or not its lead is distinct. Refused today; lifting it means proving distinct leads for quantified branches, which is the rule two rounds of this file got wrong twice — issue #73."
+  },
+  {
+    "id": "group-lead-from-one-branch",
+    "pattern": "^a*(?:b|a)*a*c$",
+    "subject": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "why": "A repeated group's leading literal was taken from its FIRST branch, so this read as beginning with `b` — a character `a*` cannot match — and the variable-atom run reset. Its `a` branch means all three quantified atoms consume the same input. Node spends 490 ms on a failing 1,000-character value and 3.9 s on 2,000, cubic. The proof is that deleting the other branch changes nothing: `^a*(?:a)*a*c$` measures 488.5 ms and 3,877.2 ms on the same subjects, so the `b` branch never separated anything. Every branch must be unmatchable by the preceding atom now, and a branch with no leading literal proves nothing at all."
   }
 ]
