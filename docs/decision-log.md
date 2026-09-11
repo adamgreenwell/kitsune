@@ -1271,7 +1271,13 @@ So the test of this ADR is not "can a non-panel consumer render it" — there is
 
 So the closed vocabulary reached every control and the cross-cutting rule reached one class.
 
-`BlockDirection` holds that pass now, and `BaseFieldType::toStorage()` applies it to every control whose `ValueDirection` is `PerBlock`. A type cannot decline it by omission — only by returning a different control, which is a visible decision. The seam is keyed on `ValueDirection` rather than on the `Control` case because that enum is where the mapping already lives, and `PerBlock`'s own docblock already said direction is needed *inside* the value; this makes that sentence happen instead of restating it.
+`BlockDirection` holds that pass now, and it is applied from a **private method on `Entry`**, keyed on `ValueDirection` rather than on the `Control` case — that enum is where the mapping already lives, and `PerBlock`'s own docblock already said direction is needed *inside* the value; this makes that sentence happen instead of restating it.
+
+**It took two attempts to find a seam a field type cannot decline, and the first one is worth recording.** Applying it in `BaseFieldType::toStorage()` made it control-driven and left it **overridable**: `MultiSelectType` and `RelationType` already override that method, a module may too, and a module implementing `FieldType` directly never reaches the base class at all. A protected hook there was also new extension surface before v1.2 — a plugin subclass with a same-named method fails to load, which is a concrete break rather than a theoretical one.
+
+`Entry::convertFieldValuesForWrite()` is where every value that reaches the database is converted, and a private method on a model is what this codebase has already settled on as *"the first version a plugin cannot reach"*. The guarantee is enforced at the point of storage rather than inside the contract the guarantee is about.
+
+**A consequence worth having:** with direction applied after the conversion rather than inside it, a conversion is lossy-only again — so the `RichTextType`-by-identity special case in `Entry`'s revision loss check is gone, along with the comment calling it *"the price of freezing the contract before v1.2 and the first thing to undo when it opens."* Moving the seam undid it early.
 
 | Rejected | Why it lost |
 |---|---|

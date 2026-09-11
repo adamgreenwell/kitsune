@@ -21,8 +21,9 @@ use Kitsune\Core\Audit\AuditedBuilder;
 use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Fields\FieldType;
 use Kitsune\Core\Fields\FieldTypeRegistry;
+use Kitsune\Core\Fields\Internal\BlockDirection;
 use Kitsune\Core\Fields\StorageStrategy;
-use Kitsune\Core\Fields\Types\RichTextType;
+use Kitsune\Core\Fields\ValueDirection;
 use Kitsune\Core\Relations\GuardedBelongsToMany;
 use Kitsune\Core\Schema\RevisionWrites;
 use Kitsune\Core\Tenancy\Attributes\SiteScoped;
@@ -478,43 +479,45 @@ class Entry extends Model implements RequiresModelSave
     }
 
     /**
-     * Whether converting a value LOST something worth keeping beside its revision.
+     * Stamp the direction the CONTROL requires inside the value, whatever type produced it.
      *
-     * ⚠️ SEPARATE FROM "the bytes changed", because those stopped being the same question. The
-     * recorder compared the stored value with the submitted one, which is right while every
-     * conversion is a cast or a strip — and wrong the moment one ADDS something. `RichTextType`
-     * stamps `dir="auto"` on each block (issue #39), so every rich text save changed its bytes and
-     * every revision retained an original identical to its input but for an attribute the type had
-     * just added. That column is swept by erasure (ADR-020) and exists to show an author what a
-     * sanitiser REMOVED.
+     * ⚠️ THIS IS ADR-029'S GUARANTEE, AND ITS THIRD HOME — each earlier one found by review, and the
+     * sequence is the same shrinking mistake `conversionLostSomething()` recorded four steps of
+     * before this change removed it — see the loss check below, which no longer needs one.
      *
-     * ⚠️ PRIVATE, AND ON A MODEL, which is the fourth home this has had — each earlier one found by
-     * review, and each a smaller version of the same mistake. On `FieldType` it grew the extension
-     * API, which CONTRIBUTING forbids before v1.2. On `BaseFieldType` with an `@internal` tag, a tag
-     * is not a visibility and a plugin subclass with a same-named method still collides. As a `final`
-     * class it was still autoloadable, so a plugin could bind to it and the intended v1.2 removal
-     * would become a compatibility break. Private on a model is the first version a plugin cannot
-     * reach at all.
+     * It began as a private method on `RichTextType`, so a module registering its own type returning
+     * `Control::RichText` got no direction at all — the exact thing that ADR says is inexpressible.
+     * Moving it to `BaseFieldType::toStorage()` made it control-driven and left it OVERRIDABLE:
+     * `MultiSelectType` and `RelationType` already override that method, a module may too, and a module
+     * implementing `FieldType` directly never reaches the base class. A protected hook on the
+     * plugin-facing base class was also new extension surface — a subclass with a same-named method
+     * fails to load — which CONTRIBUTING forbids before v1.2.
      *
-     * ⚠️ SO IT TESTS A TYPE BY IDENTITY, which `FieldType`'s own docblock argues against — *"the
-     * model testing for `rich_text` by name puts a field-type concern in every layer that touches a
-     * value"*. That argument is about a concern spread across LAYERS; this is one method inside one
-     * of them. It is the price of freezing the contract before v1.2 and the first thing to undo when
-     * it opens: at v1.2 this becomes a method on `FieldType` and this disappears.
+     * Here is the first seam a field type cannot reach: `convertFieldValuesForWrite()` is where every
+     * value that lands in the database is converted, this method is private on a model, and the
+     * decision is read from the control rather than from the type.
+     *
+     * ⚠️ KEYED ON `ValueDirection`, NOT ON THE TYPE, which is what makes it the ADR's guarantee rather
+     * than a special case for one class. `Control::direction()` is the closed mapping and `PerBlock`'s
+     * own docblock already says direction is needed INSIDE the value; this makes that happen.
+     *
+     * ⚠️ AND IT MAPS OVER A MULTI-VALUE FIELD. `toStorage()` returns a list for `cardinality` above
+     * one, and stamping a list as though it were a document would produce nothing at all.
      */
-    private function conversionLostSomething(FieldType $type, mixed $submitted, mixed $stored): bool
+    private function withPerBlockDirection(FieldType $type, mixed $stored): mixed
     {
-        if ($type instanceof RichTextType && is_string($submitted)) {
-            /*
-             * ⚠️ COMPARED AGAINST THE SANITISED FORM, not the stored one, because the stored form also
-             * carries the per-block direction this exists to ignore. §6 asks whether the author can
-             * see what the sanitiser took, and that is the only part of the conversion that takes
-             * anything.
-             */
-            return $type->sanitize($submitted) !== $submitted;
+        if ($type->control()->direction() !== ValueDirection::PerBlock) {
+            return $stored;
         }
 
-        return $stored !== $submitted;
+        if (is_array($stored)) {
+            return array_map(
+                static fn (mixed $one): mixed => is_string($one) ? BlockDirection::stampedInto($one) : $one,
+                $stored,
+            );
+        }
+
+        return is_string($stored) ? BlockDirection::stampedInto($stored) : $stored;
     }
 
     private function recordRevision(): void
@@ -1386,7 +1389,15 @@ class Entry extends Model implements RequiresModelSave
                 // is, not be overwritten with a converted null.
                 if (is_array($inline) && array_key_exists($handle, $inline)) {
                     $submitted = $inline[$handle];
-                    $inline[$handle] = $fieldType->toStorage($submitted, $config);
+
+                    /*
+                     * ⚠️ CONVERTED FIRST, STAMPED AFTER, and the loss check below is asked about the
+                     * CONVERTED value rather than the stamped one. Direction is not part of the
+                     * conversion — it is applied to the result of one — so a check that saw it would be
+                     * answering about an attribute this model added a line earlier.
+                     */
+                    $converted = $fieldType->toStorage($submitted, $config);
+                    $inline[$handle] = $this->withPerBlockDirection($fieldType, $converted);
 
                     /*
                      * Kept only when the type says its conversion is lossy AND the conversion took
@@ -1409,7 +1420,7 @@ class Entry extends Model implements RequiresModelSave
                      * bind to it and the intended v1.2 removal would become a compatibility break.
                      * A private method on this model is the first version a plugin cannot reach.
                      */
-                    if ($fieldType->retainsOriginal() && $this->conversionLostSomething($fieldType, $submitted, $inline[$handle])) {
+                    if ($fieldType->retainsOriginal() && $converted !== $submitted) {
                         $this->retainedOriginals[$handle] = $submitted;
                     }
                 }
@@ -1431,7 +1442,10 @@ class Entry extends Model implements RequiresModelSave
                 continue;
             }
 
-            $values[$column] = $fieldType->toStorage($values[$column], $config);
+            $values[$column] = $this->withPerBlockDirection(
+                $fieldType,
+                $fieldType->toStorage($values[$column], $config),
+            );
         }
 
         if ($inline !== null) {

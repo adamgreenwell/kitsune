@@ -8,7 +8,7 @@
 
 declare(strict_types=1);
 
-namespace Kitsune\Core\Fields;
+namespace Kitsune\Core\Fields\Internal;
 
 use DOMDocument;
 use DOMElement;
@@ -16,6 +16,18 @@ use DOMNode;
 
 /**
  * Gives every text-bearing block inside a rich text value its own direction.
+ *
+ * @internal Not part of the field-type contract, and not a seam a plugin may bind to. Review is right
+ *           that a tag is not a visibility — this codebase has already rejected `@internal` twice for
+ *           exactly that reason — so the tag is the weaker half and the namespace is the other: nothing
+ *           a plugin imports lives in `Fields\Internal`, and no plugin-facing class mentions this one.
+ *           `Entry` applies it from a PRIVATE method, which is the construction
+ *           `conversionLostSomething()` settled on as *"the first version a plugin cannot reach"*.
+ *
+ *           What that still does not prevent is a plugin calling this class by name. PHP has no
+ *           package-private, so the remaining options are 600 lines of DOM walking inside `Entry` or
+ *           this — and unlike the stopgaps that reasoning was written for, this is not due for removal
+ *           at v1.2, so binding to it creates no compatibility trap to spring.
  *
  * ⚠️ IT LIVES HERE RATHER THAN IN `RichTextType` BECAUSE ADR-029 SAYS IT MUST, and review found the
  * ADR claiming a guarantee this implementation did not keep. That ADR's own test is: *"can a new field

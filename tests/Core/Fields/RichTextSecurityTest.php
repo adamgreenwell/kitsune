@@ -69,9 +69,18 @@ describe('rich_text sanitisation', function (): void {
     });
 
     it('sanitises on write, so the stored value is already safe', function (): void {
+        /*
+         * ⚠️ NO `dir="auto"` IN THIS EXPECTATION ANY MORE, and the test is better for it. The direction
+         * pass moved out of `toStorage()` to the one seam a field type cannot decline — a private method
+         * on `Entry`, applied to every value that reaches the database — so this file's expectations now
+         * carry only what the SANITISER does. That is the separation `castToStorage()`'s docblock asked
+         * for in the first place: *"threading a presentation concern through it means every future
+         * direction change edits security expectations, and a reviewer reading that diff cannot tell
+         * which half is which."* One of them was still doing exactly that.
+         */
         $stored = $this->richText->toStorage('<p>Hi</p><script>alert(1)</script>', $this->config);
 
-        expect($stored)->toBe('<p dir="auto">Hi</p>');
+        expect($stored)->toBe('<p>Hi</p>');
     });
 });
 

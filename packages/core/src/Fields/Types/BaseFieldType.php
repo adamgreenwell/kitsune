@@ -10,12 +10,10 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Fields\Types;
 
-use Kitsune\Core\Fields\BlockDirection;
 use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Fields\FieldType;
 use Kitsune\Core\Fields\Projection;
 use Kitsune\Core\Fields\StorageStrategy;
-use Kitsune\Core\Fields\ValueDirection;
 
 /**
  * Sensible defaults so each type carries only its differences.
@@ -72,7 +70,7 @@ abstract class BaseFieldType implements FieldType
     public function toStorage(mixed $input, FieldConfig $config): mixed
     {
         if (! $config->isMultiValue()) {
-            return $this->withValueDirection($this->castToStorage($input, $config));
+            return $this->castToStorage($input, $config);
         }
 
         if ($input === null || $input === '') {
@@ -80,38 +78,9 @@ abstract class BaseFieldType implements FieldType
         }
 
         return array_values(array_map(
-            fn (mixed $value): mixed => $this->withValueDirection($this->castToStorage($value, $config)),
+            fn (mixed $value): mixed => $this->castToStorage($value, $config),
             (array) $input,
         ));
-    }
-
-    /**
-     * Apply the direction the CONTROL requires inside the stored value, not the one a type remembers.
-     *
-     * ⚠️ THIS IS WHAT ADR-029 CLAIMS AND DID NOT HAVE, which review found. That ADR's test is *"can a
-     * new field type be added without text direction, and is that expressible at all?"*, and its answer
-     * is no — *"because direction is derived by the renderer from the control's kind and is not a
-     * property a field type can decline to set"*. Per-block direction was a private method on
-     * `RichTextType`, so a module registering another type returning `Control::RichText` got none, and
-     * `FieldValueRenderer` adds none for `PerBlock` because the direction belongs in the stored bytes.
-     * The claim was true of every direction except the only one that needs help.
-     *
-     * ⚠️ KEYED ON `ValueDirection`, NOT ON THE CONTROL CASE, because that enum is where the decision
-     * already lives: `Control::direction()` is the closed mapping, `needsAutoDirection()` is the
-     * renderer's half of it, and `PerBlock`'s own docblock already says direction is needed *inside* the
-     * value. This is that sentence made to happen rather than restated.
-     *
-     * ⚠️ AND IT TOUCHES NOTHING ELSE: every other `ValueDirection` is carried by an attribute on the
-     * element the renderer emits, so there is nothing to change in the bytes. A non-string value is
-     * returned untouched, because a control whose value is not HTML has no blocks to stamp.
-     */
-    protected function withValueDirection(mixed $stored): mixed
-    {
-        if (! is_string($stored) || $this->control()->direction() !== ValueDirection::PerBlock) {
-            return $stored;
-        }
-
-        return BlockDirection::stampedInto($stored);
     }
 
     public function fromStorage(mixed $stored, FieldConfig $config): mixed

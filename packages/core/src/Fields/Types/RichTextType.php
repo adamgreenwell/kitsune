@@ -15,9 +15,9 @@ use DOMDocument;
 use DOMElement;
 use DOMNode;
 use DOMProcessingInstruction;
-use Kitsune\Core\Fields\BlockDirection;
 use Kitsune\Core\Fields\Control;
 use Kitsune\Core\Fields\FieldConfig;
+use Kitsune\Core\Fields\Internal\BlockDirection;
 
 /**
  * User-supplied HTML rendered on public pages — the ONLY field type in v1
@@ -208,8 +208,8 @@ final class RichTextType extends BaseFieldType
          * ⚠️ THE DIRECTION PASS IS NOT CALLED HERE ANY MORE, and review is the reason. It was a private
          * method on this class, so a module registering another type that returns `Control::RichText`
          * got no per-block direction at all — which is precisely what ADR-029 says is inexpressible.
-         * `BaseFieldType::toStorage()` applies `BlockDirection` to every control whose `ValueDirection`
-         * is `PerBlock`, so this type declines nothing by omission and neither can the next one.
+         * `Entry` applies it to every value whose control's `ValueDirection` is `PerBlock`, from a
+         * private method that no field type can override or decline.
          *
          * Sanitising stays here because it is this type's own security boundary, and the two steps are
          * still two steps for the reason above.

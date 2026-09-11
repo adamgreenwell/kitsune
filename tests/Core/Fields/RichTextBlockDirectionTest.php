@@ -638,18 +638,17 @@ it('gives per-block direction to any type whose control is rich text', function 
      * ⚠️ ADR-029'S OWN TEST, WHICH THIS BRANCH WAS FAILING: *"can a new field type be added without text
      * direction, and is that expressible at all?"* Its answer is no — *"direction is derived by the
      * renderer from the control's kind and is not a property a field type can decline to set"* — and
-     * while the pass was a private method on `RichTextType`, the honest answer was yes. Review found it.
+     * while the pass lived on `RichTextType`, the honest answer was yes. Review found it, twice: first
+     * that a module's own `Control::RichText` type got nothing, then that a module can OVERRIDE
+     * `toStorage()` — `MultiSelectType` and `RelationType` already do — or implement `FieldType`
+     * directly and never reach the base class at all.
      *
-     * A module registering its own type that returns `Control::RichText` got NO per-block direction, and
-     * `FieldValueRenderer` deliberately adds none for `PerBlock` because the direction belongs in the
-     * stored bytes. So the one direction that needs help was the one the closed vocabulary did not give.
-     *
-     * ⚠️ THE TYPE BELOW DOES NOTHING BUT DECLARE ITS CONTROL, which is the whole assertion. It has no
-     * direction code, does not extend `RichTextType`, and cannot have inherited the behaviour by
-     * accident — `BaseFieldType::toStorage()` applies `BlockDirection` to every control whose
-     * `ValueDirection` is `PerBlock`.
+     * ⚠️ SO THE TEST GOES THROUGH A REAL WRITE, which is the only thing that proves the seam. The type
+     * below declares its control and converts a string; it has no direction code, does not extend
+     * `RichTextType`, and OVERRIDES `toStorage()` itself — so if the guarantee depended on the base
+     * class or on the type's cooperation, this would store undirected HTML.
      */
-    $type = new class extends BaseFieldType
+    $module = new class extends BaseFieldType
     {
         public static function handle(): string
         {
@@ -666,46 +665,75 @@ it('gives per-block direction to any type whose control is rich text', function 
             return Control::RichText;
         }
 
+        /** ⚠️ Overridden on purpose: the guarantee may not rest on this method. */
+        public function toStorage(mixed $input, FieldConfig $config): mixed
+        {
+            return $input === null ? null : (string) $input;
+        }
+
         protected function castToStorage(mixed $input, FieldConfig $config): mixed
         {
             return $input === null ? null : (string) $input;
         }
     };
 
-    $config = new FieldConfig($this->bodyStorage);
+    app(FieldTypeRegistry::class)->register($module);
 
-    expect($type->toStorage('<p>Hello world</p><p>مرحبا بالعالم</p>', $config))
+    $storage = FieldStorage::create([
+        'org_id' => $this->org->id, 'handle' => 'module_body', 'type' => $module::handle(),
+        'pii_class' => 'none', 'cardinality' => 1,
+    ]);
+    Field::create([
+        'entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id,
+        'label' => 'Module Body', 'ordering' => 1,
+    ]);
+
+    $entry = Entry::create([
+        'entry_type_id' => $this->type->id,
+        'title' => 'Module',
+        'values' => ['module_body' => '<p>Hello world</p><p>مرحبا بالعالم</p>'],
+    ]);
+
+    $stored = json_decode((string) DB::table('entries')->where('id', $entry->getKey())->value('values'), true);
+
+    expect($stored['module_body'])
         ->toBe('<p dir="auto">Hello world</p><p dir="auto">مرحبا بالعالم</p>');
+});
 
+it('does not retain an original for a clean save, whatever the field holds', function (): void {
     /*
-     * ⚠️ AND A TYPE WITH A DIFFERENT CONTROL IS UNTOUCHED, or the seam would be stamping HTML into
-     * values that are not HTML. `Control::Paragraph` is `ValueDirection::Auto`, which the renderer
-     * carries on the element it emits — there is nothing to put in the bytes.
+     * ⚠️ REVIEW ASKED FOR A PER-ELEMENT LOSS CHECK ON A MULTI-VALUE RICH TEXT FIELD, and the premise
+     * does not hold for core: `RichTextType::supportsCardinality()` is false, so `FieldStorage` refuses
+     * that configuration outright — *"Field type [rich_text] holds exactly one value, so [bodies]
+     * cannot have cardinality -1."* Measured while trying to build the fixture.
+     *
+     * ⚠️ BUT THE DEFECT UNDERNEATH WAS REAL, and this branch had just made it reachable: any type whose
+     * control is `PerBlock` now gains `dir="auto"` on the way to storage, so a loss check comparing the
+     * SUBMITTED value with the STORED one would call every clean save lossy and copy the whole value
+     * into `unsanitized_values` — a column erasure has to sweep (ADR-020).
+     *
+     * The answer was ordering rather than a per-element walk: the check is asked about the CONVERTED
+     * value and the direction is stamped after it. That also removed the `RichTextType`-by-identity
+     * special case this model carried, which its own comment called the price of the API freeze.
      */
-    $plain = new class extends BaseFieldType
-    {
-        public static function handle(): string
-        {
-            return 'module_plain';
-        }
+    $clean = '<p>Hello world</p>';
 
-        public static function label(): string
-        {
-            return 'Module Plain';
-        }
+    expect(storedBody($clean))->toBe('<p dir="auto">Hello world</p>');
 
-        public function control(): Control
-        {
-            return Control::Paragraph;
-        }
+    $entry = Entry::query()->withoutGlobalScopes()->latest('id')->firstOrFail();
 
-        protected function castToStorage(mixed $input, FieldConfig $config): mixed
-        {
-            return $input === null ? null : (string) $input;
-        }
-    };
+    // The original is kept on the REVISION, which is the row erasure has to sweep.
+    expect(DB::table('entry_revisions')->where('entry_id', $entry->getKey())->value('unsanitized_values'))
+        ->toBeNull('a clean save retained an original that differs only by the direction it was given');
 
-    expect($plain->toStorage('<p>Hello world</p>', $config))->toBe('<p>Hello world</p>');
+    // ⚠️ And a save the sanitiser DOES take something from still retains one, or this would be
+    // asserting that nothing is ever kept.
+    storedBody('<p>Hello</p><script>alert(1)</script>');
+
+    $lossy = Entry::query()->withoutGlobalScopes()->latest('id')->firstOrFail();
+
+    expect(DB::table('entry_revisions')->where('entry_id', $lossy->getKey())->value('unsanitized_values'))
+        ->not->toBeNull('the sanitiser removed a script tag and no original was kept');
 });
 
 it('bounds what a conversion with no loss check can leave behind', function (): void {
