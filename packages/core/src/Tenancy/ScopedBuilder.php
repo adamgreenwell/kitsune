@@ -407,7 +407,19 @@ class ScopedBuilder extends Builder
 
         // See the note on `insert()`: the method is a discriminator only where `performInsert()`
         // does not use it.
-        if (! $always && ! $model->getIncrementing()) {
+        /*
+         * ⚠️ NOT `getIncrementing()`, WHICH A CALLER CAN SET. Review measured it:
+         * `Site::query()->getModel()->setIncrementing(false)` then `insert()` was classified as a
+         * non-incrementing model save although no model event ran — and with caller-authored
+         * `canonical_host` and an overlapping `path_prefix` it landed the cross-org claim
+         * `refuseOverlappingClaim()` exists to prevent. Two rows on one host, measured.
+         *
+         * The question was never "does this model increment" but "is this a model save", and
+         * `isPerformingModelSave()` answers that one directly: true inside a non-incrementing model's
+         * `insert()`, false for a hand-rolled one. The key strategy is no longer part of the decision,
+         * so `RequiresModelSave`'s assumption that every implementor increments is gone with it.
+         */
+        if (! $always && $model->isPerformingModelSave()) {
             return;
         }
 
@@ -632,10 +644,21 @@ class ScopedBuilder extends Builder
         // stands aside for have already run in `saving`", and a quiet save
         // suppresses `saving` while still being an instance save. Measured:
         // `$site->saveQuietly()` moved `base_url` with `canonical_host` left on
-        // the old address. Both halves are needed — `exists` says it is an
-        // instance write rather than a bulk one, and the flag says the guards
-        // for that write actually ran.
-        if ($model->exists && $model->guardedColumnsAreDerived()) {
+        // the old address. Both halves are needed — one says it is an instance
+        // write rather than a bulk one, and the flag says the guards for that
+        // write actually ran.
+        /*
+         * ⚠️ AND `exists` WAS ALSO ARRANGEABLE, which review found next. `Builder::setModel()` is
+         * public, so `$query = Entry::query(); $query->setModel($loadedEntry); $query->update([…])`
+         * presented a model that exists AND — through `AuditedBuilder::update()` calling
+         * `convertFieldValuesForWrite()` on that one entry — a freshly armed proof. The update then ran
+         * across every matching row, converting all of them against one entry's schema and skipping
+         * their own per-row validation. Measured: two rows, and the second one's values replaced.
+         *
+         * `isPerformingModelSave()` cannot be arranged: it is private, has no setter, and is true only
+         * inside the instance's own `performUpdate()`. A model handed to `setModel()` is not in one.
+         */
+        if ($model->isPerformingModelSave() && $model->guardedColumnsAreDerived()) {
             return;
         }
 

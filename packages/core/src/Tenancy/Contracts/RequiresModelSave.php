@@ -38,10 +38,10 @@ namespace Kitsune\Core\Tenancy\Contracts;
  * incrementing model and is allowed; `insert()` and the `…Using` forms are
  * refused, which is how `AuditedBuilder` already handled `Entry`.
  *
- * ⚠️ WHICH ASSUMES EVERY IMPLEMENTOR INCREMENTS, because a non-incrementing
- * model's `performInsert()` uses `insert()`. All four do today and
- * `PerRowInsertGuardTest` asserts it, so the day one does not, the test fails
- * rather than its creates.
+ * ⚠️ IT NO LONGER ASSUMES EVERY IMPLEMENTOR INCREMENTS, and that assumption is gone because it rested
+ * on `getIncrementing()` — which a caller can change through `getModel()`. The guards ask
+ * `isPerformingModelSave()` instead, which is true for a non-incrementing model's `insert()` and false
+ * for a hand-rolled one, so the key strategy stopped being part of the decision.
  */
 interface RequiresModelSave
 {
@@ -61,4 +61,23 @@ interface RequiresModelSave
      * attribute; only the code that derives can set this. `DerivesGuardedColumns` implements it.
      */
     public function guardedColumnsAreDerived(): bool;
+
+    /**
+     * Whether this instance is inside its OWN save attempt right now.
+     *
+     * ⚠️ BECAUSE EVERY OTHER DISCRIMINATOR WAS CALLER-MUTABLE, which review established twice over.
+     * `Builder::getModel()` and `setModel()` are public, so `$model->exists` and
+     * `$model->getIncrementing()` are both things a caller can arrange:
+     *
+     *   $query = Entry::query(); $query->setModel($loaded); $query->update([…]);
+     *       every matching row converted against ONE entry's schema — measured, 2 rows
+     *   $query = Site::query(); $query->getModel()->setIncrementing(false); $query->insert([…]);
+     *       a hand-rolled bulk insert classed as a non-incrementing model save, landing an
+     *       overlapping cross-org claim past refuseOverlappingClaim() — measured, 2 rows on one host
+     *
+     * This is set by `performInsert()`/`performUpdate()` and cleared in their `finally`, so it is true
+     * only during the dynamic extent of a real save. There is no setter, and a model handed to
+     * `setModel()` is not inside a save, so it cannot be manufactured.
+     */
+    public function isPerformingModelSave(): bool;
 }

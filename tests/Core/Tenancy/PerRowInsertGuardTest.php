@@ -194,15 +194,19 @@ it('leaves a model with no per-row columns alone', function (): void {
     expect(DB::table('orgs')->where('slug', 'bulk-org')->exists())->toBeTrue();
 });
 
-it('is only safe while every guarded model increments', function (): void {
+it('rests on a discriminator no caller can arrange', function (): void {
     /*
-     * ⚠️ THE ASSUMPTION THAT MAKES THE METHOD A DISCRIMINATOR, asserted rather than trusted. A
-     * non-incrementing model's `performInsert()` uses `insert()`, so refusing it there would break
-     * creates exactly as the reverted attempt did — which is why `insert()` is guarded only when the
-     * model increments.
+     * ⚠️ THIS TEST USED TO PIN "every guarded model increments", and that assumption is gone because it
+     * rested on `getIncrementing()` — which review showed a caller can change:
+     * `Site::query()->getModel()->setIncrementing(false)` then `insert()` was classified as a
+     * non-incrementing model save although no model event ran, and landed an overlapping cross-org
+     * claim. The key strategy was never the question; *"is this a model save"* was.
      *
-     * No `RequiresModelSave` model is non-incrementing today. The day one appears, this fails and
-     * says why, rather than its creates failing and leaving somebody to work out the reason.
+     * So what is pinned now is the invariant the guards actually rest on: a model NOT inside its own
+     * `performInsert()`/`performUpdate()` says so. Every instance a caller can reach — including one
+     * handed to `setModel()` — is such a model, which is why the flag cannot be manufactured. There is
+     * no setter for it either, and `guardedColumnsAreDerived()`'s mutator is already asserted
+     * unreachable in its own test.
      */
     /*
      * ⚠️ FOUR MODELS, NOT ONE, and the first version of this test listed only `Site` because that is
@@ -215,8 +219,8 @@ it('is only safe while every guarded model increments', function (): void {
         $model = new $class;
 
         expect($model)->toBeInstanceOf(RequiresModelSave::class)
-            ->and($model->getIncrementing())->toBeTrue(
-                "[{$class}] does not increment, so insert() is its create path and cannot be refused",
+            ->and($model->isPerformingModelSave())->toBeFalse(
+                "[{$class}] claims to be inside a save attempt before one has started",
             );
     }
 
@@ -664,6 +668,73 @@ it('does not call two different numeric-looking strings the same value', functio
 
     expect((string) Site::withoutGlobalScopes()->whereKey($site->getKey())->value('canonical_host'))
         ->toBe('0e1', 'a loose comparison called 0e1 and 0e2 the same value');
+});
+
+it('does not take a caller-arranged key strategy as proof of a model save', function (): void {
+    /*
+     * ⚠️ THE SECOND ARRANGEABLE DISCRIMINATOR, and review found it after the scope-key one. `insert()`
+     * stood aside for a non-incrementing model, because `performInsert()` is that model's create path —
+     * and `setIncrementing()` is reachable through the public `Builder::getModel()`:
+     *
+     *     $query = Site::query();
+     *     $query->getModel()->setIncrementing(false);
+     *     $query->insert([… 'canonical_host' => 'steal.test', 'path_prefix' => '/news']);
+     *
+     * No model event ran, so `refuseOverlappingClaim()` never saw it. Measured: ALLOWED, and TWO rows
+     * on `steal.test` — one org holding `/` and this one holding `/news`, which the exact-match unique
+     * index cannot prevent because the pairs differ. That is the ADR-021 theft.
+     */
+    Site::create([
+        'org_id' => $this->org->id, 'handle' => 'owner', 'slug' => 'owner', 'name' => 'Owner',
+        'locale' => 'en', 'url_strategy' => 'domain', 'base_url' => 'https://steal.test/',
+    ]);
+
+    $query = Site::query();
+    $query->getModel()->setIncrementing(false);
+
+    expect(fn () => $query->insert([
+        'org_id' => $this->org->id, 'handle' => 'thief', 'slug' => 'thief', 'name' => 'Thief',
+        'locale' => 'en', 'url_strategy' => 'domain', 'base_url' => 'https://steal.test/news',
+        'canonical_host' => 'steal.test', 'path_prefix' => '/news',
+        'created_at' => now(), 'updated_at' => now(),
+    ]))->toThrow(RuntimeException::class, 'cannot be created in bulk')
+        ->and(DB::table('sites')->where('canonical_host', 'steal.test')->count())
+        ->toBe(1, 'a caller-set key strategy let a bulk insert land an overlapping claim');
+});
+
+it('does not take a caller-supplied model as proof of an instance update', function (): void {
+    /*
+     * ⚠️ THE THIRD, AND IT CONVERTS OTHER ROWS AGAINST ONE ENTRY'S SCHEMA. `Builder::setModel()` is
+     * public, so a loaded entry can be put behind a bulk query: `AuditedBuilder::update()` then calls
+     * `convertFieldValuesForWrite()` on THAT entry — arming a genuine proof — while the update runs
+     * across every matching row.
+     *
+     * Measured: ALLOWED, 2 rows, and the second entry's `values` replaced by the first's conversion
+     * with none of its own per-row validation run.
+     */
+    $site = Site::create(['org_id' => $this->org->id, 'handle' => 's', 'slug' => 's-setmodel', 'name' => 'S']);
+    app(Context::class)->setSite($site);
+
+    $type = EntryType::create([
+        'org_id' => $this->org->id, 'handle' => 'page', 'name' => 'Page', 'plural_name' => 'Pages',
+    ]);
+
+    $first = Entry::create(['entry_type_id' => $type->id, 'title' => 'A', 'values' => ['x' => '1']]);
+    $second = Entry::create(['entry_type_id' => $type->id, 'title' => 'B', 'values' => ['x' => '2']]);
+
+    $query = Entry::query();
+    $query->setModel($first);
+
+    /*
+     * ⚠️ DECODED RATHER THAN COMPARED AS BYTES, and the byte version was GATE RED on MySQL: its JSON
+     * column type re-serialises what it stores, so the same value comes back as `{"x": "2"}` there and
+     * `{"x":"2"}` on SQLite and Postgres. The claim is about the VALUE, so the assertion has to be too.
+     * Invariant 5.
+     */
+    expect(fn () => $query->update(['values' => ['x' => 'bulk']]))
+        ->toThrow(RuntimeException::class, 'cannot be written in bulk')
+        ->and(json_decode((string) DB::table('entries')->where('id', $second->getKey())->value('values'), true))
+        ->toBe(['x' => '2'], 'a bulk update converted another entry against the model behind the query');
 });
 
 it('does not take the builder\'s own model as proof of a scope key', function (): void {

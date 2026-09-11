@@ -63,6 +63,17 @@ trait DerivesGuardedColumns
      */
     private ?array $guardedColumnsDerived = null;
 
+    /**
+     * Whether this instance is inside its own `performInsert()`/`performUpdate()` right now.
+     *
+     * ⚠️ THE ONLY DISCRIMINATOR HERE A CALLER CANNOT ARRANGE, which review established after two
+     * others turned out to be arrangeable. `exists` and `getIncrementing()` are both reachable through
+     * the public `Builder::getModel()`, so a hand-rolled write could present either — see the
+     * interface's docblock for the two measured attacks. This is private, has no setter, and is true
+     * only while a real save is on the stack.
+     */
+    private bool $insideModelSave = false;
+
     public static function bootDerivesGuardedColumns(): void
     {
         // ⚠️ Still cleared after a completed write, so a second save has to earn its own proof rather
@@ -99,9 +110,12 @@ trait DerivesGuardedColumns
      */
     protected function performInsert(Builder $query)
     {
+        $this->insideModelSave = true;
+
         try {
             return parent::performInsert($query);
         } finally {
+            $this->insideModelSave = false;
             $this->guardedColumnsDerived = null;
         }
     }
@@ -113,11 +127,19 @@ trait DerivesGuardedColumns
      */
     protected function performUpdate(Builder $query)
     {
+        $this->insideModelSave = true;
+
         try {
             return parent::performUpdate($query);
         } finally {
+            $this->insideModelSave = false;
             $this->guardedColumnsDerived = null;
         }
+    }
+
+    public function isPerformingModelSave(): bool
+    {
+        return $this->insideModelSave;
     }
 
     public function guardedColumnsAreDerived(): bool
