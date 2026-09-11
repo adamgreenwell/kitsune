@@ -496,6 +496,19 @@ class EntryType extends Model implements RefusesCascadingDeletes, RequiresModelS
         return [
             'subject_field_id' => 'the field must belong to this type and name exactly one person.',
             'org_id' => 'moving a type across orgs leaves its fields backed by storage that did not move.',
+            /*
+             * ⚠️ `handle` BECAUSE THE RESERVED-HANDLE CHECK IS PER ROW, and leaving it out was a hole
+             * review found. Both of the columns above are NULLABLE on a global type, so a
+             * `createQuietly()` or a direct `insertGetId()` that omitted them named no guarded column at
+             * all — the insert guard had nothing to inspect, allowed it, and the reserved-handle
+             * `saving` listener never ran. A type could therefore be planted on a handle ADR-012
+             * reserves, which is the collision with a registered route that listener exists to prevent.
+             *
+             * A guarded column list assembled from "the columns a guard DERIVES" missed the one a guard
+             * merely REFUSES, and a refusal is as per-row as a derivation.
+             */
+            'handle' => 'it is checked against the reserved handles ADR-012 lists, and a handle that '
+                .'collides with a registered route makes the admin unreachable.',
         ];
     }
 

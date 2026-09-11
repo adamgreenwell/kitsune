@@ -579,3 +579,68 @@ it('keeps the proof mutator out of a caller\'s reach', function (): void {
         ->and((new ReflectionMethod(Site::class, 'guardedColumnsAreDerived'))->isPublic())
         ->toBeTrue('the builder has to be able to read it');
 });
+
+it('does not call two different numeric-looking strings the same value', function (): void {
+    /*
+     * ⚠️ `==` WAS A BYPASS, which review found. PHP considers two NUMERIC-LOOKING STRINGS loosely equal
+     * when they name the same number, so `'0e1' == '0e2'` is TRUE — and a proof armed for a host of `0e1`
+     * accepted a quiet retry that had changed it to `0e2`. A proof about values cannot use a comparison
+     * that calls two different values the same.
+     *
+     * ⚠️ AND `===` ALONE WOULD BE TOO STRICT: a value arrives as an int on the model and a numeric string
+     * from a form, and failing on `255` versus `'255'` would send an author looking for a bug that is not
+     * there. Casting to string answers both.
+     */
+    $site = Site::create([
+        'org_id' => $this->org->id, 'handle' => 'exponent', 'slug' => 'exponent', 'name' => 'Exponent',
+        'locale' => 'en', 'url_strategy' => 'domain', 'base_url' => 'https://0e1/news',
+    ]);
+
+    expect($site->canonical_host)->toBe('0e1');
+
+    $theirs = Org::create(['name' => 'Theirs', 'slug' => 'theirs']);
+
+    // A save that derives, arms and then aborts after `saving`.
+    $site->org_id = $theirs->id;
+
+    expect(fn () => $site->save())->toThrow(RuntimeException::class);
+
+    // The caller restores the org and hand-edits only the derived host to another numeric-looking string.
+    $site->org_id = $this->org->id;
+    $site->canonical_host = '0e2';
+
+    expect(fn () => $site->saveQuietly())->toThrow(RuntimeException::class, 'cannot be written in bulk');
+
+    expect((string) Site::withoutGlobalScopes()->whereKey($site->getKey())->value('canonical_host'))
+        ->toBe('0e1', 'a loose comparison called 0e1 and 0e2 the same value');
+});
+
+it('guards a reserved handle on a quiet or detached entry-type write', function (): void {
+    /*
+     * ⚠️ BOTH OTHER GUARDED COLUMNS ARE NULLABLE ON A GLOBAL TYPE, which review found is the gap: a
+     * `createQuietly()` or a direct `insertGetId()` that omitted `org_id` and `subject_field_id` named no
+     * guarded column at all, so the insert guard had nothing to inspect and the reserved-handle `saving`
+     * listener never ran. A type could be planted on a handle ADR-012 reserves, which is the collision
+     * with a registered route that listener exists to prevent.
+     *
+     * A guarded column list assembled from "the columns a guard DERIVES" missed the one a guard merely
+     * REFUSES — and a refusal is as per-row as a derivation.
+     */
+    expect(fn () => EntryType::query()->createQuietly([
+        'handle' => 'admin', 'name' => 'Admin', 'plural_name' => 'Admins',
+    ]))->toThrow(RuntimeException::class, 'checks that derive and validate it did not run');
+
+    expect(fn () => EntryType::query()->insertGetId([
+        'handle' => 'admin', 'name' => 'Admin', 'plural_name' => 'Admins',
+        'created_at' => now(), 'updated_at' => now(),
+    ]))->toThrow(RuntimeException::class, 'checks that derive and validate it did not run');
+
+    expect(EntryType::withoutGlobalScopes()->where('handle', 'admin')->exists())->toBeFalse();
+
+    // ⚠️ And an ordinary create still works, or the guard would be about the column rather than the write.
+    $type = EntryType::create([
+        'org_id' => $this->org->id, 'handle' => 'ordinary', 'name' => 'Ordinary', 'plural_name' => 'Ordinaries',
+    ]);
+
+    expect($type->exists)->toBeTrue();
+});

@@ -70,30 +70,69 @@ trait DerivesGuardedColumns
             return false;
         }
 
-        /*
-         * ⚠️ COMPARED LOOSELY, because a value can arrive as an int on the model and a numeric string
-         * from a form, and a proof that fails on `255` versus `'255'` would send an author looking for a
-         * bug that is not there. What matters is whether the value CHANGED since it was derived.
-         *
-         * ⚠️ AND NOT EVERY GUARDED COLUMN IS A SCALAR — `Entry`'s `values` is a JSON-cast ARRAY, and a
-         * string cast on it threw `Array to string conversion` in 150 tests. Loose equality answers
-         * both kinds: for arrays it compares keys and values, and for scalars it ignores the int/string
-         * difference the paragraph above is about.
-         */
         foreach (static::columnsRequiringModelSave() as $column => $ignored) {
-            $derived = $this->guardedColumnsDerived[$column] ?? null;
-            $now = $this->getAttribute($column);
-
-            if (($derived === null) !== ($now === null)) {
-                return false;
-            }
-
-            if ($derived !== null && $derived != $now) {
+            if (! self::sameGuardedValue($this->guardedColumnsDerived[$column] ?? null, $this->getAttribute($column))) {
                 return false;
             }
         }
 
         return true;
+    }
+
+    /**
+     * Whether a guarded column still holds the value it was derived to.
+     *
+     * ⚠️ `==` WAS A BYPASS, which review found. PHP considers two NUMERIC-LOOKING STRINGS loosely equal
+     * when they name the same number, so `'0e1' == '0e2'` is TRUE — and a save armed for
+     * `https://0e1/news` accepted a quiet retry that had changed `canonical_host` to `0e2`. A proof about
+     * values cannot use a comparison that calls two different values the same.
+     *
+     * ⚠️ AND `===` ALONE IS TOO STRICT, which is why this is a function rather than an operator. A value
+     * arrives as an int on the model and as a numeric string from a form, and a proof that failed on
+     * `255` versus `'255'` would send an author looking for a bug that is not there. Casting to string
+     * answers both: `(string) 255 === '255'` holds, and `'0e1'` and `'0e2'` stay different.
+     *
+     * ⚠️ AND NOT EVERY GUARDED COLUMN IS A SCALAR — `Entry`'s `values` is a JSON-cast ARRAY, and a string
+     * cast on one threw `Array to string conversion` in 150 tests. Arrays are compared member by member
+     * with the same rule, with keys sorted first: nothing in Kitsune may depend on JSON key order, which
+     * `Entry::versionedState()` learned from the engine matrix, so this comparison must not either.
+     */
+    private static function sameGuardedValue(mixed $derived, mixed $now): bool
+    {
+        if (($derived === null) !== ($now === null)) {
+            return false;
+        }
+
+        if ($derived === null) {
+            return true;
+        }
+
+        if (is_array($derived) || is_array($now)) {
+            if (! is_array($derived) || ! is_array($now) || count($derived) !== count($now)) {
+                return false;
+            }
+
+            ksort($derived);
+            ksort($now);
+
+            if (array_keys($derived) !== array_keys($now)) {
+                return false;
+            }
+
+            foreach ($derived as $key => $value) {
+                if (! self::sameGuardedValue($value, $now[$key])) {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        if (is_bool($derived) || is_bool($now)) {
+            return $derived === $now;
+        }
+
+        return is_scalar($derived) && is_scalar($now) && (string) $derived === (string) $now;
     }
 
     /**
