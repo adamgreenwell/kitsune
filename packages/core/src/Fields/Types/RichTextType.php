@@ -132,6 +132,20 @@ final class RichTextType extends BaseFieldType
     private const LIST_TAGS = ['ul', 'ol'];
 
     /**
+     * Every tag this implementation can stamp a direction ON, and therefore every tag it must be able
+     * to take one back OFF.
+     *
+     * ⚠️ DERIVED FROM THE TWO STAMPING SETS rather than written out, because review found the fifth
+     * face of this defect in the gap between them: the previous round taught the pass to stamp
+     * `LIST_TAGS` and left the yielding pass reading `BLOCK_TAGS` alone, so a generated list direction
+     * survived an author's later `dir="rtl"` on an ancestor and overrode it. The `<p>` beside it yielded
+     * correctly, which is the tell — the rule was present and its coverage was not.
+     *
+     * A union cannot drift from its parts. Adding a third stamping set adds it here by construction.
+     */
+    private const STAMPED_TAGS = [...self::BLOCK_TAGS, ...self::LIST_TAGS];
+
+    /**
      * The largest value whose sanitised copy is worth holding between a conversion and its loss check.
      *
      * ⚠️ A CAP BECAUSE THE READ IS NOT GUARANTEED. `sanitize()` releases the memo when the loss check
@@ -342,7 +356,7 @@ final class RichTextType extends BaseFieldType
          * ancestor. The walk here skips `auto` ancestors for the same reason it is removing one — each
          * of them may be generated too, so none of them may block.
          */
-        foreach (self::BLOCK_TAGS as $tag) {
+        foreach (self::STAMPED_TAGS as $tag) {
             foreach (iterator_to_array($document->getElementsByTagName($tag)) as $element) {
                 if (self::ownDirection($element) === 'auto' && self::fixedAncestorDirection($element) !== null) {
                     $element->removeAttribute('dir');

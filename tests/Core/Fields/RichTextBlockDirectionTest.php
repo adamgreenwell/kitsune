@@ -598,6 +598,39 @@ it('gives loose text inside a list a direction without inserting invalid markup'
         ->toBe('<blockquote dir="rtl"><ul>مرحبا<li>English</li></ul></blockquote>');
 });
 
+it('lets a generated list direction yield to an ancestor choice made later', function (): void {
+    /*
+     * ⚠️ THE FIFTH FACE OF ONE DEFECT AND THE FIRST I INTRODUCED MYSELF. The rule is unchanged — a
+     * generated `auto` is this implementation's default, not an author's decision, so it must not block
+     * a fixed direction declared above it later. The previous round taught the stamping pass to write
+     * `LIST_TAGS` and left the yielding pass reading `BLOCK_TAGS` alone, so the rule was present and its
+     * coverage was not. Review found it by saving twice.
+     *
+     * ⚠️ THE PARAGRAPH BESIDE IT IS THE TELL, which is why both are in one test. Given identical
+     * content, the `<p>` yielded and the `<ul>` did not — and when one construct obeys a rule and its
+     * neighbour does not, the gap is in the coverage rather than in the rule. Measured before the fix:
+     *
+     *   <blockquote dir="rtl"><ul dir="auto">ACME עברית…   the list kept it, so ACME decided
+     *   <blockquote dir="rtl"><p>ACME עברית</p>            the paragraph yielded, correctly
+     *
+     * `STAMPED_TAGS` is the union of the two stamping sets rather than a third list, so a set this
+     * implementation learns to stamp cannot be one it has forgotten how to un-stamp.
+     */
+    $first = storedBody('<ul>ACME עברית<li>English</li></ul>');
+
+    expect($first)->toBe('<ul dir="auto">ACME עברית<li dir="auto">English</li></ul>');
+
+    // The author now declares a direction above it and saves the stored value again.
+    expect(storedBody('<blockquote dir="rtl">'.$first.'</blockquote>'))
+        ->toBe('<blockquote dir="rtl"><ul>ACME עברית<li>English</li></ul></blockquote>');
+
+    $block = storedBody('<p>ACME עברית</p>');
+
+    expect($block)->toBe('<p dir="auto">ACME עברית</p>')
+        ->and(storedBody('<blockquote dir="rtl">'.$block.'</blockquote>'))
+        ->toBe('<blockquote dir="rtl"><p>ACME עברית</p></blockquote>');
+});
+
 it('bounds what a conversion with no loss check can leave behind', function (): void {
     /*
      * ⚠️ "RELEASED ON READ" ONLY BOUNDS THE CASE WHERE THE READ HAPPENS, and review found the case
