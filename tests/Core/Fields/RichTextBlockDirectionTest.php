@@ -9,6 +9,8 @@
 declare(strict_types=1);
 
 use Illuminate\Support\Facades\DB;
+use Kitsune\Core\Fields\FieldConfig;
+use Kitsune\Core\Fields\FieldTypeRegistry;
 use Kitsune\Core\Fields\Types\RichTextType;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
@@ -174,15 +176,27 @@ it('does not wrap a loose run inside a list', function (): void {
     /*
      * ⚠️ NOT `ul` OR `ol`, however many text-bearing runs they hold. The recursion covers containers
      * that take FLOW content, and a list takes only `li` — so a `<p>` there would fix a direction by
-     * producing markup no browser should be handed. Loose text directly inside `ul` is invalid input
-     * to begin with, and the sanitiser does not produce it from valid input.
+     * producing markup no browser should be handed.
+     *
+     * ⚠️ THIS TEST USED TO REST ON "loose text inside `ul` is invalid input to begin with", and review
+     * disproved the half of that sentence it was leaning on. Invalid is not the same as absent:
+     * `sanitize()` parses and PRESERVES malformed markup on purpose (§6), so the API and importers can
+     * put text there and it stays. Not wrapping it is still right; leaving it with no direction at all
+     * was not, and the container takes one now — see the test below.
      */
     expect(storedBody('<ul><li>En</li><li>عربي</li></ul>'))
         ->toBe('<ul><li dir="auto">En</li><li dir="auto">عربي</li></ul>');
 
-    // Two runs directly inside the list, which is the shape that would tempt the pass in.
+    /*
+     * Two runs directly inside the list, which is the shape that would tempt the pass in — and the
+     * limit of what a container-level direction can do, stated rather than implied. One `dir="auto"`
+     * resolves from the FIRST strong character among the loose runs, so `English` decides for both.
+     * The alternative is a `<p>` or an `<li>` around each, and one is invalid markup while the other
+     * turns a stray sentence into a list item. Never worse than inheriting the page, sometimes better,
+     * and no wrapper either way.
+     */
     expect(storedBody('<ul>English<li>Item</li>עברית</ul>'))
-        ->toBe('<ul>English<li dir="auto">Item</li>עברית</ul>');
+        ->toBe('<ul dir="auto">English<li dir="auto">Item</li>עברית</ul>');
 });
 
 it('gives every run in a flow-content container its own direction', function (string $html, string $expected): void {
@@ -507,6 +521,83 @@ it('does not override an inherited direction when it wraps a run', function (): 
         ->toBe('<figure dir="rtl"><figcaption><p>ACME</p><p>x</p><p>مرحبا</p></figcaption></figure>');
 });
 
+it('does not read past a container\'s own auto to a fixed ancestor above it', function (): void {
+    /*
+     * ⚠️ THE FIFTH FACE OF THE SAME SENTENCE, and this time it was the SKIP that read past an `auto`
+     * rather than the stamp. Review's probe: a `figure dir="auto"` inside a `blockquote dir="rtl"`.
+     *
+     * The call site asked `nearestDirection()` about the figure, which walks from the figure's PARENT —
+     * so it found the blockquote's `rtl`, concluded a fixed direction was in force, and gave the
+     * generated wrappers nothing. They then inherited the figure's own `auto`, which resolves from the
+     * figure's whole content and reads `English` first. Measured before the fix:
+     *
+     *   <p>English</p><p dir="auto">عربي</p><p>עברית</p>
+     *
+     * — where the author's OWN paragraph got a direction and the two runs beside it did not, which is
+     * the inconsistency that says the rule was applied to the wrong node rather than merely missed.
+     *
+     * A container's own `auto` IS the nearest direction to its children, so nothing above it reaches
+     * them. `fixedDirectionForChildren()` answers that, which is `nearestDirection()`'s own rule
+     * applied one level lower.
+     */
+    expect(storedBody('<blockquote dir="rtl"><figure dir="auto">English<p>عربي</p>עברית</figure></blockquote>'))
+        ->toBe(
+            '<blockquote dir="rtl"><figure dir="auto">'
+            .'<p dir="auto">English</p><p dir="auto">عربي</p><p dir="auto">עברית</p>'
+            .'</figure></blockquote>',
+        );
+
+    /*
+     * ⚠️ AND A FIXED CONTAINER STILL SUPPRESSES THEM, or the fix would have swapped one defect for its
+     * mirror. `figure dir="rtl"` is a decision, it reaches the wrappers by inheritance, and writing
+     * `auto` over it would replace the author's choice with a default — which is the finding two rounds
+     * back. The two cases differ only in the container's own value, so both belong in one test.
+     */
+    expect(storedBody('<blockquote dir="ltr"><figure dir="rtl">English<p>عربي</p>עברית</figure></blockquote>'))
+        ->toBe(
+            '<blockquote dir="ltr"><figure dir="rtl">'
+            .'<p>English</p><p>عربي</p><p>עברית</p>'
+            .'</figure></blockquote>',
+        );
+});
+
+it('gives loose text inside a list a direction without inserting invalid markup', function (): void {
+    /*
+     * ⚠️ THE ONE POSITION NO PASS COULD REACH, which review found: `ul` and `ol` are absent from
+     * `BLOCK_TAGS` because they hold blocks rather than text, and absent from `FLOW_CONTAINER_TAGS`
+     * because a `<p>` inside a list is markup no browser should be handed. Text directly inside one
+     * therefore met nothing at all, and inherited the page:
+     *
+     *   <ul>مرحبا<li>English</li></ul>   ->   <ul>مرحبا<li dir="auto">English</li></ul>
+     *
+     * The input is malformed and `sanitize()` preserves it on purpose — §6 parses rather than
+     * pattern-matches, and the API and importers can submit it.
+     *
+     * ⚠️ THE CONTAINER TAKES THE DIRECTION AND ITS ITEMS KEEP THEIRS, which is what makes this correct
+     * rather than a trade: `dir="auto"` skips descendants carrying their own `dir`, and every `li` has
+     * one — so the list's `auto` reads the loose run only. Both halves are asserted below, because the
+     * `li` keeping its own attribute is the entire reason this is not a compromise.
+     */
+    expect(storedBody('<ul>مرحبا<li>English</li></ul>'))
+        ->toBe('<ul dir="auto">مرحبا<li dir="auto">English</li></ul>');
+
+    // ⚠️ NOT ONLY TEXT NODES: an inline element in that position carries the content too.
+    expect(storedBody('<ol><strong>مرحبا</strong><li>English</li></ol>'))
+        ->toBe('<ol dir="auto"><strong>مرحبا</strong><li dir="auto">English</li></ol>');
+
+    // ⚠️ AND A WELL-FORMED LIST IS UNTOUCHED, or every existing document would gain an attribute.
+    expect(storedBody('<ul><li>English</li><li>مرحبا</li></ul>'))
+        ->toBe('<ul><li dir="auto">English</li><li dir="auto">مرحبا</li></ul>');
+
+    /*
+     * ⚠️ AND NOTHING IS STAMPED WHERE A DIRECTION IS ALREADY IN FORCE, the same rule as both passes
+     * above: the loose text inside this list already inherits the author's `rtl`, and `auto` over it
+     * would replace a decision with a default.
+     */
+    expect(storedBody('<blockquote dir="rtl"><ul>مرحبا<li>English</li></ul></blockquote>'))
+        ->toBe('<blockquote dir="rtl"><ul>مرحبا<li>English</li></ul></blockquote>');
+});
+
 it('bounds what a conversion with no loss check can leave behind', function (): void {
     /*
      * ⚠️ "RELEASED ON READ" ONLY BOUNDS THE CASE WHERE THE READ HAPPENS, and review found the case
@@ -563,6 +654,61 @@ it('bounds what a conversion with no loss check can leave behind', function (): 
         ->and($held())->toBeLessThanOrEqual(2 * $limit)
         ->and($type->sanitize($small))->toBe($clean)
         ->and($held())->toBe(0, 'the read did not release it');
+
+    /*
+     * ⚠️ AND THE CACHE HIT SPENDS THE ARMING, which review found it did not — releasing the strings
+     * while leaving the memo armed hands the retention to the next call instead of ending it.
+     *
+     * The sequence is a standalone conversion leaving an entry behind, as the case above establishes it
+     * can, and then an ordinary write of the SAME html: `castToStorage()` arms, `sanitize()` serves the
+     * old entry from cache and clears it, and the loss check then finds nothing cached, reparses, and —
+     * still armed — caches again. Measured on exactly that sequence, both properties were populated
+     * when the write finished, and every later write of that html left them populated too.
+     */
+    $armed->setValue($type, true);
+    $type->sanitize($small);
+
+    expect($held())->toBeGreaterThan(0, 'the standalone conversion cached nothing to hit');
+
+    // The ordinary write: armed, then the cache hit, then the loss check's reparse.
+    $armed->setValue($type, true);
+
+    expect($type->sanitize($small))->toBe($clean)
+        ->and($held())->toBe(0)
+        ->and($type->sanitize($small))->toBe($clean)
+        ->and($held())->toBe(0, 'the cache hit left the memo armed, so the reparse cached it again');
+});
+
+it('leaves nothing held after an ordinary write of html a standalone conversion primed', function (): void {
+    /*
+     * ⚠️ THE SAME FINDING THROUGH THE REAL PATH, because the reflection above drives `sanitize()`
+     * directly and the claim is about what an ORDINARY COMPLETED WRITE leaves on the singleton. This
+     * one arms nothing by hand: `toStorage()` is the published contract, `Entry::create()` is the
+     * production path, and the registry is the singleton both share.
+     */
+    $type = app(FieldTypeRegistry::class)->get('rich_text');
+    $html = '<p>مرحبا</p>';
+
+    $held = function () use ($type): int {
+        $bytes = 0;
+
+        foreach (['memoInput', 'memoOutput'] as $name) {
+            $value = (new ReflectionProperty(RichTextType::class, $name))->getValue($type);
+            $bytes += is_string($value) ? mb_strlen($value) : 0;
+        }
+
+        return $bytes;
+    };
+
+    // A conversion with no loss check after it, which the bound above says may leave an entry behind.
+    $type->toStorage($html, new FieldConfig($this->bodyStorage));
+
+    expect($held())->toBeGreaterThan(0, 'the standalone conversion left nothing to release');
+
+    // And now the ordinary write of that same html, which must end holding nothing.
+    storedBody($html);
+
+    expect($held())->toBe(0, 'an ordinary completed write kept the memo on the singleton');
 });
 
 it('lets a later ancestor choice reach a block this implementation already stamped', function (): void {

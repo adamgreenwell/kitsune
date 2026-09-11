@@ -121,6 +121,17 @@ final class RichTextType extends BaseFieldType
     private const FLOW_CONTAINER_TAGS = ['figure', 'blockquote', 'li', 'figcaption'];
 
     /**
+     * Allowed tags whose only valid child is `li`, so loose text inside one cannot be wrapped.
+     *
+     * ⚠️ NAMED AS A THIRD SET because it is the complement of `FLOW_CONTAINER_TAGS` within
+     * `CONTAINER_TAGS` for a reason that is easy to lose: these two hold blocks, so they are boundaries
+     * between runs, and they take no `<p>`, so the run pass must skip them. That left malformed input
+     * with loose text here handled by nothing at all, which is what review found. They are the only
+     * allowed tags in that position, so the set is closed by the allowlist rather than by judgement.
+     */
+    private const LIST_TAGS = ['ul', 'ol'];
+
+    /**
      * The largest value whose sanitised copy is worth holding between a conversion and its loss check.
      *
      * ⚠️ A CAP BECAUSE THE READ IS NOT GUARANTEED. `sanitize()` releases the memo when the loss check
@@ -380,6 +391,44 @@ final class RichTextType extends BaseFieldType
         }
 
         /*
+         * ⚠️ AND A LIST HOLDING LOOSE TEXT, which no pass above can reach and no wrapper may fix.
+         * Review found it: `<ul>مرحبا<li>English</li></ul>` is malformed and `sanitize()` preserves it
+         * deliberately — §6 parses rather than pattern-matches, and an importer or the API can submit
+         * it. `ul` and `ol` are absent from `BLOCK_TAGS` because they contain blocks rather than text,
+         * and absent from `FLOW_CONTAINER_TAGS` because a `<p>` inside a list is markup no browser
+         * should be handed. So the Arabic run was stored with no direction at all while the `li` beside
+         * it got one, and it inherited the page.
+         *
+         * ⚠️ THE CONTAINER TAKES THE DIRECTION AND ITS CHILDREN KEEP THEIRS, which is what makes this
+         * correct rather than a trade. `dir="auto"` resolves from the element's text EXCLUDING any
+         * descendant that carries a `dir` of its own, and every `li` carries one by the time this runs —
+         * so the list's `auto` reads the loose text only, and each item still resolves its own.
+         *
+         * ⚠️ AND WITH MORE THAN ONE LOOSE RUN THE FIRST DECIDES FOR ALL OF THEM, which is the limit of
+         * what a container-level direction can do and is stated rather than hidden. One attribute
+         * resolves once. Giving each run its own would need a wrapper, and the only element valid here
+         * is `li` — which would turn a stray sentence into a list item and add a bullet to it. So this
+         * is never worse than inheriting the page and often better, and it reshapes nothing.
+         *
+         * ⚠️ AND ONLY WHERE NOTHING IS IN FORCE, the same rule as both passes above: a list inside
+         * `<blockquote dir="rtl">` already gives its loose text the author's direction, and stamping
+         * `auto` over that would replace a decision with a default.
+         */
+        foreach (self::LIST_TAGS as $tag) {
+            foreach (iterator_to_array($document->getElementsByTagName($tag)) as $list) {
+                if (self::ownDirection($list) !== null || self::nearestDirection($list) !== null) {
+                    continue;
+                }
+
+                if (! self::carriesText(self::looseChildren($list))) {
+                    continue;
+                }
+
+                $list->setAttribute('dir', 'auto');
+            }
+        }
+
+        /*
          * ⚠️ THE WRAPPER'S CHILDREN, NOT THE DOCUMENT'S, and the first version of this returned an
          * empty string by getting that wrong. Under `LIBXML_HTML_NOIMPLIED` the charset `<meta>`
          * becomes the document ELEMENT and the wrapper `<div>` is not among `$document->childNodes`
@@ -487,6 +536,18 @@ final class RichTextType extends BaseFieldType
             // the second answer is holding it for nobody.
             $this->memoInput = null;
             $this->memoOutput = null;
+
+            /*
+             * ⚠️ AND DISARMED, which review found missing — releasing the strings while leaving the memo
+             * armed hands the retention to the NEXT call instead of ending it. The sequence is a
+             * standalone `toStorage()` leaving a memo behind, then an ordinary `Entry` write of the same
+             * HTML: `castToStorage()` rearms, this branch serves the old entry and clears it, and the
+             * loss check then finds nothing cached, reparses, and — still armed — caches again. Measured
+             * on exactly that sequence, both properties were populated when the write finished.
+             *
+             * One arming is one answer. This branch IS that answer, so the arming has been spent.
+             */
+            $this->memoArmed = false;
 
             return $output;
         }
@@ -650,7 +711,7 @@ final class RichTextType extends BaseFieldType
          * `rtl` rather than stamp `auto` over it.
          */
         $carries = self::ownDirection($wrapper);
-        $fixed = $carries !== null && $carries !== 'auto' ? $carries : self::nearestDirection($wrapper);
+        $fixed = self::fixedDirectionForChildren($wrapper);
 
         /*
          * ⚠️ A WRAPPER IS ONLY CORRECT WHERE NOTHING ELSE CAN CARRY THE DIRECTION, and wrapping
@@ -737,6 +798,34 @@ final class RichTextType extends BaseFieldType
     }
 
     /**
+     * The FIXED direction in force on this container's children, or null when none is.
+     *
+     * ⚠️ THE CONTAINER'S OWN `auto` BLOCKS ITS ANCESTOR'S, which review found the call site getting
+     * wrong — and it is `nearestDirection()`'s rule applied one level lower rather than a new one. That
+     * method stops at the nearest direction of any kind and reports `auto` as nothing, because `auto`
+     * means "resolve from content" and nothing above it reaches the child. A container's own `auto` is
+     * the nearest direction to its children, so it answers the same way.
+     *
+     * Measured before the fix: `<blockquote dir="rtl"><figure dir="auto">English<p>عربي</p>עברית</figure>`
+     * read past the figure's `auto` to the blockquote's `rtl`, so both generated wrappers were left
+     * undirected — and they then inherited the figure's `auto`, which resolves from the figure's whole
+     * content and reads `English` first. The Hebrew run rendered left-to-right.
+     *
+     * ⚠️ DISTINCT FROM `$carries` AT THE CALL SITE, which is the distinction the caller's own docblock
+     * insists on: `auto` on a container is enough to serve ONE run and not enough to serve three.
+     */
+    private static function fixedDirectionForChildren(DOMNode $container): ?string
+    {
+        $own = self::ownDirection($container);
+
+        if ($own !== null) {
+            return $own === 'auto' ? null : $own;
+        }
+
+        return self::nearestDirection($container);
+    }
+
+    /**
      * The direction this element inherits from its nearest directed ancestor, or null when it has none.
      *
      * ⚠️ THE NEAREST ONE WINS AND THE WALK STOPS THERE, because that is what inheritance does.
@@ -792,6 +881,30 @@ final class RichTextType extends BaseFieldType
         $direction = strtolower($container->getAttribute('dir'));
 
         return in_array($direction, self::DIRECTIONS, true) ? $direction : null;
+    }
+
+    /**
+     * The children of a list that are not list items, which is where malformed input puts loose text.
+     *
+     * ⚠️ NOT ONLY TEXT NODES: `<ul><strong>مرحبا</strong><li>…` puts an ELEMENT in that position, and
+     * its content is exactly what a direction has to resolve from. The question is the node's place in
+     * the list rather than its type, so the filter is "not an `li`".
+     *
+     * @return list<DOMNode>
+     */
+    private static function looseChildren(DOMNode $list): array
+    {
+        $loose = [];
+
+        foreach ($list->childNodes as $child) {
+            if ($child instanceof DOMElement && strtolower($child->nodeName) === 'li') {
+                continue;
+            }
+
+            $loose[] = $child;
+        }
+
+        return $loose;
     }
 
     /**
