@@ -93,8 +93,14 @@ final class RichTextType extends BaseFieldType
      * survives sanitising", and that was true and not enough. Surviving is not the same as
      * existing: nothing PRODUCED a `dir`, so an author writing an Arabic paragraph next to an
      * English one got neither — every block inherited the chrome, which is issue #39's gap G3 in
-     * the one place the inventory called awkward. `toStorage()` now stamps `dir="auto"` on each
-     * block, so the browser resolves each one from its own first strong character.
+     * the one place the inventory called awkward. `Entry` stamps `dir="auto"` on each block on the way
+     * to storage, so the browser resolves each one from its own first strong character.
+     *
+     * ⚠️ NOT THIS TYPE, AND NOT `toStorage()`, which this sentence said until review pointed at the
+     * decision log describing an implementation that no longer exists. The pass is applied from a
+     * private method on `Entry` to every control whose `ValueDirection` is `PerBlock` — ADR-029's
+     * guarantee is about the CONTROL, so a type that declares this one cannot decline it and neither
+     * can a module's.
      */
     public function control(): Control
     {

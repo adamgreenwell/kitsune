@@ -50,9 +50,13 @@ use DOMNode;
  * enumerating call sites"* — and this branch is the sixth round of exactly that. Amending would have
  * conceded the one claim the seam exists to make.
  *
- * `BaseFieldType::toStorage()` applies it to every control whose `ValueDirection` is `PerBlock`, so a
- * type cannot decline it by omission — only by returning a different control, which is a visible
- * decision rather than a forgotten one.
+ * `Entry::convertFieldValuesForWrite()` applies it to every control whose `ValueDirection` is
+ * `PerBlock`, from a private method, so a type cannot decline it by omission — only by returning a
+ * different control, which is a visible decision rather than a forgotten one.
+ *
+ * ⚠️ NOT `BaseFieldType::toStorage()`, WHICH WAS THE SECOND ATTEMPT AND IS OVERRIDABLE. `MultiSelectType`
+ * and `RelationType` already override that method, a module may too, and a module implementing
+ * `FieldType` directly never reaches the base class at all.
  *
  * ⚠️ NOT A SECURITY BOUNDARY. `RichTextType::sanitize()` is that (field-types.md §6) and this runs
  * AFTER it, on a value already known to be safe. The two steps are separate for the reason
