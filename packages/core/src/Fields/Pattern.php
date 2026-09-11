@@ -2886,7 +2886,23 @@ final class Pattern
      */
     private static function fixedRepetitions(string $quantifier): ?int
     {
-        return preg_match('/^\{([0-9]+)\}\??$/', $quantifier, $bound) === 1 ? (int) $bound[1] : null;
+        /*
+         * ⚠️ `{n,n}` IS FIXED TOO, and review found this reading only `{n}`. An equal bounded form is
+         * one width by construction, both engines compile it and they agree exactly — measured,
+         * `(?<=a{1,1})b` matches `ab` in both and `(?<=a{2,2})b` matches `aab` in both and neither
+         * matches the other — yet the lookbehind rule called it variable and refused it. The published
+         * grammar permits `{n,m}`, so that was a refusal the document does not license.
+         *
+         * ⚠️ EQUAL BOUNDS, NOT A BOUNDED FORM. `{1,2}` really can match two lengths and stays refused;
+         * the distinction is the two numbers being the same rather than the comma being present.
+         */
+        if (preg_match('/^\{([0-9]+)(?:,([0-9]+))?\}\??$/', $quantifier, $bound) !== 1) {
+            return null;
+        }
+
+        $lower = (int) $bound[1];
+
+        return ($bound[2] ?? '') === '' || (int) $bound[2] === $lower ? $lower : null;
     }
 
     /** Where the character class opening at `$at` closes, or null when it does not. */

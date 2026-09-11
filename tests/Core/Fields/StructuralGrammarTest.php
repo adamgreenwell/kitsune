@@ -766,6 +766,32 @@ describe('an assertion consumes nothing, so it cannot divide a run', function ()
     });
 });
 
+describe('an equal bounded quantifier is one width', function (): void {
+    /*
+     * ⚠️ A FALSE REFUSAL THE DOCUMENT DOES NOT LICENSE, which review found: `fixedRepetitions()` read
+     * only `{n}`, so the lookbehind rule called `{n,n}` variable — while `field-types.md` §3 permits
+     * `{n,m}`. Both engines compile it and agree exactly, measured at production fidelity:
+     *
+     *   (?<=a{1,1})b   PCRE ab=1 aab=1     ECMAScript ab=1 aab=1
+     *   (?<=a{2,2})b   PCRE ab=0 aab=1     ECMAScript ab=0 aab=1
+     *
+     * ⚠️ EQUAL BOUNDS, NOT A BOUNDED FORM, which is where this stops: `{1,2}` really can match two
+     * lengths and stays refused. The distinction is the two numbers being the same rather than the comma
+     * being present, and getting that wrong in the other direction would admit the rule's whole subject.
+     */
+    it('accepts a lookbehind whose bound is equal on both sides', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))->toBeNull("[{$pattern}] is one width");
+    })->with([
+        '(?<=a{1,1})b',
+        '(?<=a{2,2})b',
+        '(?<=a{2})b',
+    ]);
+
+    it('still refuses a lookbehind that can match two lengths', function (): void {
+        expect(Pattern::unpublishable('(?<=a{1,2})b'))->toContain('more than one length');
+    });
+});
+
 describe('a zero-repeat group may not hold an assertion', function (): void {
     /*
      * ⚠️ A DIVERGENCE RATHER THAN A COST, and review found it inside the `{0}` skip added the round

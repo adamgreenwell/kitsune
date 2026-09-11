@@ -276,6 +276,34 @@ it('applies the text ceiling to text fields only', function (): void {
     $this->artisan('kitsune:audit-patterns', ['--strict' => true])->assertFailed();
 });
 
+it('reports a length that is not a whole number', function (): void {
+    /*
+     * ⚠️ THE AUDIT HAS TO ASK THE QUESTION THE GUARD ASKS, and review found it asking a narrower one.
+     * `validateSettings()` refuses a `maxLength` that is not a whole number — the ceiling was checked
+     * with `is_numeric()` and spent with `(int)`, so `"100000x"` slipped past it and was then read as
+     * 100000 — and this command reported only values above the ceiling. A stored `"100000x"` therefore
+     * passed `--strict` while the next unrelated save of that field failed, which is precisely the
+     * upgrade hazard this command exists to find.
+     */
+    $storage = FieldStorage::create([
+        'org_id' => $this->org->id, 'handle' => 'padded', 'type' => 'text',
+        'pii_class' => 'none', 'cardinality' => 1,
+    ]);
+
+    // Staged below Eloquent for the reason `storedPattern()` records: the guard refuses it now, so the
+    // row can only exist because it predates the guard — which is the state an upgrade is in.
+    DB::table('field_storage')
+        ->where('id', $storage->getKey())
+        ->update(['settings' => json_encode(['maxLength' => '100000x'])]);
+
+    $this->artisan('kitsune:audit-patterns')
+        ->expectsOutputToContain('padded')
+        ->expectsOutputToContain('not a whole number')
+        ->assertSuccessful();
+
+    $this->artisan('kitsune:audit-patterns', ['--strict' => true])->assertFailed();
+});
+
 it('stays silent about a length inside the limit', function (): void {
     storedLength($this->org->id, 'narrow', TextType::MAX_CONFIGURABLE_LENGTH);
 

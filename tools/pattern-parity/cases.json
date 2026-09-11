@@ -1006,5 +1006,11 @@
     "pattern": "(?:a|(?=a)){0}",
     "subject": "b",
     "why": "A live divergence, found inside the `{0}` skip added a round earlier. At production fidelity on PCRE 10.48 and Node 22.23.2, PCRE does not match `b` OR the empty string while ECMAScript matches both — so a generated client would accept every value this server rejects, which is what rule 3 forbids. It is narrow: `(?:(?=a)|a){0}` agrees, `(?:a|(?<=a)){0}` agrees, and `(?:a){0}` and `a{0}` agree. PCRE stops matching only when a dead group's alternation ENDS in a positive lookahead. The rule refuses any assertion in a zero-repeat group, which is wider than the quirk on purpose — a shape a reader can check, and a dead group holding an assertion is not a pattern anybody wrote deliberately."
+  },
+  {
+    "id": "equal-bounded-lookbehind",
+    "pattern": "(?<=a{2,2})b",
+    "subject": "aab",
+    "why": "A false refusal the published grammar does not license. `fixedRepetitions()` read only `{n}`, so the lookbehind rule called an equal bounded form variable-length — while §3 permits `{n,m}`. Both engines compile it and agree exactly: `(?<=a{1,1})b` matches `ab` in both, `(?<=a{2,2})b` matches `aab` in both, and neither matches the other's subject. Equal bounds are one width by construction; `{1,2}` really can match two lengths and stays refused, so the distinction is the two numbers being the same rather than the comma being present."
   }
 ]

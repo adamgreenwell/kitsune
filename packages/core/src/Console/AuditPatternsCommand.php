@@ -113,11 +113,28 @@ final class AuditPatternsCommand extends Command
                      */
                     $maxLength = $storage->settings['maxLength'] ?? null;
 
-                    if (is_numeric($maxLength) && (int) $maxLength > TextType::MAX_CONFIGURABLE_LENGTH) {
+                    /*
+                     * ⚠️ THE AUDIT ASKS THE SAME QUESTION THE GUARD ASKS, and review found it asking a
+                     * narrower one. `validateSettings()` now refuses a `maxLength` that is not a whole
+                     * number — because the ceiling was checked with `is_numeric()` and spent with
+                     * `(int)` — so a stored `"100000x"`, `"1e3"`, `10.5` or `"lots"` is refused on the
+                     * next save while this command reported nothing. That is precisely the upgrade
+                     * hazard it exists to find: a field that saved yesterday and fails today.
+                     *
+                     * The two conditions have to agree, so this one is the same test: acceptable exactly
+                     * when casting loses nothing.
+                     */
+                    $unusable = $maxLength !== null
+                        && (! is_numeric($maxLength) || (string) (int) $maxLength !== trim((string) $maxLength));
+
+                    if ($unusable || (is_numeric($maxLength) && (int) $maxLength > TextType::MAX_CONFIGURABLE_LENGTH)) {
                         $overLong++;
 
                         $this->line("  <comment>field_storage #{$storage->getKey()}</comment> <info>{$storage->handle}</info> (org {$storage->org_id})");
-                        $this->line('    maxLength: '.(int) $maxLength.' — the limit is '.TextType::MAX_CONFIGURABLE_LENGTH);
+                        $this->line($unusable
+                            ? '    maxLength: '.(is_scalar($maxLength) ? (string) $maxLength : gettype($maxLength))
+                                .' — not a whole number, and it would be read as '.(int) $maxLength
+                            : '    maxLength: '.(int) $maxLength.' — the limit is '.TextType::MAX_CONFIGURABLE_LENGTH);
                         $this->newLine();
                     }
 
