@@ -12,6 +12,7 @@ namespace Kitsune\Core\Models;
 
 use Filament\Facades\Filament;
 use Filament\Models\Contracts\HasTenants;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Kitsune\Core\Tenancy\Attributes\OrgScoped;
@@ -19,6 +20,7 @@ use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tenancy\Contracts\RefusesCascadingDeletes;
 use Kitsune\Core\Tenancy\Contracts\RequiresModelSave;
+use Kitsune\Core\Tenancy\ScopeWrites;
 use RuntimeException;
 
 /**
@@ -573,6 +575,51 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
     }
 
     /**
+     * Every other org's claim on this site's hostname, read for update on the SITE'S OWN connection.
+     *
+     * ⚠️ NOT `withoutScopeBecause()`, AND THAT IS WHY THIS METHOD EXISTS. That hatch builds its own
+     * query from a STATIC call, and a static call makes a fresh model — which is on the DEFAULT
+     * connection whatever connection the instance is on. So the mutex, the transaction and
+     * `parent::save()` ran on `$site->getConnection()` while this lookup asked an unrelated database: a
+     * second claimant could queue correctly on the right host mutex, be told no rival held the host, and
+     * commit the overlapping cross-org prefix. Review found it.
+     *
+     * ⚠️ AN OPTIONAL `$connection` ON THE HATCH WAS THE FIRST FIX AND REVIEW REJECTED IT, correctly —
+     * it is a public extension point, and `CONTRIBUTING.md` lists new public API before v1.2 among the
+     * things that will not merge. One caller needing a connection is not a reason for every caller to
+     * inherit an argument, so the crossing is built here, where the instance is.
+     *
+     * ⚠️ STILL AUDITABLE, which was the hatch's actual purpose. `ScopeWrites::suspend()` is the
+     * greppable marker for a crossing that builds its own query, and the hatch's docblock names it as
+     * the second thing to search for. The reason is the sentence it always was: the question is whether
+     * ANOTHER org holds an overlapping claim, which a query scoped to the current org cannot ask.
+     *
+     * ⚠️ `newQueryWithoutScopes()` REMOVES EVERY GLOBAL SCOPE, and for this model that is exactly
+     * the hatch's three — a `Site` carries `OrgScope` and nothing else, measured, with no soft deletes
+     * to lose. That is an assumption rather than a guarantee, so a test pins it: adding a global scope
+     * to `Site` fails that test rather than quietly widening what this read can see.
+     *
+     * ⚠️ A LOCKING READ, SO IT CANNOT REUSE A CALLER'S SNAPSHOT. Holding the host mutex makes the
+     * rival set stable from here on, and that is worthless if this read answers from an OLDER point in
+     * time — which under MySQL and MariaDB's REPEATABLE READ it can, because a nested `transaction()` is
+     * only a savepoint and the snapshot belongs to the OUTER transaction. `lockForUpdate()` forces a
+     * current read on both MySQL engines, which is the property being bought rather than the lock
+     * itself; the mutex is what serialises. Postgres reads the latest committed row under READ COMMITTED
+     * anyway and SQLite has one writer, so the clause costs them nothing and removes an engine-specific
+     * hole invariant 5 exists to prevent.
+     *
+     * @return Collection<int, self>
+     */
+    private static function rivalClaimsOnThisConnection(self $site): Collection
+    {
+        return ScopeWrites::suspend(fn () => $site->newQueryWithoutScopes()
+            ->where('canonical_host', $site->canonical_host)
+            ->when($site->exists, fn ($query) => $query->whereKeyNot($site->getKey()))
+            ->lockForUpdate()
+            ->get(['id', 'org_id', 'base_url', 'path_prefix']));
+    }
+
+    /**
      * Refuses a public URL that OVERLAPS one another org already holds.
      *
      * ⚠️ THE UNIQUE INDEX IS NOT ENOUGH, AND SAYING IT WAS WAS WRONG. It compares the pair
@@ -639,26 +686,7 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
          * costs them nothing and removes an engine-specific hole invariant 5 exists to prevent.
          * Found by review.
          */
-        $rivals = self::withoutScopeBecause(
-            'cross-org URL claims: the question is whether ANOTHER org holds an overlapping '
-            .'claim, which a query scoped to the current org cannot ask',
-            fn ($query) => $query
-                ->where('canonical_host', $site->canonical_host)
-                ->when($site->exists, fn ($q) => $q->whereKeyNot($site->getKey()))
-                ->lockForUpdate()
-                ->get(['id', 'org_id', 'base_url', 'path_prefix']),
-            /*
-             * ⚠️ THE SAVED INSTANCE'S CONNECTION, which review found this read was not using. The
-             * mutex, the transaction and `parent::save()` are all on `$site->getConnection()`; this
-             * lookup was built by a static call, and a static call makes a fresh model on the DEFAULT
-             * connection. So a `Site::on('secondary')` save could queue correctly on the right host
-             * mutex, ask an unrelated database whether a rival held the host, be told no, and commit
-             * the overlapping cross-org prefix the mutex exists to prevent.
-             *
-             * Null for the default connection, so this is the same query it always was there.
-             */
-            connection: $site->getConnectionName(),
-        );
+        $rivals = self::rivalClaimsOnThisConnection($site);
 
         /*
          * ⚠️ THE EFFECTIVE ORG, NOT `$site->org_id`, and review found why. `EnforcesScope` stamps

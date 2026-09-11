@@ -13,6 +13,7 @@ use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
+use Kitsune\Core\Tenancy\Scopes\OrgScope;
 
 /**
  * Two concurrent claimants of one hostname cannot both pass the overlap check — issue #61.
@@ -662,6 +663,24 @@ it('allows a save on a site whose row genuinely has no host', function (): void 
         ->and($site->canonical_host)->toBe('stale-firsturl.test')
         ->and($site->path_prefix)->toBe('/news');
 })->skip(fn (): bool => ! lockingEngine(), 'a second connection to SQLite :memory: is a different database');
+
+it('reads the rival set with exactly the scopes the escape hatch removes', function (): void {
+    /*
+     * ⚠️ THE ASSUMPTION `rivalClaimsOnThisConnection()` RESTS ON, pinned so it cannot rot quietly.
+     * That method uses `newQueryWithoutScopes()`, which removes EVERY global scope — and it is only
+     * equivalent to `withoutScopeBecause()`'s named three because a `Site` carries just `OrgScope`.
+     *
+     * Add a second global scope to `Site` — soft deletes being the obvious one — and the rival lookup
+     * silently starts seeing rows it should not, which for soft deletes would mean a deleted site still
+     * holding a hostname against a live one. This test fails at that moment and forces the decision,
+     * rather than leaving it to be discovered as a refusal nobody can explain.
+     */
+    expect(array_keys((new Site)->getGlobalScopes()))
+        ->toBe(
+            [OrgScope::class],
+            'Site carries a global scope the rival lookup was not written for — see rivalClaimsOnThisConnection()',
+        );
+});
 
 it('looks for rivals on the connection it took the mutex on', function (): void {
     /*
