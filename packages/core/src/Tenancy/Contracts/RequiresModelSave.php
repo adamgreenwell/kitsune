@@ -78,6 +78,16 @@ interface RequiresModelSave
      * This is set by `performInsert()`/`performUpdate()` and cleared in their `finally`, so it is true
      * only during the dynamic extent of a real save. There is no setter, and a model handed to
      * `setModel()` is not inside a save, so it cannot be manufactured.
+     *
+     * ⚠️ IT TAKES THE BUILDER, and a bare flag was not enough — review found a nested write borrowing
+     * it. A `creating` or `updating` observer can issue a second write through the model being saved:
+     * `$site->newQuery()->insert([…])` builds a DIFFERENT builder around the SAME model, and a flag
+     * saying "a save is somewhere on the stack" was true for it. Measured, that hand-written insert was
+     * classified as Laravel's own, skipped `refuseBulkCreate()`, and landed an overlapping cross-org
+     * claim with caller-authored `canonical_host` and `path_prefix` — two rows on one hostname.
+     *
+     * So the model holds the exact builder it is being saved through, and a guard asks whether THIS
+     * builder is that one. A nested query is a new object, so the answer is no.
      */
-    public function isPerformingModelSave(): bool;
+    public function isPerformingModelSave(object $through): bool;
 }

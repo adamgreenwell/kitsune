@@ -461,7 +461,7 @@ class ScopedBuilder extends Builder
          * `insert()`, false for a hand-rolled one. The key strategy is no longer part of the decision,
          * so `RequiresModelSave`'s assumption that every implementor increments is gone with it.
          */
-        if (! $always && $model->isPerformingModelSave()) {
+        if (! $always && $model->isPerformingModelSave($this)) {
             return;
         }
 
@@ -700,7 +700,7 @@ class ScopedBuilder extends Builder
          * `isPerformingModelSave()` cannot be arranged: it is private, has no setter, and is true only
          * inside the instance's own `performUpdate()`. A model handed to `setModel()` is not in one.
          */
-        if ($model->isPerformingModelSave() && $model->guardedColumnsAreDerived()) {
+        if ($model->isPerformingModelSave($this) && $model->guardedColumnsAreDerived()) {
             return;
         }
 

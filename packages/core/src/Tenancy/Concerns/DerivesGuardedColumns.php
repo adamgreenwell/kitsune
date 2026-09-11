@@ -64,7 +64,7 @@ trait DerivesGuardedColumns
     private ?array $guardedColumnsDerived = null;
 
     /**
-     * Whether this instance is inside its own `performInsert()`/`performUpdate()` right now.
+     * The builder Laravel is saving this instance through, or null when no save is in flight.
      *
      * ⚠️ THE ONLY DISCRIMINATOR HERE A CALLER CANNOT ARRANGE, which review established after two
      * others turned out to be arrangeable. `exists` and `getIncrementing()` are both reachable through
@@ -72,7 +72,7 @@ trait DerivesGuardedColumns
      * interface's docblock for the two measured attacks. This is private, has no setter, and is true
      * only while a real save is on the stack.
      */
-    private bool $insideModelSave = false;
+    private ?object $savingThrough = null;
 
     public static function bootDerivesGuardedColumns(): void
     {
@@ -110,7 +110,7 @@ trait DerivesGuardedColumns
      */
     protected function performInsert(Builder $query)
     {
-        $this->insideModelSave = true;
+        $this->savingThrough = $query;
 
         /*
          * ⚠️ CLEARED ON ENTRY AS WELL AS ON EXIT, which is what makes a proof belong to ONE attempt.
@@ -125,7 +125,7 @@ trait DerivesGuardedColumns
         try {
             return parent::performInsert($query);
         } finally {
-            $this->insideModelSave = false;
+            $this->savingThrough = null;
             $this->guardedColumnsDerived = null;
         }
     }
@@ -137,7 +137,7 @@ trait DerivesGuardedColumns
      */
     protected function performUpdate(Builder $query)
     {
-        $this->insideModelSave = true;
+        $this->savingThrough = $query;
 
         /*
          * ⚠️ CLEARED ON ENTRY AS WELL AS ON EXIT, which is what makes a proof belong to ONE attempt.
@@ -152,14 +152,14 @@ trait DerivesGuardedColumns
         try {
             return parent::performUpdate($query);
         } finally {
-            $this->insideModelSave = false;
+            $this->savingThrough = null;
             $this->guardedColumnsDerived = null;
         }
     }
 
-    public function isPerformingModelSave(): bool
+    public function isPerformingModelSave(object $through): bool
     {
-        return $this->insideModelSave;
+        return $this->savingThrough !== null && $this->savingThrough === $through;
     }
 
     public function guardedColumnsAreDerived(): bool

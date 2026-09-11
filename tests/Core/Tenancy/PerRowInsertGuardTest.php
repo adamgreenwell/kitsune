@@ -220,8 +220,8 @@ it('rests on a discriminator no caller can arrange', function (): void {
         $model = new $class;
 
         expect($model)->toBeInstanceOf(RequiresModelSave::class)
-            ->and($model->isPerformingModelSave())->toBeFalse(
-                "[{$class}] claims to be inside a save attempt before one has started",
+            ->and($model->isPerformingModelSave($model->newQuery()))->toBeFalse(
+                "[{$class}] claims to be saved through a builder before any save has started",
             );
     }
 
@@ -701,6 +701,55 @@ it('does not take a caller-arranged key strategy as proof of a model save', func
     ]))->toThrow(RuntimeException::class, 'cannot be created in bulk')
         ->and(DB::table('sites')->where('canonical_host', 'steal.test')->count())
         ->toBe(1, 'a caller-set key strategy let a bulk insert land an overlapping claim');
+});
+
+it('does not let a nested write borrow the save it is nested inside', function (): void {
+    /*
+     * ⚠️ A FLAG SAYING "A SAVE IS SOMEWHERE ON THE STACK" IS BORROWABLE, which review found and which is
+     * the third thing this discriminator has had to stop being. A `creating` observer can issue a second
+     * write through the model being saved — `$site->newQuery()->insert([…])` builds a DIFFERENT builder
+     * around the SAME model — and the flag was true for it.
+     *
+     * Measured: the hand-written insert was classified as Laravel's own, skipped `refuseBulkCreate()`
+     * entirely, and landed `steal.test/news` with caller-authored derived columns while another site
+     * held `steal.test/`. TWO rows on one hostname, which the exact-match index cannot prevent.
+     *
+     * The model holds the exact builder it is being saved THROUGH now, and a guard asks whether it is
+     * this one. A nested query is a new object, so the answer is no.
+     */
+    Site::create([
+        'org_id' => $this->org->id, 'handle' => 'owner', 'slug' => 'owner', 'name' => 'Owner',
+        'locale' => 'en', 'url_strategy' => 'domain', 'base_url' => 'https://steal.test/',
+    ]);
+
+    $nested = false;
+    $orgId = $this->org->id;
+
+    // ⚠️ `new Site;` first, for the reason the cancellation test records: a model registers its own
+    // listeners when it boots, so one registered before that runs ahead of all of them.
+    new Site;
+
+    Site::creating(function (Site $saving) use (&$nested, $orgId): void {
+        if ($nested) {
+            return;
+        }
+
+        $nested = true;
+
+        $saving->newQuery()->insert([
+            'org_id' => $orgId, 'handle' => 'thief', 'slug' => 'thief', 'name' => 'Thief',
+            'locale' => 'en', 'url_strategy' => 'domain', 'base_url' => 'https://steal.test/news',
+            'canonical_host' => 'steal.test', 'path_prefix' => '/news',
+            'created_at' => now(), 'updated_at' => now(),
+        ]);
+    });
+
+    expect(fn () => Site::create([
+        'org_id' => $orgId, 'handle' => 'trigger', 'slug' => 'trigger', 'name' => 'Trigger',
+        'locale' => 'en', 'url_strategy' => 'domain', 'base_url' => 'https://other.test',
+    ]))->toThrow(RuntimeException::class, 'cannot be created in bulk')
+        ->and(DB::table('sites')->where('canonical_host', 'steal.test')->count())
+        ->toBe(1, 'a nested write borrowed the save it was nested inside');
 });
 
 it('does not take a caller-supplied model as proof of an instance update', function (): void {
