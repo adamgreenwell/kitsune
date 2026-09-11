@@ -17,7 +17,6 @@ use DOMNode;
 use DOMProcessingInstruction;
 use Kitsune\Core\Fields\Control;
 use Kitsune\Core\Fields\FieldConfig;
-use Kitsune\Core\Fields\Internal\StampsBlockDirection;
 
 /**
  * User-supplied HTML rendered on public pages — the ONLY field type in v1
@@ -35,8 +34,6 @@ use Kitsune\Core\Fields\Internal\StampsBlockDirection;
  */
 final class RichTextType extends BaseFieldType
 {
-    use StampsBlockDirection;
-
     /** Never permitted regardless of settings. */
     public const FORBIDDEN_TAGS = ['script', 'style', 'iframe', 'object', 'embed', 'form'];
 
@@ -250,7 +247,40 @@ final class RichTextType extends BaseFieldType
          * in the value's size, and `FieldTypeRegistry` is a singleton so anything kept here is kept
          * for the life of the process.
          */
-        return self::serialize($document);
+        return $this->serialize($document);
+    }
+
+    /**
+     * The document back as HTML, without the parsing aids this method adds.
+     *
+     * ⚠️ A SECOND COPY, AND THE ONLY DUPLICATION THE DIRECTION PASS'S MOVE COST. `Entry` holds that pass
+     * privately now — see the banner there for the four reachable homes review rejected — and a private
+     * method on another class cannot be shared. Twenty lines with one rule in them is the cheaper half
+     * of that trade: the alternative was leaving an autoloadable symbol a plugin can bind to.
+     *
+     * The rule is that the charset `<meta>` is something this method PREPENDS rather than content, so it
+     * is skipped on the way out. The `div` wrapper needs no skip: `clean()` unwraps it, because `div` is
+     * not an allowed tag.
+     */
+    private function serialize(DOMNode $parent): string
+    {
+        $document = $parent instanceof DOMDocument ? $parent : $parent->ownerDocument;
+
+        if ($document === null) {
+            return '';
+        }
+
+        $out = '';
+
+        foreach (iterator_to_array($parent->childNodes) as $child) {
+            if ($child instanceof DOMElement && strtolower($child->nodeName) === 'meta') {
+                continue;
+            }
+
+            $out .= $document->saveHTML($child);
+        }
+
+        return $out;
     }
 
     /**

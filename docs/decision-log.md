@@ -1277,7 +1277,13 @@ The trait `StampsBlockDirection` holds that pass now, and it is applied from a *
 
 `Entry::convertFieldValuesForWrite()` is where every value that reaches the database is converted, and a private method on a model is what this codebase has already settled on as *"the first version a plugin cannot reach"*. The guarantee is enforced at the point of storage rather than inside the contract the guarantee is about.
 
-**The machinery itself moved twice more.** As a `final class BlockDirection` with public statics it was still new public API before v1.2, which the freeze forbids whatever the intention — so it is a **trait of entirely private methods**, `StampsBlockDirection`, which offers no callable surface at all: the only way to reach one is to `use` the trait, which copies the methods into a class of your own. `RichTextType` uses it for the DOM serialiser it shares, and `Entry` for the entry point.
+**The machinery itself then moved twice more, and the second time cost something worth naming.** As a `final class BlockDirection` with public statics it was new public API before v1.2, which the freeze forbids whatever the intention. As a **trait of entirely private methods** it offered no callable surface — and was still an autoloadable symbol a plugin can `use` and wrap, which is the fourth version of the same objection.
+
+So the pass is **private methods on `Entry`**: six hundred lines of DOM walking on a model, which is not where it belongs by any other measure. What buys it is that nothing outside that class can call, override, extend or bind to any of it, and ADR-029's argument is precisely that a cross-cutting rule must be **unforgettable rather than documented** — which a reachable seam is not.
+
+The one duplication it cost is a twenty-line DOM serialiser, now in both `Entry` and `RichTextType`, because a private method cannot be shared. That is cheaper than a symbol a plugin can bind to, and it is recorded in both copies.
+
+⚠️ **The test is what keeps it there**, and it asserts that the two rejected symbols do not exist rather than inspecting visibility — because visibility was the thing that turned out not to be enough.
 
 **A consequence worth having:** with direction applied after the conversion rather than inside it, a conversion is lossy-only again — so the `RichTextType`-by-identity special case in `Entry`'s revision loss check is gone, along with the comment calling it *"the price of freezing the contract before v1.2 and the first thing to undo when it opens."* Moving the seam undid it early.
 

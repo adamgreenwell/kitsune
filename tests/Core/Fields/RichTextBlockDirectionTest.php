@@ -12,7 +12,6 @@ use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Fields\Control;
 use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Fields\FieldTypeRegistry;
-use Kitsune\Core\Fields\Internal\StampsBlockDirection;
 use Kitsune\Core\Fields\Types\BaseFieldType;
 use Kitsune\Core\Fields\Types\RichTextType;
 use Kitsune\Core\Models\Entry;
@@ -610,35 +609,42 @@ it('retains nothing between calls, because there is no cache to retain in', func
 
 it('exposes no surface a plugin could bind to for the direction pass', function (): void {
     /*
-     * ⚠️ RAISED TWICE BEFORE I TOOK IT, and my argument answered a different objection. I said the
-     * helper is permanent rather than a stopgap, so binding to it springs no compatibility trap —
-     * CONTRIBUTING's freeze is about the SURFACE, not about what the surface is used for, and an
-     * autoloadable class with public statics is surface whatever its intentions.
+     * ⚠️ FOUR ROUNDS ON THIS, AND EACH HOME WAS REACHABLE. The pass has lived in five places and review
+     * rejected the first four for the same reason in different clothes:
      *
-     * There is no callable API at all now: a trait whose every method is private. The only way to reach
-     * one is to `use` the trait, which COPIES the methods into a class of your own rather than binding
-     * to these — the strongest construction PHP offers without package-private, and the one
-     * `conversionLostSomething()` settled on after three worse homes.
+     *   private on `RichTextType`        a module's own Control::RichText type got nothing
+     *   `BaseFieldType::toStorage()`     overridable, and a protected hook there breaks a plugin
+     *                                   subclass at LOAD time
+     *   `final class BlockDirection`     autoloadable with public statics: new public API before v1.2
+     *   `trait StampsBlockDirection`     every method private, and still a symbol a plugin can `use`
      *
-     * ⚠️ ASSERTED AS A COUNT OF ZERO rather than by naming the methods, because the failure mode is a
-     * method being ADDED as public later — which a list of known names cannot see.
+     * It is private methods on `Entry` now, which is what `conversionLostSomething()`'s docblock settled
+     * on as *"the first version a plugin cannot reach at all"*. This test is what keeps it there.
+     *
+     * ⚠️ ASSERTED AS "NO SYMBOL EXISTS" rather than by inspecting visibility, because visibility was the
+     * thing that turned out not to be enough: a private method on an autoloadable trait is unreachable
+     * and its NAME is not. A class that does not exist cannot be bound to.
      */
-    $trait = new ReflectionClass(StampsBlockDirection::class);
+    foreach (['Kitsune\\Core\\Fields\\BlockDirection', 'Kitsune\\Core\\Fields\\Internal\\StampsBlockDirection'] as $symbol) {
+        expect(class_exists($symbol) || trait_exists($symbol))
+            ->toBeFalse("[{$symbol}] is back, and a plugin can bind to it");
+    }
 
-    $public = array_filter(
-        $trait->getMethods(ReflectionMethod::IS_PUBLIC),
-        static fn (ReflectionMethod $method): bool => $method->class === $trait->getName(),
-    );
+    /*
+     * ⚠️ AND THE PASS IS PRIVATE WHEREVER IT DOES LIVE, which is the half the symbol check cannot see.
+     * Every method `Entry` gained for this is private, so nothing outside that class can call, override
+     * or extend any of it — and `BaseFieldType` carries none of it, which was the concrete load-time
+     * break.
+     */
+    $entry = new ReflectionClass(Entry::class);
 
-    expect($trait->isTrait())->toBeTrue()
-        ->and($public)->toBe([], 'the direction pass grew a public method a plugin can bind to')
-        ->and(class_exists('Kitsune\\Core\\Fields\\BlockDirection'))
-        ->toBeFalse('the autoloadable helper class is back');
+    foreach (['stampedInto', 'wrapLooseRuns', 'withPerBlockDirection'] as $method) {
+        expect($entry->hasMethod($method))->toBeTrue("[{$method}] is not on Entry any more")
+            ->and($entry->getMethod($method)->isPrivate())
+            ->toBeTrue("Entry::{$method}() is not private, so a subclass can reach the direction pass");
+    }
 
-    // ⚠️ And `BaseFieldType` carries none of it either, which was the concrete load-time break.
-    $base = new ReflectionClass(BaseFieldType::class);
-
-    expect($base->hasMethod('withValueDirection'))
+    expect((new ReflectionClass(BaseFieldType::class))->hasMethod('withValueDirection'))
         ->toBeFalse('the plugin-facing base class grew the direction hook again');
 });
 
