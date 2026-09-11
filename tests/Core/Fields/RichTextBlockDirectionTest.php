@@ -9,8 +9,10 @@
 declare(strict_types=1);
 
 use Illuminate\Support\Facades\DB;
+use Kitsune\Core\Fields\Control;
 use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Fields\FieldTypeRegistry;
+use Kitsune\Core\Fields\Types\BaseFieldType;
 use Kitsune\Core\Fields\Types\RichTextType;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
@@ -631,6 +633,81 @@ it('lets a generated list direction yield to an ancestor choice made later', fun
         ->toBe('<blockquote dir="rtl"><p>ACME עברית</p></blockquote>');
 });
 
+it('gives per-block direction to any type whose control is rich text', function (): void {
+    /*
+     * ⚠️ ADR-029'S OWN TEST, WHICH THIS BRANCH WAS FAILING: *"can a new field type be added without text
+     * direction, and is that expressible at all?"* Its answer is no — *"direction is derived by the
+     * renderer from the control's kind and is not a property a field type can decline to set"* — and
+     * while the pass was a private method on `RichTextType`, the honest answer was yes. Review found it.
+     *
+     * A module registering its own type that returns `Control::RichText` got NO per-block direction, and
+     * `FieldValueRenderer` deliberately adds none for `PerBlock` because the direction belongs in the
+     * stored bytes. So the one direction that needs help was the one the closed vocabulary did not give.
+     *
+     * ⚠️ THE TYPE BELOW DOES NOTHING BUT DECLARE ITS CONTROL, which is the whole assertion. It has no
+     * direction code, does not extend `RichTextType`, and cannot have inherited the behaviour by
+     * accident — `BaseFieldType::toStorage()` applies `BlockDirection` to every control whose
+     * `ValueDirection` is `PerBlock`.
+     */
+    $type = new class extends BaseFieldType
+    {
+        public static function handle(): string
+        {
+            return 'module_rich_text';
+        }
+
+        public static function label(): string
+        {
+            return 'Module Rich Text';
+        }
+
+        public function control(): Control
+        {
+            return Control::RichText;
+        }
+
+        protected function castToStorage(mixed $input, FieldConfig $config): mixed
+        {
+            return $input === null ? null : (string) $input;
+        }
+    };
+
+    $config = new FieldConfig($this->bodyStorage);
+
+    expect($type->toStorage('<p>Hello world</p><p>مرحبا بالعالم</p>', $config))
+        ->toBe('<p dir="auto">Hello world</p><p dir="auto">مرحبا بالعالم</p>');
+
+    /*
+     * ⚠️ AND A TYPE WITH A DIFFERENT CONTROL IS UNTOUCHED, or the seam would be stamping HTML into
+     * values that are not HTML. `Control::Paragraph` is `ValueDirection::Auto`, which the renderer
+     * carries on the element it emits — there is nothing to put in the bytes.
+     */
+    $plain = new class extends BaseFieldType
+    {
+        public static function handle(): string
+        {
+            return 'module_plain';
+        }
+
+        public static function label(): string
+        {
+            return 'Module Plain';
+        }
+
+        public function control(): Control
+        {
+            return Control::Paragraph;
+        }
+
+        protected function castToStorage(mixed $input, FieldConfig $config): mixed
+        {
+            return $input === null ? null : (string) $input;
+        }
+    };
+
+    expect($plain->toStorage('<p>Hello world</p>', $config))->toBe('<p>Hello world</p>');
+});
+
 it('bounds what a conversion with no loss check can leave behind', function (): void {
     /*
      * ⚠️ "RELEASED ON READ" ONLY BOUNDS THE CASE WHERE THE READ HAPPENS, and review found the case
@@ -687,6 +764,25 @@ it('bounds what a conversion with no loss check can leave behind', function (): 
         ->and($held())->toBeLessThanOrEqual(2 * $limit)
         ->and($type->sanitize($small))->toBe($clean)
         ->and($held())->toBe(0, 'the read did not release it');
+
+    /*
+     * ⚠️ AND AN UNCACHED CONVERSION RELEASES WHAT IT DID NOT REPLACE, which review found it did not. A
+     * release was conditional on having something to put in its place: a conversion that missed the
+     * cache and was then over the cap — or unarmed — left the previous body standing. Measured, a
+     * standalone conversion cached a 53-byte body and an ordinary write of a DIFFERENT body above the
+     * cap left it in place through both of its parses, for the worker's lifetime.
+     *
+     * Whatever is held at this point describes a value nobody is asking about any more.
+     */
+    $armed->setValue($type, true);
+    $type->sanitize($small);
+
+    expect($held())->toBeGreaterThan(0, 'nothing was cached to go stale');
+
+    $armed->setValue($type, true);
+    $type->sanitize($huge);
+
+    expect($held())->toBe(0, 'an over-cap conversion left the previous body on the singleton');
 
     /*
      * ⚠️ AND THE CACHE HIT SPENDS THE ARMING, which review found it did not — releasing the strings

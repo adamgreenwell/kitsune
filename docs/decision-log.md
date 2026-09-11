@@ -1265,6 +1265,20 @@ So the test of this ADR is not "can a non-panel consumer render it" — there is
 | Keep the rule, keep citing ADR-002 | Invariant 12: amend the decision rather than route around it. Eight docblocks asserting a rule no ADR contains is the same drift as a stale comment, at scale. |
 | Drop the rule, return components, delete the renderer | Cheapest to write and the panel converged against it: it is the one option where a field type can be added with no direction support at all. |
 
+### Amendment, 2026-09-11 — the seam now carries the case it was written for
+
+**This ADR claimed a guarantee the implementation did not keep, and review found it.** The test above is *"can a new field type be added without text direction"*, and the answer was **yes** for the one direction that needs more than an attribute: per-block direction for rich text was a private method on `RichTextType`, so a module registering its own type returning `Control::RichText` got none — and `FieldValueRenderer` deliberately adds none for `PerBlock`, because for rich text the direction belongs in the stored bytes rather than on the wrapper.
+
+So the closed vocabulary reached every control and the cross-cutting rule reached one class.
+
+`BlockDirection` holds that pass now, and `BaseFieldType::toStorage()` applies it to every control whose `ValueDirection` is `PerBlock`. A type cannot decline it by omission — only by returning a different control, which is a visible decision. The seam is keyed on `ValueDirection` rather than on the `Control` case because that enum is where the mapping already lives, and `PerBlock`'s own docblock already said direction is needed *inside* the value; this makes that sentence happen instead of restating it.
+
+| Rejected | Why it lost |
+|---|---|
+| Amend this ADR to scope the guarantee to renderer-side direction | It concedes the load-bearing claim. The argument here is that *"issue #39 has already shipped that attribute three times and been short of complete twice, both times because the reach of a correct rule depended on somebody enumerating call sites"* — and the branch that prompted this amendment was the **sixth** round of that same failure. The ADR was the side that was right. |
+| Leave the pass in `RichTextType` and document the limitation | Invariant 14: publish enforceable constraints only. A guarantee that holds for the type that happens to exist is not a guarantee. |
+| Move it to the renderer instead | The stored bytes and the displayed bytes would drift: a value arriving from the API, a seeder or an import would be stored undirected and only look right when rendered by this panel. `castToStorage()`'s docblock has the longer form of this argument. |
+
 ---
 
 ## Open questions
