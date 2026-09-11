@@ -15,6 +15,7 @@ use Kitsune\Core\Models\Field;
 use Kitsune\Core\Models\FieldStorage;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
+use Kitsune\Core\Models\SiteGroup;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tenancy\Contracts\RequiresModelSave;
 
@@ -848,6 +849,118 @@ it('does not let a proof outlive the attempt that armed it', function (): void {
     expect(fn () => $site->saveQuietly())->toThrow(RuntimeException::class, 'cannot be written by')
         ->and(DB::table('sites')->where('canonical_host', 'sneak.test')->count())
         ->toBe(1, 'the overlapping claim was written on a proof from an aborted attempt');
+});
+
+it('clears a proof when the save is cancelled before the write begins', function (): void {
+    /*
+     * ⚠️ `saving` FIRES BEFORE `performInsert()`, which review found the previous fix not covering. An
+     * observer that returns false — or throws — after the arming listener leaves the attempt with
+     * neither `performInsert()`'s `finally` nor `saved` having run, so the proof stood and a quiet retry
+     * could present it after the world had changed underneath.
+     *
+     * ⚠️ THE ANSWER MOVED THE ARMING RATHER THAN ADDING A THIRD CLEAR. It fires on `creating`/`updating`
+     * now, which are INSIDE `performInsert()`/`performUpdate()`, and those clear the proof on entry as
+     * well as on exit. So a proof can only exist for the attempt that armed it: an abort before the
+     * attempt starts leaves none to clear, and an attempt that starts destroys whatever it inherited.
+     */
+    $cancelling = true;
+
+    /*
+     * ⚠️ THE MODEL IS BOOTED FIRST, AND WITHOUT THIS LINE THE TEST PROVED NOTHING. A model registers its
+     * own listeners when it boots, lazily, on first use — so a listener registered by a test before that
+     * happens runs BEFORE all of them. Measured: the cancel landed first, `canonical_host` was still
+     * null, and nothing had armed a proof for the fix to clear. The test passed against the reverted
+     * code, which is how I found it.
+     *
+     * ⚠️ A CLOSURE, NOT AN ARROW FUNCTION, for the second half of the same lesson: `fn()` captures by
+     * VALUE, so `$cancelling` would stay true for the listener's life and cancel the rival's create
+     * below too.
+     */
+    new Site;
+
+    Site::saving(function (Site $saving) use (&$cancelling): ?bool {
+        if (! $cancelling) {
+            return null;
+        }
+
+        /*
+         * ⚠️ POSITION PINNED RATHER THAN ASSUMED. This listener has to run AFTER the model's own
+         * `saving` chain, or the cancel lands before anything has happened and the test is about
+         * nothing. The derivation is the visible evidence of that: `canonical_host` is derived from
+         * `base_url` by one of those listeners, so if it is set, they have run.
+         *
+         * It deliberately does NOT assert that a proof is armed here — that is the thing the fix
+         * moved. Arming is on `creating` now, inside the attempt, which is why a cancel at `saving`
+         * cannot strand one by construction rather than by cleanup.
+         */
+        expect($saving->canonical_host)
+            ->toBe('sneak.test', 'this listener runs before the model\'s own, so the cancel strands nothing');
+
+        return false;
+    });
+
+    $site = new Site([
+        'org_id' => $this->org->id, 'handle' => 'sneak', 'slug' => 'sneak', 'name' => 'Sneak',
+        'locale' => 'en', 'url_strategy' => 'domain', 'base_url' => 'https://sneak.test/news',
+    ]);
+
+    expect($site->save())->toBeFalse('the observer did not cancel the save')
+        ->and($site->guardedColumnsAreDerived())
+        ->toBeFalse('a cancelled save left its proof armed');
+
+    $cancelling = false;
+
+    // A rival claims the host at the root while the first attempt is abandoned.
+    $rival = Org::create(['name' => 'Rival', 'slug' => 'rival-cancel']);
+    app(Context::class)->setOrg($rival);
+
+    Site::create([
+        'org_id' => $rival->id, 'handle' => 'rival', 'slug' => 'rival', 'name' => 'Rival',
+        'locale' => 'en', 'url_strategy' => 'domain', 'base_url' => 'https://sneak.test',
+    ]);
+
+    app(Context::class)->setOrg($this->org);
+
+    expect(fn () => $site->saveQuietly())->toThrow(RuntimeException::class, 'cannot be written by')
+        ->and(DB::table('sites')->where('canonical_host', 'sneak.test')->count())
+        ->toBe(1, 'a proof from a cancelled save let an overlapping claim through');
+});
+
+it('refuses a declared scope key with no context to vouch for it', function (): void {
+    /*
+     * ⚠️ NO CONTEXT IS NOT PERMISSION, and the previous round applied that to the hand-rolled path only.
+     * `guardScopeKeys()` accepts every value when the context has none to compare against — right for an
+     * UPDATE, where the row already belongs to somebody — and a quiet create suppresses `EnforcesScope`
+     * entirely. Measured: `SiteGroup::createQuietly(['org_id' => $victim, …])` from a job with no
+     * `Context` was ALLOWED, and the row was planted for an org nothing had vouched for.
+     *
+     * A model that DECLARES a scope says its keys mean something, so a non-null one with nothing to
+     * check it against fails closed whatever the model behind the query says.
+     */
+    $victim = Org::create(['name' => 'Victim', 'slug' => 'victim-nocontext']);
+
+    app(Context::class)->forget();
+
+    expect(fn () => SiteGroup::createQuietly([
+        'org_id' => $victim->id, 'handle' => 'planted', 'name' => 'Planted',
+    ]))->toThrow(RuntimeException::class, 'from no scope at all')
+        ->and(DB::table('site_groups')->where('org_id', $victim->id)->count())
+        ->toBe(0, 'a quiet create with no context planted a row for another org');
+
+    /*
+     * ⚠️ AND THE HATCH STILL GETS THROUGH, or provisioning — the documented reason it exists — would be
+     * the one caller this blocks. That is the shape of the mistake the round before last made.
+     */
+    $group = SiteGroup::withoutScopeBecause(
+        'provisioning: a console command creates the first group before any context exists',
+        fn () => SiteGroup::createQuietly([
+            'org_id' => $victim->id, 'handle' => 'provisioned', 'name' => 'Provisioned',
+        ]),
+    );
+
+    expect($group->exists)->toBeTrue();
+
+    app(Context::class)->setOrg($this->org);
 });
 
 it('lets the reviewable escape hatch through the detached-key guard', function (): void {

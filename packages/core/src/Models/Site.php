@@ -163,7 +163,17 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
         // registration order, each guard throws rather than returning a verdict, and arming before a
         // later one runs leaves a stale proof behind when a save aborts. Appending it to the last
         // guard would work until the next guard is added after that one.
-        static::saving(fn (self $site) => $site->noteGuardedColumnsDerived());
+        /*
+         * ⚠️ `creating` AND `updating`, NOT `saving`, and review found why. Laravel fires `saving`
+         * BEFORE it enters `performInsert()`/`performUpdate()`, so an observer that returns false or
+         * throws after this listener left the proof armed with nothing to clear it — neither those
+         * methods' `finally` nor `saved` had run. A quiet retry could then present it.
+         *
+         * These two fire INSIDE the attempt, which clears the proof on entry. So a proof can only
+         * exist for the attempt that armed it, and an abort before the attempt starts leaves none.
+         */
+        static::creating(fn (self $site) => $site->noteGuardedColumnsDerived());
+        static::updating(fn (self $site) => $site->noteGuardedColumnsDerived());
     }
 
     /**

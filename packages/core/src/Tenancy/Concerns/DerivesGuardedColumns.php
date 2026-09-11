@@ -112,6 +112,16 @@ trait DerivesGuardedColumns
     {
         $this->insideModelSave = true;
 
+        /*
+         * ⚠️ CLEARED ON ENTRY AS WELL AS ON EXIT, which is what makes a proof belong to ONE attempt.
+         * Review found the exit half insufficient: `saving` fires BEFORE this method, so an observer
+         * returning false or throwing there aborts with neither the `finally` below nor `saved` having
+         * run. Clearing here means a proof armed by an attempt that never started cannot survive into
+         * the next one — and the arming listeners fire on `creating`/`updating`, which are inside this
+         * call, so the legitimate proof is armed after this line rather than before it.
+         */
+        $this->guardedColumnsDerived = null;
+
         try {
             return parent::performInsert($query);
         } finally {
@@ -128,6 +138,16 @@ trait DerivesGuardedColumns
     protected function performUpdate(Builder $query)
     {
         $this->insideModelSave = true;
+
+        /*
+         * ⚠️ CLEARED ON ENTRY AS WELL AS ON EXIT, which is what makes a proof belong to ONE attempt.
+         * Review found the exit half insufficient: `saving` fires BEFORE this method, so an observer
+         * returning false or throwing there aborts with neither the `finally` below nor `saved` having
+         * run. Clearing here means a proof armed by an attempt that never started cannot survive into
+         * the next one — and the arming listeners fire on `creating`/`updating`, which are inside this
+         * call, so the legitimate proof is armed after this line rather than before it.
+         */
+        $this->guardedColumnsDerived = null;
 
         try {
             return parent::performUpdate($query);

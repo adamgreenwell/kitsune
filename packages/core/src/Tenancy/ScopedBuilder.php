@@ -272,6 +272,19 @@ class ScopedBuilder extends Builder
          * the comparison below is what keeps a hand-rolled insert on those models honest.
          */
         if (ScopeResolver::for($model::class) !== Unscoped::class) {
+            /*
+             * ⚠️ AND NO CONTEXT IS NOT PERMISSION HERE EITHER, which review found the declared-scope
+             * path missing. `guardScopeKeys()` accepts every value when the context has none to compare
+             * against — right for an UPDATE, where the row already belongs to somebody — and a quiet
+             * create suppresses `EnforcesScope`, so `SiteGroup::createQuietly(['org_id' => $victim, …])`
+             * from a job with no `Context` was accepted by both halves and planted the row. Measured:
+             * ALLOWED, one row for an org nothing had vouched for.
+             *
+             * A model that DECLARES a scope says its keys mean something, so a non-null one with nothing
+             * to check it against fails closed. The audited way to say it is deliberate is the
+             * suspension checked above, which is what provisioning uses.
+             */
+            $this->refuseKeysWithNoContext($values);
             $this->guardScopeKeys($values);
         }
 
@@ -308,26 +321,55 @@ class ScopedBuilder extends Builder
          * a create with no org context, and leaves no entry behind" — so this makes the two agree rather
          * than inventing a policy.
          */
+        $this->refuseKeysWithNoContext($detached);
+
+        $this->guardScopeKeys($detached);
+    }
+
+    /**
+     * Refuse a scope key written with no context to vouch for it.
+     *
+     * ⚠️ NO CONTEXT IS NOT PERMISSION, and it took two rounds to apply that to both callers.
+     * `guardScopeKeys()` accepts every value when the context has none to compare against, which is
+     * right for an UPDATE — the row already belongs to somebody and the caller is not choosing — and
+     * wrong for an INSERT, where the caller is choosing and nothing can vouch for the choice either way.
+     *
+     * Both paths that write a scope key on an insert ask this now: a hand-rolled one, whose keys did
+     * not come off the model, and a DECLARED-SCOPE one whatever the model says — because a quiet create
+     * suppresses `EnforcesScope` and review measured `SiteGroup::createQuietly(['org_id' => $victim])`
+     * planting a row from a job with no context.
+     *
+     * `AuditedBuilder` already refuses a keyed `Entry` create with no org context, so this makes the
+     * builders agree rather than inventing a policy.
+     *
+     * @param  array<string, mixed>  $values
+     */
+    private function refuseKeysWithNoContext(array $values): void
+    {
         $context = app(Context::class);
 
-        foreach ($detached as $column => $value) {
-            $current = $column === 'org_id' ? $context->orgId() : $context->siteId();
+        foreach ($values as $column => $value) {
+            $bare = $this->bareColumn((string) $column);
+
+            if ($bare !== 'org_id' && $bare !== 'site_id') {
+                continue;
+            }
+
+            $current = $bare === 'org_id' ? $context->orgId() : $context->siteId();
 
             if ($value !== null && $current === null) {
                 throw new RuntimeException(sprintf(
-                    'Refusing to insert %s with [%s] = %s from no scope at all: this is a hand-rolled '
-                    .'insert rather than a model save, so `EnforcesScope` never ran, and with no context '
-                    .'established there is nothing that can vouch for the value either way (ADR-021). '
-                    .'Save the model, establish a context, or use withoutScopeBecause() if this is '
+                    'Refusing to insert %s with [%s] = %s from no scope at all: with no context '
+                    .'established there is nothing that can vouch for the value either way, and a quiet '
+                    .'or hand-rolled write dispatches no `EnforcesScope` event to derive it (ADR-021). '
+                    .'Save the model with a context established, or use withoutScopeBecause() if this is '
                     .'deliberate.',
                     $this->getModel()::class,
-                    $column,
+                    $bare,
                     is_scalar($value) ? (string) $value : gettype($value),
                 ));
             }
         }
-
-        $this->guardScopeKeys($detached);
     }
 
     /**
