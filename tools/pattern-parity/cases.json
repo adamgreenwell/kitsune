@@ -1012,5 +1012,11 @@
     "pattern": "(?<=a{2,2})b",
     "subject": "aab",
     "why": "A false refusal the published grammar does not license. `fixedRepetitions()` read only `{n}`, so the lookbehind rule called an equal bounded form variable-length — while §3 permits `{n,m}`. Both engines compile it and agree exactly: `(?<=a{1,1})b` matches `ab` in both, `(?<=a{2,2})b` matches `aab` in both, and neither matches the other's subject. Equal bounds are one width by construction; `{1,2}` really can match two lengths and stays refused, so the distinction is the two numbers being the same rather than the comma being present."
+  },
+  {
+    "id": "exactly-once-spelled-two-ways",
+    "pattern": "^(?:,(?:a*a*){1,1})*X$",
+    "subject": ",aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa",
+    "why": "The atom traversal spliced a group whose quantifier was named in a literal list — `''`, `{1}`, `{1}?` — so `{1,1}` and `{01}` stayed whole and the two `a*` inside them became invisible to the run rule. Accepted, while `^(?:,(?:a*a*){1})*X$` — the same expression — is refused, and Node spends about 6 seconds on sixteen `,aa` segments. `fixedRepetitions()` already answers \"how many times, exactly\" and handles the padded and equal-bounded forms, so one place decides what \"once\" means instead of two that can disagree."
   }
 ]

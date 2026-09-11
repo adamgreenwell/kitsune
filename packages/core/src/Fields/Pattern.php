@@ -2229,7 +2229,18 @@ final class Pattern
                 continue;
             }
 
-            if ($splice && ($quantifier === '' || $quantifier === '{1}' || $quantifier === '{1}?')) {
+            /*
+             * ⚠️ ANY QUANTIFIER THAT MEANS EXACTLY ONCE, PARSED RATHER THAN LISTED, and review found the
+             * literal list letting a group hide a run: `^(?:,(?:a*a*){1,1})*X$` was accepted while the
+             * `{1}` spelling of the same expression is refused, and Node 24 spends about 6 seconds on
+             * sixteen `,aa` segments. `{01}` is the same gap with a leading zero.
+             *
+             * `fixedRepetitions()` already answers "how many times, exactly" and handles the padded and
+             * equal-bounded forms, so asking it is both narrower and wider than the list in the right
+             * directions — and there is now one place that decides what "once" means rather than two
+             * that can disagree.
+             */
+            if ($splice && ($quantifier === '' || self::fixedRepetitions($quantifier) === 1)) {
                 $spliced = self::atomList($inner, true, $depth + 1);
 
                 if ($spliced === null) {

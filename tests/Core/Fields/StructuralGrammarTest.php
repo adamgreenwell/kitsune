@@ -766,6 +766,39 @@ describe('an assertion consumes nothing, so it cannot divide a run', function ()
     });
 });
 
+describe('every spelling of "exactly once" is read through', function (): void {
+    /*
+     * ⚠️ A LITERAL LIST LET A GROUP HIDE A RUN, which review found after the equal-bounds fix made more
+     * spellings possible. The atom traversal spliced a group whose quantifier was `''`, `{1}` or `{1}?`
+     * — named one by one — so `{1,1}` and `{01}` stayed whole and the two `a*` inside became invisible:
+     *
+     *   ^(?:,(?:a*a*){1,1})*X$   accepted, and Node 24 takes ~6 s on sixteen `,aa` segments
+     *   ^(?:,(?:a*a*){1})*X$     refused — the SAME expression
+     *
+     * `fixedRepetitions()` already answers "how many times, exactly", so asking it is both narrower and
+     * wider than the list in the right directions, and there is one place deciding what "once" means
+     * rather than two that can disagree.
+     */
+    it('refuses a run hidden behind any exactly-once group', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))->not->toBeNull("[{$pattern}] hid a run behind a quantifier");
+    })->with([
+        '^(?:,(?:a*a*){1})*X$',
+        '^(?:,(?:a*a*){1,1})*X$',
+        '^(?:,(?:a*a*){01})*X$',
+        '^(?:,(?:a*a*){1}?)*X$',
+    ]);
+
+    it('still keeps a group that runs more than once whole', function (): void {
+        /*
+         * ⚠️ THE OTHER SIDE, or the splice would read a repeated group as its body run once. `(?:a*){2}`
+         * is `a*a*` and must not read as one fixed atom — which is what `flatAtoms()`'s docblock has
+         * said since the traversal was written.
+         */
+        expect(Pattern::unpublishable('^(?:,(?:a*a*){2})*X$'))->not->toBeNull()
+            ->and(Pattern::unpublishable('^a*(?:a*){2}b$'))->not->toBeNull();
+    });
+});
+
 describe('an equal bounded quantifier is one width', function (): void {
     /*
      * ⚠️ A FALSE REFUSAL THE DOCUMENT DOES NOT LICENSE, which review found: `fixedRepetitions()` read
