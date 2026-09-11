@@ -1344,7 +1344,11 @@ final class Pattern
          * subject that fails in the first the second is never reached — the cost is paid per attempt,
          * and an alternation is what multiplies attempts.
          */
-        $cost = self::claimsQuadraticAllowance($body) ? self::quadraticBranchCost() : 1;
+        $cost = 1;
+
+        for ($runs = self::quadraticRuns($body); $runs > 0; $runs--) {
+            $cost = self::saturatingProduct($cost, self::quadraticBranchCost());
+        }
 
         for ($i = 0; $i < $length; $i++) {
             $token = self::atomAt($body, $i);
@@ -1793,12 +1797,24 @@ final class Pattern
      */
     private static function neverRuns(string $quantifier): bool
     {
-        if (preg_match('/^\{0(?:,([0-9]*))?\}\??$/', $quantifier, $bound) !== 1) {
+        if (preg_match('/^\{([0-9]+)(?:,([0-9]*))?\}\??$/', $quantifier, $bound) !== 1) {
             return false;
         }
 
-        // `{0}` is exactly zero; `{0,m}` is zero only when m is zero; `{0,}` is unbounded and runs.
-        return ! array_key_exists(1, $bound) || $bound[1] === '0';
+        /*
+         * ⚠️ PARSED NUMERICALLY, NOT MATCHED AS DIGITS, which review found the first version doing:
+         * `/^\{0(?:,…/` recognised one leading zero, so `{00}` and `{00,00}` were refused as running
+         * groups although both engines accept them and neither ever executes. Same upgrade hazard, one
+         * spelling along — and `repeatsMoreThanOnce()` beside this already parses its bound, which is
+         * where the shape should have come from.
+         *
+         * `{0}` is exactly zero; `{0,m}` is zero only when m is zero; `{0,}` is unbounded and runs.
+         */
+        $upper = ($bound[2] ?? '') !== '' || ! array_key_exists(2, $bound)
+            ? (int) ($bound[2] ?? $bound[1])
+            : PHP_INT_MAX;
+
+        return $upper === 0;
     }
 
     private static function repeatsMoreThanOnce(string $quantifier): bool
@@ -1939,9 +1955,9 @@ final class Pattern
      * ⚠️ FAILS CLOSED: an unparseable sequence is charged, matching `atomRunExceeds()`, which refuses
      * one.
      */
-    private static function claimsQuadraticAllowance(string $sequence): bool
+    private static function quadraticRuns(string $sequence): int
     {
-        return self::runExceeds(self::ownAtoms($sequence), self::RUN_WITHOUT_COST);
+        return self::runsPast(self::ownAtoms($sequence), self::RUN_WITHOUT_COST);
     }
 
     /**
@@ -1962,10 +1978,37 @@ final class Pattern
      */
     private static function runExceeds(?array $atoms, int $limit): bool
     {
+        return self::runsPast($atoms, $limit) > 0;
+    }
+
+    /**
+     * How many separate runs in this sequence are longer than `$limit`.
+     *
+     * ⚠️ A COUNT RATHER THAN A BOOLEAN, because review disproved the limit I had STATED as deliberate.
+     * `sequenceCost()` charged one grant per sequence, and its docblock argued that a second run in the
+     * same branch is never reached because a subject failing in the first stops there. That is wrong the
+     * moment the first run's separator MATCHES: the engine goes on to the second, and every allocation
+     * of the first is retried against it. Measured on Node 22.23.2, `^a*a*ba*a*c$` against
+     * `a×n . b . a×n . d`:
+     *
+     *   1,202 chars     317.5 ms          one run, 4,802 chars:  33.4 ms
+     *   2,402 chars   2,512.9 ms
+     *   4,802 chars  20,016.4 ms        within the configured ceiling
+     *
+     * Eight times per doubling against four for one run. So the cost is per run, and the model says so.
+     *
+     * ⚠️ FAILS CLOSED: an unparseable sequence counts as one, matching the refusal this used to be.
+     *
+     * @param  list<array{atom: string, quantifier: string, variable: bool, leads: list<string>|null, assertion: bool}>|null  $atoms
+     */
+    private static function runsPast(?array $atoms, int $limit): int
+    {
         if ($atoms === null) {
-            return true;
+            return 1;
         }
 
+        $past = 0;
+        $counted = false;
         $run = 0;
         $previous = null;
 
@@ -1989,10 +2032,18 @@ final class Pattern
                  * boundary is forced by the group's own leading literal rather than by anything
                  * between them.
                  */
-                $run = self::separates($previous, $atom['leads']) ? 1 : $run + 1;
+                $separated = self::separates($previous, $atom['leads']);
 
-                if ($run > $limit) {
-                    return true;
+                if ($separated) {
+                    // A forced boundary ends the run before it, so the next one is counted separately.
+                    $counted = false;
+                }
+
+                $run = $separated ? 1 : $run + 1;
+
+                if ($run > $limit && ! $counted) {
+                    $past++;
+                    $counted = true;
                 }
 
                 $previous = $atom['atom'];
@@ -2008,11 +2059,12 @@ final class Pattern
 
             if ($character !== null && ! self::atomMatches($previous, $character)) {
                 $run = 0;
+                $counted = false;
                 $previous = null;
             }
         }
 
-        return false;
+        return $past;
     }
 
     /**

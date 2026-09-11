@@ -781,6 +781,14 @@ describe('a group bounded at zero repetitions is not there', function (): void {
         '^a*(?:a*){0}a*b$',
         '^a*(?:a*){0,0}b$',
         '^a*a*(?:a|a){0}b$',
+
+        /*
+         * ⚠️ ZERO-PADDED, which review found the first fix missing: it matched ONE leading zero, so
+         * these were still refused although both engines accept them and neither group ever runs. The
+         * bound is parsed numerically now, which is what `repeatsMoreThanOnce()` beside it already did.
+         */
+        '^a*a*(?:a*){00}b$',
+        '^a*a*(?:a*){00,00}b$',
     ]);
 
     it('still refuses what the group would have cost if it ran', function (string $pattern): void {
@@ -793,6 +801,9 @@ describe('a group bounded at zero repetitions is not there', function (): void {
     })->with([
         '^a*(?:a*){0,}a*b$',
         '^a*a*a*b$',
+
+        // ⚠️ And `{1}` runs exactly once, so the group is still an atom in the run.
+        '^a*(?:a*){1}a*b$',
     ]);
 });
 
@@ -895,6 +906,28 @@ describe('a quantified branch costs what it costs', function (): void {
      *   N=1    35.7 ms      N=8    291.0 ms      N=32   1,151 ms
      *   N=2    71.6 ms      N=9    324.3 ms      N=140  5,037 ms
      */
+    it('charges every run in a sequence, not one per sequence', function (): void {
+        /*
+         * ⚠️ THIS DISPROVES A LIMIT I STATED AS DELIBERATE, which is why the docblock records it rather
+         * than quietly widening. `sequenceCost()` charged one grant per sequence and argued that a
+         * second run in the same branch is never reached, because a subject failing in the first stops
+         * there. That is wrong the moment the first run's separator MATCHES: the engine goes on, and
+         * every allocation of the first run is retried against the second.
+         *
+         * Measured on Node 22.23.2, `^a*a*ba*a*c$` against `a×n . b . a×n . d`:
+         *
+         *   1,202 chars     317.5 ms        and one run at 4,802 chars: 33.4 ms
+         *   2,402 chars   2,512.9 ms
+         *   4,802 chars  20,016.4 ms        within the configured ceiling
+         *
+         * Eight times per doubling against four for one run.
+         */
+        expect(Pattern::unpublishable('^a*a*ba*a*c$'))
+            ->toContain('ways to retry a failing subject')
+            ->and(Pattern::unpublishable('^a*a*b$'))
+            ->toBeNull('one run is still the admitted anchor');
+    });
+
     it('still publishes one quadratic run, which is deliberate', function (string $pattern): void {
         /*
          * ⚠️ AND THE GROUPED SPELLING TOO, because charging the run at more than one level would cost
