@@ -76,6 +76,27 @@ final class AuditPatternsCommand extends Command
             ->chunkById(200, function ($rows) use (&$unpublishable, &$overLong, &$examined): void {
                 foreach ($rows as $storage) {
                     /*
+                     * ⚠️ TEXT ROWS ONLY, and review found this command applying `TextType`'s ceiling to
+                     * every type that stores the key. `TextareaType` reads `maxLength` with a default of
+                     * 65,535 and both publishes and enforces that value, so `--strict` reported a valid
+                     * textarea as invalid, exited nonzero, and told the operator to lower a setting that
+                     * saves cleanly — the audit inventing the upgrade hazard it exists to find.
+                     *
+                     * ⚠️ THE GATE COVERS THE PATTERN CHECK TOO, because that half has the identical
+                     * shape: `Pattern::unpublishable()` is reached from `TextType::validateSettings()`
+                     * and nowhere else, so a `pattern` stored against any other type is never enforced
+                     * and can never be the reason a save is refused. Reporting it would be the same
+                     * false positive one setting along. Checked rather than assumed — `text` is the only
+                     * type whose settings schema declares either key.
+                     *
+                     * So the gate is stated once, here, rather than twice inside: this command audits
+                     * the settings of text fields, which is what its two rules are about.
+                     */
+                    if ((string) $storage->type !== TextType::handle()) {
+                        continue;
+                    }
+
+                    /*
                      * ⚠️ THE LENGTH CEILING IS AN UPGRADE HAZARD TOO, which review found: this command
                      * asked `Pattern::unpublishable()` and nothing else, so an installation carrying a
                      * text field configured above `TextType::MAX_CONFIGURABLE_LENGTH` passed the audit

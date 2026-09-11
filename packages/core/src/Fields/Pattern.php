@@ -79,6 +79,65 @@ final class Pattern
     private const RUN_AT_TOP_LEVEL = 2;
 
     /**
+     * How many adjacent variable-width atoms a sequence may hold for free: one, which is linear.
+     *
+     * ⚠️ SEPARATE FROM THE TWO ABOVE because it prices rather than refuses. Those two say how long a
+     * run may be; this says when a permitted run starts costing something, and the answer is as soon
+     * as it is longer than one.
+     */
+    private const RUN_WITHOUT_COST = 1;
+
+    /**
+     * How many sequences may each claim the quadratic allowance before the pattern is refused.
+     *
+     * ⚠️ REVIEW FOUND THE COST MISSING ENTIRELY, and the hole was that only a GROUP contributed to a
+     * sequence's cost — so a branch whose expense is a quantifier rather than an alternation read as
+     * free. 140 alternatives of `a*a*b` is 845 characters, was published, and takes about 5.0 seconds on
+     * a permitted 5,000-character failing value.
+     *
+     *   N alternatives of `a*a*b`, 5,000 `a` and no `b`, Node 22.23.2
+     *
+     *     N=1    35.7 ms     N=8    287.7 ms     N=32   1,151 ms
+     *     N=2    71.6 ms     N=12   430.6 ms     N=64   2,302 ms
+     *     N=4   143.6 ms     N=16   579.4 ms     N=140  5,037 ms
+     *
+     * Linear in N, as it has to be — each branch pays the quadratic in turn, and `^a*a*b$` alone
+     * measures 39.5 ms, so one branch IS the admitted anchor.
+     *
+     * ⚠️ THE CEILING IS A CHOICE AND IS STATED AS ONE, because the module had no wall-clock ceiling to
+     * read off. At this same 5,000-character subject the admitted `^a*a*b$` costs 35.7 ms and the
+     * refused `^a*a*a*b$` costs 60.1 SECONDS, so measurement puts the accepted and refused polynomials
+     * a factor of 1,680 apart and says nothing about where between them a total belongs. The two
+     * figures this module has already committed to are 490 ms, recorded as a cost it refuses, and 3 ms,
+     * what `MAX_AMBIGUITY_PRODUCT` buys. Eight grants is 287.7 ms: the largest power of two under the
+     * figure already called too expensive, which makes the budget divide exactly, and about 2.9 seconds
+     * on ADR-027's 1 vCPU floor — which is the reason not to go further rather than a comfort.
+     *
+     * ⚠️ EXACT FOR BRANCHES THAT SHARE A LEAD AND CONSERVATIVE FOR BRANCHES THAT DO NOT, and I had this
+     * backwards until I measured it. The claim I was about to write was that prefix-free branches take
+     * the max, so only indistinguishable ones sum — which is true of the COST and not of what
+     * `branchesAreUnambiguousLiterals()` can PROVE. That function exempts plain literal text only, on
+     * purpose, so any branch carrying a quantifier sums whether or not its lead is distinct:
+     *
+     *   9 × `a*a*b|a*a*c|…`   shared lead     324.3 ms   linear in N — the bound is exact
+     *   9 × `a*a*b|c*c*d|…`   distinct leads   35.8 ms   one quadratic, however many branches
+     *
+     * So nine distinguishable quadratic branches are refused although they cost one grant. That is the
+     * over-refusal this bound carries, stated rather than discovered later: an author who meets it can
+     * separate the adjacent atoms in one branch, or split the alternation across fields. Proving
+     * distinct leads for quantified branches would lift it, and that is the rule two earlier rounds of
+     * this file got wrong twice — so it is issue #73 rather than an attempt here.
+     *
+     * ⚠️ NOT FOLDED IN AT ITS TRUE WEIGHT, and that is deliberate rather than a fudge. Priced in the
+     * ambiguity budget's own currency — 45 ns per combination — a quadratic on a 5,000-character value
+     * is about 780,000 combinations, which would refuse `^a*a*b$` itself. The run rule is more
+     * permissive than the product rule ON PURPOSE, because quadratic work on a value `TextType` caps is
+     * what real patterns are made of. This bounds how many times that permission is granted, not what
+     * one grant would cost if the stricter rule applied to it.
+     */
+    private const MAX_QUADRATIC_BRANCHES = 8;
+
+    /**
      * How many ways a pattern's ambiguous alternations may combine before it is refused.
      *
      * ⚠️ MEASURED, at about 45 ns per combination on Node 22.23.2 — 3 ms at 2^16, 47 ms at 2^20 and
@@ -913,7 +972,7 @@ final class Pattern
 
         foreach ($frames as $frame) {
             $isLookbehind = $frame['kind'] === 'lookbehind' || $frame['kind'] === 'nlookbehind';
-            $isAssertion = $isLookbehind || $frame['kind'] === 'lookahead' || $frame['kind'] === 'nlookahead';
+            $isAssertion = self::isAssertionKind($frame['kind']);
 
             /*
              * ⚠️ RULE 1 — no quantifier on an assertion. `(?=a)+` is built from two permitted
@@ -1176,12 +1235,14 @@ final class Pattern
 
         if ($product > self::MAX_AMBIGUITY_PRODUCT) {
             return sprintf(
-                'ambiguous alternations whose combinations multiply to more than %s — this pattern '
-                .'reaches %s. Each one offers more than one way to match the same text, and a sequence '
-                .'of them offers the product: a failing subject is retried in every combination. '
-                .'Measured, thirty copies of `(?:a|a)` take ECMAScript 50 seconds and exhaust PCRE\'s '
-                .'backtrack limit, on a 240-character pattern. Make the branches distinct — none a '
-                .'prefix of another — so at most one can match at a position',
+                'ways to retry a failing subject that multiply to more than %s — this pattern reaches '
+                .'%s. An ambiguous alternation offers more than one way to match the same text, and a '
+                .'branch holding two adjacent variable-width atoms offers a re-division of every '
+                .'length: a sequence of either costs the product and an alternation of them costs the '
+                .'sum. Measured, thirty copies of `(?:a|a)` take ECMAScript 50 seconds on a '
+                .'240-character pattern, and 140 alternatives of `a*a*b` take 2.6 seconds on an '
+                .'845-character one. Make the branches distinct — none a prefix of another — and '
+                .'separate adjacent variable-width atoms with a character none of them can match',
                 number_format(self::MAX_AMBIGUITY_PRODUCT),
                 $product >= PHP_INT_MAX ? 'the limit of what can be counted' : number_format($product),
             );
@@ -1262,14 +1323,28 @@ final class Pattern
     /**
      * The cost of a branch with no top-level alternation: the product of the groups inside it.
      *
-     * ⚠️ ONLY GROUPS CONTRIBUTE, because only a group can hold an alternation. A class or a literal
-     * offers one way to match one position, which is a factor of one — the quantifier rules are what
-     * look at repetition, and doubling up here would count the same construct twice.
+     * ⚠️ GROUPS AND THE SEQUENCE'S OWN RUN, and the first version had only the first half — review
+     * found that a branch of `a*a*b` therefore read as free. A class or a literal on its own offers
+     * one way to match one position and is a factor of one; two variable-width atoms side by side
+     * offer a division of every length between them, which is the other thing a failing subject is
+     * retried over.
      */
     private static function sequenceCost(string $body, int $depth): int
     {
         $length = mb_strlen($body);
-        $cost = 1;
+
+        /*
+         * ⚠️ THE QUANTIFIERS COST SOMETHING TOO, which review found this function denying — its own
+         * docblock said "only groups contribute" and gave the reason as "the quantifier rules are what
+         * look at repetition". Those rules look at ONE sequence. They cannot see that an alternation
+         * puts 140 of them side by side, each paying the quadratic allowance in turn.
+         *
+         * ⚠️ CHARGED ONCE PER SEQUENCE, NOT ONCE PER RUN, and that is a stated limit rather than an
+         * oversight. `^a*a*ba*a*b$` holds two quadratic runs and is charged for one, because on a
+         * subject that fails in the first the second is never reached — the cost is paid per attempt,
+         * and an alternation is what multiplies attempts.
+         */
+        $cost = self::claimsQuadraticAllowance($body) ? self::quadraticBranchCost() : 1;
 
         for ($i = 0; $i < $length; $i++) {
             $token = self::atomAt($body, $i);
@@ -1284,8 +1359,7 @@ final class Pattern
                 continue;
             }
 
-            $prefix = self::framePrefixLength($token['atom'], 0, self::frameKindAt($token['atom'], 0));
-            $inner = mb_substr($token['atom'], $prefix, mb_strlen($token['atom']) - $prefix - 1);
+            $inner = self::frameBody($token['atom']);
 
             $cost = self::saturatingProduct($cost, self::ambiguityCost($inner, $depth + 1));
 
@@ -1530,8 +1604,7 @@ final class Pattern
                     return true;
                 }
 
-                $prefix = self::framePrefixLength($atom, 0, self::frameKindAt($atom, 0));
-                $inner = mb_substr($atom, $prefix, mb_strlen($atom) - $prefix - 1);
+                $inner = self::frameBody($atom);
 
                 if (self::variableAtomCanMatch($inner, $delimiter)) {
                     return true;
@@ -1717,10 +1790,78 @@ final class Pattern
             return true;
         }
 
+        /*
+         * ⚠️ AN ASSERTION'S BODY IS A SEQUENCE IN ITS OWN RIGHT, and it is checked HERE rather than in
+         * the walk below because only this caller owns the whole pattern. Making an assertion
+         * transparent to the run would otherwise hide `(?=a*a*a*b)` from the rule that saw it while it
+         * was being spliced — a failing lookahead is re-divided exactly as a failing sequence is, so
+         * the enclosing limit applies to it unchanged.
+         *
+         * The pricing caller must NOT descend the same way: its own recursion already visits every
+         * group, assertions included, so descending here as well would charge one body twice.
+         */
+        foreach ($atoms as $atom) {
+            if ($atom['assertion'] && self::atomRunExceeds(self::frameBody($atom['atom']), $limit)) {
+                return true;
+            }
+        }
+
+        return self::runExceeds($atoms, $limit);
+    }
+
+    /**
+     * Whether this sequence claims the quadratic allowance the top-level run limit grants.
+     *
+     * ⚠️ ITS OWN ATOMS, NOT THE FLATTENED ONES, so the allowance is charged at exactly one level. The
+     * recursion prices every group's body in its own right, and reading through a required group here
+     * would price its contents twice — `^(?:a*a*b)$` would cost the square of `^a*a*b$` and be refused
+     * while `^a*a*b$` is published, for the same regular expression written two ways.
+     *
+     * ⚠️ FAILS CLOSED: an unparseable sequence is charged, matching `atomRunExceeds()`, which refuses
+     * one.
+     */
+    private static function claimsQuadraticAllowance(string $sequence): bool
+    {
+        return self::runExceeds(self::ownAtoms($sequence), self::RUN_WITHOUT_COST);
+    }
+
+    /**
+     * What one sequence pays for claiming the allowance: the budget divided by how many may claim it.
+     *
+     * ⚠️ DERIVED RATHER THAN WRITTEN DOWN, so the three numbers cannot disagree after any one of them
+     * moves: 65,536 divided by 8 is 8,192, eight grants reach the budget exactly and nine pass it.
+     * `intdiv()` rather than `/`, because a float cost would propagate through the saturating
+     * arithmetic and out through `number_format()` into the refusal an author reads.
+     */
+    private static function quadraticBranchCost(): int
+    {
+        return intdiv(self::MAX_AMBIGUITY_PRODUCT, self::MAX_QUADRATIC_BRANCHES);
+    }
+
+    /**
+     * @param  list<array{atom: string, quantifier: string, variable: bool, lead: string|null, assertion: bool}>|null  $atoms
+     */
+    private static function runExceeds(?array $atoms, int $limit): bool
+    {
+        if ($atoms === null) {
+            return true;
+        }
+
         $run = 0;
         $previous = null;
 
         foreach ($atoms as $atom) {
+            /*
+             * ⚠️ ZERO-WIDTH MEANS TRANSPARENT, not absent — review found the third possibility being
+             * treated as the second. An assertion consumes nothing, so it cannot fill a run and it
+             * cannot divide one: `a*(?!b)a*` is `a*a*` and must read as two atoms in a row. Neither
+             * `$run` nor `$previous` may move. Its body is a sequence too, and whose business that is
+             * depends on the caller — see `atomRunExceeds()`.
+             */
+            if ($atom['assertion']) {
+                continue;
+            }
+
             if ($atom['variable']) {
                 /*
                  * ⚠️ A GROUP CAN SEPARATE ITSELF, which is what keeps the ordinary delimited list
@@ -1773,9 +1914,34 @@ final class Pattern
      * A group that repeats stays whole too, and is variable when anything inside it is — `(?:a*){2}`
      * is `a*a*` and must not read as one fixed atom.
      *
-     * @return list<array{atom: string, quantifier: string, variable: bool, lead: string|null}>|null
+     * @return list<array{atom: string, quantifier: string, variable: bool, lead: string|null, assertion: bool}>|null
      */
     private static function flatAtoms(string $sequence, int $depth = 0): ?array
+    {
+        return self::atomList($sequence, true, $depth);
+    }
+
+    /**
+     * The sequence's OWN atoms, with every group counted as one rather than read through.
+     *
+     * ⚠️ THE OTHER VIEW EXISTS SO A RUN IS CHARGED ONCE, and the two answer different questions. A
+     * rule that REFUSES a run has to read through required groups, or `(?:a*)(?:a*)` would hide one
+     * from it. A rule that PRICES one must not, because the same atoms are priced again when the
+     * recursion reaches each group's body — `^(?:a*a*b)$` would pay twice for the one run it has, and
+     * be refused while `^a*a*b$` is published.
+     *
+     * @return list<array{atom: string, quantifier: string, variable: bool, lead: string|null, assertion: bool}>|null
+     */
+    private static function ownAtoms(string $sequence): ?array
+    {
+        return self::atomList($sequence, false, 0);
+    }
+
+    /**
+     * @param  bool  $splice  Whether a required group that runs at most once is read through.
+     * @return list<array{atom: string, quantifier: string, variable: bool, lead: string|null, assertion: bool}>|null
+     */
+    private static function atomList(string $sequence, bool $splice, int $depth): ?array
     {
         // A bound on nesting, so a pathological pattern cannot recurse without end. The length
         // limit already caps depth at 250; this is the belt to that brace.
@@ -1807,16 +1973,42 @@ final class Pattern
                     'quantifier' => $quantifier,
                     'variable' => self::isVariableWidth($quantifier),
                     'lead' => null,
+                    'assertion' => false,
                 ];
 
                 continue;
             }
 
-            $prefix = self::framePrefixLength($atom, 0, self::frameKindAt($atom, 0));
-            $inner = mb_substr($atom, $prefix, mb_strlen($atom) - $prefix - 1);
+            $kind = self::frameKindAt($atom, 0);
+            $inner = self::frameBody($atom);
 
-            if ($quantifier === '' || $quantifier === '{1}' || $quantifier === '{1}?') {
-                $spliced = self::flatAtoms($inner, $depth + 1);
+            /*
+             * ⚠️ AN ASSERTION IS NEVER SPLICED, and review found this by measuring what splicing one
+             * did: `^(?:,a*(?!b)a*)*X$` was published because the `b` inside the lookahead read as a
+             * literal between the two `a*`, which is exactly the separator that ends a run. It
+             * consumes nothing, so the body is `,a*a*` — two variable atoms in a row inside a
+             * repetition. Node 24 took about 2.8 seconds on sixteen `,aa` segments and the cost grows
+             * exponentially.
+             *
+             * It is carried through as an atom rather than dropped, because its BODY is a sequence in
+             * its own right and the run rule still has to read it. The caller treats it as
+             * zero-width: it neither continues a run nor divides one, and its body is checked
+             * separately.
+             */
+            if (self::isAssertionKind($kind)) {
+                $atoms[] = [
+                    'atom' => $atom,
+                    'quantifier' => $quantifier,
+                    'variable' => false,
+                    'lead' => null,
+                    'assertion' => true,
+                ];
+
+                continue;
+            }
+
+            if ($splice && ($quantifier === '' || $quantifier === '{1}' || $quantifier === '{1}?')) {
+                $spliced = self::atomList($inner, true, $depth + 1);
 
                 if ($spliced === null) {
                     return null;
@@ -1836,6 +2028,7 @@ final class Pattern
                 // A repeated group begins where its body begins, so its body's leading literal is
                 // what a preceding atom would have to run into.
                 'lead' => self::leadingLiteral($inner),
+                'assertion' => false,
             ];
         }
 
@@ -1861,11 +2054,7 @@ final class Pattern
             }
 
             if (str_starts_with($token['atom'], '(')) {
-                $prefix = self::framePrefixLength($token['atom'], 0, self::frameKindAt($token['atom'], 0));
-
-                if (self::variableAtomCanMatchAnything(
-                    mb_substr($token['atom'], $prefix, mb_strlen($token['atom']) - $prefix - 1),
-                )) {
+                if (self::variableAtomCanMatchAnything(self::frameBody($token['atom']))) {
                     return true;
                 }
             }
@@ -2082,6 +2271,39 @@ final class Pattern
             mb_substr($pattern, $at + 2, 2) === '<!' => 'nlookbehind',
             default => 'named',
         };
+    }
+
+    /**
+     * Whether this frame kind consumes nothing, so it can neither fill nor divide a run of atoms.
+     *
+     * ⚠️ EXTRACTED RATHER THAN REPEATED, because the second caller is the reason review found the
+     * first one's list at all: `flatAtoms()` had no notion of an assertion and spliced one like any
+     * other required group, which made a literal inside it look like a separator. Two copies of a
+     * four-way comparison would let the next kind be added to one of them.
+     */
+    private static function isAssertionKind(string $kind): bool
+    {
+        return $kind === 'lookahead'
+            || $kind === 'nlookahead'
+            || $kind === 'lookbehind'
+            || $kind === 'nlookbehind';
+    }
+
+    /**
+     * The body inside a frame's own delimiters — `(?:ab)+` gives `ab`, `(?<=x)` gives `x`.
+     *
+     * ⚠️ FOUR COPIES OF THIS ARITHMETIC EXISTED and a fifth was about to, which is what prompted
+     * extracting it: the prefix depends on the frame KIND, so every caller had to remember to ask
+     * `frameKindAt()` first and to drop the closing parenthesis at the end. A caller that forgot
+     * either would read a body shifted by one and be wrong quietly.
+     *
+     * Takes an atom that IS a frame, as `atomAt()` returns it, rather than a position in a pattern.
+     */
+    private static function frameBody(string $atom): string
+    {
+        $prefix = self::framePrefixLength($atom, 0, self::frameKindAt($atom, 0));
+
+        return mb_substr($atom, $prefix, mb_strlen($atom) - $prefix - 1);
     }
 
     /** How many characters of the group's opening are syntax rather than body. */

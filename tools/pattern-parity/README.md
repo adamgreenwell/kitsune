@@ -29,8 +29,14 @@ is how PCRE's `$` is made to mean what ECMAScript's already means. Dropping it i
 
 **3. Both engines must be asked the *same question*.** The first version of this harness handed
 PHP `\\1` and Node `\1` — different patterns — and every conclusion drawn from it was luck rather
-than method. That is why the cases live in **one shared JSON file** that both readers parse, and
-why the file is written ASCII-escaped so neither reader has to guess an encoding.
+than method. That is why the cases live in **one shared JSON file** that both readers parse: the bytes reach
+PCRE and ECMAScript identically because neither reader transcribes them.
+
+⚠️ This paragraph claimed the file *"is written ASCII-escaped so neither reader has to guess an
+encoding"*, and it is not — the subjects are literal UTF-8, and have been since the file was
+written. Both readers use a standard JSON parser, which is what actually removes the guess, so
+nothing was ever wrong except the sentence. It is corrected rather than made true, because
+escaping 162 cases to satisfy a README would make them unreadable for no gain.
 
 ## ⚠️ It measures ONE version pair
 

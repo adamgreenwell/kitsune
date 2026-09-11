@@ -58,6 +58,22 @@ function storedLength(int $orgId, string $handle, int $maxLength): FieldStorage
     return $storage->refresh();
 }
 
+/**
+ * The same, for a type whose ceiling is its own — which is the case the audit was applying text's to.
+ *
+ * ⚠️ CREATED THROUGH THE MODEL, unlike the two fixtures either side of it, and that IS the assertion.
+ * `TextareaType` reads `maxLength` with a default of 65,535 and enforces it, so a textarea this wide
+ * saves cleanly — no guard to write past, nothing predating anything. A row the audit reports must be
+ * a row that cannot be saved, and this one can.
+ */
+function storedTextareaLength(int $orgId, string $handle, int $maxLength): FieldStorage
+{
+    return FieldStorage::create([
+        'org_id' => $orgId, 'handle' => $handle, 'type' => 'textarea',
+        'pii_class' => 'none', 'cardinality' => 1, 'settings' => ['maxLength' => $maxLength],
+    ]);
+}
+
 /** A field storage row carrying a pattern, written past the settings guard. */
 function storedPattern(int $orgId, string $handle, string $pattern): FieldStorage
 {
@@ -224,6 +240,40 @@ it('names a field configured longer than the limit allows', function (): void {
     $this->artisan('kitsune:audit-patterns', ['--strict' => true])->assertFailed();
 
     expect($wide->refresh()->settings['maxLength'])->toBe(65535);
+});
+
+it('applies the text ceiling to text fields only', function (): void {
+    /*
+     * ⚠️ THE AUDIT WAS INVENTING THE HAZARD IT EXISTS TO FIND, which review caught. It read
+     * `settings['maxLength']` without looking at `$storage->type` and compared it to `TextType`'s
+     * ceiling — so a `textarea` configured at 65,535, which `TextareaType` both publishes and enforces,
+     * was reported as invalid, `--strict` exited nonzero, and the operator was told to lower a setting
+     * that saves cleanly. A false failure in a deployment gate is worse than no gate.
+     *
+     * ⚠️ AND THE GATE COVERS THE PATTERN CHECK TOO, for the identical reason rather than a similar one:
+     * `Pattern::unpublishable()` is reached from `TextType::validateSettings()` and nowhere else, so a
+     * `pattern` stored against any other type is never enforced and can never be why a save is refused.
+     * Both keys are asserted here because one gate now answers for both.
+     */
+    $wide = storedTextareaLength($this->org->id, 'notes', 65535);
+
+    /*
+     * The pattern is added below Eloquent because `TextareaType` declares no `pattern` setting, so the
+     * settings guard refuses it on this type — which is the point: an unenforceable key on a row that
+     * cannot be saved with one.
+     */
+    DB::table('field_storage')
+        ->where('id', $wide->getKey())
+        ->update(['settings' => json_encode(['maxLength' => 65535, 'pattern' => '^(a|aa)+$'])]);
+
+    $this->artisan('kitsune:audit-patterns', ['--strict' => true])
+        ->expectsOutputToContain('Every stored pattern satisfies the published grammar')
+        ->assertSuccessful();
+
+    // And a text row alongside it still is reported, so the gate is about the type and not about the key.
+    storedLength($this->org->id, 'wide', 65535);
+
+    $this->artisan('kitsune:audit-patterns', ['--strict' => true])->assertFailed();
 });
 
 it('stays silent about a length inside the limit', function (): void {

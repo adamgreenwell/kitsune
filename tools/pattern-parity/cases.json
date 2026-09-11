@@ -853,8 +853,8 @@
   },
   {
     "id": "bom-delimiter-ecmascript-space",
-    "pattern": "^(?:\uFEFF\\s?)*X$",
-    "subject": "\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFF\uFEFFY",
+    "pattern": "^(?:﻿\\s?)*X$",
+    "subject": "﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿Y",
     "why": "PCRE's `\\s` excludes U+FEFF and ECMAScript's includes it. The membership probe compiled the raw `\\s` rather than the class `delimit()` rewrites it to, so the optional atom was declared unable to reach the delimiter. Node 22 spends 17.2s here."
   },
   {
@@ -946,5 +946,29 @@
     "pattern": "^(?:(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)|aaaaaaaaaaaaaaaaaaaaaaaaaaaa)$",
     "subject": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "why": "An ambiguous outer alternation enclosing 28 ambiguous groups. A flat product sorted outermost-first suppressed the children and counted only the outer branch count, reading 2 where the cost is 2^28. 231 characters, and Node spends 10.8s on a 29-character subject."
+  },
+  {
+    "id": "assertion-as-separator",
+    "pattern": "^(?:,a*(?!b)a*)*X$",
+    "subject": ",aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa",
+    "why": "The run traversal read THROUGH a required group, a lookahead included — so the `b` inside `(?!b)` looked like a literal separating the two `a*`. An assertion consumes nothing, so the body is `,a*a*`: two variable-width atoms in a row inside a repetition. Published, and Node spends 663 ms on sixteen segments and 6.0 s on eighteen. Deleting the assertion gives the same times, which is the proof it was never there to divide anything."
+  },
+  {
+    "id": "assertion-bodies-not-one-run",
+    "pattern": "^(?=.*[A-Z])(?=.*[0-9]).{8,64}$",
+    "subject": "aaaaaaaaaaaaaaaa",
+    "why": "The same splicing defect in the opposite direction, and the commonest validation pattern there is. Inlining both lookahead bodies made `.*` `[A-Z]` `.*` `[0-9]` `.{8,64}` read as one run of more than two, so this was REFUSED — while measuring 0.02 ms on a 5,000-character failing value. A zero-width atom neither fills a run nor divides one, and each body is a sequence checked in its own right."
+  },
+  {
+    "id": "quadratic-branches-summed",
+    "pattern": "^(?:a*a*b|a*a*c|a*a*d|a*a*e|a*a*f|a*a*g|a*a*h|a*a*i|a*a*j)$",
+    "subject": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "why": "A sequence's cost counted only the GROUPS inside it, so a branch whose expense is a quantifier read as free and nine of them cost nine. Each pays the quadratic in turn: measured linear in N, 291 ms at eight branches and 5.0 s at 140 on a permitted 5,000-character value. Nine is the first refused, because eight grants reach the ambiguity budget exactly."
+  },
+  {
+    "id": "quadratic-branches-distinct-leads",
+    "pattern": "^(?:a*a*b|c*c*d|e*e*f|g*g*h|i*i*j|k*k*l|m*m*n|o*o*p|q*q*r)$",
+    "subject": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "why": "The over-refusal the bound above carries, recorded rather than left to be found later. These nine branches cost ONE quadratic — 35.8 ms, because eight of them fail on their first atom — but `branchesAreUnambiguousLiterals()` exempts plain literal text only, on purpose, so a branch carrying a quantifier sums whether or not its lead is distinct. Refused today; lifting it means proving distinct leads for quantified branches, which is the rule two rounds of this file got wrong twice — issue #73."
   }
 ]

@@ -702,5 +702,128 @@ describe('the rules do not refuse ordinary field patterns', function (): void {
         '^(?<year>[0-9]{4})-(?<month>[0-9]{2})$',
         '^#[0-9A-Fa-f]{6}$',
         '^[^,]+(?:,[^,]+)*$',
+
+        /*
+         * ⚠️ REFUSED UNTIL REVIEW FOUND WHY, and it belongs on this list above all the others: two
+         * lookaheads then a bounded dot is the commonest validation pattern there is. The run
+         * traversal read THROUGH required groups, so both assertion bodies were inlined and
+         * `.*` `[A-Z]` `.*` `[0-9]` `.{8,64}` read as one run of more than two. It measures 0.02 ms
+         * on a 5,000-character failing value.
+         */
+        '^(?=.*[A-Z])(?=.*[0-9]).{8,64}$',
     ]);
+});
+
+describe('an assertion consumes nothing, so it cannot divide a run', function (): void {
+    /*
+     * ⚠️ THE RUN TRAVERSAL TREATED A LOOKAHEAD LIKE ANY OTHER REQUIRED GROUP, which review found —
+     * splicing its body in made a literal inside it look like a separator. Both directions of that
+     * are wrong, and both are asserted here, because a fix for either one alone would be half a rule.
+     */
+    it('refuses a run an assertion appeared to separate', function (string $pattern): void {
+        /*
+         * `^(?:,a*(?!b)a*)*X$` is `,a*a*` repeated: two variable-width atoms in a row inside a
+         * repetition, which `RUN_INSIDE_REPETITION` forbids. Published before this. Node 22.23.2 on
+         * `,aa` segments and no `X`:
+         *
+         *   10 segments   5.9 ms      16 segments    663.4 ms
+         *   14 segments  74.6 ms      18 segments  6,018.7 ms
+         *
+         * ⚠️ AND DELETING THE ASSERTION GIVES THE SAME TIMES — 653.2 ms at sixteen — which is the
+         * proof rather than the illustration: if the lookahead cost nothing, it was never there to
+         * divide anything either.
+         */
+        expect(Pattern::unpublishable($pattern))
+            ->not->toBeNull("[{$pattern}] hid a run behind a zero-width assertion");
+    })->with([
+        '^(?:,a*(?!b)a*)*X$',
+        '^(?:,a*(?=b)a*)*X$',
+        '^(?:,a*(?<!b)a*)*X$',
+        '^(?:,a*(?<=b)a*)*X$',
+    ]);
+
+    it('still reads a run inside the assertion body itself', function (): void {
+        /*
+         * ⚠️ THE HALF THAT MAKING AN ASSERTION TRANSPARENT WOULD OTHERWISE LOSE. While the body was
+         * spliced, `(?=a*a*a*b)` was visible to the top-level run rule; skipping the assertion
+         * outright would hide it. A failing lookahead is re-divided exactly as a failing sequence is,
+         * so its body is checked as its own sequence under the same limit.
+         */
+        expect(Pattern::unpublishable('^(?=a*a*a*b)x$'))
+            ->toContain('variable-width atoms in a row');
+    });
+
+    it('does not let an assertion body be charged twice', function (): void {
+        /*
+         * ⚠️ WHICH IS WHY THE DESCENT LIVES IN THE REFUSAL RULE AND NOT IN THE WALK. My first version
+         * descended into assertion bodies from the shared walk, so the PRICING caller — whose own
+         * recursion already visits every group — charged `(?=a*a*a*b)` twice and refused this for
+         * *"ways to retry a failing subject"* instead of naming the run. Same verdict, wrong reason,
+         * and an operator sent to fix the wrong thing.
+         */
+        expect(Pattern::unpublishable('^(?=a*a*a*b)x$'))
+            ->not->toContain('ways to retry a failing subject');
+    });
+});
+
+describe('a quantified branch costs what it costs', function (): void {
+    /*
+     * ⚠️ A SEQUENCE'S COST COUNTED ONLY THE GROUPS INSIDE IT, so a branch whose expense is a
+     * quantifier read as free — review found 140 alternatives of `a*a*b` published at 845 characters
+     * and about 5.0 seconds on a permitted 5,000-character failing value.
+     *
+     * Each branch pays the quadratic in turn, measured linear in N on the same subject:
+     *
+     *   N=1    35.7 ms      N=8    291.0 ms      N=32   1,151 ms
+     *   N=2    71.6 ms      N=9    324.3 ms      N=140  5,037 ms
+     */
+    it('still publishes one quadratic run, which is deliberate', function (string $pattern): void {
+        /*
+         * ⚠️ AND THE GROUPED SPELLING TOO, because charging the run at more than one level would cost
+         * the square and refuse one of two ways of writing the same regular expression. That is what
+         * `ownAtoms()` exists for.
+         */
+        expect(Pattern::unpublishable($pattern))->toBeNull("[{$pattern}] is the admitted quadratic");
+    })->with([
+        '^a*a*b$',
+        '^(?:a*a*b)$',
+        '^(?:(?:a*a*b))$',
+        '^.+\.[a-z]+$',
+    ]);
+
+    it('publishes eight quadratic branches and refuses nine', function (): void {
+        /*
+         * ⚠️ THE BOUNDARY, NOT A SAMPLE, because the constant is the budget divided by the count and an
+         * off-by-one in either would move it silently. Eight grants reach 65,536 exactly.
+         */
+        $branch = fn (int $n): string => '^(?:'.implode('|', array_map(
+            fn (int $i): string => 'a*a*'.chr(98 + $i),
+            range(0, $n - 1),
+        )).')$';
+
+        expect(Pattern::unpublishable($branch(8)))->toBeNull('eight quadratic branches is the bound')
+            ->and(Pattern::unpublishable($branch(9)))
+            ->toContain('ways to retry a failing subject');
+    });
+
+    it('refuses the 140-branch pattern review measured', function (): void {
+        $pattern = '^(?:'.implode('|', array_fill(0, 140, 'a*a*b')).')$';
+
+        expect(mb_strlen($pattern))->toBe(845, 'the pattern under measurement is not the one reported')
+            ->and(Pattern::unpublishable($pattern))->not->toBeNull();
+    });
+
+    it('charges the ambiguity product and the run together', function (): void {
+        /*
+         * ⚠️ ONE BUDGET, SO THEY COMPOSE. A quadratic branch retried sixteen ways is sixteen
+         * quadratics, and sixteen ambiguous binary alternations were admitted on their own. With a run
+         * beside them the product passes the budget, which is the model being consistent rather than a
+         * new rule: `8,192 × 2^n` reaches 65,536 exactly at n=3 and passes it at n=4.
+         */
+        $binaries = fn (int $n): string => '^a*a*b'.str_repeat('(?:x|x)', $n).'$';
+
+        expect(Pattern::unpublishable($binaries(3)))->toBeNull()
+            ->and(Pattern::unpublishable($binaries(4)))
+            ->toContain('ways to retry a failing subject');
+    });
 });
