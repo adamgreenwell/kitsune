@@ -1282,6 +1282,22 @@ class Entry extends Model implements RequiresModelSave
 
             if ($handle !== null) {
                 $values['type_handle'] = $handle;
+
+                /*
+                 * ⚠️ ON THE INSTANCE TOO, and review found this missing — correcting only the SQL
+                 * payload left the two write paths disagreeing about the model. The `saving` listener
+                 * restamps `$entry->type_handle` itself, so an ordinary write returns a model that
+                 * agrees with its row; a quiet write suppressed that listener, reached here, and got a
+                 * corrected row behind a model still reporting the caller's handle.
+                 *
+                 * Measured: after a quiet move of `entry_type_id` from `page` to `article`, the column
+                 * held `article` while the instance reported `page` — and `finishSave()` then called
+                 * `syncOriginal()`, which adopted that stale value as the CLEAN original. So the wrong
+                 * handle was not merely stale, it was indistinguishable from a saved one: `toArray()`
+                 * served it, every relation check and route lookup read it, and assigning the true
+                 * handle afterwards was not dirty and so could not be written back.
+                 */
+                $this->setAttribute('type_handle', $handle);
             }
         }
 

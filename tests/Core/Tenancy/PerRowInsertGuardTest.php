@@ -457,12 +457,42 @@ it('restamps the type handle when either type column moves alone', function (): 
     expect((string) Entry::withoutGlobalScopes()->whereKey($entry->getKey())->value('type_handle'))
         ->toBe('article', 'the handle was left stale when only the id moved');
 
-    // And only a forged handle is dirty: the id on the model is the truth it derives from.
+    /*
+     * ⚠️ AND THE INSTANCE AGREES WITH THE ROW, which review found this test could not see — and the
+     * reason it could not see it is the reason the assertion is here. The restamp corrected `$values`
+     * only, so the model kept reporting `page`; `finishSave()` then called `syncOriginal()` and adopted
+     * that stale value as the clean original, making it indistinguishable from a saved one. Serialising
+     * the returned entry, resolving its route or checking its relations all read the wrong type.
+     *
+     * `getOriginal()` as well as the attribute, because the attribute alone would pass while the model
+     * merely held a dirty value waiting to overwrite the row on the next save.
+     */
+    expect($entry->type_handle)
+        ->toBe('article', 'the returned model kept the stale handle after a quiet id move')
+        ->and($entry->getOriginal('type_handle'))
+        ->toBe('article', 'the stale handle was synced as the clean original')
+        ->and($entry->toArray()['type_handle'])
+        ->toBe('article', 'serialising the returned entry served the stale handle');
+
+    /*
+     * And only a forged handle is dirty: the id on the model is the truth it derives from.
+     *
+     * ⚠️ THIS HALF WAS VACUOUS UNTIL THE ASSERTIONS ABOVE PASSED. On a stale instance still reporting
+     * `page`, assigning `page` is not a change — `saveQuietly()` issued no UPDATE at all, and the
+     * expectation below was re-reading the row the previous save had written. Measured: `isDirty()`
+     * returned false. It can only forge a handle now because the instance holds the derived one.
+     */
     $entry->type_handle = 'page';
+
+    expect($entry->isDirty('type_handle'))
+        ->toBeTrue('the forged handle was not dirty, so this half never issued a write');
+
     $entry->saveQuietly();
 
     expect((string) Entry::withoutGlobalScopes()->whereKey($entry->getKey())->value('type_handle'))
-        ->toBe('article', 'a forged handle survived when it was the only dirty column');
+        ->toBe('article', 'a forged handle survived when it was the only dirty column')
+        ->and($entry->type_handle)
+        ->toBe('article', 'the instance kept the forged handle it had just been refused');
 });
 
 it('records the derived proof only after every guard has passed', function (): void {
