@@ -112,6 +112,77 @@ function lockingEngine(): bool
     return DB::connection()->getDriverName() !== 'sqlite';
 }
 
+it('takes the host mutex exclusively, even when the claim row already exists', function (): void {
+    /*
+     * ⚠️ `INSERT IGNORE` TAKES A SHARED LOCK ON A DUPLICATE KEY, which review found and which turns the
+     * mutex into a deadlock exactly when it is doing its job. On MySQL and MariaDB, `INSERT IGNORE`
+     * hitting an existing unique-index record leaves both transactions holding S — and both then ask
+     * `FOR UPDATE` to upgrade to X, which neither can while the other holds S. Staged as two real
+     * sessions against an EXISTING claim row:
+     *
+     *   INSERT IGNORE  then FOR UPDATE      ERROR 1213 Deadlock found
+     *   ON DUPLICATE KEY UPDATE  then same  both commit
+     *
+     * `DB::transaction()` takes one attempt, so the first surfaced an otherwise-valid save as a database
+     * exception rather than queueing it. `upsert()` compiles to the second on MySQL, which takes the
+     * record exclusively so the loser queues on the insert and never reaches a conversion.
+     *
+     * ⚠️ ASSERTED ON THE SQL rather than by staging the deadlock, because a conversion deadlock needs
+     * both transactions mid-flight and a second connection can hold a lock but cannot then be asked to
+     * upgrade while this one blocks. What prevents it is which statement is issued, so that is what is
+     * pinned — and the measurement above is what says the statement is the right one.
+     */
+    $statements = [];
+
+    DB::listen(function ($query) use (&$statements): void {
+        if (str_contains($query->sql, 'site_host_claims')) {
+            $statements[] = $query->sql;
+        }
+    });
+
+    Site::create([
+        'org_id' => $this->org->id, 'handle' => 'firstclaim', 'slug' => 'firstclaim', 'name' => 'First',
+        'locale' => 'en', 'url_strategy' => 'domain', 'base_url' => 'https://shared-claim.test',
+    ]);
+
+    // A second site on the SAME host, so the claim row already exists and the duplicate path is taken.
+    Site::create([
+        'org_id' => $this->org->id, 'handle' => 'secondclaim', 'slug' => 'secondclaim', 'name' => 'Second',
+        'locale' => 'en', 'url_strategy' => 'domain', 'base_url' => 'https://shared-claim.test/news',
+    ]);
+
+    $writes = array_values(array_filter(
+        $statements,
+        static fn (string $sql): bool => preg_match('/^\s*insert/i', $sql) === 1,
+    ));
+
+    expect($writes)->not->toBe([], 'no statement wrote the claim table');
+
+    /*
+     * ⚠️ ONE NEEDLE AND NO MESSAGE, because `toContain()` is VARIADIC over needles rather than taking a
+     * failure message — and my first version passed the message as a second needle. `not->toContain()`
+     * over two needles passes when EITHER is absent, so the prose was absent, so the assertion could
+     * never fail: it passed with `insert ignore` in the SQL. Caught by reverting the fix and watching
+     * the test still pass, and the reasoning lives in this comment where it cannot be mistaken for an
+     * argument.
+     */
+    /*
+     * ⚠️ THE CLAUSE IS SPELLED PER ENGINE, and asserting MySQL's on every engine is what the matrix
+     * caught: Postgres compiles `on conflict … do update set`, so the first version of this failed there
+     * for the wrong reason. The PROPERTY is one sentence — the duplicate-key path takes the record
+     * exclusively — and each engine has its own words for it.
+     */
+    $clause = match (DB::connection()->getDriverName()) {
+        'pgsql' => 'on conflict',
+        default => 'on duplicate key update',
+    };
+
+    foreach ($writes as $sql) {
+        expect(strtolower($sql))->not->toContain('insert ignore');
+        expect(strtolower($sql))->toContain($clause);
+    }
+})->skip(fn (): bool => ! lockingEngine(), 'SQLite has one writer, so there is no lock to convert');
+
 it('takes the host mutex inside the transaction that writes the site', function (): void {
     /*
      * ⚠️ THE STRUCTURAL HALF, which runs on every engine including SQLite. The lock is only

@@ -334,19 +334,32 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
             /*
              * ⚠️ UPSERT THEN LOCK, in that order, and both are required. The row may not exist — the
              * first claimant of a hostname creates it — and two concurrent first claimants must not
-             * both proceed. `insertOrIgnore()` lets exactly one of them create it and the other
-             * continue without an error, and the `SELECT … FOR UPDATE` that follows is what they
-             * then queue on.
+             * both proceed. One of them creates it and the other continues without an error, and the
+             * `SELECT … FOR UPDATE` that follows is what they then queue on.
+             *
+             * ⚠️ `upsert()` RATHER THAN `insertOrIgnore()`, BECAUSE THE LOCK IT TAKES IS THE POINT and
+             * review found the difference. On MySQL and MariaDB, `INSERT IGNORE` hitting an existing
+             * key takes a SHARED lock on that unique-index record — so both transactions get it, both
+             * then ask `FOR UPDATE` to upgrade to exclusive, and neither can while the other holds S.
+             * Measured: `ERROR 1213 Deadlock found`, and `DB::transaction()` takes one attempt, so an
+             * otherwise-valid save surfaced as a database exception instead of queueing.
+             *
+             * `INSERT … ON DUPLICATE KEY UPDATE` — which is what `upsert()` compiles to there — takes
+             * the record EXCLUSIVELY, so the second transaction queues on the insert itself and never
+             * reaches a conversion. Re-measured with the same two sessions: both commit. The update
+             * writes the key back to itself, because there is nothing else on the row to change and the
+             * lock is the whole purpose of the statement.
              *
              * ⚠️ `DB::table()`, DELIBERATELY BELOW ELOQUENT. This row is a mutex rather than a
              * record: it has no model, no scope and no events, and giving it any of those would
              * invite somebody to read it as a claim. It is also written on every site save, so the
              * cheapest path is the right one.
              */
-            $this->getConnection()->table('site_host_claims')->insertOrIgnore([
-                'canonical_host' => $host,
-                'created_at' => now(),
-            ]);
+            $this->getConnection()->table('site_host_claims')->upsert(
+                [['canonical_host' => $host, 'created_at' => now()]],
+                ['canonical_host'],
+                ['canonical_host'],
+            );
 
             /*
              * ⚠️ SQLITE COMPILES `FOR UPDATE` TO NOTHING, and that is not a hole: SQLite serialises
