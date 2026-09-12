@@ -76,11 +76,19 @@ function requireFullCoverage(string $side, array $results, array $cases): void
          * `compiles` is a boolean; `matches` is a boolean or null, where null means the engine gave no
          * verdict at all.
          */
+        /*
+         * ⚠️ AND `compiles: false` WITH A MATCH VERDICT IS IMPOSSIBLE, which review found this guard
+         * accepting: a row such as `{"compiles": false, "matches": false}` has the right keys and the
+         * right scalar types, and two of them compare EQUAL — so an impossible pair reads as agreement
+         * and the corpus reports no defect for a case neither engine measured. An engine that could not
+         * compile the pattern gave no verdict, which this file spells `null` everywhere else.
+         */
         if (! is_array($results[$id])
             || ! array_key_exists('compiles', $results[$id])
             || ! array_key_exists('matches', $results[$id])
             || ! is_bool($results[$id]['compiles'])
-            || ! (is_bool($results[$id]['matches']) || $results[$id]['matches'] === null)) {
+            || ! (is_bool($results[$id]['matches']) || $results[$id]['matches'] === null)
+            || ($results[$id]['compiles'] === false && $results[$id]['matches'] !== null)) {
             $malformed[] = $id;
         }
     }
@@ -101,7 +109,7 @@ function requireFullCoverage(string $side, array $results, array $cases): void
         $side,
         $say('cases measured by neither name in the file', $missing),
         $say('results for cases that no longer exist', $unknown),
-        $say('results that are not an object carrying a boolean `compiles` and a boolean-or-null `matches`', $malformed),
+        $say('results that are not an object carrying a boolean `compiles` and a `matches` that is a boolean, or null when it did not compile', $malformed),
         $say('case IDs used more than once in cases.json, so one pattern is never measured', $duplicated),
     ));
 

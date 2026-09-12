@@ -3089,7 +3089,27 @@ final class Pattern
          * field for free.
          */
         foreach (self::topLevelBranches($pattern) as $branch) {
-            if (! self::anchorsTheSearch($branch) && self::variableThenRequired($branch)) {
+            if (self::anchorsTheSearch($branch)) {
+                continue;
+            }
+
+            /*
+             * ⚠️ AND AN ASSERTION IS RE-EVALUATED AT EVERY STARTING POSITION TOO, which review found this
+             * loop missing: `variableThenRequired()` walks consuming atoms and steps over assertions, and
+             * the repeated-assertion check below needs a repetition. `(?=a*b)a` has neither — one
+             * variable-width atom, inside a lookahead, in an unanchored pattern — and the lookahead scans
+             * the remaining value at every position the search tries. Measured on Node 22.23.2 with a
+             * failing 5,000-character value:
+             *
+             *   (?=a*b)a   36.0 ms          ^(?=a*b)a   0.0 ms
+             *
+             * ⚠️ BOTH POLARITIES, although only the positive one is slow on the subject measured. Whether
+             * a negative assertion's body is expensive depends on the value rather than on the pattern —
+             * `(?!a*b)a` matches immediately on all-`a` and costs nothing there — and this file prices
+             * constructs rather than subjects everywhere else. The cost of including it is an item bound
+             * on a field, which is 384 elements at the default length.
+             */
+            if (self::variableThenRequired($branch) || self::assertionScansVariable($branch)) {
                 return true;
             }
         }
@@ -3115,6 +3135,25 @@ final class Pattern
             if (self::isAssertionKind($frame['kind'])
                 && self::insideRepetition($frames, $frame)
                 && self::atomRunExceeds($frame['body'], 0)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Whether any assertion in this sequence holds a variable-width atom, at any depth.
+     *
+     * ⚠️ AN ASSERTION'S SCAN GROWS WITH THE VALUE when its body does, and it is paid once per position
+     * the enclosing context visits — every starting position of an unanchored search, every iteration of
+     * a repetition. A fixed-width body scans a fixed number of characters however long the value is,
+     * which is why `(?=ab)a` costs nothing and `(?=a*b)a` costs 36 ms at 5,000 characters.
+     */
+    private static function assertionScansVariable(string $sequence): bool
+    {
+        foreach (self::frames($sequence) as $frame) {
+            if (self::isAssertionKind($frame['kind']) && self::atomRunExceeds($frame['body'], 0)) {
                 return true;
             }
         }
@@ -3323,6 +3362,22 @@ final class Pattern
             $repeats = $atom['quantifier'] === '' ? 1 : self::fixedRepetitions($atom['quantifier']);
 
             if ($previous === null || $repeats === null || $repeats < 1) {
+                continue;
+            }
+
+            /*
+             * ⚠️ AND A REQUIRED GROUP CAN DIVIDE A RUN WITHOUT BEING VARIABLE-WIDTH, which review found
+             * this branch not asking: `^a*a*(?:b|c)a*$` has a FIXED-width group, so the variable path
+             * above never ran, and `literalCharacter()` cannot pull a literal out of a whole group — so
+             * the run survived the group and the last `a*` counted as a third atom. Both branches lead
+             * with a literal `a*` cannot match, which is the same proof `separates()` already applies to
+             * a variable group; the group's width was never what made the proof work.
+             */
+            if (self::separates($previous, $atom['leads'])) {
+                $run = 0;
+                $counted = false;
+                $previous = null;
+
                 continue;
             }
 

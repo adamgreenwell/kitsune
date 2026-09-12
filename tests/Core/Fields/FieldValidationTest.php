@@ -686,6 +686,34 @@ describe('a quadratic pattern bounds how many items a text field admits', functi
         '^(?:(?!,[^,]+),)*$',
     ]);
 
+    it('counts an unanchored assertion scan too', function (string $pattern): void {
+        /*
+         * ⚠️ NEITHER THE RUN TEST NOR THE REPETITION TEST SEES THIS ONE. `(?=a*b)a` holds one
+         * variable-width atom, inside a lookahead, with no repetition anywhere — and the lookahead scans
+         * the remaining value at every position the unanchored search tries. Measured on Node 22.23.2
+         * with a failing 5,000-character value: **36.0 ms**, against 0.0 ms for `^(?=a*b)a`.
+         */
+        $type = app(FieldTypeRegistry::class)->get('text');
+
+        expect($type->maxItems(configFor('text', ['pattern' => $pattern, 'maxLength' => 1000], -1)))->toBe(25);
+    })->with([
+        '(?=a*b)a',
+        '(?!a*b)a',
+        '(?<=a*b)a',
+    ]);
+
+    it('leaves an anchored or fixed-width assertion scan alone', function (string $pattern): void {
+        // ⚠️ A fixed-width assertion body scans a fixed number of characters however long the value is,
+        // and an anchored search tries one starting position — so neither multiplies by anything.
+        $type = app(FieldTypeRegistry::class)->get('text');
+
+        expect($type->maxItems(configFor('text', ['pattern' => $pattern, 'maxLength' => 1000], -1)))->toBeNull();
+    })->with([
+        '^(?=a*b)a',
+        '(?=ab)a',
+        '^(?=ab)a',
+    ]);
+
     it('leaves a fixed-width assertion body in a repetition alone', function (string $pattern): void {
         // ⚠️ `(?!ab)` scans two characters however long the value is — 0.1 ms at 5,000 — so the cost the
         // bound exists for is the VARIABLE-width atom inside the assertion, not the assertion itself.

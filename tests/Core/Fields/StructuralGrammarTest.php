@@ -1772,3 +1772,35 @@ describe('a positive assertion can carry the anchor', function (): void {
         '(?!^)a*a*b',
     ]);
 });
+
+describe('a required group divides a run whatever its width', function (): void {
+    /*
+     * ⚠️ A FALSE REFUSAL REVIEW FOUND, and the mechanism is that the proof was reached only by the
+     * variable-width path. `^a*a*(?:b|c)a*$` has a FIXED-width group, so the branch that calls
+     * `separates()` never ran, and `literalCharacter()` cannot pull a literal out of a whole group — so
+     * the run survived the group and the last `a*` counted as a third adjacent variable-width atom.
+     *
+     * Both branches lead with a literal `a*` cannot match, which is exactly the proof `separates()`
+     * applies to a variable-width group. The group's WIDTH was never what made the proof work, and
+     * `--strict` blocks an upgrade on the difference.
+     */
+    it('accepts a run divided by a fixed-width group', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))->toBeNull("[{$pattern}] is divided by its group");
+    })->with([
+        '^a*a*(?:b|c)a*$',
+        '^a*a*(?:b|c)(?:d|e)a*$',
+        '^a*a*ba*$',
+    ]);
+
+    it('still refuses one the group cannot divide', function (string $pattern): void {
+        /*
+         * ⚠️ EVERY branch has to lead with something the atom on the left cannot match: `(?:b|a)` has an
+         * `a` branch, so `a*` may swallow it and the division is not forced. That is the same rule the
+         * variable-width path already followed, and the reason this is not "a required group ends a run".
+         */
+        expect(Pattern::unpublishable($pattern))->not->toBeNull();
+    })->with([
+        '^a*a*(?:b|a)a*$',
+        '^a*a*(?:b|c)a*a*$',
+    ]);
+});

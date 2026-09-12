@@ -61,11 +61,20 @@ A **row with the right keys and the wrong types** is a fifth: `{"compiles": "fal
 agreement. `compiles` must be a boolean and `matches` a boolean or null, where null is the third
 outcome this harness is careful about — the engine gave no verdict at all.
 
-That is five instrument errors in this file's history, all of the same class: the tool answering a
+A **`timedOut`-only no-verdict** is a sixth: that key is a diagnostic the Node reader adds, so
+deriving `no verdict from an engine` from it omitted a valid row carrying `compiles: true` and
+`matches: null` without it. Both sides are derived from compiled-and-no-verdict now.
+
+An **impossible row** is a seventh: `{"compiles": false, "matches": false}` has the right keys and
+the right types, and an engine that could not compile the pattern gave no verdict — `matches` must
+be null whenever `compiles` is false, or two impossible rows compare equal.
+
+That is seven instrument errors in this file's history, all of the same class: the tool answering a
 question nobody had checked it could answer. Raw-vs-raw reported seven divergences where there are
 three; PHP and Node were handed different patterns; absent rows compared equal; a duplicated id hid
-a pattern; a stringified row read as agreement. Each was found by review rather than by the tool,
-which is the argument for the guard rather than for another convention.
+a pattern; a stringified row read as agreement; a `timedOut`-only rule undercounted no-verdicts; an
+impossible row read as agreement. Each was found by review rather than by the tool, which is the
+argument for the guard rather than for another convention.
 
 Both matter because this tool's numbers are quoted in `docs/field-types.md` and in review replies. A
 stale pair of files could have reported `0 live defects` for a corpus it had never run.

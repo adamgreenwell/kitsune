@@ -1174,5 +1174,17 @@
         "pattern": "(?=^)(?:a|a)(?:a|a)(?:a|a)(?:a|a)b",
         "subject": "aaaa",
         "why": "A FALSE refusal: `(?=^)` says the position is the start as surely as `^` does, and the walk that looks for the anchor skipped past it as it skips every assertion — so this was refused under the unanchored ambiguity budget of 13 while the `^` spelling publishes under 65,536. Only a POSITIVE assertion counts and only when every branch of its body anchors: `(?!^)` asserts the opposite and `(?=^|,)` asserts nothing about the start on its own, and both stay refused."
+    },
+    {
+        "id": "unanchored-assertion-scan",
+        "pattern": "(?=a*b)a",
+        "subject": "aaaaaaaaaaaaaaaaaaaa",
+        "why": "Left a multi-value field unbounded, and neither of the other two cost tests could see it: one variable-width atom, inside a lookahead, with no repetition anywhere — and the lookahead scans the remaining value at every position an unanchored search tries. Measured on Node 22.23.2 with a failing 5,000-character value: 36.0 ms, against 0.0 ms for `^(?=a*b)a` and for `(?=ab)a`. A hundred of those in one valid array is 3.6 seconds. Both assertion polarities count, because whether a negative one is expensive depends on the value rather than on the pattern, and this file prices constructs rather than subjects."
+    },
+    {
+        "id": "fixed-width-group-divides-a-run",
+        "pattern": "^a*a*(?:b|c)a*$",
+        "subject": "aaaaaaaaaaaaaaaaaaaa",
+        "why": "A FALSE refusal: the group is fixed width, so the branch that applies the all-branch lead proof never ran, and `literalCharacter()` cannot pull a literal out of a whole group — so the run survived the group and the last `a*` counted as a third adjacent variable-width atom. Both branches lead with a literal `a*` cannot match, which is exactly the proof already applied to a variable-width group; the group's width was never what made it work. `(?:b|a)` still refuses, because one of its branches is something `a*` may swallow."
     }
 ]
