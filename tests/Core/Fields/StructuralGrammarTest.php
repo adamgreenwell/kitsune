@@ -823,6 +823,25 @@ describe('an equal bounded quantifier is one width', function (): void {
     it('still refuses a lookbehind that can match two lengths', function (): void {
         expect(Pattern::unpublishable('(?<=a{1,2})b'))->toContain('more than one length');
     });
+
+    it('normalises both bounds, not only the lower one', function (): void {
+        /*
+         * ⚠️ THE SAME FIX WAS NEEDED IN THE METHOD BESIDE IT, which review found: `isVariableWidth()`
+         * compared the RAW upper bound against a normalised lower one — `'01' !== '1'` — so `{01,01}`
+         * read as variable while `{1,1}` did not, and `^a*a{01,01}a*b$` was refused while the identical
+         * `{1,1}` pattern publishes. The same upgrade hazard as the two `{0}` spellings, one method
+         * along, because a padded bound is the same number and only `(int)` on both sides says so.
+         */
+        expect(Pattern::unpublishable('^a*a{01,01}a*b$'))->toBeNull()
+            ->and(Pattern::unpublishable('^a*a{1,1}a*b$'))->toBeNull()
+            ->and(Pattern::unpublishable('(?<=a{01,01})b'))->toBeNull();
+
+        // ⚠️ And a genuine range is still variable, in both spellings, or the normalising would have
+        // swallowed the rule rather than the padding.
+        expect(Pattern::unpublishable('^a*a{1,2}a*b$'))->not->toBeNull()
+            ->and(Pattern::unpublishable('^a*a{01,02}a*b$'))->not->toBeNull()
+            ->and(Pattern::unpublishable('^a*a{1,}a*b$'))->not->toBeNull();
+    });
 });
 
 describe('a zero-repeat group may not hold an assertion', function (): void {

@@ -1024,5 +1024,11 @@
     "pattern": "(?=a)a?a",
     "subject": "a",
     "why": "A VERSION-DEPENDENT divergence I could not reproduce, recorded so the harness reports it wherever it is real. Review measured PCRE 10.44 (PHP 8.5) not matching `a` while Node 24.15 does; on PHP 8.4.25 with PCRE 10.48 and Node 22.23.2 both match, as do `^(?=a)a?a$`, `(?=a)a?`, `(?=a)aa`, `a?a`, `(?=a)a*a` and `(?=ab)a?ab`. Both engines agree on what the pattern MEANS, so this is an upstream defect fixed between 10.44 and 10.48 rather than a grammar-portability property — and refusing a shape both dialects define identically would be a permanent expressiveness cost for a transient bug. `composer.json` requires PHP ^8.4, whose earliest releases bundle PCRE2 10.44, so the exposure is real: this case makes it show up as a live defect on any pair where it still diverges, which is what the harness is for."
+  },
+  {
+    "id": "zero-padded-equal-bound",
+    "pattern": "^a*a{01,01}a*b$",
+    "subject": "aaaaaaaaaaaaaaaaaaaa",
+    "why": "The third padded-bound gap, in the method beside the two that were fixed. `isVariableWidth()` compared the RAW upper bound with a normalised lower one — `'01' !== '1'` — so `{01,01}` read as variable-width while `{1,1}` did not, and this pattern was refused while the identical `{1,1}` spelling publishes: `kitsune:audit-patterns --strict` blocking an upgrade over a harmless stored pattern. Both bounds are cast now, and a genuine range stays variable in both spellings."
   }
 ]

@@ -2633,8 +2633,20 @@ final class Pattern
         }
 
         if (preg_match('/^\{([0-9]+)(?:,([0-9]*))?\}\??$/', $quantifier, $bound) === 1) {
-            // `{n}` names one length; `{n,}` and `{n,m}` name a range unless m equals n.
-            return array_key_exists(2, $bound) && $bound[2] !== (string) (int) $bound[1];
+            /*
+             * `{n}` names one length; `{n,}` and `{n,m}` name a range unless m equals n.
+             *
+             * ⚠️ BOTH BOUNDS NORMALISED, and review found this comparing the RAW upper against a
+             * normalised lower — `'01' !== '1'` — so `{01,01}` read as variable while `{1,1}` did not,
+             * and `^a*a{01,01}a*b$` was refused while the identical `{1,1}` pattern publishes. Same
+             * upgrade hazard as the two `{0}` spellings, in the method beside the one those were fixed
+             * in: a padded bound is the same number, and only `(int)` on both sides says so.
+             */
+            if (! array_key_exists(2, $bound)) {
+                return false;
+            }
+
+            return $bound[2] === '' || (int) $bound[2] !== (int) $bound[1];
         }
 
         return true;
