@@ -1206,6 +1206,36 @@ final class Pattern
                 );
             }
 
+            /*
+             * ⚠️ AN ASSERTION INSIDE A REPETITION IS RE-EVALUATED ON EVERY ITERATION, which review found
+             * nothing asking. `^(?:(?!a*a*c)a)*bX$` publishes on every other rule: the repeated body is
+             * FIXED WIDTH — the assertion consumes nothing and the `a` is one character — so rule 3's
+             * first proof is satisfied and no walk ever reached inside the lookahead. Its own body holds
+             * `a*a*`, a run of two, and pays for it once per outer iteration. Measured on Node 22.23.2
+             * with a failing 2,002-character value:
+             *
+             *   ^(?:(?!a*a*c)a)*bX$    3,894 ms          ^(?:(?!a*c)a)*bX$    6 ms
+             *
+             * `atomRunExceeds()` cannot see it from the top: it does not descend into a repeated group,
+             * deliberately, because this loop owns repetition bodies. So this loop asks the question, and
+             * with the repetition's limit rather than the top level's — one variable-width atom per
+             * assertion, exactly as for the body around it.
+             */
+            if (self::isAssertionKind($frame['kind'])
+                && self::insideRepetition($frames, $frame)
+                && self::atomRunExceeds($frame['body'], self::RUN_INSIDE_REPETITION)) {
+                return sprintf(
+                    'more than %d variable-width atom in a row inside the assertion `%s`, which sits in '
+                    .'a repetition — so the assertion is re-evaluated on every iteration and its cost '
+                    .'multiplies by the number of them. Measured, `^(?:(?!a*a*c)a)*bX$` takes ECMAScript '
+                    .'3.9 seconds on a failing 2,002-character value where `^(?:(?!a*c)a)*bX$` takes '
+                    .'6 ms. Separate them with a character none of them can match, say the same thing '
+                    .'with one quantifier, or take the assertion out of the repetition',
+                    self::RUN_INSIDE_REPETITION,
+                    self::excerpt($pattern, $frame['open'], $frame['close']),
+                );
+            }
+
             if (! self::repeatsMoreThanOnce($frame['quantifier'])) {
                 continue;
             }
@@ -2698,6 +2728,30 @@ final class Pattern
     }
 
     /**
+     * Whether any frame enclosing this one can run more than once.
+     *
+     * ⚠️ NOT `repeatingAncestor()`, which answers a narrower question beside it: that one counts only
+     * ancestors INSIDE A LOOKBEHIND, because the rule it serves is about which iteration stays captured
+     * when the two engines walk a lookbehind in opposite directions. This one is about cost, and cost is
+     * paid wherever the repetition is.
+     *
+     * @param  list<array{open: int, close: int, quantifier: string, kind: string, body: string, inLookbehind: bool}>  $frames
+     * @param  array{open: int, close: int}  $frame
+     */
+    private static function insideRepetition(array $frames, array $frame): bool
+    {
+        foreach ($frames as $ancestor) {
+            $encloses = $ancestor['open'] < $frame['open'] && $ancestor['close'] > $frame['close'];
+
+            if ($encloses && self::repeatsMoreThanOnce($ancestor['quantifier'])) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * Whether any frame enclosing this one is bounded at zero repetitions.
      *
      * ⚠️ ENCLOSURE READ FROM THE POSITIONS, like `repeatingAncestor()` beside it, because a frame does
@@ -2852,6 +2906,30 @@ final class Pattern
             }
 
             if (str_starts_with($atom, '(') && self::isAssertionKind(self::frameKindAt($atom, 0))) {
+                /*
+                 * ⚠️ A POSITIVE ASSERTION CAN BE THE ANCHOR ITSELF, which review found this walk
+                 * skipping past: `(?=^)` says the position is the start as surely as `^` does, and the
+                 * branch was read as unanchored — so `(?=^)(?:a|a)(?:a|a)(?:a|a)(?:a|a)b` was refused
+                 * under the unanchored ambiguity budget while `^(?:a|a)…b` publishes. A false refusal,
+                 * and `--strict` blocks an upgrade on one.
+                 *
+                 * Only a POSITIVE one, and only when EVERY branch of its body anchors: `(?!^)` asserts
+                 * the opposite, and `(?=^|,)` asserts nothing about the start on its own.
+                 */
+                $kind = self::frameKindAt($atom, 0);
+
+                if ($kind === 'lookahead' || $kind === 'lookbehind') {
+                    $anchored = true;
+
+                    foreach (self::topLevelBranches(self::frameBody($atom)) as $inner) {
+                        $anchored = $anchored && self::anchorsTheSearch($inner, $depth + 1);
+                    }
+
+                    if ($anchored) {
+                        return true;
+                    }
+                }
+
                 $at = $token['after'];
 
                 continue;

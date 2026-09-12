@@ -1162,5 +1162,17 @@
         "pattern": "(?:ab|\\x61b)(?:ab|\\x61b)(?:ab|\\x61b)(?:ab|\\x61b)(?:ab|\\x61b)(?:ab|\\x61b)(?:ab|\\x61b)(?:ab|\\x61b)(?:ab|\\x61b)(?:ab|\\x61b)(?:ab|\\x61b)(?:ab|\\x61b)(?:ab|\\x61b)(?:ab|\\x61b)(?:ab|\\x61b)(?:ab|\\x61b)c",
         "subject": "ababababababababababababababababababab",
         "why": "The ambiguity budget priced ONE attempt, and an unanchored search retries the whole product from every starting position. This row also disproves a measured negative §4 recorded two rounds earlier: that note said the ceiling already absorbed the search factor, on the strength of sixteen copies of `(?:a|a)` measuring 178.6 ms unanchored — one shape standing for a class. With two-character branches the same product costs 736.2 ms unanchored against 0.5 ms anchored at 5,000 characters, which is seconds on ADR-027's floor. The unanchored budget is now the anchored product divided by the longest value a field may hold: 65,536 over 5,000 is 13. A product of 8 still publishes unanchored, because refusing any ambiguity at all without an anchor refused fifteen shapes in this repository's tests, every one of them linear."
+    },
+    {
+        "id": "assertion-inside-a-repetition",
+        "pattern": "^(?:(?!a*a*c)a)*bX$",
+        "subject": "aaaaaaaaaaaaaaaaaaaa",
+        "why": "Published by every other rule, which is why nothing caught it: the repeated body is FIXED WIDTH — the assertion consumes nothing and the `a` is one character — so rule 3's first proof is satisfied and no walk descended into the lookahead. Its own body holds `a*a*`, a run of two, and pays for it once per outer iteration. Measured on Node 22.23.2 with a failing 2,002-character value: 3,894 ms, against 6 ms for `^(?:(?!a*c)a)*bX$`. The frames loop asks the question now, with the REPETITION's limit rather than the top level's, because `atomRunExceeds()` deliberately does not descend into a repeated group."
+    },
+    {
+        "id": "anchor-inside-a-positive-assertion",
+        "pattern": "(?=^)(?:a|a)(?:a|a)(?:a|a)(?:a|a)b",
+        "subject": "aaaa",
+        "why": "A FALSE refusal: `(?=^)` says the position is the start as surely as `^` does, and the walk that looks for the anchor skipped past it as it skips every assertion — so this was refused under the unanchored ambiguity budget of 13 while the `^` spelling publishes under 65,536. Only a POSITIVE assertion counts and only when every branch of its body anchors: `(?!^)` asserts the opposite and `(?=^|,)` asserts nothing about the start on its own, and both stay refused."
     }
 ]

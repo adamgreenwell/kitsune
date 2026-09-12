@@ -1704,3 +1704,71 @@ describe('an unanchored ambiguity is retried from every position', function (): 
         'x|^'.str_repeat('(?:ab|ab)', 4).'c',
     ]);
 });
+
+describe('an assertion in a repetition is paid for on every iteration', function (): void {
+    /*
+     * ⚠️ EVERY OTHER RULE PUBLISHES IT, which is why nothing caught it. `^(?:(?!a*a*c)a)*bX$` has a
+     * repeated body that is FIXED WIDTH — the assertion consumes nothing and the `a` is one character —
+     * so rule 3's first proof is satisfied, and no walk descended into the lookahead. Its own body holds
+     * `a*a*`, a run of two, and pays for it once per outer iteration. Measured on Node 22.23.2 with a
+     * failing 2,002-character value:
+     *
+     *   ^(?:(?!a*a*c)a)*bX$    3,894 ms          ^(?:(?!a*c)a)*bX$    6 ms
+     *
+     * ⚠️ AND WITH THE REPETITION'S LIMIT, not the top level's: one variable-width atom per assertion,
+     * exactly as for the body around it. `atomRunExceeds()` cannot ask from the top — it does not
+     * descend into a repeated group, because the frames loop owns repetition bodies — so the frames loop
+     * asks.
+     */
+    it('refuses a run inside an assertion under a repetition', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))->toContain('which sits in a repetition');
+    })->with([
+        '^(?:(?!a*a*c)a)*bX$',
+        '^(?:(?=a*a*c)a)*bX$',
+        '^(?:(?!a*a*c)a){2}bX$',
+        '^(?:(?:(?!a*a*c)a))*bX$',
+    ]);
+
+    it('leaves a cheap assertion and an unrepeated one alone', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))->toBeNull("[{$pattern}] costs one run or runs once");
+    })->with([
+        // ⚠️ One variable-width atom inside the assertion is the allowance, and it measures 6 ms.
+        '^(?:(?!a*c)a)*bX$',
+
+        // ⚠️ `?` runs its body at most once, so nothing multiplies.
+        '^(?:(?!aa*a*c)a)?bX$',
+
+        // ⚠️ And at the top level the assertion gets the top level's limit, which is two when anchored.
+        '^(?!a*a*c)ab$',
+        '^(?=.*[A-Z])(?=.*[0-9]).{8,64}$',
+    ]);
+});
+
+describe('a positive assertion can carry the anchor', function (): void {
+    /*
+     * ⚠️ A FALSE REFUSAL REVIEW FOUND: `(?=^)` says the position is the start as surely as `^` does, and
+     * the walk that looks for the anchor skipped past it as it skips every assertion — so
+     * `(?=^)(?:a|a)(?:a|a)(?:a|a)(?:a|a)b` was refused under the unanchored ambiguity budget while the
+     * `^` spelling publishes. `--strict` blocks an upgrade on one of those.
+     */
+    it('reads the anchor out of a positive assertion', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))->toBeNull("[{$pattern}] anchors through its assertion");
+    })->with([
+        '(?=^)'.str_repeat('(?:a|a)', 4).'b',
+        '(?<=^)'.str_repeat('(?:a|a)', 4).'b',
+        '(?=^)a*a*b',
+        '(?=^)(?=x)a*a*b',
+    ]);
+
+    it('does not read one out of a negative or a partial assertion', function (string $pattern): void {
+        /*
+         * ⚠️ `(?!^)` asserts the OPPOSITE, and `(?=^|,)` asserts nothing about the start on its own —
+         * every branch has to require it, which is the same rule the group case already follows.
+         */
+        expect(Pattern::unpublishable($pattern))->not->toBeNull();
+    })->with([
+        '(?!^)'.str_repeat('(?:a|a)', 4).'b',
+        '(?=^|,)'.str_repeat('(?:a|a)', 4).'b',
+        '(?!^)a*a*b',
+    ]);
+});
