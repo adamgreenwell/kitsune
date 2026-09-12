@@ -21,6 +21,7 @@ use Kitsune\Core\Fields\FieldTypeRegistry;
 use Kitsune\Core\Fields\StorageStrategy;
 use Kitsune\Core\Filament\Icons;
 use Kitsune\Core\Tenancy\Attributes\Unscoped;
+use Kitsune\Core\Tenancy\Concerns\DerivesGuardedColumns;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tenancy\Contracts\RefusesCascadingDeletes;
 use Kitsune\Core\Tenancy\Contracts\RequiresModelSave;
@@ -41,6 +42,8 @@ use RuntimeException;
 #[Unscoped]
 class EntryType extends Model implements RefusesCascadingDeletes, RequiresModelSave
 {
+    use DerivesGuardedColumns;
+
     /**
      * Handles that would collide with a route segment (ADR-012).
      *
@@ -493,6 +496,19 @@ class EntryType extends Model implements RefusesCascadingDeletes, RequiresModelS
         return [
             'subject_field_id' => 'the field must belong to this type and name exactly one person.',
             'org_id' => 'moving a type across orgs leaves its fields backed by storage that did not move.',
+            /*
+             * ⚠️ `handle` BECAUSE THE RESERVED-HANDLE CHECK IS PER ROW, and leaving it out was a hole
+             * review found. Both of the columns above are NULLABLE on a global type, so a
+             * `createQuietly()` or a direct `insertGetId()` that omitted them named no guarded column at
+             * all — the insert guard had nothing to inspect, allowed it, and the reserved-handle
+             * `saving` listener never ran. A type could therefore be planted on a handle ADR-012
+             * reserves, which is the collision with a registered route that listener exists to prevent.
+             *
+             * A guarded column list assembled from "the columns a guard DERIVES" missed the one a guard
+             * merely REFUSES, and a refusal is as per-row as a derivation.
+             */
+            'handle' => 'it is checked against the reserved handles ADR-012 lists, and a handle that '
+                .'collides with a registered route makes the admin unreachable.',
         ];
     }
 
@@ -577,6 +593,32 @@ class EntryType extends Model implements RefusesCascadingDeletes, RequiresModelS
                 throw new ReservedHandleException($type->handle);
             }
         });
+
+        /*
+         * ⚠️ LAST, AFTER EVERY GUARD, and the first version armed it in the FIRST listener — which
+         * review found was a stale proof waiting to happen. Listeners run in registration order and
+         * each of these throws rather than returning a verdict, so arming early meant a save that
+         * aborted in a later guard left the flag SET: catch the exception, call `saveQuietly()` on the
+         * same instance, and the builder accepts the write on a proof that no longer holds.
+         *
+         * `saved` clears the flag, and an aborted save never reaches `saved`. So the flag has to be
+         * set at the point where "all of them passed" is true, which is the end of the chain.
+         *
+         * ⚠️ REGISTERED HERE RATHER THAN APPENDED TO THE LAST GUARD, because the next guard added to
+         * this model will be registered after it and would silently move ahead of the arming again.
+         * A listener of its own is the one shape that keeps working when the list grows.
+         */
+        /*
+         * ⚠️ `creating` AND `updating`, NOT `saving`, and review found why. Laravel fires `saving`
+         * BEFORE it enters `performInsert()`/`performUpdate()`, so an observer that returns false or
+         * throws after this listener left the proof armed with nothing to clear it — neither those
+         * methods' `finally` nor `saved` had run. A quiet retry could then present it.
+         *
+         * These two fire INSIDE the attempt, which clears the proof on entry. So a proof can only
+         * exist for the attempt that armed it, and an abort before the attempt starts leaves none.
+         */
+        static::creating(fn (self $type) => $type->noteGuardedColumnsDerived());
+        static::updating(fn (self $type) => $type->noteGuardedColumnsDerived());
     }
 
     /** @return BelongsTo<Org, $this> */

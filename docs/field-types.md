@@ -347,6 +347,20 @@ User-supplied HTML rendered on public pages. **The only field type in v1 that is
 >
 > ⚠️ In the **builder**, not in a `saving` listener. `saveQuietly()`, `createQuietly()`, `updateQuietly()` and `withoutEvents()` suppress model events while still reaching the builder, so a listener would have left every quiet write unsanitized — in `entries.values` and in the revision snapshot alike. A guard has to sit where the write is, and an event is not where the write is.
 >
+> ⚠️ **That sentence was true here and unheeded three models along, which review found (issue #60).** `Site`, `EntryType` and `Field` also name columns a bulk write must not touch, and `ScopedBuilder` decided a write was a genuine model save by checking whether the guarded column was **present on the model behind it** — reasoning that a saving model has it and the empty instance `Model::query()` makes does not. A quiet write populates attributes and suppresses the callback, so it looked exactly like a save. Measured on `Site`:
+>
+> | Quiet write | What landed |
+> |---|---|
+> | `createQuietly([… 'base_url' => 'https://quiet.test/news'])` | `canonical_host` NULL — a site declaring a URL and reachable at none |
+> | `createQuietly([… supplying `canonical_host` and `path_prefix` itself])` | **`steal.test/news` under a rival org while another held `steal.test/`** |
+> | `$site->base_url = …; $site->saveQuietly()` | `base_url` moved, `canonical_host` left on the old address |
+>
+> The second is the cross-org URL theft ADR-021 says has no framework safety net, reached through the front door — and it is the case a presence check could never have caught, because every guarded column *was* on the model, supplied by the caller.
+>
+> **So the discriminator is proof rather than presence.** A model tells the builder its guarded columns have been derived (`RequiresModelSave::guardedColumnsAreDerived()`), and only the code that derives them can say so — an attribute any caller can supply, a flag it cannot. `FieldStorage::$shapeGuarded` and `GuardedStorageBuilder` were already this mechanism; it is generalised rather than copied a fifth time.
+>
+> ⚠️ **It says "derived", not "the `saving` event fired", and those are different claims.** `Entry`'s guarded columns are made correct in `convertFieldValuesForWrite()` — at the builder, which is this bullet's own principle already applied — so a quiet entry create is genuinely safe and stays allowed, as `AuditLogTest` deliberately asserts. A flag meaning "the event fired" would have refused it for nothing. `type_handle` is restamped there too, so the claim is true of *both* of `Entry`'s guarded columns rather than one; the relation check that `saving` performs beside it is a rule about relations rather than about a derived column, and is outside the claim by construction.
+>
 > A bulk write to `values` is refused rather than converted, and that is deliberate: one statement covers rows of many entry types with different field sets, so there is no single correct conversion for it. The conversion is per row because the schema is per row.
 >
 > **The trap in that bullet, recorded because the implementation had to avoid it.** `Entry::restoreRevision()` writes a revision's `values` back onto the entry. If the revision holds the pre-sanitization original *inside* `values`, restoring it puts unsanitized HTML into `entries.values` — which is the one thing this bullet forbids. So the original has to live somewhere a restore does not read: its own column on `entry_revisions`, not a key in the snapshot. Whoever implements the pipeline should read this bullet as "the original is kept beside the revision", not "inside it".

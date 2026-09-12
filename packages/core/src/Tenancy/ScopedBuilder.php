@@ -13,7 +13,9 @@ namespace Kitsune\Core\Tenancy;
 use Illuminate\Contracts\Database\Query\Expression;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
+use Kitsune\Core\Tenancy\Attributes\Unscoped;
 use Kitsune\Core\Tenancy\Contracts\RefusesCascadingDeletes;
 use Kitsune\Core\Tenancy\Contracts\RequiresModelSave;
 use RuntimeException;
@@ -67,6 +69,611 @@ class ScopedBuilder extends Builder
         $this->refusePerRowColumns($values);
 
         return parent::update($values);
+    }
+
+    /**
+     * ⚠️ THE INSERT FAMILY WAS UNGUARDED, so `columnsRequiringModelSave()` covered half the doors.
+     * Measured on `Site` before this: `update(['base_url' => …])` refused, and
+     * `insert([… 'base_url' => 'https://x.test' …])` created a row with `canonical_host = NULL` — a
+     * site declaring a public URL and reachable at none. `RequiresModelSave`'s docblock claimed the
+     * model event became "the only door rather than the first one", which was true of `update()`
+     * alone (issue #60).
+     *
+     * ⚠️ REFUSED BY METHOD, NOT BY `$model->exists`, which is the discriminator the reverted first
+     * attempt used and why it refused every ordinary create. `Model::performInsert()` writes through
+     * this builder, and during an insert `exists` is false — so a guard keyed on it fires on the
+     * legitimate path. `AuditedBuilder` already solved this for `Entry` and the answer is which
+     * METHOD was called: `performInsert()` uses `insertGetId()` for an incrementing model, and a bulk
+     * caller uses `insert()` or one of the `…Using` forms. Those are refused; `insertGetId()` is not.
+     *
+     * ⚠️ AND ONLY WHEN THE MODEL INCREMENTS, because that assumption is what makes the method a
+     * discriminator at all: a non-incrementing model's `performInsert()` uses `insert()`, so refusing
+     * it there would break creates exactly as the reverted attempt did. No `RequiresModelSave` model
+     * is non-incrementing today and `PerRowInsertGuardTest` asserts that, so the day one appears the
+     * test fails rather than the creates.
+     *
+     * ⚠️ `->toBase()` AND `DB::table()` REMAIN OUT OF SCOPE by construction. Guards live at the
+     * Eloquent layer and nothing there can police a caller who has explicitly stepped below it. That
+     * is a boundary rather than an oversight, and it is stated so it is not mistaken for one.
+     *
+     * @param  array<string, mixed>  $values
+     */
+    public function insert(array $values): bool
+    {
+        $this->refuseBulkCreate('insert');
+
+        /*
+         * ⚠️ AND THE PER-ROW GUARDS, because standing aside from the bulk refusal is not the same as
+         * being safe. Review found the gap: `$site->setIncrementing(false)` then `saveQuietly()` is a
+         * GENUINE model save through this builder — so `isPerformingModelSave($this)` is true and
+         * `refuseBulkCreate()` correctly steps back, since `performInsert()` uses `insert()` for a
+         * non-incrementing model — and a quiet save runs no listener, so nothing derived anything.
+         *
+         * Measured: `org_id`, `canonical_host` and `path_prefix` persisted verbatim. Two rows on one
+         * hostname and a row planted under another org, in one call.
+         *
+         * `insertGetId()` has run these two since the round that added them, and this method did not:
+         * the same asymmetry as the `insertGetId` proof check one round ago, which is why both are now
+         * beside each other rather than a page apart.
+         */
+        $this->guardEveryInsertedRow($values);
+
+        return parent::insert($values);
+    }
+
+    /**
+     * Run the per-row insert guards over every row a call carries.
+     *
+     * ⚠️ ONE PLACE, BECAUSE FOUR PATHS KEPT GETTING DIFFERENT ANSWERS. `insertGetId()` had these guards,
+     * `insert()` gained them a round later, and `insertOrIgnore()` and `insertOrIgnoreReturning()` had
+     * neither — each gap found separately by review. They ask the same two questions about the same
+     * values, so they ask them through the same method now.
+     *
+     * @param  array<mixed>  $values
+     */
+    private function guardEveryInsertedRow(array $values): void
+    {
+        foreach (self::insertRows($values) as $row) {
+            $this->refuseDetachedScopeKeys($row);
+            $this->refuseDetachedInsert('insert', $row);
+        }
+    }
+
+    /**
+     * Refuse an insert whose rows come from a subquery, on a model that declares a scope.
+     *
+     * ⚠️ THERE ARE NO VALUES TO GUARD, which is the whole reason this is a refusal rather than a check.
+     * `insertUsing()` and `insertOrIgnoreUsing()` name columns and a SELECT, so the scope keys of the
+     * rows they write are whatever that query returns — nothing at this layer can see them, let alone
+     * vouch for them. Review found both paths open for a scoped model with no per-row columns.
+     *
+     * `#[Unscoped]` is untouched: a model whose keys mean nothing has nothing for this to protect.
+     */
+    private function refuseSubqueryInsert(string $method): void
+    {
+        $model = $this->getModel();
+
+        if (ScopeWrites::suspended() || ScopeResolver::for($model::class) === Unscoped::class) {
+            return;
+        }
+
+        throw new RuntimeException(sprintf(
+            '%s cannot be written by %s() on %s: the rows come from a subquery, so their scope keys are '
+            .'whatever it returns and nothing here can vouch for them (ADR-021). Select the rows, then '
+            .'save them, or use withoutScopeBecause() if this is deliberate.',
+            $model::class,
+            $method,
+            $model::class,
+        ));
+    }
+
+    /**
+     * The rows an `insert()` call carries, whether it was handed one or a list.
+     *
+     * ⚠️ BOTH SHAPES, because `Query\Builder::insert()` takes either and a guard that read only the
+     * first would be a guard a second row walks past. `insertGetId()` needs no such helper — it takes
+     * one row by signature — which is exactly how the two got out of step.
+     *
+     * @param  array<mixed>  $values
+     * @return list<array<string, mixed>>
+     */
+    private static function insertRows(array $values): array
+    {
+        if ($values === []) {
+            return [];
+        }
+
+        /*
+         * ⚠️ THE FIRST VALUE DECIDES, NOT `array_is_list()`, which review found: Laravel reads
+         * `[42 => ['org_id' => …]]` as a multi-row insert from its first array value, while
+         * `array_is_list()` is false for it — so the whole payload was wrapped as ONE row, the guard saw
+         * only the numeric top-level key, and a cross-org insert went through. Measured, one row under
+         * another org.
+         *
+         * Laravel's own test is `is_array(reset($values))`, so this asks what it asks.
+         */
+        return is_array(reset($values))
+            ? array_values(array_filter($values, 'is_array'))
+            : [$values];
+    }
+
+    /** @param  array<string, mixed>  $values */
+    public function insertOrIgnore(array $values): int
+    {
+        // ⚠️ Refused whatever the model's key strategy: `performInsert()` never uses this one, so
+        // there is no legitimate per-row caller to protect.
+        $this->refuseBulkCreate('insertOrIgnore', always: true);
+
+        /*
+         * ⚠️ AND THE SCOPE KEYS, because `refuseBulkCreate()` returns immediately for a model with no
+         * per-row columns — which review found leaves a SCOPED one unguarded. `SiteGroup` is
+         * `#[OrgScoped]` and declares no derived columns, so from org A
+         * `SiteGroup::query()->insertOrIgnore(['org_id' => $orgB, …])` created org B's row. Measured.
+         *
+         * "Refused in bulk" and "the keys are somebody else's" are different questions and the first
+         * returning early is not an answer to the second.
+         */
+        $this->guardEveryInsertedRow($values);
+
+        return parent::insertOrIgnore($values);
+    }
+
+    /**
+     * @param  array<int, string>  $columns
+     * @param  mixed  $query
+     */
+    public function insertUsing(array $columns, $query): int
+    {
+        $this->refuseBulkCreate('insertUsing', always: true);
+
+        $this->refuseSubqueryInsert('insertUsing');
+
+        return parent::insertUsing($columns, $query);
+    }
+
+    /**
+     * @param  array<int, string>  $columns
+     * @param  mixed  $query
+     */
+    public function insertOrIgnoreUsing(array $columns, $query): int
+    {
+        $this->refuseBulkCreate('insertOrIgnoreUsing', always: true);
+
+        $this->refuseSubqueryInsert('insertOrIgnoreUsing');
+
+        return parent::insertOrIgnoreUsing($columns, $query);
+    }
+
+    /**
+     * ⚠️ `insertGetId()` IS PUBLICLY CALLABLE, which the first version of this guard treated as if it
+     * were `performInsert()`'s private door. `Site::query()->insertGetId([… 'base_url' => …])`
+     * therefore still wrote a row with whatever `canonical_host` the caller chose, or none — the same
+     * cross-org claim hole the change was meant to close, reached one method along. Found by review,
+     * and the test that claimed to enumerate every creation path did not cover it.
+     *
+     * ⚠️ THE DISCRIMINATOR IS THE MODEL BEHIND THE BUILDER, not the method. `Model::performInsert()`
+     * builds its query from `newModelQuery()`, so `getModel()` IS the instance being saved and every
+     * guarded value in `$values` came off its own attributes — the `saving` hooks having already put
+     * them there. `Site::query()` builds one from a fresh, empty instance, so a guarded column in
+     * `$values` has nothing on the model to match. That is a general test rather than a per-model one,
+     * which matters because the four guarded models guard different KINDS of column: `Site`'s are
+     * derived, `EntryType`'s and `Field`'s are validated, and a create legitimately names those.
+     *
+     * @param  array<string, mixed>  $values
+     * @param  string|null  $sequence
+     * @return int
+     */
+    public function insertGetId(array $values, $sequence = null)
+    {
+        /*
+         * ⚠️ THE SCOPE KEYS TOO, WHICH THIS PATH ALONE WAS MISSING — review found it, and the hole is
+         * a cross-org write rather than a malformed column. `org_id` is NOT in
+         * `Site::columnsRequiringModelSave()` and does not need to be: it is stamped by
+         * `EnforcesScope`'s `creating` listener, which `insertGetId()` never dispatches. So a caller in
+         * org A could name org B's id, omit every guarded column, and leave `refuseDetachedInsert()`
+         * with nothing to inspect. Measured: the row landed in org B.
+         *
+         * ⚠️ AND `update()` HAS ALWAYS DONE THIS, as have both of `AuditedBuilder`'s paths. Three call
+         * sites guarded the keys and the fourth delegated straight to the parent — the shape of gap
+         * this whole issue is about, one method along again.
+         */
+        $this->refuseDetachedScopeKeys($values);
+        $this->refuseDetachedInsert('insertGetId', $values);
+
+        return parent::insertGetId($values, $sequence);
+    }
+
+    /**
+     * @param  array<string, mixed>  $values
+     * @param  non-empty-array<non-empty-string>  $returning
+     * @param  non-empty-string|non-empty-array<non-empty-string>|null  $uniqueBy
+     * @return Collection<int, mixed>
+     */
+    public function insertOrIgnoreReturning(array $values, array $returning = ['*'], array|string|null $uniqueBy = null): Collection
+    {
+        // `performInsert()` never uses this one, so there is no per-row caller to protect.
+        $this->refuseBulkCreate('insertOrIgnoreReturning', always: true);
+
+        // See `insertOrIgnore()`: a model with no per-row columns still has scope keys.
+        $this->guardEveryInsertedRow($values);
+
+        /*
+         * ⚠️ Forwarded through `toBase()` rather than `parent::`, because Eloquent's builder does not
+         * declare this method — it reaches the QUERY builder through `__call`, which static analysis
+         * cannot follow. Naming the real receiver is clearer than annotating around the magic.
+         */
+        return $this->toBase()->insertOrIgnoreReturning($values, $returning, $uniqueBy);
+    }
+
+    /**
+     * Refuse a HAND-ROLLED insert that names another scope's key.
+     *
+     * ⚠️ THE SCOPE KEYS WERE UNGUARDED ON THIS PATH ALONE — review found it, and the hole is a
+     * cross-org write rather than a malformed column. `org_id` is NOT in
+     * `Site::columnsRequiringModelSave()` and does not need to be: it is stamped by `EnforcesScope`'s
+     * `creating` listener, which `insertGetId()` never dispatches. So a caller in org A could name org
+     * B's id, omit every guarded column, and leave `refuseDetachedInsert()` nothing to inspect.
+     * Measured: the row landed in org B. `update()` has always guarded the keys, and so have both of
+     * `AuditedBuilder`'s paths — three call sites did and the fourth delegated straight to the parent.
+     *
+     * ⚠️ ONLY A DETACHED INSERT, AND THAT LIMIT IS MEASURED RATHER THAN CHOSEN. Guarding every insert
+     * refuses 37 tests across ten files, because naming another org's id on a MODEL create is a shape
+     * this codebase uses deliberately — a fixture building a rival org's data, a console command
+     * seeding one. That is a policy about model creates, settled where `EnforcesScope` runs, and this
+     * method has no business relitigating it: `Entry` already guards its keys on insert through
+     * `AuditedBuilder`, so the two would otherwise disagree in the other direction.
+     *
+     * ⚠️ THE DISCRIMINATOR IS WHETHER THIS KEY CAME OFF THE MODEL, per key, and it took two attempts.
+     * "The model has any attributes at all" was the first, and it was presence again and wrong again:
+     * `Site` declares a default `url_strategy`, so a FRESH instance has an attribute and
+     * `Model::query()` looked like a save. Caught by the test for the very hole this closes.
+     *
+     * Equality on the key itself is the question actually being asked. `Model::performInsert()` builds
+     * `$values` FROM the instance's attributes, so the org id there is the org id on the model; a
+     * hand-rolled insert names one the model has never held. This is safe where equality was not safe
+     * for `refuseDetachedInsert()` — there `AuditedBuilder` deliberately TRANSFORMS an `Entry`'s
+     * `values` on the way down, and nothing transforms a scope key.
+     *
+     * @param  array<string, mixed>  $values
+     */
+    private function refuseDetachedScopeKeys(array $values): void
+    {
+        /*
+         * ⚠️ THE ESCAPE HATCH STANDS THIS DOWN TOO, and review found it did not — while the refusal
+         * below names that hatch as the remedy. `guardScopeKeys()`'s own check says "the reviewable
+         * escape hatch stands BOTH enforcers down, not one", and this was a third enforcer running in
+         * front of it: `Site::withoutScopeBecause('provisioning', fn ($q) => $q->insertGetId([...]))`
+         * threw from the no-context branch before the suspension was ever consulted.
+         *
+         * A guard whose message recommends a remedy that the guard itself defeats is worse than no
+         * message — provisioning is the documented reason the hatch exists.
+         */
+        if (ScopeWrites::suspended()) {
+            return;
+        }
+
+        $model = $this->getModel();
+
+        /*
+         * ⚠️ THE MODEL BEHIND THE BUILDER IS EVIDENCE A CALLER CAN MANUFACTURE, which review found and
+         * which invalidates the whole comparison below as an authorisation. `getModel()` and
+         * `setModel()` are public, so:
+         *
+         *     $query = Site::query();
+         *     $query->getModel()->org_id = $victim->id;
+         *     $query->insertGetId(['org_id' => $victim->id, … ]);   // and no URL columns
+         *
+         * makes every key match, empties `$detached`, and returns before anything else looks. Measured
+         * from an org's own context: the row was written and the victim org owned it.
+         *
+         * ⚠️ SO THE CONTEXT IS ASKED FIRST, BECAUSE THE CONTEXT IS NOT FORGEABLE — it is application
+         * state reached through the container, and the audited way to stand it down is the suspension
+         * checked above. `guardScopeKeys()` compares the written keys against it and refuses a write
+         * that names another scope, whatever the model behind the query says.
+         *
+         * ⚠️ AND WHETHER TO ASK IS READ FROM THE CLASS, NOT FROM THE INSTANCE. `ScopeResolver::for()`
+         * returns the scope a model DECLARES with an attribute, which cannot change at runtime, so this
+         * decision has no mutable input at all. A declared scope means its keys are enforced — and
+         * `EnforcesScope`'s own `creating` listener already applies exactly this rule, so nothing
+         * legitimate changes: what changes is that a QUIET or hand-rolled write can no longer skip it.
+         *
+         * `#[Unscoped]` is left alone deliberately. `EntryType::create(['org_id' => $theirs->id])` is a
+         * settled shape with a test of its own — a global type must be creatable for another org — and
+         * the comparison below is what keeps a hand-rolled insert on those models honest.
+         */
+        if (ScopeResolver::for($model::class) !== Unscoped::class) {
+            /*
+             * ⚠️ AND NO CONTEXT IS NOT PERMISSION HERE EITHER, which review found the declared-scope
+             * path missing. `guardScopeKeys()` accepts every value when the context has none to compare
+             * against — right for an UPDATE, where the row already belongs to somebody — and a quiet
+             * create suppresses `EnforcesScope`, so `SiteGroup::createQuietly(['org_id' => $victim, …])`
+             * from a job with no `Context` was accepted by both halves and planted the row. Measured:
+             * ALLOWED, one row for an org nothing had vouched for.
+             *
+             * A model that DECLARES a scope says its keys mean something, so a non-null one with nothing
+             * to check it against fails closed. The audited way to say it is deliberate is the
+             * suspension checked above, which is what provisioning uses.
+             */
+            $this->refuseKeysWithNoContext($values);
+            $this->guardScopeKeys($values);
+        }
+
+        $detached = [];
+
+        foreach ($values as $column => $value) {
+            $bare = $this->bareColumn((string) $column);
+
+            if ($bare !== 'org_id' && $bare !== 'site_id') {
+                continue;
+            }
+
+            $onModel = $model->getAttribute($bare);
+
+            // Loose on purpose: an id is an int on the model and may arrive as a numeric string.
+            if ($onModel === null || (string) $onModel !== (string) $value) {
+                $detached[$bare] = $value;
+            }
+        }
+
+        if ($detached === []) {
+            return;
+        }
+
+        /*
+         * ⚠️ NO CONTEXT IS NOT PERMISSION, which review found. `guardScopeKeys()` accepts every value
+         * when the context has none to compare against — right for an update, where the row already
+         * belongs to somebody and the caller is not choosing — and wrong here: a console command or a
+         * queue job with no `Context` could hand-roll an insert naming ANY org, and nothing could vouch
+         * for it either way. Measured, that is the same cross-org planting as the earlier case with the
+         * comparison removed instead of satisfied.
+         *
+         * `AuditedBuilder` already treats a keyed write with no context this way for `Entry` — "refuses
+         * a create with no org context, and leaves no entry behind" — so this makes the two agree rather
+         * than inventing a policy.
+         */
+        $this->refuseKeysWithNoContext($detached);
+
+        $this->guardScopeKeys($detached);
+    }
+
+    /**
+     * Refuse a scope key written with no context to vouch for it.
+     *
+     * ⚠️ NO CONTEXT IS NOT PERMISSION, and it took two rounds to apply that to both callers.
+     * `guardScopeKeys()` accepts every value when the context has none to compare against, which is
+     * right for an UPDATE — the row already belongs to somebody and the caller is not choosing — and
+     * wrong for an INSERT, where the caller is choosing and nothing can vouch for the choice either way.
+     *
+     * Both paths that write a scope key on an insert ask this now: a hand-rolled one, whose keys did
+     * not come off the model, and a DECLARED-SCOPE one whatever the model says — because a quiet create
+     * suppresses `EnforcesScope` and review measured `SiteGroup::createQuietly(['org_id' => $victim])`
+     * planting a row from a job with no context.
+     *
+     * `AuditedBuilder` already refuses a keyed `Entry` create with no org context, so this makes the
+     * builders agree rather than inventing a policy.
+     *
+     * @param  array<string, mixed>  $values
+     */
+    private function refuseKeysWithNoContext(array $values): void
+    {
+        $context = app(Context::class);
+
+        foreach ($values as $column => $value) {
+            $bare = $this->bareColumn((string) $column);
+
+            if ($bare !== 'org_id' && $bare !== 'site_id') {
+                continue;
+            }
+
+            $current = $bare === 'org_id' ? $context->orgId() : $context->siteId();
+
+            if ($value !== null && $current === null) {
+                throw new RuntimeException(sprintf(
+                    'Refusing to insert %s with [%s] = %s from no scope at all: with no context '
+                    .'established there is nothing that can vouch for the value either way, and a quiet '
+                    .'or hand-rolled write dispatches no `EnforcesScope` event to derive it (ADR-021). '
+                    .'Save the model with a context established, or use withoutScopeBecause() if this is '
+                    .'deliberate.',
+                    $this->getModel()::class,
+                    $bare,
+                    is_scalar($value) ? (string) $value : gettype($value),
+                ));
+            }
+        }
+    }
+
+    /**
+     * Refuse an insert that names a guarded column the model behind it never set.
+     *
+     * ⚠️ THE COMPARISON IS AGAINST THE BUILDER'S OWN MODEL, and that is what separates a save from a
+     * hand-rolled insert without needing to know what any column means. On a save the values came
+     * off that instance, so they match; on `Model::query()->insertGetId([...])` the instance is empty
+     * and they cannot.
+     *
+     * ⚠️ ABSENT IS NOT A MISMATCH. A row that names no guarded column has nothing this can check and
+     * nothing it needs to: the columns' correctness is the thing being protected, and a row that does
+     * not touch them cannot get them wrong.
+     *
+     * @param  array<string, mixed>  $values
+     */
+    private function refuseDetachedInsert(string $method, array $values): void
+    {
+        $model = $this->getModel();
+
+        if (ScopeWrites::suspended() || ! $model instanceof RequiresModelSave) {
+            return;
+        }
+
+        foreach ($model::columnsRequiringModelSave() as $column => $reason) {
+            if (! array_key_exists($column, $values)) {
+                continue;
+            }
+
+            /*
+             * ⚠️ PRESENCE PROVED NOTHING, WHICH IS WHAT REVIEW FOUND. This asked whether the guarded
+             * column existed on the model behind the builder, reasoning that a saving model has it and
+             * the empty instance `Model::query()` makes does not. `createQuietly()`, `saveQuietly()`
+             * and anything inside `withoutEvents()` populate attributes while suppressing the `saving`
+             * callback that derives them — so `Site::createQuietly(['base_url' => …])` wrote
+             * `canonical_host = NULL` for a site declaring a public URL, and a quiet create naming the
+             * derived columns itself STOLE AN OVERLAPPING CROSS-ORG CLAIM. Measured: `steal.test/` held
+             * by one org, `steal.test/news` written under another, which is the ADR-021 theft this
+             * guard exists to prevent.
+             *
+             * An attribute can be supplied by any caller. The flag is set by the code that derives, so
+             * a path that skipped the deriving cannot present it — and equality, the version before
+             * presence, was never available: `AuditedBuilder::insertGetId()` transforms an `Entry`'s
+             * `values` before delegating here, so it no longer equals the attribute it came from and
+             * comparing them refused every audited create.
+             */
+            /*
+             * ⚠️ AND THROUGH THIS BUILDER, which review found this branch not asking. The proof says the
+             * guards ran; it does not say WHICH write they ran for. A `creating` or `updating` observer
+             * can call `$site->newQuery()->insertGetId([…])` after the arming listener, and that new
+             * builder wraps the same model — so the proof was true for a nested hand-written insert.
+             *
+             * `refuseBulkCreate()` was taught this one round ago and this branch was not, which is the
+             * asymmetry rather than the mechanism: both questions are "is this write the save", and both
+             * ask the model for the builder it is being saved through.
+             */
+            if ($model->isPerformingModelSave($this) && $model->guardedColumnsAreDerived()) {
+                continue;
+            }
+
+            throw new RuntimeException(sprintf(
+                '[%s] cannot be written by %s() on %s: %s The model behind this query never set that '
+                .'value, so the checks that derive and validate it did not run. Save the model '
+                .'instead.',
+                $column,
+                $method,
+                $model::class,
+                $reason,
+            ));
+        }
+    }
+
+    /**
+     * Refuse a bulk creation path on a model whose columns need a per-row guard.
+     *
+     * ⚠️ THE MESSAGE NAMES THE COLUMNS AND THE REASON, because a refusal an importer cannot act on
+     * is a wall rather than a guard. Every column in `columnsRequiringModelSave()` is listed with
+     * the sentence the model gave for it.
+     */
+    private function refuseBulkCreate(string $method, bool $always = false): void
+    {
+        $model = $this->getModel();
+
+        if (ScopeWrites::suspended() || ! $model instanceof RequiresModelSave) {
+            return;
+        }
+
+        // See the note on `insert()`: the method is a discriminator only where `performInsert()`
+        // does not use it.
+        /*
+         * ⚠️ NOT `getIncrementing()`, WHICH A CALLER CAN SET. Review measured it:
+         * `Site::query()->getModel()->setIncrementing(false)` then `insert()` was classified as a
+         * non-incrementing model save although no model event ran — and with caller-authored
+         * `canonical_host` and an overlapping `path_prefix` it landed the cross-org claim
+         * `refuseOverlappingClaim()` exists to prevent. Two rows on one host, measured.
+         *
+         * The question was never "does this model increment" but "is this a model save", and
+         * `isPerformingModelSave()` answers that one directly: true inside a non-incrementing model's
+         * `insert()`, false for a hand-rolled one. The key strategy is no longer part of the decision,
+         * so `RequiresModelSave`'s assumption that every implementor increments is gone with it.
+         */
+        if (! $always && $model->isPerformingModelSave($this)) {
+            return;
+        }
+
+        $guarded = $model::columnsRequiringModelSave();
+
+        if ($guarded === []) {
+            return;
+        }
+
+        throw new RuntimeException(sprintf(
+            '%s cannot be created in bulk with %s(): %s A bulk insert dispatches no model events, so '
+            .'the checks that derive and validate those columns never run — and the row is written '
+            .'with them empty, which for a URL claim means a site declaring an address it can never '
+            .'be reached at. Save the model instead.',
+            $model::class,
+            $method,
+            implode(' ', array_map(
+                static fn (string $column, string $reason): string => "[{$column}] {$reason}",
+                array_keys($guarded),
+                $guarded,
+            )),
+        ));
+    }
+
+    /**
+     * ⚠️ REFUSED OUTRIGHT, because nothing this class does runs on it.
+     *
+     * `updateOrInsert()` is forwarded WHOLE to the query builder — the repository already says so in
+     * `AuditedBuilder::updateOrInsert()`, and review found the lesson had not travelled here. Neither
+     * the `insert()` override nor the `update()` one sees it, and it has THREE consequences rather than
+     * the two that are obvious. Measured, all three:
+     *
+     *   unmatched predicate   a `sites` row with `base_url = https://planted.test` and
+     *                         `canonical_host = NULL` — a site declaring a public address and
+     *                         reachable at none, which is the sentence `RequiresModelSave` exists for
+     *   matched predicate     `entry_types.handle` moved to `admin`, a handle ADR-012 RESERVES because
+     *                         it collides with a registered route
+     *   either way            THE GLOBAL SCOPE IS NEVER APPLIED. On the same row in the same org
+     *                         context, `update()` reported 0 rows affected and `updateOrInsert()`
+     *                         renamed another org's site. Scopes are applied by the Eloquent builder;
+     *                         a call forwarded past it is unscoped.
+     *
+     * ⚠️ AND NOT CONDITIONAL ON `ScopeWrites::suspended()` or on `RequiresModelSave`, unlike every
+     * other guard here. Those relax a check that RAN; there is no check to relax, because the method is
+     * not wired to this builder at all — and the third consequence has nothing to do with derived
+     * columns, so a model with none is no safer. `firstOrNew()` then `save()` is the same operation
+     * through the door that has the guards, and `DB::table()` remains the stated boundary for a caller
+     * who means to step below Eloquent.
+     *
+     * ⚠️ FOUR OTHER BUILDERS ALREADY REFUSE IT — `AuditedBuilder`, `AppendOnlyBuilder`,
+     * `GuardedRelationBuilder`, `GuardedStorageBuilder`. This was the fifth and the only one missing,
+     * which is why the fix came with a sweep of every write method on the query builder rather than
+     * this one method.
+     *
+     * @param  array<string, mixed>  $attributes
+     * @param  array<string, mixed>  $values
+     * @return bool
+     */
+    public function updateOrInsert(array $attributes, array|callable $values = [])
+    {
+        throw new RuntimeException(sprintf(
+            'updateOrInsert() cannot be used on %s: Laravel forwards it whole to the query builder, so '
+            .'neither the insert guards nor the update guards on this builder run — and the global '
+            .'scope is not applied either, so it can write another org\'s row. Measured, it planted a '
+            .'site with a public URL and no canonical host, moved an entry type onto a reserved '
+            .'handle, and renamed a rival org\'s site that a scoped update could not see. Use '
+            .'firstOrNew() and save().',
+            $this->getModel()::class,
+        ));
+    }
+
+    /**
+     * ⚠️ AND `truncate()`, which the same sweep found — the worse of the two.
+     *
+     * A global scope constrains a WHERE clause and `TRUNCATE` has none, so there is nothing for it to
+     * narrow. Measured: two sites in two orgs, one org's context, `Site::query()->truncate()` left ZERO
+     * rows. It also bypasses the cascade refusal that `delete()` and `forceDelete()` route through, so
+     * every referenced entry goes with it.
+     *
+     * ⚠️ THE RULE THE SWEEP PRODUCED, rather than a list of methods to copy: `truncate()` belongs
+     * wherever `delete()` is guarded. The three builders that override it all guard deletion;
+     * `GuardedStorageBuilder` guards CREATION only and correctly has no override, because truncating
+     * creates nothing. This builder guards deletion, so the absence was a gap rather than a decision.
+     */
+    public function truncate(): void
+    {
+        throw new RuntimeException(sprintf(
+            'truncate() cannot be used on %s: it has no WHERE clause for the org scope to narrow, so '
+            .'it removes every row in every org — measured, two sites in two orgs left zero — and it '
+            .'bypasses the cascade refusal that delete() routes through. Delete through the model.',
+            $this->getModel()::class,
+        ));
     }
 
     /**
@@ -194,12 +801,26 @@ class ScopedBuilder extends Builder
         // `Model::performUpdate()` writes through the builder — so refusing
         // every bulk-shaped write would refuse `$model->update(...)` as well.
         //
-        // A loaded model is what separates them: `performUpdate()` roots its
-        // query in the instance being saved, while `Model::query()` builds one
-        // from a fresh, non-existent instance. That is the same discriminator
-        // Laravel uses for `setKeysForSaveQuery()`, and the guards it stands
-        // aside for have already run in `saving`.
-        if ($model->exists) {
+        // ⚠️ AND `exists` ALONE WAS THE WRONG TEST, for the reason the insert
+        // guard records at length: this stood aside because "the guards it
+        // stands aside for have already run in `saving`", and a quiet save
+        // suppresses `saving` while still being an instance save. Measured:
+        // `$site->saveQuietly()` moved `base_url` with `canonical_host` left on
+        // the old address. Both halves are needed — one says it is an instance
+        // write rather than a bulk one, and the flag says the guards for that
+        // write actually ran.
+        /*
+         * ⚠️ AND `exists` WAS ALSO ARRANGEABLE, which review found next. `Builder::setModel()` is
+         * public, so `$query = Entry::query(); $query->setModel($loadedEntry); $query->update([…])`
+         * presented a model that exists AND — through `AuditedBuilder::update()` calling
+         * `convertFieldValuesForWrite()` on that one entry — a freshly armed proof. The update then ran
+         * across every matching row, converting all of them against one entry's schema and skipping
+         * their own per-row validation. Measured: two rows, and the second one's values replaced.
+         *
+         * `isPerformingModelSave()` cannot be arranged: it is private, has no setter, and is true only
+         * inside the instance's own `performUpdate()`. A model handed to `setModel()` is not in one.
+         */
+        if ($model->isPerformingModelSave($this) && $model->guardedColumnsAreDerived()) {
             return;
         }
 

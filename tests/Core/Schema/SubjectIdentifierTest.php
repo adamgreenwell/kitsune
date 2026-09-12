@@ -19,6 +19,7 @@ use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Relations\GuardedBelongsToMany;
 use Kitsune\Core\Tenancy\Context;
+use Kitsune\Core\Tenancy\ScopeWrites;
 
 /*
  * ADR-020 primitives 2 and 3, which the compliance tooling in v1.1 is built
@@ -782,12 +783,20 @@ describe('a rival\'s storage cannot be borrowed at all', function (): void {
     });
 
     it('still refuses the nomination for a row that predates the guard', function (): void {
-        // Defence in depth: the attachment guard is new, so a row written
-        // before it could already exist. Created without events to represent
-        // exactly that.
-        $field = Field::withoutEvents(fn () => Field::create([
+        /*
+         * Defence in depth: the attachment guard is new, so a row written before it could already
+         * exist. This fabricates exactly that.
+         *
+         * ⚠️ `ScopeWrites::suspend()` AND NOT `withoutEvents()` ALONE, which stopped being enough
+         * once the builder required proof that the guards ran rather than trusting an attribute to be
+         * present (issue #60). Suppressing events is what makes this row bad; it is now also what
+         * makes the builder refuse to write it, so the fixture needs the reviewable opt-out the guard
+         * is designed around. That reads better than it did: the row is deliberately written past a
+         * guard, and the test now says so.
+         */
+        $field = ScopeWrites::suspend(fn () => Field::withoutEvents(fn () => Field::create([
             'entry_type_id' => $this->type->id, 'field_storage_id' => $this->theirs->id, 'label' => 'Their email',
-        ]));
+        ])));
 
         expect(fn () => $this->type->update(['subject_field_id' => $field->id]))
             ->toThrow(RuntimeException::class, "another organisation's storage");
@@ -1259,14 +1268,122 @@ describe('a target that leaves a site and comes back is rechecked', function ():
         $visit = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Visit']);
         $visit->related()->attach($alice->id, ['field_storage_id' => $storage->id]);
 
-        // Away, changed while the pivot is invisible, and now back.
-        Entry::withoutScopeBecause('fixture: moving the target between sites', function () use ($alice, $otherSite, $article) {
-            $alice->forceFill(['site_id' => $otherSite->id])->saveQuietly();
-            $alice->forceFill(['entry_type_id' => $article->id, 'type_handle' => 'article'])->saveQuietly();
-        });
+        /*
+         * Away, changed while the pivot is invisible, and now back.
+         *
+         * ⚠️ THE TYPE CHANGE IS AN ORDINARY UPDATE IN THE OTHER SITE'S CONTEXT, and it used to be a
+         * `saveQuietly()` here. The quiet shortcut is refused now — the relation veto moved to the
+         * builder, where a suppressed listener cannot skip it — so keeping it would have made this
+         * fixture fail for the right reason and the test unrunnable for the wrong one.
+         *
+         * ⚠️ AND REWRITING IT MADE THE TEST BETTER RATHER THAN MERELY GREEN, which is the reason to
+         * prefer it over staging the row below Eloquent: the sequence is reachable exactly as written,
+         * measured. The move needs the hatch because `EnforcesScope` guards a `site_id` change, and the
+         * type change needs nothing — from site B, site A's pivot is invisible, so the veto has no
+         * relation to consult and allows it. That is the hole this test exists to close, now demonstrated
+         * with the writes a real operator would make instead of a shortcut.
+         */
+        Entry::withoutScopeBecause(
+            'fixture: an operator moves the target to another site',
+            fn () => $alice->forceFill(['site_id' => $otherSite->id])->save(),
+        );
+
+        app(Context::class)->setSite($otherSite);
+
+        Entry::query()->findOrFail($alice->id)->update(['entry_type_id' => $article->id]);
+
+        app(Context::class)->setSite($this->site);
 
         expect(fn () => $alice->fresh()->update(['site_id' => $this->site->id]))
             ->toThrow(RuntimeException::class, 'does not accept');
+    });
+
+    it('refuses a QUIET move back, which the listener cannot see', function (): void {
+        /*
+         * ⚠️ THE VETO WAS A `saving` LISTENER AND A QUIET WRITE SUPPRESSES IT, which review found — and
+         * the builder's restamp branch runs only when a TYPE column moves, so a write whose only dirty
+         * column is `site_id` reached neither. Measured: the quiet move home was ALLOWED and the
+         * relation resurfaced naming a target it refuses.
+         *
+         * ⚠️ `visibleOnly: false` at the builder too, and that asymmetry is the re-entry rule itself: on
+         * the way IN every relation in the org counts, because they are all about to be visible again.
+         * The type check uses the default for the opposite reason — otherwise one site could freeze
+         * another site's records.
+         */
+        $otherSite = Site::create([
+            'org_id' => $this->org->id, 'handle' => 'q', 'slug' => 'reentry-quiet', 'name' => 'Q',
+        ]);
+        $article = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'article', 'name' => 'A', 'plural_name' => 'As',
+        ]);
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'person', 'type' => 'relation',
+            'pii_class' => 'personal', 'cardinality' => 1,
+            'settings' => ['targetTypes' => [$this->type->handle]],
+        ]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id, 'label' => 'Person',
+        ]);
+
+        $alice = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Alice']);
+        $visit = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Visit']);
+        $visit->related()->attach($alice->id, ['field_storage_id' => $storage->id]);
+
+        Entry::withoutScopeBecause(
+            'fixture: an operator moves the target to another site',
+            fn () => $alice->forceFill(['site_id' => $otherSite->id])->save(),
+        );
+
+        app(Context::class)->setSite($otherSite);
+
+        Entry::query()->findOrFail($alice->id)->update(['entry_type_id' => $article->id]);
+
+        app(Context::class)->setSite($this->site);
+
+        $back = Entry::query()->withoutGlobalScopes()->findOrFail($alice->id);
+        $back->site_id = $this->site->id;
+
+        expect(fn () => $back->saveQuietly())
+            ->toThrow(RuntimeException::class, 'does not accept')
+            ->and((int) DB::table('entries')->where('id', $alice->id)->value('site_id'))
+            ->toBe($otherSite->id, 'a quiet move resurfaced a relation the field refuses');
+    });
+
+    it('refuses a BULK move back, which has no row to check', function (): void {
+        /*
+         * ⚠️ THE THIRD DOOR INTO ONE STATE, after the ordinary save and the quiet one. A bulk update runs
+         * `convertFieldValuesForWrite()` on the builder's FRESH PROTOTYPE, so `$this->exists` is false and
+         * the re-entry veto has no entry to ask about. Measured: a relation in site B, its target moved to
+         * site A and retyped there legitimately, then
+         * `Entry::query()->whereKey($id)->update(['site_id' => null])` made it org-shared and visible in
+         * site B again with the invalid relation attached — ALLOWED, one row.
+         *
+         * ⚠️ REFUSED RATHER THAN CHECKED ROW BY ROW, which is the honest trade: validating every affected
+         * row means a query per row inside a statement whose purpose is to avoid them, and the shape has
+         * no legitimate caller. `site_id` is on `columnsRequiringModelSave()` now, beside `values` and
+         * `type_handle`, which are there for the same reason — a guard that needs the row cannot run
+         * without one.
+         */
+        $alice = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Alice']);
+
+        /*
+         * ⚠️ `null`, NOT ANOTHER SITE'S ID, and my first version used the latter and tested the wrong
+         * guard: moving to a site the context is not scoped to is refused by `guardScopeKeys()` before
+         * the bulk-column check is reached, so the assertion passed for a reason unrelated to this fix.
+         * `null` means ORG-SHARED, which the scope guard permits — and which is exactly the shape
+         * review's scenario used to make an entry visible in the site holding the stale relation.
+         */
+        expect(fn () => Entry::query()->whereKey($alice->getKey())->update(['site_id' => null]))
+            ->toThrow(RuntimeException::class, 'cannot be written in bulk')
+            ->and((int) DB::table('entries')->where('id', $alice->getKey())->value('site_id'))
+            ->toBe($this->site->id, 'a bulk update made an entry org-shared without rechecking relations');
+
+        // ⚠️ And an ORDINARY move still works, or this would have refused the operation rather than the
+        // shape — the veto runs on that path and has a row to run against.
+        $alice->site_id = null;
+
+        expect($alice->save())->toBeTrue()
+            ->and(DB::table('entries')->where('id', $alice->getKey())->value('site_id'))->toBeNull();
     });
 
     it('allows the move back when the relation is still valid', function (): void {
@@ -1323,6 +1440,54 @@ describe('a denormalised handle is derived, never accepted', function (): void {
         $alice->update(['type_handle' => 'article']);
 
         expect($alice->fresh()->type_handle)->toBe($this->type->handle);
+    });
+
+    it('runs the relation veto on a quiet type change too', function (): void {
+        /*
+         * ⚠️ THE VETO WAS A `saving` LISTENER AND A QUIET WRITE SUPPRESSES IT, which review found — and
+         * the builder then restamped the forbidden handle and armed the derived proof, so `ScopedBuilder`
+         * accepted the write with the invalid pivot still attached. Nothing downstream rechecks
+         * `targetTypes`: not `subjectValue()`, not the relational `whereSubjectIs()` branch.
+         *
+         * Measured before the fix: the ordinary update was refused and `saveQuietly()` was ALLOWED, the
+         * entry became an `article`, and the pivot from a `person`-only field stayed.
+         */
+        $other = EntryType::create([
+            'org_id' => $this->org->id, 'handle' => 'article', 'name' => 'A', 'plural_name' => 'As',
+        ]);
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'author', 'type' => 'relation',
+            'pii_class' => 'personal', 'cardinality' => 1,
+            'settings' => ['targetTypes' => [$this->type->handle]],
+        ]);
+        Field::create([
+            'entry_type_id' => $this->type->id, 'field_storage_id' => $storage->id, 'label' => 'Author',
+        ]);
+
+        $alice = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Alice']);
+        $visit = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Visit']);
+        $visit->related()->attach($alice->id, ['field_storage_id' => $storage->id]);
+
+        $alice->entry_type_id = $other->id;
+
+        expect(fn () => $alice->saveQuietly())
+            ->toThrow(RuntimeException::class, 'does not accept that type')
+            ->and((string) DB::table('entries')->where('id', $alice->id)->value('type_handle'))
+            ->toBe($this->type->handle, 'a quiet type change moved a related entry to a forbidden type');
+
+        /*
+         * ⚠️ AND A FORGED HANDLE ALONE IS CORRECTED RATHER THAN REFUSED, which is the established
+         * behaviour and not a gap — I expected a refusal here and the code is right. The column is
+         * DERIVED from `entry_type_id`, so whatever a caller writes, the type it points at is the truth:
+         * the restamp puts the real handle back, the veto is then asked about a type the field accepts,
+         * and there is nothing to refuse. The state this test guards cannot be reached that way.
+         */
+        $alice->refresh();
+        $alice->type_handle = 'article';
+
+        expect($alice->saveQuietly())->toBeTrue()
+            ->and((string) DB::table('entries')->where('id', $alice->id)->value('type_handle'))
+            ->toBe($this->type->handle, 'a forged handle survived a quiet write');
     });
 
     it('still restamps when the type id changes, as before', function (): void {
@@ -1791,9 +1956,10 @@ it('refuses org-owned storage on a GLOBAL entry type', function (): void {
         'entry_type_id' => $global->id, 'field_storage_id' => $mine->id, 'label' => 'Email',
     ]))->toThrow(RuntimeException::class, 'belongs to another organisation');
 
-    $field = Field::withoutEvents(fn () => Field::create([
+    // ⚠️ Past the builder guard too, for the reason the `predates the guard` test above records.
+    $field = ScopeWrites::suspend(fn () => Field::withoutEvents(fn () => Field::create([
         'entry_type_id' => $global->id, 'field_storage_id' => $mine->id, 'label' => 'Email',
-    ]));
+    ])));
 
     expect(fn () => $global->update(['subject_field_id' => $field->id]))
         ->toThrow(RuntimeException::class, 'a global entry type');

@@ -30,6 +30,7 @@ use Kitsune\Core\Relations\GuardedBelongsToMany;
 use Kitsune\Core\Schema\RecordedRevisions;
 use Kitsune\Core\Schema\RevisionWrites;
 use Kitsune\Core\Tenancy\Attributes\SiteScoped;
+use Kitsune\Core\Tenancy\Concerns\DerivesGuardedColumns;
 use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
 use Kitsune\Core\Tenancy\Contracts\RequiresModelSave;
 use RuntimeException;
@@ -61,6 +62,7 @@ use RuntimeException;
 #[SiteScoped]
 class Entry extends Model implements RequiresModelSave
 {
+    use DerivesGuardedColumns;
     use EnforcesScope;
     use SoftDeletes;
 
@@ -305,6 +307,25 @@ class Entry extends Model implements RequiresModelSave
             'values' => 'every value is converted through its field type on save, and rich text is '
                 .'sanitized there — a bulk write dispatches nothing, so it would store what it was '
                 .'handed.',
+
+            /*
+             * ⚠️ `site_id` BECAUSE THE RE-ENTRY VETO CANNOT RUN PER ROW, which review found. A move INTO
+             * a site has to recheck every relation pointing at the entry with `visibleOnly: false` — on
+             * the way in they are all about to be visible again — and a bulk update runs on the builder's
+             * fresh prototype, where there is no entry to ask about.
+             *
+             * Measured: a relation in site B, its target moved to site A and retyped there legitimately,
+             * then `Entry::query()->whereKey($id)->update(['site_id' => null])` made it org-shared and
+             * visible in site B again with the invalid relation still attached. ALLOWED, one row.
+             *
+             * ⚠️ REFUSED RATHER THAN CHECKED ROW BY ROW, and that is the honest trade: validating every
+             * affected row means a query per row inside a statement whose whole purpose is to avoid them,
+             * and the shape has no legitimate caller — `EnforcesScope` already guards an instance move,
+             * erasure and restore go through instance saves, and `ScopeWrites::suspended()` covers the
+             * internal paths.
+             */
+            'site_id' => 'moving an entry into a site has to recheck every relation pointing at it, '
+                .'including ones invisible from where it is now — and a bulk write has no row to check.',
         ];
     }
 
@@ -2292,6 +2313,124 @@ class Entry extends Model implements RequiresModelSave
     public function convertFieldValuesForWrite(array $values): array
     {
         $this->retainedOriginals = [];
+
+        /*
+         * ⚠️ `type_handle` RESTAMPED HERE TOO, so the flag below is a true statement about BOTH of
+         * this model's guarded columns rather than about one of them. The restamp lives in a `saving`
+         * listener as well — which is where a caller reaching `$entry->update(['type_handle' => …])`
+         * meets it — and a quiet write suppresses that listener while still arriving here. The column
+         * is derived from `entry_type_id`, so whatever a caller wrote, the type it points at is the
+         * truth; recomputing it twice is one query on a write that is already resolving the schema.
+         *
+         * ⚠️ AND THE RELATION VETO IS DUPLICATED HERE, WHICH THIS COMMENT USED TO DENY. It said the
+         * check belongs to relations rather than to guarded columns — true of what the FLAG means, and
+         * review found the consequence it ignored: the flag then licenses the write. Measured, an entry
+         * targeted by a `person`-only field was moved to `article` with `saveQuietly()`; the ordinary
+         * path refused it, the quiet path wrote it, and the pivot stayed attached with no relational
+         * read ever rechecking `targetTypes`.
+         *
+         * §6 says a guard belongs at the builder, and this is the builder. The `saving` listener stays
+         * because it also covers a `site_id` move, which never reaches here.
+         *
+         * ⚠️ IT COSTS ONE QUERY ON A TYPE-CHANGING WRITE, paid on the ordinary path too, and that is
+         * stated rather than optimised away. `withoutEvents()` installs a NULL DISPATCHER rather than no
+         * dispatcher, so "did the listener already run" is not a question this code can ask — and a
+         * guard that runs only when it thinks it is needed is the shape every finding on this branch has
+         * had. A type change already resolves the type and its fields, and is rare.
+         */
+        if (array_key_exists('type_handle', $values) || array_key_exists('entry_type_id', $values)) {
+            /*
+             * ⚠️ EITHER COLUMN, NOT BOTH — review found the `&&` and it was wrong in both directions.
+             * Laravel's update payload carries only the DIRTY columns, so a quiet update that moves
+             * `entry_type_id` alone never reached the restamp, and one that forges `type_handle` alone
+             * never reached it either. The flag below then claimed the guarded columns were derived
+             * while `ScopedBuilder` persisted the mismatch, and every relation check and type lookup
+             * reads the handle rather than the id.
+             *
+             * ⚠️ THE ID FALLS BACK TO THE INSTANCE, because it is exactly the case where `$values`
+             * does not carry it: an update whose only dirty column is `type_handle` still has the
+             * entry's real `entry_type_id` on the model, and that is the truth the handle is derived
+             * from.
+             */
+            $typeId = $values['entry_type_id'] ?? $this->getAttribute('entry_type_id');
+
+            $handle = $typeId === null ? null : EntryType::query()->whereKey($typeId)->value('handle');
+
+            if ($handle !== null) {
+                $values['type_handle'] = $handle;
+
+                /*
+                 * The veto itself. On an insert there is no row for a relation to point at, so there is
+                 * nothing to refuse — `forbidsTypeChange()` is asked only for a row that exists.
+                 */
+                if ($this->exists
+                    && ($field = EntryRelation::forbidsTypeChange(
+                        (int) $this->getKey(),
+                        $handle,
+                        (int) $this->getAttribute('org_id'),
+                    )) !== null) {
+                    throw new RuntimeException(
+                        "Entry {$this->getKey()} cannot become a [{$handle}]: field [{$field}] relates "
+                        .'to it and does not accept that type. Detach the relation first — leaving it '
+                        .'would point a configured field at something it refuses, and a subject '
+                        .'identifier at the wrong kind of record (ADR-020).'
+                    );
+                }
+
+                /*
+                 * ⚠️ ON THE INSTANCE TOO, and review found this missing — correcting only the SQL
+                 * payload left the two write paths disagreeing about the model. The `saving` listener
+                 * restamps `$entry->type_handle` itself, so an ordinary write returns a model that
+                 * agrees with its row; a quiet write suppressed that listener, reached here, and got a
+                 * corrected row behind a model still reporting the caller's handle.
+                 *
+                 * Measured: after a quiet move of `entry_type_id` from `page` to `article`, the column
+                 * held `article` while the instance reported `page` — and `finishSave()` then called
+                 * `syncOriginal()`, which adopted that stale value as the CLEAN original. So the wrong
+                 * handle was not merely stale, it was indistinguishable from a saved one: `toArray()`
+                 * served it, every relation check and route lookup read it, and assigning the true
+                 * handle afterwards was not dirty and so could not be written back.
+                 */
+                $this->setAttribute('type_handle', $handle);
+            }
+        }
+
+        /*
+         * ⚠️ AND A SITE MOVE RE-RUNS THE RE-ENTRY VETO, which review found only the `saving` listener
+         * doing. That listener is suppressed by a quiet write, and the restamp branch above runs only
+         * when a TYPE column moves — so `$entry->site_id = $home; $entry->saveQuietly()` came back into
+         * a site carrying a type the relation there forbids, and nothing rechecked it.
+         *
+         * Measured end to end: a `person`-only field relates to Alice from site A, Alice moves to site B
+         * where that pivot is invisible, her type becomes `article` there legitimately, and the quiet
+         * move home was ALLOWED — the relation resurfaced naming a target it refuses, which is the
+         * sequence `a target that leaves a site and comes back is rechecked` exists to close.
+         *
+         * ⚠️ `visibleOnly: false` HERE, unlike the type check above, and that asymmetry is the whole
+         * point of the re-entry rule: on the way IN every relation in the org counts, because they are
+         * all about to be visible again. Filtering to visible sources is right for a type change —
+         * otherwise one site could freeze another's records — and wrong for a move that makes them
+         * visible.
+         */
+        if ($this->exists && array_key_exists('site_id', $values)) {
+            $handle = (string) ($values['type_handle'] ?? $this->getAttribute('type_handle'));
+
+            if (($field = EntryRelation::forbidsTypeChange(
+                (int) $this->getKey(),
+                $handle,
+                (int) $this->getAttribute('org_id'),
+                visibleOnly: false,
+            )) !== null) {
+                throw new RuntimeException(
+                    "Entry {$this->getKey()} cannot move here: field [{$field}] relates to it and does "
+                    ."not accept a [{$handle}]. Its relation is invisible from where it is now, so "
+                    .'moving it back would resurface a target that field refuses (ADR-020). Detach the '
+                    .'relation first.'
+                );
+            }
+        }
+
+        $this->noteGuardedColumnsDerived();
 
         $registry = app(FieldTypeRegistry::class);
 
