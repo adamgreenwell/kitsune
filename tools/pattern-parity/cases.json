@@ -1144,5 +1144,11 @@
         "pattern": "^a*a*b{1}a*$",
         "subject": "aaaaaaaaaaaaaaaaaaaa",
         "why": "The accepted `^a*a*ba*$` written another way, and refused: the run walk skipped its literal check for ANY quantifier, so the required `b{1}` did not end the run and the following `a*` counted as a third adjacent variable-width atom. Only a quantifier that can run zero times fails to force the boundary — and one that can run a variable number of times is a variable-width atom, which the rule above already counts. `b{2}` and `b{1,1}` are the same boundary spelled differently."
+    },
+    {
+        "id": "anchor-inside-a-dead-group",
+        "pattern": "(?:a|^){0}$",
+        "subject": "a",
+        "why": "A LIVE defect on this harness's own pair until the round that found it — PCRE 10.48 rejects `a` and Node 22.23.2 matches it, so a generated client would accept every value the server rejects. PCRE's start-anchor optimisation survives the dead group while ECMAScript skips the group outright. The dead-group rule already refused an ASSERTION inside a `{0}` group, and `containsAssertion()` looked only at parenthesised frames — so a group holding `^` reported none. Branch order matters here as it does for the lookahead form: `(?:^|a){0}$` agrees, and `^(?:a|^){0}$` agrees too, which is why the rule is about the shape rather than about the measured subject."
     }
 ]

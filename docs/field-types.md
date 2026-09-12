@@ -207,7 +207,7 @@ A named capture may use a name in **any script** — `(?<é>`, `(?<日本>`, `(?
 >
 > A denylist **fails open**: a construct nobody anticipated is accepted and published wrong, silently. An allowlist fails closed — an unknown construct is refused because it was never admitted, not because someone remembered it. Rule 3 says `apiSchema()` may only publish a constraint the consumer can enforce; a grammar makes that enforceable *by construction* rather than by enumeration.
 >
-> **Fresh evidence, measured 2026-09-11.** 191 candidate constructs, enumerated from six independent angles, run through one shared case file so PCRE and ECMAScript are asked the same question. At production fidelity — PCRE compiling `Pattern::delimit()`'s output, ECMAScript compiling the published source — **two constructs the screen accepted diverged, and a third made neither engine answer at all**. Both divergences are now refused by the structural rules below, so the current count is zero:
+> **Fresh evidence, measured 2026-09-11.** 192 candidate constructs, enumerated from six independent angles, run through one shared case file so PCRE and ECMAScript are asked the same question. At production fidelity — PCRE compiling `Pattern::delimit()`'s output, ECMAScript compiling the published source — **two constructs the screen accepted diverged, and a third made neither engine answer at all**. Both divergences are now refused by the structural rules below, so the current count is zero:
 >
 > | Pattern | PCRE | ECMAScript |
 > |---|---|---|
@@ -384,6 +384,16 @@ A named capture may use a name in **any script** — `(?<é>`, `(?<日本>`, `(?
 >
 > 5. **A group bounded at zero repetitions may not hold an assertion.** `{0}` is dead markup that both engines skip — except that PCRE stops matching when the dead group's alternation *ends* in a positive lookahead. Measured at production fidelity on PCRE 10.48 and Node 22.23.2: `(?:a|(?=a)){0}` matches every subject under ECMAScript and **none** under PCRE, while `(?:(?=a)|a){0}`, `(?:a|(?<=a)){0}`, `(?:a){0}` and `a{0}` agree — so the branch order and the direction of the assertion both matter.
 >
+>     ⚠️ **AND `^` IS AN ASSERTION, which this rule was not reading.** It looked only at parenthesised frames, so `(?:a|^){0}` held one and reported none — and this was a **live defect on the pair this harness runs**, not insurance on another. Measured at production fidelity on PCRE 10.48 with Node 22.23.2:
+>
+>     | Pattern | PCRE | ECMAScript |
+>     |---|---|---|
+>     | `(?:a\|^){0}$` on `a` | no match | **match** |
+>     | `(?:^\|a){0}$` on `a` | match | match |
+>     | `^(?:a\|^){0}$` on `a` | no match | no match |
+>
+>     PCRE's start-anchor optimisation survives the dead group; ECMAScript skips the group outright. Branch order matters here exactly as it does for the lookahead form, and what encloses the group matters too — which is why the rule is about the shape rather than about the measured subject. Anchors are found by walking atoms rather than by searching for `^`: `\^` is an escaped literal and `[$]` is a class member, and only a parse tells them apart.
+>
 >     ⚠️ **The rule is wider than the quirk, deliberately.** *"An alternation whose last branch is a positive lookahead"* is a shape nobody can check by reading it. The `{0}` allowance exists only so dead markup does not fail an upgrade, and a dead group that also holds an assertion is not something anybody wrote on purpose.
 >
 >     ⚠️ **A frame under a zero-repeat ANCESTOR never runs either**, which review found: `^(?:(a|aa)+){0}$` was refused for the inner `+` although the group holding it executes zero times. Both engines match only the empty string, so `--strict` was blocking an upgrade over a harmless stored pattern.
@@ -408,7 +418,7 @@ A named capture may use a name in **any script** — `(?<é>`, `(?<日本>`, `(?
 >
 > ### What this costs
 >
-> Measured, so it is a number rather than a worry: of 191 candidates, **two** are refused today that both engines agree on — `\p{Lower}` and `\p{Alpha}`, POSIX-style aliases missing from the property allowlist. Widening a list is a reviewable, testable act; a denylist's gaps are found by accident. **Both are now on it, and `\p{Upper}` with them** — the obvious third of the family, added at the same time so the allowlist does not carry an arbitrary subset.
+> Measured, so it is a number rather than a worry: of 192 candidates, **two** are refused today that both engines agree on — `\p{Lower}` and `\p{Alpha}`, POSIX-style aliases missing from the property allowlist. Widening a list is a reviewable, testable act; a denylist's gaps are found by accident. **Both are now on it, and `\p{Upper}` with them** — the obvious third of the family, added at the same time so the allowlist does not carry an arbitrary subset.
 >
 > ⚠️ **Added on a set comparison, not on compiling**, because compiling proves only that a name is accepted. Each alias was compared with its canonical spelling across all 1,114,112 codepoints in *both* engines and is exactly equal: `Lower`/`Lowercase` 2,595 members, `Alpha`/`Alphabetic` 147,421, `Upper`/`Uppercase` 2,006. `\p{Space}` is the reason this is measured one name at a time rather than adopted as a family — **PCRE compiles it and ECMAScript rejects the name**, so it stays out.
 >

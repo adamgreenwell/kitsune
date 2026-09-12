@@ -2461,12 +2461,26 @@ final class Pattern
      * anything because there is only ever one iteration to keep.
      */
     /**
-     * Whether this subpattern holds an assertion at any depth.
+     * Whether this subpattern holds an assertion at any depth, ANCHORS INCLUDED.
      *
      * ⚠️ PARSED, NOT SEARCHED FOR. `str_contains($body, '(?=')` would be a pattern matching a pattern,
      * which is the failure `sanitize()`'s allowlist docblock describes in another file — a literal
      * `(?=` inside a character class is not an assertion, and an escaped one is not either. `frames()`
      * already yields every nested frame with its kind.
+     *
+     * ⚠️ AND `^` IS AN ASSERTION, which review found this reading past: it looked only at parenthesised
+     * frames, so `(?:a|^){0}` held one and reported none. Measured at production fidelity on PCRE 10.48
+     * and Node 22.23.2 — the pair this harness runs, so this one is a DIVERGENCE rather than insurance:
+     *
+     *   (?:a|^){0}$     PCRE no match on `a`     ECMAScript matches
+     *   (?:^|a){0}$     both match               <- order matters, as it does for the lookahead form
+     *   ^(?:a|^){0}$    both refuse              <- and so does what encloses it
+     *
+     * PCRE's start-anchor optimisation survives the dead group; ECMAScript skips the group outright. A
+     * generated client would accept every value the server rejects, which is rule 3 exactly.
+     *
+     * The anchors are found by walking atoms rather than by `str_contains`, for the reason above: `[$]`
+     * and `\^` are literals, and only a parse can tell them from the assertions they look like.
      */
     private static function containsAssertion(string $body): bool
     {
@@ -2474,6 +2488,40 @@ final class Pattern
             if (self::isAssertionKind($frame['kind'])) {
                 return true;
             }
+        }
+
+        return self::containsAnchor($body);
+    }
+
+    /** Whether an unescaped `^` or `$` appears in this subpattern, at any depth. */
+    private static function containsAnchor(string $body, int $depth = 0): bool
+    {
+        if ($depth > 64) {
+            return true;
+        }
+
+        $at = 0;
+        $length = mb_strlen($body);
+
+        while ($at < $length) {
+            $token = self::atomAt($body, $at);
+
+            if ($token === null) {
+                // Unparseable: the dead-group rule fails closed, like every other rule here.
+                return true;
+            }
+
+            $atom = $token['atom'];
+
+            if ($atom === '^' || $atom === '$') {
+                return true;
+            }
+
+            if (str_starts_with($atom, '(') && self::containsAnchor(self::frameBody($atom), $depth + 1)) {
+                return true;
+            }
+
+            $at = $token['after'];
         }
 
         return false;

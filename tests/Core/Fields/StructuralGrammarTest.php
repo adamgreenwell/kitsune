@@ -1041,6 +1041,43 @@ describe('a zero-repeat group may not hold an assertion', function (): void {
     ]);
 });
 
+describe('an anchor inside a dead group is an assertion too', function (): void {
+    /*
+     * ⚠️ MEASURED ON THIS PAIR, so it is a divergence rather than insurance — PCRE 10.48 and Node
+     * 22.23.2, at production fidelity:
+     *
+     *   (?:a|^){0}$     PCRE no match on `a`     ECMAScript matches
+     *   (?:^|a){0}$     both match               <- branch order matters, as for the lookahead form
+     *   ^(?:a|^){0}$    both refuse              <- and so does what encloses it
+     *
+     * PCRE's start-anchor optimisation survives the dead group; ECMAScript skips the group outright,
+     * so a generated client would accept every value the server rejects. `containsAssertion()` looked
+     * only at parenthesised frames, so a group holding an anchor reported none at all.
+     */
+    it('refuses it wherever the anchor sits', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))->toContain('a group bounded at zero repetitions');
+    })->with([
+        '(?:a|^){0}$',
+        '(?:^|a){0}$',
+        '^(?:a|^){0}$',
+        '(?:a|$){0}b',
+        '(?:(?:^)){0}b',
+    ]);
+
+    it('leaves a literal that merely looks like an anchor alone', function (string $pattern): void {
+        /*
+         * ⚠️ PARSED RATHER THAN SEARCHED FOR, which is the whole reason this is not `str_contains()`:
+         * `\^` is an escaped literal and `[$]` is a class member, and neither asserts anything.
+         */
+        expect(Pattern::unpublishable($pattern))->toBeNull("[{$pattern}] holds no assertion");
+    })->with([
+        '(?:a|\\^){0}$',
+        '(?:a|[$]){0}b',
+        '(?:a){0}b',
+        'a{0}b',
+    ]);
+});
+
 describe('a group bounded at zero repetitions is not there', function (): void {
     /*
      * ⚠️ AN UPGRADE HAZARD RATHER THAN A HOLE, which is why it is a refusal being removed. Review found
