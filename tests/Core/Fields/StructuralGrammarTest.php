@@ -1651,3 +1651,47 @@ describe('a backreference is as wide as the capture it names', function (): void
         '^(?:x)(a)(a+)\1$',
     ]);
 });
+
+describe('an unanchored ambiguity is retried from every position', function (): void {
+    /*
+     * ⚠️ THIS DISPROVES A MEASURED NEGATIVE THIS SUITE'S OWN DOCUMENT RECORDED. §4 said the ambiguity
+     * ceiling already sat low enough to absorb the search factor, on the strength of sixteen copies of
+     * `(?:a|a)` measuring 178.6 ms unanchored. That measured ONE shape. With two-character branches the
+     * same product costs four times as much — measured on Node 22.23.2 at 5,000 characters, failing:
+     *
+     *   16 × `(?:a|a)` then `b`        142.7 ms unanchored      0.2 ms anchored
+     *   16 × `(?:ab|\x61b)` then `c`   736.2 ms unanchored      0.5 ms anchored
+     *   16 × `(?:ab|ab)` then `c`      732.4 ms unanchored
+     *
+     * 736 ms here is seconds on ADR-027's floor, so the negative was WRONG rather than incomplete.
+     *
+     * ⚠️ THE BUDGET IS DERIVED, NOT CHOSEN: the anchored product over the longest value a field may
+     * hold, 65,536 over 5,000, is 13. My first version refused any ambiguity at all without an anchor
+     * and it refused fifteen shapes in this suite — all products of 2, all linear at any length. A
+     * false refusal for a real cost is still a false refusal.
+     */
+    it('refuses a product the retry multiplies past the budget', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))->toContain('in a pattern nothing anchors');
+    })->with([
+        str_repeat('(?:ab|\x61b)', 16).'c',
+        str_repeat('(?:ab|ab)', 16).'c',
+        str_repeat('(?:a|a)', 16).'b',
+        str_repeat('(?:ab|ab)', 4).'c',
+    ]);
+
+    it('leaves the anchored spelling and a small product alone', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))->toBeNull("[{$pattern}] is anchored or cheap");
+    })->with([
+        '^'.str_repeat('(?:ab|\x61b)', 16).'c',
+        '^'.str_repeat('(?:a|a)', 16).'b',
+
+        // ⚠️ Three copies of two branches is a product of 8, inside the unanchored budget of 13 — and
+        // the rule has to admit it, because 8 × the length is linear work at any length.
+        str_repeat('(?:ab|ab)', 3).'c',
+        '(?:a|a)b',
+
+        // ⚠️ And distinct branches cost nothing at all: at most one can match at a position, whatever
+        // the pattern's length or the number of alternations.
+        str_repeat('(?:cat|dog)', 20).'x',
+    ]);
+});

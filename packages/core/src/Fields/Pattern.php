@@ -105,6 +105,17 @@ final class Pattern
     private const RUN_WITHOUT_AN_ANCHOR = 1;
 
     /**
+     * The longest value this file's cost model is allowed to assume.
+     *
+     * ⚠️ THE SAME NUMBER `TextType::MAX_CONFIGURABLE_LENGTH` ENFORCES, and stated here rather than read
+     * from there because that class depends on this one and the dependency cannot run both ways. The
+     * cost model needs it — every "measured at 5,000 characters" in this file is this number — and
+     * `FieldValidationTest` pins the two together, because two numbers that must agree and are written
+     * twice will not.
+     */
+    public const MAX_SUBJECT_LENGTH = 5000;
+
+    /**
      * How many adjacent variable-width atoms a sequence may hold for free: one, which is linear.
      *
      * ⚠️ SEPARATE FROM THE TWO ABOVE because it prices rather than refuses. Those two say how long a
@@ -1356,6 +1367,48 @@ final class Pattern
                     .'anchored: measured on 5,000 characters, `a*a*b` takes 60.2 SECONDS in '
                     .'ECMAScript where `^a*a*b` takes 36 ms. A trailing `$` does not help, because '
                     .'the retry is at the start. Anchor it with `^`, ',
+            );
+        }
+
+        /*
+         * ⚠️ AND THE BUDGET PRICES ONE ATTEMPT, WHICH IS WRONG WITHOUT A `^` — review found it, and it
+         * DISPROVES a measured negative this file recorded two rounds earlier. That note said the
+         * ambiguity ceiling already sat low enough to absorb the search factor, on the strength of
+         * sixteen copies of `(?:a|a)` measuring 178.6 ms unanchored. It measured one shape. With
+         * two-character branches the same product costs four times as much:
+         *
+         *   at the ceiling, 5,000 characters, Node 22.23.2, a failing subject
+         *   16 × `(?:a|a)` then `b`          142.7 ms unanchored      0.2 ms anchored
+         *   16 × `(?:ab|\x61b)` then `c`     736.2 ms unanchored      0.5 ms anchored
+         *   16 × `(?:ab|ab)` then `c`        732.4 ms unanchored
+         *
+         * 736 ms here is seconds on ADR-027's floor, so the negative was wrong rather than
+         * incomplete — a measurement of one shape standing for a class.
+         *
+         * ⚠️ THE BUDGET IS DERIVED RATHER THAN CHOSEN — see `ambiguityWithoutAnchor()`, which divides
+         * the anchored product by the longest value a field may hold. `(?:cat|dog)` is unaffected at any
+         * length, because at most one of its branches can match at a position and the product is one.
+         *
+         * ⚠️ AND IT IS CHECKED AFTER THE RUN LIMIT, deliberately: a run of two adjacent variable-width
+         * atoms costs 8,192 in this same product, so an unanchored `a*a*b` would otherwise be refused
+         * here — and told to "make the branches distinct" when it has no alternation at all. The run
+         * rule owns that shape and says the true thing about it.
+         */
+        foreach (self::topLevelBranches($pattern) as $branch) {
+            if ($product <= self::ambiguityWithoutAnchor() || self::anchorsTheSearch($branch)) {
+                continue;
+            }
+
+            return sprintf(
+                'ways to retry a failing subject that multiply to more than %s in a pattern nothing '
+                .'anchors — this one reaches %s, and an unanchored search retries all of them from '
+                .'every starting position. Measured on 5,000 characters, sixteen copies of '
+                .'`(?:ab|\x61b)` then `c` take 736 ms in ECMAScript where the anchored spelling takes '
+                .'0.5 ms, and ADR-027\'s floor is a single core. Anchor it with `^`, or make the '
+                .'branches distinct so that at most one can match at a position',
+                number_format(self::ambiguityWithoutAnchor()),
+                // No saturation case here: a product past the anchored ceiling has already returned.
+                number_format($product),
             );
         }
 
@@ -3011,6 +3064,27 @@ final class Pattern
     private static function quadraticRuns(string $sequence): int
     {
         return self::runsPast(self::ownAtoms($sequence), self::RUN_WITHOUT_COST);
+    }
+
+    /**
+     * The ambiguity budget for a pattern nothing anchors: the anchored one divided by the value ceiling.
+     *
+     * ⚠️ DERIVED, LIKE `quadraticBranchCost()`, so the numbers cannot disagree after any one of them
+     * moves. An unanchored search retries the whole product from every starting position, so the work is
+     * the product TIMES the length — and the budget that keeps that where one anchored attempt put it is
+     * the product divided by the longest value a field may hold.
+     *
+     * 65,536 over 5,000 is 13: about three binary choices, where an anchored pattern gets sixteen.
+     *
+     * ⚠️ AND A PRODUCT OF TWO STAYS PUBLISHABLE, which is why this is a budget rather than "ambiguity
+     * must be anchored". That rule was my first version and it refused fifteen shapes in this
+     * repository's own tests — `(?<=(a{2}?|aa))b\1$`, `a?|(?=a)a` and a dozen more, all of them
+     * products of 2, all of them linear at any length. A false refusal for a real cost is still a false
+     * refusal.
+     */
+    private static function ambiguityWithoutAnchor(): int
+    {
+        return max(1, intdiv(self::MAX_AMBIGUITY_PRODUCT, self::MAX_SUBJECT_LENGTH));
     }
 
     /**

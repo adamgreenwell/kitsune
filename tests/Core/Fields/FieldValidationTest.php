@@ -11,6 +11,7 @@ declare(strict_types=1);
 use Illuminate\Support\Facades\Validator;
 use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Fields\FieldTypeRegistry;
+use Kitsune\Core\Fields\Pattern;
 use Kitsune\Core\Fields\Types\NumberType;
 use Kitsune\Core\Fields\Types\TextType;
 use Kitsune\Core\Models\Entry;
@@ -568,6 +569,20 @@ it('publishes the cardinality bound it already enforces', function (): void {
     expect($type->apiSchema(configFor('text', [], 2))['maxItems'])->toBe(2)
         ->and($type->apiSchema(configFor('text', [], -1)))->not->toHaveKey('maxItems')
         ->and($type->apiSchema(configFor('text', [], 1)))->not->toHaveKey('maxItems');
+});
+
+it('keeps the pattern cost model and the length ceiling on the same number', function (): void {
+    /*
+     * ⚠️ TWO NUMBERS THAT MUST AGREE AND ARE WRITTEN TWICE. `Pattern`'s cost model is priced against
+     * the longest value a field may hold — every "measured at 5,000 characters" in that file, and the
+     * unanchored ambiguity budget, which is the anchored product divided by exactly this number. It
+     * cannot read `TextType::MAX_CONFIGURABLE_LENGTH`, because `TextType` depends on `Pattern` and the
+     * dependency cannot run both ways, so the number is stated in both places and pinned here.
+     *
+     * Lower the ceiling without lowering this and the cost model prices a value longer than any field
+     * accepts; raise it without raising this and the model under-prices what an author can store.
+     */
+    expect(Pattern::MAX_SUBJECT_LENGTH)->toBe(TextType::MAX_CONFIGURABLE_LENGTH);
 });
 
 describe('a quadratic pattern bounds how many items a text field admits', function (): void {
