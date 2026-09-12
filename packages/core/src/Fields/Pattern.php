@@ -1145,6 +1145,19 @@ final class Pattern
              * `{0}` allowance exists only so dead markup does not fail an upgrade — a dead group that
              * also contains an assertion is not a pattern anybody wrote on purpose.
              */
+            /*
+             * ⚠️ A FRAME UNDER A ZERO-REPEAT ANCESTOR NEVER RUNS EITHER, which review found this loop not
+             * asking: it read only the current frame's quantifier, so `^(?:(a|aa)+){0}$` was refused for
+             * the inner `+` although the group holding it executes zero times. Both engines match only
+             * the empty string, and `--strict` was blocking a deploy over a legacy row that is harmless.
+             *
+             * The same argument as the direct `{0}` case, one level out — which is where every finding on
+             * this branch has been.
+             */
+            if (self::enclosedByZeroRepeat($frames, $frame)) {
+                continue;
+            }
+
             if (self::neverRuns($frame['quantifier']) && self::containsAssertion($frame['body'])) {
                 return sprintf(
                     'the assertion inside `%s`, a group bounded at zero repetitions — the two engines '
@@ -1262,6 +1275,10 @@ final class Pattern
          * is over branches that can BOTH match, which is what `everyAlternationIsUnambiguous()`
          * already answers for a repetition body.
          */
+        if (($overlap = self::lookaheadOverlapsOptional($pattern)) !== null) {
+            return $overlap;
+        }
+
         $product = self::ambiguityCost($pattern);
 
         if ($product > self::MAX_AMBIGUITY_PRODUCT) {
@@ -1294,6 +1311,94 @@ final class Pattern
         }
 
         return null;
+    }
+
+    /**
+     * Refuse a positive lookahead immediately followed by an optional atom it can match.
+     *
+     * ⚠️ I COULD NOT REPRODUCE THE DIVERGENCE, and this refusal is insurance rather than a measurement —
+     * which is stated rather than implied. Review measured `(?=a)a?a` on PCRE 10.44 with Node 24.15: PCRE
+     * not matching `a` while ECMAScript does, so a generated client would accept what the server rejects.
+     * On PHP 8.4.25 / PCRE 10.48 / Node 22.23.2 both engines match, as do `^(?=a)a?a$`, `(?=a)a?`,
+     * `(?=a)aa`, `a?a`, `(?=a)a*a` and `(?=ab)a?ab`.
+     *
+     * ⚠️ SO WHY REFUSE SOMETHING THIS PAIR AGREES ON: the shape is REDUNDANT. A lookahead asserting the
+     * same character the following optional atom consumes constrains nothing that the atom does not — it
+     * is `a?a` with a no-op in front. Nobody writes it deliberately, so the expressiveness cost is
+     * approximately zero, and `composer.json` requires PHP `^8.4`, whose earliest releases bundle PCRE2
+     * 10.44. Cheap insurance against a real deployment beats a rule that is right on one pair.
+     *
+     * ⚠️ NARROW ON PURPOSE. Only a POSITIVE lookahead, only when the very next atom is optional — lower
+     * bound zero — and only when that atom can match the lookahead's first required character. So
+     * `^(?=.*[A-Z])(?=.*[0-9]).{8,64}$` still publishes: `.{8,64}` is not optional. `(?=b)a?a` publishes:
+     * `a?` cannot match `b`. `(?=ab)a?ab` publishes: `a?` CAN match `a`… and is refused, which is the
+     * cost of the rule being about the shape rather than about the semantics.
+     */
+    private static function lookaheadOverlapsOptional(string $pattern): ?string
+    {
+        $length = mb_strlen($pattern);
+
+        for ($i = 0; $i < $length; $i++) {
+            $token = self::atomAt($pattern, $i);
+
+            if ($token === null) {
+                return null;
+            }
+
+            $atom = $token['atom'];
+            $i = $token['after'] - 1;
+
+            if (! str_starts_with($atom, '(') || self::frameKindAt($atom, 0) !== 'lookahead') {
+                continue;
+            }
+
+            $lead = self::leadingLiteral(self::frameBody($atom));
+
+            if ($lead === null) {
+                continue;
+            }
+
+            $next = self::atomAt($pattern, $token['after']);
+
+            if ($next === null || ! self::quantifierIsOptional($next['quantifier'])) {
+                continue;
+            }
+
+            if (self::atomMatches($next['atom'], $lead)) {
+                return sprintf(
+                    'the lookahead `%s` in front of the optional `%s%s`, which can match the same '
+                    .'character it asserts. The assertion constrains nothing the atom does not, and the '
+                    .'two engines have been measured disagreeing about the shape on PCRE 10.44 — '
+                    .'ECMAScript matching a subject PCRE rejects, which the published schema cannot '
+                    .'describe. Drop the lookahead, or assert something the following atom cannot match',
+                    $atom,
+                    $next['atom'],
+                    $next['quantifier'],
+                );
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Whether this quantifier lets its atom match nothing at all.
+     *
+     * ⚠️ THE LOWER BOUND, not the upper one `neverRuns()` reads: `?`, `*`, `{0,n}` and `{0,}` are all
+     * optional while `+` and `{1,n}` are not, and `{0}` is both. Named for the question rather than the
+     * syntax, because the two look alike and a reader who took one for the other would get both rules
+     * wrong — which is how three methods in this file each got a padded bound wrong independently.
+     *
+     * The brace case delegates to `allowsZeroRepetitions()`, which already carries the padding argument
+     * and the reason the slice must run to the end of the string.
+     */
+    private static function quantifierIsOptional(string $quantifier): bool
+    {
+        if ($quantifier === '?' || $quantifier === '??' || $quantifier === '*' || $quantifier === '*?') {
+            return true;
+        }
+
+        return str_starts_with($quantifier, '{') && self::allowsZeroRepetitions($quantifier);
     }
 
     /**
@@ -1829,6 +1934,29 @@ final class Pattern
     {
         foreach (self::frames($body) as $frame) {
             if (self::isAssertionKind($frame['kind'])) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Whether any frame enclosing this one is bounded at zero repetitions.
+     *
+     * ⚠️ ENCLOSURE READ FROM THE POSITIONS, like `repeatingAncestor()` beside it, because a frame does
+     * not carry a parent pointer. A frame whose ancestor never runs never runs, whatever its own
+     * quantifier says — so every rule keyed on that quantifier is asking about code that cannot execute.
+     *
+     * @param  list<array{open: int, close: int, quantifier: string, kind: string, body: string, inLookbehind: bool}>  $frames
+     * @param  array{open: int, close: int}  $frame
+     */
+    private static function enclosedByZeroRepeat(array $frames, array $frame): bool
+    {
+        foreach ($frames as $ancestor) {
+            $encloses = $ancestor['open'] < $frame['open'] && $ancestor['close'] > $frame['close'];
+
+            if ($encloses && self::neverRuns($ancestor['quantifier'])) {
                 return true;
             }
         }

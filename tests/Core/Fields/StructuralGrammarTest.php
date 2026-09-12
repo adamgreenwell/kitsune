@@ -799,6 +799,43 @@ describe('every spelling of "exactly once" is read through', function (): void {
     });
 });
 
+describe('a lookahead may not assert what the next optional atom consumes', function (): void {
+    /*
+     * ⚠️ I COULD NOT REPRODUCE THE DIVERGENCE, and this refusal is insurance rather than a measurement.
+     * Review measured `(?=a)a?a` on PCRE 10.44 with Node 24.15 — PCRE not matching `a` while ECMAScript
+     * does, so the published schema would accept what the server rejects. On PHP 8.4.25 / PCRE 10.48 /
+     * Node 22.23.2 both engines match, and so do six neighbouring shapes.
+     *
+     * ⚠️ SO WHY REFUSE SOMETHING THIS PAIR AGREES ON: the shape is REDUNDANT. A lookahead asserting the
+     * character the following optional atom consumes constrains nothing that atom does not — it is `a?a`
+     * with a no-op in front. Nobody writes it deliberately, so the expressiveness cost is approximately
+     * zero, and `composer.json` requires PHP `^8.4` whose earliest releases bundle PCRE2 10.44. Cheap
+     * insurance against a real deployment beats a rule that is right on one pair.
+     */
+    it('refuses the overlap', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))->toContain('which can match the same');
+    })->with([
+        '(?=a)a?a',
+        '(?=a)a*a',
+        '(?=a)a{0,2}a',
+        '(?=ab)a?ab',
+    ]);
+
+    it('leaves a lookahead that constrains something alone', function (string $pattern): void {
+        /*
+         * ⚠️ WHERE THE RULE STOPS, and the first row is why it has to be narrow: two lookaheads then a
+         * bounded dot is the commonest validation pattern there is, and `.{8,64}` is not optional. The
+         * second asserts a character the optional atom cannot match, so the assertion does work.
+         */
+        expect(Pattern::unpublishable($pattern))->toBeNull("[{$pattern}] has a lookahead that constrains");
+    })->with([
+        '^(?=.*[A-Z])(?=.*[0-9]).{8,64}$',
+        '(?=b)a?a',
+        '(?=a)a+',
+        '(?!a)a?a',
+    ]);
+});
+
 describe('an equal bounded quantifier is one width', function (): void {
     /*
      * ⚠️ A FALSE REFUSAL THE DOCUMENT DOES NOT LICENSE, which review found: `fixedRepetitions()` read
@@ -891,6 +928,18 @@ describe('a group bounded at zero repetitions is not there', function (): void {
      * and on an upgrade `kitsune:audit-patterns --strict` would have blocked a deploy over a pattern
      * that saved yesterday. §4 calls that a broken install rather than a fixed one.
      */
+    it('skips a repetition its zero-repeat ancestor can never run', function (): void {
+        /*
+         * ⚠️ THE FRAMES LOOP READ ONLY THE CURRENT FRAME'S QUANTIFIER, which review found: `^(?:(a|aa)+){0}$`
+         * was refused for the inner `+` although the group holding it executes zero times. Both engines
+         * match only the empty string, and `--strict` was blocking a deploy over a harmless legacy row.
+         * The same argument as the direct `{0}` case, one level out.
+         */
+        expect(Pattern::unpublishable('^(?:(a|aa)+){0}$'))->toBeNull()
+            ->and(Pattern::unpublishable('^(?:(a|aa)+){1}$'))
+            ->not->toBeNull('the ancestor runs once, so the inner repetition still counts');
+    });
+
     it('accepts a pattern a zero-repeat group only appears to lengthen', function (string $pattern): void {
         expect(Pattern::unpublishable($pattern))->toBeNull("[{$pattern}] is `^a*a*b$` with dead markup");
     })->with([

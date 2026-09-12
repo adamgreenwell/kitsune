@@ -1023,12 +1023,18 @@
     "id": "unanchored-lookahead-optional-prefix",
     "pattern": "(?=a)a?a",
     "subject": "a",
-    "why": "A VERSION-DEPENDENT divergence I could not reproduce, recorded so the harness reports it wherever it is real. Review measured PCRE 10.44 (PHP 8.5) not matching `a` while Node 24.15 does; on PHP 8.4.25 with PCRE 10.48 and Node 22.23.2 both match, as do `^(?=a)a?a$`, `(?=a)a?`, `(?=a)aa`, `a?a`, `(?=a)a*a` and `(?=ab)a?ab`. Both engines agree on what the pattern MEANS, so this is an upstream defect fixed between 10.44 and 10.48 rather than a grammar-portability property — and refusing a shape both dialects define identically would be a permanent expressiveness cost for a transient bug. `composer.json` requires PHP ^8.4, whose earliest releases bundle PCRE2 10.44, so the exposure is real: this case makes it show up as a live defect on any pair where it still diverges, which is what the harness is for."
+    "why": "Review measured this diverging on PCRE 10.44 with Node 24.15 — PCRE not matching `a` while ECMAScript does. On PHP 8.4.25 / PCRE 10.48 / Node 22.23.2 both match, as do `^(?=a)a?a$`, `(?=a)a?`, `(?=a)aa`, `a?a`, `(?=a)a*a` and `(?=ab)a?ab`. It is REFUSED now even so, because the shape is redundant: a lookahead asserting the character the following optional atom consumes constrains nothing that atom does not, so the expressiveness cost is approximately zero — and `composer.json` requires PHP ^8.4, whose earliest releases bundle PCRE2 10.44. Cheap insurance against a real deployment beats a rule that is right on one pair. The refusal is narrow: only a positive lookahead, only when the very next atom is optional, and only when that atom can match the lookahead's first required character."
   },
   {
     "id": "zero-padded-equal-bound",
     "pattern": "^a*a{01,01}a*b$",
     "subject": "aaaaaaaaaaaaaaaaaaaa",
     "why": "The third padded-bound gap, in the method beside the two that were fixed. `isVariableWidth()` compared the RAW upper bound with a normalised lower one — `'01' !== '1'` — so `{01,01}` read as variable-width while `{1,1}` did not, and this pattern was refused while the identical `{1,1}` spelling publishes: `kitsune:audit-patterns --strict` blocking an upgrade over a harmless stored pattern. Both bounds are cast now, and a genuine range stays variable in both spellings."
+  },
+  {
+    "id": "zero-repeat-ancestor-hides-a-repetition",
+    "pattern": "^(?:(a|aa)+){0}$",
+    "subject": "aa",
+    "why": "The frames loop read only the current frame's quantifier, so this was refused for the inner `+` although the group holding it executes zero times — both engines match only the empty string. An upgrade hazard rather than a hole, and the same argument as the direct `{0}` case one level out, which is where every finding in this area has been. Enclosure is read from the frame positions, like `repeatingAncestor()` beside it."
   }
 ]
