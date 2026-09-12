@@ -2362,6 +2362,120 @@ describe('a group that runs at most once is a sequence no rule may skip', functi
     ]);
 });
 
+describe('an asserted lead survives dead markup and agreeing branches', function (): void {
+    /*
+     * ⚠️ TWO MORE WAYS PAST RULE 6, both in the walk that finds what a lookahead asserts. Dead markup
+     * has bought an exemption from this rule twice before, and `b{0}` bought a third:
+     * `^(?=b{0}a)a?a` published although the lookahead reduces to `(?=a)`, because an atom bounded at
+     * zero repetitions was read as an optional quantifier — uncertainty — rather than as markup that
+     * never runs. And an alternation whose branches AGREE was discarded: `^(?=(?:a|ab))a?a` published
+     * although both branches require `a` next, which is rule 6's exact shape with a bracket round the
+     * asserted character.
+     *
+     * The rule is insurance against PCRE 10.44, which this machine cannot run, so both are decided by
+     * STRUCTURE rather than by timing: the overlap either exists or it does not.
+     */
+    it('reads the lead past an atom that never runs', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))->toContain('which can match the same');
+    })->with([
+        '^(?=b{0}a)a?a',
+        '^(?=b{0}c{0}a)a?a',
+        '^(?=(?:b{0}a))a?a',
+    ]);
+
+    it('keeps a lead every branch agrees on', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))->toContain('which can match the same');
+    })->with([
+        '^(?=(?:a|ab))a?a',
+        '^(?=(?:ab|ac))a?ab',
+        '^(?=(?:a|ab|abc))a?a',
+    ]);
+
+    it('still answers unknown when the branches disagree', function (string $pattern): void {
+        /*
+         * ⚠️ WHERE THIS STOPS, and it is the same line the old code drew in the wrong place: `(?:a|b)`
+         * asserts neither character, so a neighbour matching one of them overlaps nothing that is
+         * certain. One branch's lead is not the alternation's lead — which is why the rule reads EVERY
+         * branch and keeps the lead only when they are the same character.
+         */
+        expect(Pattern::unpublishable($pattern))->toBeNull("[{$pattern}] asserts nothing the neighbour must consume");
+    })->with([
+        '^(?=(?:a|b))a?a',
+        '^(?=(?:ab|ac))b?ab',
+        '^(?=(?:ab))b?ab',
+        '^(?=[A-Za-z])[A-Za-z0-9]*$',
+    ]);
+});
+
+describe('a prefix outside a bracket is charged for what it rescans inside', function (): void {
+    /*
+     * ⚠️ THE SECOND HALF OF THE PREVIOUS ROUND'S FIX, which review found missing. Making the REFUSAL
+     * read through a group left the CHARGE not reading through, and the cost walk reaches a group's body
+     * on its own recursion WITHOUT the prefix in front of the brackets — so nothing priced the rescan
+     * that prefix causes. Forty alternatives of `^a+(?:(?=a+c)a|z)` fit in 719 characters and published;
+     * measured on Node 24.15, about 690 ms for one permitted 5,000-character failing value, which
+     * `maxItems` cannot contain because it is one value's own cost.
+     *
+     * ⚠️ AND CHARGING EVERYTHING WOULD DOUBLE-CHARGE, which is why a descended level charges only what an
+     * INHERITED prefix rescans — one handed in from outside the body, which the recursion pricing that
+     * body cannot see. Anything a prefix inside the body rescans is left to that recursion. The two
+     * charges are then for two different prefixes.
+     *
+     * ⚠️ THE CEILING BITES AT FIVE OF THESE, NOT NINE, and that is the alternation-ambiguity test being
+     * conservative rather than this charge being wrong: it cannot read a branch's lead through a leading
+     * assertion, so `(?:(?=a+c)a|z)` is priced as two ways to match rather than one, and each branch
+     * costs two grants of the eight the budget allows. Four publish, five do not. Recorded rather than
+     * widened, because widening the ambiguity test is a different rule and needs its own measurement.
+     */
+    it('refuses more alternatives than the budget allows', function (int $branches): void {
+        $pattern = implode('|', array_fill(0, $branches, '^a+(?:(?=a+c)a|z)'));
+
+        expect(mb_strlen($pattern))->toBeLessThanOrEqual(Pattern::MAX_LENGTH)
+            ->and(Pattern::unpublishable($pattern))->toContain('ways to retry');
+    })->with([5, 8, 40]);
+
+    it('leaves the alternatives the budget allows alone', function (int $branches): void {
+        $pattern = implode('|', array_fill(0, $branches, '^a+(?:(?=a+c)a|z)'));
+
+        expect(Pattern::unpublishable($pattern))->toBeNull("[{$branches} alternatives] is inside the budget");
+    })->with([1, 2, 4]);
+
+    /*
+     * ⚠️ AND THE CHARGE HAD TO READ ITS OWN ATOMS, which is the sentence `ownAtoms()` already carries for
+     * the RUN charge one rule along: "`^(?:a*a*b)$` would pay twice for the one run it has, and be
+     * refused while `^a*a*b$` is published". The assertion charge had no such protection and paid
+     * exactly that price — a PRE-EXISTING false refusal this round found while fixing the one above.
+     */
+    it('does not charge a body twice for the brackets round it', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))->toBeNull("[{$pattern}] is one quadratic, wrapped or not");
+    })->with([
+        '^(?:a+(?=a*b))$',
+        '^(?:a+(?=a*b))x$',
+        '^a+(?=a*b)$',
+        '^(?:a*a*b)$',
+    ]);
+
+    /*
+     * ⚠️ AND THE PREDECESSOR CROSSES THE BRACKET WITH THE RUN. Forwarding the run without it left a
+     * branch's leading separator unable to end the prefix it inherited, so `^a+(?:b(?=a*a*c)|z)$` was
+     * refused as cubic although the `a+` cannot consume the `b`. Measured on Node 24.15 against
+     * `a×2000 b a×2000`, 2.98 ms against 3.04 for the accepted `^a+b(?=a*a*c)$`.
+     */
+    it('lets a branch separator end the prefix it inherited', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))->toBeNull("[{$pattern}] cannot reach the assertion twice");
+    })->with([
+        '^a+(?:b(?=a*a*c)|z)$',
+        '^a+b(?=a*a*c)$',
+    ]);
+
+    it('and still refuses one no separator divides', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))->toContain('re-evaluates');
+    })->with([
+        '^a+(?:(?=a*a*c)q|z)$',
+        '^a+(?:a(?=a*a*c)|z)$',
+    ]);
+});
+
 describe('the screen stays inside its budget', function (): void {
     /*
      * ⚠️ THE GUARD'S OWN COST IS PART OF THE CONTRACT, and it had drifted: every rule added a walk, and

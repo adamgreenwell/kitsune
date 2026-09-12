@@ -1312,5 +1312,29 @@
     "pattern": "^\\p{Bidi_Mirrored}*\\p{Bidi_Mirrored}*∂\\p{Bidi_Mirrored}*X$",
     "subject": "∂∂∂X",
     "why": "The allowlist was built on the weaker of two tests: a name was admitted when both engines COMPILE it. `\\p{Bidi_Mirrored}` compiles in both and means two different things — 428 codepoints in PCRE 10.48, 554 in ECMAScript (Node 22.23.2), the difference one-directional, U+2202 `∂` and U+2140 `⅀` among the 126 ECMAScript adds. So rule 3 refuses it on its own: a schema meaning something narrower than the server rejects values the server accepts. It was also a COST defect, which is how a sweep for false publishes found it rather than a reading of the list: every boundary proof in `Pattern` asks PCRE whether an atom can match a character, so PCRE's narrower set PROVED that `∂` divides the run when it does not, and this published as three adjacent variable-width atoms — 45.9 ms at 250 characters, 363.4 at 500, 2,924.5 at 1,000. `tools/property-parity` now sweeps all 53 allowlisted names and all 213 script names ICU knows over 1,112,064 codepoints each in both engines: 228 agree exactly, 38 script aliases compile in neither, and this was the only divergence."
+  },
+  {
+    "id": "dead-markup-in-the-asserted-lead",
+    "pattern": "^(?=b{0}a)a?a",
+    "subject": "a",
+    "why": "A third exemption dead markup bought from rule 6. The walk that finds what a lookahead asserts read `b{0}` as an optional quantifier — uncertainty — rather than as markup that never runs, so it answered 'no lead' and the pattern published although the lookahead reduces to `(?=a)`, whose direct spelling is refused. `neverRuns()` is asked before `quantifierIsOptional()` now, which is the same ordering the run walk uses for the same reason. Rule 6 is insurance against PCRE 10.44, a version this harness cannot run, so the shape is decided by structure rather than by timing: the overlap either exists or it does not, and here it does."
+  },
+  {
+    "id": "asserted-lead-across-agreeing-branches",
+    "pattern": "^(?=(?:a|ab))a?a",
+    "subject": "aa",
+    "why": "The same rule, one bracket along. An alternation was treated as asserting nothing, which is right for `(?:a|b)` and wrong for `(?:a|ab)` — every branch requires `a` next, so the alternation requires it. The lead is now derived per branch and kept when they agree on the character, and the question is asked in ONE place: the group arm used to ask 'is this a single branch?' and discard anything else, which is what hid the case. `^(?=(?:a|b))a?a` still publishes, because one branch's lead is not the alternation's lead."
+  },
+  {
+    "id": "prefix-rescans-an-assertion-inside-a-bracket",
+    "pattern": "^a+(?:(?=a+c)a|z)|^a+(?:(?=a+c)a|z)|^a+(?:(?=a+c)a|z)|^a+(?:(?=a+c)a|z)|^a+(?:(?=a+c)a|z)",
+    "subject": "aaaacaaaa",
+    "why": "Making the REFUSAL read through a group left the CHARGE not reading through, so an assertion inside an optional or multi-branch group went unpriced: the cost walk reaches the body on its own recursion WITHOUT the prefix in front of the brackets. Forty alternatives fit in 719 characters and published, and measured on Node 24.15 one permitted 5,000-character failing value took about 690 ms — a single value's own cost, which `maxItems` cannot contain. A descended level now charges only what an INHERITED prefix rescans, so the body's own prefixes are still left to the recursion that prices it and nothing is charged twice. The ceiling bites at five of these rather than nine because the alternation-ambiguity test cannot read a branch's lead through a leading assertion and prices the group as two ways to match — a conservatism recorded rather than widened."
+  },
+  {
+    "id": "bracketed-quadratic-charged-once",
+    "pattern": "^(?:a+(?=a*b))$",
+    "subject": "aaab",
+    "why": "A pre-existing false refusal found while fixing the charge above, and the fix is a sentence this file already carried for the RUN charge: `ownAtoms()` exists so that `^(?:a*a*b)$` does not pay twice for the one run it has. The assertion charge had no such protection — splicing put the body's atoms at the outer level and the recursion priced the same body again, 8,192² passes the ambiguity ceiling, and brackets round the published quadratic `^a+(?=a*b)$` refused it. The pricing caller reads its own atoms now; the refusal caller still reads through, because a run or an assertion inside a required group is refused wherever it is written."
   }
 ]

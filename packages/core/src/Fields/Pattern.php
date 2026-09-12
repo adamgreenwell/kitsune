@@ -1486,7 +1486,7 @@ final class Pattern
         }
 
         foreach (self::topLevelBranches($pattern) as $branch) {
-            if (($rescanned = self::assertionsRescanned($branch, self::RUN_INSIDE_REPETITION, true)[0] ?? null) === null) {
+            if (($rescanned = self::assertionsRescanned($branch, self::RUN_INSIDE_REPETITION, false)[0] ?? null) === null) {
                 continue;
             }
 
@@ -2106,16 +2106,51 @@ final class Pattern
      * `(?:a)` and the parity guard skipped the pattern entirely. A leading ASSERTION is stepped over for
      * the same reason — it consumes nothing, so the first consumed character is the one after it.
      *
-     * ⚠️ AND AN ALTERNATION IS NOT TRANSPARENT: `(?:a|b)` asserts neither `a` nor `b`, so reading the
-     * first branch as the lead would be a claim about a pattern that does not make it.
+     * ⚠️ AND AN ALTERNATION IS NOT TRANSPARENT UNLESS ITS BRANCHES AGREE, which review found stated too
+     * strongly: `(?:a|b)` asserts neither `a` nor `b`, and `(?:a|ab)` asserts `a` — every branch requires
+     * it next. Discarding the lead there published `^(?=(?:a|ab))a?a`, which is rule 6's exact shape with
+     * a bracket round the asserted character. So each branch's lead is derived and kept when they are
+     * the same character, and `a|b` still answers unknown.
+     *
+     * ⚠️ AND AN ATOM BOUNDED AT ZERO REPETITIONS IS MARKUP, NOT UNCERTAINTY, which is the same finding
+     * one condition along: a `{0}` atom never runs, so the lead is whatever follows it. Reading it as an
+     * optional quantifier returned "unknown" and published `^(?=b{0}a)a?a`, whose lookahead reduces to
+     * `(?=a)`. `neverRuns()` is asked before `quantifierIsOptional()` for that reason — dead markup has
+     * bought an exemption from this rule twice before, and `field-types.md` §3 records both.
      *
      * @return array{atom: string, character: string|null}|null
      */
     private static function assertedLead(string $body, int $depth = 0): ?array
     {
-        // The same belt-and-braces bound the other recursive walks in this file carry.
+        // The same belt-and-braces bound the other recursive walks in this file carry. First, because the
+        // branch recursion below is a second way to descend and this has to bound both.
         if ($depth > self::MAX_WALK_DEPTH) {
             return null;
+        }
+
+        /*
+         * ⚠️ BRANCHES FIRST, because the walk below reads a linear sequence and `|` is not one: it stops
+         * at the first branch boundary, which is the right answer for `(?:a|b)` and the wrong one for
+         * `(?:a|ab)`. A body with no alternation is one branch and falls through unchanged.
+         */
+        $branches = self::topLevelBranches($body);
+
+        if (count($branches) > 1) {
+            $leads = [];
+
+            foreach ($branches as $branch) {
+                $lead = self::assertedLead($branch, $depth + 1);
+
+                // One branch that asserts nothing is one way the alternation asserts nothing.
+                if ($lead === null || $lead['character'] === null) {
+                    return null;
+                }
+
+                $leads[$lead['character']] = $lead;
+            }
+
+            // Every branch demands the same character, so the alternation demands it too.
+            return count($leads) === 1 ? reset($leads) : null;
         }
 
         $length = mb_strlen($body);
@@ -2140,16 +2175,27 @@ final class Pattern
                 continue;
             }
 
+            // A `{0}` atom is dead markup: it never runs, so the first character consumed is the one
+            // after it. Asked before optionality, which would read it as something that MIGHT run.
+            if (self::neverRuns($token['quantifier'])) {
+                $at = $token['after'];
+
+                continue;
+            }
+
             if (self::quantifierIsOptional($token['quantifier']) || self::isBackreference($atom)) {
                 return null;
             }
 
             if (str_starts_with($atom, '(')) {
-                $inner = self::frameBody($atom);
-
-                return count(self::topLevelBranches($inner)) === 1
-                    ? self::assertedLead($inner, $depth + 1)
-                    : null;
+                /*
+                 * ⚠️ AND A MULTI-BRANCH GROUP IS NO LONGER DISCARDED HERE, which is the same finding as
+                 * the branch block above and this was the line that hid it: the group's body is read by
+                 * that block, so branches that agree on their lead keep it. Asking the question twice —
+                 * once as "is this one branch?" here and once as "do the branches agree?" there — is how
+                 * `^(?=(?:a|ab))a?a` published while `^(?=a)a?a` is refused.
+                 */
+                return self::assertedLead(self::frameBody($atom), $depth + 1);
             }
 
             return ['atom' => $atom, 'character' => self::leadingLiteral($atom)];
@@ -2463,7 +2509,7 @@ final class Pattern
          * measures 44 ms. Eight reach the budget exactly, as eight branches do, and nine pass it — the
          * same constant and the same arithmetic as the alternation it sits beside.
          */
-        if (($rescans = count(self::assertionsRescanned($body, 0, false))) > 0) {
+        if (($rescans = count(self::assertionsRescanned($body, 0, true))) > 0) {
             $cost = self::saturatingProduct($cost, self::quadraticBranchCost() * $rescans);
         }
 
@@ -3192,18 +3238,35 @@ final class Pattern
      * too, carrying the run it has so far; a branch with its own prefix is covered by the same descent
      * seeded at zero.
      *
-     * ⚠️ THE PRICING CALLER MUST NOT DESCEND, for the reason `atomList()` takes the same flag: the same
-     * assertion is charged again when `ambiguityCost()` reaches that group's body, and charging it twice
-     * refuses a pattern for a cost it does not have. A rule that REFUSES reads through; a rule that
-     * PRICES reads its own level.
+     * ⚠️ AND THE PRICING CALLER DESCENDS TOO, BUT ONLY FOR THE PREFIX IT CAN SEE — which is the second
+     * half of the same finding, and review found the first half's fix leaving it out. Not descending at
+     * all left forty alternatives of `^a+(?:(?=a+c)a|z)` published in 719 characters, where each
+     * alternative claims a quadratic grant and eight is the ceiling: the cost walk reaches the group's
+     * body on its own recursion, but WITHOUT the `a+` in front of the brackets, so nothing charged the
+     * rescan that prefix causes. Measured on Node 24.15, about 690 ms for one permitted 5,000-character
+     * value, and `maxItems` cannot contain a single value's own cost.
+     *
+     * Descending and charging everything would double-charge instead: `^(?:a+(?=a*b))$` would pay once
+     * here and once when the recursion prices the body, 8,192² passes the ceiling, and that pattern is
+     * the published quadratic `^a+(?=a*b)$` with brackets round it. So a DESCENDED level charges only
+     * what an INHERITED prefix rescans — a run handed in from outside the body, which the recursion
+     * pricing that body cannot see — and anything a prefix inside the body rescans is left to it. The
+     * two charges are then for two different prefixes, and neither is counted twice.
+     *
+     * ⚠️ AND THE PREDECESSOR CROSSES THE BRACKET WITH THE RUN, which review found missing beside it:
+     * forwarding `$run` without `$previous` left a branch's leading separator unable to end the prefix
+     * it inherited, so `^a+(?:b(?=a*a*c)|z)$` was refused as cubic although the `a+` cannot consume the
+     * `b`. Measured on Node 24.15 against `a×2000 b a×2000`, 2.98 ms against 3.04 for the accepted
+     * `^a+b(?=a*a*c)$` — the assertion is reached once and pays the quadratic allowance.
      *
      * @return list<string>
      */
     private static function assertionsRescanned(
         string $sequence,
         int $limit,
-        bool $readThrough,
+        bool $pricing,
         int $run = 0,
+        ?string $previous = null,
         int $depth = 0,
     ): array {
         /*
@@ -3218,14 +3281,31 @@ final class Pattern
             return [];
         }
 
-        $atoms = self::flatAtoms($sequence);
+        /*
+         * ⚠️ THE PRICING CALLER READS ITS OWN ATOMS, which is the sentence `ownAtoms()` already carries
+         * for the RUN charge, one rule along: "`^(?:a*a*b)$` would pay twice for the one run it has, and
+         * be refused while `^a*a*b$` is published". The assertion charge had no such protection and paid
+         * exactly that price — `^(?:a+(?=a*b))$` was refused while `^a+(?=a*b)$` publishes, because
+         * splicing put the body's atoms at this level and the recursion priced the same body again.
+         * 8,192² passes the ambiguity ceiling, so brackets round a published quadratic refused it.
+         *
+         * A rule that REFUSES still reads through: a run or an assertion inside a required group is
+         * refused wherever it is written, and reading through is the only way to see it.
+         */
+        $atoms = $pricing ? self::ownAtoms($sequence) : self::flatAtoms($sequence);
 
         if ($atoms === null) {
             return [];
         }
 
         $rescanned = [];
-        $previous = null;
+
+        /*
+         * Whether the live run was handed in rather than built here. A descended level charges only
+         * these, because the walk that prices this body on its own recursion sees the rest.
+         */
+        $inherited = $run > 0;
+        $inheritedOnly = $pricing && $depth > 0;
 
         foreach ($atoms as $atom) {
             /*
@@ -3234,20 +3314,23 @@ final class Pattern
              * priced here, and the prefix in front of it is unchanged by it.
              */
             if ($atom['assertion']) {
-                if ($run > 0 && self::atomRunExceeds(self::frameBody($atom['atom']), $limit)) {
+                if ($run > 0
+                    && ($inherited || ! $inheritedOnly)
+                    && self::atomRunExceeds(self::frameBody($atom['atom']), $limit)) {
                     $rescanned[] = $atom['atom'];
                 }
 
                 continue;
             }
 
-            if ($readThrough
-                && $depth <= self::MAX_WALK_DEPTH
+            if ($depth <= self::MAX_WALK_DEPTH
                 && str_starts_with($atom['atom'], '(')
                 && ! self::repeatsMoreThanOnce($atom['quantifier'])) {
                 foreach (self::topLevelBranches(self::frameBody($atom['atom'])) as $branch) {
-                    foreach (self::assertionsRescanned($branch, $limit, true, $run, $depth + 1) as $inside) {
-                        $rescanned[] = $inside;
+                    $inside = self::assertionsRescanned($branch, $limit, $pricing, $run, $previous, $depth + 1);
+
+                    foreach ($inside as $one) {
+                        $rescanned[] = $one;
                     }
                 }
             }
@@ -3255,6 +3338,8 @@ final class Pattern
             if ($atom['variable']) {
                 $run = self::separatesRequired($previous, $atom) ? 1 : $run + 1;
                 $previous = $atom['atom'];
+                // Built here, so the level that prices this body can see it and will charge it.
+                $inherited = false;
 
                 continue;
             }
@@ -3262,6 +3347,7 @@ final class Pattern
             if ($run === 1 && self::separatesRequired($previous, $atom)) {
                 $run = 0;
                 $previous = null;
+                $inherited = false;
             }
         }
 
@@ -3780,7 +3866,7 @@ final class Pattern
          * quadratic, which is publishable per value and has to be bounded per array.
          */
         foreach (self::topLevelBranches($pattern) as $branch) {
-            if (self::assertionsRescanned($branch, 0, true) !== []) {
+            if (self::assertionsRescanned($branch, 0, false) !== []) {
                 return true;
             }
         }
