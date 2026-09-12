@@ -121,6 +121,30 @@ it('names each unpublishable pattern, its field and the reason', function (): vo
         ->assertSuccessful();
 });
 
+it('names a stored pattern the anchoring rule newly refuses', function (): void {
+    /*
+     * ⚠️ THE MIGRATION PROMISE, ASSERTED RATHER THAN CLAIMED. Requiring `^` for the two adjacent
+     * variable-width atoms the top level allows made a shape unpublishable that the screen accepted
+     * for as long as the screen existed — `a*a*b` measures 60 seconds in ECMAScript at the configured
+     * ceiling where `^a*a*b` measures 36 ms. Every rule that narrows the grammar is an upgrade hazard,
+     * and the answer this document gives is "the audit finds them before the upgrade does". A promise
+     * about a command is worth what a test of the command says it is.
+     *
+     * The anchored spelling of the same pattern is stored alongside it, so the row that is reported is
+     * reported for the anchor and not for the stars.
+     */
+    storedPattern($this->org->id, 'unanchored', 'a*a*b');
+    storedPattern($this->org->id, 'anchored', '^a*a*b$');
+
+    $this->artisan('kitsune:audit-patterns')
+        ->expectsOutputToContain('unanchored')
+        ->expectsOutputToContain('not anchored')
+        ->expectsOutputToContain('1 stored pattern is unpublishable.')
+        ->assertSuccessful();
+
+    $this->artisan('kitsune:audit-patterns', ['--strict' => true])->assertFailed();
+});
+
 it('exits non-zero under --strict, so a deployment can gate on it', function (): void {
     /*
      * ⚠️ SUCCESS WITHOUT `--strict` IS DELIBERATE. An operator running the audit to find out where
