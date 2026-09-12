@@ -116,12 +116,55 @@ class ScopedBuilder extends Builder
          * the same asymmetry as the `insertGetId` proof check one round ago, which is why both are now
          * beside each other rather than a page apart.
          */
+        $this->guardEveryInsertedRow($values);
+
+        return parent::insert($values);
+    }
+
+    /**
+     * Run the per-row insert guards over every row a call carries.
+     *
+     * ⚠️ ONE PLACE, BECAUSE FOUR PATHS KEPT GETTING DIFFERENT ANSWERS. `insertGetId()` had these guards,
+     * `insert()` gained them a round later, and `insertOrIgnore()` and `insertOrIgnoreReturning()` had
+     * neither — each gap found separately by review. They ask the same two questions about the same
+     * values, so they ask them through the same method now.
+     *
+     * @param  array<mixed>  $values
+     */
+    private function guardEveryInsertedRow(array $values): void
+    {
         foreach (self::insertRows($values) as $row) {
             $this->refuseDetachedScopeKeys($row);
             $this->refuseDetachedInsert('insert', $row);
         }
+    }
 
-        return parent::insert($values);
+    /**
+     * Refuse an insert whose rows come from a subquery, on a model that declares a scope.
+     *
+     * ⚠️ THERE ARE NO VALUES TO GUARD, which is the whole reason this is a refusal rather than a check.
+     * `insertUsing()` and `insertOrIgnoreUsing()` name columns and a SELECT, so the scope keys of the
+     * rows they write are whatever that query returns — nothing at this layer can see them, let alone
+     * vouch for them. Review found both paths open for a scoped model with no per-row columns.
+     *
+     * `#[Unscoped]` is untouched: a model whose keys mean nothing has nothing for this to protect.
+     */
+    private function refuseSubqueryInsert(string $method): void
+    {
+        $model = $this->getModel();
+
+        if (ScopeWrites::suspended() || ScopeResolver::for($model::class) === Unscoped::class) {
+            return;
+        }
+
+        throw new RuntimeException(sprintf(
+            '%s cannot be written by %s() on %s: the rows come from a subquery, so their scope keys are '
+            .'whatever it returns and nothing here can vouch for them (ADR-021). Select the rows, then '
+            .'save them, or use withoutScopeBecause() if this is deliberate.',
+            $model::class,
+            $method,
+            $model::class,
+        ));
     }
 
     /**
@@ -140,7 +183,16 @@ class ScopedBuilder extends Builder
             return [];
         }
 
-        return array_is_list($values) && is_array(reset($values))
+        /*
+         * ⚠️ THE FIRST VALUE DECIDES, NOT `array_is_list()`, which review found: Laravel reads
+         * `[42 => ['org_id' => …]]` as a multi-row insert from its first array value, while
+         * `array_is_list()` is false for it — so the whole payload was wrapped as ONE row, the guard saw
+         * only the numeric top-level key, and a cross-org insert went through. Measured, one row under
+         * another org.
+         *
+         * Laravel's own test is `is_array(reset($values))`, so this asks what it asks.
+         */
+        return is_array(reset($values))
             ? array_values(array_filter($values, 'is_array'))
             : [$values];
     }
@@ -151,6 +203,17 @@ class ScopedBuilder extends Builder
         // ⚠️ Refused whatever the model's key strategy: `performInsert()` never uses this one, so
         // there is no legitimate per-row caller to protect.
         $this->refuseBulkCreate('insertOrIgnore', always: true);
+
+        /*
+         * ⚠️ AND THE SCOPE KEYS, because `refuseBulkCreate()` returns immediately for a model with no
+         * per-row columns — which review found leaves a SCOPED one unguarded. `SiteGroup` is
+         * `#[OrgScoped]` and declares no derived columns, so from org A
+         * `SiteGroup::query()->insertOrIgnore(['org_id' => $orgB, …])` created org B's row. Measured.
+         *
+         * "Refused in bulk" and "the keys are somebody else's" are different questions and the first
+         * returning early is not an answer to the second.
+         */
+        $this->guardEveryInsertedRow($values);
 
         return parent::insertOrIgnore($values);
     }
@@ -163,6 +226,8 @@ class ScopedBuilder extends Builder
     {
         $this->refuseBulkCreate('insertUsing', always: true);
 
+        $this->refuseSubqueryInsert('insertUsing');
+
         return parent::insertUsing($columns, $query);
     }
 
@@ -173,6 +238,8 @@ class ScopedBuilder extends Builder
     public function insertOrIgnoreUsing(array $columns, $query): int
     {
         $this->refuseBulkCreate('insertOrIgnoreUsing', always: true);
+
+        $this->refuseSubqueryInsert('insertOrIgnoreUsing');
 
         return parent::insertOrIgnoreUsing($columns, $query);
     }
@@ -226,6 +293,9 @@ class ScopedBuilder extends Builder
     {
         // `performInsert()` never uses this one, so there is no per-row caller to protect.
         $this->refuseBulkCreate('insertOrIgnoreReturning', always: true);
+
+        // See `insertOrIgnore()`: a model with no per-row columns still has scope keys.
+        $this->guardEveryInsertedRow($values);
 
         /*
          * ⚠️ Forwarded through `toBase()` rather than `parent::`, because Eloquent's builder does not

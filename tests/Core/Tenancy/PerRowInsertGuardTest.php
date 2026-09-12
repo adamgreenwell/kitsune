@@ -671,6 +671,54 @@ it('does not call two different numeric-looking strings the same value', functio
         ->toBe('0e1', 'a loose comparison called 0e1 and 0e2 the same value');
 });
 
+it('guards the scope keys on every alternate insert path', function (): void {
+    /*
+     * ⚠️ `refuseBulkCreate()` RETURNS EARLY FOR A MODEL WITH NO PER-ROW COLUMNS, which review found
+     * leaves a SCOPED one unguarded. `SiteGroup` is `#[OrgScoped]` and declares no derived columns, so
+     * from org A every one of these created org B's row — measured, two of them before the fix.
+     *
+     * "Refused in bulk" and "these keys are somebody else's" are different questions, and the first
+     * returning early is not an answer to the second. Four paths kept getting different answers to the
+     * second — `insertGetId()` had the guards, `insert()` gained them a round later, and these two had
+     * neither — so they all ask through one method now.
+     */
+    $victim = Org::create(['name' => 'Victim', 'slug' => 'victim-alternates']);
+
+    $row = fn (string $handle): array => [
+        'org_id' => $victim->id, 'handle' => $handle, 'name' => ucfirst($handle),
+        'created_at' => now(), 'updated_at' => now(),
+    ];
+
+    expect(fn () => SiteGroup::query()->insertOrIgnore($row('ignored')))
+        ->toThrow(RuntimeException::class, 'from a context scoped to');
+
+    /*
+     * ⚠️ A KEYED BATCH IS STILL A BATCH, and `array_is_list()` said otherwise. Laravel reads
+     * `[42 => [...]]` as a multi-row insert from its FIRST ARRAY VALUE, so the whole payload was wrapped
+     * as one row, the guard saw only the numeric top-level key, and the insert went through. This asks
+     * what Laravel asks.
+     */
+    expect(fn () => SiteGroup::query()->insert([42 => $row('keyed')]))
+        ->toThrow(RuntimeException::class, 'from a context scoped to')
+        ->and(fn () => SiteGroup::query()->insert([$row('listed')]))
+        ->toThrow(RuntimeException::class, 'from a context scoped to');
+
+    /*
+     * ⚠️ AND A SUBQUERY INSERT IS REFUSED OUTRIGHT, because there are no values to guard: the rows'
+     * scope keys are whatever the SELECT returns, and nothing at this layer can see them.
+     */
+    expect(fn () => SiteGroup::query()->insertUsing(['org_id', 'handle', 'name'], SiteGroup::query()->toBase()))
+        ->toThrow(RuntimeException::class, 'the rows come from a subquery');
+
+    expect(DB::table('site_groups')->where('org_id', $victim->id)->count())
+        ->toBe(0, 'an alternate insert path planted a row under another org');
+
+    // ⚠️ And an ordinary create in the caller's own org still works, or these would be about the paths
+    // rather than about the keys.
+    expect(SiteGroup::create(['org_id' => $this->org->id, 'handle' => 'mine', 'name' => 'Mine'])->exists)
+        ->toBeTrue();
+});
+
 it('guards a non-incrementing model save, which insert() legitimately serves', function (): void {
     /*
      * ⚠️ STANDING ASIDE FROM THE BULK REFUSAL IS NOT THE SAME AS BEING SAFE, which review found and which
