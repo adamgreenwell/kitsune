@@ -1150,5 +1150,11 @@
         "pattern": "(?:a|^){0}$",
         "subject": "a",
         "why": "A LIVE defect on this harness's own pair until the round that found it — PCRE 10.48 rejects `a` and Node 22.23.2 matches it, so a generated client would accept every value the server rejects. PCRE's start-anchor optimisation survives the dead group while ECMAScript skips the group outright. The dead-group rule already refused an ASSERTION inside a `{0}` group, and `containsAssertion()` looked only at parenthesised frames — so a group holding `^` reported none. Branch order matters here as it does for the lookahead form: `(?:^|a){0}$` agrees, and `^(?:a|^){0}$` agrees too, which is why the rule is about the shape rather than about the measured subject."
+    },
+    {
+        "id": "backreference-to-a-variable-capture",
+        "pattern": "^(a+)(a+)\\1$",
+        "subject": "aaaaaaaaaaaaaaaaaaaa",
+        "why": "Accepted until review sent it, because a backreference carries no quantifier of its own — so the run rule read `\\1` as fixed and counted two variable-width atoms where there are three. At production fidelity on 5,000 `a`, the ceiling a `text` field admits: `preg_match()` exhausts its backtrack limit and returns FALSE while Node 22.23.2 matches in 13.3 ms, so the published schema accepts a value the server rejects. ⚠️ THIS ROW'S SUBJECT DOES NOT DISCRIMINATE and that is deliberate: both engines agree up to 2,000 characters, and a 5,000-character subject would make this file slow to read and slow to run. The divergence is in the numbers above; the row is here so the shape is covered. A backreference is now as wide as the capture it names, and `^(a)(a+)\\1$` and `^(a{2})(a+)\\1$` still publish because a fixed-width capture makes the reference fixed too."
     }
 ]

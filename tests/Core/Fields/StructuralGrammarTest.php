@@ -1595,3 +1595,39 @@ describe('what consumes nothing cannot change what a pattern means', function ()
         '^a*a*b{0}a*$',
     ]);
 });
+
+describe('a backreference is as wide as the capture it names', function (): void {
+    /*
+     * ⚠️ A DIVERGENCE ON THIS PAIR, not only a cost. `\1` carries no quantifier of its own, so the run
+     * rule read every backreference as fixed-width and `^(a+)(a+)\1$` counted two variable-width atoms
+     * where there are three. Measured at production fidelity on 5,000 `a` — the ceiling a `text` field
+     * admits — `preg_match()` exhausts its backtrack limit and returns FALSE while Node 22.23.2 matches
+     * in 13.3 ms. The published schema accepted a value the server rejects.
+     *
+     * ⚠️ THE CAPTURE'S WIDTH IS THE QUESTION, so the fix cannot be "refuse backreferences": a fixed
+     * capture makes the reference fixed, and `^(a)(a+)\1$` measures 0.0 ms on both engines.
+     */
+    it('counts one to a variable capture as variable', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))->toContain('variable-width atom');
+    })->with([
+        '^(a+)(a+)\1$',
+        '^(?<x>a+)(a+)\1$',
+
+        // ⚠️ `\k<name>` is not resolved at all, so it counts as variable — the conservative direction,
+        // and this shape is the same one anyway.
+        '^(a+)(a+)\k<x>$',
+    ]);
+
+    it('leaves one to a fixed capture alone', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))->toBeNull("[{$pattern}] refers to a fixed capture");
+    })->with([
+        '^(a)(a+)\1$',
+        '^(a{2})(a+)\1$',
+        '^(a+)\1$',
+        '^(a+)b\1$',
+        '^(a)(b)\2\1$',
+
+        // ⚠️ A non-capturing group takes no number, so `\1` here is still the `(a)`.
+        '^(?:x)(a)(a+)\1$',
+    ]);
+});

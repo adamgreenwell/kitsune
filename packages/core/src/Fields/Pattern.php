@@ -2255,6 +2255,46 @@ final class Pattern
     }
 
     /**
+     * Whether the group this backreference stands for can match more than one length.
+     *
+     * ⚠️ THE CAPTURE'S WIDTH, NOT THE REFERENCE'S. `\1` never carries a quantifier of its own, so the
+     * run rule read every backreference as fixed — and `^(a+)(a+)\1$` is three variable-width atoms in
+     * a row wearing two. Measured on 5,000 `a` at production fidelity: `preg_match()` exhausts its
+     * backtrack limit and returns FALSE while Node 22.23.2 matches in 13.3 ms, so the published schema
+     * accepts a value the server rejects — rule 3, and a divergence on the pair this harness runs.
+     *
+     * ⚠️ RESOLVED WITHIN THE SEQUENCE BEING WALKED, and anything it cannot resolve is variable. A body
+     * walked on its own may refer to a capture outside it, and `\k<name>` and `\g{…}` are not resolved
+     * here at all — treating an unknown width as variable costs at most a refusal of a shape that
+     * already has two variable atoms beside it, while the other direction publishes what the server
+     * rejects.
+     *
+     * ⚠️ AND A CAPTURE IS NUMBERED BY ITS OPENING PARENTHESIS, named groups included, which is what
+     * `frames()` yields in order. A non-capturing group does not take a number.
+     */
+    private static function backreferenceIsVariable(string $sequence, string $atom): bool
+    {
+        if (preg_match('/^\\\\([0-9]+)$/D', $atom, $digits) !== 1) {
+            return true;
+        }
+
+        $wanted = (int) $digits[1];
+        $seen = 0;
+
+        foreach (self::frames($sequence) as $frame) {
+            if ($frame['kind'] !== 'capture' && $frame['kind'] !== 'named') {
+                continue;
+            }
+
+            if (++$seen === $wanted) {
+                return self::fixedWidth($frame['body']) === null;
+            }
+        }
+
+        return true;
+    }
+
+    /**
      * Whether this atom refers to what another group matched, rather than naming characters itself.
      *
      * ⚠️ THE THREE SPELLINGS, and a character test rather than a pattern — my first version WAS a
@@ -3049,7 +3089,16 @@ final class Pattern
                 $atoms[] = [
                     'atom' => $atom,
                     'quantifier' => $quantifier,
-                    'variable' => self::isVariableWidth($quantifier),
+                    /*
+                     * ⚠️ A BACKREFERENCE IS AS WIDE AS WHAT IT REFERS TO, which review found this
+                     * reading from the reference's own quantifier alone. `\1` carries none, so
+                     * `^(a+)(a+)\1$` counted two variable-width atoms where there are three — and it
+                     * is a DIVERGENCE on this pair, not only a cost: measured on 5,000 `a`,
+                     * `preg_match()` exhausts its backtrack limit and returns false while Node 22
+                     * matches in 13.3 ms, so the published schema accepts what the server rejects.
+                     */
+                    'variable' => self::isVariableWidth($quantifier)
+                        || (self::isBackreference($atom) && self::backreferenceIsVariable($sequence, $atom)),
                     'leads' => null,
                     'assertion' => false,
                 ];
