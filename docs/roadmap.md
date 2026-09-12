@@ -57,7 +57,9 @@ Those consumed 5,000–15,000 hours. 12–18 months part-time is ~1,200. **So: c
 
 - [x] **`LICENSE`** — plain MPL-2.0 (no Exhibit B; make sure no contributor ever adds it)
 - [x] Public repository from the first commit, planning docs included (ADR-014)
-- [ ] **Trademark** ([#2](https://github.com/adamgreenwell/kitsune/issues/2)): file "Kitsune" in software/SaaS classes; design and register the logo. Publish `TRADEMARK.md` modeled on the WordPress Foundation's
+- [ ] **Trademark** ([#2](https://github.com/adamgreenwell/kitsune/issues/2)): file "Kitsune" in software/SaaS classes; design and register the logo. Publish `TRADEMARK.md` modeled on the WordPress Foundation's.
+
+  **The mark is designed and provisionally adopted, 2026-09-12 — ADR-032.** Three marks on a ladder that abstracts rather than reduces: nine-tail lockup, compact fox, single-tail glyph. A one-tailed fox was rejected as generic at the size where distinctiveness matters most. **Filing still waits on clearance below.** The vector redraw is in progress; nothing in [`brand/`](../brand/README.md)'s manifest is built yet, and the palette is unmeasured by design rather than by oversight
 - [ ] **`CLA.md` + CLA bot wired in before the first external PR** ([#3](https://github.com/adamgreenwell/kitsune/issues/3)). The only irreversible item in the project
 - [x] **`GOVERNANCE.md`** — stated BDFL with a disclosed bus factor, binding licence and open/paid commitments, staged succession, and a disclosed commercial conflict of interest (ADR-023)
 - [x] `CONTRIBUTING.md`
@@ -70,7 +72,9 @@ Those consumed 5,000–15,000 hours. 12–18 months part-time is ~1,200. **So: c
 - [x] ⚠️ **Bare-clone guard** — a CI job declaring no service containers at all, running the default suite on PHP 8.4 and 8.5. **Passed on first run**, so ADR-024's pillar-three mitigation is verified rather than promised. If it ever goes red the fix is never to add services to it, but to fix the test that reached for one
 - [x] `laravel/boost` as a **dev** dependency. Never a runtime dependency of `kitsune/core` (ADR-025)
 - [x] Kitsune's own guidelines file, encoding the invariants an agent violates by default ([#9](https://github.com/adamgreenwell/kitsune/issues/9)) — `AGENTS.md`, fourteen invariants. Several were added *because* something violated them: `once()` keys, foreign keys in tests, and amending an ADR rather than routing around it
-- [ ] **Name clearance before spending on a logo** ([#1](https://github.com/adamgreenwell/kitsune/issues/1)) — Mozilla's support platform and a Rust ActivityPub project both use "Kitsune"
+- [ ] **Name clearance before *registering* a logo** ([#1](https://github.com/adamgreenwell/kitsune/issues/1)) — Mozilla's support platform and a Rust ActivityPub project both use "Kitsune".
+
+  ⚠️ **This line used to say "before spending on a logo", and the wording hid a distinction that matters.** Drawing a mark and filing one are different expenditures: the first is cheap to reverse, the second is not. ADR-032 adopts a mark provisionally on that basis and leaves the filing gated here. The choice of mark is also a *clearance input* rather than only a downstream consequence — a distinctive nine-tail fan argues against confusion with the two existing "Kitsune" projects where a generic fox would argue for it
 
 ## Phase 1 — Remaining spikes
 

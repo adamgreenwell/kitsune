@@ -1509,6 +1509,77 @@ Live defects remain **0**. The expressiveness cost is nine rows: three are porta
 
 ---
 
+## ADR-032 — The mark reduces to a unit, not to a lesser fox, and it is adopted provisionally
+
+**Status:** Provisional · 2026-09-12 — adopted for use, not for registration
+
+Raised because a comp exists. It settles two things that were about to be settled by accident: what the mark system is, and whether having drawn one violates the roadmap's instruction not to spend on a logo before name clearance.
+
+### The comp is a direction, not an asset
+
+The artwork this decision was taken from is **raster only**. That makes it a design direction and nothing more — it cannot be placed at arbitrary size, its palette cannot be sampled reliably, its wordmark corresponds to no licensed typeface, and a registration cannot be filed on a JPEG. A vector redraw is in progress and every asset in [`brand/README.md`](../brand/README.md)'s manifest depends on it.
+
+This matters beyond convenience. **Five defects are visible in the comp and all five are cheap in vector and expensive afterwards** — the cream tail tips vanishing against white, the keyline haloing on dark grounds, the glyph's tip at small size, the absent horizontal lockup, and the unoutlined wordmark. They are listed in `brand/README.md` rather than here because that is where somebody opening the source will look.
+
+### The ladder abstracts; it does not reduce
+
+Three marks — formal lockup, compact fox, single-tail glyph — and the rule that generates them is that **the smallest mark is one unit of the largest, not a shrunken copy of it.**
+
+A kitsune's tails are its counting unit; nine is the mature form. So the ladder drops the wordmark, then drops to the tail. Nine of the glyph is the logo.
+
+**The rejected form is the one that looks most obvious: a one-tailed fox.** It fails three ways at once. Visually, a single orange fox at 32px is the most crowded image in software and sits closest to the marks a clearance search will surface. Structurally, it is a *reduction* — a shrunken picture of a complex mark, which is the thing that reliably turns to mud at favicon size. And in the folklore it is a juvenile kitsune, so the smallest and most-repeated mark would depict the least of what the name claims.
+
+The distinctiveness lives in the nine-tail fan and in the tail as a shape. It does not live in the fox, and a mark that reduces toward the fox reduces toward the generic — which is the wrong direction for something whose entire job at 16px is to not be mistaken for a competitor.
+
+The glyph reads secondarily as a flame. That was checked rather than assumed and is **on-myth**: *kitsunebi*, fox-fire, belongs to the same folklore. An abstract glyph whose two available readings are both correct is a better outcome than one with a single enforced reading.
+
+### Provisional, on the precedent this project already set
+
+Roadmap [#1](https://github.com/adamgreenwell/kitsune/issues/1) says clearance comes before spending on a logo, and the open question says the same. **Neither is violated, because designing a mark and registering one are different expenditures** — and the docs currently conflate them. Drawing costs nothing to reverse. Filing does.
+
+So the mark is adopted the way the domain was: **settled provisionally, 2026-09-12**, mirroring `kitsunecms.org`'s status of 2026-09-07. Provisional means the mark is used — README, the site, the admin, the manifest in `brand/` — while **registration stays gated on the software and SaaS class search in roadmap [#2](https://github.com/adamgreenwell/kitsune/issues/2).**
+
+The visual decision feeds back into that search rather than merely waiting on it. A distinctive mark is easier to protect and a generic one is harder; a fox-shaped mark alongside two existing "Kitsune" projects argues *for* confusion if there is ever a dispute, and the nine-tail fan argues against it. Choosing the more distinctive form is therefore a clearance input, not just an aesthetic preference. **This is not legal advice and does not substitute for the search.**
+
+### The bar for dropping "provisional"
+
+<!-- TODO(adam): the exit criteria. ADR-030's "The bar" is the shape to match — conditions
+     somebody who is not the maintainer can check, rather than conditions the maintainer can
+     satisfy by deciding they are satisfied. Candidates to weigh: clearance returning clean in
+     the relevant classes; the vector existing with the five comp defects resolved; the palette
+     measured rather than transcribed; TRADEMARK.md published. Whether a filing must be
+     *granted* or merely *filed* is the consequential one — granting can take a year or more,
+     and gating on it leaves the mark provisional through v1.0. -->
+
+### The licence boundary is drawn at the directory
+
+ADR-005 separates the code licence from the trademark, and GOVERNANCE.md restates it. **That separation only holds if the asset files are actually outside the MPL**, which is why they live in a top-level `brand/` with their own notice rather than anywhere under `packages/` or `skeleton/`. Shipping the mark as an MPL asset inside the package would license the one thing the trademark policy exists to withhold, and would do it silently.
+
+Two consequences follow. `skeleton/` never ships the mark as a default site logo — an operator's logo is `site_group.settings.logo` (ADR-022) and is unrelated content. And the split-publish of `kitsune/core` ([#8](https://github.com/adamgreenwell/kitsune/issues/8)) takes the `packages/core` subtree, so `brand/` stays out of the published dist without needing an export rule.
+
+### Accessibility is a property of the mark, not of its usage
+
+Pillar three is tested rather than claimed, so the brand carries requirements rather than guidance: a monochrome variant, dark-ground variants, a fixed alt-text convention, and measured contrast. **The palette is currently unmeasured and is recorded as such** — sampling it from a rasterised comp would be exactly the reasoned-not-measured failure invariant 15 and Standing Principle #9 exist to catch. Rust is *expected* near the 4.5:1 boundary on white; which side it lands on decides whether it may ever carry text, and that is a measurement nobody has taken.
+
+| Rejected | Why it lost |
+|---|---|
+| One-tailed fox as the small mark | The original proposal. Generic at exactly the size where distinctiveness matters most, adjacent to every other fox-named project, and a juvenile kitsune in the folklore the name comes from. |
+| Head-plus-fan glyph | Considered and dropped in favour of the tail. Still a reduction rather than an abstraction — a shrunken picture of the logo, with a face that becomes mud at 16px and a fan that becomes a lumpy halo. |
+| Two marks instead of three | Forces one asset to serve 512px and 16px. Whichever size it is drawn for, it fails the other. |
+| Adopt outright and file now | Spends the clearance budget before knowing whether the name survives contact with the two existing "Kitsune" projects. The roadmap put clearance first for this reason. |
+| Hold the mark entirely until clearance returns | Leaves the README, the site and the admin with no mark for an unbounded period, to avoid a cost — redrawing — that is already sunk and was never large. Provisional adoption gets the same protection at a fraction of the delay. |
+| Ship the raster comp in the meantime | A logo that cannot scale, cannot be recoloured for dark grounds and cannot be filed is not a stopgap, it is a second migration. |
+| Brand assets under MPL with the rest of the repo | Contradicts ADR-005 outright. The trademark is the moat that ADR-005 identified when it concluded the licence is not; licensing it away by filing convenience is the most expensive possible clerical error. |
+
+**Cost, stated.** Four:
+
+- **Everything downstream waits on a vector that does not exist yet.** No favicon, no social card, no admin mark until the redraw lands.
+- **The mark may have to be abandoned.** If clearance comes back contested, provisional adoption means the README, the site and any published assets carry a mark that has to be pulled. The cost is bounded by keeping the manifest small until clearance returns — which is an argument against producing the full asset set early, and is why the manifest is a checklist rather than a batch job.
+- **A provisional mark invites treating it as settled.** Every use makes the reversal marginally more expensive, and nobody will notice the moment it stops being cheap. This paragraph is what to hold that against.
+- **The trademark notice in `brand/LICENSE.md` is not lawyer-reviewed.** It states the intent so the boundary exists from the moment assets land, and it is a placeholder for `TRADEMARK.md`. An unreviewed notice that overstates the position is worse than none, which is why it claims referential use is permitted rather than attempting to enumerate every restriction.
+
+---
+
 ## Open questions
 
 - Storage benchmark at 10k / 100k / 1M entries
@@ -1516,6 +1587,8 @@ Live defects remain **0**. The expressiveness cost is nine rows: three are porta
 - Revision storage growth — full-JSON snapshots get expensive; consider diffs
 - Do relations target the translation group or a specific locale row (ADR-017)? Group-targeting with an optional locale override is the leading candidate
 - **Name/trademark clearance** — no PHP/CMS collision, but Mozilla's support platform and a Rust ActivityPub project both use "Kitsune." Confirm availability in software/SaaS classes **before** spending on a logo.
+
+  **Mark settled provisionally, 2026-09-12 — ADR-032**, on the same pattern this bullet already set for the domain. The mark is used; the filing waits here. The bullet's own phrasing was the problem: "before spending on a logo" reads as a bar on designing one, when the expenditure it protects against is registration.
 
   **Domain settled provisionally, 2026-09-07: `kitsunecms.org`.** `kitsune.org` is held by another party and is being pursued; acquiring it would make it a redirect, not a rename. Naming the domain now unblocks ADR-026's installer, which cannot be served from a URL that might later move — a checksum-pinned script behind a redirect is exactly what that ADR refuses. **What runs at that domain, and when, is settled by ADR-030:** the site is Kitsune's first install, so it waits for Phase 5's Marketing Site blueprint to apply cleanly at the ADR-027 floor rather than being stood up on something else in the meantime.
 - KaaS deployment topology beneath the org- and site-aware core — now an ops decision, not architecture, though ADR-020 gives it a legal input via data residency

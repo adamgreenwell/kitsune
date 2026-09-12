@@ -1241,6 +1241,31 @@ final class Pattern
             }
 
             /*
+             * ⚠️ AND k OF THEM COST k TIMES ONE, which review found the check above evaluating one at a
+             * time. Each assertion whose body holds a variable-width atom rescans the remaining value on
+             * every iteration, so a repetition holding a hundred of them — 709 characters of pattern —
+             * pays a hundred scans per iteration. Measured on Node 22.23.2 with a 5,000-character value:
+             *
+             *   one assertion    36.9 ms        16    586.9 ms
+             *   two              74.6 ms        32  1,174.1 ms
+             *   four            148.1 ms       100  3,719.9 ms
+             *
+             * Exactly linear in the count, and one is already at the quadratic allowance's own ceiling —
+             * `^a*a*b$` costs 36 ms at the same length. So the budget is the same equal-work rule the
+             * other two unanchored bounds use: the aggregate may cost what ONE costs, which is one.
+             */
+            if (self::scanningAssertionsInside($frames, $frame) > 1) {
+                return sprintf(
+                    'more than one assertion whose scan grows with the value inside the repetition `%s` '
+                    .'— each is re-evaluated on every iteration, so two cost twice what one costs and a '
+                    .'hundred cost a hundred times. Measured on a 5,000-character value, one takes '
+                    .'ECMAScript 36.9 ms, two 74.6 ms and a hundred 3.7 SECONDS. Give the extra '
+                    .'assertions fixed-width bodies, or take them out of the repetition',
+                    self::excerpt($pattern, $frame['open'], $frame['close']),
+                );
+            }
+
+            /*
              * ⚠️ RULE 3 — AN UNBOUNDED REPETITION MUST HAVE ONLY ONE WAY TO DIVIDE ITS SUBJECT.
              * That is the property; everything else here is a way of establishing it. If a group's
              * body can match two different lengths at the same position, a failing subject can be
@@ -2725,6 +2750,31 @@ final class Pattern
         }
 
         return false;
+    }
+
+    /**
+     * How many assertions inside this frame hold a variable-width atom.
+     *
+     * ⚠️ COUNTED RATHER THAN ANSWERED YES OR NO, because the cost is linear in the count and the rule is
+     * a budget rather than a ban: one such assertion inside a repetition is the allowance, and it is
+     * already at the same 36 ms the top-level quadratic allowance permits.
+     *
+     * @param  list<array{open: int, close: int, quantifier: string, kind: string, body: string, inLookbehind: bool}>  $frames
+     * @param  array{open: int, close: int}  $frame
+     */
+    private static function scanningAssertionsInside(array $frames, array $frame): int
+    {
+        $scanning = 0;
+
+        foreach ($frames as $inside) {
+            $contained = $inside['open'] > $frame['open'] && $inside['close'] < $frame['close'];
+
+            if ($contained && self::isAssertionKind($inside['kind']) && self::atomRunExceeds($inside['body'], 0)) {
+                $scanning++;
+            }
+        }
+
+        return $scanning;
     }
 
     /**

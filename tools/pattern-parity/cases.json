@@ -1186,5 +1186,11 @@
         "pattern": "^a*a*(?:b|c)a*$",
         "subject": "aaaaaaaaaaaaaaaaaaaa",
         "why": "A FALSE refusal: the group is fixed width, so the branch that applies the all-branch lead proof never ran, and `literalCharacter()` cannot pull a literal out of a whole group — so the run survived the group and the last `a*` counted as a third adjacent variable-width atom. Both branches lead with a literal `a*` cannot match, which is exactly the proof already applied to a variable-width group; the group's width was never what made it work. `(?:b|a)` still refuses, because one of its branches is something `a*` may swallow."
+    },
+    {
+        "id": "many-scanning-assertions-in-a-repetition",
+        "pattern": "^(?:a(?!a*c)(?!a*c))*X$",
+        "subject": "aaaaaaaaaaaaaaaaaaaa",
+        "why": "The rule that refuses a costly assertion inside a repetition evaluated them ONE AT A TIME, and each is individually inside the allowance. Each rescans the remaining value on every iteration, so k of them cost k times one — exactly linear, measured on Node 22.23.2 with a 5,000-character value: 36.9 ms for one, 74.6 ms for two, 586.9 ms for sixteen, 3,719.9 ms for a hundred. A hundred of them is 709 characters of pattern, well inside the length limit. One is already at the quadratic allowance's ceiling — `^a*a*b$` costs 36 ms at the same length — so the aggregate budget is what ONE costs, the same equal-work rule the unanchored bounds use. Fixed-width assertion bodies do not scan and are not counted."
     }
 ]

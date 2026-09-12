@@ -1729,6 +1729,25 @@ describe('an assertion in a repetition is paid for on every iteration', function
         '^(?:(?:(?!a*a*c)a))*bX$',
     ]);
 
+    it('refuses more than one scanning assertion in the same repetition', function (string $pattern): void {
+        /*
+         * ⚠️ k OF THEM COST k TIMES ONE, and the check above evaluated them one at a time. Measured on
+         * Node 22.23.2 with a 5,000-character value — exactly linear in the count:
+         *
+         *   one   36.9 ms      four   148.1 ms      thirty-two  1,174.1 ms
+         *   two   74.6 ms      sixteen 586.9 ms     a hundred   3,719.9 ms
+         *
+         * A hundred of them is 709 characters of pattern, well inside the length limit. One is already
+         * at the quadratic allowance's own ceiling — `^a*a*b$` costs 36 ms at the same length — so the
+         * budget is the equal-work rule the other bounds use: the aggregate may cost what ONE costs.
+         */
+        expect(Pattern::unpublishable($pattern))->toContain('more than one assertion whose scan grows');
+    })->with([
+        '^(?:a(?!a*c)(?!a*c))*X$',
+        '^(?:a'.str_repeat('(?!a*c)', 100).')*X$',
+        '^(?:(?:a(?!a*c))(?!a*d))*X$',
+    ]);
+
     it('leaves a cheap assertion and an unrepeated one alone', function (string $pattern): void {
         expect(Pattern::unpublishable($pattern))->toBeNull("[{$pattern}] costs one run or runs once");
     })->with([
@@ -1741,6 +1760,13 @@ describe('an assertion in a repetition is paid for on every iteration', function
         // ⚠️ And at the top level the assertion gets the top level's limit, which is two when anchored.
         '^(?!a*a*c)ab$',
         '^(?=.*[A-Z])(?=.*[0-9]).{8,64}$',
+
+        // ⚠️ Fixed-width assertion bodies do not scan: three of them cost what none do, whatever the
+        // value's length, so the count rule is about the SCAN rather than about the assertions.
+        '^(?:a(?!ac)(?!ad)(?!ae))*X$',
+
+        // ⚠️ And two of them at the top level are not multiplied by anything.
+        '^(?!a*c)(?!a*d)aX$',
     ]);
 });
 
