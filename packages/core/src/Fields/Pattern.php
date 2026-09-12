@@ -1314,7 +1314,7 @@ final class Pattern
     }
 
     /**
-     * Refuse a positive lookahead immediately followed by an optional atom it can match.
+     * Refuse a positive lookahead sitting beside an optional atom that can match what it asserts.
      *
      * ⚠️ I COULD NOT REPRODUCE THE DIVERGENCE, and this refusal is insurance rather than a measurement —
      * which is stated rather than implied. Review measured `(?=a)a?a` on PCRE 10.44 with Node 24.15: PCRE
@@ -1323,20 +1323,33 @@ final class Pattern
      * `(?=a)aa`, `a?a`, `(?=a)a*a` and `(?=ab)a?ab`.
      *
      * ⚠️ SO WHY REFUSE SOMETHING THIS PAIR AGREES ON: the shape is REDUNDANT. A lookahead asserting the
-     * same character the following optional atom consumes constrains nothing that the atom does not — it
-     * is `a?a` with a no-op in front. Nobody writes it deliberately, so the expressiveness cost is
+     * same character an adjacent optional atom consumes constrains nothing that the atom does not — it is
+     * `a?a` with a no-op beside it. Nobody writes it deliberately, so the expressiveness cost is
      * approximately zero, and `composer.json` requires PHP `^8.4`, whose earliest releases bundle PCRE2
      * 10.44. Cheap insurance against a real deployment beats a rule that is right on one pair.
      *
-     * ⚠️ NARROW ON PURPOSE. Only a POSITIVE lookahead, only when the very next atom is optional — lower
-     * bound zero — and only when that atom can match the lookahead's first required character. So
-     * `^(?=.*[A-Z])(?=.*[0-9]).{8,64}$` still publishes: `.{8,64}` is not optional. `(?=b)a?a` publishes:
-     * `a?` cannot match `b`. `(?=ab)a?ab` publishes: `a?` CAN match `a`… and is refused, which is the
-     * cost of the rule being about the shape rather than about the semantics.
+     * ⚠️ FOUR ROUNDS OF REVIEW FOUND FOUR WAYS PAST IT AND THEY WERE ALL ONE WAY: the rule read the
+     * pattern more narrowly than the shape occurs. A group hid the shape (`(?:(?=a)a?a)`), a group hid
+     * the asserted lead (`(?=(?:a))(?:a)?a`), a quantifier hid the lead (`(?=a+)a?a`), and the optional
+     * atom sat on the OTHER SIDE (`a{0}(?=a)a`, `a?(?=a)a` — same redundancy, same measured pair). So
+     * the rule is stated over the shape now rather than over one spelling of it: an optional CONSUMING
+     * atom on either side, and a lead derived through everything transparent. Patching the two spellings
+     * review happened to send would have left `a?(?=a)a` and `(?=[0-9])[0-9]?[0-9]`, which I found by
+     * probing the family rather than the report.
+     *
+     * ⚠️ STILL NARROW WHERE THE NARROWNESS IS THE POINT. Only a POSITIVE lookahead; the neighbour's lower
+     * bound must be zero; and the overlap must be PROVED, either by PCRE answering class membership for a
+     * single-character lead or by the two atoms being the same expression. `^(?=[A-Za-z])[A-Za-z0-9]*$`
+     * therefore still publishes — the assertion excludes a leading digit where the neighbour admits one,
+     * so it is not redundant — while `(?=[0-9])[0-9]?[0-9]` is refused, being the same atom twice.
+     * Deciding whether two DIFFERENT classes intersect is the missing primitive in
+     * https://github.com/adamgreenwell/kitsune/issues/73, and guessing at it here is how this rule would
+     * start refusing patterns the document licenses.
      */
     private static function lookaheadOverlapsOptional(string $pattern): ?string
     {
         $length = mb_strlen($pattern);
+        $previous = null;
 
         for ($i = 0; $i < $length; $i++) {
             $token = self::atomAt($pattern, $i);
@@ -1348,7 +1361,19 @@ final class Pattern
             $atom = $token['atom'];
             $i = $token['after'] - 1;
 
+            /*
+             * ⚠️ A BRANCH BOUNDARY IS NOT ADJACENCY: nothing sits in front of the lookahead in
+             * `a?|(?=a)a`, because the two sides never match at the same position.
+             */
+            if ($atom === '|') {
+                $previous = null;
+
+                continue;
+            }
+
             if (! str_starts_with($atom, '(')) {
+                $previous = self::consumesCharacters($atom) ? $token : $previous;
+
                 continue;
             }
 
@@ -1361,46 +1386,159 @@ final class Pattern
              * Every frame kind is descended, assertions included — a lookahead can hold the shape as
              * readily as a group can, and refusing it there is no less correct.
              */
-            if (self::frameKindAt($atom, 0) !== 'lookahead') {
-                if (($nested = self::lookaheadOverlapsOptional(self::frameBody($atom))) !== null) {
-                    return $nested;
-                }
-
-                continue;
-            }
-
-            // ⚠️ And a lookahead's own body too, before asking what follows the lookahead itself.
             if (($nested = self::lookaheadOverlapsOptional(self::frameBody($atom))) !== null) {
                 return $nested;
             }
 
-            $lead = self::leadingLiteral(self::frameBody($atom));
+            if (self::frameKindAt($atom, 0) !== 'lookahead') {
+                $previous = self::consumesCharacters($atom) ? $token : $previous;
+
+                continue;
+            }
+
+            $lead = self::assertedLead(self::frameBody($atom));
 
             if ($lead === null) {
                 continue;
             }
 
-            $next = self::atomAt($pattern, $token['after']);
+            /*
+             * ⚠️ BOTH SIDES, and the lookahead itself is never either of them: it consumes nothing, so
+             * `$previous` skips it and `a?(?=x)(?=a)a` is still read as `a?` beside `(?=a)`.
+             */
+            foreach ([self::atomAt($pattern, $token['after']), $previous] as $neighbour) {
+                if ($neighbour === null || ! self::overlapsAssertedLead($neighbour, $lead)) {
+                    continue;
+                }
 
-            if ($next === null || ! self::quantifierIsOptional($next['quantifier'])) {
-                continue;
-            }
-
-            if (self::atomMatches($next['atom'], $lead)) {
                 return sprintf(
-                    'the lookahead `%s` in front of the optional `%s%s`, which can match the same '
+                    'the lookahead `%s` beside the optional `%s%s`, which can match the same '
                     .'character it asserts. The assertion constrains nothing the atom does not, and the '
                     .'two engines have been measured disagreeing about the shape on PCRE 10.44 — '
                     .'ECMAScript matching a subject PCRE rejects, which the published schema cannot '
-                    .'describe. Drop the lookahead, or assert something the following atom cannot match',
+                    .'describe. Drop the lookahead, or assert something the neighbouring atom cannot '
+                    .'match',
                     $atom,
-                    $next['atom'],
-                    $next['quantifier'],
+                    $neighbour['atom'],
+                    $neighbour['quantifier'],
                 );
             }
         }
 
         return null;
+    }
+
+    /**
+     * The first character a body certainly consumes, as an atom and — when it is one literal — as that
+     * character.
+     *
+     * ⚠️ NOT `leadingLiteral()`, which answers a different question and is pinned to it: that one proves
+     * an iteration begins with exactly one delimiter, so a quantifier disqualifies the atom. Here a
+     * quantifier with a lower bound of ONE is fine — `(?=a+)` says as much about the next character as
+     * `(?=a)` does — and the two rules wanting different answers is why this is a second method rather
+     * than a flag on the first.
+     *
+     * ⚠️ TRANSPARENT MEANS TRANSPARENT. A group that must run at least once contributes its own body's
+     * lead, at any depth, which is what review found missing: `leadingLiteral()` returned null for
+     * `(?:a)` and the parity guard skipped the pattern entirely. A leading ASSERTION is stepped over for
+     * the same reason — it consumes nothing, so the first consumed character is the one after it.
+     *
+     * ⚠️ AND AN ALTERNATION IS NOT TRANSPARENT: `(?:a|b)` asserts neither `a` nor `b`, so reading the
+     * first branch as the lead would be a claim about a pattern that does not make it.
+     *
+     * @return array{atom: string, character: string|null}|null
+     */
+    private static function assertedLead(string $body, int $depth = 0): ?array
+    {
+        // The same belt-and-braces bound the other recursive walks in this file carry.
+        if ($depth > 64) {
+            return null;
+        }
+
+        $length = mb_strlen($body);
+
+        for ($at = 0; $at < $length;) {
+            $token = self::atomAt($body, $at);
+
+            if ($token === null) {
+                return null;
+            }
+
+            $atom = $token['atom'];
+
+            if (! self::consumesCharacters($atom)) {
+                // `^` and an assertion are zero-width, so the lead is whatever follows them.
+                if ($atom === '|') {
+                    return null;
+                }
+
+                $at = $token['after'];
+
+                continue;
+            }
+
+            if (self::quantifierIsOptional($token['quantifier']) || self::isBackreference($atom)) {
+                return null;
+            }
+
+            if (str_starts_with($atom, '(')) {
+                $inner = self::frameBody($atom);
+
+                return count(self::topLevelBranches($inner)) === 1
+                    ? self::assertedLead($inner, $depth + 1)
+                    : null;
+            }
+
+            return ['atom' => $atom, 'character' => self::leadingLiteral($atom)];
+        }
+
+        return null;
+    }
+
+    /**
+     * Whether this neighbouring atom is optional and can match the character the lookahead asserted.
+     *
+     * ⚠️ TWO PROOFS AND BOTH ARE CERTAIN: PCRE answers class membership for a single-character lead —
+     * the same delegation `variableAtomCanMatch()` makes rather than parsing class syntax here — and two
+     * atoms written identically match identically whether or not either is a single character, which is
+     * what catches `(?=[0-9])[0-9]?`. Anything weaker would be a guess about intersection, and a guess
+     * in this direction refuses patterns `field-types.md` §3 licenses.
+     *
+     * @param  array{atom: string, quantifier: string, after: int}  $neighbour
+     * @param  array{atom: string, character: string|null}  $lead
+     */
+    private static function overlapsAssertedLead(array $neighbour, array $lead): bool
+    {
+        if (! self::consumesCharacters($neighbour['atom'])) {
+            return false;
+        }
+
+        if (! self::quantifierIsOptional($neighbour['quantifier'])) {
+            return false;
+        }
+
+        if ($neighbour['atom'] === $lead['atom']) {
+            return true;
+        }
+
+        return $lead['character'] !== null && self::atomMatches($neighbour['atom'], $lead['character']);
+    }
+
+    /**
+     * Whether this atom takes characters out of the subject when it matches.
+     *
+     * ⚠️ AN ASSERTION IS NOT A NEIGHBOUR, which is the whole reason this exists: a lookahead consumes
+     * nothing, so `^(?=.*[A-Z])(?=.*[0-9]).{8,64}$` — the commonest validation pattern there is — must
+     * not read its second lookahead as an optional atom beside its first. Nor is an anchor, and nor is
+     * the alternation bar, whose atom form would compile to a pattern matching everything.
+     */
+    private static function consumesCharacters(string $atom): bool
+    {
+        if ($atom === '^' || $atom === '$' || $atom === '|') {
+            return false;
+        }
+
+        return ! str_starts_with($atom, '(') || ! self::isAssertionKind(self::frameKindAt($atom, 0));
     }
 
     /**

@@ -799,7 +799,7 @@ describe('every spelling of "exactly once" is read through', function (): void {
     });
 });
 
-describe('a lookahead may not assert what the next optional atom consumes', function (): void {
+describe('a lookahead may not assert what an adjacent optional atom consumes', function (): void {
     /*
      * ⚠️ I COULD NOT REPRODUCE THE DIVERGENCE, and this refusal is insurance rather than a measurement.
      * Review measured `(?=a)a?a` on PCRE 10.44 with Node 24.15 — PCRE not matching `a` while ECMAScript
@@ -807,10 +807,14 @@ describe('a lookahead may not assert what the next optional atom consumes', func
      * Node 22.23.2 both engines match, and so do six neighbouring shapes.
      *
      * ⚠️ SO WHY REFUSE SOMETHING THIS PAIR AGREES ON: the shape is REDUNDANT. A lookahead asserting the
-     * character the following optional atom consumes constrains nothing that atom does not — it is `a?a`
-     * with a no-op in front. Nobody writes it deliberately, so the expressiveness cost is approximately
+     * character an adjacent optional atom consumes constrains nothing that atom does not — it is `a?a`
+     * with a no-op beside it. Nobody writes it deliberately, so the expressiveness cost is approximately
      * zero, and `composer.json` requires PHP `^8.4` whose earliest releases bundle PCRE2 10.44. Cheap
      * insurance against a real deployment beats a rule that is right on one pair.
+     *
+     * ⚠️ FOUR ROUNDS FOUND FOUR WAYS PAST IT AND THEY WERE ALL ONE WAY — the rule read the pattern more
+     * narrowly than the shape occurs. The rows below are one per way: a group over the shape, a group
+     * over the asserted lead, a quantifier over the lead, and the optional atom on the other side.
      */
     it('refuses the overlap', function (string $pattern): void {
         expect(Pattern::unpublishable($pattern))->toContain('which can match the same');
@@ -829,6 +833,33 @@ describe('a lookahead may not assert what the next optional atom consumes', func
         '(?:(?=a)a?a)',
         '(?:(?:(?=a)a?a))',
         '(?=(?=a)a?a)x',
+
+        /*
+         * ⚠️ AND WITH THE OPTIONAL ATOM ON THE OTHER SIDE, which review found next: the rule asked what
+         * FOLLOWED the lookahead, so the same redundancy written backwards published. `a{0}` is the form
+         * review measured; `a?` and `(?:a)?` are the same shape and were published too.
+         */
+        'a{0}(?=a)a',
+        'a?(?=a)a',
+        '(?:a)?(?=a)a',
+        '^(?:a{0}(?=a)a)$',
+
+        /*
+         * ⚠️ AND WITH THE LEAD BEHIND BRACKETS OR A QUANTIFIER. `leadingLiteral()` answers a different
+         * question — it proves an iteration begins with exactly one delimiter, so a quantifier
+         * disqualifies the atom — and using it here meant `(?:a)` and `a+` hid the asserted character.
+         */
+        '(?=(?:a))(?:a)?a',
+        '(?=(?:(?:a)))a?a',
+        '(?=a+)a?a',
+        '(?=a{2,5})a?a',
+        '(?=(?=b)a)a?a',
+
+        // ⚠️ Two atoms written identically match identically, which is the proof for a lead that is a
+        // class rather than one character — and `(?=[0-9])[0-9]?[0-9]` was published until it existed.
+        '(?=[0-9])[0-9]?[0-9]',
+        '(?=[A-Za-z])[A-Za-z]*',
+        '(?=\\()\\(?\\(',
     ]);
 
     it('leaves a lookahead that constrains something alone', function (string $pattern): void {
@@ -848,6 +879,21 @@ describe('a lookahead may not assert what the next optional atom consumes', func
         // rule rather than extending its reach.
         '(?:(?=b)a?a)',
         '(?:(?!a)a?a)',
+
+        /*
+         * ⚠️ WHERE THE WIDENING STOPS, and each row is a way the rule could have over-reached instead.
+         * `^(?=[A-Za-z])[A-Za-z0-9]*$` is the identifier pattern every schema has: the assertion excludes
+         * a leading digit where the neighbour admits one, so it is not redundant and an intersection test
+         * would have refused it. An alternation asserts neither branch. A branch boundary is not
+         * adjacency. And a LOOKBEHIND is not in the rule at all — the divergence measured is a lookahead.
+         */
+        '^(?=[A-Za-z])[A-Za-z0-9]*$',
+        '^(?=[A-Z])[a-z]*[A-Z]$',
+        '(?=(?:a|b))a?a',
+        '(?=(?:ab))b?ab',
+        'a?|(?=a)a',
+        '(?=a)|a?a',
+        '(?<=a)b?b',
     ]);
 });
 

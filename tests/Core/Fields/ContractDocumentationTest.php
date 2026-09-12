@@ -223,6 +223,53 @@ it('finds the contract block at all', function () use ($signaturesFromDocumentat
         ->and($signaturesFromDocumentation())->toHaveCount($declared);
 });
 
+it('pins the published structural rule count to the list beneath the heading', function (): void {
+    /*
+     * ⚠️ THE HEADING SAID FOUR AND THE CODE ENFORCED SIX. §4 published *"Four rules the construct list
+     * cannot express"* over a list that grew by two — the zero-repeat assertion rule and the lookahead
+     * overlap rule — and a paragraph below it still counted *"the five structural rules"*. Nobody
+     * miscounted: each rule landed in its own round and the prose around the list was never the thing
+     * being changed.
+     *
+     * ⚠️ IT IS THE SAME ROT AS THE STALE CANDIDATE COUNT beside it, and it costs more. A published
+     * grammar exists so an author can know what is accepted BEFORE they save; a heading that
+     * undercounts the rules tells them the list they just read is the whole of it.
+     *
+     * The section is sliced to the next heading rather than matched across the document, because the
+     * numbered-item pattern is not unique to it on principle — only in fact, today.
+     */
+    $markdown = (string) file_get_contents(dirname(__DIR__, 3).'/docs/field-types.md');
+
+    expect(preg_match('/^> ### (\\w+) rules the construct list cannot express$/m', $markdown, $heading))
+        ->toBe(1, 'docs/field-types.md §4 no longer heads the structural rules with a written-out count');
+
+    $section = mb_substr($markdown, mb_strpos($markdown, $heading[0]) + mb_strlen($heading[0]));
+    $end = mb_strpos($section, "\n> ### ");
+    $section = $end === false ? $section : mb_substr($section, 0, $end);
+
+    $written = [
+        'One' => 1, 'Two' => 2, 'Three' => 3, 'Four' => 4, 'Five' => 5,
+        'Six' => 6, 'Seven' => 7, 'Eight' => 8, 'Nine' => 9, 'Ten' => 10,
+    ];
+
+    /*
+     * ⚠️ NOT `toHaveKey($key, $message)`. Its second argument is the expected VALUE, not a message, so
+     * the first version of this line asserted that the count of "Six" equals the sentence explaining
+     * itself — and failed on correct documentation. The same trap as `toContain()` being variadic over
+     * needles, and the same remedy: read the signature rather than the name.
+     */
+    expect(array_key_exists($heading[1], $written))
+        ->toBeTrue("the heading counts \"{$heading[1]}\" rules, which is not a number this test can read");
+
+    $expected = $written[$heading[1]];
+    $listed = preg_match_all('/^> (\\d+)\\. \\*\\*/m', $section, $items);
+
+    expect($listed)->toBe($expected, "docs/field-types.md §4 heads {$expected} rules and lists {$listed}");
+
+    // ⚠️ Numbered 1..N in order, or two rules could share a number and still count right.
+    expect($items[1])->toBe(array_map(static fn (int $n): string => (string) $n, range(1, $expected)));
+});
+
 it('pins the published candidate count to the harness case file', function (): void {
     /*
      * ⚠️ THE NUMBER HAD NEVER BEEN TRUE. §4 published "103 candidate constructs" from the commit

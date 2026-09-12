@@ -207,7 +207,7 @@ A named capture may use a name in **any script** — `(?<é>`, `(?<日本>`, `(?
 >
 > A denylist **fails open**: a construct nobody anticipated is accepted and published wrong, silently. An allowlist fails closed — an unknown construct is refused because it was never admitted, not because someone remembered it. Rule 3 says `apiSchema()` may only publish a constraint the consumer can enforce; a grammar makes that enforceable *by construction* rather than by enumeration.
 >
-> **Fresh evidence, measured 2026-09-11.** 174 candidate constructs, enumerated from six independent angles, run through one shared case file so PCRE and ECMAScript are asked the same question. At production fidelity — PCRE compiling `Pattern::delimit()`'s output, ECMAScript compiling the published source — **two constructs the screen accepted diverged, and a third made neither engine answer at all**. Both divergences are now refused by the structural rules below, so the current count is zero:
+> **Fresh evidence, measured 2026-09-11.** 178 candidate constructs, enumerated from six independent angles, run through one shared case file so PCRE and ECMAScript are asked the same question. At production fidelity — PCRE compiling `Pattern::delimit()`'s output, ECMAScript compiling the published source — **two constructs the screen accepted diverged, and a third made neither engine answer at all**. Both divergences are now refused by the structural rules below, so the current count is zero:
 >
 > | Pattern | PCRE | ECMAScript |
 > |---|---|---|
@@ -246,7 +246,7 @@ A named capture may use a name in **any script** — `(?<é>`, `(?<日本>`, `(?
 > | `\1` `\k<name>` | only where the group **must** participate — see the rows above |
 > | `\t` `\n` `\r` `\f` `\xHH` | `\v` is excluded: vertical whitespace here, the letter `v` there |
 >
-> ### Four rules the construct list cannot express
+> ### Six rules the construct list cannot express
 >
 > ⚠️ **An allowlist of constructs is necessary and not sufficient**, and the third row of the divergence table above is why.
 >
@@ -339,24 +339,41 @@ A named capture may use a name in **any script** — `(?<é>`, `(?<日本>`, `(?
 >
 > ⚠️ That row was originally counted among the divergences, and review corrected it: comparing the harness's full result shapes made it look like disagreement, because only the ECMAScript side carries timeout metadata. It is now classified as *no verdict from either engine*, which is both accurate and a sharper statement of the same point — the danger here is the cost of the pattern, not a difference of opinion about it.
 >
+> 5. **A group bounded at zero repetitions may not hold an assertion.** `{0}` is dead markup that both engines skip — except that PCRE stops matching when the dead group's alternation *ends* in a positive lookahead. Measured at production fidelity on PCRE 10.48 and Node 22.23.2: `(?:a|(?=a)){0}` matches every subject under ECMAScript and **none** under PCRE, while `(?:(?=a)|a){0}`, `(?:a|(?<=a)){0}`, `(?:a){0}` and `a{0}` agree — so the branch order and the direction of the assertion both matter.
+>
+>     ⚠️ **The rule is wider than the quirk, deliberately.** *"An alternation whose last branch is a positive lookahead"* is a shape nobody can check by reading it. The `{0}` allowance exists only so dead markup does not fail an upgrade, and a dead group that also holds an assertion is not something anybody wrote on purpose.
+>
+>     ⚠️ **A frame under a zero-repeat ANCESTOR never runs either**, which review found: `^(?:(a|aa)+){0}$` was refused for the inner `+` although the group holding it executes zero times. Both engines match only the empty string, so `--strict` was blocking an upgrade over a harmless stored pattern.
+>
+> 6. **A positive lookahead may not assert what an adjacent optional atom consumes.** `(?=a)a?a` — the assertion says the next character is `a`, and the optional atom beside it can consume an `a`, so the assertion constrains nothing the atom does not.
+>
+>     ⚠️ **THIS ONE IS INSURANCE RATHER THAN A MEASUREMENT, and that is published rather than implied.** On PHP 8.4.25 / PCRE 10.48 / Node 22.23.2 both engines match `a` here, and so do `^(?=a)a?a$`, `(?=a)a?`, `(?=a)aa`, `a?a`, `(?=a)a*a` and `(?=ab)a?ab`. **Review measured PCRE 10.44 with Node 24.15 disagreeing** — PCRE rejecting `a` while ECMAScript matches it — and `composer.json` requires PHP `^8.4`, whose earliest releases bundle PCRE2 10.44. The shape is redundant, so refusing it costs approximately nothing; a rule that is right on one version pair is worth less than that.
+>
+>     ⚠️ **Either side, and a lead read through anything transparent.** Four review rounds found four ways past a narrower version of this rule and they were all one way — it read the pattern more narrowly than the shape occurs. A group hid the shape (`(?:(?=a)a?a)`), a group hid the asserted character (`(?=(?:a))(?:a)?a`), a quantifier hid it (`(?=a+)a?a`), and the optional atom sat in FRONT (`a{0}(?=a)a`, `a?(?=a)a`). A rule a pair of brackets defeats is not a rule.
+>
+>     ⚠️ **The overlap has to be PROVED, and this is where the rule stops.** Either PCRE answers class membership for a single-character lead, or the two atoms are written identically — which is what refuses `(?=[0-9])[0-9]?[0-9]`. So `^(?=[A-Za-z])[A-Za-z0-9]*$` still publishes: the assertion excludes a leading digit where the neighbour admits one, so it is not redundant, and an intersection test that guessed would refuse the identifier pattern every schema has. Deciding whether two **different** classes intersect is the primitive [#73](https://github.com/adamgreenwell/kitsune/issues/73) is open on, and it is the same missing question there.
+>
 > ### What this costs
 >
-> Measured, so it is a number rather than a worry: of 174 candidates, **two** are refused today that both engines agree on — `\p{Lower}` and `\p{Alpha}`, POSIX-style aliases missing from the property allowlist. Widening a list is a reviewable, testable act; a denylist's gaps are found by accident. **Both are now on it, and `\p{Upper}` with them** — the obvious third of the family, added at the same time so the allowlist does not carry an arbitrary subset.
+> Measured, so it is a number rather than a worry: of 178 candidates, **two** are refused today that both engines agree on — `\p{Lower}` and `\p{Alpha}`, POSIX-style aliases missing from the property allowlist. Widening a list is a reviewable, testable act; a denylist's gaps are found by accident. **Both are now on it, and `\p{Upper}` with them** — the obvious third of the family, added at the same time so the allowlist does not carry an arbitrary subset.
 >
 > ⚠️ **Added on a set comparison, not on compiling**, because compiling proves only that a name is accepted. Each alias was compared with its canonical spelling across all 1,114,112 codepoints in *both* engines and is exactly equal: `Lower`/`Lowercase` 2,595 members, `Alpha`/`Alphabetic` 147,421, `Upper`/`Uppercase` 2,006. `\p{Space}` is the reason this is measured one name at a time rather than adopted as a family — **PCRE compiles it and ECMAScript rejects the name**, so it stays out.
 >
-> The remaining `agrees BUT refused` rows are refusals on purpose, not gaps — six of them, and each has a reason that is not "nobody got round to it":
+> The remaining `agrees BUT refused` rows are refusals on purpose, not gaps — **23** of them, and each has a reason that is not "nobody got round to it". ⚠️ This paragraph said *"six of them"* and the accounting below said *"of eleven rows"* while the harness reported twenty-three: the count stopped tracking as each structural rule landed, and an accounting that does not add up is worth less than no accounting, because it reads as complete. Every row the harness reports is in the table now, and the arithmetic under it is the check:
 >
 > | Refused | Why it is not a gap |
 > |---|---|
 > | `\bab\b` | A portable spelling exists and the message names it |
 > | `^\p{Cn}$`, `^\p{C}$` | Version skew the measured pair cannot show, because it shares one Unicode version |
 > | `^(a*)*b$` | Refused on **cost**, not portability — the engines agree here only because the harness's subject is benign |
-> | `^([a-zA-Z0-9]+\.?)+@x\.com$`, `^(a|aa)+$`, `^(a{1,2})+$`, `^([a-z]{1,8})+$`, `^(?:[a-z]|x)+$`, `^(a\|aa){1,32}$`, thirty copies of `(?:a\|a)` | Refused on cost, and neither engine gives a verdict at all: PCRE exhausts its backtrack limit while ECMAScript passes the deadline. They are counted here *and* as `no verdict`, because "both agree" and "neither answered" are the same shape to a comparison of results |
+> | `^([a-zA-Z0-9]+\.?)+@x\.com$`, `^(a|aa)+$`, `^(a{1,2})+$`, `^([a-z]{1,8})+$`, `^(?:[a-z]|x)+$`, `^(a\|aa){1,32}$`, thirty copies of `(?:a\|a)`, one nested in a branch | Refused on cost, and neither engine gives a verdict at all: PCRE exhausts its backtrack limit while ECMAScript passes the deadline. They are counted here *and* as `no verdict`, because "both agree" and "neither answered" are the same shape to a comparison of results |
+> | `^(?:a*a*b\|a*a*c\|…)$`, `^a*(?:b\|a)*a*c$`, `^a*a*ba*a*c$`, `^()()…(,)(?:,\10?)*X$` | Refused on cost, where the harness's subject is short enough to fail fast. The adversarial ones are measured and in the rules above: **6 s**, **20 s** and **1.5 s** at lengths a `text` field admits |
+> | `(?=a)a?a`, `(?:(?=a)a?a)`, `a{0}(?=a)a`, `(?=(?:a))(?:a)?a`, `(?=a+)a?a`, `(?=[0-9])[0-9]?[0-9]` | Rule 6, which is **insurance on a version pair this harness does not run** — PCRE 10.44, measured by review. Six spellings of one redundant shape, and the harness carries all six because each was published until the round that found it |
+> | `^(?:a*a*b\|c*c*d\|…)$` — nine branches, distinct leads | The one **known over-refusal**, and it is filed rather than excused: eight of the nine branches fail on their first atom, so the real cost is one quadratic — **35.8 ms** against the 324.3 ms of the shared-lead shape beside it. Summing branch costs cannot see that, and [#73](https://github.com/adamgreenwell/kitsune/issues/73) is the atom-against-atom proof it needs |
 >
-> So of eleven rows, **three** are portability judgements (`\b` and the two `C` categories) and **eight** are cost refusals where the engines only appear to agree. None is an omission.
+> So of 23 rows: **three** are portability judgements (`\b` and the two `C` categories), **13** are cost refusals — eight where neither engine answers at all and five where the harness's subject is simply benign — **six** are rule 6's insurance against PCRE 10.44, and **one** is the over-refusal above. Three plus thirteen plus six plus one, and only the last is an omission anybody should want closed.
 >
-> ⚠️ **`divergent AND accepted` is now 0.** It was 2 before the five structural rules were enforced, and both entries were rules this document already claimed.
+> ⚠️ **`divergent AND accepted` is now 0.** It was 2 before the structural rules above were enforced, and both entries were rules this document already claimed. That sentence used to count the rules — *"the five structural rules"* — and the count went stale the moment a sixth landed, which is the same rot as the stale candidate count this section already fixed once. A test pins the heading above to the list beneath it now.
 >
 > ⚠️ **Migration is not optional, and `kitsune:audit-patterns` is it.** Patterns already authored were accepted by the screen, not by the grammar, so any that fall outside it must be found before this lands — a pattern that saved yesterday and is refused today is a broken install, not a fixed one.
 >
