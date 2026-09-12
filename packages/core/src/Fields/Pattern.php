@@ -3094,6 +3094,31 @@ final class Pattern
             }
         }
 
+        /*
+         * ⚠️ AND A REPEATED ASSERTION RESCANS THE SUFFIX ON EVERY ITERATION, which review found this
+         * classification missing. `^(?:a(?!a*b))*$` holds no run of two anywhere and anchors its search,
+         * so both tests above say linear — and the lookahead walks the remaining value once per outer
+         * iteration. Measured on Node 22.23.2 with a 5,000-character value:
+         *
+         *   ^(?:a(?!a*b))*$   35.8 ms          ^(?:a(?!ab))*$   0.1 ms
+         *
+         * A hundred of those in one valid array is 3.6 seconds, which is the aggregate the item bound
+         * exists for. The fixed-width assertion body beside it is free, so the question is whether the
+         * assertion holds a VARIABLE-width atom — the thing whose scan grows with the value.
+         *
+         * ⚠️ THE PATTERN ITSELF STAYS PUBLISHABLE. One value at 35.8 ms is inside the quadratic
+         * allowance; it is the ARRAY that needs bounding, which is exactly what this method answers.
+         */
+        $frames = self::frames($pattern);
+
+        foreach ($frames as $frame) {
+            if (self::isAssertionKind($frame['kind'])
+                && self::insideRepetition($frames, $frame)
+                && self::atomRunExceeds($frame['body'], 0)) {
+                return true;
+            }
+        }
+
         return false;
     }
 

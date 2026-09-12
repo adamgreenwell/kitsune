@@ -665,6 +665,40 @@ describe('a quadratic pattern bounds how many items a text field admits', functi
         '[a-z]+@[a-z]+',
     ]);
 
+    it('counts a repeated assertion scan as quadratic', function (string $pattern): void {
+        /*
+         * ⚠️ NEITHER OF THE TWO TESTS ABOVE SEES IT. `^(?:a(?!a*b))*$` holds no run of two anywhere and
+         * anchors its search, so both say linear — and the lookahead rescans the remaining value once
+         * per outer iteration. Measured on Node 22.23.2 with a 5,000-character value:
+         *
+         *   ^(?:a(?!a*b))*$   35.8 ms          ^(?:a(?!ab))*$   0.1 ms
+         *
+         * A hundred of those in one valid array is 3.6 seconds, which is the aggregate this bound exists
+         * for. The pattern itself stays publishable: one value at 35.8 ms is inside the quadratic
+         * allowance, and it is the ARRAY that needs bounding.
+         */
+        $type = app(FieldTypeRegistry::class)->get('text');
+
+        expect($type->maxItems(configFor('text', ['pattern' => $pattern, 'maxLength' => 1000], -1)))->toBe(25)
+            ->and(Pattern::unpublishable($pattern))->toBeNull("[{$pattern}] is publishable as one value");
+    })->with([
+        '^(?:a(?!a*b))*$',
+        '^(?:(?!,[^,]+),)*$',
+    ]);
+
+    it('leaves a fixed-width assertion body in a repetition alone', function (string $pattern): void {
+        // ⚠️ `(?!ab)` scans two characters however long the value is — 0.1 ms at 5,000 — so the cost the
+        // bound exists for is the VARIABLE-width atom inside the assertion, not the assertion itself.
+        $type = app(FieldTypeRegistry::class)->get('text');
+
+        expect($type->maxItems(configFor('text', ['pattern' => $pattern, 'maxLength' => 1000], -1)))->toBeNull();
+    })->with([
+        '^(?:a(?!ab))*$',
+        '^(?:a)*$',
+        '^(?!a*b)a*$',
+        '^(?:,[^,]+)*$',
+    ]);
+
     it('leaves the anchored spelling and a tail that cannot fail alone', function (string $pattern): void {
         /*
          * ⚠️ `[a-z]+` IS THE LINE, and it is measured rather than assumed: with nothing after it that can
