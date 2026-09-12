@@ -1498,6 +1498,11 @@ final class Pattern
     /**
      * Whether this neighbouring atom is optional and can match the character the lookahead asserted.
      *
+     * ⚠️ OPTIONAL IS ASKED OF THE ATOM, NOT OF ITS QUANTIFIER, because a bracket hides the quantifier:
+     * `(?=a)(?:a?)a` is the same shape as `(?=a)a?a` with the `?` one level in, and reading only the
+     * outer quantifier published it. That is the fifth bracket to defeat a version of this rule, which
+     * is why the question became "can this atom match nothing" rather than "is this atom quantified".
+     *
      * ⚠️ TWO PROOFS AND BOTH ARE CERTAIN: PCRE answers class membership for a single-character lead —
      * the same delegation `variableAtomCanMatch()` makes rather than parsing class syntax here — and two
      * atoms written identically match identically whether or not either is a single character, which is
@@ -1513,7 +1518,7 @@ final class Pattern
             return false;
         }
 
-        if (! self::quantifierIsOptional($neighbour['quantifier'])) {
+        if (! self::canMatchNothing($neighbour['atom'], $neighbour['quantifier'])) {
             return false;
         }
 
@@ -1522,6 +1527,64 @@ final class Pattern
         }
 
         return $lead['character'] !== null && self::atomMatches($neighbour['atom'], $lead['character']);
+    }
+
+    /**
+     * Whether this atom can come out of a match having consumed nothing at all.
+     *
+     * ⚠️ NOT THE SAME QUESTION AS `quantifierIsOptional()`, and the difference is a pair of brackets.
+     * `a?` is optional by its quantifier; `(?:a?)` carries no quantifier and matches nothing just as
+     * readily, and `(?:|a)`, `(?:a|)` and `(?:(?:a?))` are three more spellings of it. Every earlier
+     * version of the overlap rule read the outer quantifier alone and published all four.
+     *
+     * ⚠️ ANY BRANCH WILL DO, because an alternation matches nothing if ONE of its branches can. That is
+     * the opposite of `assertedLead()`, where one branch proves nothing about the others — same walk,
+     * opposite quantifier, and stating both here is cheaper than a reader deriving which is which.
+     *
+     * ⚠️ FAILS CLOSED. An unparseable branch is not proved to match nothing, so it reports false, which
+     * means "not optional", which means the overlap rule stays silent. A guard that guesses in this
+     * direction would refuse patterns `field-types.md` §3 licenses.
+     */
+    private static function canMatchNothing(string $atom, string $quantifier, int $depth = 0): bool
+    {
+        if (self::quantifierIsOptional($quantifier)) {
+            return true;
+        }
+
+        if ($depth > 64 || ! str_starts_with($atom, '(') || ! self::consumesCharacters($atom)) {
+            return false;
+        }
+
+        foreach (self::topLevelBranches(self::frameBody($atom)) as $branch) {
+            if (self::branchCanMatchNothing($branch, $depth + 1)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /** Whether every consuming atom in this one branch can match nothing, so the branch can too. */
+    private static function branchCanMatchNothing(string $branch, int $depth): bool
+    {
+        $length = mb_strlen($branch);
+
+        for ($at = 0; $at < $length;) {
+            $token = self::atomAt($branch, $at);
+
+            if ($token === null) {
+                return false;
+            }
+
+            if (self::consumesCharacters($token['atom'])
+                && ! self::canMatchNothing($token['atom'], $token['quantifier'], $depth)) {
+                return false;
+            }
+
+            $at = $token['after'];
+        }
+
+        return true;
     }
 
     /**

@@ -1066,5 +1066,11 @@
         "pattern": "(?=[0-9])[0-9]?[0-9]",
         "subject": "5",
         "why": "The overlap was proved only by asking PCRE whether the neighbouring atom matches a single-character lead, so a lead that is a CLASS proved nothing and this published. Two atoms written identically match identically, which is a certain proof and costs no guessing about intersection — deciding whether two DIFFERENT classes intersect is the missing primitive in issue #73, and `^(?=[A-Za-z])[A-Za-z0-9]*$` is why guessing at it would be a false refusal rather than a hole."
+    },
+    {
+        "id": "lookahead-overlap-optional-inside-a-group",
+        "pattern": "(?=a)(?:a?)a",
+        "subject": "a",
+        "why": "The fifth bracket to defeat a version of the overlap rule, and the first found by probing the family rather than by review. The neighbour's optionality was read from its own quantifier, so `(?:a?)` — no outer quantifier, matches nothing just as readily — published the shape `(?=a)a?a` is refused for. `(?:a*)`, `(?:|a)`, `(?:a|)` and `(?:(?:a?))` are the same thing spelled four more ways. The question is now whether the atom can match nothing, asked of any branch of a group at any depth, and it fails closed on anything unparseable."
     }
 ]

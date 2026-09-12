@@ -860,6 +860,20 @@ describe('a lookahead may not assert what an adjacent optional atom consumes', f
         '(?=[0-9])[0-9]?[0-9]',
         '(?=[A-Za-z])[A-Za-z]*',
         '(?=\\()\\(?\\(',
+
+        /*
+         * ⚠️ AND WITH THE QUANTIFIER ONE LEVEL IN, which is the fifth bracket to defeat a version of
+         * this rule — found by probing rather than by review. `(?:a?)` carries no quantifier of its own
+         * and matches nothing just as readily as `a?` does, so the question had to become "can this atom
+         * match nothing" rather than "is this atom quantified". An empty branch is the same thing said
+         * another way.
+         */
+        '(?=a)(?:a?)a',
+        '(?=a)(?:a*)a',
+        '(?=a)(?:(?:a?))a',
+        '(?=a)(?:|a)a',
+        '(?=a)(?:a|)a',
+        '(?:a?)(?=a)a',
     ]);
 
     it('leaves a lookahead that constrains something alone', function (string $pattern): void {
@@ -894,6 +908,17 @@ describe('a lookahead may not assert what an adjacent optional atom consumes', f
         'a?|(?=a)a',
         '(?=a)|a?a',
         '(?<=a)b?b',
+
+        /*
+         * ⚠️ A KNOWN LIMIT RATHER THAN AN OVERSIGHT, asserted so it is a decision. `(?:ab)?` can consume
+         * the asserted `a` as its FIRST character, so the shape is redundant here too — and proving that
+         * needs reasoning about what follows the neighbour, which is where a wrong answer costs a false
+         * refusal: in `(?=a)(?:ax)?y` the assertion excludes every subject starting `y`, so it does
+         * constrain something. The overlap test asks whether the neighbour as a WHOLE can match the
+         * asserted character, and `(?:b?)` cannot match `a` at all.
+         */
+        '(?=a)(?:ab)?a',
+        '(?=a)(?:b?)a',
     ]);
 });
 
