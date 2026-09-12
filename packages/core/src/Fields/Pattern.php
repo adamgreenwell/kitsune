@@ -2357,8 +2357,27 @@ final class Pattern
          * value's own cost. So the branch pays the same grant a quadratic run pays, and eight grants
          * reach the budget exactly as they do for runs.
          */
-        if (self::assertionAfterVariable($body, 0) !== null) {
-            $cost = self::saturatingProduct($cost, self::quadraticBranchCost());
+        /*
+         * ⚠️ COUNTED, NOT ANSWERED YES OR NO, which review found one round after this charge was added:
+         * every assertion past the same prefix is rerun on every backtrack of it, so k of them cost k
+         * grants. `^a+` then 140 copies of `(?=a*b)` then `(?=a*c)` is 990 characters — inside every
+         * other limit — and measured on Node 22.23.2 against 5,000 `a` then a `b`, where all 140
+         * assertions succeed and the last one fails:
+         *
+         *   k=1  40.6 ms      k=8  68.9 ms      k=140  611.2 ms
+         *
+         * The same shape as the assertions inside one repetition, which are counted for the same reason.
+         */
+        /*
+         * ⚠️ MULTIPLIED BY THE COUNT, NOT MULTIPLIED PER ASSERTION, and the difference is the whole
+         * arithmetic. Ways to retry MULTIPLY when they compose — that is what this cost is — but these
+         * assertions do not compose: each adds one more scan of the same suffix, so their costs ADD.
+         * Charging a grant per assertion made two of them 8,192² and refused `^a+(?=a*b)(?=a*c)`, which
+         * measures 44 ms. Eight reach the budget exactly, as eight branches do, and nine pass it — the
+         * same constant and the same arithmetic as the alternation it sits beside.
+         */
+        if (($rescans = self::assertionsAfterVariable($body, 0)) > 0) {
+            $cost = self::saturatingProduct($cost, self::quadraticBranchCost() * $rescans);
         }
 
         for ($i = 0; $i < $length; $i++) {
@@ -2929,6 +2948,44 @@ final class Pattern
      * 36.0 ms at 5,000, which is the same order as `^a*a*b$` and the reason the array needs bounding.
      * `^a+(?=ac)` is 0.1 ms and `^a(?=a+c)` is 0.0, so both halves of the shape are load-bearing.
      */
+    /**
+     * How many assertions in this sequence a variable-width atom in front of them re-evaluates.
+     *
+     * ⚠️ THE SAME WALK AS `assertionAfterVariable()`, COUNTING RATHER THAN STOPPING, because the branch
+     * charge needs the number and the refusal needs the first one. Every assertion past the same prefix
+     * is rerun on every backtrack of it, so k of them cost k grants — `^a+` then 140 `(?=a*b)` then
+     * `(?=a*c)` measures 611 ms against 40.6 for one.
+     */
+    private static function assertionsAfterVariable(string $sequence, int $limit): int
+    {
+        if (! str_contains($sequence, '(?')) {
+            return 0;
+        }
+
+        $atoms = self::flatAtoms($sequence);
+
+        if ($atoms === null) {
+            return 0;
+        }
+
+        $variable = false;
+        $rescanned = 0;
+
+        foreach ($atoms as $atom) {
+            if ($atom['assertion']) {
+                if ($variable && self::atomRunExceeds(self::frameBody($atom['atom']), $limit)) {
+                    $rescanned++;
+                }
+
+                continue;
+            }
+
+            $variable = $variable || $atom['variable'];
+        }
+
+        return $rescanned;
+    }
+
     private static function assertionAfterVariable(string $sequence, int $limit): ?string
     {
         /*

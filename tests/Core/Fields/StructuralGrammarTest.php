@@ -1991,6 +1991,33 @@ describe('a branch pays for a rescanned assertion as it pays for a run', functio
 
         expect(Pattern::unpublishable($pattern))->toBeNull("[{$branches} branches] is inside the budget");
     })->with([1, 8]);
+
+    /*
+     * ⚠️ AND SEVERAL AFTER THE SAME PREFIX COST SEVERAL GRANTS, which the first version of this charge
+     * answered yes-or-no. Every assertion past the prefix is rerun on every backtrack of it, so k of them
+     * cost k scans of the same suffix. Measured on Node 22.23.2 against 5,000 `a` then a `b`, where every
+     * assertion but the last succeeds:
+     *
+     *   k=1  40.6 ms      k=8  68.9 ms      k=140  611.2 ms   (990 characters)
+     *
+     * ⚠️ MULTIPLIED BY THE COUNT RATHER THAN ONCE PER ASSERTION, and that distinction is the arithmetic:
+     * ways to retry multiply when they COMPOSE, and these do not — each adds one more scan of the same
+     * suffix, so they add. Charging a grant apiece made two of them 8,192² and refused
+     * `^a+(?=a*b)(?=a*c)`, which measures 44 ms. Eight reach the budget exactly and nine pass it, which
+     * is the same number the eight branches above reach.
+     */
+    it('counts the assertions after one prefix', function (int $copies, bool $published): void {
+        $pattern = '^a+'.str_repeat('(?=a*b)', $copies).'(?=a*c)';
+
+        $refusal = Pattern::unpublishable($pattern);
+
+        expect($refusal === null)->toBe($published, "[{$copies}+1 assertions] verdict is wrong: ".(string) $refusal);
+    })->with([
+        'two' => [1, true],
+        'eight, at the budget' => [7, true],
+        'nine, past it' => [8, false],
+        'a hundred and forty-one' => [140, false],
+    ]);
 });
 
 describe('the screen stays inside its budget', function (): void {
