@@ -336,6 +336,8 @@ A named capture may use a name in **any script** — `(?<é>`, `(?<日本>`, `(?
 >
 >     ⚠️ **Only where the allowance is claimed.** A run of one variable-width atom is linear — a hundred maximal values against `^[a-z]+$` is half a million character tests — so the bound applies exactly when `Pattern::costsQuadraticPerValue()` says the pattern's cost grows with the square of the value. A declared cardinality is narrowed, never widened: two means two.
 >
+>     ⚠️ **And that question is asked of the whole pattern, not of its top level.** The first version asked `quadraticRuns()`, which PRICES a sequence and reads its own atoms so the allowance is charged at exactly one level — so it never looks inside a group, and `^(?:a*a*)b$` came back linear while being the same expression as `^a*a*b$`. The walk that owns the whole pattern splices what runs once, descends into assertion bodies and into every branch of a multi-branch group, and fails closed on anything it cannot parse.
+>
 >     ⚠️ **It is an upgrade hazard whose refusal lands on an ENTRY**, so `kitsune:audit-patterns` reports it alongside the other two — and names the remedy, which is not the obvious one: cardinality is part of the locked shape once data exists, so what an author can still change is `maxLength` or the pattern.
 >
 >     ⚠️ **Ambiguity does not need a quantifier, and this is a different axis from every rule above.** Found by review. `^` then thirty copies of `(?:a|a)` then `b$` has no repetition anywhere and no variable-width atom, so nothing looked at it — each group offers two identical ways to match one character, and thirty offer 2³⁰. **PCRE exhausts its backtrack limit and Node 22 takes 50.2 s**, on a 240-character pattern.

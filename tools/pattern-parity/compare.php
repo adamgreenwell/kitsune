@@ -68,9 +68,19 @@ function requireFullCoverage(string $side, array $results, array $cases): void
          * `array_key_exists('compiles', null)` died with a TypeError instead of this file's own
          * diagnostic and exit code. A guard whose failure mode is a stack trace is half a guard.
          */
+        /*
+         * ⚠️ THE TYPES, NOT ONLY THE KEYS, which review found the first version checking. A row such as
+         * `{"compiles": "false", "matches": "false"}` — a hand-edited file, or another runner's idea of
+         * JSON — has both keys and compares EQUAL to the same strings on the other side, so two
+         * malformed rows read as engine agreement and the corpus reports no defect it never measured.
+         * `compiles` is a boolean; `matches` is a boolean or null, where null means the engine gave no
+         * verdict at all.
+         */
         if (! is_array($results[$id])
             || ! array_key_exists('compiles', $results[$id])
-            || ! array_key_exists('matches', $results[$id])) {
+            || ! array_key_exists('matches', $results[$id])
+            || ! is_bool($results[$id]['compiles'])
+            || ! (is_bool($results[$id]['matches']) || $results[$id]['matches'] === null)) {
             $malformed[] = $id;
         }
     }
@@ -91,7 +101,7 @@ function requireFullCoverage(string $side, array $results, array $cases): void
         $side,
         $say('cases measured by neither name in the file', $missing),
         $say('results for cases that no longer exist', $unknown),
-        $say('results that are not an object carrying `compiles` and `matches`', $malformed),
+        $say('results that are not an object carrying a boolean `compiles` and a boolean-or-null `matches`', $malformed),
         $say('case IDs used more than once in cases.json, so one pattern is never measured', $duplicated),
     ));
 

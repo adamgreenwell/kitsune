@@ -56,11 +56,16 @@ overwrites the first and one pattern is never measured while the id set still lo
 **present-but-`null`** row is a fourth, which `isset()` reported as absent and the comparison then
 died on with a `TypeError` instead of this message.
 
-That is four instrument errors in this file's history, all of the same class: the tool answering a
+A **row with the right keys and the wrong types** is a fifth: `{"compiles": "false", "matches":
+"false"}` compares equal to the same strings on the other side, so two corrupted rows read as
+agreement. `compiles` must be a boolean and `matches` a boolean or null, where null is the third
+outcome this harness is careful about — the engine gave no verdict at all.
+
+That is five instrument errors in this file's history, all of the same class: the tool answering a
 question nobody had checked it could answer. Raw-vs-raw reported seven divergences where there are
 three; PHP and Node were handed different patterns; absent rows compared equal; a duplicated id hid
-a pattern. Each was found by review rather than by the tool, which is the argument for the guard
-rather than for another convention.
+a pattern; a stringified row read as agreement. Each was found by review rather than by the tool,
+which is the argument for the guard rather than for another convention.
 
 Both matter because this tool's numbers are quoted in `docs/field-types.md` and in review replies. A
 stale pair of files could have reported `0 live defects` for a corpus it had never run.

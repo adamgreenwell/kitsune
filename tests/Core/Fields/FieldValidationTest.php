@@ -594,6 +594,25 @@ describe('a quadratic pattern bounds how many items a text field admits', functi
         'the ceiling itself' => [5000, 1],
     ]);
 
+    it('sees a quadratic run through a group', function (string $pattern): void {
+        /*
+         * ⚠️ THE FIRST VERSION ASKED THE PRICING QUESTION, which review found: `quadraticRuns()` reads a
+         * sequence's OWN atoms so that the allowance is charged at exactly one level, and it therefore
+         * never looks inside a group — so `^(?:a*a*)b$` came back linear and kept no item bound, while
+         * being the same expression as `^a*a*b$` and costing the same. The question here is about the
+         * whole pattern, so it is asked of the walk that owns the whole pattern.
+         */
+        $type = app(FieldTypeRegistry::class)->get('text');
+        $config = configFor('text', ['pattern' => $pattern, 'maxLength' => 1000], -1);
+
+        expect($type->maxItems($config))->toBe(25);
+    })->with([
+        '^(?:a*a*)b$',
+        '^(?:(?:a*a*))b$',
+        '^(?=a*a*b)x$',
+        '^(?:a|a*a*b)x$',
+    ]);
+
     it('publishes and enforces the same number', function (): void {
         /*
          * ⚠️ ONE ANSWER, TWO CONSUMERS. The schema and the rules were two expressions of the same

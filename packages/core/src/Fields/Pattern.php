@@ -2748,10 +2748,18 @@ final class Pattern
      *
      * A run of one variable-width atom is LINEAR and needs no item bound: a hundred 5,000-character
      * values against `^[a-z]+$` is half a million character tests, which is not a cost anybody notices.
+     *
+     * ⚠️ NOT `quadraticRuns()`, WHICH ANSWERS A DIFFERENT QUESTION AND REVIEW FOUND ME ASKING IT. That
+     * one PRICES a sequence and deliberately reads its OWN atoms, so the allowance is charged at
+     * exactly one level and a group's body is not billed twice — which means it never looks inside a
+     * group, and `^(?:a*a*)b$` came back linear. It is the same expression as `^a*a*b$` and costs the
+     * same. `atomRunExceeds()` is the walk that owns the whole pattern: it splices what runs once,
+     * descends into assertion bodies and into each branch of a multi-branch group, and fails closed on
+     * anything it cannot parse.
      */
     public static function costsQuadraticPerValue(string $pattern): bool
     {
-        return self::quadraticRuns($pattern) > 0;
+        return self::atomRunExceeds($pattern, self::RUN_WITHOUT_COST);
     }
 
     /**
