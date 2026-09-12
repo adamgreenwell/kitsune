@@ -1336,5 +1336,23 @@
     "pattern": "^(?:a+(?=a*b))$",
     "subject": "aaab",
     "why": "A pre-existing false refusal found while fixing the charge above, and the fix is a sentence this file already carried for the RUN charge: `ownAtoms()` exists so that `^(?:a*a*b)$` does not pay twice for the one run it has. The assertion charge had no such protection — splicing put the body's atoms at the outer level and the recursion priced the same body again, 8,192² passes the ambiguity ceiling, and brackets round the published quadratic `^a+(?=a*b)$` refused it. The pricing caller reads its own atoms now; the refusal caller still reads through, because a run or an assertion inside a required group is refused wherever it is written."
+  },
+  {
+    "id": "delimited-list-with-a-slash",
+    "pattern": "^[^/]+(?:/[^/]+)*$",
+    "subject": "a/b/c",
+    "why": "The path pattern every schema has, refused because of the harness's own punctuation. Both membership probes in `Pattern` hard-coded `/…/uD`, so an atom holding a slash closed the delimiter early: `preg_match('/^[^/]$/uD', '/')` is not a question about `[^/]`, it is an invalid pattern, and `preg_match()` answers FALSE — which both callers read as \"it matches\", denying the delimiter exemption. So this was refused while the byte-identical `^[^,]+(?:,[^,]+)*$` published. Measured on Node 22.23.2 against `a/a/a/…` at 5,000 characters the two are the same cost: 0.03 ms and 0.04 ms. `delimit()` has always chosen its delimiter against the text, and the probes use the same list now; `^[^,]+(?:/[^,]+)*$` stays refused, because `[^,]` really can consume a slash."
+  },
+  {
+    "id": "invalid-utf8-pattern",
+    "pattern": "èé{",
+    "subject": "x",
+    "why": "Screening must return a verdict and this threw one: three bytes that are not valid UTF-8 made `mb_strpos()` receive an offset past the end of what it could see, and the ValueError was a 500 on a settings save rather than a refusal. An author can paste anything into a settings field. It is refused first now, and the reason is the honest one rather than a structural rule: `delimit()` sets the `u` flag and neither engine compiles an invalid subject pattern under it, so this could never have been published whatever the rules said. NOTE: this case file is valid UTF-8, so the pattern here is the closest printable stand-in — the byte sequence itself is covered by `StructuralGrammarTest`, which can hold raw bytes."
+  },
+  {
+    "id": "quantifier-bound-that-overflows",
+    "pattern": "(?<=a{9223372036854775807}a)b",
+    "subject": "aab",
+    "why": "The second crash: a quantifier can name a number whose product — and whose SUM with the next atom's width — overflows to a float, and the width helper returns `?int`, so a TypeError came out of the lookbehind rule. A width nothing can measure is not a fixed width, which is exactly what null already means there and what every caller reads as 'variable' — the conservative direction. Both the multiply and the add are guarded now, and the pattern is refused for the reason it should be: a lookbehind whose length is not fixed."
   }
 ]

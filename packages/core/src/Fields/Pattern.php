@@ -797,6 +797,23 @@ final class Pattern
         // One pattern's memos, and only one pattern's: see `$atomLists`.
         self::forgetOneAnalysis();
 
+        /*
+         * ⚠️ FIRST, BECAUSE EVERY SCAN BELOW IS `mb_*` AND THEY DISAGREE ABOUT AN INVALID STRING. The
+         * three bytes `\xE8\xE9{` threw `ValueError: mb_strpos(): Argument #3 ($offset) must be
+         * contained in argument #1` out of the quantifier scan — one call counted characters and the
+         * next was handed an offset past the end of what IT could see, so screening a pasted byte
+         * sequence was a 500 on a settings save rather than a refusal.
+         *
+         * It is also the honest refusal: `delimit()` sets `u`, and neither engine compiles an invalid
+         * subject pattern under it, so this could never have been published whatever the rules below
+         * said.
+         */
+        if (! mb_check_encoding($pattern, 'UTF-8')) {
+            return 'a pattern that is not valid UTF-8 — the bytes cannot be read as text, so neither '
+                .'engine can compile it under the `u` flag that a published schema requires. This is '
+                .'usually a copy-and-paste from a file in another encoding';
+        }
+
         $length = mb_strlen($pattern);
 
         // ⚠️ Refused BEFORE the scan, because the scan is what costs. See MAX_LENGTH.
@@ -3061,7 +3078,11 @@ final class Pattern
              * was accepted. ECMAScript's `\s` DOES include the BOM, and Node 22 spends 17.2
              * SECONDS on 40 BOMs followed by a non-match.
              */
-            if (@preg_match('/^'.self::withEcmaScriptDot($atom).'$/uD', $delimiter) !== 0) {
+            // ⚠️ Delimited against the text rather than with a hard-coded `/`, which is what let an
+            // atom holding a slash close the probe early — see `probeFor()`.
+            $probe = self::probeFor($atom);
+
+            if ($probe === null || @preg_match($probe, $delimiter) !== 0) {
                 return true;
             }
         }
@@ -4436,7 +4457,37 @@ final class Pattern
             return true;
         }
 
-        return @preg_match('/^'.self::withEcmaScriptDot($atom).'$/uD', $character) !== 0;
+        $probe = self::probeFor($atom);
+
+        return $probe === null || @preg_match($probe, $character) !== 0;
+    }
+
+    /**
+     * This atom as a compilable one-character probe, or null when it cannot be built.
+     *
+     * ⚠️ THE PROBE'S OWN DELIMITER WAS PART OF ITS ANSWER, and it cost the commonest delimited list
+     * there is. Both probes in this file hard-coded `/…/uD`, so an atom containing a slash closed the
+     * delimiter early: `preg_match('/^[^/]$/uD', '/')` is not a question about `[^/]`, it is an invalid
+     * pattern, and `preg_match()` answers FALSE. Both callers read false as "it matches", which fails
+     * closed — so `^[^/]+(?:/[^/]+)*$`, the path pattern every schema has, was refused while the
+     * byte-identical `^[^,]+(?:,[^,]+)*$` publishes. A guard that depends on which character the author
+     * chose as a separator is not a guard, it is a coincidence.
+     *
+     * `delimit()` has always chosen its delimiter against the text — that is what `DELIMITERS` is for —
+     * and the probes now use the same list. If an atom somehow contains all five, there is no probe to
+     * build and the callers keep failing closed, which is the answer they already gave.
+     */
+    private static function probeFor(string $atom): ?string
+    {
+        $expression = self::withEcmaScriptDot($atom);
+
+        foreach (self::DELIMITERS as $delimiter) {
+            if (! str_contains($expression, $delimiter)) {
+                return $delimiter.'^'.$expression.'$'.$delimiter.self::MODIFIERS;
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -4987,8 +5038,26 @@ final class Pattern
                     return null;
                 }
 
+                /*
+                 * ⚠️ A QUANTIFIER CAN NAME A NUMBER THAT OVERFLOWS, and this multiplication returned a
+                 * FLOAT for one: `(?<=a{9223372036854775807}a)b` threw a TypeError out of a `?int`
+                 * return, so screening it was a 500 on a settings save rather than a refusal. A width
+                 * nothing can measure is not a fixed width, which is exactly what null means here, and
+                 * every caller already treats null as "variable" — the conservative direction.
+                 */
+                if ($width !== 0 && $repeat > intdiv(PHP_INT_MAX, $width)) {
+                    return null;
+                }
+
                 $width *= $repeat;
                 $i += mb_strlen($quantifier);
+            }
+
+            // ⚠️ And the SUM overflows as readily as the product: `a{9223372036854775807}a` is one
+            // measurable atom and one more character, and PHP turns that addition into a float. Same
+            // answer as above — a width nothing can measure is not a fixed width.
+            if ($total > PHP_INT_MAX - $width) {
+                return null;
             }
 
             $total += $width;

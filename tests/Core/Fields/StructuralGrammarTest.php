@@ -2476,6 +2476,96 @@ describe('a prefix outside a bracket is charged for what it rescans inside', fun
     ]);
 });
 
+describe('the screen answers about the author pattern, not about its own probe', function (): void {
+    /*
+     * ⚠️ THE PROBE'S OWN DELIMITER WAS PART OF ITS ANSWER, and it cost the commonest delimited list
+     * there is. Both membership probes in `Pattern` hard-coded `/…/uD`, so an atom holding a slash
+     * closed the delimiter early: `preg_match('/^[^/]$/uD', '/')` is not a question about `[^/]`, it is
+     * an invalid pattern, and `preg_match()` answers FALSE — which both callers read as "it matches".
+     * That fails closed, so `^[^/]+(?:/[^/]+)*$` — the path pattern every schema has — was REFUSED
+     * while the byte-identical `^[^,]+(?:,[^,]+)*$` publishes.
+     *
+     * Measured on Node 22.23.2 against `a/a/a/…` at 5,000 characters, the two are the same shape and
+     * the same cost: 0.03 ms for the slash list and 0.04 for the comma one. A guard whose answer
+     * depends on which separator the author picked is a coincidence rather than a guard.
+     *
+     * `delimit()` has always chosen its delimiter against the text, which is what `DELIMITERS` is for;
+     * the probes use the same list now.
+     */
+    it('admits a delimited list whatever its delimiter is', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))->toBeNull("[{$pattern}] is delimited by a character its atoms cannot match");
+    })->with([
+        '^[^/]+(?:/[^/]+)*$',
+        '^(?:/[a-z]+)*$',
+        // The four other delimiters the probe may choose, none of which was ever broken — here so the
+        // next change to that list has to keep them working.
+        '^[^,]+(?:,[^,]+)*$',
+        '^[^#]+(?:#[^#]+)*$',
+        '^[^~]+(?:~[^~]+)*$',
+        '^[^%]+(?:%[^%]+)*$',
+        '^[^!]+(?:![^!]+)*$',
+    ]);
+
+    it('still refuses one whose atom can consume the delimiter', function (string $pattern): void {
+        // ⚠️ The exemption is a proof, not a shape: `[^,]` CAN match a slash, so the split is not
+        // forced and the group can be re-divided. Fixing the probe must not turn that into a publish.
+        expect(Pattern::unpublishable($pattern))->not->toBeNull("[{$pattern}] is not divided by its delimiter");
+    })->with([
+        '^[^,]+(?:/[^,]+)*$',
+        '^[^,]+(?:,[^,]+)*(?:/[^,]+)*$',
+    ]);
+
+    /*
+     * ⚠️ AND SCREENING MUST RETURN A VERDICT, NEVER THROW — two inputs did. An author can paste
+     * anything into a settings field, so a `Throwable` here is a 500 on a save rather than a refusal,
+     * and both of these came back as one:
+     *
+     *   `(?<=a{9223372036854775807}a)b`   the width multiply, then the width SUM, returned a float out
+     *                                     of a `?int` — TypeError. A width nothing can measure is not
+     *                                     a fixed width, which is what null already means.
+     *   three bytes `\xE8\xE9{`           `mb_strpos()` was handed an offset past the end of what it
+     *                                     could see — ValueError. An invalid-UTF-8 pattern cannot
+     *                                     compile under `u` in either engine, so it is refused first.
+     */
+    it('returns a verdict for an input nothing can measure', function (string $pattern, string $expected): void {
+        $refusal = Pattern::unpublishable($pattern);
+
+        expect($refusal)->not->toBeNull()
+            ->and(str_contains((string) $refusal, $expected))->toBeTrue("[{$expected}] should be the reason");
+    })->with([
+        ['(?<=a{9223372036854775807}a)b', 'lookbehind'],
+        ['(?<=a{9223372036854775806}aa)b', 'lookbehind'],
+        ["\xE8\xE9{", 'not valid UTF-8'],
+        ["\x80abc", 'not valid UTF-8'],
+    ]);
+
+    it('screens every public entry point without throwing', function (string $pattern): void {
+        /*
+         * ⚠️ EVERY ENTRY POINT, because `unpublishable()` is not the only way in: `TextType` asks
+         * `costsQuadraticPerValue()` for the item bound and the runtime rule asks `delimit()`. The
+         * TypeError reached only one of them, which is exactly the gap this asserts away.
+         */
+        /*
+         * ⚠️ THE ASSERTION IS THAT EACH CALL RETURNS, and a throw fails this test before any
+         * expectation runs — which is why the expectations below are about TYPE rather than verdict.
+         * `a{9223372036854775807}b` is publishable by these rules and is refused at compile time by
+         * PCRE, so demanding a refusal here would pin the wrong thing.
+         */
+        $refusal = Pattern::unpublishable($pattern);
+        $delimited = Pattern::delimit($pattern);
+
+        expect($refusal === null || is_string($refusal))->toBeTrue()
+            ->and(Pattern::compiles($pattern))->toBeBool()
+            ->and(Pattern::costsQuadraticPerValue($pattern))->toBeBool()
+            ->and($delimited === null || is_string($delimited))->toBeTrue();
+    })->with([
+        '(?<=a{9223372036854775807}a)b',
+        "\xE8\xE9{",
+        "\x80abc",
+        'a{9223372036854775807}b',
+    ]);
+});
+
 describe('the screen stays inside its budget', function (): void {
     /*
      * ⚠️ THE GUARD'S OWN COST IS PART OF THE CONTRACT, and it had drifted: every rule added a walk, and
