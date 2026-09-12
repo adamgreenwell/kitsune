@@ -2175,6 +2175,77 @@ describe('a separator that can be absent hides what is in front of it', function
     ]);
 });
 
+describe('a one-character probe cannot prove a boundary for a wider atom', function (): void {
+    /*
+     * ⚠️ THREE FALSE PUBLISHES IN ONE GAP, and the gap is between two questions that look identical.
+     * `atomMatches()` asks whether an atom matches a character ON ITS OWN, against a one-character
+     * subject. A division proof needs to know whether it can CONSUME such a character at all. Those
+     * agree for a one-character context-free atom and part company for everything else — measured on
+     * Node 22.23.2 against all-`a` at 500 / 1,000 / 2,000 characters:
+     *
+     *   `^(?:aa)+a*a*X$`       142.3 / 244.1 / 1,932.4 ms — half of the refused `^a*a*a*X$` at
+     *                          286.1 / 489.9 / 3,884.9, because the group steps two at a time
+     *   `^(?:a(?=a))+a+a+X$`   282.4 / 484.0 / 3,858.7 ms against 282.4 / 483.9 / 3,870.2 for
+     *                          `^a+a+a+X$` — the same cubic to the millisecond, where the probe
+     *                          cannot see the `a` the lookahead asserts and reports no match at all
+     *
+     * The controls are 0.0–0.1 ms at every length: `^(?:aa)+bX$` and `^(?:a(?=a))+bX$`.
+     */
+    it('refuses a run whose predecessor the probe cannot answer for', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))->not->toBeNull("[{$pattern}] is not divided by the atom beside it");
+    })->with([
+        // Wider than one character, so "matches `a` alone" is false while it eats `a` two at a time.
+        '^(?:aa)+a*a*X$',
+        '^(?:aa)+a+a+X$',
+        '^(?:ab)+a+a+X$',
+        '^(?:aa|b)+a+a+X$',
+        // One character wide and context-dependent: the probe's subject is one character long, so a
+        // positive lookaround inside it has nothing to look at and fails where the real match holds.
+        '^(?:a(?=a))+a+a+X$',
+        // Review named the lookahead; the lookbehind is the same hole and was published too.
+        '^(?:(?<=x)a)+a+a+X$',
+    ]);
+
+    it('still proves one for a predecessor a single character answers for', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))->toBeNull("[{$pattern}] is divided by a proof the probe can make");
+    })->with([
+        // A GROUP one character wide is still one character wide: 0.1 ms at 1,000 characters and
+        // 0.0 at 2,000 and 5,000.
+        '^(?:a|b)+c+d+X$',
+        '^a+b+c$',
+        '^[^,]+(?:,[^,]+)*$',
+        // The guard loses the boundary, not the pattern: two atoms is the top-level allowance, so an
+        // assertion-carrying predecessor is priced rather than refused. 0.0 ms at every length.
+        '^(?:a(?=a))+b+c+X$',
+    ]);
+});
+
+describe('a digit is an atom like any other', function (): void {
+    /*
+     * ⚠️ A CRASH, NOT A MISJUDGEMENT, and it is what an array keyed by atom source costs if nobody
+     * says so: PHP folds the key `'0'` to the integer `0`, so a digit predecessor reached
+     * `dividesFrom()` as an int and threw a TypeError under `strict_types`. `^a*0*b$` is a pattern
+     * this rule has no opinion about, and screening it was a 500 on a settings save.
+     *
+     * The suite had no digit beside a variable-width atom anywhere, which is why every engine stayed
+     * green. `\d` is a class and keys as a string, so the trap needed a LITERAL digit.
+     */
+    it('screens a pattern whose atoms are digits', function (string $pattern, bool $publishable): void {
+        $refusal = Pattern::unpublishable($pattern);
+
+        expect($refusal === null)->toBe($publishable, "[{$pattern}] was screened to the wrong verdict");
+    })->with([
+        // `a*` cannot consume a `0`, so the boundary is forced and the run is one either side.
+        ['^a*0*b$', true],
+        ['^[a-z]+0+1+X$', true],
+        ['^0+1+X$', true],
+        ['^a*a*0*b$', true],
+        // Two of the same digit in a row is the quadratic run, spelled in digits.
+        ['^0*0*1*b$', true],
+        ['^0*0*0*b$', false],
+    ]);
+});
+
 describe('the screen stays inside its budget', function (): void {
     /*
      * ⚠️ THE GUARD'S OWN COST IS PART OF THE CONTRACT, and it had drifted: every rule added a walk, and
@@ -2224,7 +2295,7 @@ describe('the screen stays inside its budget', function (): void {
         $started = microtime(true);
         Pattern::unpublishable($chain);
 
-        // Measures ~39 ms here. Loose by the same order of magnitude as the assertion above, and for
+        // Measures ~41 ms here. Loose by the same order of magnitude as the assertion above, and for
         // the same reason: what would regress is the shape of the cost, not a millisecond.
         expect(microtime(true) - $started)->toBeLessThan(0.2);
     });

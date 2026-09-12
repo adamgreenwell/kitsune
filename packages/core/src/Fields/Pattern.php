@@ -92,6 +92,9 @@ final class Pattern
     /** @var array<string, list<array{open:int, close:int, kind:string, body:string, quantifier:string, inLookbehind:bool}>> */
     private static array $frameLists = [];
 
+    /** @var array<string, bool> One pattern's division proofs; see `$atomLists`. */
+    private static array $matchProofs = [];
+
     private const MAX_NESTING = 32;
 
     /**
@@ -2602,7 +2605,74 @@ final class Pattern
         }
 
         foreach ($leads as $lead) {
-            if (self::atomMatches($previous, $lead)) {
+            if (! self::cannotMatch($previous, $lead)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * Whether `$previous` provably cannot match this character ANYWHERE in a subject.
+     *
+     * ⚠️ THE PROBE ANSWERS A NARROWER QUESTION THAN EVERY DIVISION PROOF ASKS, and review found three
+     * false PUBLISHES in the gap. `atomMatches()` asks whether the atom matches this character ON ITS
+     * OWN, against a one-character subject; a division proof needs to know whether it can consume such
+     * a character at all. Those are the same question for a one-character context-free atom and
+     * different for everything else:
+     *
+     *   `^(?:aa)+a*a*X$`        `atomMatches('(?:aa)', 'a')` is false and the group eats `a` two at a
+     *                           time. Measured on Node 22.23.2 against all-`a`: 142.3 ms at 500
+     *                           characters, 244.1 at 1,000, 1,932.4 at 2,000 — half of the refused
+     *                           `^a*a*a*X$` at 286.1/489.9/3,884.9, because the group steps by two.
+     *   `^(?:a(?=a))+a+a+X$`    the probe cannot see the `a` the lookahead asserts, so it reports no
+     *                           match for a group that matches every `a` but the last. Measured,
+     *                           282.4/484.0/3,858.7 against 282.4/483.9/3,870.2 for `^a+a+a+X$` — the
+     *                           same cubic to the millisecond, where `^(?:a(?=a))+bX$` is 0.1 ms.
+     *   `^(?:(?<=x)a)+a+a+X$`   the same hole through a lookbehind, which review did not name and the
+     *                           probe fails the same way.
+     *
+     * So the proof is refused unless the atom is exactly one character wide — `fixedWidth()` reads
+     * `(?:aa)` as two and `(?:ab\|c)` as unknown — and context-free. `^` and `$` need no detection:
+     * the probe's subject is one character long, so both hold, and an assertion that HOLDS in the probe
+     * can only make it over-report, which loses a boundary rather than inventing one.
+     *
+     * ⚠️ FAILS CLOSED, WHICH HERE MEANS REFUSING TO PROVE. Every caller uses this to END a run or a
+     * prefix, so "not proved" keeps the run alive and costs a price or a refusal — never a publish.
+     */
+    private static function cannotMatch(string $previous, string $character): bool
+    {
+        /*
+         * Memoised with `$atomLists`, and for the same reason measured the same way: the run walk asks
+         * this once per predecessor per atom, and the width and frame walks behind it are not free.
+         * Two hundred distinct nullable atoms — 1,000 characters, `MAX_LENGTH` exactly — went from
+         * 39.3 ms to 79.8 when the guard landed, and back to 41.3 with this.
+         */
+        $key = $previous."\0".$character;
+
+        return self::$matchProofs[$key] ??= self::fixedWidth($previous) === 1
+            && self::probeIsContextFree($previous)
+            && ! self::atomMatches($previous, $character);
+    }
+
+    /**
+     * Whether a one-character probe of this atom answers the same way it would inside a subject.
+     *
+     * ⚠️ OVER-DETECTS ON PURPOSE, because the cost of a false NO is a run that stays alive. `\b` is
+     * looked for as text rather than parsed, so `[\b]` — the backspace character, not a boundary —
+     * reads as context-dependent too; it is refused elsewhere, and being wrong about it here costs a
+     * division proof rather than a publish. `frames()` yields nested frames, so an assertion anywhere
+     * inside is found.
+     */
+    private static function probeIsContextFree(string $atom): bool
+    {
+        if (str_contains($atom, '\b') || str_contains($atom, '\B')) {
+            return false;
+        }
+
+        foreach (self::frames($atom) as $frame) {
+            if (self::isAssertionKind($frame['kind'])) {
                 return false;
             }
         }
@@ -2662,7 +2732,7 @@ final class Pattern
 
         $character = self::literalCharacter($atom['atom']);
 
-        return $character !== null && ! self::atomMatches($previous, $character);
+        return $character !== null && self::cannotMatch($previous, $character);
     }
 
     /**
@@ -3215,6 +3285,7 @@ final class Pattern
         self::$runVerdicts = [];
         self::$ambiguityCosts = [];
         self::$frameLists = [];
+        self::$matchProofs = [];
     }
 
     /**
@@ -3773,8 +3844,14 @@ final class Pattern
          * there`. Keyed by source because two predecessors written the same way answer every proof
          * the same way, and a chain of identical nullable atoms is otherwise quadratic in the walk —
          * `a*` five hundred times is 1,000 characters, which `MAX_LENGTH` admits.
+         *
+         * ⚠️ AND THE KEY COMES BACK AN INT WHEN THE ATOM IS A DIGIT, which is the one thing an array
+         * keyed by source cannot be trusted about: PHP casts `'0'` to `0` on the way in, so
+         * `^a*0*b$` reached `dividesFrom()` with an integer and threw a TypeError — a 500 on a
+         * settings save, from a pattern nothing about this rule is even interested in. Every read
+         * casts back, which is exact: PHP only folds a key that is already a canonical decimal.
          */
-        /** @var array<string, int> $reachable */
+        /** @var array<array-key, int> $reachable */
         $reachable = [];
 
         foreach ($atoms as $atom) {
@@ -3830,7 +3907,7 @@ final class Pattern
                 $run = 1;
 
                 foreach ($reachable as $source => $ending) {
-                    if (! self::dividesFrom($source, $atom)) {
+                    if (! self::dividesFrom((string) $source, $atom)) {
                         $run = max($run, $ending + 1);
                     }
                 }
@@ -3862,7 +3939,7 @@ final class Pattern
             }
 
             foreach ($reachable as $source => $ending) {
-                if (! self::dividesFrom($source, $atom)) {
+                if (! self::dividesFrom((string) $source, $atom)) {
                     continue 2;
                 }
             }
