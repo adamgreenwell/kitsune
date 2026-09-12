@@ -84,8 +84,20 @@ final class RichTextType extends BaseFieldType
     /**
      * The only `PerBlock` control. A single `dir` on the editor would impose one
      * direction on a document that may legitimately hold an Arabic paragraph and an
-     * English one — worse than none, because it looks handled. `dir` is already in
-     * ALLOWED_ATTRIBUTES, so per-block direction survives sanitising.
+     * English one — worse than none, because it looks handled.
+     *
+     * ⚠️ THIS DOCBLOCK USED TO SAY "`dir` is already in ALLOWED_ATTRIBUTES, so per-block direction
+     * survives sanitising", and that was true and not enough. Surviving is not the same as
+     * existing: nothing PRODUCED a `dir`, so an author writing an Arabic paragraph next to an
+     * English one got neither — every block inherited the chrome, which is issue #39's gap G3 in
+     * the one place the inventory called awkward. `Entry` stamps `dir="auto"` on each block on the way
+     * to storage, so the browser resolves each one from its own first strong character.
+     *
+     * ⚠️ NOT THIS TYPE, AND NOT `toStorage()`, which this sentence said until review pointed at the
+     * decision log describing an implementation that no longer exists. The pass is applied from a
+     * private method on `Entry` to every control whose `ValueDirection` is `PerBlock` — ADR-029's
+     * guarantee is about the CONTROL, so a type that declares this one cannot decline it and neither
+     * can a module's.
      */
     public function control(): Control
     {
@@ -118,7 +130,52 @@ final class RichTextType extends BaseFieldType
 
     protected function castToStorage(mixed $input, FieldConfig $config): mixed
     {
-        return $input === null ? null : $this->sanitize((string) $input);
+        /*
+         * ⚠️ TWO STEPS, AND THEY ARE TWO STEPS ON PURPOSE. The first version of this stamped the
+         * direction inside `sanitize()`'s attribute walk, which broke nineteen tests — five of them
+         * in `RichTextSecurityTest`, asserting the sanitiser's exact output.
+         *
+         * That breakage was the design telling me something. `sanitize()` is a security boundary
+         * (field-types.md §6) and its output is asserted byte-for-byte precisely because it is one;
+         * threading a presentation concern through it means every future direction change edits
+         * security expectations, and a reviewer reading that diff cannot tell which half is which.
+         * Direction is not safety. It is a second step over a value already known to be safe.
+         *
+         * ⚠️ THE COST IS A SECOND PARSE, AND THIS SENTENCE USED TO GET IT WRONG TWICE. It said the
+         * value was "bounded by `MAX_LENGTH`" and the cost was "microseconds". Review checked both:
+         * `MAX_LENGTH` is `Pattern`'s bound on an authored VALIDATION PATTERN and has nothing to do
+         * with a rich text value, `scalarValidationRules()` is `['string']` alone, and `apiSchema()`
+         * publishes no length — so the value is unbounded from the API and from an import. Measured
+         * on a machine much faster than ADR-027's 1 vCPU floor, one parse-and-walk is 0.8 ms at
+         * 31 KB, 3.9 ms at 157 KB and 17.9 ms at 786 KB: linear, and milliseconds rather than
+         * microseconds.
+         *
+         * ⚠️ AND THERE IS NO SECOND PARSE HERE ANY MORE. This method used to sanitise and then stamp
+         * directions, and `Entry` then asked whether sanitising had REMOVED anything — three parses for
+         * one write, which a memo on this singleton existed to reduce to two.
+         *
+         * Both of those are gone. The direction pass moved to `Entry`, where no field type can decline
+         * it (ADR-029), and with it out of the conversion the loss check is a plain comparison that
+         * calls nothing. `sanitize()` runs ONCE per write, so the memo had no consumer left — it armed,
+         * filled and was never read, which is retention with the benefit removed. Review found the
+         * leftover; it is deleted rather than given a release, because a cache nothing reads is not a
+         * cache.
+         */
+        if ($input === null) {
+            return null;
+        }
+
+        /*
+         * ⚠️ THE DIRECTION PASS IS NOT CALLED HERE ANY MORE, and review is the reason. It was a private
+         * method on this class, so a module registering another type that returns `Control::RichText`
+         * got no per-block direction at all — which is precisely what ADR-029 says is inexpressible.
+         * `Entry` applies it to every value whose control's `ValueDirection` is `PerBlock`, from a
+         * private method that no field type can override or decline.
+         *
+         * Sanitising stays here because it is this type's own security boundary, and the two steps are
+         * still two steps for the reason above.
+         */
+        return $this->sanitize((string) $input);
     }
 
     /**
@@ -180,14 +237,42 @@ final class RichTextType extends BaseFieldType
         libxml_clear_errors();
         libxml_use_internal_errors($previous);
 
-        $root = $document;
+        $this->clean($document);
 
-        $this->clean($root);
+        /*
+         * ⚠️ NOTHING IS RETAINED BETWEEN CALLS, and three findings on this branch were about the memo
+         * that used to be here — what it could hold, for how long, and which paths forgot to release
+         * it. It existed because one write parsed the same value twice; it does not, so it is gone.
+         * One parse measured 17.9 ms at 786 KB on a machine much faster than ADR-027's floor, linear
+         * in the value's size, and `FieldTypeRegistry` is a singleton so anything kept here is kept
+         * for the life of the process.
+         */
+        return $this->serialize($document);
+    }
+
+    /**
+     * The document back as HTML, without the parsing aids this method adds.
+     *
+     * ⚠️ A SECOND COPY, AND THE ONLY DUPLICATION THE DIRECTION PASS'S MOVE COST. `Entry` holds that pass
+     * privately now — see the banner there for the four reachable homes review rejected — and a private
+     * method on another class cannot be shared. Twenty lines with one rule in them is the cheaper half
+     * of that trade: the alternative was leaving an autoloadable symbol a plugin can bind to.
+     *
+     * The rule is that the charset `<meta>` is something this method PREPENDS rather than content, so it
+     * is skipped on the way out. The `div` wrapper needs no skip: `clean()` unwraps it, because `div` is
+     * not an allowed tag.
+     */
+    private function serialize(DOMNode $parent): string
+    {
+        $document = $parent instanceof DOMDocument ? $parent : $parent->ownerDocument;
+
+        if ($document === null) {
+            return '';
+        }
 
         $out = '';
 
-        foreach (iterator_to_array($root->childNodes) as $child) {
-            // The charset hint this method added, not content.
+        foreach (iterator_to_array($parent->childNodes) as $child) {
             if ($child instanceof DOMElement && strtolower($child->nodeName) === 'meta') {
                 continue;
             }

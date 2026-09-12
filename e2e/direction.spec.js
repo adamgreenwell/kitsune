@@ -235,6 +235,58 @@ test.describe('a field value carries its own direction', () => {
         expect(await status.getAttribute('dir')).toBeNull();
     });
 
+    test('rich text carries a direction per block, and the editor drops it', async ({ page }) => {
+        /*
+         * ⚠️ TWO FACTS, AND ONLY ONE OF THEM IS GOOD NEWS. Issue #39 called rich text the
+         * awkward case, and it is awkward in a way the inventory did not anticipate.
+         *
+         * The STORED value is right. `RichTextType::toStorage()` stamps `dir="auto"` on
+         * every text-bearing block and leaves containers alone, so the value in the
+         * database resolves per paragraph — asserted by `RichTextBlockDirectionTest`, and
+         * visible in the seeded row:
+         *
+         *   <p dir="auto">Maintenance notes…</p>
+         *   <p dir="auto">ملاحظات الصيانة…</p>
+         *   <ul><li dir="auto">Mow the fairway</li><li dir="auto">تنظيف…</li></ul>
+         *
+         * The EDITOR is not. Filament's rich editor is TipTap/ProseMirror, which parses
+         * that HTML into its own document model and re-renders it — and its schema does
+         * not declare `dir`, so the attribute is dropped on load. Measured here: the
+         * Arabic list item inside the editor carries no `dir` at all and resolves to the
+         * chrome's `ltr`.
+         *
+         * ⚠️ THIS TEST ASSERTS THE GAP ON PURPOSE, which is unusual and deliberate. The
+         * alternative was to assume the limitation, and an assumption about somebody
+         * else's parser is exactly the kind of thing that silently stops being true. If a
+         * Filament or TipTap release starts preserving `dir`, this test fails, and the
+         * failure is the notification. Same reasoning as the dropdown ARIA finding: record
+         * what the dependency actually does, so the record cannot rot quietly.
+         */
+        await page.goto(`/admin/${SITE}/c/article`);
+        await page.getByRole('link', { name: ARABIC_TITLE }).first().click();
+        await page.waitForURL(/\/(edit|\d+)$/);
+
+        const arabicItem = page.locator('.tiptap li', { hasText: 'تنظيف' }).first();
+        await expect(arabicItem).toBeVisible();
+
+        // The gap, measured rather than assumed: no attribute, and therefore the chrome's
+        // direction on Arabic text.
+        expect(await arabicItem.getAttribute('dir')).toBeNull();
+        expect(await resolvedDirection(arabicItem)).toBe('ltr');
+
+        /*
+         * ⚠️ AND THE CONTAINER MUST STAY UNDIRECTED EITHER WAY. This is the half that is
+         * Kitsune's own and would be a real regression: a `dir` on `ul` would be inherited
+         * by every `li`, so an English first item would drag an Arabic second item
+         * left-to-right — the per-field failure reproduced one level down. It holds in the
+         * editor today because nothing sets it, and it must keep holding when TipTap
+         * starts preserving what `toStorage()` writes.
+         */
+        const list = page.locator('.tiptap ul').first();
+        await expect(list).toBeVisible();
+        expect(await list.getAttribute('dir')).toBeNull();
+    });
+
     test('typing RTL text into an empty field flips it live', async ({ page }) => {
         // `dir="auto"` is evaluated by the browser as the value changes, so a new entry
         // gets the same behaviour without the server knowing anything about direction.

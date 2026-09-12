@@ -1328,6 +1328,40 @@ So the test of this ADR is not "can a non-panel consumer render it" — there is
 | Keep the rule, keep citing ADR-002 | Invariant 12: amend the decision rather than route around it. Eight docblocks asserting a rule no ADR contains is the same drift as a stale comment, at scale. |
 | Drop the rule, return components, delete the renderer | Cheapest to write and the panel converged against it: it is the one option where a field type can be added with no direction support at all. |
 
+### Amendment, 2026-09-11 — the seam now carries the case it was written for
+
+**This ADR claimed a guarantee the implementation did not keep, and review found it.** The test above is *"can a new field type be added without text direction"*, and the answer was **yes** for the one direction that needs more than an attribute: per-block direction for rich text was a private method on `RichTextType`, so a module registering its own type returning `Control::RichText` got none — and `FieldValueRenderer` deliberately adds none for `PerBlock`, because for rich text the direction belongs in the stored bytes rather than on the wrapper.
+
+So the closed vocabulary reached every control and the cross-cutting rule reached one class.
+
+That pass is **private methods on `Entry`**, applied from a private method there, keyed on `ValueDirection` rather than on the `Control` case — that enum is where the mapping already lives, and `PerBlock`'s own docblock already said direction is needed *inside* the value; this makes that sentence happen instead of restating it.
+
+**It took three attempts to find a seam a field type cannot decline, and the ones that failed are worth recording.** Applying it in `BaseFieldType::toStorage()` made it control-driven and left it **overridable**: `MultiSelectType` and `RelationType` already override that method, a module may too, and a module implementing `FieldType` directly never reaches the base class at all. A protected hook there was also new extension surface before v1.2 — a plugin subclass with a same-named method fails to load, which is a concrete break rather than a theoretical one.
+
+`Entry::convertFieldValuesForWrite()` is where every value that reaches the database is converted, and a private method on a model is what this codebase has already settled on as *"the first version a plugin cannot reach"*. The guarantee is enforced at the point of storage rather than inside the contract the guarantee is about.
+
+**The machinery itself then moved twice more, and the second time cost something worth naming.** As a `final class BlockDirection` with public statics it was new public API before v1.2, which the freeze forbids whatever the intention. As a **trait of entirely private methods** it offered no callable surface — and was still an autoloadable symbol a plugin can `use` and wrap, which is the fourth version of the same objection.
+
+So the pass is **private methods on `Entry`**: six hundred lines of DOM walking on a model, which is not where it belongs by any other measure. What buys it is that nothing outside that class can call, override, extend or bind to any of it, and ADR-029's argument is precisely that a cross-cutting rule must be **unforgettable rather than documented** — which a reachable seam is not.
+
+The one duplication it cost is a twenty-line DOM serialiser, now in both `Entry` and `RichTextType`, because a private method cannot be shared. That is cheaper than a symbol a plugin can bind to, and it is recorded in both copies.
+
+⚠️ **The test is what keeps it there**, and it asserts that the two rejected symbols do not exist rather than inspecting visibility — because visibility was the thing that turned out not to be enough.
+
+**A consequence worth having:** with direction applied after the conversion rather than inside it, a conversion is lossy-only again — so the `RichTextType`-by-identity special case in `Entry`'s revision loss check is gone, along with the comment calling it *"the price of freezing the contract before v1.2 and the first thing to undo when it opens."* Moving the seam undid it early.
+
+**And the guarantee now holds for markup this vocabulary does not know, which it did not at first.** The pass treated anything that was not a recognised container as inline — safe while its only caller was `RichTextType`, every element of whose output is in `ALLOWED_TAGS`, and wrong for the module output the seam exists to cover. A module emitting `<div>مرحبا</div>` got `<p dir="auto"><div>…</div></p>`, which a browser takes apart, leaving the element that bears the text with no direction at all: the invalid markup and the missed guarantee were the same defect.
+
+*"Not a known block"* is not a definition of inline. Phrasing content is an allowlist now, so an unrecognised element is a run boundary — and it is **stamped rather than wrapped**, because `dir` is a global attribute valid on any element while a `<p>` is valid only in some places. The one thing that is safe to do to markup whose content model this pass cannot parse is exactly the thing the guarantee needs.
+
+So the ADR is **not** amended to constrain what a `Control::RichText` type may emit, which was the alternative. A guarantee that holds only for the vocabulary core happens to ship is the kind of guarantee invariant 14 forbids publishing.
+
+| Rejected | Why it lost |
+|---|---|
+| Amend this ADR to scope the guarantee to renderer-side direction | It concedes the load-bearing claim. The argument here is that *"issue #39 has already shipped that attribute three times and been short of complete twice, both times because the reach of a correct rule depended on somebody enumerating call sites"* — and the branch that prompted this amendment was the **sixth** round of that same failure. The ADR was the side that was right. |
+| Leave the pass in `RichTextType` and document the limitation | Invariant 14: publish enforceable constraints only. A guarantee that holds for the type that happens to exist is not a guarantee. |
+| Move it to the renderer instead | The stored bytes and the displayed bytes would drift: a value arriving from the API, a seeder or an import would be stored undirected and only look right when rendered by this panel. `castToStorage()`'s docblock has the longer form of this argument. |
+
 ---
 
 ## ADR-030 — kitsunecms.org runs on Kitsune, so the site waits for the blueprint
