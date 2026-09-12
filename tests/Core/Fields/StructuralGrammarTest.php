@@ -819,6 +819,16 @@ describe('a lookahead may not assert what the next optional atom consumes', func
         '(?=a)a*a',
         '(?=a)a{0,2}a',
         '(?=ab)a?ab',
+
+        /*
+         * ⚠️ AND INSIDE A GROUP, WHICH THE FIRST VERSION WALKED PAST. `atomAt()` returns a whole group as
+         * ONE atom, so the scan advanced over the nested lookahead and published — a structural rule that
+         * a pair of brackets defeats is not a rule. Every frame kind is descended now, assertions
+         * included, since a lookahead can hold the shape as readily as a group can.
+         */
+        '(?:(?=a)a?a)',
+        '(?:(?:(?=a)a?a))',
+        '(?=(?=a)a?a)x',
     ]);
 
     it('leaves a lookahead that constrains something alone', function (string $pattern): void {
@@ -833,6 +843,11 @@ describe('a lookahead may not assert what the next optional atom consumes', func
         '(?=b)a?a',
         '(?=a)a+',
         '(?!a)a?a',
+
+        // ⚠️ And the same non-overlapping shapes inside a group, or the recursion would have widened the
+        // rule rather than extending its reach.
+        '(?:(?=b)a?a)',
+        '(?:(?!a)a?a)',
     ]);
 });
 

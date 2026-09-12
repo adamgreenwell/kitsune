@@ -1348,8 +1348,30 @@ final class Pattern
             $atom = $token['atom'];
             $i = $token['after'] - 1;
 
-            if (! str_starts_with($atom, '(') || self::frameKindAt($atom, 0) !== 'lookahead') {
+            if (! str_starts_with($atom, '(')) {
                 continue;
+            }
+
+            /*
+             * ⚠️ RECURSES INTO EVERY GROUP BODY, and review found the first version walking the top level
+             * only: `atomAt()` returns a whole group as one atom, so `(?:(?=a)a?a)` advanced straight past
+             * the nested lookahead and published. A structural rule that a pair of brackets defeats is
+             * not a rule.
+             *
+             * Every frame kind is descended, assertions included — a lookahead can hold the shape as
+             * readily as a group can, and refusing it there is no less correct.
+             */
+            if (self::frameKindAt($atom, 0) !== 'lookahead') {
+                if (($nested = self::lookaheadOverlapsOptional(self::frameBody($atom))) !== null) {
+                    return $nested;
+                }
+
+                continue;
+            }
+
+            // ⚠️ And a lookahead's own body too, before asking what follows the lookahead itself.
+            if (($nested = self::lookaheadOverlapsOptional(self::frameBody($atom))) !== null) {
+                return $nested;
             }
 
             $lead = self::leadingLiteral(self::frameBody($atom));

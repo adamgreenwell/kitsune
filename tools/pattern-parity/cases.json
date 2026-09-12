@@ -1036,5 +1036,11 @@
     "pattern": "^(?:(a|aa)+){0}$",
     "subject": "aa",
     "why": "The frames loop read only the current frame's quantifier, so this was refused for the inner `+` although the group holding it executes zero times — both engines match only the empty string. An upgrade hazard rather than a hole, and the same argument as the direct `{0}` case one level out, which is where every finding in this area has been. Enclosure is read from the frame positions, like `repeatingAncestor()` beside it."
+  },
+  {
+    "id": "lookahead-overlap-inside-a-group",
+    "pattern": "(?:(?=a)a?a)",
+    "subject": "a",
+    "why": "The overlap refusal walked the top level only: `atomAt()` returns a whole group as ONE atom, so the scan advanced over the nested lookahead and published the shape a pair of brackets away from the one it refuses. A structural rule a bracket defeats is not a rule. Every frame kind is descended now, assertions included, and the non-overlapping shapes are asserted inside a group too — so the recursion extended the rule's reach rather than widening the rule."
   }
 ]
