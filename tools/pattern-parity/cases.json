@@ -1018,5 +1018,11 @@
     "pattern": "^(?:,(?:a*a*){1,1})*X$",
     "subject": ",aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa",
     "why": "The atom traversal spliced a group whose quantifier was named in a literal list — `''`, `{1}`, `{1}?` — so `{1,1}` and `{01}` stayed whole and the two `a*` inside them became invisible to the run rule. Accepted, while `^(?:,(?:a*a*){1})*X$` — the same expression — is refused, and Node spends about 6 seconds on sixteen `,aa` segments. `fixedRepetitions()` already answers \"how many times, exactly\" and handles the padded and equal-bounded forms, so one place decides what \"once\" means instead of two that can disagree."
+  },
+  {
+    "id": "unanchored-lookahead-optional-prefix",
+    "pattern": "(?=a)a?a",
+    "subject": "a",
+    "why": "A VERSION-DEPENDENT divergence I could not reproduce, recorded so the harness reports it wherever it is real. Review measured PCRE 10.44 (PHP 8.5) not matching `a` while Node 24.15 does; on PHP 8.4.25 with PCRE 10.48 and Node 22.23.2 both match, as do `^(?=a)a?a$`, `(?=a)a?`, `(?=a)aa`, `a?a`, `(?=a)a*a` and `(?=ab)a?ab`. Both engines agree on what the pattern MEANS, so this is an upstream defect fixed between 10.44 and 10.48 rather than a grammar-portability property — and refusing a shape both dialects define identically would be a permanent expressiveness cost for a transient bug. `composer.json` requires PHP ^8.4, whose earliest releases bundle PCRE2 10.44, so the exposure is real: this case makes it show up as a live defect on any pair where it still diverges, which is what the harness is for."
   }
 ]

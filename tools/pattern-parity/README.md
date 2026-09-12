@@ -56,6 +56,18 @@ php -r 'echo PCRE_VERSION, PHP_EOL;'
 node --version
 ```
 
+
+⚠️ **And a divergence can be a BUG rather than a property, which changes the remedy.** Review measured
+`(?=a)a?a` diverging on PCRE 10.44 with Node 24; on PCRE 10.48 with Node 22 both engines match, as do
+six neighbouring shapes. Both dialects define that pattern identically, so the disagreement is an
+upstream defect fixed between those PCRE releases — and refusing a shape the two languages agree on
+would be a permanent expressiveness cost for a transient bug.
+
+`composer.json` requires PHP `^8.4`, whose earliest releases bundle PCRE2 10.44, so the exposure is
+real rather than hypothetical. The case is in `cases.json` as `unanchored-lookahead-optional-prefix`,
+which means this harness reports it as a **live defect** on any pair where it still diverges — which
+is the honest place for a version-dependent finding, rather than a rule in the grammar that outlives
+the bug.
 ## Reading the output
 
 - **divergent AND accepted** — a live defect. The engines disagree and nothing refuses it.
