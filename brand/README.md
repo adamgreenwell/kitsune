@@ -32,12 +32,13 @@ Nothing here is built yet. This is what to export while the vector source is ope
 - [x] `kitsune-lockup.svg` — mark left, wordmark right
 - [x] `kitsune-lockup-dark.svg`
 - [x] `kitsune-lockup-compact.svg` / `-dark.svg` — glyph + wordmark, for ≤70px
-- [ ] `formal-stacked-light.svg` — mark above wordmark
-- [ ] `formal-stacked-dark.svg`
+- [x] `kitsune-logo.svg` — mark above wordmark
+- [x] `kitsune-logo-dark.svg`
 - [ ] `formal-mono.svg` — single colour, flat, no tints
 
 ### Compact
-- [ ] `compact-light.svg`, `compact-dark.svg`, `compact-mono.svg`
+- [x] `kitsune-fox.svg`, `kitsune-fox-dark.svg`
+- [ ] `compact-mono.svg`
 - [ ] `compact-128.png`, `compact-256.png`, `compact-512.png`
 
 ### Glyph
@@ -58,14 +59,16 @@ Vector, in [`source/`](source/). Colours are hardcoded hex; there is no keyline 
 | File | viewBox | id prefix | Is |
 |---|---|---|---|
 | `kitsune-logo.svg` | `0 0 1034 940` | `kt-logo-` | Nine-tail fox + wordmark, stacked |
+| `kitsune-logo-dark.svg` | `0 0 1034 940` | `kt-logod-` | Stacked, dark ground |
 | `kitsune-fox.svg` | `0 0 1034 785` | `kt-fox-` | Nine-tail fox alone |
+| `kitsune-fox-dark.svg` | `0 0 1034 785` | `kt-foxd-` | Nine-tail fox, dark ground |
 | `kitsune-glyph.svg` | `0 0 451 451` | `kt-glyph-` | The glyph — two tails, square-boxed |
 | `kitsune-lockup.svg` | `0 0 2245 783` | `kt-lockup-` | Horizontal lockup, light ground |
 | `kitsune-lockup-dark.svg` | `0 0 2245 783` | `kt-lockupd-` | Horizontal lockup, dark ground |
 | `kitsune-lockup-compact.svg` | `0 0 1418 329` | `kt-lkc-` | Glyph + wordmark, light ground |
 | `kitsune-lockup-compact-dark.svg` | `0 0 1418 329` | `kt-lkcd-` | Glyph + wordmark, dark ground |
 
-Every viewBox starts at `0 0`, every id is namespaced, and all 188 ids across the seven files are unique — verified, so any combination can be inlined in one document without breaking `aria-labelledby` or cross-wiring a mirror transform.
+Every viewBox starts at `0 0`, every id is namespaced, and all 269 ids across the nine files are unique — verified, so any combination can be inlined in one document without breaking `aria-labelledby` or cross-wiring a mirror transform.
 
 The single-tail and unboxed two-tail drafts were deleted on 2026-09-12 once the glyph superseded them; the glyph carries its own copy of the path data and depends on neither.
 
@@ -86,13 +89,24 @@ Sampled from the vector, not transcribed. Ratios are WCAG 2.x.
 
 Inside the mark, only two pairs hold a 3:1 edge — rust/white at 5.17 and teal/white at 8.66. Everything else is below it: rust/amber 2.13, amber/white 2.43, **teal/rust 1.67**. The silhouette and the white markings do all the structural work; the amber is tonal and contributes nothing at small size. This is why face detail is the first thing to die as the mark shrinks — the eyes and nose are teal on rust.
 
-### Dark-ground wordmark
+### Dark grounds need two teals, and not the same one
 
 The teal wordmark cannot be used on a dark ground. **The dark-ground wordmark is `#4FB3C0`.**
 
 `#2E96A4` was the first pick, on the strength of 5.42:1 against GitHub's `#0D1117`. Testing it against a wider set of dark grounds killed it: on slate `#1E293B` it measures **4.19:1** and misses AA. `#4FB3C0` clears AA on every dark ground tried — 7.70 on `#0D1117`, 5.95 on slate, 6.47 on `#222` — and the only ground it fails is brand teal, which the mark may not sit on anyway.
 
 Neither serves both grounds: `#4FB3C0` is 2.46:1 back on white. **The wordmark needs two colours, one per ground**, and that is what the lockup files ship.
+
+**The fox's teal is a different problem with a different answer: `#008493`.** The wordmark has one neighbour — the ground — so it can be tuned for the ground alone. The fox's teal has two, and they do not move together: the forelegs sit on the **white chest**, which stays white on any ground, while the paws and the forelegs' last 21px sit on the **ground itself**. So the fox's teal has to clear 3:1 against white *and* against a dark ground simultaneously.
+
+That window is narrow but real — relative luminance between about 0.12 and 0.30 — and `#008493` sits at its balance point: **4.45:1 on white, 4.26:1 on `#0D1117`, 3.29:1 on slate.** `#4FB3C0` would fix the paws and break the forelegs, dropping the chest edge to 2.46:1.
+
+| | Light ground | Dark ground |
+|---|---|---|
+| Wordmark | `#00545D` | `#4FB3C0` |
+| Fox — ears, eyes, nose, legs, paws | `#00545D` | `#008493` |
+
+The two dark values differ because the elements have different neighbours, not because they were picked by eye. The teal-on-rust edge is weak either way — 1.67:1 light, 1.16:1 dark — and always was; the eyes and ears are legible because the white face markings frame them, not because the teal contrasts with the rust.
 
 ### Grounds the mark may not sit on
 
@@ -103,7 +117,6 @@ Neither serves both grounds: `#4FB3C0` is 2.46:1 back on white. **The wordmark n
 
 Measured 2026-09-12 by rendering at size on white, `#FAFAFA`, `#0D1117`, mid grey, brand teal and brand rust.
 
-- [ ] **The fox's legs on dark grounds.** The wordmark half of this is done. The legs and paws are still `#00545D`, which is 2.19:1 on `#0D1117` — they read dimly rather than vanishing, but they are below any threshold worth defending. What colour they become is a design call, not a measurement.
 - [ ] **Hand-tune the 16px cut.** The two-tail glyph survives 16px — the chevrons nearly close but the internal split holds — so this is a polish pass on the raster export, not a redraw. The single-tail version needed more.
 - [ ] **No monochrome variant.**
 
@@ -111,6 +124,7 @@ Measured 2026-09-12 by rendering at size on white, `#FAFAFA`, `#0D1117`, mid gre
 
 - ~~No horizontal lockup.~~ **Done** — `kitsune-lockup.svg`, wordmark at 30% of mark height, gap at 10% of mark width, wordmark centred on the mark's bounding box. Three size ratios and four gap/alignment pairs were rendered before picking; 22% read as a labelled fox and 38% as type with an ornament.
 - ~~Dark-ground wordmark.~~ **Done**, at `#4FB3C0` rather than the `#2E96A4` first proposed.
+- ~~The fox's legs on dark grounds.~~ **Done**, at `#008493` — chosen from the three colours on the brand hue that clear 3:1 against white and a dark ground at once, and rendered against `#0D1117` and slate before picking.
 
 - ~~Duplicate element IDs.~~ **Done** — namespaced per file, zero collisions, verified by inlining every file together.
 - ~~Non-zero viewBox origins.~~ **Done** — all normalised to `0 0 W H` by translating the content. Ink bounds and per-side inset are unchanged on every file, and before/after renders are identical.

@@ -1405,7 +1405,7 @@ final class Pattern
          * already answers for a repetition body.
          */
         foreach (self::topLevelBranches($pattern) as $branch) {
-            if (($rescanned = self::assertionAfterVariable($branch)) === null) {
+            if (($rescanned = self::assertionAfterVariable($branch, self::RUN_INSIDE_REPETITION)) === null) {
                 continue;
             }
 
@@ -2863,8 +2863,15 @@ final class Pattern
      *
      * The assertion's body is held to the repetition limit for the same reason a repeated one is: what
      * multiplies it is the number of times it runs, not where it is written.
+     *
+     * ⚠️ TWO CALLERS, TWO LIMITS, AND REVIEW FOUND THE SECOND ONE MISSING. The REFUSAL asks with the
+     * repetition limit — a run of two inside the assertion is cubic and cannot be published at all. The
+     * ITEM BOUND asks with zero, because ONE variable-width atom inside the assertion is already
+     * quadratic per value: `^a+(?=a+c)` measures 1.5 ms at 1,000 characters, 12.8 ms at 3,000 and
+     * 36.0 ms at 5,000, which is the same order as `^a*a*b$` and the reason the array needs bounding.
+     * `^a+(?=ac)` is 0.1 ms and `^a(?=a+c)` is 0.0, so both halves of the shape are load-bearing.
      */
-    private static function assertionAfterVariable(string $sequence): ?string
+    private static function assertionAfterVariable(string $sequence, int $limit): ?string
     {
         $atoms = self::flatAtoms($sequence);
 
@@ -2876,7 +2883,7 @@ final class Pattern
 
         foreach ($atoms as $atom) {
             if ($atom['assertion']) {
-                if ($variable && self::atomRunExceeds(self::frameBody($atom['atom']), self::RUN_INSIDE_REPETITION)) {
+                if ($variable && self::atomRunExceeds(self::frameBody($atom['atom']), $limit)) {
                     return $atom['atom'];
                 }
 
@@ -3339,6 +3346,23 @@ final class Pattern
              * on a field, which is 384 elements at the default length.
              */
             if (self::variableThenRequired($branch) || self::assertionScansVariable($branch)) {
+                return true;
+            }
+        }
+
+        /*
+         * ⚠️ AND A VARIABLE-WIDTH PREFIX RESCANS AN ASSERTION WHEREVER IT IS, anchored or not — review
+         * found this loop asking only about unanchored branches. `^a+(?=a+c)` is anchored, holds one
+         * variable-width atom inside its lookahead, and the `a+` in front re-evaluates it once per
+         * character it gives back: 1.5 ms at 1,000 characters, 12.8 ms at 3,000, 36.0 ms at 5,000 — the
+         * same order as `^a*a*b$`, which is what this bound exists for.
+         *
+         * The REFUSAL above asks the same question with the repetition limit, because a run of TWO
+         * inside the assertion is cubic and cannot be published at any item count. One atom is
+         * quadratic, which is publishable per value and has to be bounded per array.
+         */
+        foreach (self::topLevelBranches($pattern) as $branch) {
+            if (self::assertionAfterVariable($branch, 0) !== null) {
                 return true;
             }
         }

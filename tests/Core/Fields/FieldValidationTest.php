@@ -702,6 +702,34 @@ describe('a quadratic pattern bounds how many items a text field admits', functi
         '(?<=a*b)a',
     ]);
 
+    it('counts a prefix that rescans an assertion, anchored or not', function (string $pattern): void {
+        /*
+         * ⚠️ ANCHORED AND STILL QUADRATIC, which the unanchored test above cannot see. `^a+(?=a+c)` holds
+         * ONE variable-width atom inside its lookahead — so the refusal rule leaves it alone, correctly —
+         * and the `a+` in front re-evaluates it once per character it gives back. Measured on Node
+         * 22.23.2 against all-`a`: 1.5 ms at 1,000 characters, 12.8 ms at 3,000, 36.0 ms at 5,000, which
+         * is the same order as `^a*a*b$` and the reason the array needs bounding.
+         */
+        $type = app(FieldTypeRegistry::class)->get('text');
+
+        expect($type->maxItems(configFor('text', ['pattern' => $pattern, 'maxLength' => 1000], -1)))->toBe(25);
+    })->with([
+        '^a+(?=a+c)',
+        '^a+(?!a+c)',
+        '^[a-z]+(?=a+c)',
+    ]);
+
+    it('leaves both halves of that shape alone when either is fixed', function (string $pattern): void {
+        // ⚠️ `^a+(?=ac)` is 0.1 ms at 5,000 characters and `^a(?=a+c)` is 0.0 — a fixed assertion body
+        // scans a fixed amount, and a fixed prefix has nothing to give back. Both halves are needed.
+        $type = app(FieldTypeRegistry::class)->get('text');
+
+        expect($type->maxItems(configFor('text', ['pattern' => $pattern, 'maxLength' => 1000], -1)))->toBeNull();
+    })->with([
+        '^a+(?=ac)',
+        '^a(?=a+c)',
+    ]);
+
     it('leaves an anchored or fixed-width assertion scan alone', function (string $pattern): void {
         // ⚠️ A fixed-width assertion body scans a fixed number of characters however long the value is,
         // and an anchored search tries one starting position — so neither multiplies by anything.
