@@ -2639,6 +2639,18 @@ final class Pattern
                 continue;
             }
 
+            /*
+             * ⚠️ AND DEAD MARKUP IS TRANSPARENT HERE TOO, which review found: `a{0}^a*a*b$` consumes
+             * nothing before the `^`, so both engines read it as `^a*a*b$` — and this walk stopped at
+             * the dead atom, called the pattern unanchored and refused it under the stricter limit.
+             * A false refusal, and `--strict` blocks an upgrade on one.
+             */
+            if (self::neverRuns($token['quantifier'])) {
+                $at = $token['after'];
+
+                continue;
+            }
+
             if (! str_starts_with($atom, '(') || self::quantifierIsOptional($token['quantifier'])) {
                 return false;
             }
@@ -2887,7 +2899,17 @@ final class Pattern
                 continue;
             }
 
-            if ($previous === null || $atom['quantifier'] !== '') {
+            /*
+             * ⚠️ A FIXED REPETITION OF A LITERAL STILL FORCES THE BOUNDARY, which review found this
+             * skip denying: `^a*a*b{1}a*$` is the accepted `^a*a*ba*$` written another way, and `b{2}`
+             * is two of the same boundary. The blanket "any quantifier disqualifies it" kept the run
+             * alive across the `b`, so the following `a*` counted as a third adjacent atom and a safe
+             * pattern was refused. Only a quantifier that can run ZERO times fails to divide — and one
+             * that can run a VARIABLE number of times is handled above, as a variable-width atom.
+             */
+            $repeats = $atom['quantifier'] === '' ? 1 : self::fixedRepetitions($atom['quantifier']);
+
+            if ($previous === null || $repeats === null || $repeats < 1) {
                 continue;
             }
 

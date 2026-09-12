@@ -286,13 +286,24 @@ final class TextType extends BaseFieldType
             return 'That pattern cannot be compiled, so every value for this field would be refused.';
         }
 
-        // Unusable for a CONSUMER: the same string is published verbatim as a
-        // JSON Schema pattern, and JSON Schema's dialect is ECMAScript.
+        /*
+         * Unusable for a CONSUMER: the same string is published verbatim as a JSON Schema pattern.
+         *
+         * ⚠️ THE SENTENCE USED TO NAME ONE CAUSE FOR EVERY REFUSAL — "which PCRE understands and the
+         * JSON Schema dialect does not… a constraint they cannot compile" — and review found what that
+         * tells an author whose pattern is refused on COST. `^(a|aa)+$` compiles in both engines and is
+         * refused because a failing subject can be re-divided combinatorially; being told the consumer
+         * cannot compile it sends them looking for a construct to remove, which is the wrong repair.
+         *
+         * Every reason `unpublishable()` returns is a self-contained explanation that names its own
+         * remedy — a portable spelling, an anchor, a fixed-length body — so the wrapper states what
+         * publishing requires and gets out of the way.
+         */
         if (($unpublishable = Pattern::unpublishable($pattern)) !== null) {
             return sprintf(
-                'That pattern uses %s, which PCRE understands and the JSON Schema dialect does not. '
-                .'This field publishes its pattern to API consumers verbatim, so they would be '
-                .'handed a constraint they cannot compile. Rewrite it without that construct.',
+                'That pattern cannot be published to API consumers: %s. This field publishes its '
+                .'pattern verbatim as a JSON Schema constraint, so it has to be one a consumer can '
+                .'compile, agree with, and afford.',
                 $unpublishable,
             );
         }

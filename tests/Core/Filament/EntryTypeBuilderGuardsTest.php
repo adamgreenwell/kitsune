@@ -1301,7 +1301,14 @@ describe('settings that contradict themselves are refused', function (): void {
             'org_id' => $this->org->id, 'handle' => 'ref', 'type' => 'text',
             'pii_class' => 'none', 'cardinality' => 1,
             'settings' => ['maxLength' => 30, 'pattern' => '(?P<code>[A-Z]{2})'],
-        ]))->toThrow(RuntimeException::class, 'the JSON Schema dialect does not');
+            /*
+             * ⚠️ THE REASON, NOT THE WRAPPER. This asserted the sentence the wrapper used to add — "which
+             * PCRE understands and the JSON Schema dialect does not" — and review found that sentence
+             * being told to authors whose pattern is refused on COST, where nothing about a dialect is
+             * true. The wrapper is generic now and every reason names its own cause, so the assertion
+             * moved to the part that is specific to this refusal.
+             */
+        ]))->toThrow(RuntimeException::class, 'ECMAScript has only (?:, (?=, (?!, (?<=, (?<! and (?<name>');
     });
 
     it('accepts the ECMAScript spelling of a named group', function (): void {

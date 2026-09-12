@@ -1517,3 +1517,44 @@ describe('an alternation inside a required group keeps the run around it', funct
         '^(?:19|20)[0-9]{2}$',
     ]);
 });
+
+describe('what consumes nothing cannot change what a pattern means', function (): void {
+    /*
+     * ⚠️ TWO FALSE REFUSALS REVIEW FOUND, both of them the same mistake from opposite ends: a walk
+     * stopping at something that consumes nothing. `a{0}` before a `^` made the anchor invisible, so a
+     * pattern both engines read as `^a*a*b$` was refused under the stricter unanchored limit; and a
+     * literal with a FIXED repetition did not end a run, so `^a*a*b{1}a*$` — the accepted `^a*a*ba*$`
+     * written another way — counted three adjacent variable-width atoms.
+     *
+     * Both cost an upgrade under `kitsune:audit-patterns --strict`, which is the expensive direction
+     * for a false refusal: a stored pattern that means what it meant yesterday stops a deploy.
+     */
+    it('reads through dead markup to find the anchor', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))->toBeNull("[{$pattern}] is anchored");
+    })->with([
+        'a{0}^a*a*b$',
+        'b{0}^a*a*b$',
+        '(?=x)a{0}^a*a*b$',
+    ]);
+
+    it('lets a fixed repetition of a literal divide a run', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))->toBeNull("[{$pattern}] is divided by its literal");
+    })->with([
+        '^a*a*b{1}a*$',
+        '^a*a*b{2}a*$',
+        '^a*a*b{1,1}a*$',
+    ]);
+
+    it('still refuses a divider that can match nothing', function (string $pattern): void {
+        /*
+         * ⚠️ WHERE THAT STOPS: a literal that may run ZERO times forces nothing, because the subject
+         * can simply not contain it — and one that runs a VARIABLE number of times is a variable-width
+         * atom, which the rule above it already counts.
+         */
+        expect(Pattern::unpublishable($pattern))->toContain('variable-width atom');
+    })->with([
+        '^a*a*b?a*$',
+        '^a*a*b{0,2}a*$',
+        '^a*a*b{0}a*$',
+    ]);
+});

@@ -1132,5 +1132,17 @@
         "pattern": "(?:(?=a))a?a",
         "subject": "a",
         "why": "Only the lookahead was wrapped, so the recursion checked the assertion with no neighbour inside the wrapper and the outer walk read the wrapper as an ordinary group — the `a?` outside was never compared with the assertion inside. Review measured the divergence on PCRE 10.44 with Node 24.15. A group that consumes nothing is not a group for adjacency: such wrappers are unwrapped before the walk, at any depth, and `(?:(?=a)x)a?a` still publishes because that group consumes."
+    },
+    {
+        "id": "dead-markup-before-the-anchor",
+        "pattern": "a{0}^a*a*b$",
+        "subject": "aaaaaaaaaaaaaaaaaaaa",
+        "why": "A FALSE refusal review found: `a{0}` consumes nothing, so both engines read this as `^a*a*b$` — and the walk that looks for the anchor stopped at the dead atom, called the pattern unanchored, and refused it under the stricter run limit. `--strict` blocks an upgrade on a stored pattern that means what it meant yesterday, which is the expensive direction for this kind of mistake. Dead markup is transparent to that walk now, as it already was to the run walk and to the neighbour walk."
+    },
+    {
+        "id": "fixed-repetition-divides-a-run",
+        "pattern": "^a*a*b{1}a*$",
+        "subject": "aaaaaaaaaaaaaaaaaaaa",
+        "why": "The accepted `^a*a*ba*$` written another way, and refused: the run walk skipped its literal check for ANY quantifier, so the required `b{1}` did not end the run and the following `a*` counted as a third adjacent variable-width atom. Only a quantifier that can run zero times fails to force the boundary — and one that can run a variable number of times is a variable-width atom, which the rule above already counts. `b{2}` and `b{1,1}` are the same boundary spelled differently."
     }
 ]
