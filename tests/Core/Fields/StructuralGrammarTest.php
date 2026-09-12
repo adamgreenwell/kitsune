@@ -1965,3 +1965,74 @@ describe('a variable prefix re-evaluates the assertion after it', function (): v
         '^a(?=a+a+c)',
     ]);
 });
+
+describe('a branch pays for a rescanned assertion as it pays for a run', function (): void {
+    /*
+     * ⚠️ EIGHTY-THREE BRANCHES, EACH INDIVIDUALLY ALLOWED. `^a+(?=a+c)` claims the quadratic allowance
+     * through a variable-width prefix re-evaluating a variable-width assertion body — it holds no
+     * adjacent-atom run, so the branch cost counted it as free. Measured on Node 22.23.2 with one
+     * 5,000-character all-`a` value:
+     *
+     *   1 branch  36.0 ms      8 branches  286.4 ms      83 branches  2,971.1 ms  (912 characters)
+     *
+     * ⚠️ AND `maxItems()` CANNOT CONTAIN IT, which is why this is a refusal and not a bound: that
+     * method bounds how many VALUES an array carries, and this is one value's own cost. The branch pays
+     * the same grant a quadratic run pays, so eight reach the budget and nine pass it — the same
+     * arithmetic, from the same constant.
+     */
+    it('refuses more grants than the budget allows', function (int $branches): void {
+        $pattern = implode('|', array_fill(0, $branches, '^a+(?=a+c)'));
+
+        expect(Pattern::unpublishable($pattern))->toContain('ways to retry a failing subject');
+    })->with([9, 83]);
+
+    it('leaves the branches the budget covers alone', function (int $branches): void {
+        $pattern = implode('|', array_fill(0, $branches, '^a+(?=a+c)'));
+
+        expect(Pattern::unpublishable($pattern))->toBeNull("[{$branches} branches] is inside the budget");
+    })->with([1, 8]);
+});
+
+describe('the screen stays inside its budget', function (): void {
+    /*
+     * ⚠️ THE GUARD'S OWN COST IS PART OF THE CONTRACT, and it had drifted: every rule added a walk, and
+     * the walks re-derived the same subpatterns. The hostile input `EntryTypeBuilderGuardsTest` budgets
+     * at one second — `(a)\1` two hundred times, `MAX_LENGTH` exactly — reached 703 ms, of which 231 ms
+     * was `ambiguityCost()` and 228 ms `atomRunExceeds()` walking bodies they had already walked.
+     *
+     * Memoising the three derivations — the atom list, the run verdict and the frame list, each a pure
+     * function of its body — took it to 23 ms. The memos are cleared at every public entry point, so
+     * they hold one pattern's analysis: a cache nothing bounds is one bound traded for another.
+     *
+     * ⚠️ AND THE DEPTH IS NOT IN THE KEYS, which is safe for one stated reason: the nesting limit is
+     * refused BEFORE any walk runs, and the walks' own guard is four times it, so no admissible pattern
+     * can reach the bound whose answer depends on the depth.
+     */
+    it('screens the worst admissible pattern in a fraction of its budget', function (): void {
+        $hostile = str_repeat('(a)\1', 200);
+
+        expect(mb_strlen($hostile))->toBe(Pattern::MAX_LENGTH)
+            ->and(Pattern::unpublishable($hostile))->toBeNull();
+
+        $started = microtime(true);
+        Pattern::unpublishable($hostile);
+
+        // Measures ~23 ms here, against ~703 ms before the memos and a 1-second budget. The assertion is
+        // deliberately loose: a millisecond-scale timing assertion is the flaky test a loaded CI machine
+        // punishes, and what matters is the order of magnitude.
+        expect(microtime(true) - $started)->toBeLessThan(0.2);
+    });
+
+    it('gives the same answer twice, memo or no memo', function (string $pattern): void {
+        // ⚠️ The memo is of a pure function, and this is the assertion that says so: the second call
+        // reads the cache and must agree with the first, which read nothing.
+        $first = Pattern::unpublishable($pattern);
+
+        expect(Pattern::unpublishable($pattern))->toBe($first);
+    })->with([
+        '^a*a*b$',
+        '^[^,]+(?:,[^,]+)*$',
+        'a*a*b',
+        '^(?:a(?!a*c))*X$',
+    ]);
+});

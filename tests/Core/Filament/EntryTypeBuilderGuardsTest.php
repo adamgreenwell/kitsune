@@ -1820,9 +1820,17 @@ describe('settings that contradict themselves are refused', function (): void {
         Pattern::unpublishable($groupHeavy);
         $elapsed = microtime(true) - $started;
 
-        // Measures ~3ms locally. A second is a budget a hostile input must not reach,
-        // not a performance target.
-        expect($elapsed)->toBeLessThan(1.0);
+        /*
+         * ⚠️ THIS SAID "~3ms locally" AND MEANT IT WHEN IT WAS WRITTEN. Every structural rule added since
+         * added a walk, and the walks re-derived the same subpatterns: by the round that added the
+         * per-branch assertion cost this pattern took 703 ms, and that round's first version took it to
+         * 1.54 SECONDS and failed here — which is this assertion doing its job.
+         *
+         * Three derivations are memoised now and it measures ~23 ms, so the budget is tightened to 200 ms
+         * rather than left at a second it no longer needs. Still loose by an order of magnitude, because
+         * a millisecond-scale timing assertion is the flaky test a loaded CI machine punishes.
+         */
+        expect($elapsed)->toBeLessThan(0.2);
     });
 
     it('refuses a pattern longer than it will screen', function (): void {

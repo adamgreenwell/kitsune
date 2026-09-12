@@ -71,6 +71,27 @@ final class Pattern
      * nests past three. `structuralRefusal()` refuses past it by NAME, and the walks keep their bound —
      * a walk with no bound can be made to recurse for ever by a pattern that never compiles.
      */
+    /**
+     * One pattern's derived atom lists, cleared when a new pattern is screened.
+     *
+     * ⚠️ STATE IN A STATIC CLASS, WHICH IS WORTH JUSTIFYING. Every method here is pure and this is a
+     * memo of a pure function, so the only thing it can change is speed — and it is cleared at the top
+     * of `unpublishable()` rather than being allowed to grow, because a screen that leaks memory across
+     * requests would trade one bound for another.
+     *
+     * @var array<string, list<array{atom: string, quantifier: string, variable: bool, leads: list<string>|null, assertion: bool}>|null>
+     */
+    private static array $atomLists = [];
+
+    /** @var array<string, bool> One pattern's run verdicts; see `$atomLists`. */
+    private static array $runVerdicts = [];
+
+    /** @var array<string, int> One pattern's ambiguity costs; see `$atomLists`. */
+    private static array $ambiguityCosts = [];
+
+    /** @var array<string, list<array{open:int, close:int, kind:string, body:string, quantifier:string, inLookbehind:bool}>> */
+    private static array $frameLists = [];
+
     private const MAX_NESTING = 32;
 
     /**
@@ -734,6 +755,9 @@ final class Pattern
      */
     public static function unpublishable(string $pattern): ?string
     {
+        // One pattern's memos, and only one pattern's: see `$atomLists`.
+        self::forgetOneAnalysis();
+
         $length = mb_strlen($pattern);
 
         // ⚠️ Refused BEFORE the scan, because the scan is what costs. See MAX_LENGTH.
@@ -1404,6 +1428,24 @@ final class Pattern
          * is over branches that can BOTH match, which is what `everyAlternationIsUnambiguous()`
          * already answers for a repetition body.
          */
+        /*
+         * ⚠️ FIRST, BECAUSE EVERY WALK BELOW IS SUPERLINEAR IN DEPTH. `ambiguityCost()` on 249 nested
+         * groups takes 12 seconds; refusing the nesting before any of them run is what makes the memos
+         * below safe to key on a body alone, since the only patterns that could reach a walk's own depth
+         * guard are ones this has already refused.
+         */
+        if (($nested = self::nestingDepth($pattern)) > self::MAX_NESTING) {
+            return sprintf(
+                'more than %d levels of nested groups — this one nests %d. The structural analysis is '
+                .'superlinear in depth and it runs on every settings save and on every stored pattern in '
+                .'the migration audit: measured, 32 levels take 16 ms, 64 take 130 ms and 249 take 11 '
+                .'SECONDS. Nothing a field validation needs nests past three, so this is a limit rather '
+                .'than a judgement — flatten the groups that are not doing anything',
+                self::MAX_NESTING,
+                $nested,
+            );
+        }
+
         foreach (self::topLevelBranches($pattern) as $branch) {
             if (($rescanned = self::assertionAfterVariable($branch, self::RUN_INSIDE_REPETITION)) === null) {
                 continue;
@@ -1420,18 +1462,6 @@ final class Pattern
                 .'quantifier',
                 self::RUN_INSIDE_REPETITION,
                 $rescanned,
-            );
-        }
-
-        if (($nested = self::nestingDepth($pattern)) > self::MAX_NESTING) {
-            return sprintf(
-                'more than %d levels of nested groups — this one nests %d. The structural analysis is '
-                .'superlinear in depth and it runs on every settings save and on every stored pattern in '
-                .'the migration audit: measured, 32 levels take 16 ms, 64 take 130 ms and 249 take 11 '
-                .'SECONDS. Nothing a field validation needs nests past three, so this is a limit rather '
-                .'than a judgement — flatten the groups that are not doing anything',
-                self::MAX_NESTING,
-                $nested,
             );
         }
 
@@ -2250,6 +2280,17 @@ final class Pattern
      */
     private static function ambiguityCost(string $body, int $depth = 0): int
     {
+        // Memoised like `$atomLists`, and keyed on the body alone for the same reason.
+        if (array_key_exists($body, self::$ambiguityCosts)) {
+            return self::$ambiguityCosts[$body];
+        }
+
+        return self::$ambiguityCosts[$body] = self::deriveAmbiguityCost($body, $depth);
+    }
+
+    /** @see ambiguityCost() */
+    private static function deriveAmbiguityCost(string $body, int $depth = 0): int
+    {
         // The length limit caps nesting at 250; this is the belt to that brace.
         if ($depth > self::MAX_WALK_DEPTH) {
             return PHP_INT_MAX;
@@ -2300,6 +2341,23 @@ final class Pattern
         $cost = 1;
 
         for ($runs = self::quadraticRuns($body); $runs > 0; $runs--) {
+            $cost = self::saturatingProduct($cost, self::quadraticBranchCost());
+        }
+
+        /*
+         * ⚠️ AND A RESCANNED ASSERTION IS QUADRATIC WORK THAT HOLDS NO RUN, which review found this
+         * charging nothing for: `^a+(?=a+c)` claims the allowance through a variable-width prefix
+         * re-evaluating a variable-width assertion body, and `quadraticRuns()` counts adjacent atoms
+         * only. Eighty-three of them joined by `|` is 912 characters — inside every other limit — and
+         * measured on Node 22.23.2 with one 5,000-character all-`a` value:
+         *
+         *   1 branch   36.0 ms        8 branches  286.4 ms        83 branches  2,971.1 ms
+         *
+         * `maxItems()` cannot contain this: it bounds how many VALUES an array carries, and this is one
+         * value's own cost. So the branch pays the same grant a quadratic run pays, and eight grants
+         * reach the budget exactly as they do for runs.
+         */
+        if (self::assertionAfterVariable($body, 0) !== null) {
             $cost = self::saturatingProduct($cost, self::quadraticBranchCost());
         }
 
@@ -2873,6 +2931,18 @@ final class Pattern
      */
     private static function assertionAfterVariable(string $sequence, int $limit): ?string
     {
+        /*
+         * ⚠️ A FAST NEGATIVE, AND ONLY A NEGATIVE. Every assertion's source contains `(?`, so its
+         * absence proves there is none to find; the converse is not claimed, because `\(?` contains those
+         * two characters too and the walk below is what decides. Without it this became the most
+         * expensive question in the file: `sequenceCost()` asks it per branch, and a 1,000-character
+         * pattern of 200 capturing groups — `(a)\1` two hundred times, the hostile input
+         * `EntryTypeBuilderGuardsTest` budgets at one second — went from 3 ms to 1.54 SECONDS.
+         */
+        if (! str_contains($sequence, '(?')) {
+            return null;
+        }
+
         $atoms = self::flatAtoms($sequence);
 
         if ($atoms === null) {
@@ -3016,6 +3086,15 @@ final class Pattern
 
         // `*`, `+` and their lazy forms.
         return true;
+    }
+
+    /** Drops the memos of the pattern just analysed; see `$atomLists` for why they exist at all. */
+    private static function forgetOneAnalysis(): void
+    {
+        self::$atomLists = [];
+        self::$runVerdicts = [];
+        self::$ambiguityCosts = [];
+        self::$frameLists = [];
     }
 
     /**
@@ -3239,6 +3318,15 @@ final class Pattern
      */
     private static function atomRunExceeds(string $sequence, int $limit): bool
     {
+        // Memoised with `$atomLists`, and for the same reason: several rules ask this of one body.
+        $key = $limit.'|'.$sequence;
+
+        return self::$runVerdicts[$key] ??= self::deriveAtomRunExceeds($sequence, $limit);
+    }
+
+    /** @see atomRunExceeds() */
+    private static function deriveAtomRunExceeds(string $sequence, int $limit): bool
+    {
         $atoms = self::flatAtoms($sequence);
 
         if ($atoms === null) {
@@ -3303,6 +3391,11 @@ final class Pattern
      */
     public static function costsQuadraticPerValue(string $pattern): bool
     {
+        // A public entry point clears the memos, or a long-running worker keeps every pattern it ever
+        // screened. Stale entries would still be CORRECT — the memo is of a pure function — but a cache
+        // nothing bounds is one bound traded for another. See `$atomLists`.
+        self::forgetOneAnalysis();
+
         if (self::atomRunExceeds($pattern, self::RUN_WITHOUT_COST)) {
             return true;
         }
@@ -3689,6 +3782,37 @@ final class Pattern
      */
     private static function atomList(string $sequence, bool $splice, int $depth): ?array
     {
+        /*
+         * ⚠️ MEMOISED BECAUSE THE RULES ASK THE SAME QUESTION MANY TIMES. Every walk in this file is
+         * built on this one, and the recursion re-derives the same subpattern's atoms once per rule that
+         * reaches it — measured, `(a)\1` two hundred times, the hostile input
+         * `EntryTypeBuilderGuardsTest` budgets at one second, took 703 ms of which 231 ms was
+         * `ambiguityCost()` and 228 ms `atomRunExceeds()`, both of them re-walking the same bodies. The
+         * cache is cleared at the top of `unpublishable()`, so it holds one pattern's analysis and
+         * `MAX_LENGTH` bounds that.
+         *
+         * Keyed on the depth as well, because the depth guard changes the ANSWER at the bound.
+         */
+        /*
+         * ⚠️ THE DEPTH IS NOT IN THE KEY, and that is safe for exactly one reason: `structuralRefusal()`
+         * refuses a pattern nested past `MAX_NESTING` before any walk runs, and `MAX_WALK_DEPTH` is four
+         * times that — so no admissible pattern can reach the guard whose answer depends on the depth.
+         * Keying on it instead would defeat the memo, because the same body is reached at several depths.
+         */
+        $key = ($splice ? 's' : 'o').$sequence;
+
+        if (array_key_exists($key, self::$atomLists)) {
+            return self::$atomLists[$key];
+        }
+
+        return self::$atomLists[$key] = self::deriveAtomList($sequence, $splice, $depth);
+    }
+
+    /**
+     * @return list<array{atom: string, quantifier: string, variable: bool, leads: list<string>|null, assertion: bool}>|null
+     */
+    private static function deriveAtomList(string $sequence, bool $splice, int $depth): ?array
+    {
         // A bound on nesting, so a pattern that never compiles cannot recurse for ever. `MAX_WALK_DEPTH`
         // has headroom over the PUBLISHED nesting limit, so only a pattern already refused by name can
         // reach it — see both constants for the false refusal a hand-picked 64 caused.
@@ -3975,6 +4099,17 @@ final class Pattern
      * @return list<array{open:int, close:int, kind:string, body:string, quantifier:string, inLookbehind:bool}>
      */
     private static function frames(string $pattern): array
+    {
+        // Memoised with `$atomLists`: the frame list is a parse, and eight rules want it.
+        return self::$frameLists[$pattern] ??= self::deriveFrames($pattern);
+    }
+
+    /**
+     * @see frames()
+     *
+     * @return list<array{open:int, close:int, kind:string, body:string, quantifier:string, inLookbehind:bool}>
+     */
+    private static function deriveFrames(string $pattern): array
     {
         $length = mb_strlen($pattern);
         $inClass = false;

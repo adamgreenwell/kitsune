@@ -1216,5 +1216,11 @@
         "pattern": "(?:(?=a)){2}a{0}a",
         "subject": "a",
         "why": "Unwrapping a group that consumes nothing required exactly-once, and the docblock said why it declined to assume otherwise: both engines happening to agree is the argument this file refuses elsewhere. Review measured it, and this diverges on PCRE 10.44 exactly as `(?=a)a{0}a` does. A zero-width body cannot make progress, so the repetition cannot run twice and the wrapper says what its body says. The HOIST of a leading prefix still requires exactly-once, because moving a prefix out of a repetition changes what its later iterations see."
+    },
+    {
+        "id": "branches-of-rescanned-assertions",
+        "pattern": "^a+(?=a+c)|^a+(?=a+c)|^a+(?=a+c)|^a+(?=a+c)|^a+(?=a+c)|^a+(?=a+c)|^a+(?=a+c)|^a+(?=a+c)|^a+(?=a+c)",
+        "subject": "aaaaaaaaaaaaaaaaaaaa",
+        "why": "Nine branches, each individually inside the quadratic allowance: `^a+(?=a+c)` claims it through a variable-width prefix re-evaluating a variable-width assertion body, and the branch cost counted it as free because it holds no adjacent-atom run. Measured on Node 22.23.2 with one 5,000-character all-`a` value: 36.0 ms for one branch, 286.4 ms for eight, 2,971.1 ms for eighty-three — 912 characters, inside every other limit. `maxItems()` cannot contain it, because that bounds how many VALUES an array carries and this is one value's own cost. The branch pays the grant a quadratic run pays, so eight reach the budget and nine pass it."
     }
 ]
