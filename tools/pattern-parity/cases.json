@@ -1072,5 +1072,23 @@
         "pattern": "(?=a)(?:a?)a",
         "subject": "a",
         "why": "The fifth bracket to defeat a version of the overlap rule, and the first found by probing the family rather than by review. The neighbour's optionality was read from its own quantifier, so `(?:a?)` — no outer quantifier, matches nothing just as readily — published the shape `(?=a)a?a` is refused for. `(?:a*)`, `(?:|a)`, `(?:a|)` and `(?:(?:a?))` are the same thing spelled four more ways. The question is now whether the atom can match nothing, asked of any branch of a group at any depth, and it fails closed on anything unparseable."
+    },
+    {
+        "id": "unanchored-quadratic-run",
+        "pattern": "a*a*b",
+        "subject": "aaaaaaaaaaaaaaaaaaaa",
+        "why": "The top-level allowance of TWO adjacent variable-width atoms was justified as quadratic in the value's length, and the rule never asked for the anchoring that premise needs: an unanchored pattern is retried from every starting position, so the same run is CUBIC. Measured on Node 22.23.2 with all-`a` failing subjects — 286.4 ms at 500, 489.7 ms at 1,000, 3,941.8 ms at 2,000 and 60,231.6 SECONDS-worth at 5,000 (60,231.6 ms), against 36.0 ms for `^a*a*b` at the same length. PCRE is 0.0 ms at every length, because it auto-possessifies the stars, so the two engines AGREE and the cost is the consumer's alone — which is what rule 3 is about and what a verdict comparison cannot see. The harness subject is twenty characters so this file stays fast; the cost is in the numbers above."
+    },
+    {
+        "id": "unanchored-trailing-dollar",
+        "pattern": "a*a*b$",
+        "subject": "aaaaaaaaaaaaaaaaaaaa",
+        "why": "The same shape with a trailing `$`, recorded separately because reasoning gets it wrong in a plausible direction: `$` does NOT help. The retry is at the START, so this measures what the unanchored form measures — 285.1 ms at 500 characters, 3,875.7 ms at 2,000 and 60,339.4 ms at 5,000, against 36.0 ms for `^a*a*b`. Only `^` removes the search factor, and `anchorsTheSearch()` therefore looks for `^` alone."
+    },
+    {
+        "id": "branch-boundary-ends-a-run",
+        "pattern": "^a*a*|^b*",
+        "subject": "aaaaaaaaaaaaaaaaaaaa",
+        "why": "A FALSE refusal until review found it: `|` reached the run walk as an ordinary non-variable atom, `literalCharacter('|')` is null, so nothing reset the state and two mutually exclusive branches read as one sequence of three variable-width atoms. No execution path contains three. `--strict` blocks an upgrade on a pattern like this, which is why an over-refusal is recorded in this corpus alongside the holes."
     }
 ]

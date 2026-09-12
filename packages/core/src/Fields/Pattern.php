@@ -79,6 +79,32 @@ final class Pattern
     private const RUN_AT_TOP_LEVEL = 2;
 
     /**
+     * How many adjacent variable-width atoms an UNANCHORED sequence may hold: one fewer.
+     *
+     * ⚠️ AN UNANCHORED PATTERN PAYS ONE MORE FACTOR OF THE VALUE'S LENGTH, which is what review found
+     * the allowance above not pricing. A search without `^` is retried from every starting position, so
+     * a run that is quadratic anchored is CUBIC unanchored — the cost class the limit of two exists to
+     * refuse. The limit is therefore one lower rather than a second number chosen by hand.
+     *
+     * Measured on Node 22.23.2, all-`a` subjects that fail:
+     *
+     *   n         `a*a*b`        `a*a*b$`       `^a*a*b`
+     *   500          286.4 ms       285.1 ms        1.8 ms
+     *   1,000        489.7 ms       491.5 ms        1.5 ms
+     *   2,000      3,941.8 ms     3,875.7 ms        5.8 ms
+     *   5,000     60,231.6 ms    60,339.4 ms       36.0 ms     <- `TextType::MAX_CONFIGURABLE_LENGTH`
+     *
+     * ⚠️ A TRAILING `$` DOES NOT HELP, and the middle column is why that is stated rather than assumed:
+     * the retry is at the START, so only `^` removes it.
+     *
+     * ⚠️ AND PCRE IS UNAFFECTED — every cell above is 0.0 ms through `delimit()` on PCRE 10.48, which
+     * auto-possessifies the stars and knows the subject must contain a `b`. So this is a cost the SERVER
+     * does not pay and the published constraint does: exactly what rule 3 of the field-type contract is
+     * about, and invisible to a harness that asks whether the two engines agree, because they do.
+     */
+    private const RUN_WITHOUT_AN_ANCHOR = 1;
+
+    /**
      * How many adjacent variable-width atoms a sequence may hold for free: one, which is linear.
      *
      * ⚠️ SEPARATE FROM THE TWO ABOVE because it prices rather than refuses. Those two say how long a
@@ -1296,17 +1322,40 @@ final class Pattern
             );
         }
 
-        if (self::atomRunExceeds($pattern, self::RUN_AT_TOP_LEVEL)) {
+        /*
+         * ⚠️ PER TOP-LEVEL BRANCH, AND THE LIMIT DEPENDS ON THE BRANCH, which is two review findings in
+         * one place. An unanchored search is retried from every starting position and pays one more
+         * factor of the value's length, so the allowance requires `^` — see `RUN_WITHOUT_AN_ANCHOR`.
+         * And anchoring is a property of the BRANCH rather than of the pattern: `a*a*b|^a*a*c` anchors
+         * one of its two branches and not the other, so one answer for the whole pattern would be
+         * wrong in one direction or the other.
+         */
+        foreach (self::topLevelBranches($pattern) as $branch) {
+            $anchored = self::anchorsTheSearch($branch);
+            $limit = $anchored ? self::RUN_AT_TOP_LEVEL : self::RUN_WITHOUT_AN_ANCHOR;
+
+            if (! self::atomRunExceeds($branch, $limit)) {
+                continue;
+            }
+
             return sprintf(
-                'more than %d variable-width atoms in a row with nothing between them that forces '
+                'more than %d variable-width atom%s in a row with nothing between them that forces '
                 .'where one ends and the next begins — as in `%s`. Each one can give up characters to '
                 .'the next, so a subject that fails at the end is retried in every combination: '
-                .'measured, `^a*a*a*a*b$` takes ECMAScript 7.9 seconds on 500 characters. Two in a '
-                .'row is permitted because it is quadratic rather than polynomial in the count; '
-                .'beyond that, separate them with a character none of them can match, or say the '
-                .'same thing with one quantifier — `a*a*` means `a*`',
-                self::RUN_AT_TOP_LEVEL,
-                self::excerpt($pattern, 0, min(mb_strlen($pattern) - 1, 40)),
+                .'measured, `^a*a*a*a*b$` takes ECMAScript 7.9 seconds on 500 characters. %s'
+                .'separate them with a character none of them can match, or say the same thing with '
+                .'one quantifier — `a*a*` means `a*`',
+                $limit,
+                $limit === 1 ? '' : 's',
+                self::excerpt($branch, 0, min(mb_strlen($branch) - 1, 40)),
+                $anchored
+                    ? 'Two in a row is permitted because it is quadratic rather than polynomial in '
+                    .'the count; beyond that, '
+                    : 'This is not anchored, so the engine retries the whole run from every starting '
+                    .'position and pays one more factor of the value\'s length than the same pattern '
+                    .'anchored: measured on 5,000 characters, `a*a*b` takes 60.2 SECONDS in '
+                    .'ECMAScript where `^a*a*b` takes 36 ms. A trailing `$` does not help, because '
+                    .'the retry is at the start. Anchor it with `^`, ',
             );
         }
 
@@ -2281,6 +2330,66 @@ final class Pattern
     }
 
     /**
+     * Whether this sequence can only match at the start of the subject, so the engine tries one
+     * starting position rather than every one.
+     *
+     * ⚠️ `^` IS ENOUGH AND `$` IS NOT, measured rather than reasoned: the retry is at the start, so
+     * `a*a*b$` costs what `a*a*b` costs — 60 seconds at 5,000 characters against 36 ms for `^a*a*b`.
+     * The table is in `RUN_WITHOUT_AN_ANCHOR`.
+     *
+     * ⚠️ READ THROUGH WHAT IS TRANSPARENT AND NOTHING ELSE. A leading assertion consumes nothing, so
+     * the anchor may sit behind one. A group contributes its anchor only if EVERY branch anchors —
+     * `(?:^|,)a*a*b` does not, and reading it as anchored would license the cubic case the limit exists
+     * to refuse. An optional group contributes nothing at all, because it can match nothing.
+     *
+     * ⚠️ `^` cannot mean start-of-LINE here: `delimit()` sets `uD` and never `m`, so there is one
+     * starting position rather than one per line. That is a property of this codebase rather than of
+     * the syntax, which is why it is written down where the rule depends on it.
+     */
+    private static function anchorsTheSearch(string $sequence, int $depth = 0): bool
+    {
+        if ($depth > 64) {
+            return false;
+        }
+
+        $length = mb_strlen($sequence);
+
+        for ($at = 0; $at < $length;) {
+            $token = self::atomAt($sequence, $at);
+
+            if ($token === null) {
+                return false;
+            }
+
+            $atom = $token['atom'];
+
+            if ($atom === '^') {
+                return true;
+            }
+
+            if (str_starts_with($atom, '(') && self::isAssertionKind(self::frameKindAt($atom, 0))) {
+                $at = $token['after'];
+
+                continue;
+            }
+
+            if (! str_starts_with($atom, '(') || self::quantifierIsOptional($token['quantifier'])) {
+                return false;
+            }
+
+            foreach (self::topLevelBranches(self::frameBody($atom)) as $branch) {
+                if (! self::anchorsTheSearch($branch, $depth + 1)) {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
      * Whether more than `$limit` variable-width atoms sit in a row with no forced boundary.
      *
      * ⚠️ ONE TRAVERSAL, TWO LIMITS, AND THE LIMITS ARE MEASURED. Review found three holes in the
@@ -2422,6 +2531,24 @@ final class Pattern
              * depends on the caller — see `atomRunExceeds()`.
              */
             if ($atom['assertion']) {
+                continue;
+            }
+
+            /*
+             * ⚠️ A BRANCH BOUNDARY ENDS A RUN, which review found this loop not doing: `|` fell through
+             * as a non-variable atom, `literalCharacter('|')` is null, and nothing reset the state — so
+             * two mutually exclusive branches read as one sequence and `a*a*|b*` was refused for three
+             * atoms in a row that no execution path contains. A false refusal, and `--strict` blocks an
+             * upgrade over one.
+             *
+             * The atom is exactly `|` only for a separator: a literal pipe is `\|` and a pipe in a
+             * class is `[|]`, and neither of those is this atom.
+             */
+            if ($atom['atom'] === '|') {
+                $run = 0;
+                $counted = false;
+                $previous = null;
+
                 continue;
             }
 

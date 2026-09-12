@@ -1230,3 +1230,83 @@ describe('a quantified branch costs what it costs', function (): void {
             ->toContain('ways to retry a failing subject');
     });
 });
+
+describe('an unanchored pattern pays for its own search', function (): void {
+    /*
+     * ⚠️ THE ALLOWANCE'S PREMISE WAS ANCHORING AND THE RULE NEVER ASKED FOR IT, which review found. Two
+     * adjacent variable-width atoms are quadratic in the value's length — that is why they are permitted
+     * — but an unanchored pattern is retried from EVERY starting position, so the same run is cubic, and
+     * cubic is the cost class the limit exists to refuse. Measured on Node 22.23.2, all-`a` subjects
+     * that fail:
+     *
+     *   n         `a*a*b`        `a*a*b$`       `^a*a*b`
+     *   500          286.4 ms       285.1 ms        1.8 ms
+     *   1,000        489.7 ms       491.5 ms        1.5 ms
+     *   2,000      3,941.8 ms     3,875.7 ms        5.8 ms
+     *   5,000     60,231.6 ms    60,339.4 ms       36.0 ms   <- `TextType::MAX_CONFIGURABLE_LENGTH`
+     *
+     * ⚠️ A TRAILING `$` DOES NOT HELP, which is the middle column and a row below: the retry is at the
+     * START, so only `^` removes it. Reasoning would have got that wrong in a plausible direction.
+     *
+     * ⚠️ AND THE SERVER DOES NOT PAY IT. Every cell above is 0.0 ms through `delimit()` on PCRE 10.48,
+     * which auto-possessifies the stars and knows the subject must contain a `b`. So the harness cannot
+     * see this by comparing verdicts — the engines agree — and it is exactly what rule 3 is about: the
+     * published constraint costs the consumer what the server never pays.
+     */
+    it('refuses two variable-width atoms in a row when nothing anchors the search', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))->toContain('not anchored');
+    })->with([
+        'a*a*b',
+        'a*a*b$',
+        '.+\.[a-z]+',
+
+        // ⚠️ A group is not an anchor, an ALTERNATION of anchors is not one unless every branch anchors,
+        // and anchoring is per branch — `a*a*b|^a*a*c` anchors the second branch and not the first.
+        '(?:a*a*b)',
+        '(?:^|,)a*a*b',
+        'a*a*b|^a*a*c',
+    ]);
+
+    it('grants the allowance when the branch anchors the search', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))->toBeNull("[{$pattern}] anchors its search");
+    })->with([
+        '^a*a*b',
+        '^a*a*b$',
+        '^.+\.[a-z]+$',
+        '^[^@]+@[^@]+$',
+
+        // ⚠️ Read through what is transparent: a required group, and a leading assertion that consumes
+        // nothing. Both are anchored patterns written in a way the first version could not see.
+        '(?:^a*a*b)',
+        '^(?:a*a*b)$',
+        '(?=x)^a*a*b',
+
+        // ⚠️ And ONE variable-width atom is linear, so it needs no anchor at all. A rule that asked for
+        // one everywhere would refuse most of the patterns in this file for nothing.
+        'a*b',
+        'a*b$',
+    ]);
+});
+
+describe('a branch boundary ends a run', function (): void {
+    /*
+     * ⚠️ A FALSE REFUSAL REVIEW FOUND, and the mechanism is that `|` reached the run walk as an ordinary
+     * non-variable atom: `literalCharacter('|')` is null, so nothing reset the state and two mutually
+     * exclusive branches read as one sequence of three atoms. No execution path contains three, and
+     * `kitsune:audit-patterns --strict` blocks an upgrade on a pattern like this.
+     *
+     * ⚠️ THE SAME INSIGHT AS THE OTHER TRAVERSAL, one round apart: `lookaheadOverlapsOptional()` had to
+     * learn that nothing sits in front of the lookahead in `a?|(?=a)a` for the same reason. Two walks,
+     * one fact about alternation, and each had to be told separately — which is an argument for the
+     * walks being one, and the reason they are not is that they ask different questions of each atom.
+     */
+    it('reads two branches as two sequences rather than one', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))->toBeNull("[{$pattern}] has two atoms per path, not three");
+    })->with([
+        '^a*a*|^b*',
+        '^a*|^b*b*',
+        '^(?:a*a*|b*)$',
+        '^(?:a*|b*b*)$',
+        '^(?:a*a*b|c*c*d)$',
+    ]);
+});
