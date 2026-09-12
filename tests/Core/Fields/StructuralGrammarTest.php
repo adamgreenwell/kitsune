@@ -876,6 +876,30 @@ describe('a lookahead may not assert what an adjacent optional atom consumes', f
         '(?=a)(?:|a)a',
         '(?=a)(?:a|)a',
         '(?:a?)(?=a)a',
+
+        /*
+         * ⚠️ AND A WRAPPER ROUND THE LOOKAHEAD ALONE, which review found: the recursion checked the
+         * assertion with no neighbour inside the wrapper, and the outer walk read the wrapper as an
+         * ordinary atom — so the `a?` outside was never compared with the assertion inside. A group
+         * that consumes nothing is not a group for adjacency, so such wrappers are unwrapped first, to
+         * a fixed point and at any depth. The `^` rows are here because this half of the rule does not
+         * care about anchoring: an overlap is an overlap.
+         */
+        '(?:(?=a))a?a',
+        '((?=a))a?a',
+        '(?:(?:(?=a)))a?a',
+        '(?:(?=a)(?!b))a?a',
+        '^(?:(?=a))a?a',
+
+        /*
+         * ⚠️ AND THE FORWARD NEIGHBOUR IS THE NEXT ATOM THAT CONSUMES, here too. This arm used a plain
+         * `atomAt()` while the unanchored arm used `nextConsuming()` and `$previous` had skipped
+         * zero-width atoms since it was written, so `(?=a)(?!b)a?a` was refused only for being
+         * unanchored and its anchored spelling published. Three walks, one fact about adjacency.
+         */
+        '(?=a)(?!b)a?a',
+        '^(?=a)(?!b)a?a',
+        '^(?=a)(?<!x)a?a',
     ]);
 
     it('leaves a lookahead that constrains something alone', function (string $pattern): void {
@@ -926,6 +950,10 @@ describe('a lookahead may not assert what an adjacent optional atom consumes', f
          */
         '^(?=a)(?:ab)?a',
         '^(?=a)(?:b?)a',
+
+        // ⚠️ A wrapper that CONSUMES is still a group: the lookahead's neighbour in `(?:(?=a)x)a?a` is
+        // the `x` inside it, not the `a?` outside, and unwrapping that would be a false refusal.
+        '^(?:(?=a)x)a?a',
     ]);
 });
 
@@ -1446,5 +1474,46 @@ describe('dead markup beside an unanchored lookahead is a divergence too', funct
         // would fail an upgrade over a stored pattern that means exactly what it meant yesterday.
         'a{0}b',
         'b{0}a*c',
+    ]);
+});
+
+describe('an alternation inside a required group keeps the run around it', function (): void {
+    /*
+     * ⚠️ A HOLE MY OWN FIX OPENED, one round old. Making `|` end a run was right for a real alternation
+     * and wrong for a SPLICED one: an exactly-once group's body was flattened into the enclosing linear
+     * list, so the body's `|` arrived where it means nothing and the walk treated it as a boundary.
+     * `^a*(?:b|a*)a*c$` then read as two short runs, when its second branch is `^a*a*a*c$` — three
+     * variable-width atoms in a row. Node 24: about 1.9 seconds on 2,001 characters, past 15 on the
+     * 5,000 a `text` field admits.
+     *
+     * A multi-branch group is no longer spliced. It stays one atom, priced by what it can MATCH — and
+     * its own branches are walked separately, because a run inside one branch is still a run.
+     */
+    it('refuses a run the branches complete', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))->toContain('variable-width atom');
+    })->with([
+        '^a*(?:b|a*)a*c$',
+        '^a*(?:a*|b)a*c$',
+        '^x(?:a*a*a*b|c)y$',
+
+        /*
+         * ⚠️ AND A GROUP THAT MATCHES TWO LENGTHS IS VARIABLE-WIDTH, however it is spelled. `(?:a|aa)`
+         * holds neither quantifier nor class, so a check that asked what a group CONTAINS called it
+         * fixed; `fixedWidth()` asks what it can match, which is the question the run rule has.
+         */
+        '^a*(?:a|aa)a*b$',
+    ]);
+
+    it('leaves a group that separates the run alone', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))->toBeNull("[{$pattern}] divides its own run");
+    })->with([
+        // ⚠️ Every branch leads with a literal `a*` cannot match, so the division is forced — the same
+        // proof the ordinary delimited list rests on.
+        '^a*(?:b|c)a*d$',
+        '^[^,]+(?:,[^,]+)*$',
+
+        // ⚠️ And one fixed width across the branches is not variable at all.
+        '^(?:a|b)c*d*e$',
+        '^(?:19|20)[0-9]{2}$',
     ]);
 });

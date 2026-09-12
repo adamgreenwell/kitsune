@@ -1114,5 +1114,23 @@
         "pattern": "b{0}(?=a)a",
         "subject": "a",
         "why": "An atom bounded at zero repetitions consumes nothing ever, and review measured its mere PRESENCE changing what the engines say: PCRE 10.44 rejects this and Node 24.15 matches it, while `^b{0}(?=a)a` agrees. `b` is not what the lookahead asserts, so the overlap rule passes it deliberately. It also fixed a reading error one round old — `a{0}(?=a)a` was refused as an OVERLAP, as though dead markup could match the asserted character; it cannot match anything, so the honest refusal is this one, and the anchored `^(?:a{0}(?=a)a)$` now publishes because the engines agree there."
+    },
+    {
+        "id": "spliced-alternation-hides-a-run",
+        "pattern": "^a*(?:b|a*)a*c$",
+        "subject": "aaaaaaaaaaaaaaaaaaaa",
+        "why": "A hole opened by the fix one round earlier. Making `|` end a run is right for a real alternation and wrong for a SPLICED one: an exactly-once group's body was flattened into the enclosing linear list, so its `|` arrived where it means nothing and the walk read it as a boundary — leaving two short runs where the second branch is `^a*a*a*c$`, three variable-width atoms in a row. Node 24 spends about 1.9 seconds on 2,001 characters and past 15 on the 5,000 a `text` field admits. A multi-branch group is no longer spliced: it stays one atom priced by what it can match, and its branches are walked separately."
+    },
+    {
+        "id": "alternation-of-two-lengths-is-variable",
+        "pattern": "^a*(?:a|aa)a*b$",
+        "subject": "aaaaaaaaaaaaaaaaaaaa",
+        "why": "`(?:a|aa)` holds neither a quantifier nor a class, so the check that asked what a group CONTAINS called it fixed-width — and it matches one character or two, which is exactly what the run rule means by variable. `fixedWidth()` answers the question the rule asks and already reads branches, escapes and classes, returning null for anything it cannot measure. Found while fixing the spliced-alternation hole beside it, by asking what else the old question got wrong."
+    },
+    {
+        "id": "lookahead-inside-a-required-wrapper",
+        "pattern": "(?:(?=a))a?a",
+        "subject": "a",
+        "why": "Only the lookahead was wrapped, so the recursion checked the assertion with no neighbour inside the wrapper and the outer walk read the wrapper as an ordinary group — the `a?` outside was never compared with the assertion inside. Review measured the divergence on PCRE 10.44 with Node 24.15. A group that consumes nothing is not a group for adjacency: such wrappers are unwrapped before the walk, at any depth, and `(?:(?=a)x)a?a` still publishes because that group consumes."
     }
 ]

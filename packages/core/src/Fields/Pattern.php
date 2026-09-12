@@ -1416,6 +1416,15 @@ final class Pattern
      */
     private static function lookaheadOverlapsOptional(string $pattern, bool $anchored = false): ?string
     {
+        /*
+         * ⚠️ A GROUP THAT CONSUMES NOTHING IS NOT A GROUP HERE, and review found the walk treating one
+         * as opaque: `(?:(?=a))a?a` recursed into the wrapper, found a lookahead with no neighbour
+         * inside it, and then read the wrapper itself as an ordinary atom — so the `a?` outside was
+         * never compared with the assertion inside. Unwrapping first is the whole fix, and it is done
+         * on a copy of the sequence rather than by plumbing neighbour context through the recursion.
+         */
+        $pattern = self::withoutZeroWidthWrappers($pattern);
+
         $length = mb_strlen($pattern);
         $previous = null;
         $dead = null;
@@ -1484,7 +1493,9 @@ final class Pattern
              * neither branch — and it published although the unanchored rule below does not need a lead
              * at all. One guard clause, two rules, and the narrower one took the wider one with it.
              */
-            foreach ($lead === null ? [] : [self::atomAt($pattern, $token['after']), $previous] as $neighbour) {
+            [$following] = self::nextConsuming($pattern, $token['after'], null);
+
+            foreach ($lead === null ? [] : [$following, $previous] as $neighbour) {
                 if ($neighbour === null || ! self::overlapsAssertedLead($neighbour, $lead)) {
                     continue;
                 }
@@ -1565,6 +1576,99 @@ final class Pattern
         }
 
         return null;
+    }
+
+    /**
+     * The sequence with every exactly-once group that consumes nothing replaced by its own body.
+     *
+     * ⚠️ `(?:(?=a))` IS `(?=a)` TO EVERY QUESTION THIS RULE ASKS, and treating the two differently is
+     * what review found: the wrapper made the assertion invisible to its outside neighbour. Unwrapping
+     * is done here, once, rather than by carrying neighbour context into the recursion — the recursion
+     * exists to find shapes INSIDE bodies, and teaching it about what surrounds each body would give
+     * two jobs to one walk.
+     *
+     * ⚠️ EXACTLY-ONCE ONLY. `(?:(?=a))*` also consumes nothing and both engines stop after one
+     * iteration of a zero-width body, but "both engines happen to agree" is the argument this file
+     * refuses elsewhere, and nothing has measured it.
+     *
+     * ⚠️ CAPTURE NUMBERING CHANGES AND THAT IS SAFE HERE. Unwrapping `((?=a))` renumbers the groups
+     * after it, which would matter to a backreference rule — and this walk asks nothing about
+     * backreferences. The original string is what every other rule sees.
+     */
+    private static function withoutZeroWidthWrappers(string $sequence, int $depth = 0): string
+    {
+        if ($depth > 64) {
+            return $sequence;
+        }
+
+        $out = '';
+        $at = 0;
+        $length = mb_strlen($sequence);
+        $changed = false;
+
+        while ($at < $length) {
+            $token = self::atomAt($sequence, $at);
+
+            if ($token === null) {
+                return $sequence;
+            }
+
+            $atom = $token['atom'];
+            $quantifier = $token['quantifier'];
+            $once = $quantifier === '' || self::fixedRepetitions($quantifier) === 1;
+
+            if (str_starts_with($atom, '(')
+                && ! self::isAssertionKind(self::frameKindAt($atom, 0))
+                && $once
+                && self::consumesNothing(self::frameBody($atom))) {
+                $out .= self::frameBody($atom);
+                $changed = true;
+            } else {
+                $out .= $atom.$quantifier;
+            }
+
+            $at = $token['after'];
+        }
+
+        // Unwrapping can expose another wrapper: `(?:(?:(?=a)))` is two of them.
+        return $changed ? self::withoutZeroWidthWrappers($out, $depth + 1) : $out;
+    }
+
+    /**
+     * Whether nothing in this sequence ever takes a character out of the subject.
+     *
+     * ⚠️ RECURSIVE, because `(?:(?=a))` consumes nothing and `consumesCharacters()` — which asks only
+     * what an atom IS — says a group consumes. Two questions that read alike: one is about the atom's
+     * kind, this one is about everything under it.
+     */
+    private static function consumesNothing(string $sequence, int $depth = 0): bool
+    {
+        if ($depth > 64) {
+            return false;
+        }
+
+        $at = 0;
+        $length = mb_strlen($sequence);
+
+        while ($at < $length) {
+            $token = self::atomAt($sequence, $at);
+
+            if ($token === null) {
+                return false;
+            }
+
+            $atom = $token['atom'];
+
+            if (self::consumesCharacters($atom) && ! self::neverRuns($token['quantifier'])) {
+                if (! str_starts_with($atom, '(') || ! self::consumesNothing(self::frameBody($atom), $depth + 1)) {
+                    return false;
+                }
+            }
+
+            $at = $token['after'];
+        }
+
+        return true;
     }
 
     /**
@@ -2611,6 +2715,22 @@ final class Pattern
             if ($atom['assertion'] && self::atomRunExceeds(self::frameBody($atom['atom']), $limit)) {
                 return true;
             }
+
+            /*
+             * ⚠️ AND A MULTI-BRANCH GROUP'S OWN BRANCHES, which stopped being spliced so that its `|`
+             * could not be mistaken for a run boundary in a linear list. Each branch is a sequence in
+             * its own right — `^x(?:a*a*a*b|c)y$` has a run of three inside one of them — and this is
+             * the only caller that owns the whole pattern, exactly as for an assertion's body.
+             */
+            if (! $atom['assertion']
+                && str_starts_with($atom['atom'], '(')
+                && ($atom['quantifier'] === '' || self::fixedRepetitions($atom['quantifier']) === 1)) {
+                foreach (self::topLevelBranches(self::frameBody($atom['atom'])) as $branch) {
+                    if (self::atomRunExceeds($branch, $limit)) {
+                        return true;
+                    }
+                }
+            }
         }
 
         return self::runExceeds($atoms, $limit);
@@ -2880,7 +3000,20 @@ final class Pattern
              * directions — and there is now one place that decides what "once" means rather than two
              * that can disagree.
              */
-            if ($splice && ($quantifier === '' || self::fixedRepetitions($quantifier) === 1)) {
+            /*
+             * ⚠️ ONE BRANCH ONLY, and review found what splicing an alternation did: the body's `|`
+             * landed in a LINEAR list, where it means nothing and the run walk had to treat it as a
+             * boundary — so `^a*(?:b|a*)a*c$` read as two short runs when its second branch is
+             * `^a*a*a*c$`. Node 24 spends about 1.9 seconds on 2,001 characters and past 15 on the
+             * 5,000 a `text` field admits.
+             *
+             * A multi-branch group stays whole, and the else clause below prices it by what it can
+             * match rather than by what it is written as. Its own branches are walked separately, by
+             * `atomRunExceeds()`, because a run inside one branch is still a run.
+             */
+            if ($splice
+                && ($quantifier === '' || self::fixedRepetitions($quantifier) === 1)
+                && count(self::topLevelBranches($inner)) === 1) {
                 $spliced = self::atomList($inner, true, $depth + 1);
 
                 if ($spliced === null) {
@@ -2897,7 +3030,14 @@ final class Pattern
             $atoms[] = [
                 'atom' => $atom,
                 'quantifier' => $quantifier,
-                'variable' => self::isVariableWidth($quantifier) || self::variableAtomCanMatchAnything($inner),
+                /*
+                 * ⚠️ CAN IT MATCH TWO LENGTHS, not does it CONTAIN a variable atom — `(?:a|aa)` holds
+                 * neither quantifier nor class and still matches one character or two, so a rule that
+                 * asked what it contains called it fixed. `fixedWidth()` answers the question the run
+                 * rule actually asks, and it already reads branches, escapes and classes; it returns
+                 * null for anything it cannot measure, which is the conservative answer here.
+                 */
+                'variable' => self::isVariableWidth($quantifier) || self::fixedWidth($inner) === null,
                 // A repeated group begins where its body begins, so its body's leading literal is
                 // what a preceding atom would have to run into.
                 'leads' => self::branchLeads($inner),
@@ -2906,34 +3046,6 @@ final class Pattern
         }
 
         return $atoms;
-    }
-
-    /** Whether this subpattern holds any variable-width atom at all. */
-    private static function variableAtomCanMatchAnything(string $body): bool
-    {
-        $length = mb_strlen($body);
-
-        for ($i = 0; $i < $length; $i++) {
-            $token = self::atomAt($body, $i);
-
-            if ($token === null) {
-                return true;
-            }
-
-            $i = $token['after'] - 1;
-
-            if (self::isVariableWidth($token['quantifier'])) {
-                return true;
-            }
-
-            if (str_starts_with($token['atom'], '(')) {
-                if (self::variableAtomCanMatchAnything(self::frameBody($token['atom']))) {
-                    return true;
-                }
-            }
-        }
-
-        return false;
     }
 
     /**

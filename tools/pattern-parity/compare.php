@@ -47,11 +47,21 @@ function requireFullCoverage(string $side, array $results, array $cases): void
     $malformed = [];
 
     foreach ($expected as $id) {
-        if (! isset($results[$id]) || ! is_array($results[$id])) {
+        if (! array_key_exists($id, $results)) {
+            // Already counted as missing; reporting it twice would say the same thing twice.
             continue;
         }
 
-        if (! array_key_exists('compiles', $results[$id]) || ! array_key_exists('matches', $results[$id])) {
+        /*
+         * ⚠️ `isset()` IS THE WRONG QUESTION HERE, which review found in the guard added the round
+         * before: `"case-id": null` is valid JSON, `isset()` is false for it, and the early `continue`
+         * skipped the shape check — so the ID set matched, the comparison ran, and
+         * `array_key_exists('compiles', null)` died with a TypeError instead of this file's own
+         * diagnostic and exit code. A guard whose failure mode is a stack trace is half a guard.
+         */
+        if (! is_array($results[$id])
+            || ! array_key_exists('compiles', $results[$id])
+            || ! array_key_exists('matches', $results[$id])) {
             $malformed[] = $id;
         }
     }
@@ -72,7 +82,7 @@ function requireFullCoverage(string $side, array $results, array $cases): void
         $side,
         $say('cases measured by neither name in the file', $missing),
         $say('results for cases that no longer exist', $unknown),
-        $say('results missing `compiles` or `matches`', $malformed),
+        $say('results that are not an object carrying `compiles` and `matches`', $malformed),
     ));
 
     exit(2);
