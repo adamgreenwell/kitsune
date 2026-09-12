@@ -1301,7 +1301,7 @@ final class Pattern
          * is over branches that can BOTH match, which is what `everyAlternationIsUnambiguous()`
          * already answers for a repetition body.
          */
-        if (($overlap = self::lookaheadOverlapsOptional($pattern)) !== null) {
+        if (($overlap = self::redundantLookahead($pattern)) !== null) {
             return $overlap;
         }
 
@@ -1363,6 +1363,25 @@ final class Pattern
     }
 
     /**
+     * The refusal for every redundant-lookahead shape, asked per top-level branch.
+     *
+     * ⚠️ PER BRANCH, because half the rule depends on whether the search is anchored and that is a
+     * property of the branch: `^(?=a)b*a|(?=a)b*a` anchors its first branch and not its second. The
+     * walk itself tracks the anchor as it goes — a `^` reached earlier in the same sequence counts,
+     * and a nested branch may anchor itself.
+     */
+    private static function redundantLookahead(string $pattern): ?string
+    {
+        foreach (self::topLevelBranches($pattern) as $branch) {
+            if (($refusal = self::lookaheadOverlapsOptional($branch, self::anchorsTheSearch($branch))) !== null) {
+                return $refusal;
+            }
+        }
+
+        return null;
+    }
+
+    /**
      * Refuse a positive lookahead sitting beside an optional atom that can match what it asserts.
      *
      * ⚠️ I COULD NOT REPRODUCE THE DIVERGENCE, and this refusal is insurance rather than a measurement —
@@ -1395,10 +1414,11 @@ final class Pattern
      * https://github.com/adamgreenwell/kitsune/issues/73, and guessing at it here is how this rule would
      * start refusing patterns the document licenses.
      */
-    private static function lookaheadOverlapsOptional(string $pattern): ?string
+    private static function lookaheadOverlapsOptional(string $pattern, bool $anchored = false): ?string
     {
         $length = mb_strlen($pattern);
         $previous = null;
+        $reached = $anchored;
 
         for ($i = 0; $i < $length; $i++) {
             $token = self::atomAt($pattern, $i);
@@ -1416,8 +1436,14 @@ final class Pattern
              */
             if ($atom === '|') {
                 $previous = null;
+                // Each branch starts where this sequence started: `^a|(?=a)b*a` anchors one of them.
+                $reached = $anchored;
 
                 continue;
+            }
+
+            if (! $reached && self::anchorsTheSearch($atom)) {
+                $reached = true;
             }
 
             if (! str_starts_with($atom, '(')) {
@@ -1435,7 +1461,7 @@ final class Pattern
              * Every frame kind is descended, assertions included — a lookahead can hold the shape as
              * readily as a group can, and refusing it there is no less correct.
              */
-            if (($nested = self::lookaheadOverlapsOptional(self::frameBody($atom))) !== null) {
+            if (($nested = self::lookaheadOverlapsOptional(self::frameBody($atom), $reached)) !== null) {
                 return $nested;
             }
 
@@ -1447,15 +1473,16 @@ final class Pattern
 
             $lead = self::assertedLead(self::frameBody($atom));
 
-            if ($lead === null) {
-                continue;
-            }
-
             /*
              * ⚠️ BOTH SIDES, and the lookahead itself is never either of them: it consumes nothing, so
              * `$previous` skips it and `a?(?=x)(?=a)a` is still read as `a?` beside `(?=a)`.
+             *
+             * ⚠️ AND AN UNDERIVABLE LEAD MUST NOT SKIP THE REST OF THE LOOP, which my first version did
+             * with a `continue`: `(?=(?:a|b))a?a` has no single asserted lead — an alternation asserts
+             * neither branch — and it published although the unanchored rule below does not need a lead
+             * at all. One guard clause, two rules, and the narrower one took the wider one with it.
              */
-            foreach ([self::atomAt($pattern, $token['after']), $previous] as $neighbour) {
+            foreach ($lead === null ? [] : [self::atomAt($pattern, $token['after']), $previous] as $neighbour) {
                 if ($neighbour === null || ! self::overlapsAssertedLead($neighbour, $lead)) {
                     continue;
                 }
@@ -1472,6 +1499,41 @@ final class Pattern
                     $neighbour['quantifier'],
                 );
             }
+
+            /*
+             * ⚠️ AND WITHOUT AN ANCHOR, ANY NULLABLE ATOM AFTER THE LOOKAHEAD IS ENOUGH — overlap or no
+             * overlap. Review measured `(?=a)b*a` on PCRE 10.44 with Node 24.15: PCRE rejecting `a`
+             * while ECMAScript matches it, and the ANCHORED spelling agreeing. `b*` cannot match the
+             * asserted `a`, so the overlap rule above passes it, and this is the same divergence one
+             * exemption away.
+             *
+             * It is also redundant, which is why refusing costs so little: a search is free to begin
+             * wherever the assertion holds, so an unanchored assertion in front of something that can
+             * match nothing decides nothing the search had not already decided.
+             */
+            if ($reached) {
+                continue;
+            }
+
+            $next = self::atomAt($pattern, $token['after']);
+
+            if ($next === null
+                || ! self::consumesCharacters($next['atom'])
+                || ! self::canMatchNothing($next['atom'], $next['quantifier'])) {
+                continue;
+            }
+
+            return sprintf(
+                'the lookahead `%s` in a pattern nothing anchors, in front of `%s%s`, which can match '
+                .'nothing. The two engines have been measured disagreeing about this shape on PCRE '
+                .'10.44 — `(?=a)b*a` matching `a` under ECMAScript and not under PCRE — while the '
+                .'anchored spelling agrees. Unanchored it also asserts nothing: the search is free to '
+                .'begin wherever the assertion holds, so it decides nothing the search had not already '
+                .'decided. Anchor the pattern with `^`, or drop the lookahead',
+                $atom,
+                $next['atom'],
+                $next['quantifier'],
+            );
         }
 
         return null;

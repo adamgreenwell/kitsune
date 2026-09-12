@@ -881,17 +881,22 @@ describe('a lookahead may not assert what an adjacent optional atom consumes', f
          * ⚠️ WHERE THE RULE STOPS, and the first row is why it has to be narrow: two lookaheads then a
          * bounded dot is the commonest validation pattern there is, and `.{8,64}` is not optional. The
          * second asserts a character the optional atom cannot match, so the assertion does work.
+         *
+         * ⚠️ THE ANCHORS ON THESE ROWS ARE LOAD-BEARING and they were added, not written: a separate
+         * rule refuses a positive lookahead in front of a nullable atom when NOTHING ANCHORS the search,
+         * whatever it asserts — see the block below. Without the `^` these rows would pass for the wrong
+         * reason, which is worse than failing.
          */
         expect(Pattern::unpublishable($pattern))->toBeNull("[{$pattern}] has a lookahead that constrains");
     })->with([
         '^(?=.*[A-Z])(?=.*[0-9]).{8,64}$',
-        '(?=b)a?a',
+        '^(?=b)a?a',
         '(?=a)a+',
         '(?!a)a?a',
 
         // ⚠️ And the same non-overlapping shapes inside a group, or the recursion would have widened the
         // rule rather than extending its reach.
-        '(?:(?=b)a?a)',
+        '^(?:(?=b)a?a)',
         '(?:(?!a)a?a)',
 
         /*
@@ -903,8 +908,8 @@ describe('a lookahead may not assert what an adjacent optional atom consumes', f
          */
         '^(?=[A-Za-z])[A-Za-z0-9]*$',
         '^(?=[A-Z])[a-z]*[A-Z]$',
-        '(?=(?:a|b))a?a',
-        '(?=(?:ab))b?ab',
+        '^(?=(?:a|b))a?a',
+        '^(?=(?:ab))b?ab',
         'a?|(?=a)a',
         '(?=a)|a?a',
         '(?<=a)b?b',
@@ -917,8 +922,8 @@ describe('a lookahead may not assert what an adjacent optional atom consumes', f
          * constrain something. The overlap test asks whether the neighbour as a WHOLE can match the
          * asserted character, and `(?:b?)` cannot match `a` at all.
          */
-        '(?=a)(?:ab)?a',
-        '(?=a)(?:b?)a',
+        '^(?=a)(?:ab)?a',
+        '^(?=a)(?:b?)a',
     ]);
 });
 
@@ -1308,5 +1313,58 @@ describe('a branch boundary ends a run', function (): void {
         '^(?:a*a*|b*)$',
         '^(?:a*|b*b*)$',
         '^(?:a*a*b|c*c*d)$',
+    ]);
+});
+
+describe('an unanchored lookahead in front of a nullable atom asserts nothing', function (): void {
+    /*
+     * ⚠️ ANOTHER SHAPE ON THE 10.44 PAIR, one exemption away from the overlap rule. Review measured
+     * `(?=a)b*a` on PCRE 10.44 with Node 24.15 — PCRE rejecting `a` while ECMAScript matches it — and
+     * the ANCHORED spelling agreeing. `b*` cannot match the asserted `a`, so the overlap rule passes it
+     * on purpose, and the divergence is there anyway. On PHP 8.4.25 / PCRE 10.48 / Node 22.23.2 both
+     * engines match, as they do for every shape in the overlap block.
+     *
+     * ⚠️ AND IT IS REDUNDANT, which is why refusing costs so little. A search may begin wherever it
+     * likes, so an unanchored assertion in front of something that can match nothing decides nothing
+     * the search had not already decided: `(?=a)b*a` and `b*a` accept the same set of values, and
+     * `preg_match()` and a JSON Schema `pattern` both ask only whether a match exists.
+     */
+    it('refuses the shape wherever nothing anchors the search', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))->toContain('nothing anchors');
+    })->with([
+        '(?=a)b*a',
+        '(?=a)b*',
+        '(?=a)(?:b*)a',
+        '(?:(?=a)b*a)',
+        'x(?=a)b*a',
+
+        // ⚠️ No asserted lead is needed for THIS rule, and a `continue` for the overlap rule's missing
+        // lead took this one with it in the first version: `(?=(?:a|b))a?a` published.
+        '(?=(?:a|b))a?a',
+
+        // ⚠️ Anchoring is per branch, so a pattern that anchors one branch is refused for the other.
+        '^(?=a)b*a|(?=a)b*a',
+        '(?=a)b*a|^(?=a)b*a',
+    ]);
+
+    it('leaves the anchored spelling and the non-nullable one alone', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))->toBeNull("[{$pattern}] anchors, or its atom is required");
+    })->with([
+        '^(?=a)b*a',
+        '^(?=a)b*a$',
+        '(?:^)(?=a)b*a',
+        '^(?:(?=a)b*a|x)',
+
+        // ⚠️ `b+` must consume something, so the assertion is not in front of a nullable atom at all.
+        '(?=a)b+a',
+
+        // ⚠️ A lookBEHIND is not in the rule: the measured divergence is a lookahead, and a rule wider
+        // than its evidence here would refuse `(?<=a)b*a` for nothing.
+        '(?<=a)b*a',
+
+        // ⚠️ And nothing follows the lookahead in either of these, so there is no nullable atom to be
+        // in front of — `|` does not consume, and a rule that read it as an atom would refuse both.
+        '(?=a)|a?a',
+        'a?|(?=a)a',
     ]);
 });

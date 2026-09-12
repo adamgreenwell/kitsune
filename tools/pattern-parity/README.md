@@ -38,6 +38,23 @@ written. Both readers use a standard JSON parser, which is what actually removes
 nothing was ever wrong except the sentence. It is corrected rather than made true, because
 escaping 162 cases to satisfy a README would make them unreadable for no gain.
 
+## ⚠️ An incomplete result set is refused, not compared
+
+`compare.php` exits **2** rather than comparing when either result file's case IDs are not exactly
+`cases.json`'s, or when a result is missing `compiles` or `matches`.
+
+That guard exists because the tool lied without it, which review found. An absent measurement was
+read through `?? null` as `{compiles: null, matches: null}`, and **two absences compare equal** — so
+a case that neither file had measured counted as agreement. Demonstrated by deleting one divergent
+case from both files: `divergent AND refused` fell from 98 to 97, `refused, both reject` rose from 1
+to 2, and nothing said anything. The unmeasured case did not merely vanish; it was reported in the
+bucket whose label is *"refusing costs nothing"*.
+
+One-sided absence is the mirror image: it manufactures a divergence out of nothing.
+
+Both matter because this tool's numbers are quoted in `docs/field-types.md` and in review replies. A
+stale pair of files could have reported `0 live defects` for a corpus it had never run.
+
 ## ⚠️ It measures ONE version pair
 
 The harness runs the PCRE and Node it has. **It cannot see divergence between versions it is not

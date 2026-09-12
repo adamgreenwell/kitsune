@@ -22,6 +22,63 @@ $pcre = json_decode((string) file_get_contents($argv[1]), true, 512, JSON_THROW_
 $ecma = json_decode((string) file_get_contents($argv[2]), true, 512, JSON_THROW_ON_ERROR);
 
 /**
+ * Refuse to compare a result set that does not cover the corpus, naming what is missing.
+ *
+ * ⚠️ THE MISSING-ID FALLBACK MADE THIS TOOL LIE, which review found. `outcome($pcre[$id] ?? null)`
+ * turns an ABSENT measurement into `{compiles: null, matches: null}` — and two absences compare
+ * EQUAL, so a case measured by neither file counted as agreement and vanished from every counter.
+ * A stale pair of result files could therefore report `0 live defects` for a corpus it had never
+ * measured, which is the one number this whole instrument exists to produce. One absence is worse
+ * still in the other direction: it manufactures a divergence out of nothing.
+ *
+ * The ID sets must be EXACTLY equal rather than merely sufficient, because a result for a case that
+ * no longer exists is the same staleness seen from the other side.
+ *
+ * ⚠️ A HARD EXIT RATHER THAN A WARNING. This tool's numbers are quoted in `docs/field-types.md` and
+ * in review replies; a warning above a table is a number somebody will copy.
+ */
+function requireFullCoverage(string $side, array $results, array $cases): void
+{
+    $expected = array_column($cases, 'id');
+    $measured = array_keys($results);
+
+    $missing = array_values(array_diff($expected, $measured));
+    $unknown = array_values(array_diff($measured, $expected));
+    $malformed = [];
+
+    foreach ($expected as $id) {
+        if (! isset($results[$id]) || ! is_array($results[$id])) {
+            continue;
+        }
+
+        if (! array_key_exists('compiles', $results[$id]) || ! array_key_exists('matches', $results[$id])) {
+            $malformed[] = $id;
+        }
+    }
+
+    if ($missing === [] && $unknown === [] && $malformed === []) {
+        return;
+    }
+
+    $say = static fn (string $what, array $ids): string => $ids === []
+        ? ''
+        : sprintf("  %s (%d): %s\n", $what, count($ids), implode(', ', array_slice($ids, 0, 8)).(count($ids) > 8 ? ', …' : ''));
+
+    fwrite(STDERR, sprintf(
+        "The %s result file does not match cases.json, so no comparison is trustworthy:\n%s%s%s\n"
+        ."Re-run BOTH measurements against the current corpus:\n"
+        ."  php  tools/pattern-parity/measure.php  > /tmp/pcre.json\n"
+        ."  node tools/pattern-parity/measure.mjs  > /tmp/ecma.json\n",
+        $side,
+        $say('cases measured by neither name in the file', $missing),
+        $say('results for cases that no longer exist', $unknown),
+        $say('results missing `compiles` or `matches`', $malformed),
+    ));
+
+    exit(2);
+}
+
+/**
  * The comparable part of a measurement: did it compile, and did it match.
  *
  * Diagnostics such as `timedOut` are deliberately dropped — they describe HOW an engine failed to
@@ -34,6 +91,9 @@ function outcome(?array $result): array
         'matches' => $result['matches'] ?? null,
     ];
 }
+
+requireFullCoverage('PCRE', $pcre, $cases);
+requireFullCoverage('ECMAScript', $ecma, $cases);
 
 $live = [];
 $handled = 0;

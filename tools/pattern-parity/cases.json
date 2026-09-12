@@ -1090,5 +1090,17 @@
         "pattern": "^a*a*|^b*",
         "subject": "aaaaaaaaaaaaaaaaaaaa",
         "why": "A FALSE refusal until review found it: `|` reached the run walk as an ordinary non-variable atom, `literalCharacter('|')` is null, so nothing reset the state and two mutually exclusive branches read as one sequence of three variable-width atoms. No execution path contains three. `--strict` blocks an upgrade on a pattern like this, which is why an over-refusal is recorded in this corpus alongside the holes."
+    },
+    {
+        "id": "unanchored-lookahead-nullable-prefix",
+        "pattern": "(?=a)b*a",
+        "subject": "a",
+        "why": "One exemption away from the overlap rule and refused for a different reason. `b*` cannot match the asserted `a`, so the overlap rule passes it deliberately — and review measured the engines disagreeing anyway on PCRE 10.44 with Node 24.15: PCRE rejecting `a` while ECMAScript matches it, with the ANCHORED spelling agreeing. It is also redundant, which is why refusing costs almost nothing: a search may begin wherever it likes, so an unanchored assertion in front of something that can match nothing decides nothing the search had not already decided — `(?=a)b*a` and `b*a` accept the same set of values, and both consumers ask only whether a match exists."
+    },
+    {
+        "id": "anchored-lookahead-nullable-prefix",
+        "pattern": "^(?=a)b*a",
+        "subject": "a",
+        "why": "The anchored spelling of the row above, recorded so the rule's boundary is in the corpus rather than only in a test. Review measured this one AGREEING on the pair where the unanchored form diverges, and with a `^` the assertion is no longer redundant — the search cannot move to a position where it holds. Published, and it must stay published: a rule that refused this would cost the shape rather than the divergence."
     }
 ]
