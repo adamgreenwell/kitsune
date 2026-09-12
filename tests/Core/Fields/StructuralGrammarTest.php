@@ -839,10 +839,12 @@ describe('a lookahead may not assert what an adjacent optional atom consumes', f
          * FOLLOWED the lookahead, so the same redundancy written backwards published. `a{0}` is the form
          * review measured; `a?` and `(?:a)?` are the same shape and were published too.
          */
-        'a{0}(?=a)a',
         'a?(?=a)a',
         '(?:a)?(?=a)a',
-        '^(?:a{0}(?=a)a)$',
+
+        // ⚠️ And the dead atom no longer SHADOWS the real neighbour: `b{0}` consumes nothing, so the
+        // atom before it is what sits beside the lookahead. This row published until it was transparent.
+        'a?b{0}(?=a)a',
 
         /*
          * ⚠️ AND WITH THE LEAD BEHIND BRACKETS OR A QUANTIFIER. `leadingLiteral()` answers a different
@@ -1338,6 +1340,16 @@ describe('an unanchored lookahead in front of a nullable atom asserts nothing', 
         '(?:(?=a)b*a)',
         'x(?=a)b*a',
 
+        /*
+         * ⚠️ THE NEXT CONSUMING ATOM, NOT THE NEXT ATOM, which review found one round after the rule
+         * landed: a second assertion in between made the immediate neighbour consume nothing, and the
+         * shape published. `$previous` had skipped zero-width atoms since it was written and this side
+         * had not — one fact, two places, one of them told.
+         */
+        '(?=a)(?!b)b*a',
+        '(?=a)(?<!x)b*a',
+        '(?=a)(?=c)(?!b)b*a',
+
         // ⚠️ No asserted lead is needed for THIS rule, and a `continue` for the overlap rule's missing
         // lead took this one with it in the first version: `(?=(?:a|b))a?a` published.
         '(?=(?:a|b))a?a',
@@ -1366,5 +1378,73 @@ describe('an unanchored lookahead in front of a nullable atom asserts nothing', 
         // in front of — `|` does not consume, and a rule that read it as an atom would refuse both.
         '(?=a)|a?a',
         'a?|(?=a)a',
+
+        // ⚠️ A `^` AFTER the lookahead stops the walk rather than being skipped: the pattern is
+        // anchored after all, and `(?=a)^b*a` is unmatchable nonsense either way. Refusing it would be
+        // refusing it for a reason that is not true.
+        '(?=a)^b*a',
+        '^(?=a)(?!b)b*a',
+
+        /*
+         * ⚠️ A STATED LIMIT, AND THE STATEMENT IS THE POINT. A nullable atom BEFORE the lookahead is
+         * the obvious next shape in this family, and it is published on purpose: the measurements on
+         * the 10.44 pair cover the nullable atom AFTER the lookahead and dead markup on either side,
+         * and nothing has measured this one.
+         *
+         * ⚠️ AND THE COST OF REFUSING IT IS NARROW BUT REAL, which took a measurement rather than an
+         * assertion to establish. Most spellings are refused by another rule already: an assertion is
+         * zero-width, so it does not divide a run, and `\s*(?=[0-9])[A-Za-z0-9]+` unanchored is two
+         * variable-width atoms in a row — the anchoring rule takes it. What survives is a fixed-width
+         * tail: `\s*(?=[0-9])[A-Za-z0-9]{4}` publishes and says "the first of four alphanumerics is a
+         * digit", which cannot be written by dropping the assertion.
+         *
+         * ⚠️ My first version of this note offered `\s*(?=\d)\w+` as the cost, and that pattern is
+         * refused for two unrelated reasons — neither `\d` nor `\w` is portable. A cost example has to
+         * be a pattern that publishes, or the argument it supports is decoration.
+         *
+         * If a measurement arrives, these rows move to the refusal above and the docblock says why.
+         * Recorded rather than left as an omission, because an unasserted gap is indistinguishable from
+         * one nobody thought about.
+         */
+        'b*(?=a)a',
+        '\s*(?=[0-9])[A-Za-z0-9]{4}',
+    ]);
+});
+
+describe('dead markup beside an unanchored lookahead is a divergence too', function (): void {
+    /*
+     * ⚠️ AN ATOM BOUNDED AT ZERO REPETITIONS CONSUMES NOTHING, EVER, and review measured its mere
+     * PRESENCE changing what the engines say: `b{0}(?=a)a` is rejected by PCRE 10.44 and matched by
+     * Node 24.15, while `^b{0}(?=a)a` agrees. `b` is not what the lookahead asserts, so the overlap
+     * rule passes it on purpose and the divergence is there anyway — which is the same shape as
+     * `(?=a)b*a` one step further out.
+     *
+     * ⚠️ THIS NARROWED A ROUND-OLD REFUSAL AND THAT IS DELIBERATE. `a{0}(?=a)a` used to be refused by
+     * the overlap rule, because `a{0}` was read as an ordinary optional neighbour that could match the
+     * asserted `a`. It cannot match anything at all, so that reading was wrong even where the verdict
+     * was right, and the honest refusal is this one. The consequence is that `^(?:a{0}(?=a)a)$` now
+     * PUBLISHES — anchored, the engines agree, and the `{0}` allowance exists precisely so dead markup
+     * in a stored pattern does not fail an upgrade.
+     */
+    it('refuses a zero-repeat atom on either side of the lookahead', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))->toContain('bounded at zero repetitions');
+    })->with([
+        'b{0}(?=a)a',
+        '(?=a)b{0}a',
+        'a{0}(?=a)a',
+        '(?=a)(?!x)b{0}a',
+    ]);
+
+    it('leaves the anchored spelling alone', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))->toBeNull("[{$pattern}] anchors its search");
+    })->with([
+        '^b{0}(?=a)a',
+        '^(?=a)b{0}a',
+        '^(?:a{0}(?=a)a)$',
+
+        // ⚠️ Dead markup with no lookahead beside it is not this rule's business, and refusing it
+        // would fail an upgrade over a stored pattern that means exactly what it meant yesterday.
+        'a{0}b',
+        'b{0}a*c',
     ]);
 });

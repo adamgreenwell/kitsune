@@ -1102,5 +1102,17 @@
         "pattern": "^(?=a)b*a",
         "subject": "a",
         "why": "The anchored spelling of the row above, recorded so the rule's boundary is in the corpus rather than only in a test. Review measured this one AGREEING on the pair where the unanchored form diverges, and with a `^` the assertion is no longer redundant — the search cannot move to a position where it holds. Published, and it must stay published: a rule that refused this would cost the shape rather than the divergence."
+    },
+    {
+        "id": "assertion-between-lookahead-and-nullable",
+        "pattern": "(?=a)(?!b)b*a",
+        "subject": "a",
+        "why": "The unanchored-lookahead rule looked at the atom immediately after the lookahead, and a second assertion in between consumes nothing — so the immediate neighbour was zero-width, the rule stopped there, and the shape published. Review measured the divergence on PCRE 10.44 with Node 24.15, a negative lookBEHIND in the same position behaving the same way. The walk now looks past anything zero-width for the next CONSUMING atom, which `$previous` had done since it was written: one fact held in two places, and only one of them had been told."
+    },
+    {
+        "id": "dead-atom-beside-a-lookahead",
+        "pattern": "b{0}(?=a)a",
+        "subject": "a",
+        "why": "An atom bounded at zero repetitions consumes nothing ever, and review measured its mere PRESENCE changing what the engines say: PCRE 10.44 rejects this and Node 24.15 matches it, while `^b{0}(?=a)a` agrees. `b` is not what the lookahead asserts, so the overlap rule passes it deliberately. It also fixed a reading error one round old — `a{0}(?=a)a` was refused as an OVERLAP, as though dead markup could match the asserted character; it cannot match anything, so the honest refusal is this one, and the anchored `^(?:a{0}(?=a)a)$` now publishes because the engines agree there."
     }
 ]

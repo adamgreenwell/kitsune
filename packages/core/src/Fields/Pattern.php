@@ -1418,6 +1418,7 @@ final class Pattern
     {
         $length = mb_strlen($pattern);
         $previous = null;
+        $dead = null;
         $reached = $anchored;
 
         for ($i = 0; $i < $length; $i++) {
@@ -1436,6 +1437,7 @@ final class Pattern
              */
             if ($atom === '|') {
                 $previous = null;
+                $dead = null;
                 // Each branch starts where this sequence started: `^a|(?=a)b*a` anchors one of them.
                 $reached = $anchored;
 
@@ -1447,7 +1449,7 @@ final class Pattern
             }
 
             if (! str_starts_with($atom, '(')) {
-                $previous = self::consumesCharacters($atom) ? $token : $previous;
+                [$previous, $dead] = self::afterNeighbour($token, $previous, $dead);
 
                 continue;
             }
@@ -1466,7 +1468,7 @@ final class Pattern
             }
 
             if (self::frameKindAt($atom, 0) !== 'lookahead') {
-                $previous = self::consumesCharacters($atom) ? $token : $previous;
+                [$previous, $dead] = self::afterNeighbour($token, $previous, $dead);
 
                 continue;
             }
@@ -1510,16 +1512,42 @@ final class Pattern
              * It is also redundant, which is why refusing costs so little: a search is free to begin
              * wherever the assertion holds, so an unanchored assertion in front of something that can
              * match nothing decides nothing the search had not already decided.
+             *
+             * ⚠️ A NULLABLE ATOM BEFORE THE LOOKAHEAD IS DELIBERATELY NOT HERE, and saying so is the
+             * honest form of the limit. The measurements cover the nullable atom AFTER the lookahead
+             * and dead markup on either side; nothing has measured `b*(?=a)a`. Refusing it would not be
+             * free either, and the cost took measuring: most spellings are already refused by the
+             * anchoring rule, since an assertion does not divide a run and `\s*(?=[0-9])[A-Za-z0-9]+`
+             * is two variable-width atoms in a row — but `\s*(?=[0-9])[A-Za-z0-9]{4}` publishes, says
+             * "the first of four alphanumerics is a digit", and cannot be rewritten without the
+             * assertion. `StructuralGrammarTest` asserts both shapes publish, so a measurement arriving
+             * later moves a test row rather than discovering an unwritten assumption.
              */
             if ($reached) {
                 continue;
             }
 
-            $next = self::atomAt($pattern, $token['after']);
+            /*
+             * ⚠️ THE NEXT CONSUMING ATOM, NOT THE NEXT ATOM, which review found one round after the
+             * rule landed: `(?=a)(?!b)b*a` put a second assertion in between, the immediate neighbour
+             * consumed nothing, and the shape published. `$previous` had skipped zero-width atoms since
+             * it was written; this side had not, and the asymmetry was invisible until it was measured.
+             */
+            [$next, $dead] = self::nextConsuming($pattern, $token['after'], $dead);
 
-            if ($next === null
-                || ! self::consumesCharacters($next['atom'])
-                || ! self::canMatchNothing($next['atom'], $next['quantifier'])) {
+            if ($dead !== null) {
+                return sprintf(
+                    'the lookahead `%s` beside `%s`, which is bounded at zero repetitions and so '
+                    .'matches nothing at all, in a pattern nothing anchors. Measured on PCRE 10.44 with '
+                    .'Node 24.15, `b{0}(?=a)a` is rejected by PCRE and matched by ECMAScript while the '
+                    .'anchored spelling agrees — dead markup that changes what a pattern means is still '
+                    .'a divergence. Remove it, or anchor the pattern with `^`',
+                    $atom,
+                    $dead,
+                );
+            }
+
+            if ($next === null || ! self::canMatchNothing($next['atom'], $next['quantifier'])) {
                 continue;
             }
 
@@ -1537,6 +1565,78 @@ final class Pattern
         }
 
         return null;
+    }
+
+    /**
+     * What this atom leaves behind it: the previous CONSUMING atom, and any dead markup seen since.
+     *
+     * ⚠️ AN ATOM BOUNDED AT ZERO REPETITIONS CONSUMES NOTHING, EVER, and review found this walk
+     * treating one as an ordinary neighbour: `b{0}` became the previous atom in `a?b{0}(?=a)a`, so the
+     * overlap guard compared the lookahead against dead markup and skipped the `a?` behind it. The run
+     * traversal has skipped `{0}` atoms since it was written — `atomList()` does it in its first
+     * clause — and this one had not, which is the same fact held in two places and only one of them
+     * told.
+     *
+     * ⚠️ THE DEAD ATOM IS REMEMBERED RATHER THAN DROPPED, because its PRESENCE is itself a measured
+     * divergence beside a lookahead: `b{0}(?=a)a` is rejected by PCRE 10.44 and matched by Node 24.15.
+     * Transparent to the rules and not invisible to them.
+     *
+     * @param  array{atom: string, quantifier: string, after: int}  $token
+     * @param  array{atom: string, quantifier: string, after: int}|null  $previous
+     * @return array{0: array{atom: string, quantifier: string, after: int}|null, 1: string|null}
+     */
+    private static function afterNeighbour(array $token, ?array $previous, ?string $dead): array
+    {
+        if (! self::consumesCharacters($token['atom'])) {
+            return [$previous, $dead];
+        }
+
+        if (self::neverRuns($token['quantifier'])) {
+            return [$previous, $token['atom'].$token['quantifier']];
+        }
+
+        return [$token, null];
+    }
+
+    /**
+     * The first atom at or after `$at` that consumes anything, looking past what is zero-width.
+     *
+     * ⚠️ ANCHORS STOP THE WALK RATHER THAN BEING SKIPPED. `^` after a lookahead makes the pattern
+     * anchored, and the caller has already decided it is not — `(?=a)^b*a` is unmatchable nonsense
+     * either way, and stopping means the rule stays silent about it instead of refusing it for a
+     * reason that is not true.
+     *
+     * ⚠️ AND A BRANCH BOUNDARY IS NOT ADJACENCY, which is the same fact this file has now had to state
+     * in three traversals: nothing after `|` is next to anything before it.
+     *
+     * @return array{0: array{atom: string, quantifier: string, after: int}|null, 1: string|null}
+     */
+    private static function nextConsuming(string $pattern, int $at, ?string $dead): array
+    {
+        while (($candidate = self::atomAt($pattern, $at)) !== null) {
+            $atom = $candidate['atom'];
+
+            if ($atom === '|' || $atom === '^' || $atom === '$') {
+                return [null, $dead];
+            }
+
+            if (self::neverRuns($candidate['quantifier'])) {
+                $dead = $atom.$candidate['quantifier'];
+                $at = $candidate['after'];
+
+                continue;
+            }
+
+            if (! self::consumesCharacters($atom)) {
+                $at = $candidate['after'];
+
+                continue;
+            }
+
+            return [$candidate, $dead];
+        }
+
+        return [null, $dead];
     }
 
     /**
