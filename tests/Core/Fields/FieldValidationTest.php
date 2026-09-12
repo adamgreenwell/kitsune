@@ -570,6 +570,69 @@ it('publishes the cardinality bound it already enforces', function (): void {
         ->and($type->apiSchema(configFor('text', [], 1)))->not->toHaveKey('maxItems');
 });
 
+describe('a quadratic pattern bounds how many items a text field admits', function (): void {
+    /*
+     * ⚠️ THE LENGTH CEILING BOUNDS ONE ELEMENT AND THE FIELD PUBLISHES AN ARRAY, which review found.
+     * `Pattern` permits two adjacent variable-width atoms on the strength of `MAX_CONFIGURABLE_LENGTH`
+     * bounding the value — and a cardinality of `-1` published no `maxItems` at all, so the pattern ran
+     * on every item of an array nothing bounded. Measured on Node 22.23.2, an accepted `^a*a*b$`
+     * against all-`a` values that fail: 5,000 characters cost 36 ms each, so 100 of them cost 3.6
+     * SECONDS in one schema-valid request.
+     *
+     * The work is `items × length²`, so the bound that keeps it where one maximal element put it is
+     * `(5000 / length)²`.
+     */
+    it('derives the bound from the configured length', function (int $length, ?int $expected): void {
+        $type = app(FieldTypeRegistry::class)->get('text');
+        $config = configFor('text', ['pattern' => '^a*a*b$', 'maxLength' => $length], -1);
+
+        expect($type->maxItems($config))->toBe($expected)
+            ->and($type->apiSchema($config)['maxItems'] ?? null)->toBe($expected);
+    })->with([
+        'the default length' => [255, 384],
+        'a thousand' => [1000, 25],
+        'the ceiling itself' => [5000, 1],
+    ]);
+
+    it('publishes and enforces the same number', function (): void {
+        /*
+         * ⚠️ ONE ANSWER, TWO CONSUMERS. The schema and the rules were two expressions of the same
+         * intent, and a bound narrowed in one of them would be a constraint the other does not keep —
+         * which is rule 3 of the contract read in the opposite direction.
+         */
+        $type = app(FieldTypeRegistry::class)->get('text');
+        $config = configFor('text', ['pattern' => '^a*a*b$', 'maxLength' => 1000], -1);
+
+        expect($type->apiSchema($config)['maxItems'])->toBe(25)
+            ->and($type->validationRules($config))->toContain('max:25');
+    });
+
+    it('leaves a linear pattern and a bare field alone', function (array $settings): void {
+        /*
+         * ⚠️ ONLY WHERE THE ALLOWANCE IS CLAIMED. A run of ONE variable-width atom is linear, so a
+         * hundred maximal values against `^[a-z]+$` is half a million character tests — a bound there
+         * would cost expressiveness and buy nothing.
+         */
+        $type = app(FieldTypeRegistry::class)->get('text');
+        $config = configFor('text', $settings, -1);
+
+        expect($type->maxItems($config))->toBeNull()
+            ->and($type->apiSchema($config))->not->toHaveKey('maxItems');
+    })->with([
+        'a linear pattern' => [['pattern' => '^[a-z]+$', 'maxLength' => 5000]],
+        'a delimited list' => [['pattern' => '^[^,]+(?:,[^,]+)*$', 'maxLength' => 5000]],
+        'no pattern at all' => [['maxLength' => 5000]],
+    ]);
+
+    it('narrows a declared cardinality rather than replacing it', function (): void {
+        // ⚠️ A cardinality of two means TWO, whatever the work budget would allow.
+        $type = app(FieldTypeRegistry::class)->get('text');
+
+        expect($type->maxItems(configFor('text', ['pattern' => '^a*a*b$', 'maxLength' => 255], 2)))->toBe(2)
+            ->and($type->maxItems(configFor('text', ['pattern' => '^a*a*b$', 'maxLength' => 5000], 3)))->toBe(1);
+    });
+});
+
 describe('a multi-value scalar field stores an array of scalars', function (): void {
     it('converts each element rather than the array', function (string $handle, array $input, array $expected): void {
         $type = app(FieldTypeRegistry::class)->get($handle);

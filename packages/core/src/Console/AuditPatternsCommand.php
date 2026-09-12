@@ -11,8 +11,10 @@ declare(strict_types=1);
 namespace Kitsune\Core\Console;
 
 use Illuminate\Console\Command;
+use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Fields\Pattern;
 use Kitsune\Core\Fields\Types\TextType;
+use Kitsune\Core\Models\Field;
 use Kitsune\Core\Models\FieldStorage;
 
 /**
@@ -58,6 +60,7 @@ final class AuditPatternsCommand extends Command
          * Rows are emitted inside the chunk and only the count is carried.
          */
         $unpublishable = 0;
+        $overItems = 0;
         $overLong = 0;
         $examined = 0;
 
@@ -73,7 +76,7 @@ final class AuditPatternsCommand extends Command
          */
         FieldStorage::query()
             ->whereNotNull('settings')
-            ->chunkById(200, function ($rows) use (&$unpublishable, &$overLong, &$examined): void {
+            ->chunkById(200, function ($rows) use (&$unpublishable, &$overLong, &$overItems, &$examined): void {
                 foreach ($rows as $storage) {
                     /*
                      * ⚠️ TEXT ROWS ONLY, and review found this command applying `TextType`'s ceiling to
@@ -146,6 +149,30 @@ final class AuditPatternsCommand extends Command
 
                     $examined++;
 
+                    /*
+                     * ⚠️ AND THE ITEM BOUND IS THE THIRD UPGRADE HAZARD, for the same reason as the two
+                     * above: it is new, it is derived from settings that were legal when they were
+                     * saved, and what it refuses is an ENTRY rather than a field. A multi-value text
+                     * field whose pattern costs quadratic work now publishes `maxItems` — see
+                     * `TextType::maxItems()` — so a row already holding more elements than that fails
+                     * its next save, on a screen where the author changed something else.
+                     *
+                     * ⚠️ THE REMEDY IS NOT "LOWER THE CARDINALITY", which is why this is reported rather
+                     * than left to the guard. Cardinality is part of the locked shape once data exists
+                     * (ADR-006), so the two things an author can still change are the length and the
+                     * pattern — and the line says so.
+                     */
+                    $narrowed = self::narrowedItemBound($storage, $pattern);
+
+                    if ($narrowed !== null) {
+                        $overItems++;
+
+                        $this->line("  <comment>field_storage #{$storage->getKey()}</comment> <info>{$storage->handle}</info> (org {$storage->org_id})");
+                        $this->line("    pattern: {$pattern}");
+                        $this->line("    items: {$narrowed}");
+                        $this->newLine();
+                    }
+
                     if (($reason = Pattern::unpublishable($pattern)) === null) {
                         continue;
                     }
@@ -166,7 +193,13 @@ final class AuditPatternsCommand extends Command
          */
         $this->line("examined <info>{$examined}</info> stored pattern".($examined === 1 ? '' : 's'));
 
-        if ($unpublishable === 0 && $overLong === 0) {
+        if ($overItems > 0) {
+            $this->warn($overItems.' stored field'.($overItems === 1 ? '' : 's')
+                .' now publish a narrower item bound than their cardinality declares. Lower `maxLength`'
+                .' or simplify the pattern; cardinality itself is locked once data exists.');
+        }
+
+        if ($unpublishable === 0 && $overLong === 0 && $overItems === 0) {
             $this->info('Every stored pattern satisfies the published grammar, and every configured length is within its limit.');
 
             return self::SUCCESS;
@@ -187,5 +220,47 @@ final class AuditPatternsCommand extends Command
         }
 
         return $this->option('strict') ? self::FAILURE : self::SUCCESS;
+    }
+
+    /**
+     * A description of how far a stored field's item bound has been narrowed, or null if it has not.
+     *
+     * ⚠️ ASKS THE TYPE RATHER THAN REPEATING IT. `TextType::maxItems()` owns the arithmetic — the work
+     * is `items × length²` and the budget is what one maximal element costs — and a second copy here
+     * would be a number that can disagree with the one the schema publishes. This only compares what
+     * the type answers with what the row declares.
+     */
+    private static function narrowedItemBound(FieldStorage $storage, string $pattern): ?string
+    {
+        if ((int) $storage->cardinality === 1 || $storage->type !== TextType::handle()) {
+            return null;
+        }
+
+        $type = new TextType;
+        $config = new FieldConfig($storage, new Field(['handle' => $storage->handle]));
+        $bound = $type->maxItems($config);
+
+        if ($bound === null) {
+            return null;
+        }
+
+        $declared = (int) $storage->cardinality;
+
+        if ($declared > 0 && $declared <= $bound) {
+            return null;
+        }
+
+        $length = max(1, (int) ($storage->settings['maxLength'] ?? 255));
+
+        return sprintf(
+            '%s, %d publishes now — the pattern costs quadratic work per value and %d'
+            .'-character values bound the array at (%d / %d)². Lower `maxLength` or simplify the'
+            .' pattern; cardinality is locked once data exists.',
+            $declared === -1 ? 'unlimited' : $declared.' declared',
+            $bound,
+            $length,
+            TextType::MAX_CONFIGURABLE_LENGTH,
+            $length,
+        );
     }
 }

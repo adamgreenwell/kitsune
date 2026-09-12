@@ -50,7 +50,17 @@ case from both files: `divergent AND refused` fell from 98 to 97, `refused, both
 to 2, and nothing said anything. The unmeasured case did not merely vanish; it was reported in the
 bucket whose label is *"refusing costs nothing"*.
 
-One-sided absence is the mirror image: it manufactures a divergence out of nothing.
+One-sided absence is the mirror image: it manufactures a divergence out of nothing. A **duplicated
+id** is a third face of it — both measurement scripts key their output by id, so the second row
+overwrites the first and one pattern is never measured while the id set still looks complete — and a
+**present-but-`null`** row is a fourth, which `isset()` reported as absent and the comparison then
+died on with a `TypeError` instead of this message.
+
+That is four instrument errors in this file's history, all of the same class: the tool answering a
+question nobody had checked it could answer. Raw-vs-raw reported seven divergences where there are
+three; PHP and Node were handed different patterns; absent rows compared equal; a duplicated id hid
+a pattern. Each was found by review rather than by the tool, which is the argument for the guard
+rather than for another convention.
 
 Both matter because this tool's numbers are quoted in `docs/field-types.md` and in review replies. A
 stale pair of files could have reported `0 live defects` for a corpus it had never run.

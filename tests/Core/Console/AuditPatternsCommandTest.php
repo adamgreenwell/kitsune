@@ -121,6 +121,45 @@ it('names each unpublishable pattern, its field and the reason', function (): vo
         ->assertSuccessful();
 });
 
+it('names a multi-value field whose item bound is now narrower than its cardinality', function (): void {
+    /*
+     * ⚠️ THE THIRD UPGRADE HAZARD IN THIS COMMAND, and the one whose refusal lands on an ENTRY rather
+     * than on a field. `TextType::maxItems()` now bounds a multi-value text field whose pattern costs
+     * quadratic work per value, because the length ceiling bounds one element and the field publishes
+     * an array — 100 maximal values against an accepted `^a*a*b$` measure 3.6 seconds in ECMAScript.
+     * A row already holding more elements than the new bound fails its next save.
+     *
+     * ⚠️ AND THE REMEDY IS NOT THE OBVIOUS ONE, which is why the line says it: cardinality is part of
+     * the locked shape once data exists (ADR-006), so what an author can still change is the length or
+     * the pattern.
+     */
+    $storage = storedPattern($this->org->id, 'aliases', '^a*a*b$');
+    DB::table('field_storage')->where('id', $storage->getKey())->update([
+        'cardinality' => -1,
+        'settings' => json_encode(['pattern' => '^a*a*b$', 'maxLength' => 5000]),
+    ]);
+
+    $this->artisan('kitsune:audit-patterns')
+        ->expectsOutputToContain('aliases')
+        ->expectsOutputToContain('unlimited, 1 publishes now')
+        ->expectsOutputToContain('Lower `maxLength` or simplify the pattern')
+        ->assertSuccessful();
+});
+
+it('stays silent when the declared cardinality is inside the bound', function (): void {
+    /*
+     * ⚠️ The same field at the DEFAULT length, where `(5000 / 255)²` is 384 items — so a cardinality of
+     * three is not narrowed at all and the report has nothing to say. Without this row the assertion
+     * above would pass on a command that reported every multi-value field.
+     */
+    $storage = storedPattern($this->org->id, 'aliases', '^a*a*b$');
+    DB::table('field_storage')->where('id', $storage->getKey())->update(['cardinality' => 3]);
+
+    $this->artisan('kitsune:audit-patterns')
+        ->doesntExpectOutputToContain('publishes now')
+        ->assertSuccessful();
+});
+
 it('names a stored pattern the anchoring rule newly refuses', function (): void {
     /*
      * ⚠️ THE MIGRATION PROMISE, ASSERTED RATHER THAN CLAIMED. Requiring `^` for the two adjacent

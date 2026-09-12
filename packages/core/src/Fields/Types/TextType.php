@@ -300,6 +300,52 @@ final class TextType extends BaseFieldType
         return null;
     }
 
+    /**
+     * A multi-value text field's item bound, narrowed when its pattern costs quadratic work.
+     *
+     * ⚠️ THE CEILING WAS PER ELEMENT AND THE FIELD PUBLISHES AN ARRAY, which review found.
+     * `MAX_CONFIGURABLE_LENGTH` bounds one value on the strength of the quadratic allowance being
+     * quadratic in ONE length; a cardinality of `-1` published no `maxItems` at all and applied the
+     * pattern to every item. Measured on Node 22.23.2, an accepted `^a*a*b$` against all-`a` values
+     * that fail:
+     *
+     *   items:        10        25        50       100       200
+     *   255 chars    1.3 ms    2.4 ms    4.8 ms    9.7 ms   19.5 ms
+     *   1,000       14.4      36.5      73.2     145.4     290.6
+     *   5,000      359.6     900.4   1,802.5   3,595.8   7,262.8
+     *
+     * Linear in the item count and quadratic in the length, so the work is `items × length²` and the
+     * bound that keeps it where the single-element ceiling put it is `(MAX / length)²`: **384** items at
+     * the 255-character default, 25 at 1,000, and **1** at the 5,000-character ceiling. A field
+     * configured for maximal values and a quadratic pattern really does get one element — that pair is
+     * the worst case the ceiling exists for, and it is the author's own configuration.
+     *
+     * ⚠️ ONLY WHEN THE PATTERN CLAIMS THE ALLOWANCE. A run of one variable-width atom is linear, so a
+     * hundred maximal values against `^[a-z]+$` is half a million character tests and needs no bound at
+     * all. `Pattern::costsQuadraticPerValue()` is the same question the run rule already answers, asked
+     * from outside.
+     *
+     * ⚠️ AND IT NARROWS RATHER THAN REPLACES: a declared cardinality of 2 still means two.
+     */
+    public function maxItems(FieldConfig $config): ?int
+    {
+        $declared = parent::maxItems($config);
+
+        if (! $config->isMultiValue()) {
+            return null;
+        }
+
+        $pattern = $config->setting('pattern');
+
+        if (! is_string($pattern) || $pattern === '' || ! Pattern::costsQuadraticPerValue($pattern)) {
+            return $declared;
+        }
+
+        $budget = max(1, (int) ((self::MAX_CONFIGURABLE_LENGTH / $this->length($config)) ** 2));
+
+        return $declared === null ? $budget : min($declared, $budget);
+    }
+
     private function length(FieldConfig $config): int
     {
         return max(1, (int) $config->setting('maxLength', 255));

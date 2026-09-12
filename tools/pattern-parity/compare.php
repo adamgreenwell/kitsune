@@ -42,6 +42,15 @@ function requireFullCoverage(string $side, array $results, array $cases): void
     $expected = array_column($cases, 'id');
     $measured = array_keys($results);
 
+    /*
+     * ⚠️ MULTIPLICITY, WHICH `array_diff()` DOES NOT SEE, and review found the gap: both measurement
+     * scripts key their output by case ID, so a duplicated ID in `cases.json` means the second row
+     * OVERWRITES the first and one pattern is never measured — while coverage looks complete, because
+     * the ID is present. The tool would then compare one measurement against two different patterns and
+     * could report zero live defects for a corpus it had not run.
+     */
+    $duplicated = array_values(array_unique(array_diff_assoc($expected, array_unique($expected))));
+
     $missing = array_values(array_diff($expected, $measured));
     $unknown = array_values(array_diff($measured, $expected));
     $malformed = [];
@@ -66,7 +75,7 @@ function requireFullCoverage(string $side, array $results, array $cases): void
         }
     }
 
-    if ($missing === [] && $unknown === [] && $malformed === []) {
+    if ($missing === [] && $unknown === [] && $malformed === [] && $duplicated === []) {
         return;
     }
 
@@ -75,14 +84,15 @@ function requireFullCoverage(string $side, array $results, array $cases): void
         : sprintf("  %s (%d): %s\n", $what, count($ids), implode(', ', array_slice($ids, 0, 8)).(count($ids) > 8 ? ', …' : ''));
 
     fwrite(STDERR, sprintf(
-        "The %s result file does not match cases.json, so no comparison is trustworthy:\n%s%s%s\n"
-        ."Re-run BOTH measurements against the current corpus:\n"
+        "The %s result file does not match cases.json, so no comparison is trustworthy:\n%s%s%s%s\n"
+        ."Give every case a unique id, then re-run BOTH measurements against the current corpus:\n"
         ."  php  tools/pattern-parity/measure.php  > /tmp/pcre.json\n"
         ."  node tools/pattern-parity/measure.mjs  > /tmp/ecma.json\n",
         $side,
         $say('cases measured by neither name in the file', $missing),
         $say('results for cases that no longer exist', $unknown),
         $say('results that are not an object carrying `compiles` and `matches`', $malformed),
+        $say('case IDs used more than once in cases.json, so one pattern is never measured', $duplicated),
     ));
 
     exit(2);

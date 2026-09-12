@@ -2737,6 +2737,24 @@ final class Pattern
     }
 
     /**
+     * Whether this pattern's cost grows with the SQUARE of the value's length.
+     *
+     * ⚠️ PUBLIC BECAUSE THE SCHEMA HAS TO ASK. The quadratic allowance was justified on one value being
+     * bounded — `TextType::MAX_CONFIGURABLE_LENGTH` — and review found the bound is per ELEMENT while a
+     * multi-value field publishes an array. One accepted `^a*a*b$` at 5,000 characters costs 36 ms in
+     * ECMAScript; a hundred of them in one valid array cost 3.6 seconds, and an unlimited cardinality
+     * published no `maxItems` at all. So the type that owns the ceiling needs to know which patterns
+     * claim the allowance, and only this file can answer it.
+     *
+     * A run of one variable-width atom is LINEAR and needs no item bound: a hundred 5,000-character
+     * values against `^[a-z]+$` is half a million character tests, which is not a cost anybody notices.
+     */
+    public static function costsQuadraticPerValue(string $pattern): bool
+    {
+        return self::quadraticRuns($pattern) > 0;
+    }
+
+    /**
      * Whether this sequence claims the quadratic allowance the top-level run limit grants.
      *
      * ⚠️ ITS OWN ATOMS, NOT THE FLATTENED ONES, so the allowance is charged at exactly one level. The

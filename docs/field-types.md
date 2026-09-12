@@ -324,6 +324,20 @@ A named capture may use a name in **any script** — `(?<é>`, `(?<日本>`, `(?
 >
 >     ⚠️ **That allowance needs a real ceiling on the value, and the sentence here used to claim one that did not exist** — "which `TextType` bounds by its configured `maxLength`, 255 by default". Review checked it: the setting had no upper bound, so quadratic meant whatever an org configured. Measured, `^a*a*b$` takes **6.2 s at 65,535 characters and 14.4 s at 100,000**. `TextType::MAX_CONFIGURABLE_LENGTH` caps it at **5,000**, which keeps the worst adversarial case — quadratic pattern, maximal value, subject failing at the end — at 36 ms here and inside half a second on the 1 vCPU floor. It is generous for a single-line field, and `textarea` and `rich_text` take no pattern, so neither is affected.
 >
+>     ⚠️ **AND THE CEILING BOUNDS ONE ELEMENT WHILE THE FIELD PUBLISHES AN ARRAY**, which review found one rule later. A multi-value `text` field applies its pattern to every item, and a cardinality of `-1` published no `maxItems` at all — so the bounded quadratic was multiplied by an unbounded item count. Measured on Node 22.23.2, an accepted `^a*a*b$` against all-`a` values that fail:
+>
+>     | items | 10 | 25 | 50 | 100 | 200 |
+>     |---|---|---|---|---|---|
+>     | 255 characters | 1.3 ms | 2.4 ms | 4.8 ms | 9.7 ms | 19.5 ms |
+>     | 1,000 | 14.4 ms | 36.5 ms | 73.2 ms | 145.4 ms | 290.6 ms |
+>     | 5,000 | 359.6 ms | 900.4 ms | **1,802.5 ms** | **3,595.8 ms** | **7,262.8 ms** |
+>
+>     Linear in the item count and quadratic in the length, so the work is `items × length²` and the bound that keeps it where one maximal element put it is `(5000 / length)²` — **384** items at the 255-character default, 25 at 1,000, and **1** at the ceiling itself. `TextType::maxItems()` derives it, `apiSchema()` publishes it as `maxItems` and `validationRules()` enforces the same number, because two expressions of one intent is how a published constraint and an enforced one drift apart.
+>
+>     ⚠️ **Only where the allowance is claimed.** A run of one variable-width atom is linear — a hundred maximal values against `^[a-z]+$` is half a million character tests — so the bound applies exactly when `Pattern::costsQuadraticPerValue()` says the pattern's cost grows with the square of the value. A declared cardinality is narrowed, never widened: two means two.
+>
+>     ⚠️ **It is an upgrade hazard whose refusal lands on an ENTRY**, so `kitsune:audit-patterns` reports it alongside the other two — and names the remedy, which is not the obvious one: cardinality is part of the locked shape once data exists, so what an author can still change is `maxLength` or the pattern.
+>
 >     ⚠️ **Ambiguity does not need a quantifier, and this is a different axis from every rule above.** Found by review. `^` then thirty copies of `(?:a|a)` then `b$` has no repetition anywhere and no variable-width atom, so nothing looked at it — each group offers two identical ways to match one character, and thirty offer 2³⁰. **PCRE exhausts its backtrack limit and Node 22 takes 50.2 s**, on a 240-character pattern.
 >
 >     A **product**, not a count, because the cost is measured to be exactly that — about 45 ns per combination on Node, linearly: 3 ms at 2¹⁶, 47 ms at 2²⁰, 3.1 s at 2²⁶. The bound is therefore on the cost (`MAX_AMBIGUITY_PRODUCT`, 65,536), which leaves an order of magnitude for ADR-027's floor while keeping sixteen ambiguous binary alternations publishable. Only **ambiguous** alternations count: thirty copies of `(?:a|b)` are linear, because at most one branch can match at a position.
