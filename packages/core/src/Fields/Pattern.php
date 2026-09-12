@@ -2638,10 +2638,24 @@ final class Pattern
      */
     private static function separatesRequired(?string $previous, array $atom): bool
     {
-        if ($previous === null || self::canMatchNothing($atom['atom'], $atom['quantifier'])) {
-            return false;
-        }
+        return $previous !== null
+            && ! self::canMatchNothing($atom['atom'], $atom['quantifier'])
+            && self::dividesFrom($previous, $atom);
+    }
 
+    /**
+     * Whether this atom's own text forces a boundary after `$previous`, saying nothing about whether it
+     * is there to force one.
+     *
+     * ⚠️ SPLIT OUT OF `separatesRequired()` BECAUSE THE RUN WALK NEEDS THE HALVES APART. Whether an atom
+     * CAN be absent decides which predecessors it hides, and whether it DIVIDES decides which of them it
+     * ends — and a nullable atom does both at once: `(?:b)?` divides the `a*` in front of it and hides it
+     * from the `a+` behind it. Asking one question got that wrong in the direction that publishes.
+     *
+     * @param  array{atom: string, quantifier: string, variable: bool, leads: list<string>|null, assertion: bool}  $atom
+     */
+    private static function dividesFrom(string $previous, array $atom): bool
+    {
         if (self::separates($previous, $atom['leads'])) {
             return true;
         }
@@ -3743,8 +3757,25 @@ final class Pattern
 
         $past = 0;
         $counted = false;
-        $run = 0;
-        $previous = null;
+
+        /*
+         * ⚠️ A SET OF PREDECESSORS RATHER THAN THE LAST ONE, and review found the false PUBLISH that
+         * cost: `^a*a*(?:b)?a+X$` is `^a*a*a+X$` on every subject without a `b`, and one `$previous`
+         * cannot hold both readings. The `(?:b)?` divides the `a*` in front of it — which is the
+         * delimited list's proof and has to keep working — and then HIDES it from the `a+` behind it,
+         * so each atom reset the run and a run of three read as three runs of one. Measured on Node
+         * 22.23.2 against all-`a`, it tracks `^a*a*a+X$` to the millisecond — 490.4 ms against 487.8
+         * at 1,000 characters, 1,649.8 against 1,634.7 at 1,500, 3,862.4 against 3,851.9 at 2,000,
+         * where the divided `^a*a*bX$` is 5.8 ms.
+         *
+         * So an atom that CAN match nothing keeps the predecessors it hides, and the run ending at
+         * each atom is the longest over every allocation: `atom source => the longest run ending
+         * there`. Keyed by source because two predecessors written the same way answer every proof
+         * the same way, and a chain of identical nullable atoms is otherwise quadratic in the walk —
+         * `a*` five hundred times is 1,000 characters, which `MAX_LENGTH` admits.
+         */
+        /** @var array<string, int> $reachable */
+        $reachable = [];
 
         foreach ($atoms as $atom) {
             /*
@@ -3769,9 +3800,8 @@ final class Pattern
              * class is `[|]`, and neither of those is this atom.
              */
             if ($atom['atom'] === '|') {
-                $run = 0;
+                $reachable = [];
                 $counted = false;
-                $previous = null;
 
                 continue;
             }
@@ -3793,38 +3823,52 @@ final class Pattern
                  * ceiling — measured, it runs in 35.4 ms on 10,001 characters, which is its control
                  * `^c(?=a+a+d)` to the tenth of a millisecond.
                  *
-                 * The two halves are asked separately because they license different things: a group
-                 * that may match NOTHING still divides a run when the run is what it contains, which is
-                 * the delimited list above, while an atom that may be absent proves nothing about two
-                 * atoms written either side of it. `separatesRequired()` is the stricter half.
+                 * A nullable atom divides what is in front of it and still HIDES it from what is
+                 * behind, which is why `dividesFrom()` is asked here and `canMatchNothing()` below
+                 * rather than both at once.
                  */
-                $separated = self::separates($previous, $atom['leads'])
-                    || self::separatesRequired($previous, $atom);
+                $run = 1;
 
-                if ($separated) {
-                    // A forced boundary ends the run before it, so the next one is counted separately.
-                    $counted = false;
+                foreach ($reachable as $source => $ending) {
+                    if (! self::dividesFrom($source, $atom)) {
+                        $run = max($run, $ending + 1);
+                    }
                 }
 
-                $run = $separated ? 1 : $run + 1;
+                if ($run === 1) {
+                    // Nothing before it can stand beside it, so the run it begins is counted separately.
+                    $counted = false;
+                }
 
                 if ($run > $limit && ! $counted) {
                     $past++;
                     $counted = true;
                 }
 
-                $previous = $atom['atom'];
+                $carried = self::canMatchNothing($atom['atom'], $atom['quantifier']) ? $reachable : [];
+                $carried[$atom['atom']] = max($run, $carried[$atom['atom']] ?? 0);
+                $reachable = $carried;
 
                 continue;
             }
 
-            // A required atom the run cannot consume ends it — `separatesRequired()` holds that proof,
-            // and the assertion walk ends a variable-width prefix on the same one.
-            if (self::separatesRequired($previous, $atom)) {
-                $run = 0;
-                $counted = false;
-                $previous = null;
+            /*
+             * A required atom the run cannot consume ends it — and it has to divide EVERY reading, not
+             * just the nearest one, for the same reason the set exists: what a nullable atom hides is
+             * still standing behind it.
+             */
+            if (self::canMatchNothing($atom['atom'], $atom['quantifier'])) {
+                continue;
             }
+
+            foreach ($reachable as $source => $ending) {
+                if (! self::dividesFrom($source, $atom)) {
+                    continue 2;
+                }
+            }
+
+            $reachable = [];
+            $counted = false;
         }
 
         return $past;

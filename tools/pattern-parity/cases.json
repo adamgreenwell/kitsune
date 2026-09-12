@@ -1252,5 +1252,17 @@
     "pattern": "^a*a*b(?=a+a+c)",
     "subject": "aabaac",
     "why": "Why a separator ends a prefix of ONE and not a run of two: two variable-width atoms trade characters and reach the `b` at the SAME position however they split the value, so the assertion is evaluated there once per split. Measured on Node 22.23.2 against `a×n b a×n`, 181.1 ms at 500 characters, 1,431.9 at 1,000 and 11,385.2 at 2,000 — eight times per doubling, the cubic the rule is named for. `^a+[ab]+c(?=a+a+d)` measures the same three numbers, which is why the separator is proven against the atom beside it rather than assumed from its position."
+  },
+  {
+    "id": "nullable-separator-hides-the-run",
+    "pattern": "^a*a*(?:b)?a+X$",
+    "subject": "aaaX",
+    "why": "A false publish the round before this one introduced, and the direction that matters. The run walk carried ONE predecessor, so a nullable separator both divided the run in front of it — which is the delimited list's proof and has to keep working — and erased it: this is `^a*a*a+X$` on every subject without a `b`, and each atom reset the run, so three atoms in a row read as three runs of one. Measured on Node 22.23.2 against all-`a` it tracks the refused `^a*a*a+X$` to the millisecond: 490.4 ms against 487.8 at 1,000 characters, 1,649.8 against 1,634.7 at 1,500, 3,862.4 against 3,851.9 at 2,000, where `^a*a*bX$` is 5.8 ms. The walk now keeps the predecessors a nullable atom hides and takes the longest run over every allocation, so `^a*a*(?:b)?cX$` publishes at 1.5 ms and 5.8 ms — its control `^a*a*cX$` to the tenth of a millisecond — and this does not."
+  },
+  {
+    "id": "optional-tail-divides-one-way",
+    "pattern": "^(?:,a*b?)*X$",
+    "subject": ",aab,aX",
+    "why": "The other side of the same separation, refused until the two questions came apart. `b?` was denied the boundary because it can be ABSENT, which is the right answer for what stands behind it and the wrong one for what stands in front: `a*` and `b?` cannot both match anything, so every segment divides exactly one way however long it is. Measured on Node 22.23.2 against `,aa` repeated and `,aab` repeated, 0.0 ms at n=12, 16, 20 and 24 on both — where `^(?:,a*a*)*X$` on the first is 52.1 ms, 709.6 and 57,424.0, and `^(?:,a*b?a*)*X$`, which puts an atom BEHIND the nullable one, is 4,504.5 ms at n=16 and 57,368.2 at n=20. `^(?:,a*b?b?)*X$` stays refused and measures why on a subject that carries a `b`: 0.5 ms at n=12, 1.2 at 16, 18.1 at 20, 288.2 at 24."
   }
 ]

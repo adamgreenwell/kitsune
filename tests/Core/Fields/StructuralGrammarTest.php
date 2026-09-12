@@ -247,7 +247,17 @@ describe('rule 3 — an unbounded repetition must divide its subject one way onl
         // The same body with a bracket pair, which is where the previous round's fix had to reach.
         '^(?:,(?:a*)a*)*X$',
         '^(?:,a+a+)*X$',
-        '^(?:,a*b?)*X$',
+        /*
+         * ⚠️ A NULLABLE ATOM DIVIDES WHAT IS IN FRONT OF IT AND HIDES IT FROM WHAT IS BEHIND, which
+         * is the whole of this pair. `,a*b?a*` puts an `a*` behind the `b?`, and when the `b` is
+         * absent the two stars stand together: measured on Node 22.23.2 against `,aa` repeated then
+         * a failing `Y`, 4,504.5 ms at n=16 and 57,368.2 ms at n=20. `,a*b?b?` divides one segment
+         * two ways as soon as the segment carries a `b` — on `,aab` repeated, 0.5 ms at n=12,
+         * 1.2 at 16, 18.1 at 20 and 288.2 at 24 — where `,a*b?` on the same subject is 0.0 ms at
+         * every length, because `a*` and `b?` cannot both match anything.
+         */
+        '^(?:,a*b?a*)*X$',
+        '^(?:,a*b?b?)*X$',
         // Two atoms with a separator the LEFT one can consume: measured n=24 610 ms and climbing.
         '^(?:,[^,]+-[^,]+)*X$',
     ]);
@@ -266,6 +276,15 @@ describe('rule 3 — an unbounded repetition must divide its subject one way onl
         // One variable atom with a required literal in front of it: forced by the delimiter alone.
         '^(?:,a[^,]+)*X$',
         '^(?:,ab)*X$',
+        /*
+         * ⚠️ AND ONE THIS LIST REFUSED UNTIL THE ROUND THAT SEPARATED THE TWO QUESTIONS. `b?` was
+         * denied the boundary because it can be ABSENT, which is the right answer for what stands
+         * BEHIND it and the wrong one for what stands in front: `a*` and `b?` cannot both match
+         * anything, so every segment divides exactly one way however long it is. Measured on Node
+         * 22.23.2 against `,aa` repeated and against `,aab` repeated, 0.0 ms at n=12, 16, 20 and 24
+         * on both — where `^(?:,a*a*)*X$` on the first is 52.1 ms, 709.6 and 57,424.0.
+         */
+        '^(?:,a*b?)*X$',
     ]);
 
     it('analyses the pattern itself, not only its parenthesised frames', function (string $pattern): void {
@@ -2117,6 +2136,45 @@ describe('a required separator ends the prefix that re-evaluates an assertion', 
     ]);
 });
 
+describe('a separator that can be absent hides what is in front of it', function (): void {
+    /*
+     * ⚠️ A FALSE PUBLISH REVIEW FOUND, and it was the previous round's own doing. The run walk carried
+     * ONE predecessor, so a nullable separator both divided the run in front of it and erased it:
+     * `^a*a*(?:b)?a+X$` is `^a*a*a+X$` on every subject without a `b`, and each atom reset the run, so
+     * three atoms in a row read as three runs of one. Measured on Node 22.23.2 against all-`a` it
+     * tracks the refused `^a*a*a+X$` to the millisecond:
+     *
+     *   n=1,000  490.4 ms / 487.8      n=1,500  1,649.8 / 1,634.7      n=2,000  3,862.4 / 3,851.9
+     *
+     * against 5.8 ms at n=2,000 for `^a*a*bX$`, whose separator cannot be absent. A false publish is
+     * the direction that matters: the screen accepted a pattern that makes a 5,000-character value
+     * cubic, which is what the whole grammar exists to refuse.
+     *
+     * The walk keeps the predecessors a nullable atom hides — `atom source => the longest run ending
+     * there` — and the run at each atom is the longest over every allocation.
+     */
+    it('refuses a run a nullable separator only appears to divide', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))->not->toBeNull("[{$pattern}] is three atoms in a row");
+    })->with([
+        '^a*a*(?:b)?a+X$',
+        '^a*a*(?:b)?a*c$',
+        '^a*a*b?a*c$',
+        // The same shape one level in, where the repetition limit makes two atoms enough.
+        '^(?:,a*b?a*)*X$',
+    ]);
+
+    it('still divides a run with a separator that is always there', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))->toBeNull("[{$pattern}] divides every reading");
+    })->with([
+        // 1.5 ms at 1,000 characters and 5.8 at 2,000, against 1.4 and 5.6 for `^a*a*cX$`.
+        '^a*a*(?:b)?cX$',
+        '^a*a*bX$',
+        // The delimited list, whose nullable group divides the atom in front of it and has nothing
+        // behind it to hide that atom from. This is what the two questions being separate buys.
+        '^[^,]+(?:,[^,]+)*$',
+    ]);
+});
+
 describe('the screen stays inside its budget', function (): void {
     /*
      * ⚠️ THE GUARD'S OWN COST IS PART OF THE CONTRACT, and it had drifted: every rule added a walk, and
@@ -2144,6 +2202,30 @@ describe('the screen stays inside its budget', function (): void {
         // Measures ~23 ms here, against ~703 ms before the memos and a 1-second budget. The assertion is
         // deliberately loose: a millisecond-scale timing assertion is the flaky test a loaded CI machine
         // punishes, and what matters is the order of magnitude.
+        expect(microtime(true) - $started)->toBeLessThan(0.2);
+    });
+
+    it('screens a chain of nullable atoms without going quadratic in them', function (): void {
+        /*
+         * ⚠️ THE SECOND WORST CASE, AND IT ARRIVED WITH THE PREDECESSOR SET. Every nullable atom keeps
+         * the predecessors it hides, so a chain of them makes the run walk quadratic in its length —
+         * and `MAX_LENGTH` admits two hundred of `\xNN?`. The set is keyed by atom SOURCE, so the
+         * degenerate chain of two hundred IDENTICAL nullable atoms collapses to one entry: `a*` five
+         * hundred times measures 10.3 ms and `(?:a)?` a hundred and sixty-six times 14.1 ms, against
+         * 39.3 ms for two hundred DISTINCT ones, which is the shape this pins.
+         */
+        $chain = implode('', array_map(
+            static fn (int $n): string => sprintf('\x%02X?', 0x21 + ($n % 90)),
+            range(1, 200),
+        ));
+
+        expect(mb_strlen($chain))->toBe(Pattern::MAX_LENGTH);
+
+        $started = microtime(true);
+        Pattern::unpublishable($chain);
+
+        // Measures ~39 ms here. Loose by the same order of magnitude as the assertion above, and for
+        // the same reason: what would regress is the shape of the cost, not a millisecond.
         expect(microtime(true) - $started)->toBeLessThan(0.2);
     });
 
