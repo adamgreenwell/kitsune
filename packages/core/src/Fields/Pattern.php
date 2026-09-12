@@ -1404,6 +1404,25 @@ final class Pattern
          * is over branches that can BOTH match, which is what `everyAlternationIsUnambiguous()`
          * already answers for a repetition body.
          */
+        foreach (self::topLevelBranches($pattern) as $branch) {
+            if (($rescanned = self::assertionAfterVariable($branch)) === null) {
+                continue;
+            }
+
+            return sprintf(
+                'more than %d variable-width atom in a row inside the assertion `%s`, which a '
+                .'variable-width atom in front of it re-evaluates: the prefix gives up one character at '
+                .'a time and the assertion is scanned again for each, so its own cost multiplies by the '
+                .'value\'s length. Measured on Node 22.23.2, `^a+(?=a+a+c)` against all-`a` takes 490 ms '
+                .'at 1,000 characters, 3.9 seconds at 2,000 and 12.9 SECONDS at 3,000 — cubic, where '
+                .'`^a+(?=a+c)` takes 12.9 ms and `^a(?=a+a+c)` takes 12.8. Separate the atoms inside the '
+                .'assertion with a character none of them can match, or say the same thing with one '
+                .'quantifier',
+                self::RUN_INSIDE_REPETITION,
+                $rescanned,
+            );
+        }
+
         if (($nested = self::nestingDepth($pattern)) > self::MAX_NESTING) {
             return sprintf(
                 'more than %d levels of nested groups — this one nests %d. The structural analysis is '
@@ -1543,7 +1562,14 @@ final class Pattern
     private static function redundantLookahead(string $pattern): ?string
     {
         foreach (self::topLevelBranches($pattern) as $branch) {
-            if (($refusal = self::lookaheadOverlapsOptional($branch, self::anchorsTheSearch($branch))) !== null) {
+            /*
+             * ⚠️ THE WALK DISCOVERS THE ANCHOR AS IT GOES, and seeding it from the whole branch was
+             * wrong — review found `(?=a)^a{0}a` published: `anchorsTheSearch()` looks past assertions,
+             * found the `^` AFTER the lookahead, and exempted dead markup the engines disagree about.
+             * What the exemption rests on is an anchor the assertion has already passed, which is what
+             * the running flag means and what `^b{0}(?=a)a` has.
+             */
+            if (($refusal = self::lookaheadOverlapsOptional($branch)) !== null) {
                 return $refusal;
             }
         }
@@ -1749,7 +1775,7 @@ final class Pattern
     }
 
     /**
-     * The sequence with every exactly-once group that consumes nothing replaced by its own body.
+     * The sequence with every group that consumes nothing replaced by its own body.
      *
      * ⚠️ `(?:(?=a))` IS `(?=a)` TO EVERY QUESTION THIS RULE ASKS, and treating the two differently is
      * what review found: the wrapper made the assertion invisible to its outside neighbour. Unwrapping
@@ -1757,9 +1783,9 @@ final class Pattern
      * exists to find shapes INSIDE bodies, and teaching it about what surrounds each body would give
      * two jobs to one walk.
      *
-     * ⚠️ EXACTLY-ONCE ONLY. `(?:(?=a))*` also consumes nothing and both engines stop after one
-     * iteration of a zero-width body, but "both engines happen to agree" is the argument this file
-     * refuses elsewhere, and nothing has measured it.
+     * ⚠️ ANY QUANTIFIER, NOW THAT IT IS MEASURED. This said "exactly-once only… nothing has measured
+     * it", and review then measured `(?:(?=a)){2}a{0}a` diverging on PCRE 10.44 exactly as `(?=a)a{0}a`
+     * does. A zero-width body cannot make progress, so both engines stop after one iteration.
      *
      * ⚠️ CAPTURE NUMBERING CHANGES AND THAT IS SAFE HERE. Unwrapping `((?=a))` renumbers the groups
      * after it, which would matter to a backreference rule — and this walk asks nothing about
@@ -1787,9 +1813,14 @@ final class Pattern
             $quantifier = $token['quantifier'];
             $once = $quantifier === '' || self::fixedRepetitions($quantifier) === 1;
 
+            /*
+             * ⚠️ ANY QUANTIFIER, which review measured: `(?:(?=a)){2}a{0}a` diverges on PCRE 10.44
+             * exactly as `(?=a)a{0}a` does, and requiring exactly-once hid it. A zero-width body cannot
+             * make progress, so both engines stop after one iteration and `(?:(?=a)){2}` says what
+             * `(?=a)` says. `$once` is still read below, where a repetition's later iterations matter.
+             */
             if (str_starts_with($atom, '(')
                 && ! self::isAssertionKind(self::frameKindAt($atom, 0))
-                && $once
                 && self::consumesNothing(self::frameBody($atom))) {
                 $out .= self::frameBody($atom);
                 $changed = true;
@@ -1890,8 +1921,22 @@ final class Pattern
         while (($candidate = self::atomAt($pattern, $at)) !== null) {
             $atom = $candidate['atom'];
 
-            if ($atom === '|' || $atom === '^' || $atom === '$') {
+            if ($atom === '|') {
                 return [null, $dead];
+            }
+
+            /*
+             * ⚠️ AN ANCHOR IS SKIPPED RATHER THAN A FULL STOP, and the round that wrote the stop said
+             * `(?=a)^b*a` was "unmatchable nonsense either way". It is not: at position 0 the lookahead
+             * holds, `^` holds, `b*` matches nothing and `a` matches — both engines return a match, and
+             * review then measured `(?=a)^a{0}a` DIVERGING on PCRE 10.44. A claim about a pattern being
+             * unmatchable has to be run, not reasoned; it was wrong, and the walk reads past the anchor
+             * now. What the anchoring exemption rests on is an anchor the assertion has already passed.
+             */
+            if ($atom === '^' || $atom === '$') {
+                $at = $candidate['after'];
+
+                continue;
             }
 
             if (self::neverRuns($candidate['quantifier'])) {
@@ -2799,6 +2844,49 @@ final class Pattern
         }
 
         return false;
+    }
+
+    /**
+     * The first assertion in this sequence that a variable-width atom in front of it makes expensive.
+     *
+     * ⚠️ A PREFIX BACKTRACKS AND THE ASSERTION IS SCANNED AGAIN FOR EACH STEP, which is the same
+     * multiplier a repetition applies and review found it missing: `^a+(?=a+a+c)` has its run inside an
+     * assertion that is not lexically inside any repetition, and the `a+` in front re-evaluates it once
+     * per character it gives back. Measured on Node 22.23.2 against all-`a`, cubic:
+     *
+     *   n=1,000  490.8 ms      n=2,000  3,857.1 ms      n=3,000  12,867.9 ms
+     *
+     * ⚠️ THREE NEIGHBOURS PLACE THE CAUSE EXACTLY, and each is 13 ms at 3,000 characters:
+     * `^a+(?=a+c)` — one atom in the assertion; `^(?=a+a+c)a+` — the prefix comes after it;
+     * `^a(?=a+a+c)` — the prefix is fixed width. So the rule needs BOTH a variable-width prefix and a
+     * run inside the assertion, which is why it is not "an assertion after a variable atom".
+     *
+     * The assertion's body is held to the repetition limit for the same reason a repeated one is: what
+     * multiplies it is the number of times it runs, not where it is written.
+     */
+    private static function assertionAfterVariable(string $sequence): ?string
+    {
+        $atoms = self::flatAtoms($sequence);
+
+        if ($atoms === null) {
+            return null;
+        }
+
+        $variable = false;
+
+        foreach ($atoms as $atom) {
+            if ($atom['assertion']) {
+                if ($variable && self::atomRunExceeds(self::frameBody($atom['atom']), self::RUN_INSIDE_REPETITION)) {
+                    return $atom['atom'];
+                }
+
+                continue;
+            }
+
+            $variable = $variable || $atom['variable'];
+        }
+
+        return null;
     }
 
     /**

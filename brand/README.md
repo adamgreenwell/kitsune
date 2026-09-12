@@ -12,9 +12,13 @@ A kitsune's tails are its counting unit — nine is the mature form. The ladder 
 
 | Mark | Composition | Used at | Used for |
 |---|---|---|---|
-| **Formal** | Nine-tail fox + wordmark | ≥128px | README, site header, social card, print, conference |
+| **Formal, stacked** | Nine-tail fox + wordmark | ≥140px wide | Print, social card, conference, anywhere square-ish |
+| **Formal, horizontal** | Nine-tail fox + wordmark | ≥70px tall | README banner, wide headers, docs masthead |
+| **Compact lockup** | Glyph + wordmark | ≥24px tall | Site header, nav bar — anywhere the fox would turn to mud |
 | **Compact** | Nine-tail fox, no wordmark | 64–128px | App icon, admin sidebar, avatar |
 | **Glyph** | Two tails | ≤48px | Favicon, tab strip, maskable icon |
+
+**The horizontal lockup has a floor of about 70px tall, and it is set by the fox, not the type.** Below that the nine tails collapse into an orange smudge while the wordmark is still perfectly legible — so the compact lockup exists to cover 24–70px, where a site header actually lives. Verified by rendering both at 90, 70, 52, 36 and 28px.
 
 The glyph is **two tails**, decided 2026-09-12 by render rather than by argument — the mirrored pair holds structure at 16px that a single diagonal stroke does not. Two-tailed kitsune are a stage in the folklore, so the count is still a count and never a lesser fox.
 
@@ -25,8 +29,9 @@ Never a one-tailed *fox*. That form is both the most generic image in software a
 Nothing here is built yet. This is what to export while the vector source is open.
 
 ### Formal
-- [ ] `formal-horizontal-light.svg` — mark left, wordmark right
-- [ ] `formal-horizontal-dark.svg`
+- [x] `kitsune-lockup.svg` — mark left, wordmark right
+- [x] `kitsune-lockup-dark.svg`
+- [x] `kitsune-lockup-compact.svg` / `-dark.svg` — glyph + wordmark, for ≤70px
 - [ ] `formal-stacked-light.svg` — mark above wordmark
 - [ ] `formal-stacked-dark.svg`
 - [ ] `formal-mono.svg` — single colour, flat, no tints
@@ -54,13 +59,17 @@ Vector, in [`source/`](source/). Colours are hardcoded hex; there is no keyline 
 |---|---|---|---|
 | `kitsune-logo.svg` | `0 0 1034 940` | `kt-logo-` | Nine-tail fox + wordmark, stacked |
 | `kitsune-fox.svg` | `0 0 1034 785` | `kt-fox-` | Nine-tail fox alone |
-| `kitsune-one-tail.svg` | `0 0 331 337` | `kt-onetail-` | Single-tail glyph. Not adopted; kept as provenance |
-| `kitsune-two-tails.svg` | `0 0 458 329` | `kt-twotails-` | Two-tail glyph as drawn, landscape |
-| **`kitsune-glyph.svg`** | **`0 0 451 451`** | **`kt-glyph-`** | **The glyph. Square-boxed from the above. This is the one to use** |
+| `kitsune-glyph.svg` | `0 0 451 451` | `kt-glyph-` | The glyph — two tails, square-boxed |
+| `kitsune-lockup.svg` | `0 0 2245 783` | `kt-lockup-` | Horizontal lockup, light ground |
+| `kitsune-lockup-dark.svg` | `0 0 2245 783` | `kt-lockupd-` | Horizontal lockup, dark ground |
+| `kitsune-lockup-compact.svg` | `0 0 1418 329` | `kt-lkc-` | Glyph + wordmark, light ground |
+| `kitsune-lockup-compact-dark.svg` | `0 0 1418 329` | `kt-lkcd-` | Glyph + wordmark, dark ground |
 
-Every viewBox starts at `0 0`, every id is namespaced, and all 94 ids across the five files are unique — verified, so any combination can be inlined in one document without breaking `aria-labelledby` or cross-wiring a mirror transform.
+Every viewBox starts at `0 0`, every id is namespaced, and all 188 ids across the seven files are unique — verified, so any combination can be inlined in one document without breaking `aria-labelledby` or cross-wiring a mirror transform.
 
-**Each file carries 20px of built-in inset** — about 2% of the box — uniform on all four sides. Do not double-pad it. The one exception is `kitsune-logo.svg`, whose bottom inset is 14px rather than 20; cosmetic, and worth evening up next time the wordmark is touched.
+The single-tail and unboxed two-tail drafts were deleted on 2026-09-12 once the glyph superseded them; the glyph carries its own copy of the path data and depends on neither.
+
+**The lockup and fox carry 20px of built-in inset** — about 2% of the box — uniform on all four sides. Do not double-pad it. The one exception is `kitsune-logo.svg`, whose bottom inset is 14px rather than 20; cosmetic, and worth evening up next time the wordmark is touched.
 
 ## Palette — measured
 
@@ -79,7 +88,11 @@ Inside the mark, only two pairs hold a 3:1 edge — rust/white at 5.17 and teal/
 
 ### Dark-ground wordmark
 
-The teal wordmark cannot be used on a dark ground. `#2E96A4` is the lightest-clearing minimum at **5.42:1** on `#0D1117`, and it only reaches 3.49:1 back on white — so **the wordmark needs two colours, one per ground.** There is no single hue that serves both.
+The teal wordmark cannot be used on a dark ground. **The dark-ground wordmark is `#4FB3C0`.**
+
+`#2E96A4` was the first pick, on the strength of 5.42:1 against GitHub's `#0D1117`. Testing it against a wider set of dark grounds killed it: on slate `#1E293B` it measures **4.19:1** and misses AA. `#4FB3C0` clears AA on every dark ground tried — 7.70 on `#0D1117`, 5.95 on slate, 6.47 on `#222` — and the only ground it fails is brand teal, which the mark may not sit on anyway.
+
+Neither serves both grounds: `#4FB3C0` is 2.46:1 back on white. **The wordmark needs two colours, one per ground**, and that is what the lockup files ship.
 
 ### Grounds the mark may not sit on
 
@@ -90,14 +103,16 @@ The teal wordmark cannot be used on a dark ground. `#2E96A4` is the lightest-cle
 
 Measured 2026-09-12 by rendering at size on white, `#FAFAFA`, `#0D1117`, mid grey, brand teal and brand rust.
 
-- [ ] **No horizontal lockup.** Still the biggest gap — stacked cannot sit in a site header, a README banner, or a 1200×630 card.
-- [ ] **Dark-ground variants.** The wordmark at `#2E96A4` or lighter; the legs recoloured off teal wherever the ground is dark.
+- [ ] **The fox's legs on dark grounds.** The wordmark half of this is done. The legs and paws are still `#00545D`, which is 2.19:1 on `#0D1117` — they read dimly rather than vanishing, but they are below any threshold worth defending. What colour they become is a design call, not a measurement.
 - [ ] **Hand-tune the 16px cut.** The two-tail glyph survives 16px — the chevrons nearly close but the internal split holds — so this is a polish pass on the raster export, not a redraw. The single-tail version needed more.
 - [ ] **No monochrome variant.**
 
 ### Closed
 
-- ~~Duplicate element IDs.~~ **Done** — namespaced per file, 94 ids, zero collisions, verified by inlining all five together.
+- ~~No horizontal lockup.~~ **Done** — `kitsune-lockup.svg`, wordmark at 30% of mark height, gap at 10% of mark width, wordmark centred on the mark's bounding box. Three size ratios and four gap/alignment pairs were rendered before picking; 22% read as a labelled fox and 38% as type with an ornament.
+- ~~Dark-ground wordmark.~~ **Done**, at `#4FB3C0` rather than the `#2E96A4` first proposed.
+
+- ~~Duplicate element IDs.~~ **Done** — namespaced per file, zero collisions, verified by inlining every file together.
 - ~~Non-zero viewBox origins.~~ **Done** — all normalised to `0 0 W H` by translating the content. Ink bounds and per-side inset are unchanged on every file, and before/after renders are identical.
 
 - ~~The two-tail glyph is landscape and needs a square re-box.~~ **Done** — `kitsune-glyph.svg`, ink bounds measured at 418×289, boxed square at 451 with the content translated and IDs namespaced.
@@ -109,10 +124,12 @@ Measured 2026-09-12 by rendering at size on white, `#FAFAFA`, `#0D1117`, mid gre
 
 | Mark | Holds down to | Fails at |
 |---|---|---|
-| Formal lockup, stacked | ~140px | 90px — wordmark unreadable |
+| Formal lockup, stacked | ~140px wide | 90px — wordmark unreadable |
+| Formal lockup, horizontal | ~70px tall | 52px — fox degrades; 36px it is a smudge |
+| Compact lockup | ~24px tall | — glyph and wordmark both hold at 28px |
 | Compact fox | ~64px | 32px — becomes an orange smudge |
 | Glyph (two tails) | 16px | — verified in a browser-tab mock at true 16px |
-| One-tail glyph | ~24px | 16px — single diagonal stroke loses its tip. Not adopted |
+| One tail, for comparison | ~24px | 16px — a single diagonal stroke loses its tip. Measured, then dropped |
 
 ## Using the mark
 

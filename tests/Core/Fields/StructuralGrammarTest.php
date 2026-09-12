@@ -1351,7 +1351,13 @@ describe('an unanchored pattern pays for its own search', function (): void {
         // nothing. Both are anchored patterns written in a way the first version could not see.
         '(?:^a*a*b)',
         '^(?:a*a*b)$',
-        '(?=x)^a*a*b',
+        /*
+         * ⚠️ THE FOLLOWER IS A REQUIRED `b` ON PURPOSE. This row read `(?=x)^a*a*b` until review measured
+         * `(?=a)^a{0}a` diverging — an anchor AFTER a lookahead no longer exempts the lookahead rules,
+         * so that spelling is refused by rule 6 and could not test this rule any more. The anchoring the
+         * run rule reads through the assertion is unchanged, which is what this row is for.
+         */
+        '(?=x)^ba*a*c',
 
         // ⚠️ And ONE variable-width atom is linear, so it needs no anchor at all. A rule that asked for
         // one everywhere would refuse most of the patterns in this file for nothing.
@@ -1444,10 +1450,13 @@ describe('an unanchored lookahead in front of a nullable atom asserts nothing', 
         '(?=a)|a?a',
         'a?|(?=a)a',
 
-        // ⚠️ A `^` AFTER the lookahead stops the walk rather than being skipped: the pattern is
-        // anchored after all, and `(?=a)^b*a` is unmatchable nonsense either way. Refusing it would be
-        // refusing it for a reason that is not true.
-        '(?=a)^b*a',
+        /*
+         * ⚠️ THIS ROW USED TO CARRY `(?=a)^b*a`, ON THE CLAIM THAT IT IS "UNMATCHABLE NONSENSE EITHER
+         * WAY". It is not: at position 0 the lookahead holds, `^` holds, `b*` matches nothing and `a`
+         * matches — both engines return a match, which I could have checked and did not. Review then
+         * measured `(?=a)^a{0}a` DIVERGING on PCRE 10.44, so an anchor AFTER the assertion cannot grant
+         * the exemption, and both spellings are refused now. The claim was the mistake, not the verdict.
+         */
         '^(?=a)(?!b)b*a',
 
         /*
@@ -1587,11 +1596,16 @@ describe('what consumes nothing cannot change what a pattern means', function ()
      * for a false refusal: a stored pattern that means what it meant yesterday stops a deploy.
      */
     it('reads through dead markup to find the anchor', function (string $pattern): void {
+        /*
+         * ⚠️ `(?=x)a{0}^a*a*b$` WAS ON THIS LIST AND IS NOT ANY MORE, because an anchor after an
+         * assertion no longer exempts the assertion rules — review measured `(?=a)^a{0}a` diverging. The
+         * anchor is still read through the dead markup for the RUN rule, which is what these rows test;
+         * the lookahead spelling is refused by rule 6 and is asserted there.
+         */
         expect(Pattern::unpublishable($pattern))->toBeNull("[{$pattern}] is anchored");
     })->with([
         'a{0}^a*a*b$',
         'b{0}^a*a*b$',
-        '(?=x)a{0}^a*a*b$',
     ]);
 
     it('lets a fixed repetition of a literal divide a run', function (string $pattern): void {
@@ -1868,5 +1882,86 @@ describe('rule 7 — at most 32 levels of nested groups', function (): void {
         '^[(]a$',
         '^(\()a$',
         '^[()]+$',
+    ]);
+});
+
+describe('an anchor after the assertion does not exempt it', function (): void {
+    /*
+     * ⚠️ MEASURED, AFTER A ROUND THAT REASONED AND GOT IT WRONG. The walk that looks for the anchor
+     * reads past assertions, so it found the `^` in `(?=a)^a{0}a` and exempted the dead markup beside the
+     * lookahead — and review measured that shape DIVERGING on PCRE 10.44 with Node 24.15, the server
+     * rejecting `a` while ECMAScript matches it.
+     *
+     * ⚠️ AND THE ROUND BEFORE HAD CALLED THESE SHAPES "unmatchable nonsense either way", which they are
+     * not: at position 0 the lookahead holds, `^` holds, and the rest matches — both engines return a
+     * match on `a`, which was one `preg_match()` away from being known. So the exemption now rests on an
+     * anchor the assertion has already PASSED, which is what `^b{0}(?=a)a` has and these do not.
+     */
+    it('refuses the shape when the anchor comes after', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))->not->toBeNull("[{$pattern}] is not exempt");
+    })->with([
+        '(?=a)^a{0}a',
+        '(?=a)^b*a',
+        '(?=x)^a*a*b',
+        '(?=x)a{0}^a*a*b$',
+    ]);
+
+    it('still exempts the shape when the anchor comes first', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))->toBeNull("[{$pattern}] passed its anchor");
+    })->with([
+        '^(?=a)b*a',
+        '^b{0}(?=a)a',
+        '^(?=a)(a{0}a)',
+        '(?:^)(?=a)b*a',
+    ]);
+});
+
+describe('a repeated zero-width wrapper is transparent too', function (): void {
+    /*
+     * ⚠️ MEASURED AFTER A DOCBLOCK DECLINED TO ASSUME IT. The unwrapping required exactly-once and said
+     * so — "`(?:(?=a))*` also consumes nothing and both engines stop after one iteration, but 'both
+     * engines happen to agree' is the argument this file refuses elsewhere, and nothing has measured
+     * it". Review measured it: `(?:(?=a)){2}a{0}a` diverges on PCRE 10.44 exactly as `(?=a)a{0}a` does.
+     *
+     * A zero-width body cannot make progress, so the repetition cannot run twice — and the wrapper says
+     * what its body says. The HOIST of a leading prefix still requires exactly-once, because moving a
+     * prefix out of a repetition changes what its later iterations see.
+     */
+    it('sees the lookahead through a repeated wrapper', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))->not->toBeNull("[{$pattern}] holds the shape");
+    })->with([
+        '(?:(?=a)){2}a{0}a',
+        '(?:(?=a)){2}a?a',
+        '(?:(?=a))*a?a',
+        '(?:(?:(?=a)){2})a?a',
+    ]);
+});
+
+describe('a variable prefix re-evaluates the assertion after it', function (): void {
+    /*
+     * ⚠️ THE SAME MULTIPLIER A REPETITION APPLIES, from a shape with no repetition in it. `^a+(?=a+a+c)`
+     * has its run inside an assertion, and the `a+` in front re-evaluates it once per character it gives
+     * back. Measured on Node 22.23.2 against all-`a`, cubic:
+     *
+     *   n=1,000  490.8 ms      n=2,000  3,857.1 ms      n=3,000  12,867.9 ms
+     *
+     * ⚠️ THREE NEIGHBOURS PLACE THE CAUSE, and each is 13 ms at 3,000 characters: one atom inside the
+     * assertion, the prefix after the assertion, and a fixed-width prefix. So the rule needs BOTH a
+     * variable-width prefix and a run inside the assertion.
+     */
+    it('refuses a run inside an assertion a variable prefix re-evaluates', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))->toContain('re-evaluates');
+    })->with([
+        '^a+(?=a+a+c)',
+        '^a*(?!a+a+c)x',
+        '^[a-z]+(?=a+a+c)',
+    ]);
+
+    it('leaves the three neighbours alone', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))->toBeNull("[{$pattern}] costs 13 ms at 3,000 characters");
+    })->with([
+        '^a+(?=a+c)',
+        '^(?=a+a+c)a+',
+        '^a(?=a+a+c)',
     ]);
 });

@@ -193,13 +193,23 @@ final class AuditPatternsCommand extends Command
          */
         $this->line("examined <info>{$examined}</info> stored pattern".($examined === 1 ? '' : 's'));
 
+        /*
+         * ⚠️ REPORTED WITHOUT GATING, which review corrected. A narrower effective ceiling is
+         * INTENTIONAL and it does not make stored data invalid by itself: a field may declare an
+         * unlimited cardinality, publish `maxItems: 1`, and hold no entry that carries two values — and
+         * `--strict` was failing that deployment. The other two counts gate because each names a row
+         * that WILL be refused on its next save; this one names a bound an operator should check their
+         * entries against, and this command does not read entry values.
+         */
         if ($overItems > 0) {
-            $this->warn($overItems.' stored field'.($overItems === 1 ? '' : 's')
-                .' now publish a narrower item bound than their cardinality declares. Lower `maxLength`'
-                .' or simplify the pattern; cardinality itself is locked once data exists.');
+            $this->line($overItems.' stored field'.($overItems === 1 ? '' : 's')
+                .' now publish a narrower item bound than their cardinality declares.');
+            $this->line('This is not a failure on its own: check whether any entry holds more values than');
+            $this->line('the bound above, because such an entry is refused on its next save.');
+            $this->line('Lower `maxLength` or simplify the pattern; cardinality is locked once data exists.');
         }
 
-        if ($unpublishable === 0 && $overLong === 0 && $overItems === 0) {
+        if ($unpublishable === 0 && $overLong === 0) {
             $this->info('Every stored pattern satisfies the published grammar, and every configured length is within its limit.');
 
             return self::SUCCESS;

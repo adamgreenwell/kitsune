@@ -144,6 +144,16 @@ it('names a multi-value field whose item bound is now narrower than its cardinal
         ->expectsOutputToContain('unlimited, 1 publishes now')
         ->expectsOutputToContain('Lower `maxLength` or simplify the pattern')
         ->assertSuccessful();
+
+    /*
+     * ⚠️ AND IT DOES NOT GATE, which review corrected: a narrower ceiling is intentional and does not
+     * make stored data invalid by itself. A field may declare an unlimited cardinality, publish
+     * `maxItems: 1`, and hold no entry carrying two values — `--strict` was failing that deployment for
+     * a hazard it had not found. The other two counts gate because each names a row that WILL be refused
+     * on its next save; this one names a bound to check entries against, and this command does not read
+     * entry values.
+     */
+    $this->artisan('kitsune:audit-patterns', ['--strict' => true])->assertSuccessful();
 });
 
 it('stays silent when the declared cardinality is inside the bound', function (): void {
