@@ -1395,7 +1395,20 @@ final class Pattern
          * rule owns that shape and says the true thing about it.
          */
         foreach (self::topLevelBranches($pattern) as $branch) {
-            if ($product <= self::ambiguityWithoutAnchor() || self::anchorsTheSearch($branch)) {
+            if (self::anchorsTheSearch($branch)) {
+                continue;
+            }
+
+            /*
+             * ⚠️ THE BRANCH'S OWN PRODUCT, NOT THE PATTERN'S, which I got wrong first and found by
+             * reading the code back rather than by measuring it: `^(?:ab|ab)(?:ab|ab)(?:ab|ab)(?:ab|ab)c|x`
+             * holds all its ambiguity in the ANCHORED branch and a single literal in the other, and the
+             * whole pattern's product refused it for the `x`. An unanchored branch is only retried over
+             * its own ways to match.
+             */
+            $branchProduct = self::ambiguityCost($branch);
+
+            if ($branchProduct <= self::ambiguityWithoutAnchor()) {
                 continue;
             }
 
@@ -1408,7 +1421,7 @@ final class Pattern
                 .'branches distinct so that at most one can match at a position',
                 number_format(self::ambiguityWithoutAnchor()),
                 // No saturation case here: a product past the anchored ceiling has already returned.
-                number_format($product),
+                number_format($branchProduct),
             );
         }
 

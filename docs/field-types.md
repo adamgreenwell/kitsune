@@ -341,6 +341,8 @@ A named capture may use a name in **any script** — `(?<é>`, `(?<日本>`, `(?
 >
 >     ⚠️ **A product of 8 still publishes unanchored**, and that is deliberate rather than an oversight: refusing any ambiguity without an anchor was the first version of this rule and it refused fifteen shapes in this repository's own tests — all products of 2, all linear at any length. A false refusal for a real cost is still a false refusal.
 >
+>     ⚠️ **And the product is the BRANCH's, not the pattern's** — found by reading the rule back rather than by measuring it. `^(?:ab|ab)(?:ab|ab)(?:ab|ab)(?:ab|ab)c|x` holds all its ambiguity in the anchored branch and a single literal in the other, and the whole pattern's product refused it for the `x`. An unanchored branch is only ever retried over its own ways to match.
+>
 >     **The delimiter proof was the half this paragraph got right**: the unanchored comma list `[^,]+(?:,[^,]+)*X` measures **57.5 ms** on 2,500 items, already past the ceiling, so it needs no rule of its own.
 >
 >     ⚠️ **That allowance needs a real ceiling on the value, and the sentence here used to claim one that did not exist** — "which `TextType` bounds by its configured `maxLength`, 255 by default". Review checked it: the setting had no upper bound, so quadratic meant whatever an org configured. Measured, `^a*a*b$` takes **6.2 s at 65,535 characters and 14.4 s at 100,000**. `TextType::MAX_CONFIGURABLE_LENGTH` caps it at **5,000**, which keeps the worst adversarial case — quadratic pattern, maximal value, subject failing at the end — at 36 ms here and inside half a second on the 1 vCPU floor. It is generous for a single-line field, and `textarea` and `rich_text` take no pattern, so neither is affected.

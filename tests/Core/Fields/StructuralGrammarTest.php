@@ -1693,5 +1693,14 @@ describe('an unanchored ambiguity is retried from every position', function (): 
         // ⚠️ And distinct branches cost nothing at all: at most one can match at a position, whatever
         // the pattern's length or the number of alternations.
         str_repeat('(?:cat|dog)', 20).'x',
+
+        /*
+         * ⚠️ THE BRANCH'S OWN PRODUCT, NOT THE PATTERN'S, which my first version got wrong — found by
+         * reading the code back rather than by measuring it. All the ambiguity here is in the ANCHORED
+         * branch and the unanchored one is a single literal, and the whole pattern's product refused it
+         * for the `x`. An unanchored branch is only ever retried over its own ways to match.
+         */
+        '^'.str_repeat('(?:ab|ab)', 4).'c|x',
+        'x|^'.str_repeat('(?:ab|ab)', 4).'c',
     ]);
 });
