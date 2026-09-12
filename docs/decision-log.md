@@ -1511,7 +1511,7 @@ Live defects remain **0**. The expressiveness cost is nine rows: three are porta
 
 ## ADR-032 — The mark reduces to a unit, not to a lesser fox, and it is adopted provisionally
 
-**Status:** Provisional · 2026-09-12 — adopted for use, not for registration
+**Status:** Provisional · 2026-09-12 — adopted for use, not for registration · vector source landed and measured the same day, see the amendment below
 
 Raised because a comp exists. It settles two things that were about to be settled by accident: what the mark system is, and whether having drawn one violates the roadmap's instruction not to spend on a logo before name clearance.
 
@@ -1521,11 +1521,19 @@ The artwork this decision was taken from is **raster only**. That makes it a des
 
 This matters beyond convenience. **Five defects are visible in the comp and all five are cheap in vector and expensive afterwards** — the cream tail tips vanishing against white, the keyline haloing on dark grounds, the glyph's tip at small size, the absent horizontal lockup, and the unoutlined wordmark. They are listed in `brand/README.md` rather than here because that is where somebody opening the source will look.
 
+**Amended 2026-09-12 — the vector landed the same day, and three of those five defects did not exist.** The tail tips do not vanish on white: the white shapes are fully inset within the rust and read as notches on every ground tested. There is no keyline to halo, and there never was — the comp only appeared to have one. The wordmark was already outlined as paths, so no typeface licence question arises. **All three were reasoned from a rasterised comp and all three were wrong**, which is Standing Principle #9 arriving from the direction nobody watches: the failure mode is not only asserting a problem is absent, it is asserting one is present and spending the redraw on it.
+
+What measurement found instead was worse than what it cleared. **The teal wordmark fails on dark grounds at 2.19:1**, and no single hue serves both grounds — `#2E96A4` is the minimum that clears on dark and falls to 3.49:1 back on white, so the wordmark needs two colours. **The mark cannot sit on its own brand teal at all**: the legs and paws are `#00545D` against a `#00545D` ground, which is 1.00:1, and the render shows a fox with no legs. Neither was visible in the comp and neither was predicted. Both are in `brand/README.md` with the numbers.
+
+The two defects that survived are the two that were about absence rather than appearance — no horizontal lockup, and the glyph's tip below 24px. Absence was the thing reasoning could get right.
+
 ### The ladder abstracts; it does not reduce
 
 Three marks — formal lockup, compact fox, single-tail glyph — and the rule that generates them is that **the smallest mark is one unit of the largest, not a shrunken copy of it.**
 
 A kitsune's tails are its counting unit; nine is the mature form. So the ladder drops the wordmark, then drops to the tail. Nine of the glyph is the logo.
+
+**Amended 2026-09-12 — the glyph is two tails, not one.** The original pick was a single tail, on the reasoning that one unit is the cleanest possible reduction. Rendering both at 16, 32 and 48px on white, dark and grey settled it the other way: **the mirrored pair carries structure that a single diagonal stroke does not**, because symmetry gives the eye an axis to resolve when detail is gone, and a lone tail at 16px is one stroke with a closing notch. Two-tailed kitsune are a stage in the folklore, so the count is still a count — the rule that the glyph is a tail-count and never a lesser fox is unchanged, and it is the rule rather than the number that this ADR fixes. The decision was made by looking at the thing at the size it will be used, which is the only way it could have been made correctly.
 
 **The rejected form is the one that looks most obvious: a one-tailed fox.** It fails three ways at once. Visually, a single orange fox at 32px is the most crowded image in software and sits closest to the marks a clearance search will surface. Structurally, it is a *reduction* — a shrunken picture of a complex mark, which is the thing that reliably turns to mud at favicon size. And in the folklore it is a juvenile kitsune, so the smallest and most-repeated mark would depict the least of what the name claims.
 
@@ -1565,6 +1573,7 @@ Pillar three is tested rather than claimed, so the brand carries requirements ra
 |---|---|
 | One-tailed fox as the small mark | The original proposal. Generic at exactly the size where distinctiveness matters most, adjacent to every other fox-named project, and a juvenile kitsune in the folklore the name comes from. |
 | Head-plus-fan glyph | Considered and dropped in favour of the tail. Still a reduction rather than an abstraction — a shrunken picture of the logo, with a face that becomes mud at 16px and a fan that becomes a lumpy halo. |
+| A single tail as the glyph | The original pick, reversed on 2026-09-12 by rendering both at icon sizes. One diagonal stroke with a notch has no axis to resolve at 16px; the mirrored pair does. |
 | Two marks instead of three | Forces one asset to serve 512px and 16px. Whichever size it is drawn for, it fails the other. |
 | Adopt outright and file now | Spends the clearance budget before knowing whether the name survives contact with the two existing "Kitsune" projects. The roadmap put clearance first for this reason. |
 | Hold the mark entirely until clearance returns | Leaves the README, the site and the admin with no mark for an unbounded period, to avoid a cost — redrawing — that is already sunk and was never large. Provisional adoption gets the same protection at a fraction of the delay. |

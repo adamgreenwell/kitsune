@@ -52,6 +52,43 @@ final class Pattern
     public const MAX_LENGTH = 1000;
 
     /**
+     * How deep a pattern may nest its groups, which is a PUBLISHED limit rather than a silent one.
+     *
+     * ⚠️ IT WAS SILENT, AND IT REPORTED THE WRONG REASON, which review found: every recursive walk in
+     * this file stopped at 64 levels and reported MAXIMAL AMBIGUITY, so `^` then 65 nested `(?:` around
+     * an `a` — 263 characters, identical in both engines — was refused for reaching the retry ceiling it
+     * does not reach. A restriction the published grammar does not contain, diagnosed as something else.
+     *
+     * ⚠️ AND RAISING IT WAS THE WRONG FIX, which measuring showed. The structural analysis is
+     * superlinear in depth, and the guard runs on every settings save and on every stored pattern in the
+     * migration audit:
+     *
+     *   depth  8   2.5 ms      48    53.8 ms      249  11,134 ms
+     *        16   2.7 ms      64   129.5 ms      497  43,091 ms
+     *        32  16.2 ms      80   258.6 ms
+     *
+     * So the limit is real and it is stated: 32 levels, 16 ms, and nothing a field validation needs
+     * nests past three. `structuralRefusal()` refuses past it by NAME, and the walks keep their bound —
+     * a walk with no bound can be made to recurse for ever by a pattern that never compiles.
+     */
+    private const MAX_NESTING = 32;
+
+    /**
+     * The bound the recursive walks carry, which is NOT the published nesting limit.
+     *
+     * ⚠️ THE WALKS COUNT MORE THAN ONCE PER LEVEL, which is why these are two numbers: `ambiguityCost()`
+     * descends into a group and then into each of its branches, so seventeen nestings of `(?:X|a)` reach
+     * a depth of thirty-four. Setting the walk bound to the published limit made that pattern — eighteen
+     * alternative paths, 100,000 Node matches in 3 ms, and a test in this repository asserting it is
+     * harmless — report maximal ambiguity again, which is the very defect the published limit replaced.
+     *
+     * So the published limit is what an AUTHOR meets, and this is what a walk meets: four times it, for
+     * the headroom those extra increments need. Only a pattern that has already been refused by name can
+     * reach it.
+     */
+    private const MAX_WALK_DEPTH = self::MAX_NESTING * 4;
+
+    /**
      * How many variable-width atoms may sit in a row with no forced boundary between them.
      *
      * ⚠️ TWO NUMBERS BECAUSE THERE ARE TWO COST CLASSES, both measured — see `atomRunExceeds()`.
@@ -1367,6 +1404,18 @@ final class Pattern
          * is over branches that can BOTH match, which is what `everyAlternationIsUnambiguous()`
          * already answers for a repetition body.
          */
+        if (($nested = self::nestingDepth($pattern)) > self::MAX_NESTING) {
+            return sprintf(
+                'more than %d levels of nested groups — this one nests %d. The structural analysis is '
+                .'superlinear in depth and it runs on every settings save and on every stored pattern in '
+                .'the migration audit: measured, 32 levels take 16 ms, 64 take 130 ms and 249 take 11 '
+                .'SECONDS. Nothing a field validation needs nests past three, so this is a limit rather '
+                .'than a judgement — flatten the groups that are not doing anything',
+                self::MAX_NESTING,
+                $nested,
+            );
+        }
+
         if (($overlap = self::redundantLookahead($pattern)) !== null) {
             return $overlap;
         }
@@ -1718,7 +1767,7 @@ final class Pattern
      */
     private static function withoutZeroWidthWrappers(string $sequence, int $depth = 0): string
     {
-        if ($depth > 64) {
+        if ($depth > self::MAX_WALK_DEPTH) {
             return $sequence;
         }
 
@@ -1764,7 +1813,7 @@ final class Pattern
      */
     private static function consumesNothing(string $sequence, int $depth = 0): bool
     {
-        if ($depth > 64) {
+        if ($depth > self::MAX_WALK_DEPTH) {
             return false;
         }
 
@@ -1891,7 +1940,7 @@ final class Pattern
      */
     private static function leadingDeadAtom(string $body, int $depth = 0): ?string
     {
-        if ($depth > 64) {
+        if ($depth > self::MAX_WALK_DEPTH) {
             return null;
         }
 
@@ -1951,7 +2000,7 @@ final class Pattern
     private static function assertedLead(string $body, int $depth = 0): ?array
     {
         // The same belt-and-braces bound the other recursive walks in this file carry.
-        if ($depth > 64) {
+        if ($depth > self::MAX_WALK_DEPTH) {
             return null;
         }
 
@@ -2051,7 +2100,7 @@ final class Pattern
             return true;
         }
 
-        if ($depth > 64 || ! str_starts_with($atom, '(') || ! self::consumesCharacters($atom)) {
+        if ($depth > self::MAX_WALK_DEPTH || ! str_starts_with($atom, '(') || ! self::consumesCharacters($atom)) {
             return false;
         }
 
@@ -2157,7 +2206,7 @@ final class Pattern
     private static function ambiguityCost(string $body, int $depth = 0): int
     {
         // The length limit caps nesting at 250; this is the belt to that brace.
-        if ($depth > 64) {
+        if ($depth > self::MAX_WALK_DEPTH) {
             return PHP_INT_MAX;
         }
 
@@ -2721,7 +2770,7 @@ final class Pattern
     /** Whether an unescaped `^` or `$` appears in this subpattern, at any depth. */
     private static function containsAnchor(string $body, int $depth = 0): bool
     {
-        if ($depth > 64) {
+        if ($depth > self::MAX_WALK_DEPTH) {
             return true;
         }
 
@@ -2918,6 +2967,48 @@ final class Pattern
     }
 
     /**
+     * The deepest level of nested groups in this pattern.
+     *
+     * ⚠️ SCANNED RATHER THAN PARSED, and the two things it must not count are the two every scanner in
+     * this file has to know about: a `(` inside a character class is a literal, and an escaped `\(` is
+     * one too. `frames()` would answer the same question and costs a full parse, which is the thing this
+     * check exists to run BEFORE.
+     */
+    private static function nestingDepth(string $pattern): int
+    {
+        $length = mb_strlen($pattern);
+        $inClass = false;
+        $depth = 0;
+        $deepest = 0;
+
+        for ($i = 0; $i < $length; $i++) {
+            $char = mb_substr($pattern, $i, 1);
+
+            if ($char === '\\') {
+                $i += self::escapeSpan($pattern, $i) - 1;
+
+                continue;
+            }
+
+            if ($inClass) {
+                $inClass = $char !== ']';
+
+                continue;
+            }
+
+            if ($char === '[') {
+                $inClass = true;
+            } elseif ($char === '(') {
+                $deepest = max($deepest, ++$depth);
+            } elseif ($char === ')') {
+                $depth = max(0, $depth - 1);
+            }
+        }
+
+        return $deepest;
+    }
+
+    /**
      * Whether this sequence can only match at the start of the subject, so the engine tries one
      * starting position rather than every one.
      *
@@ -2936,7 +3027,7 @@ final class Pattern
      */
     private static function anchorsTheSearch(string $sequence, int $depth = 0): bool
     {
-        if ($depth > 64) {
+        if ($depth > self::MAX_WALK_DEPTH) {
             return false;
         }
 
@@ -3486,9 +3577,10 @@ final class Pattern
      */
     private static function atomList(string $sequence, bool $splice, int $depth): ?array
     {
-        // A bound on nesting, so a pathological pattern cannot recurse without end. The length
-        // limit already caps depth at 250; this is the belt to that brace.
-        if ($depth > 64) {
+        // A bound on nesting, so a pattern that never compiles cannot recurse for ever. `MAX_WALK_DEPTH`
+        // has headroom over the PUBLISHED nesting limit, so only a pattern already refused by name can
+        // reach it — see both constants for the false refusal a hand-picked 64 caused.
+        if ($depth > self::MAX_WALK_DEPTH) {
             return null;
         }
 

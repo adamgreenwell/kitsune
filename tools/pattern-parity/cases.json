@@ -1192,5 +1192,11 @@
         "pattern": "^(?:a(?!a*c)(?!a*c))*X$",
         "subject": "aaaaaaaaaaaaaaaaaaaa",
         "why": "The rule that refuses a costly assertion inside a repetition evaluated them ONE AT A TIME, and each is individually inside the allowance. Each rescans the remaining value on every iteration, so k of them cost k times one — exactly linear, measured on Node 22.23.2 with a 5,000-character value: 36.9 ms for one, 74.6 ms for two, 586.9 ms for sixteen, 3,719.9 ms for a hundred. A hundred of them is 709 characters of pattern, well inside the length limit. One is already at the quadratic allowance's ceiling — `^a*a*b$` costs 36 ms at the same length — so the aggregate budget is what ONE costs, the same equal-work rule the unanchored bounds use. Fixed-width assertion bodies do not scan and are not counted."
+    },
+    {
+        "id": "deeply-nested-groups",
+        "pattern": "^(?:(?:(?:(?:(?:(?:(?:(?:a))))))))$",
+        "subject": "a",
+        "why": "Eight levels of nested groups, published — the row exists because the limit above it was SILENT and misdiagnosed: every recursive walk in `Pattern` stopped at 64 levels and reported maximal ambiguity, so 65 levels was refused for reaching a retry ceiling it does not reach. Raising the bound was the wrong fix and measuring showed it: the analysis is superlinear in depth — 16.2 ms at 32 levels, 129.5 ms at 64, 11.1 SECONDS at 249, 43.1 at 497 — and it runs on every settings save and every stored pattern in the audit. So 32 is a published limit with its own refusal, and this row holds the shape that must keep working."
     }
 ]

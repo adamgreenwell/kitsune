@@ -210,7 +210,7 @@ A named capture may use a name in **any script** — `(?<é>`, `(?<日本>`, `(?
 >
 > A denylist **fails open**: a construct nobody anticipated is accepted and published wrong, silently. An allowlist fails closed — an unknown construct is refused because it was never admitted, not because someone remembered it. Rule 3 says `apiSchema()` may only publish a constraint the consumer can enforce; a grammar makes that enforceable *by construction* rather than by enumeration.
 >
-> **Fresh evidence, measured 2026-09-11.** 199 candidate constructs, enumerated from six independent angles, run through one shared case file so PCRE and ECMAScript are asked the same question. At production fidelity — PCRE compiling `Pattern::delimit()`'s output, ECMAScript compiling the published source — **two constructs the screen accepted diverged, and a third made neither engine answer at all**. Both divergences are now refused by the structural rules below, so the current count is zero:
+> **Fresh evidence, measured 2026-09-11.** 200 candidate constructs, enumerated from six independent angles, run through one shared case file so PCRE and ECMAScript are asked the same question. At production fidelity — PCRE compiling `Pattern::delimit()`'s output, ECMAScript compiling the published source — **two constructs the screen accepted diverged, and a third made neither engine answer at all**. Both divergences are now refused by the structural rules below, so the current count is zero:
 >
 > | Pattern | PCRE | ECMAScript |
 > |---|---|---|
@@ -249,7 +249,7 @@ A named capture may use a name in **any script** — `(?<é>`, `(?<日本>`, `(?
 > | `\1` `\k<name>` | only where the group **must** participate — see the rows above |
 > | `\t` `\n` `\r` `\f` `\xHH` | `\v` is excluded: vertical whitespace here, the letter `v` there |
 >
-> ### Six rules the construct list cannot express
+> ### Seven rules the construct list cannot express
 >
 > ⚠️ **An allowlist of constructs is necessary and not sufficient**, and the third row of the divergence table above is why.
 >
@@ -453,9 +453,19 @@ A named capture may use a name in **any script** — `(?<é>`, `(?<日本>`, `(?
 >
 >     ⚠️ **The overlap has to be PROVED, and this is where the rule stops.** Either PCRE answers class membership for a single-character lead, or the two atoms are written identically — which is what refuses `(?=[0-9])[0-9]?[0-9]`. So `^(?=[A-Za-z])[A-Za-z0-9]*$` still publishes: the assertion excludes a leading digit where the neighbour admits one, so it is not redundant, and an intersection test that guessed would refuse the identifier pattern every schema has. Deciding whether two **different** classes intersect is the primitive [#73](https://github.com/adamgreenwell/kitsune/issues/73) is open on, and it is the same missing question there.
 >
+> 7. **At most 32 levels of nested groups.** A limit rather than a judgement, and it is published because it was **silent and misdiagnosed** before: every recursive walk in `Pattern` stopped at 64 levels and reported *maximal ambiguity*, so `^` then 65 nested `(?:` around an `a` — 263 characters, identical in both engines — was refused for reaching a retry ceiling it does not reach.
+>
+>     ⚠️ **Raising the limit was the wrong fix, and measuring showed it.** The structural analysis is superlinear in depth, and it runs on every settings save and on every stored pattern in the migration audit:
+>
+>     | depth | 8 | 16 | 32 | 48 | 64 | 80 | 249 | 497 |
+>     |---|---|---|---|---|---|---|---|---|
+>     | | 2.5 ms | 2.7 ms | **16.2 ms** | 53.8 ms | 129.5 ms | 258.6 ms | 11.1 s | 43.1 s |
+>
+>     So the limit is 32, it is stated, and the refusal names it — nothing a field validation needs nests past three. The internal walks keep a bound of their own, because a walk with no bound can be made to recurse for ever by a pattern that never compiles; the difference is that only an inadmissible pattern now reaches it.
+>
 > ### What this costs
 >
-> Measured, so it is a number rather than a worry: of 199 candidates, **two** are refused today that both engines agree on — `\p{Lower}` and `\p{Alpha}`, POSIX-style aliases missing from the property allowlist. Widening a list is a reviewable, testable act; a denylist's gaps are found by accident. **Both are now on it, and `\p{Upper}` with them** — the obvious third of the family, added at the same time so the allowlist does not carry an arbitrary subset.
+> Measured, so it is a number rather than a worry: of 200 candidates, **two** are refused today that both engines agree on — `\p{Lower}` and `\p{Alpha}`, POSIX-style aliases missing from the property allowlist. Widening a list is a reviewable, testable act; a denylist's gaps are found by accident. **Both are now on it, and `\p{Upper}` with them** — the obvious third of the family, added at the same time so the allowlist does not carry an arbitrary subset.
 >
 > ⚠️ **Added on a set comparison, not on compiling**, because compiling proves only that a name is accepted. Each alias was compared with its canonical spelling across all 1,114,112 codepoints in *both* engines and is exactly equal: `Lower`/`Lowercase` 2,595 members, `Alpha`/`Alphabetic` 147,421, `Upper`/`Uppercase` 2,006. `\p{Space}` is the reason this is measured one name at a time rather than adopted as a family — **PCRE compiles it and ECMAScript rejects the name**, so it stays out.
 >

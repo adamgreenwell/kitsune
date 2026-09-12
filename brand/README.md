@@ -8,13 +8,15 @@
 
 ## The system
 
-A kitsune's tails are its counting unit — nine is the mature form. The ladder is built on that, so the smallest mark is **one unit of the largest**, not a shrunken copy of it.
+A kitsune's tails are its counting unit — nine is the mature form. The ladder is built on that, so the smallest mark is **a couple of units of the largest**, not a shrunken copy of it.
 
 | Mark | Composition | Used at | Used for |
 |---|---|---|---|
 | **Formal** | Nine-tail fox + wordmark | ≥128px | README, site header, social card, print, conference |
-| **Compact** | Nine-tail fox, no wordmark | 48–128px | App icon, admin sidebar, avatar |
-| **Glyph** | One tail | ≤32px | Favicon, tab strip, maskable icon |
+| **Compact** | Nine-tail fox, no wordmark | 64–128px | App icon, admin sidebar, avatar |
+| **Glyph** | Two tails | ≤48px | Favicon, tab strip, maskable icon |
+
+The glyph is **two tails**, decided 2026-09-12 by render rather than by argument — the mirrored pair holds structure at 16px that a single diagonal stroke does not. Two-tailed kitsune are a stage in the folklore, so the count is still a count and never a lesser fox.
 
 Never a one-tailed *fox*. That form is both the most generic image in software and, in the folklore, a juvenile kitsune. The ladder drops the wordmark, then drops to the unit — it never depicts a lesser fox.
 
@@ -34,7 +36,8 @@ Nothing here is built yet. This is what to export while the vector source is ope
 - [ ] `compact-128.png`, `compact-256.png`, `compact-512.png`
 
 ### Glyph
-- [ ] `glyph-light.svg`, `glyph-dark.svg`, `glyph-mono.svg`
+- [x] `kitsune-glyph.svg` — square, centred, namespaced
+- [ ] `glyph-dark.svg`, `glyph-mono.svg`
 - [ ] `favicon.ico` — 16 / 32 / 48 multi-resolution
 - [ ] `apple-touch-icon.png` — 180×180, no transparency, no rounding (iOS masks it)
 - [ ] `maskable-512.png` — glyph inside the inner 80% safe area; anything outside gets cropped
@@ -43,28 +46,73 @@ Nothing here is built yet. This is what to export while the vector source is ope
 ### Social
 - [ ] `og-card.png` — 1200×630, formal horizontal on a solid ground
 
-## Resolve these in the source
+## Source
 
-Five defects in the comp that are cheap to fix in vector and expensive to fix later:
+Vector, in [`source/`](source/). Colours are hardcoded hex; there is no keyline and no stroke anywhere.
 
-1. **The cream tail tips die on white.** They are separated from a white page by a keyline alone, so on the README and on GitHub the tails read as notched rather than tipped. Either darken the tip, weight the keyline, or accept that the mark is never placed on pure white.
-2. **The white keyline haloes on dark.** Commit to it as a deliberate sticker treatment that works on any ground, or drop it and cut the dark variants properly.
-3. **The glyph tip needs its own treatment.** A cream chevron notched out of a small shape is a chipped blob at 16px. Solid contrasting tip, or no tip below 24px.
-4. **There is no horizontal lockup.** Stacked cannot sit in a site header, a README banner, or a 1200×630 card — three of the first four places the mark appears.
-5. **Outline the wordmark**, and confirm the typeface is licensed for trademark use before doing so. If the letterforms came out of a raster comp they correspond to no real font and must be drawn.
+| File | viewBox | id prefix | Is |
+|---|---|---|---|
+| `kitsune-logo.svg` | `0 0 1034 940` | `kt-logo-` | Nine-tail fox + wordmark, stacked |
+| `kitsune-fox.svg` | `0 0 1034 785` | `kt-fox-` | Nine-tail fox alone |
+| `kitsune-one-tail.svg` | `0 0 331 337` | `kt-onetail-` | Single-tail glyph. Not adopted; kept as provenance |
+| `kitsune-two-tails.svg` | `0 0 458 329` | `kt-twotails-` | Two-tail glyph as drawn, landscape |
+| **`kitsune-glyph.svg`** | **`0 0 451 451`** | **`kt-glyph-`** | **The glyph. Square-boxed from the above. This is the one to use** |
 
-## Palette
+Every viewBox starts at `0 0`, every id is namespaced, and all 94 ids across the five files are unique — verified, so any combination can be inlined in one document without breaking `aria-labelledby` or cross-wiring a mirror transform.
 
-⚠️ **Unmeasured.** Sample from the vector once it exists; do not transcribe from the comp. Invariant 15.
+**Each file carries 20px of built-in inset** — about 2% of the box — uniform on all four sides. Do not double-pad it. The one exception is `kitsune-logo.svg`, whose bottom inset is 14px rather than 20; cosmetic, and worth evening up next time the wordmark is touched.
 
-| Role | Hex | Must clear |
+## Palette — measured
+
+Sampled from the vector, not transcribed. Ratios are WCAG 2.x.
+
+| Role | Hex | On white | On `#0D1117` |
+|---|---|---|---|
+| Rust | `#BB481F` | **5.17** — AA, may carry body text | 3.66 — UI only |
+| Amber | `#D79A50` | 2.43 — decorative only | **7.77** — AAA |
+| Teal | `#00545D` | **8.66** — AAA | 2.19 — **fails** |
+| White | `#FFFFFF` | — | 18.92 — AAA |
+
+**Rust clears AA on white at 5.17:1 and may be used for body text.** This was predicted to fail and does not.
+
+Inside the mark, only two pairs hold a 3:1 edge — rust/white at 5.17 and teal/white at 8.66. Everything else is below it: rust/amber 2.13, amber/white 2.43, **teal/rust 1.67**. The silhouette and the white markings do all the structural work; the amber is tonal and contributes nothing at small size. This is why face detail is the first thing to die as the mark shrinks — the eyes and nose are teal on rust.
+
+### Dark-ground wordmark
+
+The teal wordmark cannot be used on a dark ground. `#2E96A4` is the lightest-clearing minimum at **5.42:1** on `#0D1117`, and it only reaches 3.49:1 back on white — so **the wordmark needs two colours, one per ground.** There is no single hue that serves both.
+
+### Grounds the mark may not sit on
+
+- **Brand teal `#00545D`.** The legs and paws are teal and vanish at 1.00:1; the rust silhouette edge is 1.67:1. Verified by render — the fox appears to have no legs.
+- Anything that puts the rust silhouette below 3:1. Mid grey `#8A8A8A` is fine; darker greys are not.
+
+## Open defects
+
+Measured 2026-09-12 by rendering at size on white, `#FAFAFA`, `#0D1117`, mid grey, brand teal and brand rust.
+
+- [ ] **No horizontal lockup.** Still the biggest gap — stacked cannot sit in a site header, a README banner, or a 1200×630 card.
+- [ ] **Dark-ground variants.** The wordmark at `#2E96A4` or lighter; the legs recoloured off teal wherever the ground is dark.
+- [ ] **Hand-tune the 16px cut.** The two-tail glyph survives 16px — the chevrons nearly close but the internal split holds — so this is a polish pass on the raster export, not a redraw. The single-tail version needed more.
+- [ ] **No monochrome variant.**
+
+### Closed
+
+- ~~Duplicate element IDs.~~ **Done** — namespaced per file, 94 ids, zero collisions, verified by inlining all five together.
+- ~~Non-zero viewBox origins.~~ **Done** — all normalised to `0 0 W H` by translating the content. Ink bounds and per-side inset are unchanged on every file, and before/after renders are identical.
+
+- ~~The two-tail glyph is landscape and needs a square re-box.~~ **Done** — `kitsune-glyph.svg`, ink bounds measured at 418×289, boxed square at 451 with the content translated and IDs namespaced.
+- ~~Cream tail tips die on white.~~ **Disproven.** The white shapes are fully inset within the rust and read as notches on any ground. Predicted from the raster comp; the vector does not have the problem.
+- ~~The keyline haloes on dark.~~ **There is no keyline.** The comp appeared to have one; the vector has no stroke anywhere.
+- ~~The wordmark is unoutlined.~~ **Already outlined** as paths. No typeface licence question arises.
+
+### Minimum sizes, measured
+
+| Mark | Holds down to | Fails at |
 |---|---|---|
-| Rust | `TBD` | 3:1 on ground — **never body text** |
-| Amber | `TBD` | Decorative only; assume it clears nothing |
-| Teal | `TBD` | 4.5:1 on white — this is the text colour |
-| Cream | `TBD` | 3:1 against rust, or the tail tips fail |
-
-Rust on white is expected to land near the 4.5:1 boundary. Whichever side it falls on is a measurement, not a preference, and it decides whether rust may ever carry text.
+| Formal lockup, stacked | ~140px | 90px — wordmark unreadable |
+| Compact fox | ~64px | 32px — becomes an orange smudge |
+| Glyph (two tails) | 16px | — verified in a browser-tab mock at true 16px |
+| One-tail glyph | ~24px | 16px — single diagonal stroke loses its tip. Not adopted |
 
 ## Using the mark
 

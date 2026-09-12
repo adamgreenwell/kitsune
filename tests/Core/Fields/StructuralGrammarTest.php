@@ -1830,3 +1830,43 @@ describe('a required group divides a run whatever its width', function (): void 
         '^a*a*(?:b|c)a*a*$',
     ]);
 });
+
+describe('rule 7 — at most 32 levels of nested groups', function (): void {
+    /*
+     * ⚠️ THE LIMIT WAS SILENT AND IT REPORTED THE WRONG REASON, which review found: every recursive walk
+     * in `Pattern` stopped at 64 levels and reported MAXIMAL AMBIGUITY, so `^` then 65 nested `(?:`
+     * around an `a` — 263 characters, identical in both engines, matching identically — was refused for
+     * reaching a retry ceiling it does not reach.
+     *
+     * ⚠️ AND RAISING IT WAS THE WRONG FIX, which measuring showed. The analysis is superlinear in depth,
+     * and it runs on every settings save and on every stored pattern in the migration audit:
+     *
+     *   depth  8   2.5 ms      48    53.8 ms      249  11,134 ms
+     *        16   2.7 ms      64   129.5 ms      497  43,091 ms
+     *        32  16.2 ms      80   258.6 ms
+     *
+     * So the limit is real, it is 32, and the refusal names it. Nothing a field validation needs nests
+     * past three.
+     */
+    it('accepts nesting up to the limit', function (int $levels): void {
+        $pattern = '^'.str_repeat('(?:', $levels).'a'.str_repeat(')', $levels).'$';
+
+        expect(Pattern::unpublishable($pattern))->toBeNull("[{$levels} levels] is inside the limit");
+    })->with([1, 3, 32]);
+
+    it('refuses past it, by name', function (int $levels): void {
+        $pattern = '^'.str_repeat('(?:', $levels).'a'.str_repeat(')', $levels).'$';
+
+        expect(Pattern::unpublishable($pattern))->toContain('levels of nested groups');
+    })->with([33, 65, 249]);
+
+    it('counts neither a class nor an escape as nesting', function (string $pattern): void {
+        // ⚠️ The two things every scanner in this file has to know: `(` inside a class is a literal, and
+        // so is `\(`. A depth counter that read either as nesting would refuse ordinary patterns.
+        expect(Pattern::unpublishable($pattern))->toBeNull("[{$pattern}] nests once or not at all");
+    })->with([
+        '^[(]a$',
+        '^(\()a$',
+        '^[()]+$',
+    ]);
+});
