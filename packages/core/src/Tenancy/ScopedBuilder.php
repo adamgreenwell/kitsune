@@ -102,7 +102,47 @@ class ScopedBuilder extends Builder
     {
         $this->refuseBulkCreate('insert');
 
+        /*
+         * ⚠️ AND THE PER-ROW GUARDS, because standing aside from the bulk refusal is not the same as
+         * being safe. Review found the gap: `$site->setIncrementing(false)` then `saveQuietly()` is a
+         * GENUINE model save through this builder — so `isPerformingModelSave($this)` is true and
+         * `refuseBulkCreate()` correctly steps back, since `performInsert()` uses `insert()` for a
+         * non-incrementing model — and a quiet save runs no listener, so nothing derived anything.
+         *
+         * Measured: `org_id`, `canonical_host` and `path_prefix` persisted verbatim. Two rows on one
+         * hostname and a row planted under another org, in one call.
+         *
+         * `insertGetId()` has run these two since the round that added them, and this method did not:
+         * the same asymmetry as the `insertGetId` proof check one round ago, which is why both are now
+         * beside each other rather than a page apart.
+         */
+        foreach (self::insertRows($values) as $row) {
+            $this->refuseDetachedScopeKeys($row);
+            $this->refuseDetachedInsert('insert', $row);
+        }
+
         return parent::insert($values);
+    }
+
+    /**
+     * The rows an `insert()` call carries, whether it was handed one or a list.
+     *
+     * ⚠️ BOTH SHAPES, because `Query\Builder::insert()` takes either and a guard that read only the
+     * first would be a guard a second row walks past. `insertGetId()` needs no such helper — it takes
+     * one row by signature — which is exactly how the two got out of step.
+     *
+     * @param  array<mixed>  $values
+     * @return list<array<string, mixed>>
+     */
+    private static function insertRows(array $values): array
+    {
+        if ($values === []) {
+            return [];
+        }
+
+        return array_is_list($values) && is_array(reset($values))
+            ? array_values(array_filter($values, 'is_array'))
+            : [$values];
     }
 
     /** @param  array<string, mixed>  $values */

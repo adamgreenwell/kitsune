@@ -671,6 +671,62 @@ it('does not call two different numeric-looking strings the same value', functio
         ->toBe('0e1', 'a loose comparison called 0e1 and 0e2 the same value');
 });
 
+it('guards a non-incrementing model save, which insert() legitimately serves', function (): void {
+    /*
+     * ⚠️ STANDING ASIDE FROM THE BULK REFUSAL IS NOT THE SAME AS BEING SAFE, which review found and which
+     * is the sharpest version of this branch's recurring shape. `$site->setIncrementing(false)` then
+     * `saveQuietly()` is a GENUINE model save through this builder — `isPerformingModelSave($this)` is
+     * true and `performInsert()` really does use `insert()` for a non-incrementing model, so
+     * `refuseBulkCreate()` is right to step back — and a quiet save runs no listener, so nothing derived
+     * anything.
+     *
+     * Measured: `org_id`, `canonical_host` and `path_prefix` persisted verbatim. TWO rows on one hostname
+     * and a row planted under another org, in one call.
+     *
+     * ⚠️ `insertGetId()` had run the per-row guards since the round that added them and `insert()` had
+     * not, which is the same asymmetry as the proof check one round earlier. They sit beside each other
+     * now rather than a page apart.
+     */
+    $victim = Org::create(['name' => 'Victim', 'slug' => 'victim-nonincrementing']);
+
+    Site::create([
+        'org_id' => $this->org->id, 'handle' => 'owner', 'slug' => 'owner', 'name' => 'Owner',
+        'locale' => 'en', 'url_strategy' => 'domain', 'base_url' => 'https://steal.test/',
+    ]);
+
+    $site = new Site([
+        'org_id' => $victim->id, 'handle' => 'thief', 'slug' => 'thief', 'name' => 'Thief',
+        'locale' => 'en', 'url_strategy' => 'domain', 'base_url' => 'https://steal.test/news',
+        'canonical_host' => 'steal.test', 'path_prefix' => '/news',
+    ]);
+    $site->setIncrementing(false);
+    $site->id = 999;
+
+    expect(fn () => $site->saveQuietly())
+        ->toThrow(RuntimeException::class, 'from a context scoped to')
+        ->and(DB::table('sites')->where('canonical_host', 'steal.test')->count())
+        ->toBe(1, 'a non-incrementing quiet save landed an overlapping claim')
+        ->and(DB::table('sites')->where('org_id', $victim->id)->count())
+        ->toBe(0, 'a non-incrementing quiet save planted a row under another org');
+
+    /*
+     * ⚠️ AND THE SAME SAVE INSIDE ITS OWN ORG IS STILL REFUSED, for the derived columns rather than the
+     * scope keys — otherwise this would be testing the scope guard and the quiet path's real problem
+     * would be untested.
+     */
+    $own = new Site([
+        'org_id' => $this->org->id, 'handle' => 'sibling', 'slug' => 'sibling', 'name' => 'Sibling',
+        'locale' => 'en', 'url_strategy' => 'domain', 'base_url' => 'https://steal.test/blog',
+        'canonical_host' => 'steal.test', 'path_prefix' => '/blog',
+    ]);
+    $own->setIncrementing(false);
+    $own->id = 998;
+
+    expect(fn () => $own->saveQuietly())
+        ->toThrow(RuntimeException::class, 'cannot be written by insert()')
+        ->and(DB::table('sites')->where('canonical_host', 'steal.test')->count())->toBe(1);
+});
+
 it('does not take a caller-arranged key strategy as proof of a model save', function (): void {
     /*
      * ⚠️ THE SECOND ARRANGEABLE DISCRIMINATOR, and review found it after the scope-key one. `insert()`
