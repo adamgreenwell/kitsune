@@ -1737,10 +1737,74 @@ final class Pattern
                 continue;
             }
 
+            /*
+             * ⚠️ AND A GROUP CAN HIDE THE DEAD ATOM INSIDE ITS OWN FRONT, which review found: the
+             * neighbour of `(?=a)` in `(?=a)(a{0}a)` is the whole group, so the `a{0}` adjacent to the
+             * assertion across the bracket was lost — while the direct `(?=a)a{0}a` spelling is refused.
+             *
+             * The group stays the neighbour, because that is what the nullable test needs to ask about;
+             * only the dead markup is read out of it. Hoisting the prefix out of the group instead was
+             * my first attempt and it broke three refusals: `(?:(?=a)a?a)` became `(?=a)(?:a?a)`, which
+             * pairs the assertion with the GROUP rather than with the `a?` inside it. What is adjacent
+             * across a bracket depends on which side of the bracket the question comes from.
+             */
+            if (str_starts_with($atom, '(') && ($inside = self::leadingDeadAtom(self::frameBody($atom))) !== null) {
+                $dead = $inside;
+            }
+
             return [$candidate, $dead];
         }
 
         return [null, $dead];
+    }
+
+    /**
+     * The first atom of this body that is bounded at zero repetitions, if nothing consuming precedes it.
+     *
+     * ⚠️ ONLY WHAT IS IN FRONT. `(a a{0})` has a dead atom and nothing beside the assertion outside it,
+     * so the walk stops at the first atom that consumes — the question is adjacency, not membership.
+     *
+     * ⚠️ THROUGH ANYTHING TRANSPARENT, at any depth: an assertion consumes nothing, and a group that
+     * runs exactly once contributes its own front. A quantified group does not, because its second
+     * iteration would not be adjacent to anything outside it.
+     */
+    private static function leadingDeadAtom(string $body, int $depth = 0): ?string
+    {
+        if ($depth > 64) {
+            return null;
+        }
+
+        $at = 0;
+        $length = mb_strlen($body);
+
+        while ($at < $length) {
+            $token = self::atomAt($body, $at);
+
+            if ($token === null) {
+                return null;
+            }
+
+            $atom = $token['atom'];
+
+            if (self::neverRuns($token['quantifier'])) {
+                return $atom.$token['quantifier'];
+            }
+
+            if (! self::consumesCharacters($atom)) {
+                $at = $token['after'];
+
+                continue;
+            }
+
+            if (str_starts_with($atom, '(')
+                && ($token['quantifier'] === '' || self::fixedRepetitions($token['quantifier']) === 1)) {
+                return self::leadingDeadAtom(self::frameBody($atom), $depth + 1);
+            }
+
+            return null;
+        }
+
+        return null;
     }
 
     /**

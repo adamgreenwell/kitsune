@@ -116,6 +116,9 @@ interface FieldType
     /** Rules for ONE element of a multi-value field, not for the array. */
     public function elementValidationRules(FieldConfig $config): array;
 
+    /** How many elements a multi-value field admits — published, enforced and rendered from here. */
+    public function maxItems(FieldConfig $config): ?int;
+
     public function settingsSchema(): array;          // the "configure this field" form
     public function validateSettings(array $settings): ?string;
 
@@ -343,6 +346,8 @@ A named capture may use a name in **any script** — `(?<é>`, `(?<日本>`, `(?
 >     ⚠️ **And an unanchored search supplies the second factor itself**, which the classification missed. `a*b` holds ONE variable-width atom, so the run rule calls it linear — and unanchored it is retried from every starting position, where the star takes the whole remaining value and the `b` refuses all of it. Measured on Node 22.23.2 with 5,000 `a`: **`a*b` 35.6 ms** against **`^a*b` 0.0 ms**, `a*b$` 35.6 ms, `.*x` 37.7 ms against `^.*x` 0.0 ms — the same order as the anchored quadratic this bound exists for. `[a-z]+` is the line, and it is measured rather than assumed: with nothing after it that can fail, every starting position matches at once or fails in constant time, so the retry adds a factor of nothing and the field keeps no bound.
 >
 >     ⚠️ **And that question is asked of the whole pattern, not of its top level.** The first version asked `quadraticRuns()`, which PRICES a sequence and reads its own atoms so the allowance is charged at exactly one level — so it never looks inside a group, and `^(?:a*a*)b$` came back linear while being the same expression as `^a*a*b$`. The walk that owns the whole pattern splices what runs once, descends into assertion bodies and into every branch of a multi-branch group, and fails closed on anything it cannot parse.
+>
+>     ⚠️ **And the FORM reads the same number.** `FieldValueRenderer` capped its repeater from `cardinality()` alone, so an author could add rows that validation and the published schema both refuse — three readings of one bound, and the form was the one that disagreed. `maxItems()` is on the `FieldType` contract for exactly that reason: published, enforced and rendered from one answer.
 >
 >     ⚠️ **It is an upgrade hazard whose refusal lands on an ENTRY**, so `kitsune:audit-patterns` reports it alongside the other two — and names the remedy, which is not the obvious one: cardinality is part of the locked shape once data exists, so what an author can still change is `maxLength` or the pattern.
 >

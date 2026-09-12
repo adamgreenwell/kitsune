@@ -1498,6 +1498,21 @@ describe('dead markup beside an unanchored lookahead is a divergence too', funct
         '(?=a)b{0}a',
         'a{0}(?=a)a',
         '(?=a)(?!x)b{0}a',
+
+        /*
+         * ⚠️ AND INSIDE THE NEIGHBOUR'S OWN FRONT, which review found: the neighbour of the lookahead
+         * in `(?=a)(a{0}a)` is the whole group, so the dead atom adjacent to the assertion across the
+         * bracket was lost — while the direct spelling is refused.
+         *
+         * ⚠️ Hoisting the prefix OUT of the group was my first attempt and it broke three refusals:
+         * `(?:(?=a)a?a)` became `(?=a)(?:a?a)`, which pairs the assertion with the group rather than
+         * with the `a?` inside it. What is adjacent across a bracket depends on which side the question
+         * comes from, so the group stays the neighbour and only the dead markup is read out of it.
+         */
+        '(?=a)(a{0}a)',
+        '(?=a)((a{0})a)',
+        '(?=a)(?:a{0}a)',
+        '(?=a)(?:(?=x)a{0}a)',
     ]);
 
     it('leaves the anchored spelling alone', function (string $pattern): void {
@@ -1506,6 +1521,11 @@ describe('dead markup beside an unanchored lookahead is a divergence too', funct
         '^b{0}(?=a)a',
         '^(?=a)b{0}a',
         '^(?:a{0}(?=a)a)$',
+        '^(?=a)(a{0}a)',
+
+        // ⚠️ A STATED LIMIT: the dead atom in `(?=a)(aa{0})` is not in FRONT of anything — the `a`
+        // consumes before it — so nothing is adjacent to the assertion across the bracket.
+        '(?=a)(aa{0})',
 
         // ⚠️ Dead markup with no lookahead beside it is not this rule's business, and refusing it
         // would fail an upgrade over a stored pattern that means exactly what it meant yesterday.

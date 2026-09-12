@@ -104,6 +104,37 @@ it('gives every control the direction its vocabulary specifies', function (): vo
     }
 });
 
+it('caps the repeater at the bound the type publishes, not at the declared cardinality', function (): void {
+    /*
+     * ⚠️ THREE NUMBERS FOR ONE BOUND, AND THE FORM WAS THE ONE THAT DISAGREED. `TextType::maxItems()`
+     * narrows the item count when a pattern costs quadratic work per value — an unlimited field with a
+     * 5,000-character ceiling publishes `maxItems: 1` and validates `max:1` — and this form was capped
+     * from `cardinality()` alone, so an author could add rows the save then refuses. Found by review.
+     *
+     * The renderer asks the type now, like `controlFor()` beside it.
+     */
+    $storage = FieldStorage::create([
+        'org_id' => $this->org->id, 'handle' => 'aliases', 'type' => 'text',
+        'pii_class' => 'none', 'cardinality' => -1,
+        'settings' => ['pattern' => '^a*a*b$', 'maxLength' => 5000],
+    ]);
+
+    $component = FieldValueRenderer::formComponent(new FieldConfig($storage));
+
+    expect($component)->toBeInstanceOf(Repeater::class)
+        ->and($component->getMaxItems())->toBe(1);
+
+    // ⚠️ And an unlimited field whose pattern is linear keeps no bound at all, or the fix would have
+    // capped every multi-value text field at something.
+    $linear = FieldStorage::create([
+        'org_id' => $this->org->id, 'handle' => 'keywords', 'type' => 'text',
+        'pii_class' => 'none', 'cardinality' => -1,
+        'settings' => ['pattern' => '^[a-z]+$', 'maxLength' => 5000],
+    ]);
+
+    expect(FieldValueRenderer::formComponent(new FieldConfig($linear))->getMaxItems())->toBeNull();
+});
+
 it('puts the direction on the INNER control of a multi-value field', function (): void {
     /*
      * ⚠️ A `Repeater` has no input hook, so direction attached to the repeater would land

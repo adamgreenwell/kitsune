@@ -138,6 +138,19 @@ interface FieldType
     public function elementValidationRules(FieldConfig $config): array;
 
     /**
+     * How many elements a multi-value field admits, or null for no bound at all.
+     *
+     * ⚠️ ONE ANSWER FOR THREE CONSUMERS — `apiSchema()` publishes it as `maxItems`,
+     * `validationRules()` enforces it as `max:`, and the panel caps its repeater with it. They were
+     * three readings of `cardinality()` before, and the day a type had a reason to narrow the bound
+     * two of them were wrong: `TextType` narrows it when the pattern costs quadratic work per value,
+     * because the length ceiling bounds ONE element while the field publishes an array.
+     *
+     * A declared cardinality is the ceiling, never the floor: an implementation narrows, never widens.
+     */
+    public function maxItems(FieldConfig $config): ?int;
+
+    /**
      * The "configure this field" form, as a schema description.
      *
      * Deliberately data rather than Filament components: a field type describes a

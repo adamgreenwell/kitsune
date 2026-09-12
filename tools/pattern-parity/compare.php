@@ -188,7 +188,18 @@ foreach ($cases as $case) {
         && $pcre[$id]['matches'] === null
         && ($pcre[$id]['compiles'] ?? false) === true;
 
-    if ($pcreGaveNoVerdict || ($ecma[$id]['timedOut'] ?? false) === true) {
+    /*
+     * ⚠️ AND THE ECMASCRIPT SIDE IS DERIVED THE SAME WAY, which review found it not being: this read
+     * `timedOut`, a DIAGNOSTIC the Node reader adds, so a valid row carrying `compiles: true` and
+     * `matches: null` without it — an edited file, or another runner — was omitted from this count while
+     * the comparison above correctly treated null as the third outcome. The summary would then report
+     * zero unanswered cases for a case nobody answered. One question, asked of both files the same way.
+     */
+    $ecmaGaveNoVerdict = array_key_exists('matches', $ecma[$id])
+        && $ecma[$id]['matches'] === null
+        && ($ecma[$id]['compiles'] ?? false) === true;
+
+    if ($pcreGaveNoVerdict || $ecmaGaveNoVerdict) {
         $noVerdict[] = $id;
     }
 }
