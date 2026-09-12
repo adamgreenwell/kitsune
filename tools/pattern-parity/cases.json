@@ -1294,5 +1294,17 @@
     "pattern": "^(?=a)(?:(?<=x)a)?a",
     "subject": "aa",
     "why": "The same hole through a lookbehind, which review did not name and which published for the same reason: the probe's subject is one character long, so a lookbehind has nothing behind it and the whole atom reports no match. Rule 6 is insurance against PCRE 10.44 — a version this harness cannot run — so the fallback fails open, which here means refusing: an optional first atom, a backreference or an unparseable branch inside the neighbour is treated as an overlap rather than guessed at."
+  },
+  {
+    "id": "skippable-group-hides-a-run",
+    "pattern": "^(?:a*a*a*b)?$",
+    "subject": "aaab",
+    "why": "The worst false publish this grammar has had, and a pair of brackets and a `?` were the whole of it: this published while the identical `^a*a*a*b$` is refused. Measured on Node 22.23.2 against all-`a`, 62.2 ms at 500 characters, 485.3 at 1,000, 3,997.7 at 2,000 and 13,038.8 at 3,000 — the cubic the run rule exists to catch — where the legitimate `^(?:a*a*b)?$` beside it is 0.4 / 1.4 / 5.7 / 13.0. Three walks can reach a group's body and a skippable group satisfied none of them: the atom list splices only what is required and runs once, the run walk's descent asked the same question, and the repetition rule descends only into what repeats. So the body was priced at one grant and never screened. The question is now how often a group RUNS rather than whether it is required, which covers `(?:…)?`, `(?:…)??`, `(?:…){0,1}`, `(…)?` and `(?:…|z)?` alike; `(?:…){1}` was the one spelling already refused, being the only one `fixedRepetitions()` answers 1 for. The array bound asks the same walk, so it had the same hole: `costsQuadraticPerValue('^(?:a*a*b)?$')` answered false where `^a*a*b$` answers true."
+  },
+  {
+    "id": "assertion-inside-a-multi-branch-group",
+    "pattern": "^a+(?:(?=a*a*c)q|z)$",
+    "subject": "aaacq",
+    "why": "The same body-nobody-reads, one walk along. A multi-branch group is not spliced into the atom list, so every assertion inside one was invisible to the rule that refuses an assertion a variable-width prefix re-evaluates. Measured on Node 22.23.2 against all-`a`: 62.4 ms at 500 characters, 488.1 at 1,000 and 3,876.6 at 2,000 — the refused `^a+(?=a*a*c)q$` to the millisecond at 62.1 / 488.8 / 3,874.8. The walk now reads through a group that runs at most once, carrying the run it has so far, so a prefix outside the brackets and a prefix inside one branch are both covered. The PRICING caller does not descend, for the reason the atom list takes the same flag: the same assertion is charged again when the cost model reaches that group's body, and charging it twice refuses a pattern for a cost it does not have."
   }
 ]

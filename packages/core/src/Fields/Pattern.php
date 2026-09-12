@@ -1450,7 +1450,7 @@ final class Pattern
         }
 
         foreach (self::topLevelBranches($pattern) as $branch) {
-            if (($rescanned = self::assertionsRescanned($branch, self::RUN_INSIDE_REPETITION)[0] ?? null) === null) {
+            if (($rescanned = self::assertionsRescanned($branch, self::RUN_INSIDE_REPETITION, true)[0] ?? null) === null) {
                 continue;
             }
 
@@ -2427,7 +2427,7 @@ final class Pattern
          * measures 44 ms. Eight reach the budget exactly, as eight branches do, and nine pass it — the
          * same constant and the same arithmetic as the alternation it sits beside.
          */
-        if (($rescans = count(self::assertionsRescanned($body, 0))) > 0) {
+        if (($rescans = count(self::assertionsRescanned($body, 0, false))) > 0) {
             $cost = self::saturatingProduct($cost, self::quadraticBranchCost() * $rescans);
         }
 
@@ -3148,10 +3148,28 @@ final class Pattern
      * and every assertion past the same prefix is rerun on every backtrack of it — so k of them cost k
      * grants: `^a+` then 140 `(?=a*b)` then `(?=a*c)` measures 611 ms against 40.6 for one.
      *
+     * ⚠️ AND A GROUP'S BODY IS A SEQUENCE THIS WALK OWNS TOO, which it did not read: `flatAtoms()`
+     * splices a group that is required and runs once, so a MULTI-BRANCH or OPTIONAL one stayed whole and
+     * every assertion inside it was invisible. `^a+(?:(?=a*a*c)q|z)$` published and measured 62.4 ms at
+     * 500 characters, 488.1 at 1,000 and 3,876.6 at 2,000 — the refused `^a+(?=a*a*c)q$` to the
+     * millisecond at 62.1 / 488.8 / 3,874.8. The prefix reaches inside the brackets, so the walk does
+     * too, carrying the run it has so far; a branch with its own prefix is covered by the same descent
+     * seeded at zero.
+     *
+     * ⚠️ THE PRICING CALLER MUST NOT DESCEND, for the reason `atomList()` takes the same flag: the same
+     * assertion is charged again when `ambiguityCost()` reaches that group's body, and charging it twice
+     * refuses a pattern for a cost it does not have. A rule that REFUSES reads through; a rule that
+     * PRICES reads its own level.
+     *
      * @return list<string>
      */
-    private static function assertionsRescanned(string $sequence, int $limit): array
-    {
+    private static function assertionsRescanned(
+        string $sequence,
+        int $limit,
+        bool $readThrough,
+        int $run = 0,
+        int $depth = 0,
+    ): array {
         /*
          * ⚠️ A FAST NEGATIVE, AND ONLY A NEGATIVE. Every assertion's source contains `(?`, so its
          * absence proves there is none to find; the converse is not claimed, because `\(?` contains those
@@ -3172,7 +3190,6 @@ final class Pattern
 
         $rescanned = [];
         $previous = null;
-        $run = 0;
 
         foreach ($atoms as $atom) {
             /*
@@ -3186,6 +3203,17 @@ final class Pattern
                 }
 
                 continue;
+            }
+
+            if ($readThrough
+                && $depth <= self::MAX_WALK_DEPTH
+                && str_starts_with($atom['atom'], '(')
+                && ! self::repeatsMoreThanOnce($atom['quantifier'])) {
+                foreach (self::topLevelBranches(self::frameBody($atom['atom'])) as $branch) {
+                    foreach (self::assertionsRescanned($branch, $limit, true, $run, $depth + 1) as $inside) {
+                        $rescanned[] = $inside;
+                    }
+                }
             }
 
             if ($atom['variable']) {
@@ -3593,9 +3621,31 @@ final class Pattern
              * its own right — `^x(?:a*a*a*b|c)y$` has a run of three inside one of them — and this is
              * the only caller that owns the whole pattern, exactly as for an assertion's body.
              */
+            /*
+             * ⚠️ AND A GROUP THAT CAN BE SKIPPED, which nothing screened at all — the worst false publish
+             * this rule has had. `^(?:a*a*a*b)?$` published while the identical `^a*a*a*b$` is refused,
+             * and on Node 22.23.2 against all-`a` it is the cubic the run rule exists to catch: 62.2 ms
+             * at 500 characters, 485.3 at 1,000, 3,997.7 at 2,000 and 13,038.8 at 3,000, where the
+             * legitimate `^(?:a*a*b)?$` beside it is 0.4 / 1.4 / 5.7 / 13.0. THREE walks can reach a
+             * group's body and a skippable one satisfied none of them: `deriveAtomList()` splices only
+             * what is required and runs once, this descent asked the same question, and
+             * `structuralRefusal()` descends only into what `repeatsMoreThanOnce()`. So the body was
+             * priced — one grant of 8,192 — and never screened, which is only sound if something else
+             * refused the run first.
+             *
+             * The question is therefore how often it runs, not whether it is required: at most once
+             * means the enclosing limit applies unchanged, and more than once is the repetition rule's
+             * subject at its tighter one. Every skippable spelling leaked and all of them are covered by
+             * asking it this way — `(?:…)?`, `(?:…)??`, `(?:…){0,1}`, the capturing `(…)?` and the
+             * multi-branch `(?:…|z)?` — while `(?:…){1}` was the one spelling already refused, because
+             * it is the only one `fixedRepetitions()` answers 1 for.
+             *
+             * Re-reading a body that was also spliced costs nothing but time: flattening only gives an
+             * atom MORE neighbours, so a run seen in isolation is a subset of the run seen in context.
+             */
             if (! $atom['assertion']
                 && str_starts_with($atom['atom'], '(')
-                && ($atom['quantifier'] === '' || self::fixedRepetitions($atom['quantifier']) === 1)) {
+                && ! self::repeatsMoreThanOnce($atom['quantifier'])) {
                 foreach (self::topLevelBranches(self::frameBody($atom['atom'])) as $branch) {
                     if (self::atomRunExceeds($branch, $limit)) {
                         return true;
@@ -3694,7 +3744,7 @@ final class Pattern
          * quadratic, which is publishable per value and has to be bounded per array.
          */
         foreach (self::topLevelBranches($pattern) as $branch) {
-            if (self::assertionsRescanned($branch, 0) !== []) {
+            if (self::assertionsRescanned($branch, 0, true) !== []) {
                 return true;
             }
         }

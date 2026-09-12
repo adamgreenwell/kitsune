@@ -2277,6 +2277,91 @@ describe('a digit is an atom like any other', function (): void {
     ]);
 });
 
+describe('a group that runs at most once is a sequence no rule may skip', function (): void {
+    /*
+     * ⚠️ THE WORST FALSE PUBLISH THIS GRAMMAR HAS HAD, and a pair of brackets and a `?` were the whole
+     * of it. `^(?:a*a*a*b)?$` published while the identical `^a*a*a*b$` is refused, and on Node 22.23.2
+     * against all-`a` it is exactly the cubic the run rule exists to catch:
+     *
+     *   n=500  62.2 ms     n=1,000  485.3 ms     n=2,000  3,997.7 ms     n=3,000  13,038.8 ms
+     *
+     * where the legitimate `^(?:a*a*b)?$` beside it measures 0.4 / 1.4 / 5.7 / 13.0 — a thousandfold
+     * separation at the same length, and the author picks the exponent: `^(?:a*a*a*a*a*a*a*b)?$` is
+     * twenty-two characters.
+     *
+     * THREE walks can reach a group's body and a skippable group satisfied none of them. `flatAtoms()`
+     * splices only what is required and runs once — correctly, since its contents must not read as
+     * required. The run walk's own descent asked the same question. And `structuralRefusal()` descends
+     * only into what repeats. So the body was PRICED, at one grant of 8,192, and never SCREENED, which
+     * is sound only if something else refused the run first.
+     *
+     * The question is how often a group runs, not whether it is required: at most once means the
+     * enclosing limit applies unchanged, and more than once is the repetition rule's subject at its
+     * tighter limit. `(?:…){1}` was the one spelling already refused — the only one
+     * `fixedRepetitions()` answers 1 for.
+     */
+    it('refuses a run inside a group that can be skipped', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))->toContain('variable-width atom');
+    })->with([
+        '^(?:a*a*a*b)?$',
+        // Every skippable spelling leaked, so every skippable spelling is pinned.
+        '^(a*a*a*b)?$',
+        '^(?:a*a*a*b)??$',
+        '^(?:a*a*a*b){0,1}$',
+        '^(?:a*a*a*b|z)?$',
+        // Not a synthetic toy: an optional suffix of ordinary classes is a shape an author writes.
+        '^(?:[a-z]*[a-z]*[a-z]*!)?$',
+        // Degree is the author's choice, which is what makes the hole worth this much prose.
+        '^(?:a*a*a*a*a*a*a*b)?$',
+    ]);
+
+    it('leaves the allowance inside such a group alone', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))->toBeNull("[{$pattern}] holds no run past the top-level limit");
+    })->with([
+        // Two adjacent atoms is the top-level allowance, wrapped or not: 13.0 ms at 3,000 characters.
+        '^(?:a*a*b)?$',
+        '^(?:a*b)?$',
+        '^(?:ab)?$',
+        '^a*a*b$',
+    ]);
+
+    /*
+     * ⚠️ AND THE ARRAY BOUND HAD THE SAME HOLE, because it asks the same walk at a tighter limit:
+     * `costsQuadraticPerValue('^(?:a*a*b)?$')` answered FALSE where the unwrapped `^a*a*b$` answers
+     * true, so a wrapped quadratic published no `maxItems` at all. One descent closes both.
+     */
+    it('bounds the array for a quadratic run inside a skippable group', function (string $pattern): void {
+        expect(Pattern::costsQuadraticPerValue($pattern))->toBeTrue("[{$pattern}] is quadratic per value");
+    })->with([
+        '^(?:a*a*b)?$',
+        '^a*a*b$',
+        '^(a*a*b)?$',
+    ]);
+
+    /*
+     * ⚠️ THE ASSERTION WALK HAD IT TOO, and the same descent fixes it. A multi-branch group is not
+     * spliced either, so every assertion inside one was invisible to the prefix rule:
+     * `^a+(?:(?=a*a*c)q|z)$` published and measured 62.4 / 488.1 / 3,876.6 ms at 500 / 1,000 / 2,000
+     * characters — the refused `^a+(?=a*a*c)q$` to the millisecond at 62.1 / 488.8 / 3,874.8.
+     */
+    it('refuses an assertion a prefix rescans through brackets', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))->toContain('re-evaluates');
+    })->with([
+        '^a+(?:(?=a*a*c)q|z)$',
+        // The prefix inside the branch is reached by the same descent, seeded at zero.
+        '^(?:a+(?=a*a*c)q|z)$',
+        '^a+(?:(?=a*a*b)b|(?=a*a*c)c|9)$',
+        '^a+(?:(?=a*a*c)q)?$',
+    ]);
+
+    it('still publishes one the prefix cannot make expensive', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))->toBeNull("[{$pattern}] holds one atom in its assertion");
+    })->with([
+        '^a+(?:(?=a*c)q|z)$',
+        '^a+b(?=a+a+c)',
+    ]);
+});
+
 describe('the screen stays inside its budget', function (): void {
     /*
      * ⚠️ THE GUARD'S OWN COST IS PART OF THE CONTRACT, and it had drifted: every rule added a walk, and
