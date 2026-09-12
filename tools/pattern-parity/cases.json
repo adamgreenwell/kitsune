@@ -1,1232 +1,1256 @@
 [
-    {
-        "id": "digit-arabic",
-        "pattern": "^\\d+$",
-        "subject": "١٢",
-        "why": ""
-    },
-    {
-        "id": "word-cyrillic",
-        "pattern": "^\\w+$",
-        "subject": "аб",
-        "why": ""
-    },
-    {
-        "id": "space-nbsp",
-        "pattern": "^\\s+$",
-        "subject": " ",
-        "why": ""
-    },
-    {
-        "id": "dot-linesep",
-        "pattern": "^.$",
-        "subject": " ",
-        "why": ""
-    },
-    {
-        "id": "noncapture-alt",
-        "pattern": "^(?:ab|cd)$",
-        "subject": "cd",
-        "why": ""
-    },
-    {
-        "id": "backref",
-        "pattern": "^(a)\\1$",
-        "subject": "aa",
-        "why": ""
-    },
-    {
-        "id": "lazy-quant",
-        "pattern": "^a+?b$",
-        "subject": "aab",
-        "why": ""
-    },
-    {
-        "id": "bounded-quant",
-        "pattern": "^a{2,3}$",
-        "subject": "aaa",
-        "why": ""
-    },
-    {
-        "id": "class-range",
-        "pattern": "^[a-z0-9]+$",
-        "subject": "abc9",
-        "why": ""
-    },
-    {
-        "id": "prop-script",
-        "pattern": "^\\p{Script=Arabic}+$",
-        "subject": "مرحبا",
-        "why": ""
-    },
-    {
-        "id": "prop-bare",
-        "pattern": "^\\p{L}+$",
-        "subject": "abc",
-        "why": ""
-    },
-    {
-        "id": "anchor-A",
-        "pattern": "\\Aabc",
-        "subject": "abc",
-        "why": ""
-    },
-    {
-        "id": "lookahead",
-        "pattern": "^(?=a)ab$",
-        "subject": "ab",
-        "why": ""
-    },
-    {
-        "id": "lookbehind",
-        "pattern": "(?<=a)b",
-        "subject": "ab",
-        "why": ""
-    },
-    {
-        "id": "named-group",
-        "pattern": "^(?<x>a)$",
-        "subject": "a",
-        "why": ""
-    },
-    {
-        "id": "possessive",
-        "pattern": "^a++$",
-        "subject": "aa",
-        "why": ""
-    },
-    {
-        "id": "atomic",
-        "pattern": "^(?>a)$",
-        "subject": "a",
-        "why": ""
-    },
-    {
-        "id": "hex-escape",
-        "pattern": "^\\x41$",
-        "subject": "A",
-        "why": ""
-    },
-    {
-        "id": "unicode-escape",
-        "pattern": "^\\x{1F600}$",
-        "subject": "😀",
-        "why": ""
-    },
-    {
-        "id": "boundary-b",
-        "pattern": "\\bab\\b",
-        "subject": "ab",
-        "why": ""
-    },
-    {
-        "id": "escaped-slash",
-        "pattern": "^a\\/b$",
-        "subject": "a/b",
-        "why": ""
-    },
-    {
-        "id": "escaped-dash-class",
-        "pattern": "^[a\\-b]+$",
-        "subject": "a-b",
-        "why": ""
-    },
-    {
-        "id": "unset-group-backref",
-        "pattern": "^(?:(a)|b)\\1$",
-        "subject": "b",
-        "why": "Backreference to a group in an alternative that never participated: PCRE2 fails the backref, ECMA-262 matches it as empty (measured: PHP NOMATCH, Node MATCH) — proves group+alternation+backref cannot be allowlisted together even though each part is already allowed."
-    },
-    {
-        "id": "quantified-capture-persistence",
-        "pattern": "^(?:(a)|b)+c\\1$",
-        "subject": "abca",
-        "why": "ECMA-262 clears captures inside a quantified group at each iteration while PCRE2 keeps the last value (measured: PHP MATCH, Node NOMATCH) — proves a capture written in one iteration and read after the loop means different things."
-    },
-    {
-        "id": "combining-mark-group-name",
-        "pattern": "^(?<a̧o>[0-9]{4})$",
-        "subject": "2026",
-        "why": "Group name is 'a' + U+0327 COMBINING CEDILLA + 'o'. ECMA-262 group names are IdentifierName and admit combining marks; PCRE2 restricts them to word characters. The case is worthless without the mark actually present — review found it had been flattened to plain ASCII 'ao', so both engines compiled it and the case validated nothing."
-    },
-    {
-        "id": "dollar-sign-group-name",
-        "pattern": "^(?<$y>[0-9]{4})$",
-        "subject": "2026",
-        "why": "ECMA-262 group names are IdentifierName (so '$' is legal) while PCRE2 restricts them to word characters (measured: PHP compile error, Node MATCH) — establishes that named-group NAME legality diverges, and diverges in the JS-accepts/PHP-refuses direction."
-    },
-    {
-        "id": "bare-inline-caseless",
-        "pattern": "^(?i)straße$",
-        "subject": "STRAßE",
-        "why": "Bare inline modifier: PCRE2 turns on caseless matching from that point, ECMA-262 has no such construct at all (measured: PHP MATCH, Node SyntaxError) — a published schema built from this source is not merely stricter, it is uncompilable."
-    },
-    {
-        "id": "scoped-modifier-kelvin",
-        "pattern": "^(?i:k)$",
-        "subject": "K",
-        "why": "Subject is U+212A KELVIN SIGN: scoped modifier group is PCRE2-valid and (unlike the bare form) is ES2025 syntax, so this measures both availability on the consumer's engine and whether Unicode simple case folding of K/k agrees (measured: PHP MATCH, Node 22 SyntaxError — a Node 24+ consumer would compile it and the folding comparison becomes the real result)."
-    },
-    {
-        "id": "bare-inline-free-spacing",
-        "pattern": "^(?x) a b $",
-        "subject": "ab",
-        "why": "PCRE2 (?x) deletes the literal spaces, and ECMA-262 has no x flag in any edition, so unlike (?i:...) this can never converge (measured: PHP MATCH, Node SyntaxError) — proves the literal meaning of the source text itself is engine-dependent."
-    },
-    {
-        "id": "inline-comment-group",
-        "pattern": "^a(?#a note)b$",
-        "subject": "ab",
-        "why": "(?#...) is a PCRE2 comment and ECMA-262 has no comment syntax (measured: PHP MATCH, Node SyntaxError) — the construct a non-developer is most likely to want for self-documenting a pattern is exactly the one that breaks publication."
-    },
-    {
-        "id": "python-style-named-group",
-        "pattern": "^(?P<year>[0-9]{4})$",
-        "subject": "2026",
-        "why": "PCRE2 accepts the Python-style (?P<name>...) alias that ECMA-262 does not (measured: PHP MATCH, Node SyntaxError) — distinct from the already-measured (?<x>a), and it is the spelling PHP's own documentation shows, so it will be authored."
-    },
-    {
-        "id": "relative-backreference",
-        "pattern": "^(a)(b)\\g{-1}$",
-        "subject": "abb",
-        "why": "Group-relative backreference \\g{-1} is PCRE2-only; in ECMA-262 unicode mode \\g is an invalid escape (measured: PHP MATCH, Node SyntaxError) — classifies the relative (as opposed to absolute) way of naming a group."
-    },
-    {
-        "id": "octal-escape-vs-group-number",
-        "pattern": "^(a)\\101$",
-        "subject": "aA",
-        "why": "With one capture group, PCRE2 reads \\101 as the octal escape for 'A' while ECMA-262 unicode mode treats it as a reference to nonexistent group 101 (measured: PHP MATCH of \"aA\", Node SyntaxError) — group numbering silently reinterprets an escape, so the boundary between backref and literal is engine-dependent."
-    },
-    {
-        "id": "branch-reset-group",
-        "pattern": "^(?|(a)|(b))\\1$",
-        "subject": "bb",
-        "why": "Branch reset makes both alternatives group 1 in PCRE2, so \\1 is \"b\"; ECMA-262 has no (?| construct (measured: PHP MATCH, Node SyntaxError) — the one construct where alternation changes group NUMBERING rather than just participation."
-    },
-    {
-        "id": "numeric-conditional",
-        "pattern": "^(a)?(?(1)b|c)$",
-        "subject": "c",
-        "why": "Subject exercises the else-branch of a PCRE2 conditional on whether group 1 participated; ECMA-262 has no conditionals (measured: PHP MATCH, Node SyntaxError) — proves group participation can drive control flow in PHP with no schema-side equivalent."
-    },
-    {
-        "id": "recursive-subroutine-call",
-        "pattern": "^(a(?1)?b)$",
-        "subject": "aabb",
-        "why": "Recursive subroutine call to group 1 matches balanced a…b in PCRE2 and is not expressible in ECMA-262 (measured: PHP MATCH, Node SyntaxError) — the balanced-nesting idiom people copy from the web, and the reason (?N) must be refused rather than approximated."
-    },
-    {
-        "id": "alternation-pruning-verb",
-        "pattern": "^(?:a(*FAIL)|a)b$",
-        "subject": "ab",
-        "why": "PCRE2 backtracking control verbs silently prune an alternative that ECMA-262 cannot even parse (measured: PHP MATCH, Node SyntaxError) — classifies the whole (*VERB) family, which is group-shaped syntax the validator will otherwise walk straight past."
-    },
-    {
-        "id": "brace-bare-open-literal",
-        "pattern": "^a{$",
-        "subject": "a{",
-        "why": "PCRE2 silently treats an unmatched { as a literal character while ECMA u-mode makes it a SyntaxError, so a typo'd bound (e.g. ^\\d{2$) compiles server-side and hard-fails every API consumer (measured: PHP MATCH, Node SyntaxError 'Incomplete quantifier')."
-    },
-    {
-        "id": "bound-comma-first",
-        "pattern": "^a{,3}$",
-        "subject": "aa",
-        "why": "PCRE2 10.43+ accepts {,n} as {0,n} whereas ECMA u-mode rejects it outright, so this is a construct where PCRE2 quantifies and ECMA refuses to compile at all (measured: PHP MATCH on 'aa' proving {0,3} semantics, Node SyntaxError)."
-    },
-    {
-        "id": "bound-whitespace-inside",
-        "pattern": "^a{ 2 }$",
-        "subject": "aa",
-        "why": "Tests whether whitespace inside braces makes the bound a quantifier, a literal, or an error; PCRE2 10.48 accepts it as a real quantifier while ECMA u-mode refuses (measured: PHP MATCH on 'aa' — quantifier, not literal — Node SyntaxError), the pattern most likely to be typed by a non-developer."
-    },
-    {
-        "id": "bound-escaped-braces-literal",
-        "pattern": "^a\\{2\\}$",
-        "subject": "a{2}",
-        "why": "Positive control establishing the one sanctioned way to author a literal brace: \\{ is a legal IdentityEscape in ECMA u-mode and literal in PCRE2, so if this agrees it becomes the allowlist's replacement for the three refused brace forms (measured: both MATCH 'a{2}')."
-    },
-    {
-        "id": "bound-upper-over-65535",
-        "pattern": "^a{0,65536}$",
-        "subject": "aaa",
-        "why": "Pins the divergent quantifier ceiling — PCRE2 caps a repeat count at 65535 and refuses to compile above it, while ECMA allows up to 2^32-1, so an author-visible bound is accepted by the API schema but rejected by the server (measured: PHP compile failure 'number too big in {} quantifier', Node MATCH)."
-    },
-    {
-        "id": "bound-upper-at-65535",
-        "pattern": "^a{0,65535}$",
-        "subject": "aaa",
-        "why": "The just-under-the-line half of the ceiling pair, needed so the published grammar can state an exact inclusive maximum bound rather than an approximate one (measured: both MATCH, so 65535 is legal in both)."
-    },
-    {
-        "id": "group-bound-pattern-too-large",
-        "pattern": "^(?:a?){20000}$",
-        "subject": "aaa",
-        "why": "A bound on a group is expanded by replication in PCRE2, so a count far below the 65535 numeric cap can still blow the compiled-pattern size limit that ECMA has no equivalent of — a second, independent bound ceiling that depends on what is being quantified (measured: PHP 'regular expression is too large', Node MATCH)."
-    },
-    {
-        "id": "quantified-group-capture-reset",
-        "pattern": "^(?:(a)|b)+\\1$",
-        "subject": "aba",
-        "why": "The highest-value case: ECMA clears captures inside a quantified group on every iteration while PCRE2 retains the last value, so a quantified group feeding a backreference silently accepts different input in each engine with no error anywhere (measured: PHP MATCH with $1='a', Node NOMATCH)."
-    },
-    {
-        "id": "zero-bound-unset-backref",
-        "pattern": "^(a){0}\\1b$",
-        "subject": "b",
-        "why": "A {0} bound makes the capture non-participating, and the engines disagree on what a backreference to a non-participating group matches — PCRE2 fails it, ECMA matches empty — a silent boolean divergence driven purely by the bound (measured: PHP NOMATCH, Node MATCH)."
-    },
-    {
-        "id": "optional-group-unset-backref",
-        "pattern": "^(a)?\\1b$",
-        "subject": "b",
-        "why": "Same unset-backreference divergence reached through ? instead of {0}, which determines whether the refusal rule must cover every optional/starred capture group followed by a backreference (a broad restriction) or just the {0} form (a trivial one) (measured: PHP NOMATCH, Node MATCH)."
-    },
-    {
-        "id": "quantifier-on-lookahead",
-        "pattern": "^(?=a)+a$",
-        "subject": "a",
-        "why": "Tests whether an assertion is a repeatable item: PCRE2 accepts a quantified lookahead and matches, while ECMA u-mode disallows quantified assertions entirely, so the construct compiles server-side and breaks the published schema (measured: PHP MATCH, Node SyntaxError 'Invalid quantifier')."
-    },
-    {
-        "id": "grapheme-cluster-bound",
-        "pattern": "^\\X{2}$",
-        "subject": "n̈n̈",
-        "why": "Asks what unit a bound counts when the author wants 'two characters' of combining-mark text: PCRE2's \\X counts grapheme clusters, and ECMA has no such atom at all, so a length rule written this way cannot survive publication (measured: PHP MATCH on two clusters, Node SyntaxError 'Invalid escape')."
-    },
-    {
-        "id": "astral-literal-bound",
-        "pattern": "^😀{2}$",
-        "subject": "😀😀",
-        "why": "Confirms the quantified atom is a whole code point rather than a UTF-16 code unit in both engines — the subject is the discriminating one because surrogate-level binding would reject it — licensing bounds on non-BMP literals in the allowlist (measured: both MATCH)."
-    },
-    {
-        "id": "star-on-starred-group-cost",
-        "pattern": "^(a*)*b$",
-        "subject": "aaaaaaaaaaaaaaaaaaaaaaaa",
-        "why": "Same verdict, four orders of magnitude apart in cost: PCRE2 optimizes the degenerate nested quantifier away while V8 backtracks exponentially, so a pattern that is free server-side is a ReDoS handed to every API consumer (measured: PHP NOMATCH in 0ms, Node NOMATCH in 1513ms, doubling per added character)."
-    },
-    {
-        "id": "class-s-zwnbsp",
-        "pattern": "^[\\s]$",
-        "subject": "﻿",
-        "why": "Subject is U+FEFF ZWNBSP: proves ECMA-262 \\s inside a class is BROADER than PCRE2/UCP \\s (ES counts ZWNBSP as WhiteSpace, PCRE2 does not) — a client-side-accepted value the server rejects."
-    },
-    {
-        "id": "class-s-mongolian-vowel-sep",
-        "pattern": "^[\\s]$",
-        "subject": "᠎",
-        "why": "Subject is U+180E MONGOLIAN VOWEL SEPARATOR: proves the divergence runs the OTHER way too — PCRE2's \\h/\\s list still includes it (pre-Unicode-6.3 view) while ES does not, so \\s is bidirectionally non-portable."
-    },
-    {
-        "id": "class-w-superscript-two",
-        "pattern": "^[\\w]$",
-        "subject": "²",
-        "why": "Subject is U+00B2 (category No): proves PCRE2/UCP \\w admits digit-like non-ASCII characters that its own \\d rejects, while ES \\w stays ASCII — the class boundary sits in a different place in each engine."
-    },
-    {
-        "id": "neg-class-d-arabic-indic",
-        "pattern": "^[^\\d]+$",
-        "subject": "٣",
-        "why": "Subject is U+0663 ARABIC-INDIC THREE: proves negation INVERTS which engine is permissive — PCRE2 excludes it from [^\\d] while ES admits it, so a negated class is stricter server-side than the published schema."
-    },
-    {
-        "id": "posix-alpha-in-class",
-        "pattern": "^[[:alpha:]]$",
-        "subject": "a",
-        "why": "Proves PCRE2 POSIX bracket expressions are not merely different in meaning but produce a published schema ECMA-262 cannot compile at all (the trailing ] becomes a lone quantifier bracket in u-mode)."
-    },
-    {
-        "id": "posix-alpha-bare",
-        "pattern": "^[:alpha:]+$",
-        "subject": "alpha",
-        "why": "The common authoring typo without an enclosing class: proves PCRE2 refuses it outright while ES silently accepts it as the literal set {:,a,l,p,h}, so authoring-time acceptance and consumer-side meaning can invert."
-    },
-    {
-        "id": "class-rbracket-first",
-        "pattern": "^[]]$",
-        "subject": "]",
-        "why": "Proves the Perl/POSVIX convention that a leading ] is a literal class member holds in PCRE2 but is a SyntaxError in ES u-mode (empty class plus lone ]), so any pattern matching a literal bracket this way must be refused."
-    },
-    {
-        "id": "neg-class-empty",
-        "pattern": "^[^]$",
-        "subject": "]",
-        "why": "Proves the reverse bracket asymmetry: PCRE2 refuses [^] as an unterminated class while ES compiles it to 'any code point', the most permissive possible published constraint."
-    },
-    {
-        "id": "class-set-op-intersection",
-        "pattern": "^[a-z&&[aeiou]]$",
-        "subject": "a]",
-        "why": "ECMAScript v-flag set-operation syntax compiled under u: proves PCRE2 silently mis-parses it as a union containing literal & and [ (matching 'a]'), while ES rejects it — nested classes and set ops are unsafe in both directions."
-    },
-    {
-        "id": "class-u-escape-range",
-        "pattern": "^[A-Z]+$",
-        "subject": "AZ",
-        "why": "Proves the JS-idiomatic \\uXXXX range endpoint is ES-only: PCRE2 10.48 explicitly refuses \\u, so an author copying a JS pattern is blocked server-side rather than silently diverging."
-    },
-    {
-        "id": "class-escaped-underscore",
-        "pattern": "^[\\_]$",
-        "subject": "_",
-        "why": "Proves defensive backslashing of a non-syntax character inside a class (PCRE2: literal) is a hard SyntaxError under ES u-mode's restricted IdentityEscape — a very common authoring habit that would break every consumer."
-    },
-    {
-        "id": "class-h-escape-space",
-        "pattern": "^[\\h]$",
-        "subject": " ",
-        "why": "Proves PCRE2's \\h horizontal-whitespace escape inside a class has no ECMA-262 equivalent (invalid escape in u-mode); ASCII space is used so the outcome isolates escape support, not Unicode membership."
-    },
-    {
-        "id": "class-quote-literal-block",
-        "pattern": "^[\\Q.-]\\E]+$",
-        "subject": "]-.",
-        "why": "Proves \\Q...\\E literal quoting is PCRE2-only and additionally hides a ] from any ES parser, so it must be refused rather than translated."
-    },
-    {
-        "id": "class-bare-script-name",
-        "pattern": "^[\\p{Greek}]+$",
-        "subject": "λ",
-        "why": "Subject is U+03BB: proves PCRE2 accepts a bare script name as a property while ES requires Script=/sc= and rejects \\p{Greek} outright — property-name spelling is part of the grammar, not just the property itself."
-    },
-    {
-        "id": "class-long-general-category",
-        "pattern": "^[\\p{General_Category=Letter}]+$",
-        "subject": "λ",
-        "why": "The mirror case: proves ES accepts the long General_Category=Letter form that PCRE2 10.48 refuses, so allowlisting \\p{...} requires an explicit list of spellings valid in BOTH engines."
-    },
-    {
-        "id": "bslash-v-vertical-ws",
-        "pattern": "^\\v$",
-        "subject": "",
-        "why": "Same syntax, different meaning with no compile error either side: PCRE2 \\v is the vertical-whitespace CLASS (LF, VT, FF, CR, NEL, LS, PS) so it matches U+0085, while ECMA-262 \\v is exactly VT U+000B and does not — the highest-risk silent divergence in the escape family (verified: PHP match, Node nomatch)."
-    },
-    {
-        "id": "bslash-u-four-hex",
-        "pattern": "^A$",
-        "subject": "A",
-        "why": "Reverses the usual strictness direction: ECMA-262 \\uHHHH is the canonical codepoint escape a JSON-Schema author would copy, but PCRE2 without ALT_BSUX refuses \\u outright — proves the grammar must ban the form that looks most native to the published side (verified: Node match, PHP compile error)."
-    },
-    {
-        "id": "bslash-u-brace-astral",
-        "pattern": "^\\u{1F600}$",
-        "subject": "😀",
-        "why": "The braced ECMA-262 codepoint escape for an astral character compiles and matches in Node but is a PCRE2 compile error, so it must be refused even though \\x{1F600} (already measured) is the PCRE2-side spelling of the same intent."
-    },
-    {
-        "id": "octal-three-digit",
-        "pattern": "^\\101$",
-        "subject": "A",
-        "why": "Legacy three-digit octal escape: PCRE2 reads it as chr(0o101)='A' while u-mode ECMA-262 forbids octal escapes entirely — proves \\NNN is refusable and that \\ + digit cannot be judged by PCRE2 semantics alone (verified: PHP match, Node SyntaxError)."
-    },
-    {
-        "id": "octal-vs-backref-ten",
-        "pattern": "^(a)\\10$",
-        "subject": "a\b",
-        "why": "The octal/backreference ambiguity itself: with only one group, PCRE2 re-reads \\10 as octal 0o10 = U+0008 backspace, while u-mode ECMA-262 rejects it as an invalid escape — proves \\ + multi-digit is a two-reading construct whose meaning depends on the group count (verified: PHP match, Node SyntaxError)."
-    },
-    {
-        "id": "bslash-e-esc",
-        "pattern": "^\\e$",
-        "subject": "\u001b",
-        "why": "Control-character escape present only in PCRE2: \\e is ESC U+001B there and an invalid identity escape under u-mode — proves the \\e/\\a-style single-letter control escapes must be refused (verified: PHP match, Node SyntaxError)."
-    },
-    {
-        "id": "ctrl-escape-c-nonletter",
-        "pattern": "^\\c[$",
-        "subject": "\u001b",
-        "why": "Pins the exact boundary of \\c: PCRE2 XORs 0x40 with any following char so \\c[ is ESC, while u-mode ECMA-262 requires \\c + ASCII letter and rejects this — proves \\c is only safe when the next character is a letter (\\cJ agrees in both), so the grammar needs a per-argument rule, not a per-escape one."
-    },
-    {
-        "id": "short-hex-one-digit",
-        "pattern": "^\\x4$",
-        "subject": "\u0004",
-        "why": "Hex-escape length strictness: PCRE2 accepts one or two hex digits after \\x (yielding U+0004) while ECMA-262 u-mode demands exactly two — proves \\xHH must be allowlisted only in its full two-digit form (verified: PHP match, Node SyntaxError)."
-    },
-    {
-        "id": "identity-escape-hyphen",
-        "pattern": "^a\\-b$",
-        "subject": "a-b",
-        "why": "The likeliest author mistake in the whole set: outside a character class PCRE2 allows \\- as an identity escape, but ECMA-262 u-mode restricts IdentityEscape to SyntaxCharacter plus '/' and rejects it — proves \\- is only portable inside a class (already measured as [a\\-b]), never outside (verified: PHP match, Node SyntaxError)."
-    },
-    {
-        "id": "identity-escape-space",
-        "pattern": "^a\\ b$",
-        "subject": "a b",
-        "why": "Escaped whitespace: PCRE2 treats \\<space> as a literal space, u-mode ECMA-262 rejects it — proves over-escaping a non-syntax punctuation/whitespace character is a refusal class in general, not just for '-' (verified: PHP match, Node SyntaxError)."
-    },
-    {
-        "id": "bslash-X-grapheme",
-        "pattern": "^\\X$",
-        "subject": "é",
-        "why": "PCRE2-only \\X matches a whole extended grapheme cluster, so it consumes base+combining-mark as one unit, while u-mode ECMA-262 rejects \\X — proves a construct that changes the unit of matching for decomposed non-ASCII text cannot be published (verified: PHP match on U+0065 U+0301, Node SyntaxError)."
-    },
-    {
-        "id": "quote-literal-span",
-        "pattern": "^\\Qa.b\\E$",
-        "subject": "axb",
-        "why": "Literal-quoting span: PCRE2 makes the '.' inside \\Q...\\E literal (so 'axb' does NOT match), while ECMA-262 u-mode rejects \\Q — the nomatch proves \\Q is actively suppressing metacharacters, i.e. an author's 'make this literal' idiom silently has no counterpart downstream (verified: PHP nomatch, Node SyntaxError)."
-    },
-    {
-        "id": "bslash-Z-trailing-newline",
-        "pattern": "^abc\\Z",
-        "subject": "abc\n",
-        "why": "PCRE2's \\Z end-anchor matches before a final newline (so 'abc\\n' passes) and has no ECMA-262 equivalent — proves both that \\Z/\\z must be refused and that PCRE2 end-of-subject leniency lets trailing-newline input slip through a validator (verified: PHP match, Node SyntaxError)."
-    },
-    {
-        "id": "bslash-R-crlf",
-        "pattern": "^\\R$",
-        "subject": "\r\n",
-        "why": "PCRE2 \\R matches any newline sequence including the TWO-character CRLF as a single unit, while u-mode ECMA-262 rejects \\R — proves a refusable escape whose PCRE2 semantics cannot even be expressed as a single-character class downstream (verified: PHP match on U+000D U+000A, Node SyntaxError)."
-    },
-    {
-        "id": "p-script-colon-sep",
-        "pattern": "^\\p{Script:Greek}$",
-        "subject": "α",
-        "why": "PCRE accepts ':' as the property separator where ECMAScript requires '=' and throws (verified: SyntaxError in Node), so the separator character needs its own ruling rather than riding on the loose-name row."
-    },
-    {
-        "id": "p-sc-short-alias",
-        "pattern": "^\\p{sc=Greek}$",
-        "subject": "α",
-        "why": "Proves whether the short property alias 'sc' travels with '=' in both engines, i.e. whether the allowlist must enumerate aliases as well as the canonical 'Script'."
-    },
-    {
-        "id": "p-scx-long-name",
-        "pattern": "^\\p{Script_Extensions=Greek}$",
-        "subject": "ʹ",
-        "why": "U+0374 has Script=Common but Script_Extensions=Greek, so this proves both that the Script_Extensions spelling compiles in PCRE and that its set agrees with ECMAScript's (true) exactly where scx and sc part ways."
-    },
-    {
-        "id": "p-script-not-scx",
-        "pattern": "^\\p{Script=Greek}$",
-        "subject": "ʹ",
-        "why": "ECMAScript answers false on U+0374; a PCRE that resolves Script= against Script_Extensions would answer true, a conflation invisible on any character whose sc and scx agree."
-    },
-    {
-        "id": "p-gc-long-form-astral",
-        "pattern": "^\\p{General_Category=Lu}$",
-        "subject": "𞤀",
-        "why": "Tests the long General_Category spelling an author copies off the JSON Schema side, on an astral Lu (U+1E900 Adlam) so a property table that stops at the BMP shows up as a mismatch rather than a compile error."
-    },
-    {
-        "id": "p-cased-letter-long-name",
-        "pattern": "^\\p{Cased_Letter}$",
-        "subject": "ǅ",
-        "why": "The long name for the LC group the allowlist already permits, measured on the titlecase category (U+01C5) that belongs to LC but to neither Lu nor Ll — so a partial LC implementation is exposed."
-    },
-    {
-        "id": "p-lowercase-other-lowercase",
-        "pattern": "^\\p{Lowercase}$",
-        "subject": "ª",
-        "why": "Lowercase is Ll plus Other_Lowercase; U+00AA is Lo, so a PCRE that maps the binary property onto Ll diverges here and on no ordinary letter."
-    },
-    {
-        "id": "p-lower-posix-alias",
-        "pattern": "^\\p{Lower}$",
-        "subject": "ª",
-        "why": "'Lower' is an ECMAScript alias for Lowercase but collides with PCRE's POSIX 'lower'; the same subject separates 'alias honoured' from 'alias silently resolved to Ll'."
-    },
-    {
-        "id": "p-uppercase-roman-numeral",
-        "pattern": "^\\p{Uppercase}$",
-        "subject": "Ⅰ",
-        "why": "Other_Uppercase on a non-letter category (U+2160 is Nl) — the mirror of the Lowercase case, and one of the few case semantics reachable at all when no 'i' flag is available."
-    },
-    {
-        "id": "p-alpha-alias-nl",
-        "pattern": "^\\p{Alpha}$",
-        "subject": "Ⅰ",
-        "why": "Combines the 'Alpha' alias with Alphabetic's inclusion of Nl, where \\p{L} is false, so an alias quietly resolved to L is visible instead of hidden."
-    },
-    {
-        "id": "p-changes-when-uppercased",
-        "pattern": "^\\p{Changes_When_Uppercased}$",
-        "subject": "ß",
-        "why": "A case-mapping binary property ECMAScript defines (true for ß→SS) and PCRE may not implement at all, which would be a compile-time divergence rather than a semantic one."
-    },
-    {
-        "id": "p-extended-pictographic",
-        "pattern": "^\\p{Extended_Pictographic}$",
-        "subject": "😀",
-        "why": "The property an emoji-constrained field would actually reach for, on an astral code point: ECMAScript has it, and PCRE's tables may not carry emoji-data-derived properties."
-    },
-    {
-        "id": "p-script-newest-name",
-        "pattern": "^\\p{Script=Sidetic}$",
-        "subject": "𐥀",
-        "why": "A Unicode 17 script name (U+10940): whichever engine's tables are older rejects the name outright, which is the version-skew failure a published script allowlist has to survive."
-    },
-    {
-        "id": "p-cn-version-skew",
-        "pattern": "^\\p{Cn}$",
-        "subject": "𐥀",
-        "why": "Same code point, set contents instead of name inventory — Cn compiles in both engines, so an engine on an older Unicode calls U+10940 unassigned while the newer one does not."
-    },
-    {
-        "id": "aggregate-C-unassigned",
-        "pattern": "^\\p{C}$",
-        "subject": "𐥀",
-        "why": "The Cn exclusion reached by another spelling: C is Cc|Cf|Co|Cs|Cn, so it contains the unassigned set and inverts with it. It was on the portable list while Cn was off it, which made the exclusion arbitrary. Both engines here sit at Unicode 17.0 and agree, so this reports as an expressiveness cost rather than a divergence."
-    },
-    {
-        "id": "assigned-letter-same-codepoint",
-        "pattern": "^\\p{L}$",
-        "subject": "𐥀",
-        "why": "The SYMMETRY case, and the reason the exclusion stops at Cn and C. U+10940 is SIDETIC LETTER N01, assigned in Unicode 17.0, so \\p{L} diverges on exactly the code point \\p{Cn} does — in the opposite direction. A grammar that refused every version-sensitive property would have to refuse this, which is why the limit is disclosed instead of enforced."
-    },
-    {
-        "id": "complement-of-letter",
-        "pattern": "^\\P{L}$",
-        "subject": "𐥀",
-        "why": "The complement review asked to exclude. It diverges no more than \\p{L} does and for the same reason, so refusing it would remove half of a symmetric pair and still claim portability for the other half."
-    },
-    {
-        "id": "p-negated-p-class-astral",
-        "pattern": "^[^\\p{L}]$",
-        "subject": "😀",
-        "why": "A negated property class over an astral code point: ECMAScript matches it as one code point, and any engine counting UTF-16 units or splitting the surrogate pair fails the anchors."
-    },
-    {
-        "id": "dollar-trailing-newline-latin",
-        "pattern": "^[a-z]+$",
-        "subject": "abc\n",
-        "why": "The headline anchor divergence: PCRE2's $ also matches before a single trailing newline, so an author's \"^...$\" fully-anchored field accepts a trailing \\n that ECMA-262 rejects (verified locally: PHP MATCH, Node no-match)."
-    },
-    {
-        "id": "dollar-midpattern-then-newline",
-        "pattern": "^a$\\n",
-        "subject": "a\n",
-        "why": "Proves PCRE2's $ is a positional assertion, not a terminal one — it succeeds mid-pattern and the newline is still consumable afterwards — while ECMA-262 fails there, so the divergence is not just about what the match ends with."
-    },
-    {
-        "id": "anchor-in-alternation-branch",
-        "pattern": "^(?:xyz|abc$)",
-        "subject": "abc\n",
-        "why": "Tests whether the $-before-final-newline leniency still applies when the anchor sits inside a non-capturing group's alternation branch rather than at top level (PHP MATCH, Node no-match)."
-    },
-    {
-        "id": "bsZ-end-anchor-newline",
-        "pattern": "^a\\Z",
-        "subject": "a\n",
-        "why": "\\Z is a PCRE2-only end anchor with the same trailing-newline leniency as $; in ECMA-262 'u' mode it is a SyntaxError (Invalid escape), so it is a compile-time refusal, not a semantic mismatch."
-    },
-    {
-        "id": "bsz-absolute-end",
-        "pattern": "^a\\z",
-        "subject": "a",
-        "why": "\\z is the strict end-of-subject anchor authors would naturally reach for as a fix for $, so the grammar must publish that it is unavailable: PHP compiles and matches, Node 'u' mode throws Invalid escape."
-    },
-    {
-        "id": "inline-m-modifier-anchors",
-        "pattern": "(?m)^b$",
-        "subject": "a\nb",
-        "why": "A leading inline (?m) silently redefines ^ and $ as line anchors in PCRE2 but is a SyntaxError (Invalid group) in ECMA-262, so multiline anchor semantics are reachable in one engine and unexpressible in the other."
-    },
-    {
-        "id": "scoped-m-modifier-group",
-        "pattern": "(?m:^b$)",
-        "subject": "a\nb",
-        "why": "The ES2025 scoped-modifier form is the only cross-engine spelling that could exist, and the subject is chosen so a silently ignored modifier shows as a mismatch; on Node 22 it is still a SyntaxError, pinning the runtime floor for this construct."
-    },
-    {
-        "id": "crlf-verb-anchor",
-        "pattern": "(*CRLF)^a$",
-        "subject": "a\r\n",
-        "why": "PCRE2 newline-convention verbs widen $ to match before a CRLF pair; in ECMA-262 the leading (* is a SyntaxError, so this must be refused as a whole class of anchor-mutating prefixes."
-    },
-    {
-        "id": "bsK-match-reset",
-        "pattern": "^a\\Kb",
-        "subject": "ab",
-        "why": "\\K resets the reported match start in PCRE2 (match becomes \"b\") and throws in ECMA-262 'u' mode — relevant because JSON Schema \"pattern\" is an unanchored search where match extent is observable."
-    },
-    {
-        "id": "word-boundary-accented-word",
-        "pattern": "\\bcafé\\b",
-        "subject": "café",
-        "why": "The realistic authored idiom: PHP's /u sets PCRE2_UCP so é is a word char and the trailing \\b holds, while ECMA-262 \\w stays ASCII so no boundary exists after é — same pattern, opposite verdicts on ordinary Latin-1 text."
-    },
-    {
-        "id": "bsB-inside-accented",
-        "pattern": "a\\Bï",
-        "subject": "naïve",
-        "why": "Tests \\B (not just \\b) across an ASCII/non-ASCII letter junction: UCP makes it a non-boundary in PCRE2 (match) but a boundary in ECMA-262 (no match), confirming both boundary operators inherit the \\w definition split."
-    },
-    {
-        "id": "boundary-underscore-arabic-digit",
-        "pattern": "_\\b",
-        "subject": "_٣",
-        "why": "Discriminates in the reverse direction — ECMA-262 matches and PCRE2 does not — because U+0663 is a word char only under UCP; also covers the underscore/digit side of \\w, guarding against a rule that only ever fires one way."
-    },
-    {
-        "id": "boundary-astral-math-letter",
-        "pattern": "\\b𝐀\\b",
-        "subject": "𝐀",
-        "why": "Word boundaries around an astral letter (U+1D400): checks that boundary evaluation at a supplementary code point behaves as one character in both engines and isolates whether any divergence is UCP-driven or astral-driven."
-    },
-    {
-        "id": "boundary-bmp-cjk-letter",
-        "pattern": "\\b日\\b",
-        "subject": "日",
-        "why": "BMP control for the astral case: if this diverges identically then the cause is the UCP \\w definition rather than surrogate handling, which is what lets the grammar write one rule instead of two."
-    },
-    {
-        "id": "bsB-at-start-before-accent",
-        "pattern": "\\Bé",
-        "subject": "é",
-        "why": "Boundary semantics at position zero, where the engines invert: ECMA-262 sees no boundary before a non-ASCII letter so \\B succeeds, PCRE2 sees one so it fails — proving start-of-subject boundary state is also UCP-dependent."
-    },
-    {
-        "id": "dot-carriage-return",
-        "pattern": "^.+$",
-        "subject": "a\r",
-        "why": "MEASURED: PHP matches, Node does not — PCRE excludes only the newline convention char (LF) from `.` while ECMA-262 excludes LF, CR, LS and PS; every proposer probed `.` on U+2028 but nobody probed CR, the one line terminator that actually arrives in CMS input from Windows paste."
-    },
-    {
-        "id": "s-next-line-u0085",
-        "pattern": "^\\s$",
-        "subject": "",
-        "why": "MEASURED: PHP matches, Node does not — PCRE2's UCP `\\s` includes the C1 control U+0085 NEL, ECMA-262's WhiteSpace list does not; NBSP was measured but it is a Zs and both engines agree on it, so the whole Cc/Cf side of `\\s` is still unmeasured."
-    },
-    {
-        "id": "lookbehind-alt-length-order",
-        "pattern": "(?<=(a|aa))b\\1$",
-        "subject": "aaba",
-        "why": "MEASURED: Node matches (group 1 = \"a\", written alternation order preserved in backward matching), PHP does not (PCRE2 orders lookbehind branches by length, binding group 1 = \"aa\") — the matrix already blessed \"lookbehind\" as a measured construct, and this shows that blessing is wrong the moment the lookbehind contains alternatives of unequal length plus a backreference."
-    },
-    {
-        "id": "lookbehind-unbounded-plus",
-        "pattern": "(?<=a+)b",
-        "subject": "aab",
-        "why": "MEASURED: Node matches, PHP refuses to compile (\"length of lookbehind assertion is not limited\") — nobody probed the direction where PCRE2 is the STRICTER engine, so the grammar has no evidence about lookbehind LENGTH rules (bounded `(?<=\\d{2,4})` compiles and agrees in both; unbounded does not)."
-    },
-    {
-        "id": "forward-numbered-backref",
-        "pattern": "^\\1(a)$",
-        "subject": "a",
-        "why": "MEASURED: Node matches (unset group backreference succeeds as empty), PHP does not — a forward reference is a construct legal in BOTH engines and distinct from the already-measured plain `(a)\\1`, and it is the likeliest author accident (backreference typed before the group) in the unset-group family."
-    },
-    {
-        "id": "prop-name-lowercase-loose",
-        "pattern": "^\\p{lu}$",
-        "subject": "A",
-        "why": "MEASURED: PHP matches, Node refuses (\"Invalid property name\") — PCRE2 applies loose matching to property names (case, spaces and underscores ignored, so `\\p{lu}`, `\\p{Lu }`, `\\p{cased_letter}` all compile), while every `\\p` case proposed used canonically-cased names and so never touched the looseness rule that makes the two surfaces different sizes."
-    },
-    {
-        "id": "prop-single-letter-no-braces",
-        "pattern": "^\\pL$",
-        "subject": "a",
-        "why": "MEASURED: PHP matches, Node refuses — the braceless one-letter property form `\\pL`/`\\PL` is what the PHP manual itself shows and what an author will copy, yet all 12 proposed `\\p` cases assumed the braced spelling."
-    },
-    {
-        "id": "prop-caret-negation",
-        "pattern": "^\\p{^L}$",
-        "subject": "1",
-        "why": "MEASURED: PHP matches, Node refuses — PCRE2's in-brace negation `\\p{^L}` is a third distinct spelling rule (separate from loose names and from braceless forms) that silently stores and then breaks every consumer."
-    },
-    {
-        "id": "named-backref-brace-form",
-        "pattern": "^(?<y>a)\\k{y}$",
-        "subject": "aa",
-        "why": "MEASURED: PHP matches, Node refuses (\"Invalid named reference\") — named GROUPS were measured but never named BACKREFERENCES, so the grammar cannot yet say that `\\k<y>` is the one portable spelling (I verified it agrees) while `\\k{y}`, `\\k'y'`, `(?P=y)` and `\\g{y}` are PCRE-only."
-    },
-    {
-        "id": "bare-close-bracket-literal",
-        "pattern": "^a]$",
-        "subject": "a]",
-        "why": "MEASURED: PHP matches (bare `]` is a literal), Node refuses (\"Lone quantifier brackets\" — `]` is a SyntaxCharacter forbidden as a PatternCharacter under /u) — the proposals covered the `{` version of this rule and stopped, missing that `]` behaves the same way and is the more likely leftover from an edited character class."
-    },
-    {
-        "id": "duplicate-named-group-alt",
-        "pattern": "^(?:(?<y>a)|(?<y>b))$",
-        "subject": "b",
-        "why": "MEASURED: Node matches (ES2025 duplicate named capture groups shipped in V8), PHP refuses without `(?J)` — a second case where the JS surface is LARGER than PCRE's, which matters because a grammar derived only from \"PHP accepts, JS refuses\" evidence will be shaped as if PCRE were always the superset."
-    },
-    {
-        "id": "backtrack-limit-email-shape",
-        "pattern": "^([a-zA-Z0-9]+\\.?)+@x\\.com$",
-        "subject": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!@x.com",
-        "why": "MEASURED: PHP returns FALSE in 1.8ms (\"Backtrack limit exhausted\"), Node was still searching after 20s — every cost-related proposal was about COMPILE size (`{0,65536}`, 20000 nested groups), so nobody measured runtime decidability, where PCRE's 1M backtrack cap turns a rejection into an error while V8 has no cap and the published pattern becomes a client-side DoS."
-    },
-    {
-        "id": "backslash-n-uppercase-any",
-        "pattern": "^\\N$",
-        "subject": "a",
-        "why": "MEASURED: PHP matches (PCRE `\\N` = any character except newline), Node refuses (\"Invalid escape\") — a capitalisation slip on `\\n` silently stores as a wildcard with the opposite meaning of what was typed, and the escape-family proposals covered `\\e`, `\\R`, `\\X`, `\\v`, `\\h` but not this one."
-    },
-    {
-        "id": "quantified-lookbehind",
-        "pattern": "(?<=a)+b",
-        "subject": "ab",
-        "why": "Rule 1 in the lookbehind position. An assertion consumes nothing, so ECMAScript rejects a quantifier on one under `u` while PCRE accepts it."
-    },
-    {
-        "id": "ambiguous-alternation-repeated",
-        "pattern": "^(a|aa)+$",
-        "subject": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!",
-        "why": "Rule 4, found by review. Rule 3 cannot catch it because the repeated group holds no quantifier of its own; 40 a's plus ! exhausts PCRE's backtrack limit and runs past a 1.5s ECMAScript deadline."
-    },
-    {
-        "id": "prefix-free-alternation-repeated",
-        "pattern": "^(?:cat|dog)+$",
-        "subject": "catdogcat",
-        "why": "Rule 4's exemption, and the reason it is exact rather than generous: no branch is a prefix of another, so at most one can match at a position and the repetition is deterministic."
-    },
-    {
-        "id": "variable-capture-in-lookbehind",
-        "pattern": "(?<=([ab]{1,2})([bc]{1,2}))\\2\\1$",
-        "subject": "abcbca",
-        "why": "Rule 5, found by review. The engines traverse a lookbehind in opposite directions and allocate the variable width to different captures: PCRE says no, ECMAScript says yes."
-    },
-    {
-        "id": "fixed-capture-in-lookbehind",
-        "pattern": "(?<=([ab]{2})([bc]{2}))\\2\\1$",
-        "subject": "abbcbcab",
-        "why": "Rule 5's boundary, which is what placed the line at variable width rather than at captures-in-lookbehinds: two adjacent FIXED captures agree in both engines."
-    },
-    {
-        "id": "delimited-repetition",
-        "pattern": "^[^,]+(?:,[^,]+)*$",
-        "subject": "ab,cd,ef",
-        "why": "Rule 3's exemption. Nests + inside * and is provably linear: every iteration must begin at a comma and [^,] cannot consume one, so the subject's commas force the split."
-    },
-    {
-        "id": "bounded-ambiguous-repeat",
-        "pattern": "^(a{1,2})+$",
-        "subject": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!",
-        "why": "Review's case, and it slipped between two published rules: the inner quantifier is BOUNDED so the nested-unbounded rule never fired, and there is no alternation so the ambiguous-alternation rule did not either. Both are now one rule about whether the body divides one way."
-    },
-    {
-        "id": "bounded-ambiguous-class-repeat",
-        "pattern": "^([a-z]{1,8})+$",
-        "subject": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!",
-        "why": "The same shape, and my own test asserted it was acceptable under the heading 'accepts a bounded outer quantifier'. PCRE exhausts its backtrack limit and ECMAScript runs past a two-second deadline."
-    },
-    {
-        "id": "overlapping-branches-fixed-width",
-        "pattern": "^(?:[a-z]|x)+$",
-        "subject": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx!",
-        "why": "A forced division is not sufficient: fixed at one character, so the split is forced, yet x lies inside [a-z] so both branches match at every position — 2^30 branch choices. ECMAScript 7.9s, PCRE backtrack limit. The same pattern on 30 a's is instant, which is why the rule is about the construct rather than a subject."
-    },
-    {
-        "id": "nested-unambiguous-alternation",
-        "pattern": "^(?:a(?:b|c))+$",
-        "subject": "abacab",
-        "why": "The recursive half of the exemption. A nested alternation of distinct literals is as safe as (?:ab|ac)+, and a check that looked only at the body's own top level refused it for nothing."
-    },
-    {
-        "id": "escape-width-in-lookbehind",
-        "pattern": "(?<=(\\x61|aaa))b\\1$",
-        "subject": "aaaba",
-        "why": "Review's case. Every scanner advanced past a backslash by two characters, so fixedWidth() read \\x61 as a \\x atom plus the literals 6 and 1 and reported width 3 — the branches looked equal and the lookbehind rule was bypassed. PCRE says no, ECMAScript says yes."
-    },
-    {
-        "id": "escape-width-equal-lookbehind",
-        "pattern": "(?<=(\\x61|a))b\\1$",
-        "subject": "aba",
-        "why": "The other half: \\x61 IS one character, so these alternatives are genuinely equal and both engines agree. Kept so the fix cannot become 'refuse anything with an escape in a lookbehind'."
-    },
-    {
-        "id": "bounded-delimiter-consumer",
-        "pattern": "^(?:,,?)*X$",
-        "subject": ",,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,Y",
-        "why": "Review's case. The delimiter proof asked only whether an UNBOUNDED atom could consume the delimiter, so the optional comma was ignored — and it can either end the current iteration or start the next. 40 commas plus a Y takes ECMAScript about 1.3 seconds and grows exponentially."
-    },
-    {
-        "id": "lazy-braced-width-in-lookbehind",
-        "pattern": "(?<=(a{2}?|aaa))b\\1$",
-        "subject": "aaabaa",
-        "why": "Review's case. `quantifierAt()` dropped the lazy suffix on a braced form, so `fixedWidth()` counted the trailing ? as a separate one-character atom and measured `a{2}?` as width 3 — the branches looked equal and the lookbehind rule was bypassed. PCRE says no, ECMAScript says yes."
-    },
-    {
-        "id": "lazy-braced-width-equal",
-        "pattern": "(?<=(a{2}?|aa))b\\1$",
-        "subject": "aabaa",
-        "why": "The other half: `a{2}?` and `aa` ARE both two wide, so this is genuinely equal-length and must publish. Kept so the fix cannot become 'refuse anything lazy in a lookbehind'."
-    },
-    {
-        "id": "nested-group-hides-optional-delimiter",
-        "pattern": "^(?:,(?:,?))*X$",
-        "subject": ",,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,Y",
-        "why": "A required group around the optional delimiter. The proof jumped from a group's `(` to its `)` and asked only about the group's own quantifier, so this was exempted while the identical `^(?:,,?)*X$` was refused. Node 22 spends 10.5s here."
-    },
-    {
-        "id": "bom-delimiter-ecmascript-space",
-        "pattern": "^(?:﻿\\s?)*X$",
-        "subject": "﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿Y",
-        "why": "PCRE's `\\s` excludes U+FEFF and ECMAScript's includes it. The membership probe compiled the raw `\\s` rather than the class `delimit()` rewrites it to, so the optional atom was declared unable to reach the delimiter. Node 22 spends 17.2s here."
-    },
-    {
-        "id": "lookbehind-capture-repeated-variable",
-        "pattern": "(?<=([ab]){1,2})\\1$",
-        "subject": "aba",
-        "why": "A fixed-width capture under a repetition inside a lookbehind. The width rule passed it, but which iteration stays captured is a property of the traversal and the engines walk a lookbehind in opposite directions. PCRE says no on `aba` and MATCH on `abb`; Node is the reverse."
-    },
-    {
-        "id": "lookbehind-capture-repeated-fixed",
-        "pattern": "(?<=([ab]){2})\\1$",
-        "subject": "aba",
-        "why": "The same defect with a FIXED repetition, which is what makes it a second rule rather than a wider net on the width rule: `{2}` of a one-character class is fixed in every sense and still diverges."
-    },
-    {
-        "id": "lookbehind-capture-once",
-        "pattern": "(?<=([ab]){1})\\1$",
-        "subject": "aa",
-        "why": "The other side of that line, kept so the rule cannot become `refuse every quantifier`. `{1}` runs the capture once, so there is nothing to reallocate, and the engines agree on all six subjects measured."
-    },
-    {
-        "id": "ambiguous-body-inside-delimited",
-        "pattern": "^(?:,a*a*)*X$",
-        "subject": ",aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aaY",
-        "why": "The delimiter proof forced the split BETWEEN iterations and never asked about the body. Neither star can match a comma, so the exemption was granted, and each `,aa` segment still divides three ways. Node 22 takes 58.8s at 20 segments."
-    },
-    {
-        "id": "separated-body-inside-delimited",
-        "pattern": "^(?:,[^,-]+-[^,-]+)*X$",
-        "subject": ",a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-bY",
-        "why": "Two variable atoms and a separator NEITHER can match, so both boundaries are forced. Measured flat at 24 segments, and kept because `at most one variable atom` would have been simpler and would refuse it."
-    },
-    {
-        "id": "top-level-adjacent-stars",
-        "pattern": "^a*a*a*a*a*a*b$",
-        "subject": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!",
-        "why": "No parentheses at all, so the frame-driven structural walk analysed none of it. Six adjacent variable atoms are a polynomial of degree six: Node 22 takes 26.4s on 100 characters and a failing one."
-    },
-    {
-        "id": "top-level-two-stars",
-        "pattern": "^a*a*b$",
-        "subject": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!",
-        "why": "The other side of that line, kept because refusing it would take `^.+\\.[a-z]+$` and `^[^@]+@[^@]+$` with it. Two adjacent atoms are quadratic in the value length, which TextType bounds: 2ms at 1000 characters."
-    },
-    {
-        "id": "bounded-ambiguous-repetition",
-        "pattern": "^(a|aa){1,32}$",
-        "subject": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!",
-        "why": "A finite bound bypassed every ambiguity check. The bound is the exponent and the body is the base, and nothing bounds the base — Node 22 takes 24.3s here, and 16.6s for a four-branch body at only {1,14}."
-    },
-    {
-        "id": "grouped-adjacent-stars-in-body",
-        "pattern": "^(?:,(?:a*a*))*X$",
-        "subject": ",aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aaY",
-        "why": "Both stars inside one required group. A group holding a variable atom read as one variable atom, so the pair inside it was invisible; the walk flattens required groups now. Node 22 takes 58s at 20 segments."
-    },
-    {
-        "id": "class-first-position-bracket",
-        "pattern": "[]a[]",
-        "subject": "a",
-        "why": "PCRE reads a first-position `]` as a literal member; ECMAScript under `u` reads `[]` as an EMPTY class. Both compile, PCRE matches `a`, and Node reads an empty class then `a` then another empty class so it can never match. `[]]` was already refused for the unbalanced bracket, which is why this shape slipped past."
-    },
-    {
-        "id": "set-escape-as-range-endpoint",
-        "pattern": "[\\b-\\s]",
-        "subject": "\b",
-        "why": "The cost of admitting a construct by rewriting it. `delimit()` splices `\\s` into a character list so PCRE compiles this, while ECMAScript under `u` refuses a character-set escape as a range endpoint and does not compile the published pattern at all."
-    },
-    {
-        "id": "ambiguity-product-no-quantifier",
-        "pattern": "^(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)b$",
-        "subject": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "why": "Ambiguity with no quantifier anywhere and no variable-width atom: thirty groups each offering two identical ways to match one character, so 2^30 combinations. 240 characters of pattern; PCRE exhausts its backtrack limit and Node 22 takes 50.2s."
-    },
-    {
-        "id": "lookbehind-nested-alternation",
-        "pattern": "(?<=([ab])(?:a|aa))\\1$",
-        "subject": "baab",
-        "why": "Rule 2 checked the lookbehind's TOP-LEVEL alternatives, and this one has none — the nest makes the lookbehind two characters or three while the capture stays fixed-width. Both engines compile it: PCRE matches `baab` and Node does not, Node matches `baaa` and PCRE does not."
-    },
-    {
-        "id": "harmless-alternation-nesting",
-        "pattern": "^(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:a|a)|a)|a)|a)|a)|a)|a)|a)|a)|a)|a)|a)|a)|a)|a)|a)|a)$",
-        "subject": "a",
-        "why": "Seventeen nestings of `(?:<previous>|a)`. The ambiguity product multiplied every level, because frames() appends a group as it CLOSES so a child arrives before its parent and the containment skip had nothing recorded yet. Eighteen alternative paths, and 100,000 Node matches in 3ms — kept so the fix cannot become `refuse nesting`."
-    },
-    {
-        "id": "ambiguity-nested-in-a-branch",
-        "pattern": "^(?:(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)|aaaaaaaaaaaaaaaaaaaaaaaaaaaa)$",
-        "subject": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "why": "An ambiguous outer alternation enclosing 28 ambiguous groups. A flat product sorted outermost-first suppressed the children and counted only the outer branch count, reading 2 where the cost is 2^28. 231 characters, and Node spends 10.8s on a 29-character subject."
-    },
-    {
-        "id": "assertion-as-separator",
-        "pattern": "^(?:,a*(?!b)a*)*X$",
-        "subject": ",aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa",
-        "why": "The run traversal read THROUGH a required group, a lookahead included — so the `b` inside `(?!b)` looked like a literal separating the two `a*`. An assertion consumes nothing, so the body is `,a*a*`: two variable-width atoms in a row inside a repetition. Published, and Node spends 663 ms on sixteen segments and 6.0 s on eighteen. Deleting the assertion gives the same times, which is the proof it was never there to divide anything."
-    },
-    {
-        "id": "assertion-bodies-not-one-run",
-        "pattern": "^(?=.*[A-Z])(?=.*[0-9]).{8,64}$",
-        "subject": "aaaaaaaaaaaaaaaa",
-        "why": "The same splicing defect in the opposite direction, and the commonest validation pattern there is. Inlining both lookahead bodies made `.*` `[A-Z]` `.*` `[0-9]` `.{8,64}` read as one run of more than two, so this was REFUSED — while measuring 0.02 ms on a 5,000-character failing value. A zero-width atom neither fills a run nor divides one, and each body is a sequence checked in its own right."
-    },
-    {
-        "id": "quadratic-branches-summed",
-        "pattern": "^(?:a*a*b|a*a*c|a*a*d|a*a*e|a*a*f|a*a*g|a*a*h|a*a*i|a*a*j)$",
-        "subject": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "why": "A sequence's cost counted only the GROUPS inside it, so a branch whose expense is a quantifier read as free and nine of them cost nine. Each pays the quadratic in turn: measured linear in N, 291 ms at eight branches and 5.0 s at 140 on a permitted 5,000-character value. Nine is the first refused, because eight grants reach the ambiguity budget exactly."
-    },
-    {
-        "id": "quadratic-branches-distinct-leads",
-        "pattern": "^(?:a*a*b|c*c*d|e*e*f|g*g*h|i*i*j|k*k*l|m*m*n|o*o*p|q*q*r)$",
-        "subject": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "why": "The over-refusal the bound above carries, recorded rather than left to be found later. These nine branches cost ONE quadratic — 35.8 ms, because eight of them fail on their first atom — but `branchesAreUnambiguousLiterals()` exempts plain literal text only, on purpose, so a branch carrying a quantifier sums whether or not its lead is distinct. Refused today; lifting it means proving distinct leads for quantified branches, which is the rule two rounds of this file got wrong twice — issue #73."
-    },
-    {
-        "id": "group-lead-from-one-branch",
-        "pattern": "^a*(?:b|a)*a*c$",
-        "subject": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "why": "A repeated group's leading literal was taken from its FIRST branch, so this read as beginning with `b` — a character `a*` cannot match — and the variable-atom run reset. Its `a` branch means all three quantified atoms consume the same input. Node spends 490 ms on a failing 1,000-character value and 3.9 s on 2,000, cubic. The proof is that deleting the other branch changes nothing: `^a*(?:a)*a*c$` measures 488.5 ms and 3,877.2 ms on the same subjects, so the `b` branch never separated anything. Every branch must be unmatchable by the preceding atom now, and a branch with no leading literal proves nothing at all."
-    },
-    {
-        "id": "multi-digit-backreference-delimiter",
-        "pattern": "^()()()()()()()()()(,)(?:,\\10?)*X$",
-        "subject": ",,,,,,,,,,,,,,,,,,,,Y",
-        "why": "Two defects in one atom, both about the SCAN. Only the leading digit of a numeric reference was consumed, so `\\10?` read as `\\1` then a separate `0?` — a required comma followed by an optional zero, which looks divided. And the delimiter proof PROBES an atom against the delimiter, which is meaningless for a backreference: `/^\\1$/uD` fails to compile so PCRE returned false and the test failed closed by luck, while `/^\\10$/uD` compiles as an OCTAL escape, does not match `,`, and the test concluded the atom cannot consume the delimiter. Group 10 is `(,)`, so the body is `(?:,,?)`. Node spends 1,555 ms on 40 commas and no `X` against 1,470 ms for `^(?:,,?)*X$` written out, which was already refused — same cost, opposite verdict. A variable-width backreference fails closed now; a required one is untouched."
-    },
-    {
-        "id": "zero-repeat-group-is-absent",
-        "pattern": "^a*a*(?:a*){0}b$",
-        "subject": "aaaaaaaaaaaaaaaaaaaa",
-        "why": "An upgrade hazard rather than a hole, and a refusal being removed. This was REFUSED as three adjacent variable-width atoms while `^a*a*b$` — the same regular expression — is deliberately admitted, so on an upgrade `kitsune:audit-patterns --strict` would block a deploy over a pattern that saved yesterday. A `{0}` group never runs: it can neither fill a variable-atom run nor cost anything. Only an upper bound of zero counts — `{0,}` is zero-or-more and is still refused."
-    },
-    {
-        "id": "two-quadratic-runs-in-one-sequence",
-        "pattern": "^a*a*ba*a*c$",
-        "subject": "aaaaaaaaaaaaaaaaaaaabaaaaaaaaaaaaaaaaaaaad",
-        "why": "The cost model charged ONE quadratic grant per sequence, on a stated argument that a second run in the same branch is never reached because a subject failing in the first stops there. Wrong the moment the first run's separator MATCHES: the engine goes on, and every allocation of the first run is retried against the second. Measured on Node 22.23.2 against `a*n . b . a*n . d` — 317.5 ms at 1,202 characters, 2,512.9 ms at 2,402 and 20,016.4 ms at 4,802, which is within the configured ceiling. One run at 4,802 characters is 33.4 ms. Eight times per doubling against four. Every run is charged now."
-    },
-    {
-        "id": "zero-padded-zero-bound",
-        "pattern": "^a*a*(?:a*){00}b$",
-        "subject": "aaaaaaaaaaaaaaaaaaaa",
-        "why": "The same upgrade hazard as `{0}`, one spelling along. Both engines accept a zero-padded bound and neither ever runs the group, but the first fix recognised a single leading zero only — so `{00}` and `{00,00}` were still refused as three adjacent variable-width atoms while `^a*a*b$` is admitted. The bound is parsed numerically now, which is what `repeatsMoreThanOnce()` beside it already did."
-    },
-    {
-        "id": "zero-repeat-group-with-assertion",
-        "pattern": "(?:a|(?=a)){0}",
-        "subject": "b",
-        "why": "A live divergence, found inside the `{0}` skip added a round earlier. At production fidelity on PCRE 10.48 and Node 22.23.2, PCRE does not match `b` OR the empty string while ECMAScript matches both — so a generated client would accept every value this server rejects, which is what rule 3 forbids. It is narrow: `(?:(?=a)|a){0}` agrees, `(?:a|(?<=a)){0}` agrees, and `(?:a){0}` and `a{0}` agree. PCRE stops matching only when a dead group's alternation ENDS in a positive lookahead. The rule refuses any assertion in a zero-repeat group, which is wider than the quirk on purpose — a shape a reader can check, and a dead group holding an assertion is not a pattern anybody wrote deliberately."
-    },
-    {
-        "id": "equal-bounded-lookbehind",
-        "pattern": "(?<=a{2,2})b",
-        "subject": "aab",
-        "why": "A false refusal the published grammar does not license. `fixedRepetitions()` read only `{n}`, so the lookbehind rule called an equal bounded form variable-length — while §3 permits `{n,m}`. Both engines compile it and agree exactly: `(?<=a{1,1})b` matches `ab` in both, `(?<=a{2,2})b` matches `aab` in both, and neither matches the other's subject. Equal bounds are one width by construction; `{1,2}` really can match two lengths and stays refused, so the distinction is the two numbers being the same rather than the comma being present."
-    },
-    {
-        "id": "exactly-once-spelled-two-ways",
-        "pattern": "^(?:,(?:a*a*){1,1})*X$",
-        "subject": ",aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa",
-        "why": "The atom traversal spliced a group whose quantifier was named in a literal list — `''`, `{1}`, `{1}?` — so `{1,1}` and `{01}` stayed whole and the two `a*` inside them became invisible to the run rule. Accepted, while `^(?:,(?:a*a*){1})*X$` — the same expression — is refused, and Node spends about 6 seconds on sixteen `,aa` segments. `fixedRepetitions()` already answers \"how many times, exactly\" and handles the padded and equal-bounded forms, so one place decides what \"once\" means instead of two that can disagree."
-    },
-    {
-        "id": "unanchored-lookahead-optional-prefix",
-        "pattern": "(?=a)a?a",
-        "subject": "a",
-        "why": "Review measured this diverging on PCRE 10.44 with Node 24.15 — PCRE not matching `a` while ECMAScript does. On PHP 8.4.25 / PCRE 10.48 / Node 22.23.2 both match, as do `^(?=a)a?a$`, `(?=a)a?`, `(?=a)aa`, `a?a`, `(?=a)a*a` and `(?=ab)a?ab`. It is REFUSED now even so, because the shape is redundant: a lookahead asserting the character the following optional atom consumes constrains nothing that atom does not, so the expressiveness cost is approximately zero — and `composer.json` requires PHP ^8.4, whose earliest releases bundle PCRE2 10.44. Cheap insurance against a real deployment beats a rule that is right on one pair. The refusal is narrow: only a positive lookahead, only when the very next atom is optional, and only when that atom can match the lookahead's first required character."
-    },
-    {
-        "id": "zero-padded-equal-bound",
-        "pattern": "^a*a{01,01}a*b$",
-        "subject": "aaaaaaaaaaaaaaaaaaaa",
-        "why": "The third padded-bound gap, in the method beside the two that were fixed. `isVariableWidth()` compared the RAW upper bound with a normalised lower one — `'01' !== '1'` — so `{01,01}` read as variable-width while `{1,1}` did not, and this pattern was refused while the identical `{1,1}` spelling publishes: `kitsune:audit-patterns --strict` blocking an upgrade over a harmless stored pattern. Both bounds are cast now, and a genuine range stays variable in both spellings."
-    },
-    {
-        "id": "zero-repeat-ancestor-hides-a-repetition",
-        "pattern": "^(?:(a|aa)+){0}$",
-        "subject": "aa",
-        "why": "The frames loop read only the current frame's quantifier, so this was refused for the inner `+` although the group holding it executes zero times — both engines match only the empty string. An upgrade hazard rather than a hole, and the same argument as the direct `{0}` case one level out, which is where every finding in this area has been. Enclosure is read from the frame positions, like `repeatingAncestor()` beside it."
-    },
-    {
-        "id": "lookahead-overlap-inside-a-group",
-        "pattern": "(?:(?=a)a?a)",
-        "subject": "a",
-        "why": "The overlap refusal walked the top level only: `atomAt()` returns a whole group as ONE atom, so the scan advanced over the nested lookahead and published the shape a pair of brackets away from the one it refuses. A structural rule a bracket defeats is not a rule. Every frame kind is descended now, assertions included, and the non-overlapping shapes are asserted inside a group too — so the recursion extended the rule's reach rather than widening the rule."
-    },
-    {
-        "id": "lookahead-overlap-on-the-other-side",
-        "pattern": "a{0}(?=a)a",
-        "subject": "a",
-        "why": "The overlap refusal asked what FOLLOWED the lookahead, so the same redundancy written backwards published. Review measured this shape on PCRE 10.44 with Node 24.15 — PCRE rejecting `a` while ECMAScript matches it — and the rule now reads an optional consuming atom on EITHER side. `a?(?=a)a` and `(?:a)?(?=a)a` are the same shape and were published too, which is why the fix is stated over the shape rather than over the spelling reported."
-    },
-    {
-        "id": "lookahead-overlap-lead-behind-a-group",
-        "pattern": "(?=(?:a))(?:a)?a",
-        "subject": "a",
-        "why": "The asserted lead came from `leadingLiteral()`, which answers a different question and returns null for a group — so a pair of brackets around the asserted character skipped the parity guard entirely. `assertedLead()` now reads through anything transparent: a group that must run at least once, at any depth, and a leading assertion, which consumes nothing. An alternation stays opaque, because `(?:a|b)` asserts neither branch."
-    },
-    {
-        "id": "lookahead-overlap-lead-behind-a-quantifier",
-        "pattern": "(?=a+)a?a",
-        "subject": "a",
-        "why": "`leadingLiteral()` disqualifies a quantified atom because its own rule needs exactly one delimiter per iteration, so `(?=a+)` hid the asserted character the same way a group did. A lower bound of one says as much about the next character as no quantifier does, and the two rules wanting different answers is why the lead derivation is a second method rather than a flag on the first."
-    },
-    {
-        "id": "lookahead-overlap-identical-class",
-        "pattern": "(?=[0-9])[0-9]?[0-9]",
-        "subject": "5",
-        "why": "The overlap was proved only by asking PCRE whether the neighbouring atom matches a single-character lead, so a lead that is a CLASS proved nothing and this published. Two atoms written identically match identically, which is a certain proof and costs no guessing about intersection — deciding whether two DIFFERENT classes intersect is the missing primitive in issue #73, and `^(?=[A-Za-z])[A-Za-z0-9]*$` is why guessing at it would be a false refusal rather than a hole."
-    },
-    {
-        "id": "lookahead-overlap-optional-inside-a-group",
-        "pattern": "(?=a)(?:a?)a",
-        "subject": "a",
-        "why": "The fifth bracket to defeat a version of the overlap rule, and the first found by probing the family rather than by review. The neighbour's optionality was read from its own quantifier, so `(?:a?)` — no outer quantifier, matches nothing just as readily — published the shape `(?=a)a?a` is refused for. `(?:a*)`, `(?:|a)`, `(?:a|)` and `(?:(?:a?))` are the same thing spelled four more ways. The question is now whether the atom can match nothing, asked of any branch of a group at any depth, and it fails closed on anything unparseable."
-    },
-    {
-        "id": "unanchored-quadratic-run",
-        "pattern": "a*a*b",
-        "subject": "aaaaaaaaaaaaaaaaaaaa",
-        "why": "The top-level allowance of TWO adjacent variable-width atoms was justified as quadratic in the value's length, and the rule never asked for the anchoring that premise needs: an unanchored pattern is retried from every starting position, so the same run is CUBIC. Measured on Node 22.23.2 with all-`a` failing subjects — 286.4 ms at 500, 489.7 ms at 1,000, 3,941.8 ms at 2,000 and 60,231.6 SECONDS-worth at 5,000 (60,231.6 ms), against 36.0 ms for `^a*a*b` at the same length. PCRE is 0.0 ms at every length, because it auto-possessifies the stars, so the two engines AGREE and the cost is the consumer's alone — which is what rule 3 is about and what a verdict comparison cannot see. The harness subject is twenty characters so this file stays fast; the cost is in the numbers above."
-    },
-    {
-        "id": "unanchored-trailing-dollar",
-        "pattern": "a*a*b$",
-        "subject": "aaaaaaaaaaaaaaaaaaaa",
-        "why": "The same shape with a trailing `$`, recorded separately because reasoning gets it wrong in a plausible direction: `$` does NOT help. The retry is at the START, so this measures what the unanchored form measures — 285.1 ms at 500 characters, 3,875.7 ms at 2,000 and 60,339.4 ms at 5,000, against 36.0 ms for `^a*a*b`. Only `^` removes the search factor, and `anchorsTheSearch()` therefore looks for `^` alone."
-    },
-    {
-        "id": "branch-boundary-ends-a-run",
-        "pattern": "^a*a*|^b*",
-        "subject": "aaaaaaaaaaaaaaaaaaaa",
-        "why": "A FALSE refusal until review found it: `|` reached the run walk as an ordinary non-variable atom, `literalCharacter('|')` is null, so nothing reset the state and two mutually exclusive branches read as one sequence of three variable-width atoms. No execution path contains three. `--strict` blocks an upgrade on a pattern like this, which is why an over-refusal is recorded in this corpus alongside the holes."
-    },
-    {
-        "id": "unanchored-lookahead-nullable-prefix",
-        "pattern": "(?=a)b*a",
-        "subject": "a",
-        "why": "One exemption away from the overlap rule and refused for a different reason. `b*` cannot match the asserted `a`, so the overlap rule passes it deliberately — and review measured the engines disagreeing anyway on PCRE 10.44 with Node 24.15: PCRE rejecting `a` while ECMAScript matches it, with the ANCHORED spelling agreeing. It is also redundant, which is why refusing costs almost nothing: a search may begin wherever it likes, so an unanchored assertion in front of something that can match nothing decides nothing the search had not already decided — `(?=a)b*a` and `b*a` accept the same set of values, and both consumers ask only whether a match exists."
-    },
-    {
-        "id": "anchored-lookahead-nullable-prefix",
-        "pattern": "^(?=a)b*a",
-        "subject": "a",
-        "why": "The anchored spelling of the row above, recorded so the rule's boundary is in the corpus rather than only in a test. Review measured this one AGREEING on the pair where the unanchored form diverges, and with a `^` the assertion is no longer redundant — the search cannot move to a position where it holds. Published, and it must stay published: a rule that refused this would cost the shape rather than the divergence."
-    },
-    {
-        "id": "assertion-between-lookahead-and-nullable",
-        "pattern": "(?=a)(?!b)b*a",
-        "subject": "a",
-        "why": "The unanchored-lookahead rule looked at the atom immediately after the lookahead, and a second assertion in between consumes nothing — so the immediate neighbour was zero-width, the rule stopped there, and the shape published. Review measured the divergence on PCRE 10.44 with Node 24.15, a negative lookBEHIND in the same position behaving the same way. The walk now looks past anything zero-width for the next CONSUMING atom, which `$previous` had done since it was written: one fact held in two places, and only one of them had been told."
-    },
-    {
-        "id": "dead-atom-beside-a-lookahead",
-        "pattern": "b{0}(?=a)a",
-        "subject": "a",
-        "why": "An atom bounded at zero repetitions consumes nothing ever, and review measured its mere PRESENCE changing what the engines say: PCRE 10.44 rejects this and Node 24.15 matches it, while `^b{0}(?=a)a` agrees. `b` is not what the lookahead asserts, so the overlap rule passes it deliberately. It also fixed a reading error one round old — `a{0}(?=a)a` was refused as an OVERLAP, as though dead markup could match the asserted character; it cannot match anything, so the honest refusal is this one, and the anchored `^(?:a{0}(?=a)a)$` now publishes because the engines agree there."
-    },
-    {
-        "id": "spliced-alternation-hides-a-run",
-        "pattern": "^a*(?:b|a*)a*c$",
-        "subject": "aaaaaaaaaaaaaaaaaaaa",
-        "why": "A hole opened by the fix one round earlier. Making `|` end a run is right for a real alternation and wrong for a SPLICED one: an exactly-once group's body was flattened into the enclosing linear list, so its `|` arrived where it means nothing and the walk read it as a boundary — leaving two short runs where the second branch is `^a*a*a*c$`, three variable-width atoms in a row. Node 24 spends about 1.9 seconds on 2,001 characters and past 15 on the 5,000 a `text` field admits. A multi-branch group is no longer spliced: it stays one atom priced by what it can match, and its branches are walked separately."
-    },
-    {
-        "id": "alternation-of-two-lengths-is-variable",
-        "pattern": "^a*(?:a|aa)a*b$",
-        "subject": "aaaaaaaaaaaaaaaaaaaa",
-        "why": "`(?:a|aa)` holds neither a quantifier nor a class, so the check that asked what a group CONTAINS called it fixed-width — and it matches one character or two, which is exactly what the run rule means by variable. `fixedWidth()` answers the question the rule asks and already reads branches, escapes and classes, returning null for anything it cannot measure. Found while fixing the spliced-alternation hole beside it, by asking what else the old question got wrong."
-    },
-    {
-        "id": "lookahead-inside-a-required-wrapper",
-        "pattern": "(?:(?=a))a?a",
-        "subject": "a",
-        "why": "Only the lookahead was wrapped, so the recursion checked the assertion with no neighbour inside the wrapper and the outer walk read the wrapper as an ordinary group — the `a?` outside was never compared with the assertion inside. Review measured the divergence on PCRE 10.44 with Node 24.15. A group that consumes nothing is not a group for adjacency: such wrappers are unwrapped before the walk, at any depth, and `(?:(?=a)x)a?a` still publishes because that group consumes."
-    },
-    {
-        "id": "dead-markup-before-the-anchor",
-        "pattern": "a{0}^a*a*b$",
-        "subject": "aaaaaaaaaaaaaaaaaaaa",
-        "why": "A FALSE refusal review found: `a{0}` consumes nothing, so both engines read this as `^a*a*b$` — and the walk that looks for the anchor stopped at the dead atom, called the pattern unanchored, and refused it under the stricter run limit. `--strict` blocks an upgrade on a stored pattern that means what it meant yesterday, which is the expensive direction for this kind of mistake. Dead markup is transparent to that walk now, as it already was to the run walk and to the neighbour walk."
-    },
-    {
-        "id": "fixed-repetition-divides-a-run",
-        "pattern": "^a*a*b{1}a*$",
-        "subject": "aaaaaaaaaaaaaaaaaaaa",
-        "why": "The accepted `^a*a*ba*$` written another way, and refused: the run walk skipped its literal check for ANY quantifier, so the required `b{1}` did not end the run and the following `a*` counted as a third adjacent variable-width atom. Only a quantifier that can run zero times fails to force the boundary — and one that can run a variable number of times is a variable-width atom, which the rule above already counts. `b{2}` and `b{1,1}` are the same boundary spelled differently."
-    },
-    {
-        "id": "anchor-inside-a-dead-group",
-        "pattern": "(?:a|^){0}$",
-        "subject": "a",
-        "why": "A LIVE defect on this harness's own pair until the round that found it — PCRE 10.48 rejects `a` and Node 22.23.2 matches it, so a generated client would accept every value the server rejects. PCRE's start-anchor optimisation survives the dead group while ECMAScript skips the group outright. The dead-group rule already refused an ASSERTION inside a `{0}` group, and `containsAssertion()` looked only at parenthesised frames — so a group holding `^` reported none. Branch order matters here as it does for the lookahead form: `(?:^|a){0}$` agrees, and `^(?:a|^){0}$` agrees too, which is why the rule is about the shape rather than about the measured subject."
-    },
-    {
-        "id": "backreference-to-a-variable-capture",
-        "pattern": "^(a+)(a+)\\1$",
-        "subject": "aaaaaaaaaaaaaaaaaaaa",
-        "why": "Accepted until review sent it, because a backreference carries no quantifier of its own — so the run rule read `\\1` as fixed and counted two variable-width atoms where there are three. At production fidelity on 5,000 `a`, the ceiling a `text` field admits: `preg_match()` exhausts its backtrack limit and returns FALSE while Node 22.23.2 matches in 13.3 ms, so the published schema accepts a value the server rejects. ⚠️ THIS ROW'S SUBJECT DOES NOT DISCRIMINATE and that is deliberate: both engines agree up to 2,000 characters, and a 5,000-character subject would make this file slow to read and slow to run. The divergence is in the numbers above; the row is here so the shape is covered. A backreference is now as wide as the capture it names, and `^(a)(a+)\\1$` and `^(a{2})(a+)\\1$` still publish because a fixed-width capture makes the reference fixed too."
-    },
-    {
-        "id": "unanchored-ambiguity-product",
-        "pattern": "(?:ab|\\x61b)(?:ab|\\x61b)(?:ab|\\x61b)(?:ab|\\x61b)(?:ab|\\x61b)(?:ab|\\x61b)(?:ab|\\x61b)(?:ab|\\x61b)(?:ab|\\x61b)(?:ab|\\x61b)(?:ab|\\x61b)(?:ab|\\x61b)(?:ab|\\x61b)(?:ab|\\x61b)(?:ab|\\x61b)(?:ab|\\x61b)c",
-        "subject": "ababababababababababababababababababab",
-        "why": "The ambiguity budget priced ONE attempt, and an unanchored search retries the whole product from every starting position. This row also disproves a measured negative §4 recorded two rounds earlier: that note said the ceiling already absorbed the search factor, on the strength of sixteen copies of `(?:a|a)` measuring 178.6 ms unanchored — one shape standing for a class. With two-character branches the same product costs 736.2 ms unanchored against 0.5 ms anchored at 5,000 characters, which is seconds on ADR-027's floor. The unanchored budget is now the anchored product divided by the longest value a field may hold: 65,536 over 5,000 is 13. A product of 8 still publishes unanchored, because refusing any ambiguity at all without an anchor refused fifteen shapes in this repository's tests, every one of them linear."
-    },
-    {
-        "id": "assertion-inside-a-repetition",
-        "pattern": "^(?:(?!a*a*c)a)*bX$",
-        "subject": "aaaaaaaaaaaaaaaaaaaa",
-        "why": "Published by every other rule, which is why nothing caught it: the repeated body is FIXED WIDTH — the assertion consumes nothing and the `a` is one character — so rule 3's first proof is satisfied and no walk descended into the lookahead. Its own body holds `a*a*`, a run of two, and pays for it once per outer iteration. Measured on Node 22.23.2 with a failing 2,002-character value: 3,894 ms, against 6 ms for `^(?:(?!a*c)a)*bX$`. The frames loop asks the question now, with the REPETITION's limit rather than the top level's, because `atomRunExceeds()` deliberately does not descend into a repeated group."
-    },
-    {
-        "id": "anchor-inside-a-positive-assertion",
-        "pattern": "(?=^)(?:a|a)(?:a|a)(?:a|a)(?:a|a)b",
-        "subject": "aaaa",
-        "why": "A FALSE refusal: `(?=^)` says the position is the start as surely as `^` does, and the walk that looks for the anchor skipped past it as it skips every assertion — so this was refused under the unanchored ambiguity budget of 13 while the `^` spelling publishes under 65,536. Only a POSITIVE assertion counts and only when every branch of its body anchors: `(?!^)` asserts the opposite and `(?=^|,)` asserts nothing about the start on its own, and both stay refused."
-    },
-    {
-        "id": "unanchored-assertion-scan",
-        "pattern": "(?=a*b)a",
-        "subject": "aaaaaaaaaaaaaaaaaaaa",
-        "why": "Left a multi-value field unbounded, and neither of the other two cost tests could see it: one variable-width atom, inside a lookahead, with no repetition anywhere — and the lookahead scans the remaining value at every position an unanchored search tries. Measured on Node 22.23.2 with a failing 5,000-character value: 36.0 ms, against 0.0 ms for `^(?=a*b)a` and for `(?=ab)a`. A hundred of those in one valid array is 3.6 seconds. Both assertion polarities count, because whether a negative one is expensive depends on the value rather than on the pattern, and this file prices constructs rather than subjects."
-    },
-    {
-        "id": "fixed-width-group-divides-a-run",
-        "pattern": "^a*a*(?:b|c)a*$",
-        "subject": "aaaaaaaaaaaaaaaaaaaa",
-        "why": "A FALSE refusal: the group is fixed width, so the branch that applies the all-branch lead proof never ran, and `literalCharacter()` cannot pull a literal out of a whole group — so the run survived the group and the last `a*` counted as a third adjacent variable-width atom. Both branches lead with a literal `a*` cannot match, which is exactly the proof already applied to a variable-width group; the group's width was never what made it work. `(?:b|a)` still refuses, because one of its branches is something `a*` may swallow."
-    },
-    {
-        "id": "many-scanning-assertions-in-a-repetition",
-        "pattern": "^(?:a(?!a*c)(?!a*c))*X$",
-        "subject": "aaaaaaaaaaaaaaaaaaaa",
-        "why": "The rule that refuses a costly assertion inside a repetition evaluated them ONE AT A TIME, and each is individually inside the allowance. Each rescans the remaining value on every iteration, so k of them cost k times one — exactly linear, measured on Node 22.23.2 with a 5,000-character value: 36.9 ms for one, 74.6 ms for two, 586.9 ms for sixteen, 3,719.9 ms for a hundred. A hundred of them is 709 characters of pattern, well inside the length limit. One is already at the quadratic allowance's ceiling — `^a*a*b$` costs 36 ms at the same length — so the aggregate budget is what ONE costs, the same equal-work rule the unanchored bounds use. Fixed-width assertion bodies do not scan and are not counted."
-    },
-    {
-        "id": "deeply-nested-groups",
-        "pattern": "^(?:(?:(?:(?:(?:(?:(?:(?:a))))))))$",
-        "subject": "a",
-        "why": "Eight levels of nested groups, published — the row exists because the limit above it was SILENT and misdiagnosed: every recursive walk in `Pattern` stopped at 64 levels and reported maximal ambiguity, so 65 levels was refused for reaching a retry ceiling it does not reach. Raising the bound was the wrong fix and measuring showed it: the analysis is superlinear in depth — 16.2 ms at 32 levels, 129.5 ms at 64, 11.1 SECONDS at 249, 43.1 at 497 — and it runs on every settings save and every stored pattern in the audit. So 32 is a published limit with its own refusal, and this row holds the shape that must keep working."
-    },
-    {
-        "id": "variable-prefix-rescans-an-assertion",
-        "pattern": "^a+(?=a+a+c)",
-        "subject": "aaaaaaaaaaaaaaaaaaaa",
-        "why": "The same multiplier a repetition applies, from a shape with no repetition in it: the run is inside an assertion, and the `a+` in front re-evaluates it once per character it gives back. Measured on Node 22.23.2 against all-`a`, cubic — 490.8 ms at 1,000 characters, 3,857.1 ms at 2,000 and 12,867.9 ms at 3,000, where a `text` field admits 5,000. Three neighbours place the cause exactly, each 13 ms at 3,000: `^a+(?=a+c)` has one atom inside the assertion, `^(?=a+a+c)a+` has the prefix after it, and `^a(?=a+a+c)` has a fixed-width prefix. So the rule needs both a variable-width prefix and a run inside the assertion."
-    },
-    {
-        "id": "anchor-after-the-assertion",
-        "pattern": "(?=a)^a{0}a",
-        "subject": "a",
-        "why": "The walk that looks for the anchor reads past assertions, so it found this `^` and exempted the dead markup beside the lookahead — and review measured the shape DIVERGING on PCRE 10.44 with Node 24.15. The round before had called these shapes unmatchable nonsense, which they are not: at position 0 the lookahead holds, `^` holds, and the rest matches, as both engines confirm on `a`. The exemption now rests on an anchor the assertion has already PASSED, so `^b{0}(?=a)a` publishes and this does not."
-    },
-    {
-        "id": "repeated-zero-width-wrapper",
-        "pattern": "(?:(?=a)){2}a{0}a",
-        "subject": "a",
-        "why": "Unwrapping a group that consumes nothing required exactly-once, and the docblock said why it declined to assume otherwise: both engines happening to agree is the argument this file refuses elsewhere. Review measured it, and this diverges on PCRE 10.44 exactly as `(?=a)a{0}a` does. A zero-width body cannot make progress, so the repetition cannot run twice and the wrapper says what its body says. The HOIST of a leading prefix still requires exactly-once, because moving a prefix out of a repetition changes what its later iterations see."
-    },
-    {
-        "id": "branches-of-rescanned-assertions",
-        "pattern": "^a+(?=a+c)|^a+(?=a+c)|^a+(?=a+c)|^a+(?=a+c)|^a+(?=a+c)|^a+(?=a+c)|^a+(?=a+c)|^a+(?=a+c)|^a+(?=a+c)",
-        "subject": "aaaaaaaaaaaaaaaaaaaa",
-        "why": "Nine branches, each individually inside the quadratic allowance: `^a+(?=a+c)` claims it through a variable-width prefix re-evaluating a variable-width assertion body, and the branch cost counted it as free because it holds no adjacent-atom run. Measured on Node 22.23.2 with one 5,000-character all-`a` value: 36.0 ms for one branch, 286.4 ms for eight, 2,971.1 ms for eighty-three — 912 characters, inside every other limit. `maxItems()` cannot contain it, because that bounds how many VALUES an array carries and this is one value's own cost. The branch pays the grant a quadratic run pays, so eight reach the budget and nine pass it."
-    },
-    {
-        "id": "many-rescanned-assertions-in-a-branch",
-        "pattern": "^a+(?=a*b)(?=a*b)(?=a*b)(?=a*b)(?=a*b)(?=a*b)(?=a*b)(?=a*b)(?=a*c)",
-        "subject": "aaaaaaaaaaaaaaaaaaaab",
-        "why": "Nine assertions after one variable-width prefix. The charge that priced a rescanned assertion answered yes-or-no, so a branch paid one grant however many it held — and every assertion past the prefix is rerun on every backtrack of it. Measured on Node 22.23.2 against 5,000 `a` then a `b`, where every assertion but the last succeeds: 40.6 ms for one, 68.9 ms for eight, 611.2 ms for a hundred and forty-one at 990 characters. The charge is the grant MULTIPLIED BY THE COUNT rather than one grant per assertion: ways to retry multiply when they compose and these do not — each adds one more scan of the same suffix — so charging a grant apiece refused `^a+(?=a*b)(?=a*c)`, which measures 44 ms. Eight reach the budget exactly and nine pass it, the same number eight alternation branches reach."
-    }
+  {
+    "id": "digit-arabic",
+    "pattern": "^\\d+$",
+    "subject": "١٢",
+    "why": ""
+  },
+  {
+    "id": "word-cyrillic",
+    "pattern": "^\\w+$",
+    "subject": "аб",
+    "why": ""
+  },
+  {
+    "id": "space-nbsp",
+    "pattern": "^\\s+$",
+    "subject": " ",
+    "why": ""
+  },
+  {
+    "id": "dot-linesep",
+    "pattern": "^.$",
+    "subject": " ",
+    "why": ""
+  },
+  {
+    "id": "noncapture-alt",
+    "pattern": "^(?:ab|cd)$",
+    "subject": "cd",
+    "why": ""
+  },
+  {
+    "id": "backref",
+    "pattern": "^(a)\\1$",
+    "subject": "aa",
+    "why": ""
+  },
+  {
+    "id": "lazy-quant",
+    "pattern": "^a+?b$",
+    "subject": "aab",
+    "why": ""
+  },
+  {
+    "id": "bounded-quant",
+    "pattern": "^a{2,3}$",
+    "subject": "aaa",
+    "why": ""
+  },
+  {
+    "id": "class-range",
+    "pattern": "^[a-z0-9]+$",
+    "subject": "abc9",
+    "why": ""
+  },
+  {
+    "id": "prop-script",
+    "pattern": "^\\p{Script=Arabic}+$",
+    "subject": "مرحبا",
+    "why": ""
+  },
+  {
+    "id": "prop-bare",
+    "pattern": "^\\p{L}+$",
+    "subject": "abc",
+    "why": ""
+  },
+  {
+    "id": "anchor-A",
+    "pattern": "\\Aabc",
+    "subject": "abc",
+    "why": ""
+  },
+  {
+    "id": "lookahead",
+    "pattern": "^(?=a)ab$",
+    "subject": "ab",
+    "why": ""
+  },
+  {
+    "id": "lookbehind",
+    "pattern": "(?<=a)b",
+    "subject": "ab",
+    "why": ""
+  },
+  {
+    "id": "named-group",
+    "pattern": "^(?<x>a)$",
+    "subject": "a",
+    "why": ""
+  },
+  {
+    "id": "possessive",
+    "pattern": "^a++$",
+    "subject": "aa",
+    "why": ""
+  },
+  {
+    "id": "atomic",
+    "pattern": "^(?>a)$",
+    "subject": "a",
+    "why": ""
+  },
+  {
+    "id": "hex-escape",
+    "pattern": "^\\x41$",
+    "subject": "A",
+    "why": ""
+  },
+  {
+    "id": "unicode-escape",
+    "pattern": "^\\x{1F600}$",
+    "subject": "😀",
+    "why": ""
+  },
+  {
+    "id": "boundary-b",
+    "pattern": "\\bab\\b",
+    "subject": "ab",
+    "why": ""
+  },
+  {
+    "id": "escaped-slash",
+    "pattern": "^a\\/b$",
+    "subject": "a/b",
+    "why": ""
+  },
+  {
+    "id": "escaped-dash-class",
+    "pattern": "^[a\\-b]+$",
+    "subject": "a-b",
+    "why": ""
+  },
+  {
+    "id": "unset-group-backref",
+    "pattern": "^(?:(a)|b)\\1$",
+    "subject": "b",
+    "why": "Backreference to a group in an alternative that never participated: PCRE2 fails the backref, ECMA-262 matches it as empty (measured: PHP NOMATCH, Node MATCH) — proves group+alternation+backref cannot be allowlisted together even though each part is already allowed."
+  },
+  {
+    "id": "quantified-capture-persistence",
+    "pattern": "^(?:(a)|b)+c\\1$",
+    "subject": "abca",
+    "why": "ECMA-262 clears captures inside a quantified group at each iteration while PCRE2 keeps the last value (measured: PHP MATCH, Node NOMATCH) — proves a capture written in one iteration and read after the loop means different things."
+  },
+  {
+    "id": "combining-mark-group-name",
+    "pattern": "^(?<a̧o>[0-9]{4})$",
+    "subject": "2026",
+    "why": "Group name is 'a' + U+0327 COMBINING CEDILLA + 'o'. ECMA-262 group names are IdentifierName and admit combining marks; PCRE2 restricts them to word characters. The case is worthless without the mark actually present — review found it had been flattened to plain ASCII 'ao', so both engines compiled it and the case validated nothing."
+  },
+  {
+    "id": "dollar-sign-group-name",
+    "pattern": "^(?<$y>[0-9]{4})$",
+    "subject": "2026",
+    "why": "ECMA-262 group names are IdentifierName (so '$' is legal) while PCRE2 restricts them to word characters (measured: PHP compile error, Node MATCH) — establishes that named-group NAME legality diverges, and diverges in the JS-accepts/PHP-refuses direction."
+  },
+  {
+    "id": "bare-inline-caseless",
+    "pattern": "^(?i)straße$",
+    "subject": "STRAßE",
+    "why": "Bare inline modifier: PCRE2 turns on caseless matching from that point, ECMA-262 has no such construct at all (measured: PHP MATCH, Node SyntaxError) — a published schema built from this source is not merely stricter, it is uncompilable."
+  },
+  {
+    "id": "scoped-modifier-kelvin",
+    "pattern": "^(?i:k)$",
+    "subject": "K",
+    "why": "Subject is U+212A KELVIN SIGN: scoped modifier group is PCRE2-valid and (unlike the bare form) is ES2025 syntax, so this measures both availability on the consumer's engine and whether Unicode simple case folding of K/k agrees (measured: PHP MATCH, Node 22 SyntaxError — a Node 24+ consumer would compile it and the folding comparison becomes the real result)."
+  },
+  {
+    "id": "bare-inline-free-spacing",
+    "pattern": "^(?x) a b $",
+    "subject": "ab",
+    "why": "PCRE2 (?x) deletes the literal spaces, and ECMA-262 has no x flag in any edition, so unlike (?i:...) this can never converge (measured: PHP MATCH, Node SyntaxError) — proves the literal meaning of the source text itself is engine-dependent."
+  },
+  {
+    "id": "inline-comment-group",
+    "pattern": "^a(?#a note)b$",
+    "subject": "ab",
+    "why": "(?#...) is a PCRE2 comment and ECMA-262 has no comment syntax (measured: PHP MATCH, Node SyntaxError) — the construct a non-developer is most likely to want for self-documenting a pattern is exactly the one that breaks publication."
+  },
+  {
+    "id": "python-style-named-group",
+    "pattern": "^(?P<year>[0-9]{4})$",
+    "subject": "2026",
+    "why": "PCRE2 accepts the Python-style (?P<name>...) alias that ECMA-262 does not (measured: PHP MATCH, Node SyntaxError) — distinct from the already-measured (?<x>a), and it is the spelling PHP's own documentation shows, so it will be authored."
+  },
+  {
+    "id": "relative-backreference",
+    "pattern": "^(a)(b)\\g{-1}$",
+    "subject": "abb",
+    "why": "Group-relative backreference \\g{-1} is PCRE2-only; in ECMA-262 unicode mode \\g is an invalid escape (measured: PHP MATCH, Node SyntaxError) — classifies the relative (as opposed to absolute) way of naming a group."
+  },
+  {
+    "id": "octal-escape-vs-group-number",
+    "pattern": "^(a)\\101$",
+    "subject": "aA",
+    "why": "With one capture group, PCRE2 reads \\101 as the octal escape for 'A' while ECMA-262 unicode mode treats it as a reference to nonexistent group 101 (measured: PHP MATCH of \"aA\", Node SyntaxError) — group numbering silently reinterprets an escape, so the boundary between backref and literal is engine-dependent."
+  },
+  {
+    "id": "branch-reset-group",
+    "pattern": "^(?|(a)|(b))\\1$",
+    "subject": "bb",
+    "why": "Branch reset makes both alternatives group 1 in PCRE2, so \\1 is \"b\"; ECMA-262 has no (?| construct (measured: PHP MATCH, Node SyntaxError) — the one construct where alternation changes group NUMBERING rather than just participation."
+  },
+  {
+    "id": "numeric-conditional",
+    "pattern": "^(a)?(?(1)b|c)$",
+    "subject": "c",
+    "why": "Subject exercises the else-branch of a PCRE2 conditional on whether group 1 participated; ECMA-262 has no conditionals (measured: PHP MATCH, Node SyntaxError) — proves group participation can drive control flow in PHP with no schema-side equivalent."
+  },
+  {
+    "id": "recursive-subroutine-call",
+    "pattern": "^(a(?1)?b)$",
+    "subject": "aabb",
+    "why": "Recursive subroutine call to group 1 matches balanced a…b in PCRE2 and is not expressible in ECMA-262 (measured: PHP MATCH, Node SyntaxError) — the balanced-nesting idiom people copy from the web, and the reason (?N) must be refused rather than approximated."
+  },
+  {
+    "id": "alternation-pruning-verb",
+    "pattern": "^(?:a(*FAIL)|a)b$",
+    "subject": "ab",
+    "why": "PCRE2 backtracking control verbs silently prune an alternative that ECMA-262 cannot even parse (measured: PHP MATCH, Node SyntaxError) — classifies the whole (*VERB) family, which is group-shaped syntax the validator will otherwise walk straight past."
+  },
+  {
+    "id": "brace-bare-open-literal",
+    "pattern": "^a{$",
+    "subject": "a{",
+    "why": "PCRE2 silently treats an unmatched { as a literal character while ECMA u-mode makes it a SyntaxError, so a typo'd bound (e.g. ^\\d{2$) compiles server-side and hard-fails every API consumer (measured: PHP MATCH, Node SyntaxError 'Incomplete quantifier')."
+  },
+  {
+    "id": "bound-comma-first",
+    "pattern": "^a{,3}$",
+    "subject": "aa",
+    "why": "PCRE2 10.43+ accepts {,n} as {0,n} whereas ECMA u-mode rejects it outright, so this is a construct where PCRE2 quantifies and ECMA refuses to compile at all (measured: PHP MATCH on 'aa' proving {0,3} semantics, Node SyntaxError)."
+  },
+  {
+    "id": "bound-whitespace-inside",
+    "pattern": "^a{ 2 }$",
+    "subject": "aa",
+    "why": "Tests whether whitespace inside braces makes the bound a quantifier, a literal, or an error; PCRE2 10.48 accepts it as a real quantifier while ECMA u-mode refuses (measured: PHP MATCH on 'aa' — quantifier, not literal — Node SyntaxError), the pattern most likely to be typed by a non-developer."
+  },
+  {
+    "id": "bound-escaped-braces-literal",
+    "pattern": "^a\\{2\\}$",
+    "subject": "a{2}",
+    "why": "Positive control establishing the one sanctioned way to author a literal brace: \\{ is a legal IdentityEscape in ECMA u-mode and literal in PCRE2, so if this agrees it becomes the allowlist's replacement for the three refused brace forms (measured: both MATCH 'a{2}')."
+  },
+  {
+    "id": "bound-upper-over-65535",
+    "pattern": "^a{0,65536}$",
+    "subject": "aaa",
+    "why": "Pins the divergent quantifier ceiling — PCRE2 caps a repeat count at 65535 and refuses to compile above it, while ECMA allows up to 2^32-1, so an author-visible bound is accepted by the API schema but rejected by the server (measured: PHP compile failure 'number too big in {} quantifier', Node MATCH)."
+  },
+  {
+    "id": "bound-upper-at-65535",
+    "pattern": "^a{0,65535}$",
+    "subject": "aaa",
+    "why": "The just-under-the-line half of the ceiling pair, needed so the published grammar can state an exact inclusive maximum bound rather than an approximate one (measured: both MATCH, so 65535 is legal in both)."
+  },
+  {
+    "id": "group-bound-pattern-too-large",
+    "pattern": "^(?:a?){20000}$",
+    "subject": "aaa",
+    "why": "A bound on a group is expanded by replication in PCRE2, so a count far below the 65535 numeric cap can still blow the compiled-pattern size limit that ECMA has no equivalent of — a second, independent bound ceiling that depends on what is being quantified (measured: PHP 'regular expression is too large', Node MATCH)."
+  },
+  {
+    "id": "quantified-group-capture-reset",
+    "pattern": "^(?:(a)|b)+\\1$",
+    "subject": "aba",
+    "why": "The highest-value case: ECMA clears captures inside a quantified group on every iteration while PCRE2 retains the last value, so a quantified group feeding a backreference silently accepts different input in each engine with no error anywhere (measured: PHP MATCH with $1='a', Node NOMATCH)."
+  },
+  {
+    "id": "zero-bound-unset-backref",
+    "pattern": "^(a){0}\\1b$",
+    "subject": "b",
+    "why": "A {0} bound makes the capture non-participating, and the engines disagree on what a backreference to a non-participating group matches — PCRE2 fails it, ECMA matches empty — a silent boolean divergence driven purely by the bound (measured: PHP NOMATCH, Node MATCH)."
+  },
+  {
+    "id": "optional-group-unset-backref",
+    "pattern": "^(a)?\\1b$",
+    "subject": "b",
+    "why": "Same unset-backreference divergence reached through ? instead of {0}, which determines whether the refusal rule must cover every optional/starred capture group followed by a backreference (a broad restriction) or just the {0} form (a trivial one) (measured: PHP NOMATCH, Node MATCH)."
+  },
+  {
+    "id": "quantifier-on-lookahead",
+    "pattern": "^(?=a)+a$",
+    "subject": "a",
+    "why": "Tests whether an assertion is a repeatable item: PCRE2 accepts a quantified lookahead and matches, while ECMA u-mode disallows quantified assertions entirely, so the construct compiles server-side and breaks the published schema (measured: PHP MATCH, Node SyntaxError 'Invalid quantifier')."
+  },
+  {
+    "id": "grapheme-cluster-bound",
+    "pattern": "^\\X{2}$",
+    "subject": "n̈n̈",
+    "why": "Asks what unit a bound counts when the author wants 'two characters' of combining-mark text: PCRE2's \\X counts grapheme clusters, and ECMA has no such atom at all, so a length rule written this way cannot survive publication (measured: PHP MATCH on two clusters, Node SyntaxError 'Invalid escape')."
+  },
+  {
+    "id": "astral-literal-bound",
+    "pattern": "^😀{2}$",
+    "subject": "😀😀",
+    "why": "Confirms the quantified atom is a whole code point rather than a UTF-16 code unit in both engines — the subject is the discriminating one because surrogate-level binding would reject it — licensing bounds on non-BMP literals in the allowlist (measured: both MATCH)."
+  },
+  {
+    "id": "star-on-starred-group-cost",
+    "pattern": "^(a*)*b$",
+    "subject": "aaaaaaaaaaaaaaaaaaaaaaaa",
+    "why": "Same verdict, four orders of magnitude apart in cost: PCRE2 optimizes the degenerate nested quantifier away while V8 backtracks exponentially, so a pattern that is free server-side is a ReDoS handed to every API consumer (measured: PHP NOMATCH in 0ms, Node NOMATCH in 1513ms, doubling per added character)."
+  },
+  {
+    "id": "class-s-zwnbsp",
+    "pattern": "^[\\s]$",
+    "subject": "﻿",
+    "why": "Subject is U+FEFF ZWNBSP: proves ECMA-262 \\s inside a class is BROADER than PCRE2/UCP \\s (ES counts ZWNBSP as WhiteSpace, PCRE2 does not) — a client-side-accepted value the server rejects."
+  },
+  {
+    "id": "class-s-mongolian-vowel-sep",
+    "pattern": "^[\\s]$",
+    "subject": "᠎",
+    "why": "Subject is U+180E MONGOLIAN VOWEL SEPARATOR: proves the divergence runs the OTHER way too — PCRE2's \\h/\\s list still includes it (pre-Unicode-6.3 view) while ES does not, so \\s is bidirectionally non-portable."
+  },
+  {
+    "id": "class-w-superscript-two",
+    "pattern": "^[\\w]$",
+    "subject": "²",
+    "why": "Subject is U+00B2 (category No): proves PCRE2/UCP \\w admits digit-like non-ASCII characters that its own \\d rejects, while ES \\w stays ASCII — the class boundary sits in a different place in each engine."
+  },
+  {
+    "id": "neg-class-d-arabic-indic",
+    "pattern": "^[^\\d]+$",
+    "subject": "٣",
+    "why": "Subject is U+0663 ARABIC-INDIC THREE: proves negation INVERTS which engine is permissive — PCRE2 excludes it from [^\\d] while ES admits it, so a negated class is stricter server-side than the published schema."
+  },
+  {
+    "id": "posix-alpha-in-class",
+    "pattern": "^[[:alpha:]]$",
+    "subject": "a",
+    "why": "Proves PCRE2 POSIX bracket expressions are not merely different in meaning but produce a published schema ECMA-262 cannot compile at all (the trailing ] becomes a lone quantifier bracket in u-mode)."
+  },
+  {
+    "id": "posix-alpha-bare",
+    "pattern": "^[:alpha:]+$",
+    "subject": "alpha",
+    "why": "The common authoring typo without an enclosing class: proves PCRE2 refuses it outright while ES silently accepts it as the literal set {:,a,l,p,h}, so authoring-time acceptance and consumer-side meaning can invert."
+  },
+  {
+    "id": "class-rbracket-first",
+    "pattern": "^[]]$",
+    "subject": "]",
+    "why": "Proves the Perl/POSVIX convention that a leading ] is a literal class member holds in PCRE2 but is a SyntaxError in ES u-mode (empty class plus lone ]), so any pattern matching a literal bracket this way must be refused."
+  },
+  {
+    "id": "neg-class-empty",
+    "pattern": "^[^]$",
+    "subject": "]",
+    "why": "Proves the reverse bracket asymmetry: PCRE2 refuses [^] as an unterminated class while ES compiles it to 'any code point', the most permissive possible published constraint."
+  },
+  {
+    "id": "class-set-op-intersection",
+    "pattern": "^[a-z&&[aeiou]]$",
+    "subject": "a]",
+    "why": "ECMAScript v-flag set-operation syntax compiled under u: proves PCRE2 silently mis-parses it as a union containing literal & and [ (matching 'a]'), while ES rejects it — nested classes and set ops are unsafe in both directions."
+  },
+  {
+    "id": "class-u-escape-range",
+    "pattern": "^[A-Z]+$",
+    "subject": "AZ",
+    "why": "Proves the JS-idiomatic \\uXXXX range endpoint is ES-only: PCRE2 10.48 explicitly refuses \\u, so an author copying a JS pattern is blocked server-side rather than silently diverging."
+  },
+  {
+    "id": "class-escaped-underscore",
+    "pattern": "^[\\_]$",
+    "subject": "_",
+    "why": "Proves defensive backslashing of a non-syntax character inside a class (PCRE2: literal) is a hard SyntaxError under ES u-mode's restricted IdentityEscape — a very common authoring habit that would break every consumer."
+  },
+  {
+    "id": "class-h-escape-space",
+    "pattern": "^[\\h]$",
+    "subject": " ",
+    "why": "Proves PCRE2's \\h horizontal-whitespace escape inside a class has no ECMA-262 equivalent (invalid escape in u-mode); ASCII space is used so the outcome isolates escape support, not Unicode membership."
+  },
+  {
+    "id": "class-quote-literal-block",
+    "pattern": "^[\\Q.-]\\E]+$",
+    "subject": "]-.",
+    "why": "Proves \\Q...\\E literal quoting is PCRE2-only and additionally hides a ] from any ES parser, so it must be refused rather than translated."
+  },
+  {
+    "id": "class-bare-script-name",
+    "pattern": "^[\\p{Greek}]+$",
+    "subject": "λ",
+    "why": "Subject is U+03BB: proves PCRE2 accepts a bare script name as a property while ES requires Script=/sc= and rejects \\p{Greek} outright — property-name spelling is part of the grammar, not just the property itself."
+  },
+  {
+    "id": "class-long-general-category",
+    "pattern": "^[\\p{General_Category=Letter}]+$",
+    "subject": "λ",
+    "why": "The mirror case: proves ES accepts the long General_Category=Letter form that PCRE2 10.48 refuses, so allowlisting \\p{...} requires an explicit list of spellings valid in BOTH engines."
+  },
+  {
+    "id": "bslash-v-vertical-ws",
+    "pattern": "^\\v$",
+    "subject": "",
+    "why": "Same syntax, different meaning with no compile error either side: PCRE2 \\v is the vertical-whitespace CLASS (LF, VT, FF, CR, NEL, LS, PS) so it matches U+0085, while ECMA-262 \\v is exactly VT U+000B and does not — the highest-risk silent divergence in the escape family (verified: PHP match, Node nomatch)."
+  },
+  {
+    "id": "bslash-u-four-hex",
+    "pattern": "^A$",
+    "subject": "A",
+    "why": "Reverses the usual strictness direction: ECMA-262 \\uHHHH is the canonical codepoint escape a JSON-Schema author would copy, but PCRE2 without ALT_BSUX refuses \\u outright — proves the grammar must ban the form that looks most native to the published side (verified: Node match, PHP compile error)."
+  },
+  {
+    "id": "bslash-u-brace-astral",
+    "pattern": "^\\u{1F600}$",
+    "subject": "😀",
+    "why": "The braced ECMA-262 codepoint escape for an astral character compiles and matches in Node but is a PCRE2 compile error, so it must be refused even though \\x{1F600} (already measured) is the PCRE2-side spelling of the same intent."
+  },
+  {
+    "id": "octal-three-digit",
+    "pattern": "^\\101$",
+    "subject": "A",
+    "why": "Legacy three-digit octal escape: PCRE2 reads it as chr(0o101)='A' while u-mode ECMA-262 forbids octal escapes entirely — proves \\NNN is refusable and that \\ + digit cannot be judged by PCRE2 semantics alone (verified: PHP match, Node SyntaxError)."
+  },
+  {
+    "id": "octal-vs-backref-ten",
+    "pattern": "^(a)\\10$",
+    "subject": "a\b",
+    "why": "The octal/backreference ambiguity itself: with only one group, PCRE2 re-reads \\10 as octal 0o10 = U+0008 backspace, while u-mode ECMA-262 rejects it as an invalid escape — proves \\ + multi-digit is a two-reading construct whose meaning depends on the group count (verified: PHP match, Node SyntaxError)."
+  },
+  {
+    "id": "bslash-e-esc",
+    "pattern": "^\\e$",
+    "subject": "\u001b",
+    "why": "Control-character escape present only in PCRE2: \\e is ESC U+001B there and an invalid identity escape under u-mode — proves the \\e/\\a-style single-letter control escapes must be refused (verified: PHP match, Node SyntaxError)."
+  },
+  {
+    "id": "ctrl-escape-c-nonletter",
+    "pattern": "^\\c[$",
+    "subject": "\u001b",
+    "why": "Pins the exact boundary of \\c: PCRE2 XORs 0x40 with any following char so \\c[ is ESC, while u-mode ECMA-262 requires \\c + ASCII letter and rejects this — proves \\c is only safe when the next character is a letter (\\cJ agrees in both), so the grammar needs a per-argument rule, not a per-escape one."
+  },
+  {
+    "id": "short-hex-one-digit",
+    "pattern": "^\\x4$",
+    "subject": "\u0004",
+    "why": "Hex-escape length strictness: PCRE2 accepts one or two hex digits after \\x (yielding U+0004) while ECMA-262 u-mode demands exactly two — proves \\xHH must be allowlisted only in its full two-digit form (verified: PHP match, Node SyntaxError)."
+  },
+  {
+    "id": "identity-escape-hyphen",
+    "pattern": "^a\\-b$",
+    "subject": "a-b",
+    "why": "The likeliest author mistake in the whole set: outside a character class PCRE2 allows \\- as an identity escape, but ECMA-262 u-mode restricts IdentityEscape to SyntaxCharacter plus '/' and rejects it — proves \\- is only portable inside a class (already measured as [a\\-b]), never outside (verified: PHP match, Node SyntaxError)."
+  },
+  {
+    "id": "identity-escape-space",
+    "pattern": "^a\\ b$",
+    "subject": "a b",
+    "why": "Escaped whitespace: PCRE2 treats \\<space> as a literal space, u-mode ECMA-262 rejects it — proves over-escaping a non-syntax punctuation/whitespace character is a refusal class in general, not just for '-' (verified: PHP match, Node SyntaxError)."
+  },
+  {
+    "id": "bslash-X-grapheme",
+    "pattern": "^\\X$",
+    "subject": "é",
+    "why": "PCRE2-only \\X matches a whole extended grapheme cluster, so it consumes base+combining-mark as one unit, while u-mode ECMA-262 rejects \\X — proves a construct that changes the unit of matching for decomposed non-ASCII text cannot be published (verified: PHP match on U+0065 U+0301, Node SyntaxError)."
+  },
+  {
+    "id": "quote-literal-span",
+    "pattern": "^\\Qa.b\\E$",
+    "subject": "axb",
+    "why": "Literal-quoting span: PCRE2 makes the '.' inside \\Q...\\E literal (so 'axb' does NOT match), while ECMA-262 u-mode rejects \\Q — the nomatch proves \\Q is actively suppressing metacharacters, i.e. an author's 'make this literal' idiom silently has no counterpart downstream (verified: PHP nomatch, Node SyntaxError)."
+  },
+  {
+    "id": "bslash-Z-trailing-newline",
+    "pattern": "^abc\\Z",
+    "subject": "abc\n",
+    "why": "PCRE2's \\Z end-anchor matches before a final newline (so 'abc\\n' passes) and has no ECMA-262 equivalent — proves both that \\Z/\\z must be refused and that PCRE2 end-of-subject leniency lets trailing-newline input slip through a validator (verified: PHP match, Node SyntaxError)."
+  },
+  {
+    "id": "bslash-R-crlf",
+    "pattern": "^\\R$",
+    "subject": "\r\n",
+    "why": "PCRE2 \\R matches any newline sequence including the TWO-character CRLF as a single unit, while u-mode ECMA-262 rejects \\R — proves a refusable escape whose PCRE2 semantics cannot even be expressed as a single-character class downstream (verified: PHP match on U+000D U+000A, Node SyntaxError)."
+  },
+  {
+    "id": "p-script-colon-sep",
+    "pattern": "^\\p{Script:Greek}$",
+    "subject": "α",
+    "why": "PCRE accepts ':' as the property separator where ECMAScript requires '=' and throws (verified: SyntaxError in Node), so the separator character needs its own ruling rather than riding on the loose-name row."
+  },
+  {
+    "id": "p-sc-short-alias",
+    "pattern": "^\\p{sc=Greek}$",
+    "subject": "α",
+    "why": "Proves whether the short property alias 'sc' travels with '=' in both engines, i.e. whether the allowlist must enumerate aliases as well as the canonical 'Script'."
+  },
+  {
+    "id": "p-scx-long-name",
+    "pattern": "^\\p{Script_Extensions=Greek}$",
+    "subject": "ʹ",
+    "why": "U+0374 has Script=Common but Script_Extensions=Greek, so this proves both that the Script_Extensions spelling compiles in PCRE and that its set agrees with ECMAScript's (true) exactly where scx and sc part ways."
+  },
+  {
+    "id": "p-script-not-scx",
+    "pattern": "^\\p{Script=Greek}$",
+    "subject": "ʹ",
+    "why": "ECMAScript answers false on U+0374; a PCRE that resolves Script= against Script_Extensions would answer true, a conflation invisible on any character whose sc and scx agree."
+  },
+  {
+    "id": "p-gc-long-form-astral",
+    "pattern": "^\\p{General_Category=Lu}$",
+    "subject": "𞤀",
+    "why": "Tests the long General_Category spelling an author copies off the JSON Schema side, on an astral Lu (U+1E900 Adlam) so a property table that stops at the BMP shows up as a mismatch rather than a compile error."
+  },
+  {
+    "id": "p-cased-letter-long-name",
+    "pattern": "^\\p{Cased_Letter}$",
+    "subject": "ǅ",
+    "why": "The long name for the LC group the allowlist already permits, measured on the titlecase category (U+01C5) that belongs to LC but to neither Lu nor Ll — so a partial LC implementation is exposed."
+  },
+  {
+    "id": "p-lowercase-other-lowercase",
+    "pattern": "^\\p{Lowercase}$",
+    "subject": "ª",
+    "why": "Lowercase is Ll plus Other_Lowercase; U+00AA is Lo, so a PCRE that maps the binary property onto Ll diverges here and on no ordinary letter."
+  },
+  {
+    "id": "p-lower-posix-alias",
+    "pattern": "^\\p{Lower}$",
+    "subject": "ª",
+    "why": "'Lower' is an ECMAScript alias for Lowercase but collides with PCRE's POSIX 'lower'; the same subject separates 'alias honoured' from 'alias silently resolved to Ll'."
+  },
+  {
+    "id": "p-uppercase-roman-numeral",
+    "pattern": "^\\p{Uppercase}$",
+    "subject": "Ⅰ",
+    "why": "Other_Uppercase on a non-letter category (U+2160 is Nl) — the mirror of the Lowercase case, and one of the few case semantics reachable at all when no 'i' flag is available."
+  },
+  {
+    "id": "p-alpha-alias-nl",
+    "pattern": "^\\p{Alpha}$",
+    "subject": "Ⅰ",
+    "why": "Combines the 'Alpha' alias with Alphabetic's inclusion of Nl, where \\p{L} is false, so an alias quietly resolved to L is visible instead of hidden."
+  },
+  {
+    "id": "p-changes-when-uppercased",
+    "pattern": "^\\p{Changes_When_Uppercased}$",
+    "subject": "ß",
+    "why": "A case-mapping binary property ECMAScript defines (true for ß→SS) and PCRE may not implement at all, which would be a compile-time divergence rather than a semantic one."
+  },
+  {
+    "id": "p-extended-pictographic",
+    "pattern": "^\\p{Extended_Pictographic}$",
+    "subject": "😀",
+    "why": "The property an emoji-constrained field would actually reach for, on an astral code point: ECMAScript has it, and PCRE's tables may not carry emoji-data-derived properties."
+  },
+  {
+    "id": "p-script-newest-name",
+    "pattern": "^\\p{Script=Sidetic}$",
+    "subject": "𐥀",
+    "why": "A Unicode 17 script name (U+10940): whichever engine's tables are older rejects the name outright, which is the version-skew failure a published script allowlist has to survive."
+  },
+  {
+    "id": "p-cn-version-skew",
+    "pattern": "^\\p{Cn}$",
+    "subject": "𐥀",
+    "why": "Same code point, set contents instead of name inventory — Cn compiles in both engines, so an engine on an older Unicode calls U+10940 unassigned while the newer one does not."
+  },
+  {
+    "id": "aggregate-C-unassigned",
+    "pattern": "^\\p{C}$",
+    "subject": "𐥀",
+    "why": "The Cn exclusion reached by another spelling: C is Cc|Cf|Co|Cs|Cn, so it contains the unassigned set and inverts with it. It was on the portable list while Cn was off it, which made the exclusion arbitrary. Both engines here sit at Unicode 17.0 and agree, so this reports as an expressiveness cost rather than a divergence."
+  },
+  {
+    "id": "assigned-letter-same-codepoint",
+    "pattern": "^\\p{L}$",
+    "subject": "𐥀",
+    "why": "The SYMMETRY case, and the reason the exclusion stops at Cn and C. U+10940 is SIDETIC LETTER N01, assigned in Unicode 17.0, so \\p{L} diverges on exactly the code point \\p{Cn} does — in the opposite direction. A grammar that refused every version-sensitive property would have to refuse this, which is why the limit is disclosed instead of enforced."
+  },
+  {
+    "id": "complement-of-letter",
+    "pattern": "^\\P{L}$",
+    "subject": "𐥀",
+    "why": "The complement review asked to exclude. It diverges no more than \\p{L} does and for the same reason, so refusing it would remove half of a symmetric pair and still claim portability for the other half."
+  },
+  {
+    "id": "p-negated-p-class-astral",
+    "pattern": "^[^\\p{L}]$",
+    "subject": "😀",
+    "why": "A negated property class over an astral code point: ECMAScript matches it as one code point, and any engine counting UTF-16 units or splitting the surrogate pair fails the anchors."
+  },
+  {
+    "id": "dollar-trailing-newline-latin",
+    "pattern": "^[a-z]+$",
+    "subject": "abc\n",
+    "why": "The headline anchor divergence: PCRE2's $ also matches before a single trailing newline, so an author's \"^...$\" fully-anchored field accepts a trailing \\n that ECMA-262 rejects (verified locally: PHP MATCH, Node no-match)."
+  },
+  {
+    "id": "dollar-midpattern-then-newline",
+    "pattern": "^a$\\n",
+    "subject": "a\n",
+    "why": "Proves PCRE2's $ is a positional assertion, not a terminal one — it succeeds mid-pattern and the newline is still consumable afterwards — while ECMA-262 fails there, so the divergence is not just about what the match ends with."
+  },
+  {
+    "id": "anchor-in-alternation-branch",
+    "pattern": "^(?:xyz|abc$)",
+    "subject": "abc\n",
+    "why": "Tests whether the $-before-final-newline leniency still applies when the anchor sits inside a non-capturing group's alternation branch rather than at top level (PHP MATCH, Node no-match)."
+  },
+  {
+    "id": "bsZ-end-anchor-newline",
+    "pattern": "^a\\Z",
+    "subject": "a\n",
+    "why": "\\Z is a PCRE2-only end anchor with the same trailing-newline leniency as $; in ECMA-262 'u' mode it is a SyntaxError (Invalid escape), so it is a compile-time refusal, not a semantic mismatch."
+  },
+  {
+    "id": "bsz-absolute-end",
+    "pattern": "^a\\z",
+    "subject": "a",
+    "why": "\\z is the strict end-of-subject anchor authors would naturally reach for as a fix for $, so the grammar must publish that it is unavailable: PHP compiles and matches, Node 'u' mode throws Invalid escape."
+  },
+  {
+    "id": "inline-m-modifier-anchors",
+    "pattern": "(?m)^b$",
+    "subject": "a\nb",
+    "why": "A leading inline (?m) silently redefines ^ and $ as line anchors in PCRE2 but is a SyntaxError (Invalid group) in ECMA-262, so multiline anchor semantics are reachable in one engine and unexpressible in the other."
+  },
+  {
+    "id": "scoped-m-modifier-group",
+    "pattern": "(?m:^b$)",
+    "subject": "a\nb",
+    "why": "The ES2025 scoped-modifier form is the only cross-engine spelling that could exist, and the subject is chosen so a silently ignored modifier shows as a mismatch; on Node 22 it is still a SyntaxError, pinning the runtime floor for this construct."
+  },
+  {
+    "id": "crlf-verb-anchor",
+    "pattern": "(*CRLF)^a$",
+    "subject": "a\r\n",
+    "why": "PCRE2 newline-convention verbs widen $ to match before a CRLF pair; in ECMA-262 the leading (* is a SyntaxError, so this must be refused as a whole class of anchor-mutating prefixes."
+  },
+  {
+    "id": "bsK-match-reset",
+    "pattern": "^a\\Kb",
+    "subject": "ab",
+    "why": "\\K resets the reported match start in PCRE2 (match becomes \"b\") and throws in ECMA-262 'u' mode — relevant because JSON Schema \"pattern\" is an unanchored search where match extent is observable."
+  },
+  {
+    "id": "word-boundary-accented-word",
+    "pattern": "\\bcafé\\b",
+    "subject": "café",
+    "why": "The realistic authored idiom: PHP's /u sets PCRE2_UCP so é is a word char and the trailing \\b holds, while ECMA-262 \\w stays ASCII so no boundary exists after é — same pattern, opposite verdicts on ordinary Latin-1 text."
+  },
+  {
+    "id": "bsB-inside-accented",
+    "pattern": "a\\Bï",
+    "subject": "naïve",
+    "why": "Tests \\B (not just \\b) across an ASCII/non-ASCII letter junction: UCP makes it a non-boundary in PCRE2 (match) but a boundary in ECMA-262 (no match), confirming both boundary operators inherit the \\w definition split."
+  },
+  {
+    "id": "boundary-underscore-arabic-digit",
+    "pattern": "_\\b",
+    "subject": "_٣",
+    "why": "Discriminates in the reverse direction — ECMA-262 matches and PCRE2 does not — because U+0663 is a word char only under UCP; also covers the underscore/digit side of \\w, guarding against a rule that only ever fires one way."
+  },
+  {
+    "id": "boundary-astral-math-letter",
+    "pattern": "\\b𝐀\\b",
+    "subject": "𝐀",
+    "why": "Word boundaries around an astral letter (U+1D400): checks that boundary evaluation at a supplementary code point behaves as one character in both engines and isolates whether any divergence is UCP-driven or astral-driven."
+  },
+  {
+    "id": "boundary-bmp-cjk-letter",
+    "pattern": "\\b日\\b",
+    "subject": "日",
+    "why": "BMP control for the astral case: if this diverges identically then the cause is the UCP \\w definition rather than surrogate handling, which is what lets the grammar write one rule instead of two."
+  },
+  {
+    "id": "bsB-at-start-before-accent",
+    "pattern": "\\Bé",
+    "subject": "é",
+    "why": "Boundary semantics at position zero, where the engines invert: ECMA-262 sees no boundary before a non-ASCII letter so \\B succeeds, PCRE2 sees one so it fails — proving start-of-subject boundary state is also UCP-dependent."
+  },
+  {
+    "id": "dot-carriage-return",
+    "pattern": "^.+$",
+    "subject": "a\r",
+    "why": "MEASURED: PHP matches, Node does not — PCRE excludes only the newline convention char (LF) from `.` while ECMA-262 excludes LF, CR, LS and PS; every proposer probed `.` on U+2028 but nobody probed CR, the one line terminator that actually arrives in CMS input from Windows paste."
+  },
+  {
+    "id": "s-next-line-u0085",
+    "pattern": "^\\s$",
+    "subject": "",
+    "why": "MEASURED: PHP matches, Node does not — PCRE2's UCP `\\s` includes the C1 control U+0085 NEL, ECMA-262's WhiteSpace list does not; NBSP was measured but it is a Zs and both engines agree on it, so the whole Cc/Cf side of `\\s` is still unmeasured."
+  },
+  {
+    "id": "lookbehind-alt-length-order",
+    "pattern": "(?<=(a|aa))b\\1$",
+    "subject": "aaba",
+    "why": "MEASURED: Node matches (group 1 = \"a\", written alternation order preserved in backward matching), PHP does not (PCRE2 orders lookbehind branches by length, binding group 1 = \"aa\") — the matrix already blessed \"lookbehind\" as a measured construct, and this shows that blessing is wrong the moment the lookbehind contains alternatives of unequal length plus a backreference."
+  },
+  {
+    "id": "lookbehind-unbounded-plus",
+    "pattern": "(?<=a+)b",
+    "subject": "aab",
+    "why": "MEASURED: Node matches, PHP refuses to compile (\"length of lookbehind assertion is not limited\") — nobody probed the direction where PCRE2 is the STRICTER engine, so the grammar has no evidence about lookbehind LENGTH rules (bounded `(?<=\\d{2,4})` compiles and agrees in both; unbounded does not)."
+  },
+  {
+    "id": "forward-numbered-backref",
+    "pattern": "^\\1(a)$",
+    "subject": "a",
+    "why": "MEASURED: Node matches (unset group backreference succeeds as empty), PHP does not — a forward reference is a construct legal in BOTH engines and distinct from the already-measured plain `(a)\\1`, and it is the likeliest author accident (backreference typed before the group) in the unset-group family."
+  },
+  {
+    "id": "prop-name-lowercase-loose",
+    "pattern": "^\\p{lu}$",
+    "subject": "A",
+    "why": "MEASURED: PHP matches, Node refuses (\"Invalid property name\") — PCRE2 applies loose matching to property names (case, spaces and underscores ignored, so `\\p{lu}`, `\\p{Lu }`, `\\p{cased_letter}` all compile), while every `\\p` case proposed used canonically-cased names and so never touched the looseness rule that makes the two surfaces different sizes."
+  },
+  {
+    "id": "prop-single-letter-no-braces",
+    "pattern": "^\\pL$",
+    "subject": "a",
+    "why": "MEASURED: PHP matches, Node refuses — the braceless one-letter property form `\\pL`/`\\PL` is what the PHP manual itself shows and what an author will copy, yet all 12 proposed `\\p` cases assumed the braced spelling."
+  },
+  {
+    "id": "prop-caret-negation",
+    "pattern": "^\\p{^L}$",
+    "subject": "1",
+    "why": "MEASURED: PHP matches, Node refuses — PCRE2's in-brace negation `\\p{^L}` is a third distinct spelling rule (separate from loose names and from braceless forms) that silently stores and then breaks every consumer."
+  },
+  {
+    "id": "named-backref-brace-form",
+    "pattern": "^(?<y>a)\\k{y}$",
+    "subject": "aa",
+    "why": "MEASURED: PHP matches, Node refuses (\"Invalid named reference\") — named GROUPS were measured but never named BACKREFERENCES, so the grammar cannot yet say that `\\k<y>` is the one portable spelling (I verified it agrees) while `\\k{y}`, `\\k'y'`, `(?P=y)` and `\\g{y}` are PCRE-only."
+  },
+  {
+    "id": "bare-close-bracket-literal",
+    "pattern": "^a]$",
+    "subject": "a]",
+    "why": "MEASURED: PHP matches (bare `]` is a literal), Node refuses (\"Lone quantifier brackets\" — `]` is a SyntaxCharacter forbidden as a PatternCharacter under /u) — the proposals covered the `{` version of this rule and stopped, missing that `]` behaves the same way and is the more likely leftover from an edited character class."
+  },
+  {
+    "id": "duplicate-named-group-alt",
+    "pattern": "^(?:(?<y>a)|(?<y>b))$",
+    "subject": "b",
+    "why": "MEASURED: Node matches (ES2025 duplicate named capture groups shipped in V8), PHP refuses without `(?J)` — a second case where the JS surface is LARGER than PCRE's, which matters because a grammar derived only from \"PHP accepts, JS refuses\" evidence will be shaped as if PCRE were always the superset."
+  },
+  {
+    "id": "backtrack-limit-email-shape",
+    "pattern": "^([a-zA-Z0-9]+\\.?)+@x\\.com$",
+    "subject": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!@x.com",
+    "why": "MEASURED: PHP returns FALSE in 1.8ms (\"Backtrack limit exhausted\"), Node was still searching after 20s — every cost-related proposal was about COMPILE size (`{0,65536}`, 20000 nested groups), so nobody measured runtime decidability, where PCRE's 1M backtrack cap turns a rejection into an error while V8 has no cap and the published pattern becomes a client-side DoS."
+  },
+  {
+    "id": "backslash-n-uppercase-any",
+    "pattern": "^\\N$",
+    "subject": "a",
+    "why": "MEASURED: PHP matches (PCRE `\\N` = any character except newline), Node refuses (\"Invalid escape\") — a capitalisation slip on `\\n` silently stores as a wildcard with the opposite meaning of what was typed, and the escape-family proposals covered `\\e`, `\\R`, `\\X`, `\\v`, `\\h` but not this one."
+  },
+  {
+    "id": "quantified-lookbehind",
+    "pattern": "(?<=a)+b",
+    "subject": "ab",
+    "why": "Rule 1 in the lookbehind position. An assertion consumes nothing, so ECMAScript rejects a quantifier on one under `u` while PCRE accepts it."
+  },
+  {
+    "id": "ambiguous-alternation-repeated",
+    "pattern": "^(a|aa)+$",
+    "subject": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!",
+    "why": "Rule 4, found by review. Rule 3 cannot catch it because the repeated group holds no quantifier of its own; 40 a's plus ! exhausts PCRE's backtrack limit and runs past a 1.5s ECMAScript deadline."
+  },
+  {
+    "id": "prefix-free-alternation-repeated",
+    "pattern": "^(?:cat|dog)+$",
+    "subject": "catdogcat",
+    "why": "Rule 4's exemption, and the reason it is exact rather than generous: no branch is a prefix of another, so at most one can match at a position and the repetition is deterministic."
+  },
+  {
+    "id": "variable-capture-in-lookbehind",
+    "pattern": "(?<=([ab]{1,2})([bc]{1,2}))\\2\\1$",
+    "subject": "abcbca",
+    "why": "Rule 5, found by review. The engines traverse a lookbehind in opposite directions and allocate the variable width to different captures: PCRE says no, ECMAScript says yes."
+  },
+  {
+    "id": "fixed-capture-in-lookbehind",
+    "pattern": "(?<=([ab]{2})([bc]{2}))\\2\\1$",
+    "subject": "abbcbcab",
+    "why": "Rule 5's boundary, which is what placed the line at variable width rather than at captures-in-lookbehinds: two adjacent FIXED captures agree in both engines."
+  },
+  {
+    "id": "delimited-repetition",
+    "pattern": "^[^,]+(?:,[^,]+)*$",
+    "subject": "ab,cd,ef",
+    "why": "Rule 3's exemption. Nests + inside * and is provably linear: every iteration must begin at a comma and [^,] cannot consume one, so the subject's commas force the split."
+  },
+  {
+    "id": "bounded-ambiguous-repeat",
+    "pattern": "^(a{1,2})+$",
+    "subject": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!",
+    "why": "Review's case, and it slipped between two published rules: the inner quantifier is BOUNDED so the nested-unbounded rule never fired, and there is no alternation so the ambiguous-alternation rule did not either. Both are now one rule about whether the body divides one way."
+  },
+  {
+    "id": "bounded-ambiguous-class-repeat",
+    "pattern": "^([a-z]{1,8})+$",
+    "subject": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!",
+    "why": "The same shape, and my own test asserted it was acceptable under the heading 'accepts a bounded outer quantifier'. PCRE exhausts its backtrack limit and ECMAScript runs past a two-second deadline."
+  },
+  {
+    "id": "overlapping-branches-fixed-width",
+    "pattern": "^(?:[a-z]|x)+$",
+    "subject": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx!",
+    "why": "A forced division is not sufficient: fixed at one character, so the split is forced, yet x lies inside [a-z] so both branches match at every position — 2^30 branch choices. ECMAScript 7.9s, PCRE backtrack limit. The same pattern on 30 a's is instant, which is why the rule is about the construct rather than a subject."
+  },
+  {
+    "id": "nested-unambiguous-alternation",
+    "pattern": "^(?:a(?:b|c))+$",
+    "subject": "abacab",
+    "why": "The recursive half of the exemption. A nested alternation of distinct literals is as safe as (?:ab|ac)+, and a check that looked only at the body's own top level refused it for nothing."
+  },
+  {
+    "id": "escape-width-in-lookbehind",
+    "pattern": "(?<=(\\x61|aaa))b\\1$",
+    "subject": "aaaba",
+    "why": "Review's case. Every scanner advanced past a backslash by two characters, so fixedWidth() read \\x61 as a \\x atom plus the literals 6 and 1 and reported width 3 — the branches looked equal and the lookbehind rule was bypassed. PCRE says no, ECMAScript says yes."
+  },
+  {
+    "id": "escape-width-equal-lookbehind",
+    "pattern": "(?<=(\\x61|a))b\\1$",
+    "subject": "aba",
+    "why": "The other half: \\x61 IS one character, so these alternatives are genuinely equal and both engines agree. Kept so the fix cannot become 'refuse anything with an escape in a lookbehind'."
+  },
+  {
+    "id": "bounded-delimiter-consumer",
+    "pattern": "^(?:,,?)*X$",
+    "subject": ",,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,Y",
+    "why": "Review's case. The delimiter proof asked only whether an UNBOUNDED atom could consume the delimiter, so the optional comma was ignored — and it can either end the current iteration or start the next. 40 commas plus a Y takes ECMAScript about 1.3 seconds and grows exponentially."
+  },
+  {
+    "id": "lazy-braced-width-in-lookbehind",
+    "pattern": "(?<=(a{2}?|aaa))b\\1$",
+    "subject": "aaabaa",
+    "why": "Review's case. `quantifierAt()` dropped the lazy suffix on a braced form, so `fixedWidth()` counted the trailing ? as a separate one-character atom and measured `a{2}?` as width 3 — the branches looked equal and the lookbehind rule was bypassed. PCRE says no, ECMAScript says yes."
+  },
+  {
+    "id": "lazy-braced-width-equal",
+    "pattern": "(?<=(a{2}?|aa))b\\1$",
+    "subject": "aabaa",
+    "why": "The other half: `a{2}?` and `aa` ARE both two wide, so this is genuinely equal-length and must publish. Kept so the fix cannot become 'refuse anything lazy in a lookbehind'."
+  },
+  {
+    "id": "nested-group-hides-optional-delimiter",
+    "pattern": "^(?:,(?:,?))*X$",
+    "subject": ",,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,Y",
+    "why": "A required group around the optional delimiter. The proof jumped from a group's `(` to its `)` and asked only about the group's own quantifier, so this was exempted while the identical `^(?:,,?)*X$` was refused. Node 22 spends 10.5s here."
+  },
+  {
+    "id": "bom-delimiter-ecmascript-space",
+    "pattern": "^(?:﻿\\s?)*X$",
+    "subject": "﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿Y",
+    "why": "PCRE's `\\s` excludes U+FEFF and ECMAScript's includes it. The membership probe compiled the raw `\\s` rather than the class `delimit()` rewrites it to, so the optional atom was declared unable to reach the delimiter. Node 22 spends 17.2s here."
+  },
+  {
+    "id": "lookbehind-capture-repeated-variable",
+    "pattern": "(?<=([ab]){1,2})\\1$",
+    "subject": "aba",
+    "why": "A fixed-width capture under a repetition inside a lookbehind. The width rule passed it, but which iteration stays captured is a property of the traversal and the engines walk a lookbehind in opposite directions. PCRE says no on `aba` and MATCH on `abb`; Node is the reverse."
+  },
+  {
+    "id": "lookbehind-capture-repeated-fixed",
+    "pattern": "(?<=([ab]){2})\\1$",
+    "subject": "aba",
+    "why": "The same defect with a FIXED repetition, which is what makes it a second rule rather than a wider net on the width rule: `{2}` of a one-character class is fixed in every sense and still diverges."
+  },
+  {
+    "id": "lookbehind-capture-once",
+    "pattern": "(?<=([ab]){1})\\1$",
+    "subject": "aa",
+    "why": "The other side of that line, kept so the rule cannot become `refuse every quantifier`. `{1}` runs the capture once, so there is nothing to reallocate, and the engines agree on all six subjects measured."
+  },
+  {
+    "id": "ambiguous-body-inside-delimited",
+    "pattern": "^(?:,a*a*)*X$",
+    "subject": ",aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aaY",
+    "why": "The delimiter proof forced the split BETWEEN iterations and never asked about the body. Neither star can match a comma, so the exemption was granted, and each `,aa` segment still divides three ways. Node 22 takes 58.8s at 20 segments."
+  },
+  {
+    "id": "separated-body-inside-delimited",
+    "pattern": "^(?:,[^,-]+-[^,-]+)*X$",
+    "subject": ",a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-b,a-bY",
+    "why": "Two variable atoms and a separator NEITHER can match, so both boundaries are forced. Measured flat at 24 segments, and kept because `at most one variable atom` would have been simpler and would refuse it."
+  },
+  {
+    "id": "top-level-adjacent-stars",
+    "pattern": "^a*a*a*a*a*a*b$",
+    "subject": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!",
+    "why": "No parentheses at all, so the frame-driven structural walk analysed none of it. Six adjacent variable atoms are a polynomial of degree six: Node 22 takes 26.4s on 100 characters and a failing one."
+  },
+  {
+    "id": "top-level-two-stars",
+    "pattern": "^a*a*b$",
+    "subject": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!",
+    "why": "The other side of that line, kept because refusing it would take `^.+\\.[a-z]+$` and `^[^@]+@[^@]+$` with it. Two adjacent atoms are quadratic in the value length, which TextType bounds: 2ms at 1000 characters."
+  },
+  {
+    "id": "bounded-ambiguous-repetition",
+    "pattern": "^(a|aa){1,32}$",
+    "subject": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!",
+    "why": "A finite bound bypassed every ambiguity check. The bound is the exponent and the body is the base, and nothing bounds the base — Node 22 takes 24.3s here, and 16.6s for a four-branch body at only {1,14}."
+  },
+  {
+    "id": "grouped-adjacent-stars-in-body",
+    "pattern": "^(?:,(?:a*a*))*X$",
+    "subject": ",aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aaY",
+    "why": "Both stars inside one required group. A group holding a variable atom read as one variable atom, so the pair inside it was invisible; the walk flattens required groups now. Node 22 takes 58s at 20 segments."
+  },
+  {
+    "id": "class-first-position-bracket",
+    "pattern": "[]a[]",
+    "subject": "a",
+    "why": "PCRE reads a first-position `]` as a literal member; ECMAScript under `u` reads `[]` as an EMPTY class. Both compile, PCRE matches `a`, and Node reads an empty class then `a` then another empty class so it can never match. `[]]` was already refused for the unbalanced bracket, which is why this shape slipped past."
+  },
+  {
+    "id": "set-escape-as-range-endpoint",
+    "pattern": "[\\b-\\s]",
+    "subject": "\b",
+    "why": "The cost of admitting a construct by rewriting it. `delimit()` splices `\\s` into a character list so PCRE compiles this, while ECMAScript under `u` refuses a character-set escape as a range endpoint and does not compile the published pattern at all."
+  },
+  {
+    "id": "ambiguity-product-no-quantifier",
+    "pattern": "^(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)b$",
+    "subject": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "why": "Ambiguity with no quantifier anywhere and no variable-width atom: thirty groups each offering two identical ways to match one character, so 2^30 combinations. 240 characters of pattern; PCRE exhausts its backtrack limit and Node 22 takes 50.2s."
+  },
+  {
+    "id": "lookbehind-nested-alternation",
+    "pattern": "(?<=([ab])(?:a|aa))\\1$",
+    "subject": "baab",
+    "why": "Rule 2 checked the lookbehind's TOP-LEVEL alternatives, and this one has none — the nest makes the lookbehind two characters or three while the capture stays fixed-width. Both engines compile it: PCRE matches `baab` and Node does not, Node matches `baaa` and PCRE does not."
+  },
+  {
+    "id": "harmless-alternation-nesting",
+    "pattern": "^(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:(?:a|a)|a)|a)|a)|a)|a)|a)|a)|a)|a)|a)|a)|a)|a)|a)|a)|a)$",
+    "subject": "a",
+    "why": "Seventeen nestings of `(?:<previous>|a)`. The ambiguity product multiplied every level, because frames() appends a group as it CLOSES so a child arrives before its parent and the containment skip had nothing recorded yet. Eighteen alternative paths, and 100,000 Node matches in 3ms — kept so the fix cannot become `refuse nesting`."
+  },
+  {
+    "id": "ambiguity-nested-in-a-branch",
+    "pattern": "^(?:(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)(?:a|a)|aaaaaaaaaaaaaaaaaaaaaaaaaaaa)$",
+    "subject": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "why": "An ambiguous outer alternation enclosing 28 ambiguous groups. A flat product sorted outermost-first suppressed the children and counted only the outer branch count, reading 2 where the cost is 2^28. 231 characters, and Node spends 10.8s on a 29-character subject."
+  },
+  {
+    "id": "assertion-as-separator",
+    "pattern": "^(?:,a*(?!b)a*)*X$",
+    "subject": ",aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa",
+    "why": "The run traversal read THROUGH a required group, a lookahead included — so the `b` inside `(?!b)` looked like a literal separating the two `a*`. An assertion consumes nothing, so the body is `,a*a*`: two variable-width atoms in a row inside a repetition. Published, and Node spends 663 ms on sixteen segments and 6.0 s on eighteen. Deleting the assertion gives the same times, which is the proof it was never there to divide anything."
+  },
+  {
+    "id": "assertion-bodies-not-one-run",
+    "pattern": "^(?=.*[A-Z])(?=.*[0-9]).{8,64}$",
+    "subject": "aaaaaaaaaaaaaaaa",
+    "why": "The same splicing defect in the opposite direction, and the commonest validation pattern there is. Inlining both lookahead bodies made `.*` `[A-Z]` `.*` `[0-9]` `.{8,64}` read as one run of more than two, so this was REFUSED — while measuring 0.02 ms on a 5,000-character failing value. A zero-width atom neither fills a run nor divides one, and each body is a sequence checked in its own right."
+  },
+  {
+    "id": "quadratic-branches-summed",
+    "pattern": "^(?:a*a*b|a*a*c|a*a*d|a*a*e|a*a*f|a*a*g|a*a*h|a*a*i|a*a*j)$",
+    "subject": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "why": "A sequence's cost counted only the GROUPS inside it, so a branch whose expense is a quantifier read as free and nine of them cost nine. Each pays the quadratic in turn: measured linear in N, 291 ms at eight branches and 5.0 s at 140 on a permitted 5,000-character value. Nine is the first refused, because eight grants reach the ambiguity budget exactly."
+  },
+  {
+    "id": "quadratic-branches-distinct-leads",
+    "pattern": "^(?:a*a*b|c*c*d|e*e*f|g*g*h|i*i*j|k*k*l|m*m*n|o*o*p|q*q*r)$",
+    "subject": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "why": "The over-refusal the bound above carries, recorded rather than left to be found later. These nine branches cost ONE quadratic — 35.8 ms, because eight of them fail on their first atom — but `branchesAreUnambiguousLiterals()` exempts plain literal text only, on purpose, so a branch carrying a quantifier sums whether or not its lead is distinct. Refused today; lifting it means proving distinct leads for quantified branches, which is the rule two rounds of this file got wrong twice — issue #73."
+  },
+  {
+    "id": "group-lead-from-one-branch",
+    "pattern": "^a*(?:b|a)*a*c$",
+    "subject": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "why": "A repeated group's leading literal was taken from its FIRST branch, so this read as beginning with `b` — a character `a*` cannot match — and the variable-atom run reset. Its `a` branch means all three quantified atoms consume the same input. Node spends 490 ms on a failing 1,000-character value and 3.9 s on 2,000, cubic. The proof is that deleting the other branch changes nothing: `^a*(?:a)*a*c$` measures 488.5 ms and 3,877.2 ms on the same subjects, so the `b` branch never separated anything. Every branch must be unmatchable by the preceding atom now, and a branch with no leading literal proves nothing at all."
+  },
+  {
+    "id": "multi-digit-backreference-delimiter",
+    "pattern": "^()()()()()()()()()(,)(?:,\\10?)*X$",
+    "subject": ",,,,,,,,,,,,,,,,,,,,Y",
+    "why": "Two defects in one atom, both about the SCAN. Only the leading digit of a numeric reference was consumed, so `\\10?` read as `\\1` then a separate `0?` — a required comma followed by an optional zero, which looks divided. And the delimiter proof PROBES an atom against the delimiter, which is meaningless for a backreference: `/^\\1$/uD` fails to compile so PCRE returned false and the test failed closed by luck, while `/^\\10$/uD` compiles as an OCTAL escape, does not match `,`, and the test concluded the atom cannot consume the delimiter. Group 10 is `(,)`, so the body is `(?:,,?)`. Node spends 1,555 ms on 40 commas and no `X` against 1,470 ms for `^(?:,,?)*X$` written out, which was already refused — same cost, opposite verdict. A variable-width backreference fails closed now; a required one is untouched."
+  },
+  {
+    "id": "zero-repeat-group-is-absent",
+    "pattern": "^a*a*(?:a*){0}b$",
+    "subject": "aaaaaaaaaaaaaaaaaaaa",
+    "why": "An upgrade hazard rather than a hole, and a refusal being removed. This was REFUSED as three adjacent variable-width atoms while `^a*a*b$` — the same regular expression — is deliberately admitted, so on an upgrade `kitsune:audit-patterns --strict` would block a deploy over a pattern that saved yesterday. A `{0}` group never runs: it can neither fill a variable-atom run nor cost anything. Only an upper bound of zero counts — `{0,}` is zero-or-more and is still refused."
+  },
+  {
+    "id": "two-quadratic-runs-in-one-sequence",
+    "pattern": "^a*a*ba*a*c$",
+    "subject": "aaaaaaaaaaaaaaaaaaaabaaaaaaaaaaaaaaaaaaaad",
+    "why": "The cost model charged ONE quadratic grant per sequence, on a stated argument that a second run in the same branch is never reached because a subject failing in the first stops there. Wrong the moment the first run's separator MATCHES: the engine goes on, and every allocation of the first run is retried against the second. Measured on Node 22.23.2 against `a*n . b . a*n . d` — 317.5 ms at 1,202 characters, 2,512.9 ms at 2,402 and 20,016.4 ms at 4,802, which is within the configured ceiling. One run at 4,802 characters is 33.4 ms. Eight times per doubling against four. Every run is charged now."
+  },
+  {
+    "id": "zero-padded-zero-bound",
+    "pattern": "^a*a*(?:a*){00}b$",
+    "subject": "aaaaaaaaaaaaaaaaaaaa",
+    "why": "The same upgrade hazard as `{0}`, one spelling along. Both engines accept a zero-padded bound and neither ever runs the group, but the first fix recognised a single leading zero only — so `{00}` and `{00,00}` were still refused as three adjacent variable-width atoms while `^a*a*b$` is admitted. The bound is parsed numerically now, which is what `repeatsMoreThanOnce()` beside it already did."
+  },
+  {
+    "id": "zero-repeat-group-with-assertion",
+    "pattern": "(?:a|(?=a)){0}",
+    "subject": "b",
+    "why": "A live divergence, found inside the `{0}` skip added a round earlier. At production fidelity on PCRE 10.48 and Node 22.23.2, PCRE does not match `b` OR the empty string while ECMAScript matches both — so a generated client would accept every value this server rejects, which is what rule 3 forbids. It is narrow: `(?:(?=a)|a){0}` agrees, `(?:a|(?<=a)){0}` agrees, and `(?:a){0}` and `a{0}` agree. PCRE stops matching only when a dead group's alternation ENDS in a positive lookahead. The rule refuses any assertion in a zero-repeat group, which is wider than the quirk on purpose — a shape a reader can check, and a dead group holding an assertion is not a pattern anybody wrote deliberately."
+  },
+  {
+    "id": "equal-bounded-lookbehind",
+    "pattern": "(?<=a{2,2})b",
+    "subject": "aab",
+    "why": "A false refusal the published grammar does not license. `fixedRepetitions()` read only `{n}`, so the lookbehind rule called an equal bounded form variable-length — while §3 permits `{n,m}`. Both engines compile it and agree exactly: `(?<=a{1,1})b` matches `ab` in both, `(?<=a{2,2})b` matches `aab` in both, and neither matches the other's subject. Equal bounds are one width by construction; `{1,2}` really can match two lengths and stays refused, so the distinction is the two numbers being the same rather than the comma being present."
+  },
+  {
+    "id": "exactly-once-spelled-two-ways",
+    "pattern": "^(?:,(?:a*a*){1,1})*X$",
+    "subject": ",aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa,aa",
+    "why": "The atom traversal spliced a group whose quantifier was named in a literal list — `''`, `{1}`, `{1}?` — so `{1,1}` and `{01}` stayed whole and the two `a*` inside them became invisible to the run rule. Accepted, while `^(?:,(?:a*a*){1})*X$` — the same expression — is refused, and Node spends about 6 seconds on sixteen `,aa` segments. `fixedRepetitions()` already answers \"how many times, exactly\" and handles the padded and equal-bounded forms, so one place decides what \"once\" means instead of two that can disagree."
+  },
+  {
+    "id": "unanchored-lookahead-optional-prefix",
+    "pattern": "(?=a)a?a",
+    "subject": "a",
+    "why": "Review measured this diverging on PCRE 10.44 with Node 24.15 — PCRE not matching `a` while ECMAScript does. On PHP 8.4.25 / PCRE 10.48 / Node 22.23.2 both match, as do `^(?=a)a?a$`, `(?=a)a?`, `(?=a)aa`, `a?a`, `(?=a)a*a` and `(?=ab)a?ab`. It is REFUSED now even so, because the shape is redundant: a lookahead asserting the character the following optional atom consumes constrains nothing that atom does not, so the expressiveness cost is approximately zero — and `composer.json` requires PHP ^8.4, whose earliest releases bundle PCRE2 10.44. Cheap insurance against a real deployment beats a rule that is right on one pair. The refusal is narrow: only a positive lookahead, only when the very next atom is optional, and only when that atom can match the lookahead's first required character."
+  },
+  {
+    "id": "zero-padded-equal-bound",
+    "pattern": "^a*a{01,01}a*b$",
+    "subject": "aaaaaaaaaaaaaaaaaaaa",
+    "why": "The third padded-bound gap, in the method beside the two that were fixed. `isVariableWidth()` compared the RAW upper bound with a normalised lower one — `'01' !== '1'` — so `{01,01}` read as variable-width while `{1,1}` did not, and this pattern was refused while the identical `{1,1}` spelling publishes: `kitsune:audit-patterns --strict` blocking an upgrade over a harmless stored pattern. Both bounds are cast now, and a genuine range stays variable in both spellings."
+  },
+  {
+    "id": "zero-repeat-ancestor-hides-a-repetition",
+    "pattern": "^(?:(a|aa)+){0}$",
+    "subject": "aa",
+    "why": "The frames loop read only the current frame's quantifier, so this was refused for the inner `+` although the group holding it executes zero times — both engines match only the empty string. An upgrade hazard rather than a hole, and the same argument as the direct `{0}` case one level out, which is where every finding in this area has been. Enclosure is read from the frame positions, like `repeatingAncestor()` beside it."
+  },
+  {
+    "id": "lookahead-overlap-inside-a-group",
+    "pattern": "(?:(?=a)a?a)",
+    "subject": "a",
+    "why": "The overlap refusal walked the top level only: `atomAt()` returns a whole group as ONE atom, so the scan advanced over the nested lookahead and published the shape a pair of brackets away from the one it refuses. A structural rule a bracket defeats is not a rule. Every frame kind is descended now, assertions included, and the non-overlapping shapes are asserted inside a group too — so the recursion extended the rule's reach rather than widening the rule."
+  },
+  {
+    "id": "lookahead-overlap-on-the-other-side",
+    "pattern": "a{0}(?=a)a",
+    "subject": "a",
+    "why": "The overlap refusal asked what FOLLOWED the lookahead, so the same redundancy written backwards published. Review measured this shape on PCRE 10.44 with Node 24.15 — PCRE rejecting `a` while ECMAScript matches it — and the rule now reads an optional consuming atom on EITHER side. `a?(?=a)a` and `(?:a)?(?=a)a` are the same shape and were published too, which is why the fix is stated over the shape rather than over the spelling reported."
+  },
+  {
+    "id": "lookahead-overlap-lead-behind-a-group",
+    "pattern": "(?=(?:a))(?:a)?a",
+    "subject": "a",
+    "why": "The asserted lead came from `leadingLiteral()`, which answers a different question and returns null for a group — so a pair of brackets around the asserted character skipped the parity guard entirely. `assertedLead()` now reads through anything transparent: a group that must run at least once, at any depth, and a leading assertion, which consumes nothing. An alternation stays opaque, because `(?:a|b)` asserts neither branch."
+  },
+  {
+    "id": "lookahead-overlap-lead-behind-a-quantifier",
+    "pattern": "(?=a+)a?a",
+    "subject": "a",
+    "why": "`leadingLiteral()` disqualifies a quantified atom because its own rule needs exactly one delimiter per iteration, so `(?=a+)` hid the asserted character the same way a group did. A lower bound of one says as much about the next character as no quantifier does, and the two rules wanting different answers is why the lead derivation is a second method rather than a flag on the first."
+  },
+  {
+    "id": "lookahead-overlap-identical-class",
+    "pattern": "(?=[0-9])[0-9]?[0-9]",
+    "subject": "5",
+    "why": "The overlap was proved only by asking PCRE whether the neighbouring atom matches a single-character lead, so a lead that is a CLASS proved nothing and this published. Two atoms written identically match identically, which is a certain proof and costs no guessing about intersection — deciding whether two DIFFERENT classes intersect is the missing primitive in issue #73, and `^(?=[A-Za-z])[A-Za-z0-9]*$` is why guessing at it would be a false refusal rather than a hole."
+  },
+  {
+    "id": "lookahead-overlap-optional-inside-a-group",
+    "pattern": "(?=a)(?:a?)a",
+    "subject": "a",
+    "why": "The fifth bracket to defeat a version of the overlap rule, and the first found by probing the family rather than by review. The neighbour's optionality was read from its own quantifier, so `(?:a?)` — no outer quantifier, matches nothing just as readily — published the shape `(?=a)a?a` is refused for. `(?:a*)`, `(?:|a)`, `(?:a|)` and `(?:(?:a?))` are the same thing spelled four more ways. The question is now whether the atom can match nothing, asked of any branch of a group at any depth, and it fails closed on anything unparseable."
+  },
+  {
+    "id": "unanchored-quadratic-run",
+    "pattern": "a*a*b",
+    "subject": "aaaaaaaaaaaaaaaaaaaa",
+    "why": "The top-level allowance of TWO adjacent variable-width atoms was justified as quadratic in the value's length, and the rule never asked for the anchoring that premise needs: an unanchored pattern is retried from every starting position, so the same run is CUBIC. Measured on Node 22.23.2 with all-`a` failing subjects — 286.4 ms at 500, 489.7 ms at 1,000, 3,941.8 ms at 2,000 and 60,231.6 SECONDS-worth at 5,000 (60,231.6 ms), against 36.0 ms for `^a*a*b` at the same length. PCRE is 0.0 ms at every length, because it auto-possessifies the stars, so the two engines AGREE and the cost is the consumer's alone — which is what rule 3 is about and what a verdict comparison cannot see. The harness subject is twenty characters so this file stays fast; the cost is in the numbers above."
+  },
+  {
+    "id": "unanchored-trailing-dollar",
+    "pattern": "a*a*b$",
+    "subject": "aaaaaaaaaaaaaaaaaaaa",
+    "why": "The same shape with a trailing `$`, recorded separately because reasoning gets it wrong in a plausible direction: `$` does NOT help. The retry is at the START, so this measures what the unanchored form measures — 285.1 ms at 500 characters, 3,875.7 ms at 2,000 and 60,339.4 ms at 5,000, against 36.0 ms for `^a*a*b`. Only `^` removes the search factor, and `anchorsTheSearch()` therefore looks for `^` alone."
+  },
+  {
+    "id": "branch-boundary-ends-a-run",
+    "pattern": "^a*a*|^b*",
+    "subject": "aaaaaaaaaaaaaaaaaaaa",
+    "why": "A FALSE refusal until review found it: `|` reached the run walk as an ordinary non-variable atom, `literalCharacter('|')` is null, so nothing reset the state and two mutually exclusive branches read as one sequence of three variable-width atoms. No execution path contains three. `--strict` blocks an upgrade on a pattern like this, which is why an over-refusal is recorded in this corpus alongside the holes."
+  },
+  {
+    "id": "unanchored-lookahead-nullable-prefix",
+    "pattern": "(?=a)b*a",
+    "subject": "a",
+    "why": "One exemption away from the overlap rule and refused for a different reason. `b*` cannot match the asserted `a`, so the overlap rule passes it deliberately — and review measured the engines disagreeing anyway on PCRE 10.44 with Node 24.15: PCRE rejecting `a` while ECMAScript matches it, with the ANCHORED spelling agreeing. It is also redundant, which is why refusing costs almost nothing: a search may begin wherever it likes, so an unanchored assertion in front of something that can match nothing decides nothing the search had not already decided — `(?=a)b*a` and `b*a` accept the same set of values, and both consumers ask only whether a match exists."
+  },
+  {
+    "id": "anchored-lookahead-nullable-prefix",
+    "pattern": "^(?=a)b*a",
+    "subject": "a",
+    "why": "The anchored spelling of the row above, recorded so the rule's boundary is in the corpus rather than only in a test. Review measured this one AGREEING on the pair where the unanchored form diverges, and with a `^` the assertion is no longer redundant — the search cannot move to a position where it holds. Published, and it must stay published: a rule that refused this would cost the shape rather than the divergence."
+  },
+  {
+    "id": "assertion-between-lookahead-and-nullable",
+    "pattern": "(?=a)(?!b)b*a",
+    "subject": "a",
+    "why": "The unanchored-lookahead rule looked at the atom immediately after the lookahead, and a second assertion in between consumes nothing — so the immediate neighbour was zero-width, the rule stopped there, and the shape published. Review measured the divergence on PCRE 10.44 with Node 24.15, a negative lookBEHIND in the same position behaving the same way. The walk now looks past anything zero-width for the next CONSUMING atom, which `$previous` had done since it was written: one fact held in two places, and only one of them had been told."
+  },
+  {
+    "id": "dead-atom-beside-a-lookahead",
+    "pattern": "b{0}(?=a)a",
+    "subject": "a",
+    "why": "An atom bounded at zero repetitions consumes nothing ever, and review measured its mere PRESENCE changing what the engines say: PCRE 10.44 rejects this and Node 24.15 matches it, while `^b{0}(?=a)a` agrees. `b` is not what the lookahead asserts, so the overlap rule passes it deliberately. It also fixed a reading error one round old — `a{0}(?=a)a` was refused as an OVERLAP, as though dead markup could match the asserted character; it cannot match anything, so the honest refusal is this one, and the anchored `^(?:a{0}(?=a)a)$` now publishes because the engines agree there."
+  },
+  {
+    "id": "spliced-alternation-hides-a-run",
+    "pattern": "^a*(?:b|a*)a*c$",
+    "subject": "aaaaaaaaaaaaaaaaaaaa",
+    "why": "A hole opened by the fix one round earlier. Making `|` end a run is right for a real alternation and wrong for a SPLICED one: an exactly-once group's body was flattened into the enclosing linear list, so its `|` arrived where it means nothing and the walk read it as a boundary — leaving two short runs where the second branch is `^a*a*a*c$`, three variable-width atoms in a row. Node 24 spends about 1.9 seconds on 2,001 characters and past 15 on the 5,000 a `text` field admits. A multi-branch group is no longer spliced: it stays one atom priced by what it can match, and its branches are walked separately."
+  },
+  {
+    "id": "alternation-of-two-lengths-is-variable",
+    "pattern": "^a*(?:a|aa)a*b$",
+    "subject": "aaaaaaaaaaaaaaaaaaaa",
+    "why": "`(?:a|aa)` holds neither a quantifier nor a class, so the check that asked what a group CONTAINS called it fixed-width — and it matches one character or two, which is exactly what the run rule means by variable. `fixedWidth()` answers the question the rule asks and already reads branches, escapes and classes, returning null for anything it cannot measure. Found while fixing the spliced-alternation hole beside it, by asking what else the old question got wrong."
+  },
+  {
+    "id": "lookahead-inside-a-required-wrapper",
+    "pattern": "(?:(?=a))a?a",
+    "subject": "a",
+    "why": "Only the lookahead was wrapped, so the recursion checked the assertion with no neighbour inside the wrapper and the outer walk read the wrapper as an ordinary group — the `a?` outside was never compared with the assertion inside. Review measured the divergence on PCRE 10.44 with Node 24.15. A group that consumes nothing is not a group for adjacency: such wrappers are unwrapped before the walk, at any depth, and `(?:(?=a)x)a?a` still publishes because that group consumes."
+  },
+  {
+    "id": "dead-markup-before-the-anchor",
+    "pattern": "a{0}^a*a*b$",
+    "subject": "aaaaaaaaaaaaaaaaaaaa",
+    "why": "A FALSE refusal review found: `a{0}` consumes nothing, so both engines read this as `^a*a*b$` — and the walk that looks for the anchor stopped at the dead atom, called the pattern unanchored, and refused it under the stricter run limit. `--strict` blocks an upgrade on a stored pattern that means what it meant yesterday, which is the expensive direction for this kind of mistake. Dead markup is transparent to that walk now, as it already was to the run walk and to the neighbour walk."
+  },
+  {
+    "id": "fixed-repetition-divides-a-run",
+    "pattern": "^a*a*b{1}a*$",
+    "subject": "aaaaaaaaaaaaaaaaaaaa",
+    "why": "The accepted `^a*a*ba*$` written another way, and refused: the run walk skipped its literal check for ANY quantifier, so the required `b{1}` did not end the run and the following `a*` counted as a third adjacent variable-width atom. Only a quantifier that can run zero times fails to force the boundary — and one that can run a variable number of times is a variable-width atom, which the rule above already counts. `b{2}` and `b{1,1}` are the same boundary spelled differently."
+  },
+  {
+    "id": "anchor-inside-a-dead-group",
+    "pattern": "(?:a|^){0}$",
+    "subject": "a",
+    "why": "A LIVE defect on this harness's own pair until the round that found it — PCRE 10.48 rejects `a` and Node 22.23.2 matches it, so a generated client would accept every value the server rejects. PCRE's start-anchor optimisation survives the dead group while ECMAScript skips the group outright. The dead-group rule already refused an ASSERTION inside a `{0}` group, and `containsAssertion()` looked only at parenthesised frames — so a group holding `^` reported none. Branch order matters here as it does for the lookahead form: `(?:^|a){0}$` agrees, and `^(?:a|^){0}$` agrees too, which is why the rule is about the shape rather than about the measured subject."
+  },
+  {
+    "id": "backreference-to-a-variable-capture",
+    "pattern": "^(a+)(a+)\\1$",
+    "subject": "aaaaaaaaaaaaaaaaaaaa",
+    "why": "Accepted until review sent it, because a backreference carries no quantifier of its own — so the run rule read `\\1` as fixed and counted two variable-width atoms where there are three. At production fidelity on 5,000 `a`, the ceiling a `text` field admits: `preg_match()` exhausts its backtrack limit and returns FALSE while Node 22.23.2 matches in 13.3 ms, so the published schema accepts a value the server rejects. ⚠️ THIS ROW'S SUBJECT DOES NOT DISCRIMINATE and that is deliberate: both engines agree up to 2,000 characters, and a 5,000-character subject would make this file slow to read and slow to run. The divergence is in the numbers above; the row is here so the shape is covered. A backreference is now as wide as the capture it names, and `^(a)(a+)\\1$` and `^(a{2})(a+)\\1$` still publish because a fixed-width capture makes the reference fixed too."
+  },
+  {
+    "id": "unanchored-ambiguity-product",
+    "pattern": "(?:ab|\\x61b)(?:ab|\\x61b)(?:ab|\\x61b)(?:ab|\\x61b)(?:ab|\\x61b)(?:ab|\\x61b)(?:ab|\\x61b)(?:ab|\\x61b)(?:ab|\\x61b)(?:ab|\\x61b)(?:ab|\\x61b)(?:ab|\\x61b)(?:ab|\\x61b)(?:ab|\\x61b)(?:ab|\\x61b)(?:ab|\\x61b)c",
+    "subject": "ababababababababababababababababababab",
+    "why": "The ambiguity budget priced ONE attempt, and an unanchored search retries the whole product from every starting position. This row also disproves a measured negative §4 recorded two rounds earlier: that note said the ceiling already absorbed the search factor, on the strength of sixteen copies of `(?:a|a)` measuring 178.6 ms unanchored — one shape standing for a class. With two-character branches the same product costs 736.2 ms unanchored against 0.5 ms anchored at 5,000 characters, which is seconds on ADR-027's floor. The unanchored budget is now the anchored product divided by the longest value a field may hold: 65,536 over 5,000 is 13. A product of 8 still publishes unanchored, because refusing any ambiguity at all without an anchor refused fifteen shapes in this repository's tests, every one of them linear."
+  },
+  {
+    "id": "assertion-inside-a-repetition",
+    "pattern": "^(?:(?!a*a*c)a)*bX$",
+    "subject": "aaaaaaaaaaaaaaaaaaaa",
+    "why": "Published by every other rule, which is why nothing caught it: the repeated body is FIXED WIDTH — the assertion consumes nothing and the `a` is one character — so rule 3's first proof is satisfied and no walk descended into the lookahead. Its own body holds `a*a*`, a run of two, and pays for it once per outer iteration. Measured on Node 22.23.2 with a failing 2,002-character value: 3,894 ms, against 6 ms for `^(?:(?!a*c)a)*bX$`. The frames loop asks the question now, with the REPETITION's limit rather than the top level's, because `atomRunExceeds()` deliberately does not descend into a repeated group."
+  },
+  {
+    "id": "anchor-inside-a-positive-assertion",
+    "pattern": "(?=^)(?:a|a)(?:a|a)(?:a|a)(?:a|a)b",
+    "subject": "aaaa",
+    "why": "A FALSE refusal: `(?=^)` says the position is the start as surely as `^` does, and the walk that looks for the anchor skipped past it as it skips every assertion — so this was refused under the unanchored ambiguity budget of 13 while the `^` spelling publishes under 65,536. Only a POSITIVE assertion counts and only when every branch of its body anchors: `(?!^)` asserts the opposite and `(?=^|,)` asserts nothing about the start on its own, and both stay refused."
+  },
+  {
+    "id": "unanchored-assertion-scan",
+    "pattern": "(?=a*b)a",
+    "subject": "aaaaaaaaaaaaaaaaaaaa",
+    "why": "Left a multi-value field unbounded, and neither of the other two cost tests could see it: one variable-width atom, inside a lookahead, with no repetition anywhere — and the lookahead scans the remaining value at every position an unanchored search tries. Measured on Node 22.23.2 with a failing 5,000-character value: 36.0 ms, against 0.0 ms for `^(?=a*b)a` and for `(?=ab)a`. A hundred of those in one valid array is 3.6 seconds. Both assertion polarities count, because whether a negative one is expensive depends on the value rather than on the pattern, and this file prices constructs rather than subjects."
+  },
+  {
+    "id": "fixed-width-group-divides-a-run",
+    "pattern": "^a*a*(?:b|c)a*$",
+    "subject": "aaaaaaaaaaaaaaaaaaaa",
+    "why": "A FALSE refusal: the group is fixed width, so the branch that applies the all-branch lead proof never ran, and `literalCharacter()` cannot pull a literal out of a whole group — so the run survived the group and the last `a*` counted as a third adjacent variable-width atom. Both branches lead with a literal `a*` cannot match, which is exactly the proof already applied to a variable-width group; the group's width was never what made it work. `(?:b|a)` still refuses, because one of its branches is something `a*` may swallow."
+  },
+  {
+    "id": "many-scanning-assertions-in-a-repetition",
+    "pattern": "^(?:a(?!a*c)(?!a*c))*X$",
+    "subject": "aaaaaaaaaaaaaaaaaaaa",
+    "why": "The rule that refuses a costly assertion inside a repetition evaluated them ONE AT A TIME, and each is individually inside the allowance. Each rescans the remaining value on every iteration, so k of them cost k times one — exactly linear, measured on Node 22.23.2 with a 5,000-character value: 36.9 ms for one, 74.6 ms for two, 586.9 ms for sixteen, 3,719.9 ms for a hundred. A hundred of them is 709 characters of pattern, well inside the length limit. One is already at the quadratic allowance's ceiling — `^a*a*b$` costs 36 ms at the same length — so the aggregate budget is what ONE costs, the same equal-work rule the unanchored bounds use. Fixed-width assertion bodies do not scan and are not counted."
+  },
+  {
+    "id": "deeply-nested-groups",
+    "pattern": "^(?:(?:(?:(?:(?:(?:(?:(?:a))))))))$",
+    "subject": "a",
+    "why": "Eight levels of nested groups, published — the row exists because the limit above it was SILENT and misdiagnosed: every recursive walk in `Pattern` stopped at 64 levels and reported maximal ambiguity, so 65 levels was refused for reaching a retry ceiling it does not reach. Raising the bound was the wrong fix and measuring showed it: the analysis is superlinear in depth — 16.2 ms at 32 levels, 129.5 ms at 64, 11.1 SECONDS at 249, 43.1 at 497 — and it runs on every settings save and every stored pattern in the audit. So 32 is a published limit with its own refusal, and this row holds the shape that must keep working."
+  },
+  {
+    "id": "variable-prefix-rescans-an-assertion",
+    "pattern": "^a+(?=a+a+c)",
+    "subject": "aaaaaaaaaaaaaaaaaaaa",
+    "why": "The same multiplier a repetition applies, from a shape with no repetition in it: the run is inside an assertion, and the `a+` in front re-evaluates it once per character it gives back. Measured on Node 22.23.2 against all-`a`, cubic — 490.8 ms at 1,000 characters, 3,857.1 ms at 2,000 and 12,867.9 ms at 3,000, where a `text` field admits 5,000. Three neighbours place the cause exactly, each 13 ms at 3,000: `^a+(?=a+c)` has one atom inside the assertion, `^(?=a+a+c)a+` has the prefix after it, and `^a(?=a+a+c)` has a fixed-width prefix. So the rule needs both a variable-width prefix and a run inside the assertion."
+  },
+  {
+    "id": "anchor-after-the-assertion",
+    "pattern": "(?=a)^a{0}a",
+    "subject": "a",
+    "why": "The walk that looks for the anchor reads past assertions, so it found this `^` and exempted the dead markup beside the lookahead — and review measured the shape DIVERGING on PCRE 10.44 with Node 24.15. The round before had called these shapes unmatchable nonsense, which they are not: at position 0 the lookahead holds, `^` holds, and the rest matches, as both engines confirm on `a`. The exemption now rests on an anchor the assertion has already PASSED, so `^b{0}(?=a)a` publishes and this does not."
+  },
+  {
+    "id": "repeated-zero-width-wrapper",
+    "pattern": "(?:(?=a)){2}a{0}a",
+    "subject": "a",
+    "why": "Unwrapping a group that consumes nothing required exactly-once, and the docblock said why it declined to assume otherwise: both engines happening to agree is the argument this file refuses elsewhere. Review measured it, and this diverges on PCRE 10.44 exactly as `(?=a)a{0}a` does. A zero-width body cannot make progress, so the repetition cannot run twice and the wrapper says what its body says. The HOIST of a leading prefix still requires exactly-once, because moving a prefix out of a repetition changes what its later iterations see."
+  },
+  {
+    "id": "branches-of-rescanned-assertions",
+    "pattern": "^a+(?=a+c)|^a+(?=a+c)|^a+(?=a+c)|^a+(?=a+c)|^a+(?=a+c)|^a+(?=a+c)|^a+(?=a+c)|^a+(?=a+c)|^a+(?=a+c)",
+    "subject": "aaaaaaaaaaaaaaaaaaaa",
+    "why": "Nine branches, each individually inside the quadratic allowance: `^a+(?=a+c)` claims it through a variable-width prefix re-evaluating a variable-width assertion body, and the branch cost counted it as free because it holds no adjacent-atom run. Measured on Node 22.23.2 with one 5,000-character all-`a` value: 36.0 ms for one branch, 286.4 ms for eight, 2,971.1 ms for eighty-three — 912 characters, inside every other limit. `maxItems()` cannot contain it, because that bounds how many VALUES an array carries and this is one value's own cost. The branch pays the grant a quadratic run pays, so eight reach the budget and nine pass it."
+  },
+  {
+    "id": "many-rescanned-assertions-in-a-branch",
+    "pattern": "^a+(?=a*b)(?=a*b)(?=a*b)(?=a*b)(?=a*b)(?=a*b)(?=a*b)(?=a*b)(?=a*c)",
+    "subject": "aaaaaaaaaaaaaaaaaaaab",
+    "why": "Nine assertions after one variable-width prefix. The charge that priced a rescanned assertion answered yes-or-no, so a branch paid one grant however many it held — and every assertion past the prefix is rerun on every backtrack of it. Measured on Node 22.23.2 against 5,000 `a` then a `b`, where every assertion but the last succeeds: 40.6 ms for one, 68.9 ms for eight, 611.2 ms for a hundred and forty-one at 990 characters. The charge is the grant MULTIPLIED BY THE COUNT rather than one grant per assertion: ways to retry multiply when they compose and these do not — each adds one more scan of the same suffix — so charging a grant apiece refused `^a+(?=a*b)(?=a*c)`, which measures 44 ms. Eight reach the budget exactly and nine pass it, the same number eight alternation branches reach."
+  },
+  {
+    "id": "prefix-separated-from-the-assertion",
+    "pattern": "^a+b(?=a+a+c)",
+    "subject": "aabaac",
+    "why": "Refused as cubic although the prefix cannot reach the assertion twice: every character `a+` gives back is an `a`, the `b` has to match there, and the retry dies before the lookahead is entered. Measured on Node 22.23.2 against `a×n b a×n` it tracks its control `^b(?=a+a+c)` on `b a×n` to the tenth of a millisecond — 0.4 ms against 1.7 at n=500, 1.4 against 1.5 at 1,000, 5.7 against 5.7 at 2,000 — where `^a*a*b(?=a+a+c)` is 181 ms, 1,432 and 11,385. The prefix state now resets at a required atom the run provably cannot consume, on the proof the run rule already held, and `--strict` no longer blocks an upgrade over it."
+  },
+  {
+    "id": "variable-width-separator-in-a-run",
+    "pattern": "^a+b+c$",
+    "subject": "aabbc",
+    "why": "The run rule proved a separator only through a group's leading literals, and `leads` is null for everything that is not a group — so `a+b+` read as a re-division of every length when the boundary between them is forced by the subject, exactly as it is in `a+b`. It cost a price rather than a refusal on its own and a REFUSAL once something else multiplied it: `^a+b+c(?=a+a+d)` was charged one quadratic grant for the run and another for the assertion's own, and 8,192² passes the ambiguity ceiling, while the pattern measures 35.4 ms on 10,001 characters — its control `^c(?=a+a+d)` to the tenth of a millisecond. `^a+b+c$` itself measures 0.03 ms at 5,000 characters, so the item bound no longer narrows `maxItems` for it either."
+  },
+  {
+    "id": "separator-before-an-assertion-that-can-be-absent",
+    "pattern": "^a+b?(?=a+a+c)",
+    "subject": "aaaac",
+    "why": "The other half of the separator proof, and the reason it asks `canMatchNothing()` rather than reading the quantifier: a `b?` the subject does not carry is not there to divide anything, so the prefix backtracks into the assertion exactly as it does with no separator at all. Measured on Node 22.23.2 against all-`a`: 276.9 ms at 500 characters, 477.0 at 1,000 and 3,879.8 at 2,000, against 0.4/1.4/5.7 for the `^a+b(?=a+a+c)` this round admits. Refused, and the engines agree on it."
+  },
+  {
+    "id": "trading-atoms-before-an-assertion",
+    "pattern": "^a*a*b(?=a+a+c)",
+    "subject": "aabaac",
+    "why": "Why a separator ends a prefix of ONE and not a run of two: two variable-width atoms trade characters and reach the `b` at the SAME position however they split the value, so the assertion is evaluated there once per split. Measured on Node 22.23.2 against `a×n b a×n`, 181.1 ms at 500 characters, 1,431.9 at 1,000 and 11,385.2 at 2,000 — eight times per doubling, the cubic the rule is named for. `^a+[ab]+c(?=a+a+d)` measures the same three numbers, which is why the separator is proven against the atom beside it rather than assumed from its position."
+  }
 ]

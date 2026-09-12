@@ -2020,6 +2020,103 @@ describe('a branch pays for a rescanned assertion as it pays for a run', functio
     ]);
 });
 
+describe('a required separator ends the prefix that re-evaluates an assertion', function (): void {
+    /*
+     * ⚠️ A FALSE REFUSAL REVIEW FOUND, and the flag that caused it was carried by two copies of one
+     * walk. `^a+b(?=a+a+c)` was refused as cubic although the `a+` cannot consume the `b`: every
+     * character the prefix gives back is an `a`, the `b` has to match there, and the retry dies before
+     * the assertion is reached. Measured on Node 22.23.2 against `a×n b a×n`, it tracks its control
+     * `^b(?=a+a+c)` on `b a×n` to the tenth of a millisecond — 0.4 ms against 1.7 at n=500, 1.4 against
+     * 1.5 at 1,000, 5.7 against 5.7 at 2,000.
+     *
+     * `kitsune:audit-patterns --strict` blocks an upgrade over a refusal, so a false one costs an
+     * operator a migration for a pattern that was safe all along.
+     */
+    it('accepts an assertion the separator keeps the prefix out of', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))->toBeNull("[{$pattern}] cannot reach the assertion twice");
+    })->with([
+        // The finding, and the four spellings of its separator the same proof has to read.
+        '^a+b(?=a+a+c)',
+        '^a+b+c(?=a+a+d)',
+        '^a+(?:b|c)(?=a+a+d)',
+        '^a+b{2}(?=a+a+c)',
+        '^a+\.(?=a+a+c)',
+    ]);
+
+    it('still refuses a prefix nothing divides', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))->toContain('re-evaluates');
+    })->with([
+        /*
+         * ⚠️ TWO VARIABLE-WIDTH ATOMS TRADE CHARACTERS and reach the separator at the SAME position
+         * however they split it, so the assertion runs there once per split. Both of these measure the
+         * cubic the rule is named for — 181 ms at 500 characters, 1,432 at 1,000, 11,385 at 2,000 — and
+         * the second is why the separator is proven against the atom beside it rather than assumed from
+         * its position: `[ab]+` can consume what `a+` gives back.
+         */
+        '^a*a*b(?=a+a+c)',
+        '^a+[ab]+c(?=a+a+d)',
+        // A separator that can be absent divides nothing: 276.9 ms at 500 characters, 3,879.8 at 2,000.
+        '^a+b?(?=a+a+c)',
+        '^a+(?:b+|c+)?a(?=a+a+d)',
+        // And one the prefix can match is not a separator at all, whatever its width.
+        '^a+a(?=a+a+c)',
+        '^a+[a-z]{2}(?=a+a+c)',
+    ]);
+
+    /*
+     * ⚠️ THE SAME WALK ANSWERS THE ITEM BOUND, at zero rather than the repetition limit, so the false
+     * refusal had a quieter twin: `TextType` narrowed `maxItems` for a pattern that costs nothing per
+     * value. Measured on Node 22.23.2 at 1,250, 2,500 and 5,000 characters:
+     *
+     *   `^a+b(?=a+c)`     0.02 ms   0.02 ms   0.04 ms     linear — the prefix cannot re-enter it
+     *   `^a+(?=a+c)`      2.36 ms   9.27 ms  35.60 ms     quadratic — nothing stops it
+     *   `^a+b(?=a+a+c)`   2.27 ms   8.86 ms  35.40 ms     quadratic in the assertion's OWN run
+     *
+     * The third is why ending the prefix is not the same as pricing the assertion free: `a+a+` scans the
+     * value once whatever runs it, which is the quadratic `^a*a*b$` pays at 35.39 ms.
+     */
+    it('stops bounding the array for a prefix the separator ends', function (string $pattern): void {
+        expect(Pattern::costsQuadraticPerValue($pattern))->toBeFalse("[{$pattern}] is linear per value");
+    })->with([
+        '^a+b(?=a+c)',
+        '^a+b+c$',
+    ]);
+
+    it('goes on bounding the array for one it does not', function (string $pattern): void {
+        expect(Pattern::costsQuadraticPerValue($pattern))->toBeTrue("[{$pattern}] is quadratic per value");
+    })->with([
+        '^a+(?=a+c)',
+        '^a+b(?=a+a+c)',
+        '^a*a*b$',
+    ]);
+
+    /*
+     * ⚠️ THE RUN RULE NEEDED THE OTHER HALF OF THE SAME PROOF, because `leads` is null for everything
+     * that is not a group: `a+b+` read as a re-division of every length when the boundary between them
+     * is forced by the subject, exactly as it is in `a+b`. It cost a REFUSAL rather than a price once
+     * something else multiplied it — `^a+b+c(?=a+a+d)` was charged one quadratic grant for the run and
+     * another for the assertion's own, and 8,192² passes the ambiguity ceiling.
+     *
+     * What it must NOT license is an atom that can be absent: `^a*a*b?a*c$` is `^a*a*a*c$` on every
+     * subject without a `b`, and `canMatchNothing()` is what tells the two apart.
+     */
+    it('reads a variable-width atom as a separator when the subject forces the boundary', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))->toBeNull("[{$pattern}] divides its own run");
+    })->with([
+        '^a+b+c$',
+        '^a+b+a+c$',
+        '^a+b+c(?=a+a+d)',
+    ]);
+
+    it('and refuses one whose separator can be absent', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))->not->toBeNull("[{$pattern}] is three atoms in a row");
+    })->with([
+        '^a*a*b?a*c$',
+        '^a*a*a*c$',
+        '^a*a*(?:b)?a*c$',
+    ]);
+});
+
 describe('the screen stays inside its budget', function (): void {
     /*
      * ⚠️ THE GUARD'S OWN COST IS PART OF THE CONTRACT, and it had drifted: every rule added a walk, and

@@ -319,3 +319,29 @@ it('pins the published candidate count to the harness case file', function (): v
         expect($written)->toBe($count, "docs/field-types.md quotes {$written} candidates; cases.json holds {$count}");
     }
 });
+
+it('pins the two halves of the refusal accounting to each other', function (): void {
+    /*
+     * ⚠️ THIS NUMBER HAS ALREADY DRIFTED ONCE, and §4 says so in its own prose: the paragraph read
+     * "six of them" and the accounting under it "of eleven rows" while the harness reported
+     * twenty-three. It is quoted TWICE — once to introduce the table and once to check the
+     * arithmetic under it — which is two independent chances to update one and forget the other,
+     * and an accounting that does not add up reads as complete while being wrong.
+     *
+     * The harness itself cannot be the pin: it needs Node as well as PHP, and the default suite
+     * must run on a bare clone (AGENTS.md invariant 11). So this pins the two halves to EACH OTHER,
+     * which is the slip that actually happened; the total against the harness stays a manual step,
+     * recorded in the harness README.
+     */
+    $markdown = (string) file_get_contents(dirname(__DIR__, 3).'/docs/field-types.md');
+
+    expect(preg_match('/refusals on purpose, not gaps — \*\*(\d+)\*\* of them/', $markdown, $introduced))
+        ->toBe(1, 'docs/field-types.md "What this costs" no longer states how many rows are refused on purpose')
+        ->and(preg_match('/So of (\d+) rows:/', $markdown, $accounted))
+        ->toBe(1, 'docs/field-types.md no longer accounts for those rows one by one');
+
+    expect($accounted[1])->toBe(
+        $introduced[1],
+        "docs/field-types.md introduces {$introduced[1]} deliberate refusals and accounts for {$accounted[1]}",
+    );
+});

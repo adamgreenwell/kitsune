@@ -1447,7 +1447,7 @@ final class Pattern
         }
 
         foreach (self::topLevelBranches($pattern) as $branch) {
-            if (($rescanned = self::assertionAfterVariable($branch, self::RUN_INSIDE_REPETITION)) === null) {
+            if (($rescanned = self::assertionsRescanned($branch, self::RUN_INSIDE_REPETITION)[0] ?? null) === null) {
                 continue;
             }
 
@@ -2376,7 +2376,7 @@ final class Pattern
          * measures 44 ms. Eight reach the budget exactly, as eight branches do, and nine pass it — the
          * same constant and the same arithmetic as the alternation it sits beside.
          */
-        if (($rescans = self::assertionsAfterVariable($body, 0)) > 0) {
+        if (($rescans = count(self::assertionsRescanned($body, 0))) > 0) {
             $cost = self::saturatingProduct($cost, self::quadraticBranchCost() * $rescans);
         }
 
@@ -2608,6 +2608,47 @@ final class Pattern
         }
 
         return true;
+    }
+
+    /**
+     * Whether this atom forces a boundary after `$previous` AND is always there to force it.
+     *
+     * ⚠️ ONE PROOF, THREE WALKS, and it lived inside one of them. `runsPast()` ends a run here and the
+     * assertion walk ends a variable-width prefix here, for the same reason in both: the atom would have
+     * to match at a position `$previous` has already consumed, and it cannot. Review found the assertion
+     * walk without the proof at all — a false refusal of `^a+b(?=a+a+c)` — so the copy that had it is now
+     * the only copy.
+     *
+     * ⚠️ AND IT MUST BE UNSKIPPABLE, which is the half a boundary is useless without: `^a+b?(?=a+a+c)`
+     * measures 276.9 ms at 500 characters, 477.0 at 1,000 and 3,879.8 at 2,000 on all-`a` — the cubic of
+     * no separator at all, because the `b?` simply is not there. `canMatchNothing()` is the question,
+     * not the quantifier: `(?:a?)` and `(?:|a)` are optional without wearing a `?`.
+     *
+     * ⚠️ A FIXED REPETITION OF A LITERAL STILL FORCES THE BOUNDARY, which review found a blanket "any
+     * quantifier disqualifies it" denying: `^a*a*b{1}a*$` is the accepted `^a*a*ba*$` written another
+     * way, and `b{2}` is two of the same boundary.
+     *
+     * ⚠️ AND A REQUIRED GROUP CAN DIVIDE WITHOUT BEING VARIABLE-WIDTH, which review found this not
+     * asking: `^a*a*(?:b|c)a*$` has a FIXED-width group, and `literalCharacter()` cannot pull a literal
+     * out of a whole group — so the run survived it and the last `a*` counted as a third atom. Both
+     * branches lead with a literal `a*` cannot match, which is the proof `separates()` already applies to
+     * a variable-width group; the group's width was never what made it work.
+     *
+     * @param  array{atom: string, quantifier: string, variable: bool, leads: list<string>|null, assertion: bool}  $atom
+     */
+    private static function separatesRequired(?string $previous, array $atom): bool
+    {
+        if ($previous === null || self::canMatchNothing($atom['atom'], $atom['quantifier'])) {
+            return false;
+        }
+
+        if (self::separates($previous, $atom['leads'])) {
+            return true;
+        }
+
+        $character = self::literalCharacter($atom['atom']);
+
+        return $character !== null && ! self::atomMatches($previous, $character);
     }
 
     /**
@@ -2924,7 +2965,7 @@ final class Pattern
     }
 
     /**
-     * The first assertion in this sequence that a variable-width atom in front of it makes expensive.
+     * Every assertion in this sequence that a variable-width atom in front of it makes expensive.
      *
      * ⚠️ A PREFIX BACKTRACKS AND THE ASSERTION IS SCANNED AGAIN FOR EACH STEP, which is the same
      * multiplier a repetition applies and review found it missing: `^a+(?=a+a+c)` has its run inside an
@@ -2947,46 +2988,37 @@ final class Pattern
      * quadratic per value: `^a+(?=a+c)` measures 1.5 ms at 1,000 characters, 12.8 ms at 3,000 and
      * 36.0 ms at 5,000, which is the same order as `^a*a*b$` and the reason the array needs bounding.
      * `^a+(?=ac)` is 0.1 ms and `^a(?=a+c)` is 0.0, so both halves of the shape are load-bearing.
-     */
-    /**
-     * How many assertions in this sequence a variable-width atom in front of them re-evaluates.
      *
-     * ⚠️ THE SAME WALK AS `assertionAfterVariable()`, COUNTING RATHER THAN STOPPING, because the branch
-     * charge needs the number and the refusal needs the first one. Every assertion past the same prefix
-     * is rerun on every backtrack of it, so k of them cost k grants — `^a+` then 140 `(?=a*b)` then
-     * `(?=a*c)` measures 611 ms against 40.6 for one.
+     * ⚠️ A REQUIRED SEPARATOR ENDS THE PREFIX, and review found this walk carrying the flag straight
+     * past one. `^a+b(?=a+a+c)` was refused as cubic although the `a+` cannot consume the `b`: every
+     * character it gives back is an `a`, the `b` has to match there, and the retry dies before the
+     * assertion is reached. Measured on Node 22.23.2 against `a×n b a×n`, it tracks its control
+     * `^b(?=a+a+c)` on `b a×n` to the tenth of a millisecond — 0.4 ms against 1.7 at n=500, 1.4 against
+     * 1.5 at 1,000, 5.7 against 5.7 at 2,000 — where the shapes below are cubic at the same lengths.
+     * `--strict` blocks an upgrade over a refusal, so a false one costs an operator a migration.
+     *
+     * ⚠️ AND IT ONLY ENDS A PREFIX OF ONE, because two variable-width atoms TRADE characters and reach
+     * the separator at the SAME position however they split it, so the assertion runs there once per
+     * split. Both of these are the cubic the rule is named for, measured against `a×n b a×n` and
+     * `a×n bc a×n`:
+     *
+     *                            n=500          n=1,000         n=2,000
+     *   `^a*a*b(?=a+a+c)`       181.1 ms      1,431.9 ms     11,385.2 ms
+     *   `^a+[ab]+c(?=a+a+d)`    180.7 ms      1,433.0 ms     11,381.4 ms
+     *
+     * The second is why the run is counted rather than assumed from the separator's position: `[ab]+`
+     * can consume what `a+` gives back, so it does not divide them and nothing before the `c` is dead.
+     * A prefix of one is dead by induction — an atom that ends the run before it has already proved the
+     * same thing about everything in front of that.
+     *
+     * ⚠️ ONE WALK, TWO QUESTIONS, because two copies of it is what let the reset be missing from one.
+     * The refusal needs the first offending assertion and the branch charge needs how many there are,
+     * and every assertion past the same prefix is rerun on every backtrack of it — so k of them cost k
+     * grants: `^a+` then 140 `(?=a*b)` then `(?=a*c)` measures 611 ms against 40.6 for one.
+     *
+     * @return list<string>
      */
-    private static function assertionsAfterVariable(string $sequence, int $limit): int
-    {
-        if (! str_contains($sequence, '(?')) {
-            return 0;
-        }
-
-        $atoms = self::flatAtoms($sequence);
-
-        if ($atoms === null) {
-            return 0;
-        }
-
-        $variable = false;
-        $rescanned = 0;
-
-        foreach ($atoms as $atom) {
-            if ($atom['assertion']) {
-                if ($variable && self::atomRunExceeds(self::frameBody($atom['atom']), $limit)) {
-                    $rescanned++;
-                }
-
-                continue;
-            }
-
-            $variable = $variable || $atom['variable'];
-        }
-
-        return $rescanned;
-    }
-
-    private static function assertionAfterVariable(string $sequence, int $limit): ?string
+    private static function assertionsRescanned(string $sequence, int $limit): array
     {
         /*
          * ⚠️ A FAST NEGATIVE, AND ONLY A NEGATIVE. Every assertion's source contains `(?`, so its
@@ -2997,30 +3029,47 @@ final class Pattern
          * `EntryTypeBuilderGuardsTest` budgets at one second — went from 3 ms to 1.54 SECONDS.
          */
         if (! str_contains($sequence, '(?')) {
-            return null;
+            return [];
         }
 
         $atoms = self::flatAtoms($sequence);
 
         if ($atoms === null) {
-            return null;
+            return [];
         }
 
-        $variable = false;
+        $rescanned = [];
+        $previous = null;
+        $run = 0;
 
         foreach ($atoms as $atom) {
+            /*
+             * ⚠️ ZERO-WIDTH MEANS TRANSPARENT, the same way `runsPast()` reads it: an assertion consumes
+             * nothing, so it can neither join the prefix nor end it. Its own body is the sequence being
+             * priced here, and the prefix in front of it is unchanged by it.
+             */
             if ($atom['assertion']) {
-                if ($variable && self::atomRunExceeds(self::frameBody($atom['atom']), $limit)) {
-                    return $atom['atom'];
+                if ($run > 0 && self::atomRunExceeds(self::frameBody($atom['atom']), $limit)) {
+                    $rescanned[] = $atom['atom'];
                 }
 
                 continue;
             }
 
-            $variable = $variable || $atom['variable'];
+            if ($atom['variable']) {
+                $run = self::separatesRequired($previous, $atom) ? 1 : $run + 1;
+                $previous = $atom['atom'];
+
+                continue;
+            }
+
+            if ($run === 1 && self::separatesRequired($previous, $atom)) {
+                $run = 0;
+                $previous = null;
+            }
         }
 
-        return null;
+        return $rescanned;
     }
 
     /**
@@ -3512,7 +3561,7 @@ final class Pattern
          * quadratic, which is publishable per value and has to be bounded per array.
          */
         foreach (self::topLevelBranches($pattern) as $branch) {
-            if (self::assertionAfterVariable($branch, 0) !== null) {
+            if (self::assertionsRescanned($branch, 0) !== []) {
                 return true;
             }
         }
@@ -3734,8 +3783,23 @@ final class Pattern
                  * row, and the second one must BEGIN with a comma the first cannot match — so the
                  * boundary is forced by the group's own leading literal rather than by anything
                  * between them.
+                 *
+                 * ⚠️ AND A VARIABLE-WIDTH ATOM CAN BE A SEPARATOR TOO, which this asked only of groups:
+                 * `leads` is null for everything that is not one, so `a+b+` read as a re-division of
+                 * every length when the boundary between them is forced by the subject — the `a+` cannot
+                 * consume a `b`, exactly as it cannot in `a+b`. It cost a REFUSAL rather than a price
+                 * once something else multiplied it: `^a+b+c(?=a+a+d)` was charged one quadratic grant
+                 * for the run and another for the assertion's own, and 8,192² passes the ambiguity
+                 * ceiling — measured, it runs in 35.4 ms on 10,001 characters, which is its control
+                 * `^c(?=a+a+d)` to the tenth of a millisecond.
+                 *
+                 * The two halves are asked separately because they license different things: a group
+                 * that may match NOTHING still divides a run when the run is what it contains, which is
+                 * the delimited list above, while an atom that may be absent proves nothing about two
+                 * atoms written either side of it. `separatesRequired()` is the stricter half.
                  */
-                $separated = self::separates($previous, $atom['leads']);
+                $separated = self::separates($previous, $atom['leads'])
+                    || self::separatesRequired($previous, $atom);
 
                 if ($separated) {
                     // A forced boundary ends the run before it, so the next one is counted separately.
@@ -3754,39 +3818,9 @@ final class Pattern
                 continue;
             }
 
-            /*
-             * ⚠️ A FIXED REPETITION OF A LITERAL STILL FORCES THE BOUNDARY, which review found this
-             * skip denying: `^a*a*b{1}a*$` is the accepted `^a*a*ba*$` written another way, and `b{2}`
-             * is two of the same boundary. The blanket "any quantifier disqualifies it" kept the run
-             * alive across the `b`, so the following `a*` counted as a third adjacent atom and a safe
-             * pattern was refused. Only a quantifier that can run ZERO times fails to divide — and one
-             * that can run a VARIABLE number of times is handled above, as a variable-width atom.
-             */
-            $repeats = $atom['quantifier'] === '' ? 1 : self::fixedRepetitions($atom['quantifier']);
-
-            if ($previous === null || $repeats === null || $repeats < 1) {
-                continue;
-            }
-
-            /*
-             * ⚠️ AND A REQUIRED GROUP CAN DIVIDE A RUN WITHOUT BEING VARIABLE-WIDTH, which review found
-             * this branch not asking: `^a*a*(?:b|c)a*$` has a FIXED-width group, so the variable path
-             * above never ran, and `literalCharacter()` cannot pull a literal out of a whole group — so
-             * the run survived the group and the last `a*` counted as a third atom. Both branches lead
-             * with a literal `a*` cannot match, which is the same proof `separates()` already applies to
-             * a variable group; the group's width was never what made the proof work.
-             */
-            if (self::separates($previous, $atom['leads'])) {
-                $run = 0;
-                $counted = false;
-                $previous = null;
-
-                continue;
-            }
-
-            $character = self::literalCharacter($atom['atom']);
-
-            if ($character !== null && ! self::atomMatches($previous, $character)) {
+            // A required atom the run cannot consume ends it — `separatesRequired()` holds that proof,
+            // and the assertion walk ends a variable-width prefix on the same one.
+            if (self::separatesRequired($previous, $atom)) {
                 $run = 0;
                 $counted = false;
                 $previous = null;
