@@ -703,8 +703,29 @@ final class Pattern
          * Alpha/Alphabetic 147,421; Upper/Uppercase 2,006). `Space` is deliberately not here — PCRE
          * compiles `\p{Space}` and ECMAScript rejects the name, so the aliases are not portable as a
          * family and were measured one at a time.
+         *
+         * ⚠️ AND THAT COMPARISON IS NOW MADE FOR EVERY NAME ON THIS LIST, because doing it for three
+         * aliases and admitting the rest on compiling alone was the weaker test wearing the stronger
+         * one's clothes. `tools/property-parity` sweeps all 54 names here and all 213 script names the
+         * `Script=` prefix admits, over 1,112,064 codepoints each — every codepoint but the surrogates,
+         * which are not valid UTF-8 — in both engines. 228 names agree exactly, 38 script aliases
+         * compile in neither engine, and exactly ONE name diverged:
+         *
+         *   `Bidi_Mirrored`   PCRE 10.48  428 members      ECMAScript (Node 22.23.2)  554 members
+         *
+         * one-directional — 126 codepoints ECMAScript includes and PCRE does not, U+2202 `∂` and
+         * U+2140 `⅀` among them, none the other way. So it is OFF the list. Rule 3 is that
+         * `apiSchema()` may only publish a constraint the consumer can enforce, and a name meaning two
+         * things publishes a schema that rejects values the server accepts.
+         *
+         * ⚠️ IT WAS ALSO A COST DEFECT, which is how review's sweep found it rather than by reading:
+         * every boundary proof in this file asks PCRE whether an atom can match a character, so PCRE's
+         * narrower `Bidi_Mirrored` PROVED boundaries that do not exist for the consumer.
+         * `^\p{Bidi_Mirrored}*\p{Bidi_Mirrored}*∂\p{Bidi_Mirrored}*X$` published and measures
+         * 45.9 ms at 250 characters, 363.4 at 500 and 2,924.5 at 1,000 on Node — three adjacent
+         * variable-width atoms, because `∂` divides them only in PCRE.
          */
-        'ASCII', 'ASCII_Hex_Digit', 'Alpha', 'Alphabetic', 'Any', 'Bidi_Control', 'Bidi_Mirrored',
+        'ASCII', 'ASCII_Hex_Digit', 'Alpha', 'Alphabetic', 'Any', 'Bidi_Control',
         'Case_Ignorable', 'Cased', 'Changes_When_Casefolded', 'Changes_When_Casemapped',
         'Changes_When_Lowercased', 'Changes_When_Titlecased', 'Changes_When_Uppercased',
         'Dash', 'Default_Ignorable_Code_Point', 'Deprecated', 'Diacritic', 'Emoji',
@@ -716,6 +737,21 @@ final class Pattern
         'Sentence_Terminal', 'Soft_Dotted', 'Terminal_Punctuation', 'Unified_Ideograph', 'Upper',
         'Uppercase',
         'Variation_Selector', 'White_Space', 'XID_Continue', 'XID_Start',
+    ];
+
+    /**
+     * Names both engines accept and read differently, so the refusal can say which it is.
+     *
+     * ⚠️ A REFUSAL WITH THE WRONG REASON IS ITS OWN DEFECT, which taking the name off the allowlist
+     * created: the fallback message says ECMAScript "does not have this one", and ECMAScript has
+     * `Bidi_Mirrored` — that is the whole problem. An author told the wrong thing goes looking in the
+     * wrong place, so a diverging name gets the measurement instead.
+     *
+     * @var array<string, string>
+     */
+    private const DIVERGENT_PROPERTIES = [
+        'Bidi_Mirrored' => 'PCRE 10.48 gives it 428 codepoints and ECMAScript 554, the 126 extra '
+            .'including U+2202 `∂` and U+2140 `⅀`',
     ];
 
     /**
@@ -5733,6 +5769,23 @@ final class Pattern
                 'the bare script name `\%s{%s}` — ECMAScript accepts a script only in its prefixed '
                 .'form. Use `\%s{Script=%s}`',
                 $letter, $name, $letter, $name,
+            );
+        }
+
+        /*
+         * ⚠️ BOTH ENGINES HAVE IT AND THEY MEAN DIFFERENT THINGS, which no other refusal here covers:
+         * every message above is about a name one engine cannot compile or spells differently. This one
+         * compiles in both, so the author needs the measurement rather than a spelling lesson — and
+         * `tools/property-parity` is named so the number can be re-derived when either engine's Unicode
+         * version moves.
+         */
+        if (array_key_exists($name, self::DIVERGENT_PROPERTIES)) {
+            return sprintf(
+                'the Unicode property `\%s{%s}` — both engines compile it and they disagree about what '
+                .'it MATCHES: %s. A published schema would reject values the server accepts, so this '
+                .'name cannot travel whatever it is spelled like. Measured over every codepoint in both '
+                .'engines by `tools/property-parity`',
+                $letter, $name, self::DIVERGENT_PROPERTIES[$name],
             );
         }
 

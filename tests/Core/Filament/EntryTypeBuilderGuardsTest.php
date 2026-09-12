@@ -2486,7 +2486,7 @@ describe('settings that contradict themselves are refused', function (): void {
         expect($portable)->not->toBe([]);
 
         /*
-         * ⚠️ TWO NAMES ARE REFUSED ON PURPOSE THOUGH BOTH ENGINES TAKE THEM, and they have to be
+         * ⚠️ THREE NAMES ARE REFUSED ON PURPOSE THOUGH BOTH ENGINES TAKE THEM, and they have to be
          * named here or this assertion cannot tell a deliberate cost from an omission — which is
          * the whole thing it exists to detect.
          *
@@ -2496,8 +2496,16 @@ describe('settings that contradict themselves are refused', function (): void {
          * moves away from the author's intent with every release in both polarities. U+10940 is
          * SIDETIC LETTER N01, assigned in Unicode 17.0, which is the codepoint that shows it.
          * See `PortablePropertyTest` and field-types.md §3.
+         *
+         * ⚠️ AND `Bidi_Mirrored` IS THE THIRD, which THIS ASSERTION COULD NEVER HAVE CAUGHT, because
+         * it asks whether both engines COMPILE a name. They do, and they mean different sets: 428
+         * codepoints under PCRE 10.48 and 554 under Node 22.23.2, one-directional, U+2202 `∂` among
+         * the 126. That is the weaker test this whole sweep rests on, and
+         * `tools/property-parity` is the stronger one — every publishable name compared over
+         * 1,112,064 codepoints in both engines, where 228 agree exactly and this was the only
+         * divergence.
          */
-        $refusedOnPurpose = ['Cn', 'C'];
+        $refusedOnPurpose = ['Cn', 'C', 'Bidi_Mirrored'];
 
         $falselyRefused = array_values(array_filter(
             $portable,

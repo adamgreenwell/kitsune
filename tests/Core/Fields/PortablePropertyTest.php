@@ -109,3 +109,81 @@ it('admits the POSIX-style aliases that are synonyms in both engines', function 
     expect(Pattern::unpublishable('^\p{Space}$'))
         ->not->toBeNull('\p{Space} compiles only in PCRE and cannot be published');
 });
+
+it('refuses a name both engines compile and read differently', function (): void {
+    /*
+     * ⚠️ COMPILING IS NOT AGREEING, and the allowlist was built on the weaker test. Every name here was
+     * admitted because both engines accept it; `tools/property-parity` now sweeps all 53 of them and all
+     * 213 script names the `Script=` prefix admits, over 1,112,064 codepoints each — every codepoint but
+     * the surrogates — in both engines. 228 agree exactly, 38 script aliases compile in neither, and
+     * exactly ONE diverged:
+     *
+     *   `Bidi_Mirrored`   PCRE 10.48  428 members      ECMAScript (Node 22.23.2)  554 members
+     *
+     * one-directional: 126 codepoints ECMAScript includes and PCRE does not, U+2202 `∂` and U+2140 `⅀`
+     * among them, none the other way. Rule 3 makes that unpublishable on its own — a schema that means
+     * something narrower than the server rejects values the server accepts.
+     */
+    expect(Pattern::unpublishable('^\p{Bidi_Mirrored}+$'))
+        ->toContain('disagree about what it MATCHES')
+        ->toContain('428')
+        ->toContain('554');
+
+    /*
+     * ⚠️ AND THE REASON HAS TO BE THE RIGHT ONE, which taking the name off the list would otherwise get
+     * wrong: the fallback message says ECMAScript "does not have this one", and it HAS this one. An
+     * author told the wrong thing looks in the wrong place, so a diverging name carries the measurement
+     * and a misspelt one carries the spelling lesson.
+     */
+    expect(Pattern::unpublishable('^\p{Bidi_Mirrored}+$'))
+        ->not->toContain('does not have this one');
+
+    expect(Pattern::unpublishable('^\p{Nonesuch}+$'))
+        ->toContain('does not have this one');
+});
+
+it('was a cost defect as well as a portability one', function (string $pattern): void {
+    /*
+     * ⚠️ WHICH IS HOW IT WAS FOUND — by a sweep for false publishes, not by reading the allowlist. Every
+     * boundary proof in `Pattern` asks PCRE whether an atom can match a character, so PCRE's narrower
+     * `Bidi_Mirrored` PROVED boundaries the consumer does not have. Measured on Node 22.23.2 against a
+     * value of `∂` repeated, the first of these is three adjacent variable-width atoms: 45.9 ms at 250
+     * characters, 363.4 at 500, 2,924.5 at 1,000 — cubic, and published until the name came off.
+     */
+    expect(Pattern::unpublishable($pattern))->not->toBeNull("[{$pattern}] rests on a divergent property");
+})->with([
+    '^\p{Bidi_Mirrored}*\p{Bidi_Mirrored}*∂\p{Bidi_Mirrored}*X$',
+    '^(?:∂\p{Bidi_Mirrored}?)*Y$',
+]);
+
+it('keeps the two lists from contradicting each other', function (): void {
+    /*
+     * ⚠️ TWO LISTS, ONE FACT. A name on the allowlist AND on the divergent list would publish while
+     * claiming it cannot, and the refusal for it would be unreachable — so the test is that their
+     * intersection is empty, rather than that either has particular contents.
+     */
+    $reflection = new ReflectionClass(Pattern::class);
+
+    /** @var list<string> $portable */
+    $portable = $reflection->getConstant('PORTABLE_PROPERTIES');
+    /** @var array<string, string> $divergent */
+    $divergent = $reflection->getConstant('DIVERGENT_PROPERTIES');
+
+    expect($divergent)->not->toBeEmpty()
+        ->and(array_intersect(array_keys($divergent), $portable))
+        ->toBe([], 'a property cannot be both portable and divergent');
+
+    /*
+     * And every divergent name must actually reach its own refusal rather than a spelling message.
+     *
+     * ⚠️ `toContain()` IS VARIADIC OVER NEEDLES, so a second argument is another needle rather than a
+     * message — the failure it produced here was "to contain: [the message]", which is the assertion
+     * looking for the explanation in the text. The message goes on a boolean expectation instead.
+     */
+    foreach (array_keys($divergent) as $name) {
+        $refusal = Pattern::unpublishable('^\p{'.$name.'}$') ?? '';
+
+        expect(str_contains($refusal, 'disagree about what it MATCHES'))
+            ->toBeTrue("[\\p{{$name}}] must be refused for the right reason");
+    }
+});

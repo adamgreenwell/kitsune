@@ -1306,5 +1306,11 @@
     "pattern": "^a+(?:(?=a*a*c)q|z)$",
     "subject": "aaacq",
     "why": "The same body-nobody-reads, one walk along. A multi-branch group is not spliced into the atom list, so every assertion inside one was invisible to the rule that refuses an assertion a variable-width prefix re-evaluates. Measured on Node 22.23.2 against all-`a`: 62.4 ms at 500 characters, 488.1 at 1,000 and 3,876.6 at 2,000 — the refused `^a+(?=a*a*c)q$` to the millisecond at 62.1 / 488.8 / 3,874.8. The walk now reads through a group that runs at most once, carrying the run it has so far, so a prefix outside the brackets and a prefix inside one branch are both covered. The PRICING caller does not descend, for the reason the atom list takes the same flag: the same assertion is charged again when the cost model reaches that group's body, and charging it twice refuses a pattern for a cost it does not have."
+  },
+  {
+    "id": "divergent-property-proves-a-boundary",
+    "pattern": "^\\p{Bidi_Mirrored}*\\p{Bidi_Mirrored}*∂\\p{Bidi_Mirrored}*X$",
+    "subject": "∂∂∂X",
+    "why": "The allowlist was built on the weaker of two tests: a name was admitted when both engines COMPILE it. `\\p{Bidi_Mirrored}` compiles in both and means two different things — 428 codepoints in PCRE 10.48, 554 in ECMAScript (Node 22.23.2), the difference one-directional, U+2202 `∂` and U+2140 `⅀` among the 126 ECMAScript adds. So rule 3 refuses it on its own: a schema meaning something narrower than the server rejects values the server accepts. It was also a COST defect, which is how a sweep for false publishes found it rather than a reading of the list: every boundary proof in `Pattern` asks PCRE whether an atom can match a character, so PCRE's narrower set PROVED that `∂` divides the run when it does not, and this published as three adjacent variable-width atoms — 45.9 ms at 250 characters, 363.4 at 500, 2,924.5 at 1,000. `tools/property-parity` now sweeps all 53 allowlisted names and all 213 script names ICU knows over 1,112,064 codepoints each in both engines: 228 agree exactly, 38 script aliases compile in neither, and this was the only divergence."
   }
 ]
