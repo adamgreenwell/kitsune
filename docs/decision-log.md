@@ -1271,7 +1271,7 @@ So the test of this ADR is not "can a non-panel consumer render it" — there is
 
 So the closed vocabulary reached every control and the cross-cutting rule reached one class.
 
-The trait `StampsBlockDirection` holds that pass now, and it is applied from a **private method on `Entry`**, keyed on `ValueDirection` rather than on the `Control` case — that enum is where the mapping already lives, and `PerBlock`'s own docblock already said direction is needed *inside* the value; this makes that sentence happen instead of restating it.
+That pass is **private methods on `Entry`**, applied from a private method there, keyed on `ValueDirection` rather than on the `Control` case — that enum is where the mapping already lives, and `PerBlock`'s own docblock already said direction is needed *inside* the value; this makes that sentence happen instead of restating it.
 
 **It took three attempts to find a seam a field type cannot decline, and the ones that failed are worth recording.** Applying it in `BaseFieldType::toStorage()` made it control-driven and left it **overridable**: `MultiSelectType` and `RelationType` already override that method, a module may too, and a module implementing `FieldType` directly never reaches the base class at all. A protected hook there was also new extension surface before v1.2 — a plugin subclass with a same-named method fails to load, which is a concrete break rather than a theoretical one.
 

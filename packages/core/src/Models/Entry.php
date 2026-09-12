@@ -852,7 +852,7 @@ class Entry extends Model implements RequiresModelSave
                 continue;
             }
 
-            if (self::bearsTextDirectly($element)) {
+            if (self::isInnermostTextBlock($element)) {
                 $element->setAttribute('dir', 'auto');
             }
         }
@@ -1175,21 +1175,34 @@ class Entry extends Model implements RequiresModelSave
     }
 
     /**
-     * Whether this element holds text of its own, rather than only elements that hold text.
+     * Whether this element is the innermost block holding text, and so the one a direction belongs on.
      *
-     * ⚠️ DIRECT CHILDREN ONLY, which is what makes the stamp per BLOCK. `textContent` would be true for
-     * every ancestor up to the document, so a wrapper with no words of its own would resolve a direction
-     * from its descendants' — the single-`dir`-on-the-field failure this whole pass exists to avoid.
+     * ⚠️ "HOLDS TEXT DIRECTLY" WAS TOO NARROW, which review found: `<div><strong>مرحبا</strong></div>`
+     * keeps its words inside a phrasing element, so the `div` had no direct text, the `strong` was
+     * skipped as phrasing, and the value went to storage undirected. Measured — the value came back
+     * byte-for-byte, inheriting the page.
+     *
+     * ⚠️ AND `textContent` ALONE IS TOO WIDE, which is why the second half exists: it is true for every
+     * ancestor up to the document, so a wrapper with no words of its own would resolve a direction from
+     * its descendants' — the single-`dir`-on-the-field failure this whole pass exists to avoid.
+     *
+     * Between them: text somewhere inside, and no descendant that is itself a block. So
+     * `<section><div><strong>x</strong></div></section>` stamps the `div` and leaves the `section`, and
+     * `<div><p>x</p></div>` stamps the `p` — which the block pass already did — and leaves the `div`.
      */
-    private static function bearsTextDirectly(DOMNode $element): bool
+    private static function isInnermostTextBlock(DOMElement $element): bool
     {
-        foreach ($element->childNodes as $child) {
-            if ($child->nodeType === XML_TEXT_NODE && trim($child->textContent) !== '') {
-                return true;
+        if (trim($element->textContent) === '') {
+            return false;
+        }
+
+        foreach ($element->getElementsByTagName('*') as $descendant) {
+            if (! in_array(strtolower($descendant->nodeName), self::PHRASING_TAGS, true)) {
+                return false;
             }
         }
 
-        return false;
+        return true;
     }
 
     /**

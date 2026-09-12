@@ -757,10 +757,25 @@ it('gives per-block direction to any type whose control is rich text', function 
      * global attribute valid on any element while a `<p>` is valid only in some places. The one safe
      * thing to do to markup whose content model this pass cannot parse is exactly the thing needed.
      */
+    /*
+     * ⚠️ AND "HOLDS TEXT DIRECTLY" WAS TOO NARROW, which review found after the first version of this.
+     * `<div><strong>مرحبا</strong></div>` keeps its words inside a phrasing element, so the `div` had no
+     * direct text, the `strong` was skipped as phrasing, and the value went to storage undirected —
+     * measured, byte-for-byte unchanged, inheriting the page. `textContent` alone is the opposite
+     * mistake: true for every ancestor, so a wrapper with no words of its own would resolve a direction
+     * from its descendants'.
+     *
+     * Between them: text somewhere inside, and no descendant that is itself a block. The four rows below
+     * are the four cases that distinguishes — nested phrasing, direct text, a block inside a block, and
+     * a KNOWN container inside an unknown one, which the block pass already handles.
+     */
     foreach ([
         '<div>مرحبا</div>' => '<div dir="auto">مرحبا</div>',
         '<h1>مرحبا</h1>' => '<h1 dir="auto">مرحبا</h1>',
+        '<div><strong>مرحبا</strong></div>' => '<div dir="auto"><strong>مرحبا</strong></div>',
         '<section><div>مرحبا</div></section>' => '<section><div dir="auto">مرحبا</div></section>',
+        '<section><div><strong>مرحبا</strong></div></section>' => '<section><div dir="auto"><strong>مرحبا</strong></div></section>',
+        '<div><p>مرحبا</p></div>' => '<div><p dir="auto">مرحبا</p></div>',
     ] as $submitted => $expected) {
         $module = Entry::create([
             'entry_type_id' => $this->type->id,
