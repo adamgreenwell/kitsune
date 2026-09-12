@@ -2153,7 +2153,55 @@ final class Pattern
             return true;
         }
 
-        return $lead['character'] !== null && self::atomMatches($neighbour['atom'], $lead['character']);
+        return $lead['character'] !== null && self::beginsWith($neighbour['atom'], $lead['character']);
+    }
+
+    /**
+     * Whether this atom can consume the given character AS ITS FIRST, answered open.
+     *
+     * ⚠️ A SIXTH BRACKET DEFEATED THE RULE, and this time by defeating the PROBE rather than the
+     * question. `^(?=a)(?:a(?=a))?a` published: the optional group really can consume the asserted `a`,
+     * and `atomMatches('(?:a(?=a))', 'a')` says no, because a one-character probe subject gives the
+     * inner lookahead nothing to look at. `^(?=a)(?:(?<=x)a)?a` is the same hole through a lookbehind,
+     * which review did not name. Both published while the bare `^(?=a)a?a` is refused, so a bracket
+     * bought an exemption the rule never granted.
+     *
+     * ⚠️ ONLY WHERE THE PROBE CANNOT ANSWER, and the test suite is what stopped this from going wider.
+     * Asking "what does it BEGIN with" everywhere would refuse `^(?=a)(?:ab)?a`, which `field-types.md`
+     * records as a KNOWN LIMIT rather than an oversight and gives the counter-example for:
+     * `(?=a)(?:ax)?y` excludes every subject starting `y`, so its assertion does constrain something,
+     * and proving the difference needs reasoning about what FOLLOWS the neighbour. Where the probe can
+     * see the whole atom, its answer stands and that limit stands with it. Where an assertion inside
+     * the atom means the probe sees nothing at all, a decision has to be made anyway, and rule 6's
+     * direction is to refuse.
+     *
+     * ⚠️ THE FALLBACK IS PRECISE, NOT BLANKET. `assertedLead()` already steps over leading assertions
+     * and reads through required groups, so `(?:a(?=a))` leads with `a` and overlaps while
+     * `(?:b(?=b))` leads with `b` and publishes: the bracket buys neither an exemption nor a refusal.
+     *
+     * ⚠️ AND IT FAILS OPEN, WHICH HERE MEANS REFUSING. Rule 6 is insurance against a PCRE version this
+     * harness cannot run, so a shape the fallback cannot read — an optional first atom, a
+     * backreference, an unparseable branch — is treated as overlapping.
+     */
+    private static function beginsWith(string $atom, string $character, int $depth = 0): bool
+    {
+        if (self::probeIsContextFree($atom)) {
+            return self::atomMatches($atom, $character);
+        }
+
+        if ($depth > self::MAX_WALK_DEPTH || ! str_starts_with($atom, '(')) {
+            return true;
+        }
+
+        foreach (self::topLevelBranches(self::frameBody($atom)) as $branch) {
+            $lead = self::assertedLead($branch, $depth + 1);
+
+            if ($lead === null || self::beginsWith($lead['atom'], $character, $depth + 1)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

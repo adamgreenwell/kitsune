@@ -34,16 +34,16 @@ Nothing here is built yet. This is what to export while the vector source is ope
 - [x] `kitsune-lockup-compact.svg` / `-dark.svg` — glyph + wordmark, for ≤70px
 - [x] `kitsune-logo.svg` — mark above wordmark
 - [x] `kitsune-logo-dark.svg`
-- [ ] `formal-mono.svg` — single colour, flat, no tints
+- [x] `kitsune-logo-mono.svg` — one ink, knockouts, `currentColor`
 
 ### Compact
 - [x] `kitsune-fox.svg`, `kitsune-fox-dark.svg`
-- [ ] `compact-mono.svg`
+- [x] `kitsune-fox-mono.svg`
 - [ ] `compact-128.png`, `compact-256.png`, `compact-512.png`
 
 ### Glyph
 - [x] `kitsune-glyph.svg` — square, centred, namespaced
-- [ ] `glyph-dark.svg`, `glyph-mono.svg`
+- [x] `kitsune-glyph-mono.svg` (the glyph has no teal, so it needs no dark variant)
 - [ ] `favicon.ico` — 16 / 32 / 48 multi-resolution
 - [ ] `apple-touch-icon.png` — 180×180, no transparency, no rounding (iOS masks it)
 - [ ] `maskable-512.png` — glyph inside the inner 80% safe area; anything outside gets cropped
@@ -62,13 +62,16 @@ Vector, in [`source/`](source/). Colours are hardcoded hex; there is no keyline 
 | `kitsune-logo-dark.svg` | `0 0 1034 940` | `kt-logod-` | Stacked, dark ground |
 | `kitsune-fox.svg` | `0 0 1034 785` | `kt-fox-` | Nine-tail fox alone |
 | `kitsune-fox-dark.svg` | `0 0 1034 785` | `kt-foxd-` | Nine-tail fox, dark ground |
+| `kitsune-logo-mono.svg` | `0 0 1034 940` | `kt-logom-` | Stacked, one ink, any ground |
+| `kitsune-fox-mono.svg` | `0 0 1034 785` | `kt-foxm-` | Fox, one ink, any ground |
+| `kitsune-glyph-mono.svg` | `0 0 451 451` | `kt-glym-` | Glyph, one ink, any ground |
 | `kitsune-glyph.svg` | `0 0 451 451` | `kt-glyph-` | The glyph — two tails, square-boxed |
 | `kitsune-lockup.svg` | `0 0 2245 783` | `kt-lockup-` | Horizontal lockup, light ground |
 | `kitsune-lockup-dark.svg` | `0 0 2245 783` | `kt-lockupd-` | Horizontal lockup, dark ground |
 | `kitsune-lockup-compact.svg` | `0 0 1418 329` | `kt-lkc-` | Glyph + wordmark, light ground |
 | `kitsune-lockup-compact-dark.svg` | `0 0 1418 329` | `kt-lkcd-` | Glyph + wordmark, dark ground |
 
-Every viewBox starts at `0 0`, every id is namespaced, and all 269 ids across the nine files are unique — verified, so any combination can be inlined in one document without breaking `aria-labelledby` or cross-wiring a mirror transform.
+Every viewBox starts at `0 0`, every id is namespaced, and all 275 ids across the twelve files are unique — verified, so any combination can be inlined in one document without breaking `aria-labelledby` or cross-wiring a mirror transform.
 
 The single-tail and unboxed two-tail drafts were deleted on 2026-09-12 once the glyph superseded them; the glyph carries its own copy of the path data and depends on neither.
 
@@ -108,6 +111,26 @@ That window is narrow but real — relative luminance between about 0.12 and 0.3
 
 The two dark values differ because the elements have different neighbours, not because they were picked by eye. The teal-on-rust edge is weak either way — 1.67:1 light, 1.16:1 dark — and always was; the eyes and ears are legible because the white face markings frame them, not because the teal contrasts with the rust.
 
+### Monochrome
+
+Three files, one ink each, and **no colour hardcoded anywhere** — every shape is `currentColor`.
+
+**The light areas are real holes, not white paint.** The white shapes in the colour mark are inset inside the rust, so they reduce cleanly to knockouts: the mono files carry an SVG `<mask>` that cuts them out, and the ground shows through. That is what makes it a genuine one-ink mark — it prints on coloured stock, embroiders, engraves, and stamps without a second plate.
+
+The teal elements are painted *over* the mask rather than through it, because in the colour mark they sit on top of the white chest and the face markings. Knocking them out with everything else would have removed the legs from the chest and the eyes from the face.
+
+**Inline it and set `color`** — one file then serves every ground:
+
+```html
+<span style="color: #00545D">  <!-- mark renders teal -->
+```
+
+Referenced with `<img src="…">` it cannot inherit and falls back to black, which is the right default for print.
+
+**Monochrome is the only variant permitted on brand teal.** White ink on `#00545D` is the sanctioned way to put the mark on its own colour; the colour mark still may not go there.
+
+Mono inherits the colour mark's floors — the fox is a blob below about 64px, the glyph holds to 16px.
+
 ### Grounds the mark may not sit on
 
 - **Brand teal `#00545D`.** The legs and paws are teal and vanish at 1.00:1; the rust silhouette edge is 1.67:1. Verified by render — the fox appears to have no legs.
@@ -118,9 +141,10 @@ The two dark values differ because the elements have different neighbours, not b
 Measured 2026-09-12 by rendering at size on white, `#FAFAFA`, `#0D1117`, mid grey, brand teal and brand rust.
 
 - [ ] **Hand-tune the 16px cut.** The two-tail glyph survives 16px — the chevrons nearly close but the internal split holds — so this is a polish pass on the raster export, not a redraw. The single-tail version needed more.
-- [ ] **No monochrome variant.**
 
 ### Closed
+
+- ~~No monochrome variant.~~ **Done** — three files, mask-based knockouts so the light areas are real holes, and `currentColor` throughout so one file serves any ink on any ground.
 
 - ~~No horizontal lockup.~~ **Done** — `kitsune-lockup.svg`, wordmark at 30% of mark height, gap at 10% of mark width, wordmark centred on the mark's bounding box. Three size ratios and four gap/alignment pairs were rendered before picking; 22% read as a labelled fox and 38% as type with an ornament.
 - ~~Dark-ground wordmark.~~ **Done**, at `#4FB3C0` rather than the `#2E96A4` first proposed.
@@ -141,6 +165,8 @@ Measured 2026-09-12 by rendering at size on white, `#FAFAFA`, `#0D1117`, mid gre
 | Formal lockup, stacked | ~140px wide | 90px — wordmark unreadable |
 | Formal lockup, horizontal | ~70px tall | 52px — fox degrades; 36px it is a smudge |
 | Compact lockup | ~24px tall | — glyph and wordmark both hold at 28px |
+| Mono fox | ~64px | 48px — same floor as the colour fox |
+| Mono glyph | 16px | — knockouts survive; same as the colour glyph |
 | Compact fox | ~64px | 32px — becomes an orange smudge |
 | Glyph (two tails) | 16px | — verified in a browser-tab mock at true 16px |
 | One tail, for comparison | ~24px | 16px — a single diagonal stroke loses its tip. Measured, then dropped |

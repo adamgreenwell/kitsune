@@ -919,6 +919,24 @@ describe('a lookahead may not assert what an adjacent optional atom consumes', f
         '(?=a)(?!b)a?a',
         '^(?=a)(?!b)a?a',
         '^(?=a)(?<!x)a?a',
+
+        /*
+         * ⚠️ AND A SIXTH BRACKET, WHICH DEFEATED THE PROBE RATHER THAN THE QUESTION. Review found
+         * `^(?=a)(?:a(?=a))?a` published: the optional group really can consume the asserted `a`, and
+         * `atomMatches('(?:a(?=a))', 'a')` says no because a one-character probe subject gives the
+         * inner lookahead nothing to look at. The lookbehind spelling is the same hole and was
+         * published too. Where the probe cannot see the whole atom, what the atom can BEGIN with is
+         * asked instead — precisely, so `(?:b(?=b))?` still publishes below.
+         */
+        '^(?=a)(?:a(?=a))?a',
+        '^(?=a)(?:(?<=x)a)?a',
+        '^(?=a)(?:(?:a(?=a)))?a',
+        // One branch that overlaps is one way the two can consume the same character.
+        '^(?=a)(?:b|a(?=a))?a',
+        // A NEGATIVE lookaround inside the neighbour hides it from the probe exactly as a positive one
+        // does: `(?!$)` fails against a one-character subject and holds in the middle of a value.
+        '^(?=a)(?:a(?!b))?a',
+        '^(?=a)(?:(?=a)a)?a',
     ]);
 
     it('leaves a lookahead that constrains something alone', function (string $pattern): void {
@@ -969,6 +987,19 @@ describe('a lookahead may not assert what an adjacent optional atom consumes', f
          */
         '^(?=a)(?:ab)?a',
         '^(?=a)(?:b?)a',
+        // ⚠️ AND THE LIMIT SURVIVED THE ROUND THAT WIDENED THE RULE, which is why these rows are here
+        // twice over: asking "what does it begin with" EVERYWHERE would refuse both of them, so it is
+        // asked only where the probe cannot see the whole atom. `(?:aa)?` is the same known limit one
+        // character wider, and `(?:b*)a` must still reach the rule that owns it — the unanchored one.
+        '^(?=a)(?:aa)?a',
+
+        /*
+         * ⚠️ AND THE FALLBACK IS PRECISE RATHER THAN BLANKET. An assertion inside the neighbour stops
+         * the probe from answering; it does not make every such neighbour an overlap. These lead with a
+         * character the lookahead does not assert, so the assertion still constrains something.
+         */
+        '^(?=a)(?:b(?=b))?a',
+        '^(?=a)(?:b(?=b)|c)?a',
 
         // ⚠️ A wrapper that CONSUMES is still a group: the lookahead's neighbour in `(?:(?=a)x)a?a` is
         // the `x` inside it, not the `a?` outside, and unwrapping that would be a false refusal.

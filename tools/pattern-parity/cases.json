@@ -1282,5 +1282,17 @@
     "pattern": "^a*0*b$",
     "subject": "aa00b",
     "why": "Not a judgement at all — a crash, and the cost of keying a map by atom source without saying what PHP does to those keys: `'0'` folds to the integer `0`, so a digit predecessor reached the boundary proof as an int and threw a TypeError under strict_types. Screening this pattern was a 500 on a settings save, and the suite had no literal digit beside a variable-width atom anywhere, so every engine stayed green. `\\d` is a class and keys as a string, so the trap needed a literal digit. Published, and correctly: `a*` cannot consume a `0`, so the boundary is forced."
+  },
+  {
+    "id": "assertion-inside-the-optional-neighbour",
+    "pattern": "^(?=a)(?:a(?=a))?a",
+    "subject": "aa",
+    "why": "The sixth bracket to defeat rule 6, and the first to defeat the PROBE rather than the question. The optional group really can consume the asserted `a`, and `atomMatches('(?:a(?=a))', 'a')` says no — a one-character probe subject gives the inner lookahead nothing to look at — so the bracket bought an exemption the rule never granted while the bare `^(?=a)a?a` stays refused. Where the probe cannot see the whole atom, what the atom can BEGIN with is asked instead, which `assertedLead()` already answers by stepping over leading assertions: `(?:a(?=a))` leads with `a` and overlaps, `(?:b(?=b))` leads with `b` and publishes. The known limit beside it is untouched — `^(?=a)(?:ab)?a` still publishes, because asking what an atom begins with EVERYWHERE would refuse `(?=a)(?:ax)?y`, whose assertion does constrain something."
+  },
+  {
+    "id": "lookbehind-inside-the-optional-neighbour",
+    "pattern": "^(?=a)(?:(?<=x)a)?a",
+    "subject": "aa",
+    "why": "The same hole through a lookbehind, which review did not name and which published for the same reason: the probe's subject is one character long, so a lookbehind has nothing behind it and the whole atom reports no match. Rule 6 is insurance against PCRE 10.44 — a version this harness cannot run — so the fallback fails open, which here means refusing: an optional first atom, a backreference or an unparseable branch inside the neighbour is treated as an overlap rather than guessed at."
   }
 ]
