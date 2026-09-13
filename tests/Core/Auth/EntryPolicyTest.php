@@ -140,3 +140,42 @@ it('lets an owner through every ability, without a grant', function (): void {
         ->and($this->policy->publish($this->user, $this->entry))->toBeTrue()
         ->and(Permissions::held($this->user))->toBe([]);
 });
+
+it('answers the bulk abilities Filament actually asks', function (): void {
+    /*
+     * ⚠️ A MISSING POLICY METHOD IS A DENIAL, INCLUDING FOR AN OWNER — review found all three absent.
+     * Filament checks `deleteAny`, `forceDeleteAny` and `restoreAny` for bulk actions rather than
+     * authorizing each record, so `DeleteBulkAction` asked for an ability this policy did not define and the
+     * toolbar was refused to everybody. ADR-033 keeps the owner bypass inside these methods rather than in
+     * `Gate::before`, so there was nothing above to rescue it: the narrower blast radius is bought with
+     * every ability having to be spelled out.
+     */
+    app()->instance(EntryType::class, new EntryType(['handle' => 'article']));
+
+    expect($this->policy->deleteAny($this->user))->toBeFalse()
+        ->and($this->policy->forceDeleteAny($this->user))->toBeFalse()
+        ->and($this->policy->restoreAny($this->user))->toBeFalse();
+
+    $this->role->grant('entry.article.delete');
+
+    expect($this->policy->deleteAny($this->user))->toBeTrue()
+        ->and($this->policy->forceDeleteAny($this->user))->toBeTrue()
+        ->and($this->policy->restoreAny($this->user))->toBeTrue();
+});
+
+it('resolves a bulk ability through the Gate, which is how it is actually reached', function (): void {
+    /*
+     * The assertion above instantiates the policy directly and would pass on a class Laravel never
+     * consults. This is the path Filament takes — and `Gate::allows` on a CLASS rather than an instance is
+     * the shape a bulk ability has, since there is no record to pass.
+     */
+    app()->instance(EntryType::class, new EntryType(['handle' => 'article']));
+    $this->role->grant('entry.article.delete');
+
+    expect(Gate::forUser($this->user)->allows('deleteAny', Entry::class))->toBeTrue()
+        ->and(Gate::forUser($this->user)->allows('deleteAny', Entry::class))->toBeTrue();
+
+    $this->role->revoke('entry.article.delete');
+
+    expect(Gate::forUser($this->user)->allows('deleteAny', Entry::class))->toBeFalse();
+});

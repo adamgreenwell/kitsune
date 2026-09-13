@@ -76,6 +76,39 @@ class EntryPolicy
     }
 
     /**
+     * The BULK abilities, which Filament asks instead of the singular ones — review found them missing.
+     *
+     * ⚠️ A MISSING POLICY METHOD IS A DENIAL, INCLUDING FOR AN OWNER. Filament's own note says bulk actions
+     * check `deleteAny`, `forceDeleteAny` and `restoreAny` "for performance" rather than authorizing each
+     * record — so `DeleteBulkAction` asked for an ability this policy did not define, Laravel's Gate found no
+     * callback, and the toolbar was refused to everybody. And because ADR-033 deliberately keeps the owner
+     * bypass inside these methods rather than in `Gate::before`, there was nothing above to rescue it: the
+     * narrower blast radius is bought with exactly this, that every ability has to be spelled out.
+     *
+     * ⚠️ ALL THREE, THOUGH ONLY ONE IS REACHABLE TODAY. The toolbar carries `DeleteBulkAction` alone, but
+     * adding a trash filter with restore actions is one line in a Resource — and the failure mode is a
+     * refusal for everybody, which reads as a broken button rather than as a missing method. Defining the
+     * family closes the trap once instead of leaving it for whoever adds the second action.
+     *
+     * They resolve against the CURRENT type rather than a record, because there is no record: the whole
+     * point of the bulk ability is that it is asked once for the selection.
+     */
+    public function deleteAny(Authenticatable $user): bool
+    {
+        return $this->allowsOnCurrentType($user, 'delete');
+    }
+
+    public function forceDeleteAny(Authenticatable $user): bool
+    {
+        return $this->allowsOnCurrentType($user, 'delete');
+    }
+
+    public function restoreAny(Authenticatable $user): bool
+    {
+        return $this->allowsOnCurrentType($user, 'delete');
+    }
+
+    /**
      * May this user move an entry of this type into a published state?
      *
      * ⚠️ NOT A LARAVEL POLICY CONVENTION, and it is enforced anyway — `EntryResource` withholds the

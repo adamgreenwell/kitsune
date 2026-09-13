@@ -104,6 +104,13 @@ class User extends Authenticatable implements FilamentUser, HasLocalePreference,
     /**
      * Roles this user holds — ADR-033.
      *
+     * ⚠️ FOR READING. ASSIGN THROUGH `Role::assignTo()` / `removeFrom()`, which record it. `attach()` and
+     * `detach()` write `role_user` directly and call no `Auditor`, so an owner elevation through this
+     * relation leaves no `audit_log` row — and ADR-033 names assignment as the audited security event.
+     * Review found the relation published ahead of that API; it is the same back door ADR-020 already
+     * documents for `toBase()`, and it is documented here rather than removed because reading a user's
+     * roles is a legitimate thing to want.
+     *
      * ⚠️ NOT SCOPED HERE, and it must not be read as though it were. `Role` is `#[OrgScoped]`, so a query
      * through this relation is filtered by whatever org context is current — and with none established it
      * returns nothing, like every other scoped read. Authorization does not go through here: it goes

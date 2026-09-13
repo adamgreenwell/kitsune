@@ -17,6 +17,31 @@ const { test, expect } = require('@playwright/test');
 
 const SITE = 'golfdom';
 
+/** Open the edit form of the first row whose status cell reads `status`. */
+async function openForEditing(page, status) {
+    const row = page.locator('.fi-ta-row').filter({ hasText: status }).first();
+    await expect(row).toBeVisible();
+
+    await row.locator('a[href*="/c/article/"]').first().click();
+    await page.waitForURL(/\/c\/article\/\d+/);
+    await page.getByRole('link', { name: /^edit$/i }).first().click();
+    await page.waitForURL(/\/edit$/);
+}
+
+/**
+ * The status control's options, trimmed.
+ *
+ * `allInnerTexts()` returns the option markup's whitespace with it, so an untrimmed `toContain('Draft')`
+ * fails on a list that plainly contains Draft.
+ */
+async function statusOptions(page) {
+    const status = page.locator('select[id$="status"]');
+    await expect(status).toBeVisible();
+
+    return (await status.locator('option').allInnerTexts()).map((text) => text.trim());
+}
+
+
 test.describe('a user holds only what was granted', () => {
     test('reaches the entry type they may view', async ({ page }) => {
         const response = await page.goto(`/admin/${SITE}/c/article`);
@@ -64,34 +89,47 @@ test.describe('a user holds only what was granted', () => {
         await expect(sidebar.getByRole('link', { name: 'Products' })).toHaveCount(0);
     });
 
-    test('is offered no published status, because publishing is its own permission', async ({ page }) => {
+    test('is offered no published status on a draft, because publishing is its own permission', async ({ page }) => {
         /*
          * ⚠️ THE OPTIONS ARE THE VISIBLE HALF ONLY. `EntryResource` also validates the value against the
-         * same list, because a hand-built request never opens the select — and a permission enforced only
-         * by what a page renders is a permission enforced only against people who use the page. That half
-         * is asserted in PHP, where a request can be built without a browser.
+         * same list, because a hand-built request never opens a select — and a permission enforced only by
+         * what a page renders is a permission enforced only against people who use the page. That half is
+         * asserted in PHP, where a request can be built without a browser.
          *
          * ⚠️ AND IT IS THE EDIT FORM, WHICH IS WHY THE FIXTURE HOLDS `update`. Create is refused for this
          * user — the assertion two tests up — so the form that carries the control has to be reached the
          * other way.
+         *
+         * ⚠️ A DRAFT ROW SPECIFICALLY, and picking whichever row came first was wrong. Two of every three
+         * seeded articles are published, and a published entry KEEPS its own status in the list whoever is
+         * editing it (see the test below) — so a test that took the first row was asserting about whichever
+         * status the seeder happened to give it.
          */
         await page.goto(`/admin/${SITE}/c/article`);
 
-        // Whichever row is first; which rows are on page one is not this spec's business.
-        await page.locator('.fi-ta a[href*="/c/article/"]').first().click();
-        await page.waitForURL(/\/c\/article\/\d+/);
-        await page.getByRole('link', { name: /^edit$/i }).first().click();
-        await page.waitForURL(/\/edit$/);
+        await openForEditing(page, 'Draft');
 
-        const status = page.locator('select[id$="status"]');
-        await expect(status).toBeVisible();
-
-        // Trimmed: `allInnerTexts()` returns the option markup's whitespace with it, so an untrimmed
-        // `toContain('Draft')` fails on a list that plainly contains Draft.
-        const options = (await status.locator('option').allInnerTexts()).map((text) => text.trim());
+        const options = await statusOptions(page);
 
         expect(options).toContain('Draft');
         expect(options).toContain('Archived');
         expect(options).not.toContain('Published');
+    });
+
+    test('may still keep an entry that is already published', async ({ page }) => {
+        /*
+         * ⚠️ THE OTHER HALF OF THE SAME RULE, and without it the permission is a licence to unpublish.
+         * `publish` is permission to move an entry INTO the published state; withholding the option outright
+         * also withheld the entry's own current value, so this user could not fix a typo on a published
+         * article without demoting or archiving it first. Review found it.
+         *
+         * The concession cannot be used to REACH the state, because the stored status is what decides — the
+         * test above is that half, on a draft.
+         */
+        await page.goto(`/admin/${SITE}/c/article`);
+
+        await openForEditing(page, 'Published');
+
+        expect(await statusOptions(page)).toContain('Published');
     });
 });

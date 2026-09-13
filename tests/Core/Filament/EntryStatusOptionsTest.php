@@ -77,3 +77,37 @@ it('withholds published from nobody at all', function (): void {
     // grants the widest option on it.
     expect(array_keys(EntryResource::statusOptions(null)))->toBe(['draft', 'archived']);
 });
+
+it('lets an already published entry keep that status without the permission', function (): void {
+    /*
+     * ⚠️ REVIEW FOUND THE PERMISSION BECOMING A LICENCE TO UNPUBLISH. `publish` is permission to move an
+     * entry INTO the published state — but withholding the option outright also withheld the entry's own
+     * CURRENT value, so a copy-editor could not fix a typo on a published article without first demoting or
+     * archiving it. Saving was impossible: the select offered no matching option and the `in` rule refused
+     * the stored value.
+     */
+    $this->role->grant(Permissions::forEntryType('article', 'update'));
+
+    expect(array_keys(EntryResource::statusOptions($this->user, 'published')))
+        ->toBe(['draft', 'published', 'archived']);
+});
+
+it('does not let the concession become a way into the published state', function (): void {
+    /*
+     * ⚠️ THE DISTINCTION IS THE TRANSITION, NOT THE VALUE, and this is the half that keeps the permission
+     * meaningful. The STORED status is what decides, so an entry that is draft or archived is offered no
+     * `published` option — and one demoted to draft in a save has none in the next.
+     */
+    $this->role->grant(Permissions::forEntryType('article', 'update'));
+
+    expect(array_keys(EntryResource::statusOptions($this->user, 'draft')))->toBe(['draft', 'archived'])
+        ->and(array_keys(EntryResource::statusOptions($this->user, 'archived')))->toBe(['draft', 'archived'])
+        ->and(array_keys(EntryResource::statusOptions($this->user, null)))->toBe(['draft', 'archived']);
+});
+
+it('still offers published to somebody who may, whatever the entry is now', function (): void {
+    $this->role->grant(Permissions::forEntryType('article', 'publish'));
+
+    expect(array_keys(EntryResource::statusOptions($this->user, 'draft')))
+        ->toBe(['draft', 'published', 'archived']);
+});

@@ -146,11 +146,13 @@ class EntryResource extends Resource
              * than silent: `archive` is not one of the five actions `architecture.md` publishes.
              */
             Select::make('status')
-                ->options(fn (): array => self::statusOptions(Filament::auth()->user()))
+                ->options(fn (?Entry $record): array => self::statusOptions(Filament::auth()->user(), $record?->status))
                 ->default('draft')
                 // A string rule rather than `Illuminate\Validation\Rule::in()`, because `Rule` in this
                 // file is Kitsune's own — the one that goes through Eloquent so global scopes apply.
-                ->rule(fn (): string => 'in:'.implode(',', array_keys(self::statusOptions(Filament::auth()->user()))))
+                ->rule(fn (?Entry $record): string => 'in:'.implode(',', array_keys(
+                    self::statusOptions(Filament::auth()->user(), $record?->status),
+                )))
                 ->required(),
             ...self::fieldControls(),
         ]);
@@ -172,15 +174,28 @@ class EntryResource extends Resource
      * exist`, since core's tests stand up no panel by design (ADR-024 puts that layer in the browser). The
      * caller is inside a panel and supplies it; this is a function of a user and a type.
      *
+     * ⚠️ AN ENTRY THAT IS ALREADY PUBLISHED KEEPS THAT OPTION, WHICHEVER PERMISSIONS THE EDITOR HOLDS, and
+     * review found what the first version cost. `publish` is permission to move an entry INTO the published
+     * state — but withholding the option outright also withheld the entry's own CURRENT value, so a
+     * copy-editor could not fix a typo on a published article without first demoting or archiving it. The
+     * permission became a licence to unpublish.
+     *
+     * The distinction is the transition rather than the value: `published` is offered when the user may
+     * publish OR when the entry already is, and because the stored status is what decides, the concession
+     * cannot be used to reach the state — draft stays draft, and an entry demoted to draft in one save is
+     * offered no way back in the next.
+     *
      * @return array<string, string>
      */
-    public static function statusOptions(?Authenticatable $user): array
+    public static function statusOptions(?Authenticatable $user, ?string $current = null): array
     {
         $options = ['draft' => 'Draft', 'archived' => 'Archived'];
 
-        if ($user !== null && app()->bound(EntryType::class) && Permissions::allows(
+        $mayPublish = $user !== null && app()->bound(EntryType::class) && Permissions::allows(
             $user, Permissions::forEntryType(app(EntryType::class)->handle, 'publish'),
-        )) {
+        );
+
+        if ($mayPublish || $current === 'published') {
             $options['published'] = 'Published';
         }
 
