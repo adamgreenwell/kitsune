@@ -11,6 +11,7 @@ declare(strict_types=1);
 namespace Kitsune\Core\Audit;
 
 use Illuminate\Database\Eloquent\Model;
+use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Models\AuditLog;
 use Kitsune\Core\Tenancy\Context;
 use RuntimeException;
@@ -68,11 +69,30 @@ final class Auditor
         return AuditLog::create([
             'org_id' => $orgId,
             'site_id' => $this->context->siteId(),
-            // NULL for the system acting on its own — a scheduled prune, a
-            // replayed erasure. Attributing that to whoever happened to be
-            // logged in would be a lie in the one place that must not hold
-            // one.
-            'actor_id' => auth()->id(),
+            /*
+             * NULL for the system acting on its own — a scheduled prune, a
+             * replayed erasure. Attributing that to whoever happened to be
+             * logged in would be a lie in the one place that must not hold
+             * one.
+             *
+             * ⚠️ ASKED OF THE PANEL WHEN THERE IS ONE, which review found this
+             * not doing. A host may authenticate its Kitsune panel through a
+             * guard that is not the application default — Filament's own
+             * `Panel::authGuard()` exists for exactly that — and bare
+             * `auth()->id()` then asks the DEFAULT guard: it records null, or
+             * worse, whichever unrelated user happens to be signed in on
+             * another guard at the same time. ADR-020's log claims to answer
+             * "at whose hand", so an actor resolved from somebody else's guard
+             * is the one kind of wrong this column must not be.
+             *
+             * `Permissions::currentUser()` is that resolution and already
+             * carries the binding check the package test suite needs — core's
+             * tests never register `filament`, so reaching for the facade
+             * unguarded fails with "Target class [filament] does not exist".
+             * One encoding, used by both layers, rather than a second copy
+             * here to drift from it.
+             */
+            'actor_id' => Permissions::currentUser()?->getAuthIdentifier(),
             'action' => $action,
             'target_type' => $target?->getMorphClass(),
             'target_id' => $target?->getKey(),

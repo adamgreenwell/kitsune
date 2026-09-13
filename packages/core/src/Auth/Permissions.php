@@ -15,6 +15,7 @@ use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Once;
 use InvalidArgumentException;
 use Kitsune\Core\Models\Entry;
@@ -255,7 +256,7 @@ final class Permissions
             // and its real job is to keep `$orgId` from becoming a parameter nobody reads, which is what
             // the memo above is keyed on. See the note there.
             ->where('org_id', $orgId)
-            ->whereIn('id', self::roleIdsFor($userId))
+            ->whereIn('id', self::roleIdsFor($userId, $class))
             ->with('permissions')
             ->get()
             ->flatMap(fn (Role $role): array => $role->permissions->pluck('permission')->all())
@@ -429,7 +430,7 @@ final class Permissions
 
         return Role::query()
             ->where('org_id', $orgId)
-            ->whereIn('id', self::roleIdsFor($userId))
+            ->whereIn('id', self::roleIdsFor($userId, $class))
             ->where('is_owner', true)
             ->exists();
     }
@@ -478,11 +479,79 @@ final class Permissions
      * customer — so a `role_user` row pairing a user with a foreign role resolves nothing, by construction
      * rather than by a guard. `RoleIsolationTest` asserts that from the attacker's side.
      *
+     * ⚠️ AND A NUMERIC ID IS NOT AN IDENTITY, which review found: the memo and the membership check learned to
+     * carry the authenticated model's class, and this still matched on `user_id` alone. A host running two
+     * panels through two providers has two user models on two tables with two independent sequences — so
+     * `role_user` row (role 7, user 1) is about the FIRST model's user 1, and the second model's user 1 was
+     * being handed the same roles the moment they belonged to the current org. That is a grant resolving for
+     * the wrong person, which is the one failure this layer exists to prevent.
+     *
+     * The table `role_user.user_id` REFERENCES is what says whose ids these are, so the class is checked
+     * against it. Asked of the schema rather than of a config value, because the skeleton's migration is what
+     * decides — `constrained()` on `users` — and a config key would be a second place for the answer to live.
+     *
+     * @param  class-string  $class
      * @return list<int>
      */
-    private static function roleIdsFor(int $userId): array
+    private static function roleIdsFor(int $userId, string $class): array
     {
+        if (! self::assignmentsAreAbout($class)) {
+            return [];
+        }
+
         return array_map('intval', DB::table('role_user')->where('user_id', $userId)->pluck('role_id')->all());
+    }
+
+    /**
+     * Do the rows in `role_user` name instances of THIS model?
+     *
+     * ⚠️ WHAT CANNOT BE DISCOVERED IS ALLOWED, and that is a deliberate line rather than an oversight. A host
+     * whose `role_user` declares no foreign key — the skeleton's does, with `constrained()` — gives nothing
+     * to compare, and refusing every assignment on an installation this cannot inspect would break RBAC
+     * outright for a schema that is merely undocumented rather than wrong. The narrower failure mode stays
+     * open there and is stated in ADR-033 rather than implied here.
+     *
+     * ⚠️ THE TABLE NAME ONLY, not the schema qualifier Postgres also reports. An Eloquent model carries no
+     * schema of its own, so there is nothing to compare it against; two schemas each holding a `users` table
+     * is a shape this does not distinguish.
+     *
+     * @param  class-string  $class
+     */
+    private static function assignmentsAreAbout(string $class): bool
+    {
+        if (! is_subclass_of($class, Model::class)) {
+            return false;
+        }
+
+        $referenced = self::assignmentTable();
+
+        /** @var Model $prototype */
+        $prototype = new $class;
+
+        return $referenced === null || $referenced === $prototype->getTable();
+    }
+
+    /**
+     * The table `role_user.user_id` points at, read from the schema once.
+     *
+     * Memoised through `once()` like the rest of this class: it is a fact about the installation rather than
+     * about a request, and `forget()` flushing it costs one introspection after a role write.
+     */
+    private static function assignmentTable(): ?string
+    {
+        return once(function (): ?string {
+            foreach (Schema::getForeignKeys('role_user') as $key) {
+                if (! in_array('user_id', (array) ($key['columns'] ?? []), true)) {
+                    continue;
+                }
+
+                $table = $key['foreign_table'] ?? null;
+
+                return is_string($table) ? $table : null;
+            }
+
+            return null;
+        });
     }
 
     /**

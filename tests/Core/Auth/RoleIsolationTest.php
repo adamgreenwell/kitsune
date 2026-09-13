@@ -17,6 +17,7 @@ use Kitsune\Core\Models\Role;
 use Kitsune\Core\Models\RolePermission;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
+use Kitsune\Core\Tests\Fixtures\TestImpostor;
 use Kitsune\Core\Tests\Fixtures\TestUser;
 
 /*
@@ -538,4 +539,113 @@ it('refuses a bulk force-delete of roles', function (): void {
     $this->alphaRole->delete();
 
     expect(AuditLog::query()->where('id', '>', $mark)->where('action', 'role.unassigned')->count())->toBe(1);
+});
+
+it('does not resolve one user model\'s assignments for another model\'s matching id', function (): void {
+    /*
+     * ⚠️ A NUMERIC ID IS NOT AN IDENTITY, which review found after the memo and the membership check had
+     * both already learned to carry the authenticated model's CLASS. `roleIdsFor()` still matched on
+     * `user_id` alone — so in a host running two panels through two providers, two user models sit on two
+     * tables with two independent sequences, both have a user 1, and the second one was handed the first's
+     * roles the moment they belonged to the current org. A grant resolving for the wrong person is the one
+     * failure this layer exists to prevent.
+     *
+     * What says whose ids these are is the table `role_user.user_id` REFERENCES — `users`, by the skeleton's
+     * `constrained()`. `TestImpostor` is a member of this org, is authenticatable, and lives on another
+     * table.
+     */
+    app(Context::class)->setOrg($this->alpha);
+
+    assign($this->alphaRole, $this->user);
+    joinOrg($this->alpha, $this->user);
+
+    $owner = Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true]);
+    $owner->assignTo($this->user->getKey());
+
+    $impostor = TestImpostor::create(['name' => 'Also number one']);
+    DB::table('pivot_scoped_thing_org')->insert([
+        'org_id' => $this->alpha->getKey(),
+        'pivot_scoped_thing_id' => $impostor->getKey(),
+    ]);
+
+    /*
+     * ⚠️ THE IDS HAVE TO COLLIDE OR THIS MEASURES NOTHING — two tables, two sequences, both starting at 1.
+     * Asserted rather than assumed, because a fixture that drifted to id 2 would make the test pass against
+     * the defect.
+     */
+    expect($impostor->getKey())->toBe($this->user->getKey());
+
+    // The real user holds both, which is what makes the impostor's answers meaningful.
+    expect(Permissions::held($this->user))->toBe(['entry.article.update'])
+        ->and(Permissions::isOwner($this->user))->toBeTrue();
+
+    expect(Permissions::held($impostor))->toBe([])
+        ->and(Permissions::isOwner($impostor))->toBeFalse()
+        ->and(Permissions::allows($impostor, 'entry.article.update'))->toBeFalse();
+});
+
+it('refuses a direct write to the unscoped grants table', function (): void {
+    /*
+     * ⚠️ `#[Unscoped]` IS AN ARGUMENT ABOUT READS AND IT WAS COVERING WRITES TOO — review found it. Nothing
+     * narrows a write to `role_permissions` either, and the table deliberately has no `org_id` for a clause
+     * to narrow: so the ordinary published model API could revoke every org's grants in one call, or attach
+     * one to another org's role, with no validation, no audit row and no memo flush.
+     *
+     * "A reviewer should treat a bare `RolePermission::query()` as a defect" is attention rather than
+     * enforcement, which is what this test replaces.
+     */
+    app(Context::class)->setOrg($this->alpha);
+
+    $betaRole = null;
+
+    app(Context::class)->setOrg($this->beta);
+    $betaRole = Role::create(['handle' => 'rival', 'name' => 'Rival']);
+    $betaRole->grant('entry.article.view');
+    app(Context::class)->setOrg($this->alpha);
+
+    $before = RolePermission::query()->count();
+
+    expect($before)->toBe(2);
+
+    expect(fn () => RolePermission::query()->delete())
+        ->toThrow(RuntimeException::class, 'Refusing delete() on role_permissions')
+        ->and(fn () => RolePermission::query()->where('role_id', $betaRole->getKey())->delete())
+        ->toThrow(RuntimeException::class, 'Refusing delete() on role_permissions')
+        ->and(fn () => RolePermission::create(['role_id' => $betaRole->getKey(), 'permission' => 'entry.article.delete']))
+        ->toThrow(RuntimeException::class, 'Refusing insertGetId() on role_permissions')
+        ->and(fn () => RolePermission::query()->update(['permission' => 'entry.article.delete']))
+        ->toThrow(RuntimeException::class, 'Refusing update() on role_permissions')
+        ->and(fn () => RolePermission::query()->increment('role_id', 0, ['permission' => 'entry.article.delete']))
+        ->toThrow(RuntimeException::class, 'Refusing an arithmetic write on role_permissions');
+
+    // Nothing moved, in either org.
+    expect(RolePermission::query()->count())->toBe($before);
+
+    // ⚠️ And the legitimate path still works, or this would be a refusal of the table rather than of the door.
+    $this->alphaRole->grant('entry.article.publish');
+    $this->alphaRole->revoke('entry.article.publish');
+
+    expect(RolePermission::query()->count())->toBe($before);
+});
+
+it('does not record a revocation for a deletion an observer vetoed', function (): void {
+    /*
+     * ⚠️ THE ROWS WENT IN BEFORE THE DELETE, AND A VETO LEFT THEM THERE — review found it. An application
+     * observer returning `false` from `deleting` aborts the delete; `parent::delete()` returns false and the
+     * transaction commits normally, so the role and every assignment survive while the log says their
+     * authority was revoked. A retry would add another set of false rows.
+     *
+     * The holders still have to be READ first, because the database cascades `role_user` away with the role.
+     */
+    app(Context::class)->setOrg($this->alpha);
+    assign($this->alphaRole, $this->user);
+
+    $mark = (int) AuditLog::query()->max('id');
+
+    Role::deleting(fn (): bool => false);
+
+    expect($this->alphaRole->delete())->toBeFalse()
+        ->and(Role::query()->whereKey($this->alphaRole->getKey())->exists())->toBeTrue()
+        ->and(DB::table('role_user')->where('role_id', $this->alphaRole->getKey())->count())->toBe(1)
+        ->and(AuditLog::query()->where('id', '>', $mark)->count())->toBe(0);
 });
