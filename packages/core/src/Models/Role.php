@@ -116,14 +116,36 @@ class Role extends Model
         try {
             return DB::transaction(function (): ?bool {
                 /*
-                 * ⚠️ EVERY HOLDER LOSES AUTHORITY, NOT ONLY AN OWNER'S, which review found the first
-                 * version missing: the condition recorded revocations only for owner roles, while the
-                 * database cascades `role_user` for every role and a role carrying ordinary grants is
-                 * authority too. ADR-033's guarantee is about authority, so the log has to be as well.
+                 * ⚠️ THE HOLDERS ARE READ BEFORE THE DELETE AND RECORDED AFTER IT, and doing both before was a
+                 * false record waiting to happen — review found it. An application observer returning `false`
+                 * from `deleting` aborts the delete, `parent::delete()` returns false, and this transaction
+                 * commits normally: the role and every assignment survive while the log says their authority was
+                 * revoked. Repeating the attempt would add another set of false rows.
+                 *
+                 * They cannot be read afterwards either, because the database cascades `role_user` away with the
+                 * role — so the read has to come first and the write has to come second.
                  */
-                $this->recordOwnerChange($this->is_owner ? 'unassigned' : null);
+                $holders = DB::table('role_user')
+                    ->where('role_id', $this->getKey())
+                    ->pluck('user_id')
+                    ->map(static fn (mixed $id): int => (int) $id)
+                    ->all();
 
-                return parent::delete();
+                $deleted = parent::delete();
+
+                if ($deleted === false) {
+                    return $deleted;
+                }
+
+                /*
+                 * ⚠️ EVERY HOLDER LOSES AUTHORITY, NOT ONLY AN OWNER'S, which review found the first version
+                 * missing: the condition recorded revocations only for owner roles, while the database cascades
+                 * `role_user` for every role and a role carrying ordinary grants is authority too. ADR-033's
+                 * guarantee is about authority, so the log has to be as well.
+                 */
+                $this->recordOwnerChange($this->is_owner ? 'unassigned' : null, holders: $holders);
+
+                return $deleted;
             });
         } finally {
             $this->authorityGuarded = false;
@@ -223,12 +245,26 @@ class Role extends Model
      * role revokes it from every holder whether or not it carried the owner bypass, and `role.unassigned` is
      * what an ordinary role's holders lost. Recording only the owner case left a grant-bearing role
      * disappearing from everybody with nothing in the log, which is the same gap one level down.
+     *
+     * @param  list<int>|null  $holders
      */
-    private function recordOwnerChange(?string $ownerVerb, string $plain = 'unassigned'): void
+    private function recordOwnerChange(?string $ownerVerb, string $plain = 'unassigned', ?array $holders = null): void
     {
         $action = $ownerVerb === null ? "role.{$plain}" : "role.owner_{$ownerVerb}";
 
-        foreach (DB::table('role_user')->where('role_id', $this->getKey())->pluck('user_id') as $userId) {
+        /*
+         * ⚠️ THE HOLDERS MAY HAVE TO BE SUPPLIED, because on the deletion path they are gone by the time the
+         * rows are written: the database cascades `role_user`, and the record has to be made AFTER the delete
+         * succeeds — an observer can veto it (see `delete()`). Reading them here is right for the owner-flag
+         * transition, where nothing has been removed.
+         */
+        $holders ??= DB::table('role_user')
+            ->where('role_id', $this->getKey())
+            ->pluck('user_id')
+            ->map(static fn (mixed $id): int => (int) $id)
+            ->all();
+
+        foreach ($holders as $userId) {
             app(Auditor::class)->record($action, $this->assignee((int) $userId));
         }
     }
@@ -493,8 +529,15 @@ class Role extends Model
          * an entry's insert and its audit row in one transaction for exactly this reason; the same rule
          * applies to a write that is not an entry.
          */
+        /*
+         * ⚠️ AND THE WRITE IS THE ONLY ONE `role_permissions` ALLOWS, which review found it was not:
+         * `#[Unscoped]` means nothing narrows a direct write either, and that table has no `org_id` for a
+         * clause to narrow — so `RolePermission::create([...])` could attach a grant to another org's role
+         * and `RolePermission::query()->delete()` could revoke every org's. The window says the write came
+         * through here, where the org question has already been asked.
+         */
         /** @var RolePermission $row */
-        $row = DB::transaction(function () use ($permission): RolePermission {
+        $row = RolePermission::throughRole(fn (): RolePermission => DB::transaction(function () use ($permission): RolePermission {
             /** @var RolePermission $created */
             $created = $this->permissions()->firstOrCreate(['permission' => $permission]);
 
@@ -503,7 +546,7 @@ class Role extends Model
             }
 
             return $created;
-        });
+        }));
 
         Permissions::forget();
 
@@ -515,10 +558,12 @@ class Role extends Model
     {
         $this->refuseIfNotCurrentOrg('revoke');
 
-        DB::transaction(function () use ($permission): void {
-            if ($this->permissions()->where('permission', $permission)->delete() > 0) {
-                app(Auditor::class)->record('role.revoked', $this);
-            }
+        RolePermission::throughRole(function () use ($permission): void {
+            DB::transaction(function () use ($permission): void {
+                if ($this->permissions()->where('permission', $permission)->delete() > 0) {
+                    app(Auditor::class)->record('role.revoked', $this);
+                }
+            });
         });
 
         Permissions::forget();

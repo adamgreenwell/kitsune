@@ -611,6 +611,8 @@ A field that has not been classified does not save. Same discipline as the tenan
 
 **4. Audit logs record actor, action and target — never payloads.** *"User 47 updated entry 1203"* survives erasure. *"User 47 changed name from X to Y"* does not. An audit log that captures diffs is a compliance liability wearing a helpful hat, and it puts SOC 2 and GDPR in direct conflict for no gain.
 
+> ⚠️ **The actor is asked of the PANEL's guard, not of the application default** — review found `Auditor` using bare `auth()->id()`. Filament has `Panel::authGuard()` precisely so a host can authenticate its admin through a guard of its own, and with one configured this column recorded either NULL or whichever unrelated user happened to be signed in on the default guard at the same moment. "At whose hand" is a third of this primitive, so an actor resolved from somebody else's guard is the one kind of wrong it must not be. `Permissions::currentUser()` is the resolution, shared with the RBAC layer rather than copied, and it carries the binding check core's own test suite needs.
+
 **5. A replayable erasure log.** Backups cannot be rewritten. The workable answer is a documented retention window plus erasure re-applied on restore — which requires core to keep a record of what was erased, containing no erased content.
 
 **6. Encryption at rest for `sensitive`-classified fields**, and retention policies that attach to classified fields.
@@ -1762,6 +1764,33 @@ What the suite measures is that the clause is emitted, that the check runs at a 
 - **A permission check is not a tenancy check, and `EntryPolicy` now makes both.** Review found it asking only about the record's `type_handle`: `SiteScope` constrains the query that LOADS an entry and says nothing about the object afterwards, and an instance update or delete writes by primary key without reapplying it. So in a worker or a multi-site command, a record loaded under site A survived a context switch and a user in site B holding the same `entry.{handle}.update` authorised the write — B's grant spent on A's row, with the audit attributed to B. **An owner was the worst case**, because `isOwner()` answers for the current org and would have said yes about anybody's row.
 
   The policy therefore asks whether the current scope's own query would return the record — `site_id` matching, or `site_id IS NULL` inside the same org (ADR-021's org-shared case) — and a test pins its answer to the scope's for every shape, because a second encoding of a scope's clause that is allowed to drift is worse than none. It applies to a row that **exists**: an unsaved instance names nothing, and its scope keys are the insert's business, which `EnforcesScope` already guards.
+
+- **`role_permissions` has no public write surface, which `#[Unscoped]` alone did not give it.** The
+  declaration's justification is about READS — every read goes through the org-scoped `Role` — and review
+  found it covering writes by implication: nothing narrows a direct write either, and the table deliberately
+  carries no `org_id` for a clause to narrow. So `RolePermission::query()->delete()` revoked every org's
+  grants in one call and `RolePermission::create([...])` attached one to another org's role, with no
+  validation, no audit row and no memo flush. The model's own docblock said a reviewer should treat a bare
+  query as a defect, which is attention rather than enforcement. `GuardedGrantBuilder` refuses every write
+  that did not come through `Role::grant()` or `revoke()` — the paths that ask the org question — and the
+  discriminator is a narrow window rather than a per-instance flag, because `firstOrCreate()` builds its own
+  instance and a flag armed on the model in hand never reaches it.
+
+- **A numeric user id is not an identity.** The memo and the membership check both learned to carry the
+  authenticated model's class; the assignment lookup still matched on `user_id` alone. A host running two
+  panels through two providers has two user models on two tables with two independent sequences, so both have
+  a user 1 — and the second model's user 1 was handed the first's roles the moment they belonged to the
+  current org. What says whose ids `role_user` holds is the table its `user_id` **references**, read from the
+  schema rather than from a config key, because the skeleton's `constrained()` is what decides. **A host whose
+  `role_user` declares no foreign key gives nothing to compare, and that case is allowed rather than
+  refused** — breaking RBAC outright on a schema that is merely undocumented would be the worse failure, and
+  the narrower exposure is recorded here rather than implied.
+
+- **A revocation is recorded only once the deletion has succeeded.** The rows went in first, which read as
+  correct until an application observer returning `false` from `deleting` aborted the delete: the role and
+  every assignment survived while the log said their authority was revoked, and a retry added another set of
+  false rows. The holders still have to be READ first, because the database cascades `role_user` away with the
+  role — so the read comes before and the write comes after, inside one transaction.
 
 - **We own the resolution cache, the wildcard semantics, and the bugs in both.**
 

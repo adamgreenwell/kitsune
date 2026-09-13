@@ -8,6 +8,7 @@
 
 declare(strict_types=1);
 
+use Illuminate\Contracts\Auth\StatefulGuard;
 use Illuminate\Database\Query\Builder;
 use Illuminate\Foundation\Auth\User as AuthUser;
 use Illuminate\Support\Facades\Auth;
@@ -134,6 +135,48 @@ describe('what gets recorded', function (): void {
         Entry::query()->whereKey($entry->getKey())->update(['status' => 'published']);
 
         expect(AuditLog::for($entry)->where('action', 'entry.updated')->value('actor_id'))->toBe(91);
+    });
+
+    it('asks the PANEL\'s guard for the actor, not the application default', function (): void {
+        /*
+         * ⚠️ `auth()->id()` ASKS THE DEFAULT GUARD, AND A PANEL NEED NOT USE IT — review found it. Filament
+         * has `Panel::authGuard()` precisely so a host can authenticate its admin through a guard of its
+         * own, and with one configured this column recorded either NULL or whichever unrelated user happened
+         * to be signed in on the default guard at the same moment. ADR-020's log claims to answer "at whose
+         * hand", so an actor resolved from somebody else's guard is the one kind of wrong it must not be.
+         *
+         * ⚠️ THE PANEL IS A STAND-IN, AND IT HAS TO BE. Core's test suite never registers the `filament`
+         * binding — ADR-024 puts the panel layer in the browser — so the only way to ask this question in PHP
+         * is to bind the one method the resolution calls. `Permissions::currentUser()` is that resolution,
+         * shared with the RBAC layer rather than copied here, and the binding check it carries is what keeps
+         * this file from needing Filament at all.
+         *
+         * Two users, two guards, at the same time: the one on the panel's guard is the one who acted.
+         */
+        config(['auth.guards.panel' => ['driver' => 'session', 'provider' => 'users']]);
+
+        $default = new AuthUser;
+        $default->forceFill(['id' => 5]);
+        Auth::login($default);
+
+        $onThePanel = new AuthUser;
+        $onThePanel->forceFill(['id' => 12]);
+        Auth::guard('panel')->setUser($onThePanel);
+
+        app()->instance('filament', new class
+        {
+            public function auth(): StatefulGuard
+            {
+                return Auth::guard('panel');
+            }
+        });
+
+        $entry = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Attributed to the panel']);
+
+        expect(AuditLog::for($entry)->where('action', 'entry.created')->value('actor_id'))->toBe(12);
+
+        // ⚠️ Not vacuous: both users are authenticated, so an actor of 5 is the defect and 12 is the fix.
+        expect(auth()->id())->toBe(5);
     });
 
     it('leaves the actor NULL when the system acts on its own', function (): void {
