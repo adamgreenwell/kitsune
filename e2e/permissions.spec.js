@@ -156,3 +156,70 @@ test.describe('a user holds only what was granted', () => {
         expect(await statusOptions(page)).toContain('Published');
     });
 });
+
+test.describe('a relation pointing at something the editor may not view', () => {
+    /*
+     * ⚠️ THE PAGE COULD NOT BE SAVED AT ALL, which is the defect review found and the reason this is a
+     * browser test rather than a PHP one. `SyncsFieldRelations` hydrates every id an entry is related
+     * through, and the seeded `related_products` field points week five at a product — a type this
+     * copy-editor holds nothing on. The label resolvers withheld it, and Filament validates a select's
+     * submitted options THROUGH those resolvers (`Select::getInValidationRuleValues()`), so the id became an
+     * invalid option: a permission narrowing one relation froze the whole record, including a title change
+     * on a field the editor was not touching.
+     *
+     * ⚠️ AND THE PHP TEST CANNOT SEE IT. `FieldValueRenderer::relationLabels()` is asserted directly in
+     * `RelationPickerSearchTest`, but whether Filament hands that callback the RECORD — an evaluation
+     * parameter the fix depends on — is a property of the panel. ADR-024: that layer is measured here.
+     */
+    const TITLE = 'Course maintenance in week 5';
+
+    /** Open week five for editing, found by search rather than by position. */
+    async function openWeekFive(page) {
+        await page.goto(`/admin/${SITE}/c/article`);
+
+        // The list pages at ten and sorts by `updated_at`, so which page a row is on is not this spec's to
+        // know — the title column is searchable, so ask for it by name.
+        await page.locator('.fi-ta-search-field input').first().fill(TITLE);
+
+        const row = page.locator('.fi-ta-row').filter({ hasText: TITLE }).first();
+        await expect(row).toBeVisible();
+
+        await row.locator('a[href*="/c/article/"]').first().click();
+        await page.waitForURL(/\/c\/article\/\d+/);
+        await page.getByRole('link', { name: /^edit$/i }).first().click();
+        await page.waitForURL(/\/edit$/);
+    }
+
+    test('withholds the title of the linked record', async ({ page }) => {
+        await openWeekFive(page);
+
+        // The link is kept AS A VALUE and withheld AS A TITLE: the id was already in the form state, and the
+        // product's name is what the grant protects.
+        const products = page.getByRole('combobox', { name: 'Related products' });
+
+        await expect(products).toContainText(/you may not view this entry type/);
+        await expect(page.getByText('Fairway mower')).toHaveCount(0);
+    });
+
+    test('saves an unrelated change, and keeps the link', async ({ page }) => {
+        await openWeekFive(page);
+
+        const minutes = page.getByLabel('Reading minutes');
+        await minutes.fill('42');
+
+        await page.getByRole('button', { name: /^save changes$/i }).click();
+
+        /*
+         * ⚠️ THE NOTIFICATION, NOT THE ABSENCE OF AN ERROR. Filament renders a validation failure as a
+         * message beside the field and leaves the page exactly where it was, so a test that only asserted
+         * the URL had not changed would pass on the broken behaviour.
+         */
+        await expect(page.getByRole('heading', { name: 'Saved' })).toBeVisible();
+
+        // The relation the editor could not see is still there, which is the other half of "preserve".
+        await page.reload();
+        await expect(page.getByLabel('Reading minutes')).toHaveValue('42');
+        await expect(page.getByRole('combobox', { name: 'Related products' }))
+            .toContainText(/you may not view this entry type/);
+    });
+});

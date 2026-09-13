@@ -470,3 +470,72 @@ it('records what every holder lost when a role is deleted, owner or not', functi
         ->and(AuditLog::query()->where('id', '>', $mark)->value('target_id'))
         ->toBe($this->user->getKey());
 });
+
+it('refuses the owner flag through the arithmetic family too', function (): void {
+    /*
+     * ⚠️ `update()` WAS ONE DOOR OF FOUR, which review found by name: *"inherited `increment()`,
+     * `decrement()`, `incrementEach()` and `decrementEach()` bypass this override and write through the
+     * query builder"*. Laravel's arithmetic methods take an `$extra` map of ORDINARY assignments, so
+     * `increment('id', 0, ['is_owner' => true])` is a bulk promotion wearing another method's name — no
+     * per-holder audit, no `Permissions::forget()`, no instance org check, and the memoised answer left
+     * standing. The same lesson as the bulk update above, one API call along.
+     *
+     * ⚠️ THE INCREMENTED COLUMN COUNTS AS WELL AS THE EXTRAS: adding to a per-row column is no safer than
+     * assigning it, so `increment('is_owner')` is refused on its own account.
+     */
+    app(Context::class)->setOrg($this->alpha);
+    assign($this->alphaRole, $this->user);
+
+    $key = $this->alphaRole->getKey();
+    $mark = (int) AuditLog::query()->max('id');
+
+    expect(fn () => Role::query()->whereKey($key)->increment('id', 0, ['is_owner' => true]))
+        ->toThrow(RuntimeException::class, 'arithmetic write to `is_owner`')
+        ->and(fn () => Role::query()->whereKey($key)->decrement('id', 0, ['is_owner' => true]))
+        ->toThrow(RuntimeException::class, 'arithmetic write to `is_owner`')
+        ->and(fn () => Role::query()->whereKey($key)->incrementEach(['id' => 0], ['is_owner' => true]))
+        ->toThrow(RuntimeException::class, 'arithmetic write to `is_owner`')
+        ->and(fn () => Role::query()->whereKey($key)->decrementEach(['id' => 0], ['is_owner' => true]))
+        ->toThrow(RuntimeException::class, 'arithmetic write to `is_owner`')
+        ->and(fn () => Role::query()->whereKey($key)->increment('is_owner'))
+        ->toThrow(RuntimeException::class, 'arithmetic write to `is_owner`')
+        // And the scope key, which the same list guards for the same reason.
+        ->and(fn () => Role::query()->whereKey($key)->increment('id', 0, ['org_id' => $this->beta->getKey()]))
+        ->toThrow(RuntimeException::class, 'increment or decrement [org_id]');
+
+    // Nothing moved, and nothing was recorded as having moved.
+    expect(Role::query()->whereKey($key)->first()?->is_owner)->toBeFalse()
+        ->and(AuditLog::query()->where('id', '>', $mark)->count())->toBe(0);
+
+    // ⚠️ An arithmetic write to an ORDINARY column still works, or this is a refusal of the method rather
+    // than of the column — which would be a different and wrong guarantee.
+    Role::query()->whereKey($key)->increment('id', 0, ['name' => 'Renamed in bulk']);
+
+    expect(Role::query()->whereKey($key)->first()?->name)->toBe('Renamed in bulk');
+});
+
+it('refuses a bulk force-delete of roles', function (): void {
+    /*
+     * ⚠️ ELOQUENT SENDS `forceDelete()` STRAIGHT TO THE QUERY BUILDER rather than through `delete()`, which
+     * review found: the roles and their cascading `role_user` rows went with none of the per-holder
+     * revocation audits and no `Permissions::forget()`, so cached grants stayed usable for the rest of the
+     * process — answering for authority that no longer existed.
+     */
+    app(Context::class)->setOrg($this->alpha);
+    assign($this->alphaRole, $this->user);
+
+    $key = $this->alphaRole->getKey();
+    $mark = (int) AuditLog::query()->max('id');
+
+    expect(fn () => Role::query()->whereKey($key)->forceDelete())
+        ->toThrow(RuntimeException::class, 'bulk force-delete of roles');
+
+    expect(Role::query()->whereKey($key)->exists())->toBeTrue()
+        ->and(DB::table('role_user')->where('role_id', $key)->count())->toBe(1)
+        ->and(AuditLog::query()->where('id', '>', $mark)->count())->toBe(0);
+
+    // The instance path still records the revocation, which is what the refusal is protecting.
+    $this->alphaRole->delete();
+
+    expect(AuditLog::query()->where('id', '>', $mark)->where('action', 'role.unassigned')->count())->toBe(1);
+});

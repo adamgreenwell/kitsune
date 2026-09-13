@@ -158,6 +158,17 @@ class DatabaseSeeder extends Seeder
             // lives in `entry_relations` (ADR-015), so nothing about it can be tested
             // without a real field to drive the save lifecycle through.
             ['related_articles', 'relation', 'Related articles', -1],
+            /*
+             * ⚠️ A SECOND RELATION, POINTING AT A TYPE THE COPY-EDITOR MAY NOT VIEW, which is the fixture
+             * for a defect review found and nothing else here could reach: an owner links an article to a
+             * product, and the article's editor holds `entry.article.*` alone. Filament validates a
+             * select's options through the label callbacks, so a withheld label made the id an invalid
+             * option and the editor could not save a TITLE change on a field they were not editing.
+             *
+             * `related_articles` cannot demonstrate it, because the copy-editor may view articles — the
+             * whole point of this field is that its targets are outside their grants.
+             */
+            ['related_products', 'relation', 'Related products', -1],
         ];
 
         foreach ($articleFields as $index => [$handle, $type, $label, $cardinality]) {
@@ -179,6 +190,8 @@ class DatabaseSeeder extends Seeder
                     // Constrained to articles, so the picker offers what the validation
                     // rule would actually accept rather than a wider set.
                     'related_articles' => ['targetTypes' => ['article']],
+                    // Products, which the copy-editor holds nothing on — see the field list above.
+                    'related_products' => ['targetTypes' => ['product']],
                     default => null,
                 },
             ]);
@@ -332,6 +345,26 @@ class DatabaseSeeder extends Seeder
             'course-maintenance-week-7',
         ])->pluck('id');
         $first?->related()->attach($others->all(), ['org_id' => $orgA->id]);
+
+        /*
+         * ⚠️ AND ONE RELATION THROUGH A FIELD, which is a different fixture from the attach above: that one
+         * carries no `field_storage_id`, so it feeds the relation MANAGER and no picker. This one is what a
+         * relation control is hydrated from — `relatedIdsForField()` — and it points at a product, which the
+         * copy-editor may not view. See `related_products` in the field list.
+         */
+        $productRelation = FieldStorage::where('org_id', $orgA->id)->where('handle', 'related_products')->first();
+        $mower = Entry::where('slug', 'fairway-mower')->first();
+
+        /*
+         * ⚠️ WEEK FIVE, WHICH NO OTHER SPEC NAMES, and that is the whole reason it is not week one. The
+         * browser test for this saves the entry, and an entry another spec asserts the title of is a fixture
+         * two tests share — the kind that fails for the wrong reason. Weeks 1 to 4 are spoken for.
+         */
+        $linked = Entry::where('slug', 'course-maintenance-week-5')->first();
+
+        if ($linked !== null && $productRelation !== null && $mower !== null) {
+            $linked->syncFieldRelations($productRelation, [$mower->id]);
+        }
 
         $context->setSite($rival);
         Entry::create([

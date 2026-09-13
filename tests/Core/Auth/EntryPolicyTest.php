@@ -16,6 +16,7 @@ use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Role;
+use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tests\Fixtures\TestUser;
 
@@ -178,4 +179,229 @@ it('resolves a bulk ability through the Gate, which is how it is actually reache
     $this->role->revoke('entry.article.delete');
 
     expect(Gate::forUser($this->user)->allows('deleteAny', Entry::class))->toBeFalse();
+});
+
+/**
+ * A site of this org, created in its own org's context.
+ *
+ * ⚠️ CONTEXT FIRST, THEN THE ROW. `EnforcesScope` refuses a write that NAMES a scope key belonging to
+ * somewhere else — so a rival's site cannot be created while the context is on alpha, and the guard caught
+ * every one of these fixtures on the first run. That is the guard working.
+ */
+function siteFor(Org $org, string $handle): Site
+{
+    app(Context::class)->setOrg($org);
+
+    return Site::create(['org_id' => $org->getKey(), 'handle' => $handle, 'slug' => $handle, 'name' => $handle]);
+}
+
+/** The `article` type of this site's org, created once. */
+function articleTypeFor(Site $site): EntryType
+{
+    app(Context::class)->setSite($site);
+
+    return EntryType::query()->where('org_id', $site->org_id)->where('handle', 'article')->first()
+        ?? EntryType::create([
+            'org_id' => $site->org_id, 'handle' => 'article',
+            'name' => 'Article', 'plural_name' => 'Articles',
+        ]);
+}
+
+/**
+ * A persisted entry belonging to one site, created in that site's context.
+ *
+ * ⚠️ THE REST OF THIS FILE DELIBERATELY PERSISTS NOTHING, and the scope tests below are the exception
+ * rather than a change of mind: the hole they cover only exists for a row that EXISTS, because an instance
+ * update or delete writes by primary key. An unsaved `Entry` has no row to reach, so the fixture has to be
+ * real here and nowhere else.
+ */
+function entryOn(Site $site): Entry
+{
+    $type = articleTypeFor($site);
+
+    return Entry::create(['entry_type_id' => $type->getKey(), 'title' => 'Row on '.$site->handle]);
+}
+
+/**
+ * A persisted entry SHARED across its org, created in the context of one of that org's sites.
+ *
+ * `site_id` is named explicitly as null, which is what makes a row org-shared (ADR-021): the stamp fills
+ * an ABSENT key and leaves a stated one alone. The context still needs a site, because clearing it would
+ * clear the org with it and `EnforcesScope` has nothing to vouch for `org_id` then.
+ */
+function sharedEntryIn(Site $site): Entry
+{
+    $type = articleTypeFor($site);
+
+    return Entry::create([
+        'entry_type_id' => $type->getKey(),
+        'title' => 'Row shared across '.$site->org_id,
+        'site_id' => null,
+    ]);
+}
+
+it('refuses a record from a sibling site, however the grant reads', function (): void {
+    /*
+     * ⚠️ A SCOPE ON THE QUERY IS NOT A CHECK ON THE INSTANCE, which review found this policy assuming.
+     * `SiteScope` constrains the SELECT that loads an entry and says nothing about the object afterwards,
+     * and an instance update or delete writes by primary key without reapplying it — so in a worker or a
+     * multi-site command, a record loaded under site A survives a `Context` switch and a user in site B
+     * holding the same `entry.article.update` authorised the write. B's grant, spent on A's row, with the
+     * audit attributed to B.
+     *
+     * Same ORG, second site: the narrower boundary, and the one a merely org-scoped check would pass.
+     */
+    $home = siteFor($this->org, 'home');
+    $sibling = siteFor($this->org, 'sib');
+
+    $theirs = entryOn($sibling);
+
+    // Now working in `home`, holding every action on this type.
+    app(Context::class)->setSite($home);
+    foreach (['view', 'update', 'delete', 'publish'] as $action) {
+        $this->role->grant('entry.article.'.$action);
+    }
+    Permissions::forget();
+
+    expect($this->policy->view($this->user, $theirs))->toBeFalse()
+        ->and($this->policy->update($this->user, $theirs))->toBeFalse()
+        ->and($this->policy->delete($this->user, $theirs))->toBeFalse()
+        ->and($this->policy->restore($this->user, $theirs))->toBeFalse()
+        ->and($this->policy->forceDelete($this->user, $theirs))->toBeFalse()
+        ->and($this->policy->publish($this->user, $theirs))->toBeFalse();
+
+    // And the same record, from the site it belongs to, is allowed — or the refusal above proves nothing.
+    app(Context::class)->setSite($sibling);
+
+    expect($this->policy->update($this->user, $theirs))->toBeTrue();
+});
+
+it('refuses an owner too, because the record is not theirs to reach', function (): void {
+    /*
+     * ⚠️ THE OWNER BYPASS IS ABOUT PERMISSIONS, NOT ABOUT TENANCY. `Permissions::isOwner()` answers for the
+     * CURRENT org, so an owner of org B asked about org A's row would otherwise be told yes by the widest
+     * grant in the system — the one case where the mistake costs the most.
+     */
+    $rival = Org::create(['slug' => 'rival', 'name' => 'Rival']);
+    $theirs = entryOn(siteFor($rival, 'r'));
+
+    app(Context::class)->setSite(siteFor($this->org, 'mine'));
+
+    $this->role->update(['is_owner' => true]);
+    Permissions::forget();
+
+    expect(Permissions::isOwner($this->user))->toBeTrue()
+        ->and($this->policy->update($this->user, $theirs))->toBeFalse()
+        ->and($this->policy->view($this->user, $theirs))->toBeFalse();
+});
+
+it('allows an org-shared record from any of that org\'s sites', function (): void {
+    /*
+     * ⚠️ `site_id IS NULL` IS ORG-SHARED AND LEGITIMATE (ADR-021) — one media library serving eight brands.
+     * A check that simply compared `site_id` to the current site would refuse every shared row, which is
+     * the failure mode of tightening this by one line too many.
+     */
+    $home = siteFor($this->org, 'home');
+    $other = siteFor($this->org, 'other');
+
+    $shared = sharedEntryIn($home);
+
+    $this->role->grant('entry.article.update');
+    Permissions::forget();
+
+    app(Context::class)->setSite($home);
+    expect($this->policy->update($this->user, $shared))->toBeTrue();
+
+    app(Context::class)->setSite($other);
+    expect($this->policy->update($this->user, $shared))->toBeTrue();
+});
+
+it('agrees with the scope it is a copy of, shape by shape', function (): void {
+    /*
+     * ⚠️ THE ANTI-DRIFT PIN, and the reason `withinCurrentScope()` is allowed to be a second encoding of
+     * `SiteScope`'s clause at all. The scope's version is SQL inside a WHERE and cannot be asked about an
+     * object already in memory; this asserts the two answer identically for every shape a row can have, so
+     * the copy cannot quietly become a wider or a narrower rule than the query it stands in for.
+     *
+     * `Entry::query()->whereKey(...)->exists()` IS the scope: whatever clause it applies is the oracle.
+     */
+    $home = siteFor($this->org, 'home');
+    $sibling = siteFor($this->org, 'sib');
+
+    $rival = Org::create(['slug' => 'rival2', 'name' => 'Rival 2']);
+    $rivalSite = siteFor($rival, 'rr');
+
+    $rows = [
+        'same site' => entryOn($home),
+        'sibling site, same org' => entryOn($sibling),
+        'org-shared, same org' => sharedEntryIn($home),
+        'another org\'s site' => entryOn($rivalSite),
+        'another org\'s shared row' => sharedEntryIn($rivalSite),
+    ];
+
+    // The policy's question is asked from `home`, with every action granted so that only the scope decides.
+    app(Context::class)->setOrg($this->org);
+    app(Context::class)->setSite($home);
+    $this->role->grant('entry.article.update');
+    Permissions::forget();
+
+    $disagreed = [];
+
+    foreach ($rows as $shape => $row) {
+        $scopeSaysYes = Entry::query()->whereKey($row->getKey())->exists();
+        $policySaysYes = $this->policy->update($this->user, $row);
+
+        if ($scopeSaysYes !== $policySaysYes) {
+            $disagreed[] = $shape.': scope='.var_export($scopeSaysYes, true).' policy='.var_export($policySaysYes, true);
+        }
+    }
+
+    expect($disagreed)->toBe([], 'the policy and the scope disagree: '.implode('; ', $disagreed));
+
+    // ⚠️ Not vacuous: the oracle has to say yes to something and no to something, or an agreement is two
+    // constants agreeing. Two of the five shapes are reachable from `home` and three are not.
+    expect(collect($rows)->filter(fn (Entry $row): bool => Entry::query()->whereKey($row->getKey())->exists())->count())
+        ->toBe(2);
+});
+
+it('says no with no site context at all, which is what the scope says', function (): void {
+    /*
+     * With no site established `SiteScope` adds `1 = 0` and the query returns nothing, so the policy must
+     * not answer yes about a row that query could not produce. `Permissions::allows()` already refuses when
+     * there is no ORG; this is the site half, and a console command holding a loaded entry is where it bites.
+     *
+     * ⚠️ THE ORG IS PUT BACK AFTER CLEARING THE SITE, and without that this test measured nothing. `setSite(null)`
+     * clears the org with it — "setting a Site implies its Org" — so `Permissions::allows()` refused on the
+     * org half and the assertion passed with the site check deleted. Measured: removing the guard left this
+     * green. An org and no site is also the honest shape of the case, which is a worker that has resolved a
+     * customer and not yet a site.
+     */
+    $row = entryOn(siteFor($this->org, 'home'));
+
+    $this->role->grant('entry.article.update');
+    Permissions::forget();
+
+    expect($this->policy->update($this->user, $row))->toBeTrue();
+
+    app(Context::class)->setSite(null);
+    app(Context::class)->setOrg($this->org);
+
+    expect(app(Context::class)->orgId())->toBe($this->org->getKey())
+        ->and(app(Context::class)->hasSite())->toBeFalse()
+        ->and(Entry::query()->whereKey($row->getKey())->exists())->toBeFalse()
+        ->and($this->policy->update($this->user, $row))->toBeFalse();
+});
+
+it('still answers about an unsaved entry, which names no row', function (): void {
+    /*
+     * ⚠️ THE SCOPE CHECK IS FOR A ROW THAT EXISTS, and this is the line between the two. A new `Entry` has
+     * no stored identity and nothing to mutate — its scope keys are the INSERT's business, stamped and
+     * guarded by `EnforcesScope` — so refusing it here would break every question asked about a record
+     * being built, and the type mapping the rest of this file tests is asked exactly that way.
+     */
+    $this->role->grant('entry.article.update');
+    Permissions::forget();
+
+    expect($this->entry->exists)->toBeFalse()
+        ->and($this->policy->update($this->user, $this->entry))->toBeTrue();
 });

@@ -131,6 +131,65 @@ it('resolves the explicit wildcard for the action it names, and not for others',
         ->and(Permissions::allows($user, 'entry.article.delete'))->toBeFalse();
 });
 
+it('refuses a string this vocabulary does not define, wildcard or not', function (): void {
+    /*
+     * ⚠️ THE WILDCARD WAS CONSTRUCTED FROM THE CALLER'S STRING AND NOTHING CHECKED IT, which review found:
+     * any three segments ending in a registered action became `entry.*.{action}`, so a holder of
+     * `entry.*.view` was granted `site.settings.view` — a SUBJECT this vocabulary does not have. The direct
+     * match cannot fail that way, because a stored grant went through `validated()`; the wildcard is built
+     * at check time, so what is built has to be checked.
+     *
+     * ⚠️ AND IT MATTERS MOST FOR A FUTURE ABILITY. `entry` is the only subject in v1.0, so today's wrong
+     * answer is about a permission nobody asks for — but a module adding `media.image.view` in v1.2 would
+     * have found every `entry.*` holder already granted it, retroactively, by a wildcard written about
+     * entries. Failing closed now is what keeps that from being a migration problem.
+     */
+    $wildcard = member($this->org, grants: ['entry.*.view']);
+
+    expect(Permissions::allows($wildcard, 'entry.article.view'))->toBeTrue()
+        ->and(Permissions::allows($wildcard, 'site.settings.view'))->toBeFalse()
+        ->and(Permissions::allows($wildcard, 'media.image.view'))->toBeFalse()
+        // An unregistered action, which `validated()` refuses and the wildcard used to answer anyway.
+        ->and(Permissions::allows($wildcard, 'entry.article.frobnicate'))->toBeFalse()
+        // Arity: two segments and four, neither of which is a permission.
+        ->and(Permissions::allows($wildcard, 'entry.view'))->toBeFalse()
+        ->and(Permissions::allows($wildcard, 'entry.article.sub.view'))->toBeFalse();
+});
+
+it('gives an owner the same answer about a permission that does not exist', function (): void {
+    /*
+     * ⚠️ CHECKED BEFORE THE OWNER BYPASS, deliberately. An owner told yes about `site.settings.view` is an
+     * owner whose CALLER now believes such a permission is real — and a caller that believes it will write
+     * the other half of the feature against a check that answers for everybody. A question nobody can ask
+     * gets one answer, and it is no.
+     */
+    $owner = member($this->org, owner: true);
+
+    expect(Permissions::allows($owner, 'entry.article.delete'))->toBeTrue()
+        ->and(Permissions::allows($owner, 'site.settings.view'))->toBeFalse()
+        ->and(Permissions::allows($owner, 'entry.article.frobnicate'))->toBeFalse();
+});
+
+it('still answers about a type handle no FORM would have accepted', function (): void {
+    /*
+     * ⚠️ THE TYPE SEGMENT'S SHAPE IS A RULE ABOUT WRITING A GRANT, NOT ABOUT ANSWERING ONE, and conflating
+     * the two would have been a regression dressed as a fix. `validated()` requires `^[a-z][a-z0-9_]*$` so
+     * that a stored grant cannot be a string nobody can hold; the entry type table does not, and the panel
+     * enforces it on the create screen only — a seeder or a blueprint reaches the model directly.
+     *
+     * So `entry.*.update` has to cover an installation's real type whatever its handle looks like, and an
+     * owner has to be let through for it. Refusing here would deny authority over data that exists.
+     */
+    $wildcard = member($this->org, grants: ['entry.*.update']);
+    $owner = member($this->org, owner: true);
+
+    expect(Permissions::allows($wildcard, 'entry.blog-post.update'))->toBeTrue()
+        ->and(Permissions::allows($owner, 'entry.blog-post.update'))->toBeTrue()
+        // And it is still not a grant anybody may WRITE, which is the other half of the distinction.
+        ->and(fn () => Permissions::validated('entry.blog-post.update'))
+        ->toThrow(InvalidArgumentException::class, 'is not an entry type handle');
+});
+
 it('lets an owner through without holding a grant', function (): void {
     // The bootstrap hole: somebody has to create the first entry type, which is before any permission
     // naming that type can exist.

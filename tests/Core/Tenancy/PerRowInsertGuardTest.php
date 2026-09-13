@@ -1280,3 +1280,47 @@ it('guards a reserved handle on a quiet or detached entry-type write', function 
 
     expect($type->exists)->toBeTrue();
 });
+
+it('refuses a per-row column assigned through the arithmetic family', function (): void {
+    /*
+     * ⚠️ AND THE ARITHMETIC FAMILY WAS THE LAST UNGUARDED DOOR, found while review was naming the same hole
+     * on `GuardedRoleBuilder`. Laravel's `increment()` carries an `$extra` map of ORDINARY assignments and
+     * forwards to the query builder, so `increment('id', 0, ['base_url' => …])` is the update this file
+     * exists to refuse, under a method name nobody thought to override. Measured before the fix: the same
+     * values refused through `update()` landed through `increment()`, leaving `canonical_host` describing
+     * the previous URL — a site declaring one public address and answering at another.
+     *
+     * `Site` is the subject rather than `Role` because this is the GENERIC guard: `Site`, `Field` and
+     * `EntryType` reach the arithmetic family through `ScopedBuilder` alone, with no builder of their own.
+     */
+    $site = Site::create([
+        'org_id' => $this->org->id, 'handle' => 'arith', 'slug' => 'arith', 'name' => 'Arith',
+        'locale' => 'en', 'url_strategy' => 'domain', 'base_url' => 'https://arith.test',
+    ]);
+
+    $before = $site->fresh()?->canonical_host;
+
+    expect($before)->toBe('arith.test');
+
+    foreach ([
+        fn () => Site::query()->whereKey($site->getKey())->increment('id', 0, ['base_url' => 'https://moved.test']),
+        fn () => Site::query()->whereKey($site->getKey())->decrement('id', 0, ['base_url' => 'https://moved.test']),
+        fn () => Site::query()->whereKey($site->getKey())->incrementEach(['id' => 0], ['base_url' => 'https://moved.test']),
+        fn () => Site::query()->whereKey($site->getKey())->decrementEach(['id' => 0], ['base_url' => 'https://moved.test']),
+        // The incremented column itself, not only the extras: adding to a derived column is no safer than
+        // assigning one.
+        fn () => Site::query()->whereKey($site->getKey())->increment('canonical_host'),
+    ] as $attempt) {
+        expect($attempt)->toThrow(RuntimeException::class, 'cannot be written in bulk');
+    }
+
+    // Nothing moved, and the derived column still describes the URL the site was saved with.
+    expect($site->fresh()?->base_url)->toBe('https://arith.test')
+        ->and($site->fresh()?->canonical_host)->toBe($before);
+
+    // ⚠️ An arithmetic write to an UNGUARDED column still works, or this refuses the method rather than the
+    // column — a different guarantee, and the wrong one.
+    Site::query()->whereKey($site->getKey())->increment('id', 0, ['name' => 'Renamed']);
+
+    expect($site->fresh()?->name)->toBe('Renamed');
+});
