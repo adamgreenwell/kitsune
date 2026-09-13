@@ -2513,9 +2513,26 @@ final class Pattern
 
             // ⚠️ Prefix-free branches cannot both match at a position, so the cost is the worst single
             // branch rather than all of them. Ambiguous ones are all tried, so they add up.
-            return self::everyAlternationIsUnambiguous($body)
-                ? max($costs)
-                : self::saturatingSum($costs);
+            if (self::everyAlternationIsUnambiguous($body)) {
+                return max($costs);
+            }
+
+            /*
+             * ⚠️ AND ADDING UP EVERY BRANCH ASSUMES ONE SUBJECT CAN MAKE THEM ALL WORK, which issue #73
+             * filed as a measured over-refusal. Nine branches of `^(?:a*a*b|a*a*c|…)$` really do cost nine
+             * times one — 323.3 ms against 36.0 for a single branch on 5,000 `a` — because every branch's
+             * `a*a*` consumes the same subject. Nine branches whose runs are built from DIFFERENT
+             * characters cost one: `^(?:a*a*z|b*b*z|c*c*z|…)$` measures 36.1 ms, because the subject that
+             * engages one leaves the other eight failing on their first atom.
+             *
+             * ⚠️ IT IS THE RUN'S ALPHABET, NOT THE LEAD, and the issue's own suggested fix would not have
+             * separated them: it proposed comparing each branch's first REQUIRED atom, and both shapes
+             * above have distinct required atoms (`b`, `c`, `d`, … in one and `z` in the other). What
+             * differs is whether the expensive part of each branch can consume the same characters.
+             * Measured to be sure: `^(?:[ab]*[ab]*b|[ab]*[ab]*c|…)$` costs 323.2 ms — overlapping classes
+             * sum exactly as identical ones do.
+             */
+            return self::worstEngageableBranchCost($branches, $costs);
         }
 
         return self::sequenceCost($body, $depth);
@@ -2640,6 +2657,379 @@ final class Pattern
     }
 
     /** @param  list<int>  $costs */
+    /**
+     * The most one subject can cost: branches whose runs can consume a common character, added up.
+     *
+     * ⚠️ GROUPED BY WHETHER THEY CAN BOTH BE ENGAGED, because that is what the sum is a claim about. A
+     * subject made of the characters two branches share engages both, so their costs add; a subject that
+     * engages one leaves a branch built from other characters failing on its first atom, so those two
+     * never add. The answer is the worst group rather than the worst branch.
+     *
+     * ⚠️ TRANSITIVELY GROUPED, WHICH OVER-GROUPS ON PURPOSE. If A shares a character with B and B with C
+     * while A and C share none, no single subject engages all three — but separating that needs the
+     * largest mutually-sharing set, and being wrong about it publishes a pattern. Union by intersection is
+     * the conservative reading: it can only put MORE branches in a group than a subject can engage, which
+     * can only refuse more.
+     *
+     * @param  list<string>  $branches
+     * @param  list<int>  $costs
+     */
+    private static function worstEngageableBranchCost(array $branches, array $costs): int
+    {
+        /** @var list<list<int>> $groups each a list of branch indexes */
+        $groups = [];
+
+        foreach ($branches as $index => $branch) {
+            $joined = null;
+
+            foreach ($groups as $at => $group) {
+                foreach ($group as $member) {
+                    if (! self::branchesCanShareASubject($branch, $branches[$member])) {
+                        continue;
+                    }
+
+                    if ($joined === null) {
+                        $groups[$at][] = $index;
+                        $joined = $at;
+                    } else {
+                        // Two groups now share a branch, so they were one group all along.
+                        $groups[$joined] = array_merge($groups[$joined], $groups[$at]);
+                        unset($groups[$at]);
+                    }
+
+                    continue 2;
+                }
+            }
+
+            if ($joined === null) {
+                $groups[] = [$index];
+            }
+        }
+
+        $worst = 1;
+
+        foreach ($groups as $group) {
+            $worst = max($worst, self::saturatingSum(array_map(
+                static fn (int $member): int => $costs[$member],
+                $group,
+            )));
+        }
+
+        return $worst;
+    }
+
+    /**
+     * Whether any single character matches both atoms.
+     *
+     * ⚠️ THE PRIMITIVE ISSUE #73 NAMES AS MISSING: `atomMatches()` answers atom-against-CHARACTER, and
+     * deciding whether two branches can be engaged by one subject needs atom-against-ATOM. It is answered
+     * by reading each atom into codepoint RANGES and intersecting them, rather than by probing characters,
+     * because probing cannot prove a negative over 1,114,112 candidates.
+     *
+     * ⚠️ FAILS CLOSED, AND THAT IS WHERE THE HARD CASES GO. A Unicode property is a set this cannot read
+     * — `tools/property-parity` needs 1,112,064 probes per name to know one — so `\p{L}` against anything
+     * reports that they CAN share, which sums the costs. The issue records why that direction is the only
+     * acceptable one: "the cost of being wrong is a published catastrophic pattern, while the cost of being
+     * conservative is the 35.8 ms refusal".
+     */
+    private static function atomsCanShareACharacter(string $left, string $right): bool
+    {
+        if ($left === $right) {
+            return true;
+        }
+
+        $ours = self::characterRanges($left);
+        $theirs = self::characterRanges($right);
+
+        if ($ours === null || $theirs === null) {
+            return true;
+        }
+
+        foreach ($ours as [$from, $to]) {
+            foreach ($theirs as [$start, $end]) {
+                if ($from <= $end && $start <= $to) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Every codepoint this atom can match, as ranges, or null when they cannot be read.
+     *
+     * ⚠️ ONLY THE SYNTAX THE GRAMMAR ADMITS, which is what makes this tractable: a literal, an escape
+     * `literalCharacter()` can decode, a bracketed class of those and of ranges, and the ECMAScript dot.
+     * Everything else — a property, a shorthand class, a group, a backreference — returns null and the
+     * caller assumes the worst. `\d` and `\w` are absent deliberately: the grammar refuses `\d` outright
+     * for portability (PCRE reads any Unicode digit, ECMAScript only 0-9) and names `[0-9]` as the
+     * spelling, so the class parser below is where digits actually arrive.
+     *
+     * @return list<array{int, int}>|null
+     */
+    private static function characterRanges(string $atom): ?array
+    {
+        if ($atom === '.') {
+            /*
+             * The ECMAScript dot, which `delimit()` rewrites explicitly: everything except the four line
+             * terminators. Written as the complement so the intersection arithmetic stays the same.
+             */
+            return [[0x0, 0x9], [0xB, 0xC], [0xE, 0x2027], [0x202A, 0x10FFFF]];
+        }
+
+        $single = self::literalCharacter($atom);
+
+        if ($single !== null) {
+            /*
+             * ⚠️ NO FAILURE BRANCH, and static analysis is right that there cannot be one:
+             * `literalCharacter()` returns a single character it has already decoded — a literal, an
+             * escape, or a `\xNN` it checked with `mb_check_encoding()` — so `mb_ord()` has nothing to
+             * reject. A guard here would be unreachable code dressed as caution.
+             */
+            $codepoint = mb_ord($single, 'UTF-8');
+
+            return [[$codepoint, $codepoint]];
+        }
+
+        if (! str_starts_with($atom, '[') || ! str_ends_with($atom, ']')) {
+            return null;
+        }
+
+        return self::classRanges(mb_substr($atom, 1, -1));
+    }
+
+    /**
+     * A character class's contents as ranges, or null when anything inside cannot be read.
+     *
+     * ⚠️ A NEGATED CLASS IS THE COMPLEMENT, computed rather than approximated, because `[^,]` against
+     * `[^;]` is the commonest pair this will ever be asked about — two delimited lists — and they DO share
+     * almost every character. Getting that wrong in the permissive direction would publish a pattern whose
+     * branches both engage.
+     *
+     * @return list<array{int, int}>|null
+     */
+    private static function classRanges(string $contents): ?array
+    {
+        $negated = str_starts_with($contents, '^');
+
+        if ($negated) {
+            $contents = mb_substr($contents, 1);
+        }
+
+        $ranges = [];
+        $length = mb_strlen($contents);
+
+        for ($at = 0; $at < $length;) {
+            $span = mb_substr($contents, $at, 1) === '\\' ? self::escapeSpan($contents, $at) : 1;
+            $item = mb_substr($contents, $at, $span);
+            $character = self::literalCharacter($item);
+
+            if ($character === null) {
+                // A shorthand, a property, or a posix name — not a set this can read.
+                return null;
+            }
+
+            $from = mb_ord($character, 'UTF-8');
+            $at += $span;
+
+            // A range, but only when the `-` is between two readable characters: `[a-]` ends with a
+            // literal hyphen, which is a member rather than a range.
+            if ($at + 1 < $length && mb_substr($contents, $at, 1) === '-') {
+                $upperSpan = mb_substr($contents, $at + 1, 1) === '\\' ? self::escapeSpan($contents, $at + 1) : 1;
+                $upper = self::literalCharacter(mb_substr($contents, $at + 1, $upperSpan));
+
+                if ($upper === null) {
+                    return null;
+                }
+
+                $to = mb_ord($upper, 'UTF-8');
+
+                // A reversed range is not a range: PCRE refuses `[z-a]` and so does ECMAScript.
+                if ($to < $from) {
+                    return null;
+                }
+
+                $ranges[] = [$from, $to];
+                $at += 1 + $upperSpan;
+
+                continue;
+            }
+
+            $ranges[] = [$from, $from];
+        }
+
+        if ($ranges === []) {
+            return null;
+        }
+
+        return $negated ? self::complementOf($ranges) : $ranges;
+    }
+
+    /**
+     * Every codepoint these ranges do not cover.
+     *
+     * @param  list<array{int, int}>  $ranges
+     * @return list<array{int, int}>
+     */
+    private static function complementOf(array $ranges): array
+    {
+        usort($ranges, static fn (array $one, array $other): int => $one[0] <=> $other[0]);
+
+        $complement = [];
+        $next = 0;
+
+        foreach ($ranges as [$from, $to]) {
+            if ($from > $next) {
+                $complement[] = [$next, $from - 1];
+            }
+
+            $next = max($next, $to + 1);
+        }
+
+        if ($next <= 0x10FFFF) {
+            $complement[] = [$next, 0x10FFFF];
+        }
+
+        return $complement;
+    }
+
+    /**
+     * Whether one subject can engage both branches at the same position.
+     *
+     * ⚠️ THE CHARACTERS EACH CAN BEGIN WITH, and the first version of this asked about the atoms that
+     * REPEAT instead — which published `^(?:a|a)(?:a|a)…b$`, thirty ambiguous groups whose product is
+     * 2^30. Neither `a` branch repeats anything, so "nothing expensive to share" separated two branches
+     * that match the same character. The cost of an alternation is not only its runs: two branches that
+     * both match the text are both TRIED, and that is the combinatorial half of the same budget.
+     *
+     * So the question is whether their first consumed characters can be the same character. That answers
+     * both halves at once: `a*a*b` and `c*c*d` can begin with {a, b} and {c, d} and no subject engages
+     * both, while `a*a*b` and `a*a*c` share `a` and every subject that engages one engages the other.
+     *
+     * ⚠️ FAILS CLOSED EVERYWHERE. An unreadable branch, an atom whose alphabet this cannot read, or a
+     * branch that can match nothing at all — which can begin with anything — all report that the two CAN
+     * share, which sums their costs. Refusing more cannot publish a catastrophic pattern.
+     */
+    private static function branchesCanShareASubject(string $left, string $right): bool
+    {
+        $ours = self::firstCharacterAtomsOf($left);
+        $theirs = self::firstCharacterAtomsOf($right);
+
+        if ($ours === null || $theirs === null) {
+            return true;
+        }
+
+        foreach ($ours as $mine) {
+            foreach ($theirs as $yours) {
+                if (self::atomsCanShareACharacter($mine, $yours)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Every atom that could match this branch's FIRST consumed character, or null when they cannot be read.
+     *
+     * ⚠️ UP TO AND INCLUDING THE FIRST ATOM THAT MUST RUN, because everything before it can match nothing
+     * and hand the position to what follows: `a*a*b` can begin with an `a` or, when both stars take
+     * nothing, with a `b`. Stopping at the first written atom would call `a*a*b` and `a*a*c` distinct,
+     * which is measurably wrong — they cost 323.3 ms together against 36.0 for one.
+     *
+     * ⚠️ NULL WHEN EVERYTHING IS OPTIONAL, because a branch that can match nothing begins with whatever
+     * comes after it — which is outside this branch. That is the fail-closed case rather than an empty set.
+     *
+     * @return list<string>|null
+     */
+    private static function firstCharacterAtomsOf(string $branch, int $depth = 0): ?array
+    {
+        if ($depth > self::MAX_WALK_DEPTH) {
+            return null;
+        }
+
+        $atoms = self::flatAtoms($branch, $depth);
+
+        if ($atoms === null) {
+            return null;
+        }
+
+        $first = [];
+
+        foreach ($atoms as $atom) {
+            if ($atom['assertion']) {
+                /*
+                 * ⚠️ ZERO-WIDTH IS NOT FREE, and review found this walk treating it as though it were.
+                 * An assertion consumes nothing, so it cannot be a branch's first CHARACTER — but it
+                 * still RUNS, at every position the branch is tried, before anything it precedes is
+                 * looked at. Nine branches of `(?=a*a*b)c|(?=a*a*d)e|…` published: their first
+                 * characters are `c`, `e`, … and disjoint, so the grouping took the maximum, while every
+                 * lookahead runs anyway. Measured on 5,000 `a`, and both engines add them up rather than
+                 * hoisting the character test in front:
+                 *
+                 *   Node 22.23.2   one branch 35.9 ms   four 143.6   nine 325.8
+                 *   PCRE 10.48     one branch  4.1 ms                nine  36.5
+                 *
+                 * Nine is past the eight-grant ceiling, which is what the sum exists to enforce. So a
+                 * branch whose leading assertion is EXPENSIVE reports no first characters at all: unknown,
+                 * which shares a subject with everything and adds. An assertion that costs nothing to run
+                 * is still stepped over.
+                 *
+                 * ⚠️ AND "EXPENSIVE" IS NOT ONLY "SCANS", which review found the first version assuming.
+                 * A FIXED-width body can be ruinous by ambiguity alone: sixteen `(a|a)` groups then a
+                 * failing `z` is 33 characters wide, holds no variable-width atom at all, and offers
+                 * 65,536 ways to match. Eight branches of those plus a final `a+` is 704 characters and
+                 * published — and it DIVERGES, which is worse than slow: measured on 5,000 `a`, PCRE
+                 * exhausts its backtrack limit and returns false in 1.5 ms while Node returns TRUE in
+                 * 3.3 ms, so the published schema accepts a value the server rejects. The cost model
+                 * already prices that body at 65,536; nothing had asked it.
+                 */
+                $body = self::frameBody($atom['atom']);
+
+                if (self::atomRunExceeds($body, 0) || self::ambiguityCost($body) > 1) {
+                    return null;
+                }
+
+                continue;
+            }
+
+            // A branch boundary: the first consumed character is still ahead.
+            if ($atom['atom'] === '|') {
+                continue;
+            }
+
+            $nullable = self::canMatchNothing($atom['atom'], $atom['quantifier']);
+
+            if (str_starts_with($atom['atom'], '(')) {
+                foreach (self::topLevelBranches(self::frameBody($atom['atom'])) as $inner) {
+                    $found = self::firstCharacterAtomsOf($inner, $depth + 1);
+
+                    if ($found === null) {
+                        return null;
+                    }
+
+                    foreach ($found as $one) {
+                        $first[] = $one;
+                    }
+                }
+            } else {
+                $first[] = $atom['atom'];
+            }
+
+            if (! $nullable) {
+                return array_values(array_unique($first));
+            }
+        }
+
+        // Everything was optional, so this branch can begin with whatever follows it.
+        return null;
+    }
+
+    /**
+     * @param  list<int>  $costs
+     */
     private static function saturatingSum(array $costs): int
     {
         $total = 0;
@@ -2961,7 +3351,23 @@ final class Pattern
 
         $character = self::literalCharacter($atom['atom']);
 
-        return $character !== null && self::cannotMatch($previous, $character);
+        if ($character !== null && self::cannotMatch($previous, $character)) {
+            return true;
+        }
+
+        /*
+         * ⚠️ ATOM AGAINST ATOM, WHICH IS THE PRIMITIVE ISSUE #73 FILED AS MISSING. The two paths above ask
+         * about a single CHARACTER, so a class could never divide a run however obviously disjoint it was:
+         * `^[A-Z]{2,3}[0-9]{1,4}[A-Z]{1,2}$` — a UK postcode — was refused for three variable-width atoms
+         * in a row, and `[a-z]+[0-9]*` for two. Measured on Node 22.23.2 at 1,250 / 2,500 / 5,000
+         * characters, both are 0.03 ms or less at every length, where the refused `^a*a*a*b$` is 15.4 ms,
+         * 119.7 and 949.9. The refusal was the missing question rather than a cost.
+         *
+         * `atomsCanShareACharacter()` reads both atoms as codepoint RANGES and intersects them, and it
+         * fails closed on anything it cannot read — a property, a shorthand, a group — so this path only
+         * ever adds a proof, never weakens one.
+         */
+        return ! self::atomsCanShareACharacter($previous, $atom['atom']);
     }
 
     /**

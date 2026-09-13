@@ -2421,11 +2421,17 @@ describe('a prefix outside a bracket is charged for what it rescans inside', fun
      * body cannot see. Anything a prefix inside the body rescans is left to that recursion. The two
      * charges are then for two different prefixes.
      *
-     * ⚠️ THE CEILING BITES AT FIVE OF THESE, NOT NINE, and that is the alternation-ambiguity test being
-     * conservative rather than this charge being wrong: it cannot read a branch's lead through a leading
-     * assertion, so `(?:(?=a+c)a|z)` is priced as two ways to match rather than one, and each branch
-     * costs two grants of the eight the budget allows. Four publish, five do not. Recorded rather than
-     * widened, because widening the ambiguity test is a different rule and needs its own measurement.
+     * ⚠️ THE CEILING BITES AT FIVE OF THESE, went to nine for one commit, and is back at five — which is
+     * worth recording as a sequence rather than a state. #73's atom-against-atom primitive could tell that
+     * one branch begins with `a` and the other with `z`, so the group priced as one way to match rather
+     * than two. Then review found that a branch whose LEADING ASSERTION can scan is engaged at every
+     * position whatever it consumes afterwards — nine branches of `(?=a*a*b)c|(?=a*a*d)e|…` published at
+     * 325.8 ms on Node and 36.5 on PCRE, both exactly nine times one branch — so such a branch now reports
+     * no first characters at all and shares a subject with everything.
+     *
+     * `(?=a+c)a` is one of those, so this shape sums again. It is conservative by a factor of two against
+     * the measurement — eight of these is 288.4 ms, the eight grants the model licenses — and that is the
+     * direction to be wrong in: the alternative published a shape at 325.8 ms.
      */
     it('refuses more alternatives than the budget allows', function (int $branches): void {
         $pattern = implode('|', array_fill(0, $branches, '^a+(?:(?=a+c)a|z)'));
@@ -2742,6 +2748,177 @@ describe('a branch is its own search', function (): void {
         '^z|^(?:a(?!a*b))*x',
         '^(?:a(?!a*b))*x|^z',
     ]);
+});
+
+describe('two atoms that cannot match the same character', function (): void {
+    /*
+     * ⚠️ ISSUE #73's MISSING PRIMITIVE. `atomMatches()` answers atom-against-CHARACTER, and two questions
+     * in this file need atom-against-ATOM: whether one subject can engage two alternation branches, and
+     * whether a class divides a run. Both were answered conservatively, and the cost was measured:
+     *
+     *   `^[A-Z]{2,3}[0-9]{1,4}[A-Z]{1,2}$`   a UK postcode, refused for three atoms in a row
+     *   `[a-z]+[0-9]*`                       refused for two
+     *   nine branches of `b*b*B|c*c*C|…`     refused, and they cost what ONE costs
+     *
+     * Measured on Node 22.23.2 at 1,250 / 2,500 / 5,000 characters, the first two are 0.03 ms or less at
+     * every length, where the refused `^a*a*a*b$` is 15.4 ms, 119.7 and 949.9. The nine branches measure
+     * 35.8 ms against 36.3 for one branch alone.
+     *
+     * The primitive reads each atom as codepoint RANGES and intersects them, rather than probing
+     * characters — probing cannot prove a negative over 1,114,112 candidates. It fails closed on anything
+     * it cannot read, which is where properties and shorthands go.
+     */
+    it('proves a class cannot be consumed by the class before it', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))->toBeNull("[{$pattern}] is divided by its own alphabets");
+    })->with([
+        '^[A-Z]{2,3}[0-9]{1,4}[A-Z]{1,2}$',
+        '[a-z]+[0-9]*',
+        '^[a-z]+[0-9]+[a-z]+$',
+        '^[0-9]+[0-9]*$',
+        // A range that touches, rather than overlaps, is still disjoint.
+        '^[a-m]+[n-z]+[a-m]+$',
+    ]);
+
+    it('still refuses atoms whose alphabets meet', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))->not->toBeNull("[{$pattern}] shares characters");
+    })->with([
+        // One character of overlap is one way to re-divide the subject.
+        '^[a-n]+[n-z]+[a-n]+$',
+        '^[a-z]+[a-z]+[a-z]+x$',
+        '^[0-9]+[0-9]+[0-9]+x$',
+        // And a property is a set this cannot read, so it fails closed.
+        '^\p{L}+\p{L}+\p{L}+x$',
+    ]);
+
+    it('groups alternation branches by what can engage them', function (): void {
+        /*
+         * ⚠️ SUMMING EVERY BRANCH ASSUMES ONE SUBJECT CAN MAKE THEM ALL WORK. Nine branches that share an
+         * alphabet really do cost nine times one — 323.3 ms against 36.0 on 5,000 `a` — because every
+         * branch's `a*a*` consumes the same subject. Nine built from DIFFERENT characters cost one:
+         * 35.8 ms, because the subject that engages one leaves the other eight failing on their first atom.
+         */
+        $letters = 'bcdefghijklmnop';
+        $shared = '^(?:'.implode('|', array_map(
+            static fn (int $i): string => 'a*a*'.$letters[$i],
+            range(0, 8),
+        )).')$';
+        $distinct = '^(?:'.implode('|', array_map(
+            static fn (int $i): string => $letters[$i].'*'.$letters[$i].'*'.strtoupper($letters[$i]),
+            range(0, 8),
+        )).')$';
+
+        expect(Pattern::unpublishable($shared))->toContain('ways to retry')
+            ->and(Pattern::unpublishable($distinct))->toBeNull('distinct alphabets cost what one costs');
+    });
+
+    it('reads the lead through everything that can match nothing', function (): void {
+        /*
+         * ⚠️ THE CASE THE ISSUE NAMES AS THE ONE TO GET RIGHT, and the reason its own suggested fix would
+         * not have worked. `a*a*b` has no required FIRST atom — both stars can match nothing — so the
+         * characters it can begin with are `a` AND `b`. Comparing written first atoms would call `a*a*b`
+         * and `a*a*c` distinct, which is measurably wrong: they cost 323.3 ms together against 36.0 for
+         * one. Comparing first REQUIRED atoms would call them distinct too, since `b` and `c` differ.
+         */
+        expect(Pattern::unpublishable('^(?:a*a*b|a*a*c)$'))->toBeNull('two branches is inside the budget');
+
+        $nine = '^(?:'.implode('|', array_map(
+            static fn (int $i): string => 'a*a*'.chr(98 + $i),
+            range(0, 8),
+        )).')$';
+
+        // Nine of them is not, because the shared `a` means one subject engages all nine.
+        expect(Pattern::unpublishable($nine))->toContain('ways to retry');
+    });
+
+    it('does not let the grouping lose a combinatorial product', function (): void {
+        /*
+         * ⚠️ THE REGRESSION THE FIRST VERSION OF THIS CAUSED, kept as a row. Asking which atoms REPEAT
+         * instead of which characters a branch can BEGIN with published thirty `(?:a|a)` groups — a product
+         * of 2^30 — because neither `a` branch repeats anything, so "nothing expensive to share" separated
+         * two branches that match the same character. The cost of an alternation is not only its runs: two
+         * branches that both match the text are both TRIED.
+         */
+        expect(Pattern::unpublishable('^'.str_repeat('(?:a|a)', 30).'b$'))->toContain('ways to retry')
+            ->and(Pattern::unpublishable('^(?:a|a)(?:a|a)b$'))->toBeNull('two of them is harmless');
+    });
+});
+
+describe('a zero-width atom is not free', function (): void {
+    /*
+     * ⚠️ THE GROUPING'S BLIND SPOT, found by review the round after it landed. An assertion consumes
+     * nothing, so it cannot be a branch's first CHARACTER — but it still RUNS, at every position the
+     * branch is tried, before anything it precedes is looked at. Nine branches of
+     * `(?=a*a*b)c|(?=a*a*d)e|…` have first characters `c`, `e`, … which are disjoint, so the grouping took
+     * the maximum while every lookahead ran anyway.
+     *
+     * Measured on a 5,000-character all-`a` value, and NEITHER engine hoists the character test in front
+     * of the assertion — the costs add on both:
+     *
+     *   Node 22.23.2   one branch 35.9 ms   four 143.6 ms   nine 325.8 ms
+     *   PCRE 10.48     one branch  4.1 ms                   nine  36.5 ms
+     *
+     * Nine is past the eight-grant ceiling the sum exists to enforce. So a branch whose leading assertion
+     * can SCAN reports no first characters at all — unknown, which shares a subject with everything.
+     */
+    it('refuses branches whose leading assertions all run', function (int $branches): void {
+        $letters = 'bcdefghijklmnopqrstuvwxyz';
+        $pattern = '^(?:'.implode('|', array_map(
+            static fn (int $i): string => '(?=a*a*'.$letters[$i * 2].')'.$letters[$i * 2 + 1],
+            range(0, $branches - 1),
+        )).')$';
+
+        expect(Pattern::unpublishable($pattern))->toContain('ways to retry');
+    })->with([9, 12]);
+
+    it('leaves the same shape alone inside the budget', function (int $branches): void {
+        $letters = 'bcdefghijklmnopqrstuvwxyz';
+        $pattern = '^(?:'.implode('|', array_map(
+            static fn (int $i): string => '(?=a*a*'.$letters[$i * 2].')'.$letters[$i * 2 + 1],
+            range(0, $branches - 1),
+        )).')$';
+
+        expect(Pattern::unpublishable($pattern))->toBeNull("[{$branches} branches] is inside the budget");
+    })->with([1, 4, 8]);
+
+    it('counts an assertion that is expensive by ambiguity alone', function (): void {
+        /*
+         * ⚠️ "EXPENSIVE" IS NOT ONLY "SCANS", which review found the first version of this assuming. A
+         * FIXED-width assertion body can be ruinous by ambiguity: sixteen `(a|a)` groups then a failing
+         * `z` is 33 characters wide, holds no variable-width atom at all, and offers 65,536 ways to match.
+         *
+         * ⚠️ AND IT DIVERGED, which is worse than slow. Eight of those branches plus a final `a+` is 704
+         * characters and published; measured on a 5,000-`a` value, PCRE exhausts its backtrack limit and
+         * returns FALSE in 1.5 ms while Node returns TRUE in 3.3 ms — so the published schema accepted a
+         * value the server rejects, which is rule 3 rather than a budget. The cost model already priced
+         * that body at 65,536; nothing had asked it.
+         */
+        $body = str_repeat('(a|a)', 16).'z';
+        $letters = 'bcdefghijklmnopqrstuvwxyz';
+        $branches = array_map(
+            static fn (int $i): string => '(?='.$body.')'.$letters[$i],
+            range(0, 7),
+        );
+        $branches[] = 'a+';
+        $pattern = '^(?:'.implode('|', $branches).')$';
+
+        expect(mb_strlen($pattern))->toBeLessThanOrEqual(Pattern::MAX_LENGTH)
+            ->and(Pattern::unpublishable($pattern))->not->toBeNull('an ambiguous assertion body is expensive too');
+    });
+
+    it('still steps over an assertion that costs nothing to run', function (int $branches): void {
+        /*
+         * ⚠️ A FIXED-WIDTH ASSERTION BODY IS FREE, so the branches keep their distinct first characters
+         * and the grouping still takes the maximum. Nine of these publish where nine of the scanning kind
+         * do not, which is the assertion that says this fix is about COST rather than about assertions.
+         */
+        $letters = 'bcdefghijklmnopqrstuvwxyz';
+        $pattern = '^(?:'.implode('|', array_map(
+            static fn (int $i): string => '(?='.$letters[$i * 2].$letters[$i * 2].')'.$letters[$i * 2 + 1],
+            range(0, $branches - 1),
+        )).')$';
+
+        expect(Pattern::unpublishable($pattern))->toBeNull("[{$branches} cheap branches] cost nothing to try");
+    })->with([9, 12]);
 });
 
 describe('the screen stays inside its budget', function (): void {

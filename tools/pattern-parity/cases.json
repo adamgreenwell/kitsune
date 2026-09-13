@@ -969,7 +969,7 @@
     "id": "quadratic-branches-distinct-leads",
     "pattern": "^(?:a*a*b|c*c*d|e*e*f|g*g*h|i*i*j|k*k*l|m*m*n|o*o*p|q*q*r)$",
     "subject": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    "why": "The over-refusal the bound above carries, recorded rather than left to be found later. These nine branches cost ONE quadratic — 35.8 ms, because eight of them fail on their first atom — but `branchesAreUnambiguousLiterals()` exempts plain literal text only, on purpose, so a branch carrying a quantifier sums whether or not its lead is distinct. Refused today; lifting it means proving distinct leads for quantified branches, which is the rule two rounds of this file got wrong twice — issue #73."
+    "why": "The known over-refusal issue #73 was filed for, and it publishes now. Nine branches whose runs are built from DIFFERENT characters cost what ONE costs — measured on Node 22.23.2 with a 5,000-character subject, 35.8 ms against 36.3 for a single branch — because the subject that engages one leaves the other eight failing on their first atom. Nine that SHARE an alphabet really do cost nine times one, 323.3 ms, so summing was right for them and wrong for these. The discriminator is the set of characters each branch can BEGIN with, read through everything that can match nothing: `a*a*b` begins with `a` or `b`, which is why it shares a subject with `a*a*c` and not with `c*c*d`. ⚠️ The issue's own suggested fix — compare each branch's first REQUIRED atom — would not have separated them, since `b` and `c` differ; that is recorded on the issue rather than quietly fixed."
   },
   {
     "id": "group-lead-from-one-branch",
@@ -1384,5 +1384,29 @@
     "pattern": "^a+a{64}a{64}a{64}X",
     "subject": "aaaaX",
     "why": "The weight multiplied where it should add. Each allocation of the atom in front re-tests each repetition ONCE, so the characters they cost add: this was refused at 64³ = 262,144 retry paths while the identical `^a+a{192}X` published, and both measure about 3 ms against 5,000 `a` (3.0 and 2.8). Fourteen of them — 896 characters of re-test — is 13.0 ms and publishes too, because the base is linear. A count split across adjacent atoms is the same count, and `--strict` would have blocked an upgrade over the spelling alone."
+  },
+  {
+    "id": "disjoint-classes-divide-a-run",
+    "pattern": "^[A-Z]{2,3}[0-9]{1,4}[A-Z]{1,2}$",
+    "subject": "AB12CD",
+    "why": "A UK postcode, refused for three variable-width atoms in a row until issue #73's primitive landed. The run rule could prove a boundary only from a single literal character — `literalCharacter()` returns null for a class — so two obviously disjoint classes read as re-dividable. Measured on Node 22.23.2 at 1,250 / 2,500 / 5,000 characters it is 0.03 ms or less at every length, where the refused `^a*a*a*b$` is 15.4 ms, 119.7 and 949.9: the refusal was a missing question rather than a cost. `atomsCanShareACharacter()` reads both atoms as codepoint ranges and intersects them, and fails closed on anything it cannot read — a property, a shorthand, a group — so `^\\p{L}+\\p{L}+\\p{L}+x$` stays refused."
+  },
+  {
+    "id": "touching-classes-are-still-disjoint",
+    "pattern": "^[a-m]+[n-z]+[a-m]+$",
+    "subject": "abnoab",
+    "why": "The arithmetic rather than the syntax: `[a-m]` and `[n-z]` touch without overlapping, so no character matches both and the boundary is forced twice over. Its neighbour `^[a-n]+[n-z]+[a-n]+$` shares exactly one character — `n` — and stays refused, which is the assertion that says this is an intersection test rather than a comparison of range endpoints."
+  },
+  {
+    "id": "costly-assertions-before-disjoint-branches",
+    "pattern": "^(?:(?=a*a*b)c|(?=a*a*d)e|(?=a*a*f)g|(?=a*a*h)i|(?=a*a*j)k|(?=a*a*l)m|(?=a*a*n)o|(?=a*a*p)q|(?=a*a*r)s)$",
+    "subject": "aaab",
+    "why": "The blind spot in the branch grouping that #73 introduced, found by review the round after it landed. An assertion consumes nothing, so it cannot be a branch's first CHARACTER — but it still RUNS, at every position the branch is tried, before anything it precedes is looked at. These nine branches have first characters `c`, `e`, `g`, … which are disjoint, so the grouping took the maximum while every lookahead ran anyway. Measured on a 5,000-character all-`a` value, and NEITHER engine hoists the character test in front: Node 22.23.2 takes 35.9 ms for one branch, 143.6 for four and 325.8 for nine; PCRE 10.48 takes 4.1 ms for one and 36.5 for nine. Both are exactly nine times one, and nine is past the eight-grant ceiling the sum exists to enforce. A branch whose leading assertion can SCAN now reports no first characters at all — unknown, which shares a subject with everything and adds. A fixed-width assertion body costs nothing to run and is still stepped over, so nine of `(?=bb)c|(?=dd)e|…` publish."
+  },
+  {
+    "id": "ambiguous-assertion-before-disjoint-branches",
+    "pattern": "^(?:(?=(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)z)b|(?=(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)z)c|(?=(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)z)d|(?=(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)z)e|(?=(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)z)f|(?=(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)z)g|(?=(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)z)h|(?=(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)(a|a)z)i|a+)$",
+    "subject": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaz",
+    "why": "The same bypass as the scanning-assertion one, through ambiguity rather than width — and this one DIVERGES, which is worse than slow. A fixed-width assertion body can be ruinous on its own: sixteen `(a|a)` groups then a failing `z` is 33 characters wide, holds no variable-width atom, and offers 65,536 ways to match. Eight branches of those plus a final `a+` is 704 characters and published, because the costly-leading-assertion test asked only whether the body SCANS. Measured on a 5,000-`a` value, PCRE 10.48 exhausts its backtrack limit and returns FALSE in 1.5 ms while Node 22.23.2 returns TRUE in 3.3 ms: the published schema accepted a value the server rejects, which is rule 3 rather than a budget. The cost model already priced that body at 65,536 — nothing had asked it. The test now asks both questions, and a body that is neither variable-width nor ambiguous is still stepped over, so `(?=bb)c|(?=dd)e|…` publishes at any count."
   }
 ]
