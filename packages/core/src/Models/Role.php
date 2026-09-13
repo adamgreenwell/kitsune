@@ -179,7 +179,7 @@ class Role extends Model
 
         DB::table('role_user')->insert(['role_id' => $this->getKey(), 'user_id' => $userId]);
 
-        app(Auditor::class)->record('role.assigned', $this);
+        app(Auditor::class)->record($this->assignmentAction('assigned'), $this->assignee($userId));
 
         Permissions::forget();
     }
@@ -195,9 +195,50 @@ class Role extends Model
             ->delete();
 
         if ($removed > 0) {
-            app(Auditor::class)->record('role.unassigned', $this);
+            app(Auditor::class)->record($this->assignmentAction('unassigned'), $this->assignee($userId));
         }
 
         Permissions::forget();
+    }
+
+    /**
+     * The action name for an assignment, which is where owner-ness has to live.
+     *
+     * ⚠️ THE LOG HOLDS ONE TARGET AND AN ASSIGNMENT HAS THREE PARTIES — who did it, which user, which role.
+     * `audit_log` carries actor, action and target and deliberately no payload (ADR-020), so one of the
+     * three has to be expressed some other way. Review found the first version recording the ROLE, which
+     * made ADR-033's own claim — *who was made an owner* — unanswerable the moment two people held the
+     * same role.
+     *
+     * So the target is the USER, because that is the irreplaceable half: a named role is still there to be
+     * read while it exists, and the person whose authority changed is the question. And owner-ness goes in
+     * the action, because it is the fact the ADR singles out and an action is a vocabulary rather than a
+     * payload — `role.owner_assigned` is greppable in a way that a target alone is not.
+     */
+    private function assignmentAction(string $verb): string
+    {
+        return $this->is_owner ? "role.owner_{$verb}" : "role.{$verb}";
+    }
+
+    /**
+     * The user an assignment is about, as a model, so the audit row can name them.
+     *
+     * ⚠️ WITHOUT GLOBAL SCOPES, because the host's user model is org-scoped through a pivot and this runs
+     * where the answer must not depend on the reader's context — the same reason `Permissions` resolves a
+     * user that way. Null when the provider names no model this class can load; the row is then written
+     * with no target rather than not written at all, because a change of authority that went unrecorded is
+     * worse than one recorded thinly.
+     */
+    private function assignee(int $userId): ?Model
+    {
+        $model = config('auth.providers.users.model');
+
+        if (! is_string($model) || ! class_exists($model) || ! is_subclass_of($model, Model::class)) {
+            return null;
+        }
+
+        $user = $model::withoutGlobalScopes()->find($userId);
+
+        return $user instanceof Model ? $user : null;
     }
 }

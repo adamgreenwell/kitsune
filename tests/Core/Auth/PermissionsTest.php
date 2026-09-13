@@ -184,6 +184,41 @@ it('records the four operations that change authority, and nothing else', functi
 
     expect(AuditLog::query()->orderBy('id')->pluck('action')->all())
         ->toBe(['role.granted', 'role.assigned', 'role.revoked', 'role.unassigned']);
+
+    /*
+     * ⚠️ AND AN ASSIGNMENT ROW NAMES THE USER, NOT THE ROLE — review found the first version recording the
+     * role, which made this ADR's own question (*who was made an owner*) unanswerable the moment two people
+     * held one. An assignment has three parties and `audit_log` holds two, so the target is the
+     * irreplaceable half and the role is still there to be read.
+     */
+    $assignment = AuditLog::query()->where('action', 'role.assigned')->sole();
+
+    expect($assignment->target_id)->toBe($user->getKey())
+        ->and($assignment->target_type)->toBe($user->getMorphClass());
+
+    // A grant is about the role, and that is the right target for it.
+    expect(AuditLog::query()->where('action', 'role.granted')->value('target_id'))->toBe($role->getKey());
+});
+
+it('names an owner elevation in the action, because the target cannot hold it', function (): void {
+    /*
+     * ⚠️ OWNER-NESS IS THE FACT ADR-033 SINGLES OUT, and with the user in the target column there is nowhere
+     * else for it to go — `audit_log` has no payload by design. An action is a vocabulary rather than a
+     * payload, and `role.owner_assigned` is greppable in a way a target alone is not.
+     */
+    $owner = Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true]);
+
+    /** @var TestUser $user */
+    $user = TestUser::create(['email' => 'elevated@kitsune.test']);
+    DB::table('org_user')->insert(['org_id' => $this->org->getKey(), 'user_id' => $user->getKey()]);
+
+    $owner->assignTo($user->getKey());
+    $owner->removeFrom($user->getKey());
+
+    expect(AuditLog::query()->orderBy('id')->pluck('action')->all())
+        ->toBe(['role.owner_assigned', 'role.owner_unassigned'])
+        ->and(AuditLog::query()->where('action', 'role.owner_assigned')->value('target_id'))
+        ->toBe($user->getKey());
 });
 
 it('records nothing for an operation that changed nothing', function (): void {
