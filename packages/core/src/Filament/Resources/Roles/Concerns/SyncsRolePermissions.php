@@ -179,6 +179,33 @@ trait SyncsRolePermissions
 
         $desired = [];
 
+        /*
+         * ⚠️ ONLY THE TYPES THE FORM ACTUALLY SHOWED MAY BE REVOKED, because a grant it never showed was not
+         * decided about. `perTypeSections()` lists the types enabled for the CURRENT site, so a role holding
+         * a grant for a type enabled only elsewhere — or predeclared for one that does not exist yet, which
+         * `Permissions::validated()` supports so a blueprint can seed both together — must not lose it
+         * because somebody renamed the role from the wrong site.
+         *
+         * ⚠️ AND THE REVOCATION DID NOT REPRODUCE, WHICH IS WORTH SAYING RATHER THAN IMPLYING A FIX. Review
+         * raised this as live data loss; measured on the edit page, the grant survives without this check.
+         * `mutateFormDataBeforeFill()` hydrates `grants.{type}` for every permission the role HOLDS, and
+         * `getRawState()` returns those keys whether or not a component renders them — so the absent
+         * section's grant is still in `$desired` and never reaches the revoke branch.
+         *
+         * It stays because the protection is currently incidental: it depends on hydration filling a path
+         * nothing renders and on raw state keeping it. `getState()` instead of `getRawState()`, or Filament
+         * pruning unmanaged paths, would reopen it silently — and the failure is deleted permissions on
+         * another site. This makes the rule explicit instead of emergent.
+         *
+         * An unchecked box still submits its key with an empty array, so the keys present in the state are
+         * exactly what the operator was offered.
+         */
+        $represented = [];
+
+        if (array_key_exists(RoleResource::ANY_TYPE_STATE, $state)) {
+            $represented[] = Permissions::ANY_TYPE;
+        }
+
         foreach ((array) ($state[RoleResource::ANY_TYPE_STATE] ?? []) as $action) {
             if (is_string($action)) {
                 $desired[] = Permissions::forEntryType(Permissions::ANY_TYPE, $action);
@@ -189,6 +216,8 @@ trait SyncsRolePermissions
             if (! is_string($type)) {
                 continue;
             }
+
+            $represented[] = $type;
 
             foreach ((array) $actions as $action) {
                 if (is_string($action)) {
@@ -204,7 +233,17 @@ trait SyncsRolePermissions
         }
 
         foreach (array_diff($held, $desired) as $permission) {
-            $record->revoke($permission);
+            if (in_array(self::typeSegmentOf($permission), $represented, true)) {
+                $record->revoke($permission);
+            }
         }
+    }
+
+    /** The `{type_handle}` out of `entry.{type_handle}.{action}`, or null if it is not shaped like one. */
+    private static function typeSegmentOf(string $permission): ?string
+    {
+        $parts = explode('.', $permission);
+
+        return count($parts) === 3 ? $parts[1] : null;
     }
 }

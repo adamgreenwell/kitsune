@@ -213,11 +213,36 @@ it('names an owner elevation in the action, because the target cannot hold it', 
     DB::table('org_user')->insert(['org_id' => $this->org->getKey(), 'user_id' => $user->getKey()]);
 
     $owner->assignTo($user->getKey());
-    $owner->removeFrom($user->getKey());
 
     expect(AuditLog::query()->orderBy('id')->pluck('action')->all())
-        ->toBe(['role.owner_assigned', 'role.owner_unassigned'])
+        ->toBe(['role.owner_assigned'])
         ->and(AuditLog::query()->where('action', 'role.owner_assigned')->value('target_id'))
+        ->toBe($user->getKey());
+
+    /*
+     * ⚠️ A SECOND OWNER FIRST, because taking the last one away is refused (#84): they would be the last
+     * member of the org holding an owner role, and owner is the only role that may put one back. The guard
+     * doing its job, not a test in its way.
+     */
+    /** @var TestUser $spare */
+    $spare = TestUser::create(['email' => 'spare-owner@kitsune.test']);
+    DB::table('org_user')->insert(['org_id' => $this->org->getKey(), 'user_id' => $spare->getKey()]);
+
+    $second = Role::create(['handle' => 'owner-2', 'name' => 'Owner 2', 'is_owner' => true]);
+    $second->assignTo($spare->getKey());
+
+    /*
+     * ⚠️ Asserted from a mark rather than over the whole table, because the spare owner's own assignment is
+     * an elevation too and writes its own row. A test that read every row would be asserting about its
+     * fixture.
+     */
+    $mark = (int) AuditLog::query()->max('id');
+
+    $owner->removeFrom($user->getKey());
+
+    expect(AuditLog::query()->where('id', '>', $mark)->pluck('action')->all())
+        ->toBe(['role.owner_unassigned'])
+        ->and(AuditLog::query()->where('id', '>', $mark)->value('target_id'))
         ->toBe($user->getKey());
 });
 

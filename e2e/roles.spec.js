@@ -134,6 +134,45 @@ test.describe('a role can be defined in the admin', () => {
         await expect(sectionFor(page, 'Held by')).toContainText('Alpha User');
     });
 
+    test('keeps grants for entry types this site never showed', async ({ page }) => {
+        /*
+         * ⚠️ SILENT DATA LOSS, which review found. `perTypeSections()` lists the types enabled for the
+         * CURRENT site, and the save diffed against that list — so a grant for a type enabled only elsewhere
+         * was read as *unchecked* and revoked. Changing a role's name from one site quietly removed
+         * permissions another site needed.
+         *
+         * The seeded `podcast` type is disabled for `golfdom` and the copy-editor holds `entry.podcast.view`,
+         * so this saves from the site that cannot show it and reads the grant back from the site that can.
+         * Asserted in the OTHER site's form rather than in the database, because that is where an operator
+         * would see it — and a section that is not rendered cannot report on itself.
+         *
+         * ⚠️ THIS TEST PASSES WITHOUT THE GUARD IN `SyncsRolePermissions`, AND THAT IS STATED RATHER THAN
+         * LEFT TO BE DISCOVERED. Hydration puts the absent section's grant into the raw form state, so the
+         * revocation does not currently reproduce — measured. It guards the BEHAVIOUR (a cross-site save
+         * keeps grants it never showed), which is what an operator cares about and what a change to
+         * Filament's state handling would break; it does not isolate that guard.
+         */
+        await page.goto(`/admin/${SITE}/roles`);
+        await page.getByRole('link', { name: 'Copy editor' }).first().click();
+        await page.waitForURL(/\/edit$/);
+
+        const url = page.url();
+
+        // The precondition rather than the assertion: this site does not offer the type at all.
+        await expect(page.getByRole('heading', { name: 'Podcasts', exact: true })).toHaveCount(0);
+
+        await page.getByRole('textbox', { name: /^Name/ }).fill('Copy editor renamed');
+        await page.getByRole('button', { name: /^save changes$/i }).first().click();
+        await expect(page.getByText(/saved/i).first()).toBeVisible();
+
+        // The same role, from a site where `podcast` IS enabled.
+        await page.goto(url.replace(`/admin/${SITE}/`, '/admin/golfdom-fr/'));
+        await page.getByRole('heading', { name: 'Podcasts', exact: true }).click();
+
+        await expect(sectionFor(page, 'Podcasts').getByRole('checkbox', { name: 'View', exact: true }))
+            .toBeChecked();
+    });
+
     test('lists the roles the seeder made, with what they hold', async ({ page }) => {
         await page.goto(`/admin/${SITE}/roles`);
 

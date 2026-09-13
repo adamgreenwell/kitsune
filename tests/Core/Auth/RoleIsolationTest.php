@@ -485,6 +485,10 @@ it('refuses to remove the last owner role an org actually holds', function (): v
     $owner = Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true]);
     $owner->assignTo($this->user->getKey());
 
+    // ⚠️ Membership as well as assignment, because the guard counts only holders who are MEMBERS — holding
+    // a role in an org you have left confers nothing, so it cannot be the org's safety net either.
+    joinOrg($this->alpha, $this->user);
+
     expect(fn () => $owner->update(['is_owner' => false]))
         ->toThrow(RuntimeException::class, 'only owner role')
         ->and(fn () => $owner->delete())
@@ -544,6 +548,59 @@ it('does not count another org\'s owners as this org\'s safety net', function ()
 
     $alphaOwner = Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true]);
     $alphaOwner->assignTo($this->user->getKey());
+    joinOrg($this->alpha, $this->user);
 
     expect(fn () => $alphaOwner->delete())->toThrow(RuntimeException::class, 'only owner role');
+});
+
+it('does not take away an owner role from its last member holder', function (): void {
+    /*
+     * ⚠️ THE OTHER HALF OF THE LOCK-OUT, which review found open while deleting the role was shut. The role
+     * form calls `removeFrom()` for every holder taken out of the selection, so an owner could remove the
+     * final holder — themselves — and lose role and schema administration on the next request.
+     * `refuseIfLastOwner()` guards the ROLE; this guards its last holder.
+     */
+    app(Context::class)->setOrg($this->alpha);
+
+    $owner = Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true]);
+    $owner->assignTo($this->user->getKey());
+    joinOrg($this->alpha, $this->user);
+
+    expect(fn () => $owner->removeFrom($this->user->getKey()))
+        ->toThrow(RuntimeException::class, 'last member of this organisation holding an owner role');
+
+    // A second member holding one is the way out, and it has to work.
+    /** @var TestUser $colleague */
+    $colleague = TestUser::create(['email' => 'second-admin@kitsune.test']);
+    joinOrg($this->alpha, $colleague);
+    $owner->assignTo($colleague->getKey());
+
+    $owner->removeFrom($this->user->getKey());
+
+    expect(DB::table('role_user')->where('role_id', $owner->getKey())->count())->toBe(1);
+});
+
+it('counts only holders who are members of the org as owners', function (): void {
+    /*
+     * ⚠️ HOLDING AN OWNER ROLE IS NOT ENOUGH — review found the guard ignoring membership. `assignTo()` is
+     * public and membership can be removed afterwards, so a `role_user` row may name somebody this org no
+     * longer contains. Counting that inert pivot let the last role held by a REAL member be demoted, while
+     * `Permissions` refuses the remaining assignee and nobody can administer the org.
+     */
+    app(Context::class)->setOrg($this->alpha);
+
+    $held = Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true]);
+    $held->assignTo($this->user->getKey());
+    joinOrg($this->alpha, $this->user);
+
+    // An owner role assigned to somebody who is NOT a member of this org.
+    /** @var TestUser $outsider */
+    $outsider = TestUser::create(['email' => 'not-a-member@kitsune.test']);
+
+    $inert = Role::create(['handle' => 'owner-inert', 'name' => 'Owner inert', 'is_owner' => true]);
+    $inert->assignTo($outsider->getKey());
+
+    // The inert one must not count as this org's safety net.
+    expect(fn () => $held->delete())
+        ->toThrow(RuntimeException::class, 'only owner role');
 });

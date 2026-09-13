@@ -230,16 +230,58 @@ class Role extends Model
     /** Is this the only owner role in its org that anybody actually holds? */
     private function isOnlyHeldOwnerRole(): bool
     {
-        $held = static::query()
+        return $this->effectiveOwners() !== [] && $this->effectiveOwners(exceptRole: (int) $this->getKey()) === [];
+    }
+
+    /**
+     * The people who can actually administer this org right now.
+     *
+     * ⚠️ HOLDING AN OWNER ROLE IS NOT ENOUGH — THEY HAVE TO BE A MEMBER, which review found the guard
+     * ignoring. `assignTo()` is public and membership can be removed afterwards, so a `role_user` row may
+     * name somebody this org no longer contains. The old check counted that inert pivot as a held owner role
+     * — so demoting the last role held by a real member passed, while `Permissions` refuses the remaining
+     * assignee and nobody can administer the org. The guard has to ask the same question the resolver asks.
+     *
+     * ⚠️ MEMBERSHIP IS ASKED THROUGH THE USER MODEL'S OWN SCOPED QUERY under this role's org, which is the
+     * one place that knows what membership means (`#[OrgScopedThroughPivot]`). With no resolvable user model
+     * — a console context with no panel — every holder counts, because refusing to believe in any of them
+     * would make the guard refuse every change on an installation it cannot inspect.
+     *
+     * @return list<int>
+     */
+    private function effectiveOwners(?int $exceptRole = null, ?int $exceptUser = null): array
+    {
+        $roles = static::query()
             ->withoutGlobalScopes()
             ->where('org_id', $this->org_id)
             ->where('is_owner', true)
-            ->whereIn('id', DB::table('role_user')->select('role_id'))
+            ->when($exceptRole !== null, fn ($query) => $query->whereKeyNot($exceptRole))
+            ->pluck('id');
+
+        $holders = DB::table('role_user')
+            ->whereIn('role_id', $roles)
+            ->when($exceptUser !== null, fn ($query) => $query->where('user_id', '!=', $exceptUser))
+            ->pluck('user_id')
+            ->map(static fn (mixed $id): int => (int) $id)
+            ->unique()
+            ->values()
+            ->all();
+
+        if ($holders === []) {
+            return [];
+        }
+
+        $model = Permissions::userModel();
+
+        if ($model === null) {
+            return $holders;
+        }
+
+        return $model::query()
+            ->whereIn('id', $holders)
             ->pluck('id')
             ->map(static fn (mixed $id): int => (int) $id)
             ->all();
-
-        return $held === [(int) $this->getKey()];
     }
 
     /**
@@ -379,6 +421,23 @@ class Role extends Model
     {
         $this->refuseIfNotCurrentOrg('removeFrom');
 
+        /*
+         * ⚠️ TAKING THE LAST OWNER'S ROLE AWAY IS THE SAME LOCK-OUT AS DELETING THE ROLE, and review found
+         * this door open while the other was shut: the role form calls this for every holder removed from the
+         * selection, so an owner could remove the final holder — themselves — and permanently lose role and
+         * schema administration on the next request. `refuseIfLastOwner()` guards the ROLE; this guards its
+         * last holder.
+         */
+        if ($this->is_owner && $this->effectiveOwners() !== [] && $this->effectiveOwners(exceptUser: $userId) === []) {
+            throw new RuntimeException(sprintf(
+                'Refusing to take role %s from user %s: they are the last member of this organisation '
+                .'holding an owner role, and owner is the only role that may administer roles or edit the '
+                .'schema (ADR-033). Removing it would leave nobody able to put it back.',
+                (string) $this->getKey(),
+                (string) $userId,
+            ));
+        }
+
         DB::transaction(function () use ($userId): void {
             $removed = DB::table('role_user')
                 ->where('role_id', $this->getKey())
@@ -434,7 +493,7 @@ class Role extends Model
          * and a wrong one costs a thin audit row rather than a wrong guarantee. The row is written either
          * way: an authority change that went unrecorded is worse than one recorded without a name.
          */
-        $model = Permissions::userModel() ?? config('auth.providers.users.model');
+        $model = Permissions::userModel();
 
         if (! is_string($model) || ! class_exists($model) || ! is_subclass_of($model, Model::class)) {
             return null;

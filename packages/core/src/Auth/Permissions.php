@@ -294,27 +294,38 @@ final class Permissions
      */
     public static function userModel(): ?string
     {
-        if (! app()->bound('filament')) {
-            return null;
-        }
-
         /*
          * ⚠️ THE PANEL HANDLING THE REQUEST, NOT THE DEFAULT ONE — review found the second version still
          * asking for the default. A host may run several panels, and a non-default one may authenticate
          * through another provider entirely; asking the default then names a model from somebody else's
          * panel, so an audit row records an unrelated row with the same id.
          */
-        $panel = Filament::getCurrentPanel() ?? Filament::getDefaultPanel();
+        if (app()->bound('filament')) {
+            $panel = Filament::getCurrentPanel() ?? Filament::getDefaultPanel();
+            $provider = $panel->auth()->getProvider();
 
-        $provider = $panel->auth()->getProvider();
+            if (method_exists($provider, 'getModel')) {
+                $model = $provider->getModel();
 
-        if (! method_exists($provider, 'getModel')) {
-            return null;
+                if (is_string($model) && is_subclass_of($model, Model::class)) {
+                    return $model;
+                }
+            }
         }
 
-        $model = $provider->getModel();
+        /*
+         * ⚠️ THE CONFIGURED PROVIDER IS THE PANEL-LESS FALLBACK, AND IT LIVES HERE SO THERE IS ONE ANSWER.
+         * A seeder, a console command and the package test suite have no panel at all, and two callers
+         * needed this — the audit target and the lock-out guard's membership test — so resolving it twice
+         * was two places for the rule to drift. What it is NOT is a licence to skip the user: every caller
+         * still treats null as "cannot tell", and `isMemberOfCurrentOrg()` deliberately asks the
+         * AUTHENTICATED instance's own class instead, because there a wrong answer fails open.
+         */
+        $configured = config('auth.providers.users.model');
 
-        return is_string($model) && is_subclass_of($model, Model::class) ? $model : null;
+        return is_string($configured) && class_exists($configured) && is_subclass_of($configured, Model::class)
+            ? $configured
+            : null;
     }
 
     /**
