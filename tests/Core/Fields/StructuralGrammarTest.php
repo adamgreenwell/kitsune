@@ -2880,6 +2880,31 @@ describe('a zero-width atom is not free', function (): void {
         expect(Pattern::unpublishable($pattern))->toBeNull("[{$branches} branches] is inside the budget");
     })->with([1, 4, 8]);
 
+    it('counts an assertion that is expensive by ambiguity alone', function (): void {
+        /*
+         * ⚠️ "EXPENSIVE" IS NOT ONLY "SCANS", which review found the first version of this assuming. A
+         * FIXED-width assertion body can be ruinous by ambiguity: sixteen `(a|a)` groups then a failing
+         * `z` is 33 characters wide, holds no variable-width atom at all, and offers 65,536 ways to match.
+         *
+         * ⚠️ AND IT DIVERGED, which is worse than slow. Eight of those branches plus a final `a+` is 704
+         * characters and published; measured on a 5,000-`a` value, PCRE exhausts its backtrack limit and
+         * returns FALSE in 1.5 ms while Node returns TRUE in 3.3 ms — so the published schema accepted a
+         * value the server rejects, which is rule 3 rather than a budget. The cost model already priced
+         * that body at 65,536; nothing had asked it.
+         */
+        $body = str_repeat('(a|a)', 16).'z';
+        $letters = 'bcdefghijklmnopqrstuvwxyz';
+        $branches = array_map(
+            static fn (int $i): string => '(?='.$body.')'.$letters[$i],
+            range(0, 7),
+        );
+        $branches[] = 'a+';
+        $pattern = '^(?:'.implode('|', $branches).')$';
+
+        expect(mb_strlen($pattern))->toBeLessThanOrEqual(Pattern::MAX_LENGTH)
+            ->and(Pattern::unpublishable($pattern))->not->toBeNull('an ambiguous assertion body is expensive too');
+    });
+
     it('still steps over an assertion that costs nothing to run', function (int $branches): void {
         /*
          * ⚠️ A FIXED-WIDTH ASSERTION BODY IS FREE, so the branches keep their distinct first characters

@@ -2973,11 +2973,22 @@ final class Pattern
                  *   PCRE 10.48     one branch  4.1 ms                nine  36.5
                  *
                  * Nine is past the eight-grant ceiling, which is what the sum exists to enforce. So a
-                 * branch whose leading assertion can SCAN reports no first characters at all: unknown,
-                 * which shares a subject with everything and adds. A fixed-width assertion costs nothing
-                 * to run and is still stepped over.
+                 * branch whose leading assertion is EXPENSIVE reports no first characters at all: unknown,
+                 * which shares a subject with everything and adds. An assertion that costs nothing to run
+                 * is still stepped over.
+                 *
+                 * ⚠️ AND "EXPENSIVE" IS NOT ONLY "SCANS", which review found the first version assuming.
+                 * A FIXED-width body can be ruinous by ambiguity alone: sixteen `(a|a)` groups then a
+                 * failing `z` is 33 characters wide, holds no variable-width atom at all, and offers
+                 * 65,536 ways to match. Eight branches of those plus a final `a+` is 704 characters and
+                 * published — and it DIVERGES, which is worse than slow: measured on 5,000 `a`, PCRE
+                 * exhausts its backtrack limit and returns false in 1.5 ms while Node returns TRUE in
+                 * 3.3 ms, so the published schema accepts a value the server rejects. The cost model
+                 * already prices that body at 65,536; nothing had asked it.
                  */
-                if (self::atomRunExceeds(self::frameBody($atom['atom']), 0)) {
+                $body = self::frameBody($atom['atom']);
+
+                if (self::atomRunExceeds($body, 0) || self::ambiguityCost($body) > 1) {
                     return null;
                 }
 

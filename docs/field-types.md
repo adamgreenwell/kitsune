@@ -210,14 +210,17 @@ A named capture may use a name in **any script** — `(?<é>`, `(?<日本>`, `(?
 >
 > A denylist **fails open**: a construct nobody anticipated is accepted and published wrong, silently. An allowlist fails closed — an unknown construct is refused because it was never admitted, not because someone remembered it. Rule 3 says `apiSchema()` may only publish a constraint the consumer can enforce; a grammar makes that enforceable *by construction* rather than by enumeration.
 >
-> **Fresh evidence, measured 2026-09-12.** 234 candidate constructs, enumerated from six independent angles, run through one shared case file so PCRE and ECMAScript are asked the same question. At production fidelity — PCRE compiling `Pattern::delimit()`'s output, ECMAScript compiling the published source — **three constructs the screen accepted diverged, and a fourth made neither engine answer at all**. All three are now refused, so the current count is zero:
+> **Fresh evidence, measured 2026-09-12.** 235 candidate constructs, enumerated from six independent angles, run through one shared case file so PCRE and ECMAScript are asked the same question. At production fidelity — PCRE compiling `Pattern::delimit()`'s output, ECMAScript compiling the published source — **four constructs the screen accepted diverged, and a fifth made neither engine answer at all**. All four are now refused, so the current count is zero:
 >
 > | Pattern | PCRE | ECMAScript |
 > |---|---|---|
 > | `^(?=a)+a$` | compiles, matches | **refuses to compile** under `u` — *"Invalid quantifier"* |
 > | `(?<=(a\|aa))b\1$` | no match | **match** — PCRE orders lookbehind branches by length, ECMAScript by written order |
 > | `\p{Bidi_Mirrored}` | **428 codepoints** | **554** — both compile it and they mean different sets |
+> | eight `(?=(a\|a)×16 z)x` branches then `a+` | **no match** — backtrack limit exhausted, 1.5 ms | **match**, 3.3 ms |
 > | `^([a-zA-Z0-9]+\.?)+@x\.com$` | **no verdict** — backtrack limit exhausted, ~2ms | **no verdict** — still searching at the harness deadline |
+>
+> ⚠️ **The fourth is the newest and it came from review of the branch-grouping work.** A fixed-width assertion body can be ruinous by **ambiguity** alone — sixteen `(a|a)` groups then a failing `z` is 33 characters wide, holds no variable-width atom, and offers 65,536 ways to match — and the test that decided whether a leading assertion is costly asked only whether the body SCANS. Eight such branches plus a final `a+` fit in 704 characters and published. The cost model already priced that body at 65,536; nothing had asked it. ⚠️ It is the first divergence found on **this** version pair by a cost rule rather than a portability one, which is the shape the harness's own README warns about: the two questions are not separable, because a pattern that exhausts one engine's backtrack limit and not the other's is a divergence **about the same subject**.
 >
 > ⚠️ **The third was found by a sweep for false publishes, not by reading the allowlist**, and it arrived with a cost defect attached. Every boundary proof in `Pattern` asks PCRE whether an atom can match a character, so PCRE's narrower `Bidi_Mirrored` PROVED boundaries the consumer does not have: `^\p{Bidi_Mirrored}*\p{Bidi_Mirrored}*∂\p{Bidi_Mirrored}*X$` published as three adjacent variable-width atoms and measures **45.9 ms** at 250 characters, **363.4** at 500 and **2,924.5** at 1,000. A portability defect and a denial of service are the same defect here, because the proofs rest on membership.
 >
@@ -512,7 +515,7 @@ A named capture may use a name in **any script** — `(?<é>`, `(?<日本>`, `(?
 >
 > ### What this costs
 >
-> Measured, so it is a number rather than a worry: of 234 candidates, **two** are refused today that both engines agree on — `\p{Lower}` and `\p{Alpha}`, POSIX-style aliases missing from the property allowlist. Widening a list is a reviewable, testable act; a denylist's gaps are found by accident. **Both are now on it, and `\p{Upper}` with them** — the obvious third of the family, added at the same time so the allowlist does not carry an arbitrary subset.
+> Measured, so it is a number rather than a worry: of 235 candidates, **two** are refused today that both engines agree on — `\p{Lower}` and `\p{Alpha}`, POSIX-style aliases missing from the property allowlist. Widening a list is a reviewable, testable act; a denylist's gaps are found by accident. **Both are now on it, and `\p{Upper}` with them** — the obvious third of the family, added at the same time so the allowlist does not carry an arbitrary subset.
 >
 > ⚠️ **Added on a set comparison, not on compiling**, because compiling proves only that a name is accepted. Each alias was compared with its canonical spelling across all 1,114,112 codepoints in *both* engines and is exactly equal: `Lower`/`Lowercase` 2,595 members, `Alpha`/`Alphabetic` 147,421, `Upper`/`Uppercase` 2,006. `\p{Space}` is the reason this is measured one name at a time rather than adopted as a family — **PCRE compiles it and ECMAScript rejects the name**, so it stays out.
 >
