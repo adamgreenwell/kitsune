@@ -81,7 +81,13 @@ class BlockDirectionPlugin implements RichContentPlugin
     public const PACKAGE = 'kitsune/core';
 
     /**
-     * The node names the JS extension declares `dir` on, in one place and deduplicated.
+     * Every node name the extensions declare `dir` on, in one place and deduplicated.
+     *
+     * ⚠️ ONE LIST, NOT TWO. A round of this work split it into "starts at `auto`" and "preserves only",
+     * so that a block the author had just created would resolve its own direction while typing. The
+     * measurement killed it: `auto` also lands on the paragraph inside a list item, and `dir="auto"`
+     * reads an element's text EXCLUDING descendants that have their own direction, so the seeded list
+     * rendered `LI[auto]=ltr` around `P[auto]=rtl` — bullet on the wrong side. See `BlockDirection`.
      *
      * @return list<string>
      */

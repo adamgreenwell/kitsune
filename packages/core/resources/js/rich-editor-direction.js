@@ -46,27 +46,40 @@ export default () => {
             return [
                 {
                     // ⚠️ IN THE ORDER `BlockDirectionPlugin::nodes()` DERIVES THEM, so the test can assert
-                    // equality rather than set-equality — this list is a transcription of that one, and a
-                    // transcription that has been reordered is one nobody can check at a glance.
+                    // equality rather than set-equality — this list is a transcription of that one.
                     //
                     // ⚠️ THE LIST CONTAINERS ARE HERE TO PRESERVE, NOT TO SET. `Entry` never stamps `ul`
-                    // or `ol` — a direction on a container is inherited by items that should each resolve
-                    // their own — but it KEEPS one an author wrote, and then leaves the items unstamped
+                    // or `ol`, but it KEEPS one an author wrote and then leaves the items unstamped
                     // because they inherit it. Declaring the attribute with a null default is what makes
-                    // those two facts survive the editor; leaving the nodes out discarded the author's
-                    // only direction, and the next save replaced a uniform `rtl` with per-item `auto`.
+                    // both facts survive the editor.
                     types: ['paragraph', 'listItem', 'heading', 'blockquote', 'codeBlock', 'bulletList', 'orderedList'],
                     attributes: {
                         dir: {
+                            /*
+                             * ⚠️ NULL, AND `auto` HERE IS A MEASURED MISTAKE rather than an untried idea.
+                             * A default of `auto` would give a block the author has just created its own
+                             * direction while typing — which is a real gap, recorded in
+                             * `docs/accessibility-inventory.md` — but it also puts `dir="auto"` on the
+                             * paragraph INSIDE a list item, and `dir="auto"` resolves from an element's
+                             * text EXCLUDING any descendant that has its own direction. Measured in the
+                             * browser on the seeded list:
+                             *
+                             *   LI[auto]=ltr  wrapping  P[auto]=rtl
+                             *
+                             * The text flowed right-to-left and the item's own direction went
+                             * left-to-right, which puts the bullet on the wrong side. Closing the
+                             * authoring gap needs a handler that knows a block's parent, not a static
+                             * default.
+                             */
                             default: null,
                             /*
                              * ⚠️ NOT CARRIED ACROSS A SPLIT, and TipTap's default is the opposite —
                              * `keepOnSplit` defaults to true, and both `splitBlock` and `splitListItem`
                              * honour it. So pressing Enter at the end of a stored `<li dir="rtl">` gave
-                             * the NEW item a copied `dir="rtl"`, which then renders English text
+                             * the NEW item a copied `dir="rtl"`, which renders English text
                              * right-to-left and which `Entry` stores as an explicit choice rather than
                              * replacing with `auto`. A direction is a property of a block's content, so a
-                             * block with no content yet has no direction to inherit.
+                             * block with no content yet has none to inherit.
                              */
                             keepOnSplit: false,
                             parseHTML: (element) => {

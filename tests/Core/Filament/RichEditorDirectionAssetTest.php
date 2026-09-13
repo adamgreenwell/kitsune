@@ -86,19 +86,21 @@ it('preserves a direction on a list without inventing one', function (): void {
         ->and(BlockDirectionPlugin::nodes())->toContain('orderedList');
 
     /*
-     * ⚠️ AND THE DEFAULT IS NULL ON BOTH SIDES, which is the property that keeps "preserve" from becoming
-     * "set". Filament's own `textDirection` extension is not used precisely because its option defaults a
-     * direction onto every node type, containers included.
+     * ⚠️ AND THE CONTAINER GROUP'S DEFAULT IS NULL ON BOTH SIDES, which is the property that keeps
+     * "preserve" from becoming "set". Filament's own `textDirection` extension is not used precisely
+     * because its option defaults a direction onto every node type at once, containers included — the two
+     * groups here exist so a text-bearing block can start at `auto` while a list starts at nothing.
      */
-    $attributes = (new BlockDirection)->addGlobalAttributes()[0]['attributes']['dir'];
+    $group = (new BlockDirection)->addGlobalAttributes()[0];
 
-    expect($attributes['default'])->toBeNull();
+    expect($group['attributes']['dir']['default'])->toBeNull();
 
     $javascript = (string) file_get_contents(
         dirname(__DIR__, 3).'/packages/core/resources/js/rich-editor-direction.js',
     );
 
-    expect(str_contains($javascript, 'default: null'))->toBeTrue('the browser half must not default it either');
+    expect(str_contains($javascript, 'default: null'))
+        ->toBeTrue('the browser half must not default a direction either');
 
     /*
      * ⚠️ AND IT MUST NOT SURVIVE A SPLIT. TipTap's `keepOnSplit` defaults to TRUE, so pressing Enter at the
@@ -113,9 +115,9 @@ it('preserves a direction on a list without inventing one', function (): void {
 it('declares the same node names in PHP and in the browser', function (): void {
     /*
      * ⚠️ THE JS IS READ RATHER THAN TRUSTED. The browser half cannot import a PHP constant, so the node
-     * list appears in both languages and this is what keeps them the same list. The JS is parsed for its
-     * `types` array rather than searched for each name, so a name left in the file and removed from the
-     * array is caught too.
+     * lists appear in both languages and this is what keeps them the same lists. Both groups are checked,
+     * because the groups are the decision: which nodes START at `auto` and which only PRESERVE what an
+     * author wrote.
      */
     $javascript = (string) file_get_contents(
         dirname(__DIR__, 3).'/packages/core/resources/js/rich-editor-direction.js',
@@ -126,6 +128,34 @@ it('declares the same node names in PHP and in the browser', function (): void {
     preg_match_all("/'([a-zA-Z]+)'/", $found[1], $names);
 
     expect($names[1])->toBe(BlockDirectionPlugin::nodes());
+});
+
+it('starts every block at nothing, which a measurement decided', function (): void {
+    /*
+     * ⚠️ A DEFAULT OF `auto` WOULD CLOSE A REAL GAP AND OPEN A WORSE ONE, and the measurement is the whole
+     * argument. Review asked for one: a block the author has just created carries no `dir`, so Arabic typed
+     * into it renders in the chrome's direction until the value is saved and `Entry` stamps it.
+     *
+     * But `auto` on every text-bearing node also lands on the paragraph INSIDE a list item, and `dir="auto"`
+     * resolves from an element's text EXCLUDING any descendant that has its own direction. Measured in the
+     * browser on the seeded list, with the default in place:
+     *
+     *   LI[auto]=ltr   wrapping   P[auto]=rtl
+     *
+     * The text flowed right-to-left while the item's own direction went left-to-right — the bullet on the
+     * wrong side, in content that was rendering correctly before. A top-level paragraph and one inside a
+     * list item are the same node type, so no static default separates them; the gap is recorded in
+     * `docs/accessibility-inventory.md` instead.
+     */
+    $group = (new BlockDirection)->addGlobalAttributes()[0];
+
+    expect($group['types'])->toBe(BlockDirectionPlugin::nodes())
+        ->and($group['attributes']['dir']['default'])->toBeNull();
+
+    // A block with no `dir` in the stored HTML gains nothing, which is what keeps the list rendering right.
+    $document = new DOMDocument;
+
+    expect($group['attributes']['dir']['parseHTML']($document->createElement('p')))->toBeNull();
 });
 
 it('keeps the same three directions on both sides', function (): void {
@@ -155,6 +185,11 @@ it('keeps the same three directions on both sides', function (): void {
         expect($attributes['parseHTML']($element))->toBe($direction);
     }
 
+    /*
+     * ⚠️ AND A VALUE THAT IS NOT A DIRECTION FALLS BACK TO THE GROUP'S DEFAULT rather than to null, which
+     * is the same thing a missing attribute does: `dir="sideways"` says nothing about direction, so the
+     * block is treated as having said nothing.
+     */
     foreach (['', 'sideways', 'LTR', 'auto '] as $rejected) {
         $element = $document->createElement('p');
         $element->setAttribute('dir', $rejected);

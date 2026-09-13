@@ -37,50 +37,68 @@ class BlockDirection extends Extension
     public static $name = 'kitsuneBlockDirection';
 
     /**
-     * ⚠️ DECLARED WITHOUT A DEFAULT, which is the whole difference between this and the `textDirection`
-     * extension Filament already ships. That one takes a `direction` option and makes it the default for
-     * every node type, including the `ul` and `ol` that `Entry` deliberately leaves undirected — and a
-     * direction on a container is inherited by children that should each resolve their own, which is the
-     * per-field failure this issue exists to undo, one level down. Here the attribute round-trips when it
-     * is present and is invented when it is not.
-     *
      * @return array<int, array<string, mixed>>
      */
     public function addGlobalAttributes(): array
     {
         return [
-            [
-                'types' => BlockDirectionPlugin::nodes(),
-                'attributes' => [
-                    'dir' => [
-                        'default' => null,
-                        /*
-                         * ⚠️ ONLY THE THREE VALUES `Entry` WILL STORE. Anything else on a stored block is
-                         * somebody's stray attribute rather than a direction, and carrying it through the
-                         * document model would launder it into the editor's own output — the sanitiser
-                         * allows `dir`, and what it allows is `ltr`, `rtl` and `auto`.
-                         */
-                        'parseHTML' => function ($DOMNode): ?string {
-                            if (! $DOMNode instanceof DOMElement) {
-                                return null;
-                            }
+            self::declaredOn(BlockDirectionPlugin::nodes(), null),
+        ];
+    }
 
-                            $direction = $DOMNode->getAttribute('dir');
+    /**
+     * One group of node types, and the direction a block of those types starts with.
+     *
+     * ⚠️ THE DEFAULT IS NULL, AND `auto` IS A MEASURED MISTAKE rather than an untried idea. Review asked
+     * for a default so a block the author has just created resolves its own direction while typing — a real
+     * gap, since `Entry` stamps only on the way INTO storage. But `auto` on every text-bearing node also
+     * puts it on the paragraph INSIDE a list item, and `dir="auto"` resolves from an element's text
+     * EXCLUDING any descendant that has its own direction. Measured in the browser on the seeded list:
+     *
+     *   LI[auto]=ltr  wrapping  P[auto]=rtl
+     *
+     * The text flowed right-to-left while the item's own direction went left-to-right, which puts the
+     * bullet on the wrong side — a visible regression in exchange for the gap it closed. No static default
+     * can tell a top-level paragraph from one inside a list item, because they are the same node type; that
+     * needs a handler which knows a block's parent. The gap is recorded in
+     * `docs/accessibility-inventory.md` rather than traded for this.
+     *
+     * @param  list<string>  $types
+     * @return array<string, mixed>
+     */
+    private static function declaredOn(array $types, ?string $default): array
+    {
+        return [
+            'types' => $types,
+            'attributes' => [
+                'dir' => [
+                    'default' => $default,
+                    /*
+                     * ⚠️ ONLY THE THREE VALUES `Entry` WILL STORE. Anything else on a stored block is
+                     * somebody's stray attribute rather than a direction, and carrying it through the
+                     * document model would launder it into the editor's own output — the sanitiser allows
+                     * `dir`, and what it allows is `ltr`, `rtl` and `auto`.
+                     */
+                    'parseHTML' => function ($DOMNode) use ($default): ?string {
+                        if (! $DOMNode instanceof DOMElement) {
+                            return $default;
+                        }
 
-                            return in_array($direction, ['ltr', 'rtl', 'auto'], true) ? $direction : null;
-                        },
-                        /*
-                         * ⚠️ NULL RATHER THAN AN EMPTY ARRAY when there is nothing to write, because the
-                         * library reads null as "this attribute contributes no markup". An empty array
-                         * would be a `dir=""`, which is a direction — the browser reads it as `ltr` — on
-                         * every block that never had one.
-                         */
-                        'renderHTML' => function ($attributes): ?array {
-                            $direction = $attributes->dir ?? null;
+                        $direction = $DOMNode->getAttribute('dir');
 
-                            return $direction === null ? null : ['dir' => $direction];
-                        },
-                    ],
+                        return in_array($direction, ['ltr', 'rtl', 'auto'], true) ? $direction : $default;
+                    },
+                    /*
+                     * ⚠️ NULL RATHER THAN AN EMPTY ARRAY when there is nothing to write, because the
+                     * library reads null as "this attribute contributes no markup". An empty array would be
+                     * a `dir=""`, which is a direction — the browser reads it as `ltr` — on every block
+                     * that never had one.
+                     */
+                    'renderHTML' => function ($attributes): ?array {
+                        $direction = $attributes->dir ?? null;
+
+                        return $direction === null ? null : ['dir' => $direction];
+                    },
                 ],
             ],
         ];

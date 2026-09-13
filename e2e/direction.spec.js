@@ -346,6 +346,25 @@ test.describe('a field value carries its own direction', () => {
          */
     });
 
+    /*
+     * ⚠️ WHAT IS NOT ASSERTED, AND WHY THE OBVIOUS FIX FOR IT IS WRONG. A block the author has just
+     * created has no stored direction to preserve — `Entry` stamps `auto` on the way INTO storage, which
+     * is too late to help while typing — so Arabic typed into a NEW paragraph renders in the chrome's
+     * direction until the value is saved. Review asked for a default of `auto` to close that.
+     *
+     * Measured, that default costs more than it buys. It also lands on the paragraph INSIDE a list item,
+     * and `dir="auto"` resolves from an element's text EXCLUDING any descendant that has its own
+     * direction — so on the seeded list the browser reported:
+     *
+     *   LI[auto]=ltr   wrapping   P[auto]=rtl
+     *
+     * The text flowed right-to-left while the item's own direction went left-to-right, which puts the
+     * bullet on the wrong side. No static default can tell a top-level paragraph from one inside a list
+     * item, because they are the same node type; closing the gap needs a handler that knows a block's
+     * parent, and that is recorded in `docs/accessibility-inventory.md` rather than traded for a visible
+     * regression in already-stored content.
+     */
+
     test('typing RTL text into an empty field flips it live', async ({ page }) => {
         // `dir="auto"` is evaluated by the browser as the value changes, so a new entry
         // gets the same behaviour without the server knowing anything about direction.
