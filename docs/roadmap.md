@@ -223,7 +223,37 @@ Data model is specified in [`architecture.md`](architecture.md) §3.
 
 **Done when:** a non-developer builds a working "Products" entity with ten field types, relations and permissions entirely through the admin, on 100k rows, with no query over 200ms.
 
-**Where that stands.** The entity, its field types, its relations and its indexing are done and driven from the admin — the builder above is what makes that sentence true rather than aspirational. **Three** things are not: **permissions**, which wait on Phase 3's RBAC (see `EntryPolicy` above); **revisions and drafts**, the last unchecked line of the checklist; and the **100k-row / 200ms** measurement, which needs a seeded corpus rather than the floor benchmark that exists — `benchmark:storage` proves the shape holds at the ADR-027 floor, not that it holds at scale. None is a surprise and none is hidden: the checklist above is what shipped, and this paragraph is what "done" still needs.
+**Where that stands.** The entity, its field types, its relations and its indexing are done and driven from the admin — the builder above is what makes that sentence true rather than aspirational. **One** thing is not: **permissions**, which wait on Phase 3's RBAC (see `EntryPolicy` above).
+
+⚠️ **This paragraph used to say three, and two of them were stale — [#80](https://github.com/adamgreenwell/kitsune/issues/80).** It called revisions "the last unchecked line of the checklist" after that line had been ticked, and it said the 100k-row measurement was missing because `benchmark-storage` only measured the ADR-027 floor — confusing it with `benchmark-floor`, while the 100k table sits twenty lines up this same document. Prose describing the state of something else, not derived from it.
+
+✅ **The 100k-row / 200ms half is measured, 2026-09-13**, via `php artisan kitsune:benchmark-admin` — a third benchmark, and the first to issue **requests** rather than queries. Every admin page shape at 100k entries on SQLite, warmed, with query counts beside the wall-clock:
+
+| page | page ms | queries | slowest query |
+|---|---|---|---|
+| dashboard | 18.8 | 11 | 0.07 |
+| entry list, page 1 | 59.9 | 17 | 18.89 |
+| entry list, last page (offset 99,990) | 91.7 | 17 | 24.49 |
+| entry create | 30.3 | 15 | 0.69 |
+| entry edit | 31.9 | 19 | 0.10 |
+| entry view | 29.4 | 16 | 0.10 |
+| related records | 27.9 | 15 | 0.12 |
+| entry type builder | 30.6 | 13 | 0.15 |
+
+⚠️ **And it found a defect the query benchmark could not, which is the whole argument for it.** `benchmark-storage` reported the list page fast at 100k rows — probing `order by published_at`, which nothing in the admin orders by. The entry list orders by `updated_at desc` and **nothing indexed it**, so every request paid a full sort of every row in the site. The list query alone, median of five:
+
+| | page 1 | offset 99,990 |
+|---|---|---|
+| without the index | 22.51 ms | 153.65 ms |
+| with `(site_id, entry_type_id, updated_at)` | **0.07 ms** | **16.65 ms** |
+
+Through real requests the last page went from **214.6 ms to 91.7 ms**, and the slowest statement on the list page is now the pagination `count(*)` rather than the sort. A benchmark measuring a query the application does not issue is a benchmark that agrees with you.
+
+The index is three columns rather than four: covering the `id` tiebreak as well was measured and made no difference outside noise, and a fourth column on the hottest table in the schema costs write throughput for nothing. ⚠️ The first corpus hid that, because it stamped every row with the same `now()` — so `updated_at` discriminated nothing, the ordering fell entirely to `id`, and the four-column index looked necessary. The benchmark spreads the corpus over time now.
+
+`EntryListSortIsIndexedTest` keeps it true: it reads `EntryResource::DEFAULT_SORT` rather than naming a column, so changing the sort fails the build until an index covers the new one.
+
+**What the command does not measure, said plainly:** sorting and searching from the table's own controls, which Livewire drives over POST rather than through a URL, and browser render time. It measures server cost for every page shape a GET reaches.
 
 ## Phase 5 — Blueprints
 

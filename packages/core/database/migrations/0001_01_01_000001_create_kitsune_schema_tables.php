@@ -130,6 +130,31 @@ return new class extends Migration
 
             // ADR-021: composite indexes lead with the scope key.
             $table->index(['site_id', 'entry_type_id', 'status']);
+
+            /*
+             * ⚠️ THE SORT THE ADMIN ACTUALLY USES, and nothing indexed it until something measured the
+             * admin. `kitsune:benchmark-storage` had reported the list page fast at 100k rows — but it
+             * probed `order by published_at`, and the entry list orders by `updated_at desc, id desc`.
+             * A benchmark measuring a query the application does not issue is a benchmark that agrees
+             * with you. The list query alone, on SQLite at 100k entries, median of five:
+             *
+             *                      page 1      offset 99,990
+             *   without the index  22.51 ms    153.65 ms
+             *   with it             0.07 ms     16.65 ms
+             *
+             * Through real admin requests that moves the last page from 214.6 ms to 91.7 ms, and leaves
+             * the pagination `count(*)` as the slowest statement on the page rather than the sort.
+             *
+             * ⚠️ THREE COLUMNS, NOT FOUR. Adding `id` to cover the tiebreak was measured and made no
+             * difference outside noise, and a fourth column on the hottest table in the schema costs
+             * write throughput for nothing — ADR-006's trade, taken in the direction the numbers point.
+             *
+             * ⚠️ AND THE FIRST CORPUS HID THE ANSWER, which is worth recording: it stamped every row with
+             * the same `now()`, so `updated_at` discriminated nothing and the ordering fell entirely to
+             * `id`. On that data the four-column index looked necessary. The benchmark now spreads the
+             * corpus over time, because a measurement on degenerate data is a measurement of the data.
+             */
+            $table->index(['site_id', 'entry_type_id', 'updated_at']);
             $table->unique(['site_id', 'entry_type_id', 'slug']);
             $table->unique(['translation_group', 'site_id']);
         });
