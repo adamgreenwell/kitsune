@@ -2421,30 +2421,33 @@ describe('a prefix outside a bracket is charged for what it rescans inside', fun
      * body cannot see. Anything a prefix inside the body rescans is left to that recursion. The two
      * charges are then for two different prefixes.
      *
-     * ⚠️ THE CEILING BITES AT FIVE OF THESE, went to nine for one commit, and is back at five — which is
-     * worth recording as a sequence rather than a state. #73's atom-against-atom primitive could tell that
-     * one branch begins with `a` and the other with `z`, so the group priced as one way to match rather
-     * than two. Then review found that a branch whose LEADING ASSERTION can scan is engaged at every
-     * position whatever it consumes afterwards — nine branches of `(?=a*a*b)c|(?=a*a*d)e|…` published at
-     * 325.8 ms on Node and 36.5 on PCRE, both exactly nine times one branch — so such a branch now reports
-     * no first characters at all and shares a subject with everything.
+     * ⚠️ THE CEILING IS NINE HERE, and it took three passes to get there — worth recording as a sequence,
+     * because each pass was a measurement correcting the one before.
      *
-     * `(?=a+c)a` is one of those, so this shape sums again. It is conservative by a factor of two against
-     * the measurement — eight of these is 288.4 ms, the eight grants the model licenses — and that is the
-     * direction to be wrong in: the alternative published a shape at 325.8 ms.
+     *   five   the alternation test could not read a branch's lead through a leading assertion, so
+     *          `(?:(?=a+c)a|z)` priced as two ways to match rather than one
+     *   nine   #73's atom-against-atom primitive could: one branch begins with `a`, the other with `z`
+     *   five   review found a branch whose leading assertion SCANS is engaged wherever the branch is
+     *          tried, so such a branch reported no first characters at all and shared with everything
+     *   nine   review found THAT too coarse: an expensive assertion only works where its own BODY can
+     *          begin, so the branch is engaged there — `(?=a+c)`'s body begins with `a` or `c`, and the
+     *          `z` branch shares neither
+     *
+     * Measured on Node 22.23.2 with a 5,000-character all-`a` value: eight of these is 286.7 ms — the
+     * eight grants the model licenses — and nine is 320.7 ms.
      */
     it('refuses more alternatives than the budget allows', function (int $branches): void {
         $pattern = implode('|', array_fill(0, $branches, '^a+(?:(?=a+c)a|z)'));
 
         expect(mb_strlen($pattern))->toBeLessThanOrEqual(Pattern::MAX_LENGTH)
             ->and(Pattern::unpublishable($pattern))->toContain('ways to retry');
-    })->with([5, 8, 40]);
+    })->with([9, 40]);
 
     it('leaves the alternatives the budget allows alone', function (int $branches): void {
         $pattern = implode('|', array_fill(0, $branches, '^a+(?:(?=a+c)a|z)'));
 
         expect(Pattern::unpublishable($pattern))->toBeNull("[{$branches} alternatives] is inside the budget");
-    })->with([1, 2, 4]);
+    })->with([1, 2, 4, 8]);
 
     /*
      * ⚠️ AND THE CHARGE HAD TO READ ITS OWN ATOMS, which is the sentence `ownAtoms()` already carries for
@@ -2903,6 +2906,28 @@ describe('a zero-width atom is not free', function (): void {
 
         expect(mb_strlen($pattern))->toBeLessThanOrEqual(Pattern::MAX_LENGTH)
             ->and(Pattern::unpublishable($pattern))->not->toBeNull('an ambiguous assertion body is expensive too');
+    });
+
+    it('keeps branches apart when their assertions cannot both engage', function (): void {
+        /*
+         * ⚠️ "EXPENSIVE" DOES NOT MEAN "EXPENSIVE EVERYWHERE", which review found the first version of this
+         * assuming. An assertion only does its work at a position its own body can match: nine branches of
+         * `(?=(a|a)×13z)A|(?=(b|b)×13z)B|…` are 653 characters, each carrying 8,192 ambiguous paths, and
+         * they measure about 0.11 ms in Node and 0.24 in PCRE — because a subject character engages exactly
+         * one of them, and `(b|b)` fails at once where the subject holds an `a`.
+         *
+         * Treating every costly assertion as engaged everywhere refused this, which would block an upgrade
+         * over a pattern nothing can make slow. The branch is engaged where the assertion's BODY can begin.
+         */
+        $letters = 'abcdefghijklmnopqrstuvwxyz';
+        $pattern = '^(?:'.implode('|', array_map(
+            static fn (int $i): string => '(?='.str_repeat('('.$letters[$i].'|'.$letters[$i].')', 13).'z)'
+                .strtoupper($letters[$i]),
+            range(0, 8),
+        )).')$';
+
+        expect(mb_strlen($pattern))->toBeLessThanOrEqual(Pattern::MAX_LENGTH)
+            ->and(Pattern::unpublishable($pattern))->toBeNull('one character engages exactly one branch');
     });
 
     it('still steps over an assertion that costs nothing to run', function (int $branches): void {

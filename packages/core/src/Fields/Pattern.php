@@ -2989,7 +2989,29 @@ final class Pattern
                 $body = self::frameBody($atom['atom']);
 
                 if (self::atomRunExceeds($body, 0) || self::ambiguityCost($body) > 1) {
-                    return null;
+                    /*
+                     * ⚠️ WHERE THE ASSERTION CAN BEGIN, NOT "ANYWHERE" — review found the first version
+                     * answering the coarser question and refusing a flat shape for it. An expensive
+                     * assertion only does its work at a position its own body can match: nine branches of
+                     * `(?=(a|a)×13z)A|(?=(b|b)×13z)B|…` are 653 characters and measure about 0.11 ms in
+                     * Node and 0.24 in PCRE, because a subject character engages exactly one of them —
+                     * `(b|b)` fails at once where the subject holds an `a`. Refusing that blocks an
+                     * upgrade over a pattern nothing can make slow.
+                     *
+                     * So the branch is engaged where the assertion's BODY can begin, and the walk goes on
+                     * to the branch's own first character as well: a superset of the truth, which can only
+                     * group more branches together. `(?=a*a*b)c` and `(?=a*a*d)e` both begin with `a`
+                     * inside the assertion and still add up, which is the P1 this replaced.
+                     */
+                    $inside = self::firstCharacterAtomsOf($body, $depth + 1);
+
+                    if ($inside === null) {
+                        return null;
+                    }
+
+                    foreach ($inside as $one) {
+                        $first[] = $one;
+                    }
                 }
 
                 continue;
