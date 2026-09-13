@@ -158,6 +158,40 @@ it('starts every block at nothing, which a measurement decided', function (): vo
     expect($group['attributes']['dir']['parseHTML']($document->createElement('p')))->toBeNull();
 });
 
+it('gives a new block auto everywhere but inside a list item', function (): void {
+    /*
+     * ⚠️ THE LIST THE TRANSACTION USES IS NOT THE LIST THE ATTRIBUTE IS DECLARED ON — issue #76. Declaring
+     * `dir` keeps what is already there; the handler supplies one for a block the author has just made,
+     * which has nothing stored to keep.
+     *
+     * ⚠️ `listItem` IS ABSENT AND THAT IS THE MEASUREMENT, not a preference: an item's text lives in a
+     * paragraph inside it, and `dir="auto"` resolves from an element's text EXCLUDING any descendant with
+     * its own direction — so `auto` on that paragraph left `LI[auto]=ltr` wrapping `P[auto]=rtl`, bullet on
+     * the wrong side. `e2e/direction.spec.js` asserts both halves in a browser; this keeps the two
+     * languages agreeing about which nodes they are.
+     */
+    expect(BlockDirectionPlugin::automaticNodes())
+        ->toBe(['paragraph', 'heading', 'blockquote', 'codeBlock'])
+        ->and(BlockDirectionPlugin::automaticNodes())->not->toContain('listItem')
+        ->and(BlockDirectionPlugin::automaticNodes())->not->toContain('bulletList')
+        ->and(BlockDirectionPlugin::automaticNodes())->not->toContain('orderedList');
+
+    $javascript = (string) file_get_contents(
+        dirname(__DIR__, 3).'/packages/core/resources/js/rich-editor-direction.js',
+    );
+
+    expect(preg_match('/const AUTOMATIC = \[([^\]]*)\]/', $javascript, $found))
+        ->toBe(1, 'the module declares no AUTOMATIC list');
+
+    preg_match_all("/'([a-zA-Z]+)'/", $found[1], $names);
+
+    expect($names[1])->toBe(BlockDirectionPlugin::automaticNodes(), 'the two languages disagree about it');
+
+    // And the handler that uses it is there, with the parent check that is the point of doing it in one.
+    expect(str_contains($javascript, 'appendTransaction'))->toBeTrue()
+        ->and(str_contains($javascript, "parent.type.name === 'listItem'"))->toBeTrue();
+});
+
 it('keeps the same three directions on both sides', function (): void {
     /*
      * ⚠️ `ltr`, `rtl` and `auto` — the three the sanitiser admits and the model writes. A fourth value

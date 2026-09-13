@@ -81,6 +81,34 @@ class BlockDirectionPlugin implements RichContentPlugin
     public const PACKAGE = 'kitsune/core';
 
     /**
+     * The node types a NEWLY CREATED block may be given `auto` on — issue #76.
+     *
+     * ⚠️ NOT THE LIST THE ATTRIBUTE IS DECLARED ON, and the difference is the whole of that issue.
+     * Declaring `dir` keeps what is already there; this is about supplying one for a block the author has
+     * just made, which has nothing stored to keep. `Entry` stamps on the way INTO storage, which is too
+     * late to help while typing.
+     *
+     * ⚠️ `listItem` IS ABSENT, MEASURED. An item's text lives in a paragraph inside it, and `dir="auto"`
+     * resolves from an element's text EXCLUDING any descendant that has its own direction — so giving that
+     * paragraph `auto` left `LI[auto]=ltr` wrapping `P[auto]=rtl`: text flowing right-to-left with the
+     * bullet on the wrong side. The browser-side handler skips a paragraph whose parent is a list item,
+     * which a static default could not do, and this list is the PHP half of that decision so the two
+     * cannot drift.
+     *
+     * The containers are absent for the reason they always were: a direction on a list is inherited by
+     * every item.
+     *
+     * @return list<string>
+     */
+    public static function automaticNodes(): array
+    {
+        return array_values(array_diff(
+            self::nodes(),
+            ['listItem', 'bulletList', 'orderedList'],
+        ));
+    }
+
+    /**
      * Every node name the extensions declare `dir` on, in one place and deduplicated.
      *
      * ⚠️ ONE LIST, NOT TWO. A round of this work split it into "starts at `auto`" and "preserves only",

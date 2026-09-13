@@ -346,24 +346,69 @@ test.describe('a field value carries its own direction', () => {
          */
     });
 
-    /*
-     * ⚠️ WHAT IS NOT ASSERTED, AND WHY THE OBVIOUS FIX FOR IT IS WRONG. A block the author has just
-     * created has no stored direction to preserve — `Entry` stamps `auto` on the way INTO storage, which
-     * is too late to help while typing — so Arabic typed into a NEW paragraph renders in the chrome's
-     * direction until the value is saved. Review asked for a default of `auto` to close that.
-     *
-     * Measured, that default costs more than it buys. It also lands on the paragraph INSIDE a list item,
-     * and `dir="auto"` resolves from an element's text EXCLUDING any descendant that has its own
-     * direction — so on the seeded list the browser reported:
-     *
-     *   LI[auto]=ltr   wrapping   P[auto]=rtl
-     *
-     * The text flowed right-to-left while the item's own direction went left-to-right, which puts the
-     * bullet on the wrong side. No static default can tell a top-level paragraph from one inside a list
-     * item, because they are the same node type; closing the gap needs a handler that knows a block's
-     * parent — filed as issue #76 and recorded in `docs/accessibility-inventory.md` — rather than traded
-     * for a visible regression in already-stored content.
-     */
+    test('a block authored right now resolves its own direction, before any save', async ({ page }) => {
+        /*
+         * ⚠️ THE CASE THE STORAGE FIX CANNOT REACH, and the one an author meets first. A block that has
+         * just been created has no stored direction to preserve: `Entry` stamps `auto` on the way INTO
+         * storage, which is too late to help while typing. So Arabic typed into a new paragraph rendered in
+         * the chrome's direction until the value was saved — the complaint #39 opens with, surviving in the
+         * one place #67 was meant to fix it. Issue #76 carried it; this is the handler it asked for.
+         *
+         * ⚠️ A DEFAULT OF `auto` WOULD HAVE BEEN WRONG, measured: it also lands on the paragraph INSIDE a
+         * list item, and `dir="auto"` resolves from an element's text EXCLUDING any descendant that has its
+         * own direction — so the seeded list rendered `LI[auto]=ltr` around `P[auto]=rtl`, bullet on the
+         * wrong side. A transaction can see a block's PARENT, which is what a static default cannot, so a
+         * list item's paragraph is left alone. The test below this one is the half that guards it.
+         *
+         * ⚠️ THE CREATE PAGE, because that is where a caret can be placed: the editor on an existing
+         * entry's edit page cannot be focused from this harness — every attempt lands at the document
+         * start — while an empty editor takes a click.
+         */
+        await page.goto(`/admin/${SITE}/c/article/create`);
+
+        const editor = page.locator('.tiptap[contenteditable="true"]').first();
+        await expect(editor).toBeVisible();
+        await editor.click();
+
+        await page.keyboard.type('ملاحظات جديدة');
+        await page.keyboard.press('Enter');
+        await page.keyboard.type('A second block, in English.');
+
+        const blocks = editor.locator('p');
+        await expect(blocks).toHaveCount(2);
+
+        // Each block resolves from its OWN text, in an LTR admin, with nothing saved yet.
+        expect(await resolvedDirection(blocks.nth(0))).toBe('rtl');
+        expect(await resolvedDirection(blocks.nth(1))).toBe('ltr');
+    });
+
+    test('and filling a new block does not disturb a list', async ({ page }) => {
+        /*
+         * ⚠️ THE GUARD ON THE HANDLER ABOVE. It gives a new text-bearing block `auto`, and it must not give
+         * one to the paragraph inside a list item: that paragraph's text is what the ITEM's own `auto`
+         * reads, and a direction on the paragraph takes it out of the item's reach. Measured with the
+         * default that did that: `LI[auto]=ltr` wrapping `P[auto]=rtl`.
+         *
+         * So this asserts the shape as well as the resolution — the items carry the direction, their
+         * paragraphs carry none, and the list carries none.
+         */
+        await page.goto(`/admin/${SITE}/c/article`);
+        await page.getByRole('link', { name: ARABIC_TITLE }).first().click();
+        await page.waitForURL(/\/(edit|\d+)$/);
+
+        const editor = page.locator('.tiptap').first();
+        await expect(editor).toBeVisible();
+
+        const shape = await editor.evaluate((el) => [...el.querySelectorAll('ul li, ul li p, ul')]
+            .map((node) => node.tagName + '[' + (node.getAttribute('dir') || '-') + ']')
+            .join(' '));
+
+        // Document order, so the items and their paragraphs interleave.
+        expect(shape).toBe('UL[-] LI[auto] P[-] LI[auto] P[-]');
+
+        const arabicItem = editor.locator('li', { hasText: 'تنظيف' }).first();
+        expect(await resolvedDirection(arabicItem)).toBe('rtl');
+    });
 
     test('typing RTL text into an empty field flips it live', async ({ page }) => {
         // `dir="auto"` is evaluated by the browser as the value changes, so a new entry

@@ -39,6 +39,17 @@ export default () => {
     /** The three values `Entry` will store; anything else is somebody else's attribute. */
     const KEPT = ['ltr', 'rtl', 'auto']
 
+    /*
+     * ⚠️ THE NODE TYPES A NEW BLOCK MAY BE GIVEN `auto` ON, which is NOT the list the attribute is declared
+     * on. `listItem` is absent deliberately and measurably: `dir="auto"` resolves from an element's text
+     * EXCLUDING any descendant that has its own direction, and a list item's text lives in a paragraph
+     * inside it — so putting `auto` on that paragraph left `LI[auto]=ltr` wrapping `P[auto]=rtl`, text
+     * flowing right-to-left with the bullet on the wrong side. Issue #76 records that measurement; this is
+     * the handler it asked for, and the point of doing it in a transaction rather than as a default is that
+     * a transaction can see a block's PARENT.
+     */
+    const AUTOMATIC = ['paragraph', 'heading', 'blockquote', 'codeBlock']
+
     return Extension.create({
         name: 'kitsuneBlockDirection',
 
@@ -91,6 +102,66 @@ export default () => {
                         },
                     },
                 },
+            ]
+        },
+
+        /*
+         * ⚠️ THE HALF A STATIC DEFAULT CANNOT DO — issue #76. A block the author has just created has no
+         * stored direction to preserve: `Entry` stamps `auto` on the way INTO storage, which is too late to
+         * help while typing, so Arabic typed into a new paragraph rendered in the CHROME's direction until
+         * the value was saved. That is the complaint #39 opens with, surviving in the one place #67 was
+         * meant to fix it.
+         *
+         * A default of `auto` on the attribute closes it and breaks list rendering — see `AUTOMATIC` above.
+         * A transaction can do what a default cannot: look at the block's PARENT, and leave a list item's
+         * paragraph alone.
+         *
+         * ⚠️ IT ONLY EVER FILLS A GAP. A block that already carries a direction is untouched, including an
+         * author's explicit `rtl`; a block inside a list item is untouched; and nothing is written when the
+         * document has not changed. So this cannot override a choice — it supplies one where the editor
+         * would otherwise have shown the chrome's.
+         */
+        addProseMirrorPlugins() {
+            const { Plugin, PluginKey } = window.FilamentRichEditor.tiptap.pmState
+
+            return [
+                new Plugin({
+                    key: new PluginKey('kitsuneBlockDirectionForNewBlocks'),
+
+                    appendTransaction: (transactions, oldState, newState) => {
+                        if (!transactions.some((transaction) => transaction.docChanged)) {
+                            return null
+                        }
+
+                        const tr = newState.tr
+                        let filled = false
+
+                        newState.doc.descendants((node, pos, parent) => {
+                            if (!AUTOMATIC.includes(node.type.name)) {
+                                return
+                            }
+
+                            // Already decided — by the author, or by `Entry` on the way out of storage.
+                            if (node.attrs.dir) {
+                                return
+                            }
+
+                            /*
+                             * ⚠️ A PARAGRAPH INSIDE A LIST ITEM IS THE ONE TO LEAVE ALONE, and it is why
+                             * this is a transaction. The item carries the direction for its own text, and
+                             * `auto` on the paragraph would take that text out of the item's reach.
+                             */
+                            if (parent && parent.type.name === 'listItem') {
+                                return
+                            }
+
+                            tr.setNodeAttribute(pos, 'dir', 'auto')
+                            filled = true
+                        })
+
+                        return filled ? tr : null
+                    },
+                }),
             ]
         },
     })
