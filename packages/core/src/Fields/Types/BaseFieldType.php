@@ -137,13 +137,12 @@ abstract class BaseFieldType implements FieldType
 
         $schema = ['type' => 'array', 'items' => $item];
 
-        // ⚠️ The bound is PUBLISHED. Validation enforces `max:{cardinality}`,
-        // so describing every multi-value field as an unbounded array meant a
-        // generated client considered three elements valid on a field that
-        // holds two, and the API rejected what its own schema allowed.
-        // -1 is the explicit unlimited and stays unbounded.
-        if ($config->cardinality() > 0) {
-            $schema['maxItems'] = $config->cardinality();
+        // ⚠️ The bound is PUBLISHED. Validation enforces the same number through
+        // `maxItems()`, so describing every multi-value field as an unbounded
+        // array meant a generated client considered three elements valid on a
+        // field that holds two, and the API rejected what its own schema allowed.
+        if (($items = $this->maxItems($config)) !== null) {
+            $schema['maxItems'] = $items;
         }
 
         return $schema;
@@ -177,13 +176,35 @@ abstract class BaseFieldType implements FieldType
         // array schema, and its shape changed on the way in.
         $rules = [...$presence, 'array', 'list'];
 
-        // -1 is the explicit "unlimited". A cardinality of 2 means TWO, and
-        // accepting three silently stored a shape the configuration forbids.
-        if ($config->cardinality() > 1) {
-            $rules[] = 'max:'.$config->cardinality();
+        // A cardinality of 2 means TWO, and accepting three silently stored a
+        // shape the configuration forbids. The number comes from `maxItems()`
+        // so that what is enforced and what is published cannot drift.
+        if (($items = $this->maxItems($config)) !== null) {
+            $rules[] = 'max:'.$items;
         }
 
         return $rules;
+    }
+
+    /**
+     * How many elements a multi-value field admits, or null for no bound at all.
+     *
+     * ⚠️ ONE ANSWER, TWO CONSUMERS — `apiSchema()` publishes it and `validationRules()` enforces it.
+     * They were two expressions of the same intent before, and a type that wanted to narrow the bound
+     * would have had to narrow both or publish a constraint the server does not keep.
+     *
+     * ⚠️ `-1` IS THE EXPLICIT UNLIMITED and still means unlimited here; a type that has a reason to
+     * bound it says so by overriding, which is what `TextType` does when a pattern costs quadratic work
+     * per value. Bounding every unlimited field by default would be a storage decision made in the
+     * wrong place — nothing has measured it — and it would change the meaning of stored rows.
+     */
+    public function maxItems(FieldConfig $config): ?int
+    {
+        if (! $config->isMultiValue()) {
+            return null;
+        }
+
+        return $config->cardinality() > 1 ? $config->cardinality() : null;
     }
 
     /** @return array<int, mixed> */

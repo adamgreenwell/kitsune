@@ -71,8 +71,18 @@ final class SettingsSchemaRenderer
      * types publish was compared against every key this method consumes: `default`, `help`,
      * `label`, `nullable`, `options`, `optionsFrom` and `type` are all read, and `maxLength`
      * was the only one that was not. The issue also asked about `min`, `max` and `step` on
-     * `number` — those are descriptor NAMES rather than descriptor keys, so there is no
+     * `number` — those are descriptor NAMES rather than descriptor keys, so there was no
      * second instance.
+     *
+     * ⚠️ AND THEN I ADDED ONE, which review caught. `TextType` grew a `maximum` on its
+     * `maxLength` descriptor — published, per invariant 14, because `validateSettings()`
+     * enforces it — and this renderer consumed no such key, so the form imposed nothing and
+     * an author met the ceiling only when the save was refused. That is the identical defect
+     * this method exists to have fixed, recreated by the same reasoning that fixed it: a key
+     * was published because it was enforced, and nothing rendered it.
+     *
+     * The enumeration is re-run rather than re-asserted: `maximum` is now consumed by
+     * `withMaximum()`, and `min`, `max` and `step` remain descriptor names.
      *
      * ⚠️ AND IT IS NOT THE ENFORCEMENT. The server refuses an over-long pattern —
      * `Pattern::lengthRefusal()`, consulted by `unpublishable()`, `delimit()` and
@@ -117,6 +127,44 @@ final class SettingsSchemaRenderer
         }
 
         return $component->maxLength((int) $descriptor['maxLength']);
+    }
+
+    /**
+     * Applies a descriptor's `maximum`, and refuses to drop one it cannot apply.
+     *
+     * ⚠️ THE SAME POSTURE AS `withLength()` AND FOR THE SAME REASON, which is why this is a second
+     * method rather than a second branch inside that one: the two keys express different constraints on
+     * different descriptor types, and a method that applied "a maximum of some kind" would be the very
+     * conflation `withLength()` fails closed to avoid — a digit count and a value bound are not
+     * interchangeable, and `integer` and `number` descriptors render the same `TextInput` as `string`.
+     *
+     * ⚠️ AND IT IS NOT THE ENFORCEMENT. `TextType::validateSettings()` refuses an over-long
+     * configuration, and a `max` attribute is something a client can ignore (invariant 6). This is a
+     * courtesy to the author.
+     *
+     * @param  array<string, mixed>  $descriptor
+     */
+    private static function withMaximum(mixed $component, string $key, array $descriptor): mixed
+    {
+        if (! isset($descriptor['maximum'])) {
+            return $component;
+        }
+
+        $type = $descriptor['type'] ?? null;
+
+        if (($type !== 'integer' && $type !== 'number') || ! $component instanceof TextInput) {
+            throw new RuntimeException(sprintf(
+                'Setting [%s] declares maximum on a [%s] descriptor, which cannot express a numeric '
+                .'bound. The renderer fails closed rather than dropping it or applying something else, '
+                .'for the reason withLength() records: a published constraint the form does not apply '
+                .'is one the author meets by accident, and one it applies DIFFERENTLY is one nobody can '
+                .'see is wrong.',
+                $key,
+                is_string($type) ? $type : get_debug_type($type),
+            ));
+        }
+
+        return $component->maxValue($descriptor['maximum']);
     }
 
     /**
@@ -165,7 +213,7 @@ final class SettingsSchemaRenderer
             $component = $component->helperText($descriptor['help']);
         }
 
-        return self::withLength($component, $key, $descriptor);
+        return self::withMaximum(self::withLength($component, $key, $descriptor), $key, $descriptor);
     }
 
     /**

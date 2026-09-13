@@ -116,6 +116,9 @@ interface FieldType
     /** Rules for ONE element of a multi-value field, not for the array. */
     public function elementValidationRules(FieldConfig $config): array;
 
+    /** How many elements a multi-value field admits — published, enforced and rendered from here. */
+    public function maxItems(FieldConfig $config): ?int;
+
     public function settingsSchema(): array;          // the "configure this field" form
     public function validateSettings(array $settings): ?string;
 
@@ -199,6 +202,348 @@ A named capture may use a name in **any script** — `(?<é>`, `(?<日本>`, `(?
 
 ⚠️ Those rows are the ones to read twice, because both engines *compile* every one of them. A backreference is portable exactly when its group **must** participate — existence is not enough, and neither is opening earlier in the pattern.
 
+---
+
+> ⚠️ **Amended — rule 3 is enforced by a published grammar, not by screening divergences.** Decided under [#44](https://github.com/adamgreenwell/kitsune/issues/44). The table above stays as the **evidence**, because it is what the decision rests on; it is no longer the mechanism.
+>
+> **Why the shape changed.** Every row above was found by a reviewer noticing the next case — nine consecutive rounds of it. The two parts of the screen that **stopped** producing findings are the two that switched from listing offenders to listing what is allowed: the group prefixes and the Unicode property names. Neither has produced a finding since. Everything still enumerating divergences kept producing them.
+>
+> A denylist **fails open**: a construct nobody anticipated is accepted and published wrong, silently. An allowlist fails closed — an unknown construct is refused because it was never admitted, not because someone remembered it. Rule 3 says `apiSchema()` may only publish a constraint the consumer can enforce; a grammar makes that enforceable *by construction* rather than by enumeration.
+>
+> **Fresh evidence, measured 2026-09-12.** 231 candidate constructs, enumerated from six independent angles, run through one shared case file so PCRE and ECMAScript are asked the same question. At production fidelity — PCRE compiling `Pattern::delimit()`'s output, ECMAScript compiling the published source — **three constructs the screen accepted diverged, and a fourth made neither engine answer at all**. All three are now refused, so the current count is zero:
+>
+> | Pattern | PCRE | ECMAScript |
+> |---|---|---|
+> | `^(?=a)+a$` | compiles, matches | **refuses to compile** under `u` — *"Invalid quantifier"* |
+> | `(?<=(a\|aa))b\1$` | no match | **match** — PCRE orders lookbehind branches by length, ECMAScript by written order |
+> | `\p{Bidi_Mirrored}` | **428 codepoints** | **554** — both compile it and they mean different sets |
+> | `^([a-zA-Z0-9]+\.?)+@x\.com$` | **no verdict** — backtrack limit exhausted, ~2ms | **no verdict** — still searching at the harness deadline |
+>
+> ⚠️ **The third was found by a sweep for false publishes, not by reading the allowlist**, and it arrived with a cost defect attached. Every boundary proof in `Pattern` asks PCRE whether an atom can match a character, so PCRE's narrower `Bidi_Mirrored` PROVED boundaries the consumer does not have: `^\p{Bidi_Mirrored}*\p{Bidi_Mirrored}*∂\p{Bidi_Mirrored}*X$` published as three adjacent variable-width atoms and measures **45.9 ms** at 250 characters, **363.4** at 500 and **2,924.5** at 1,000. A portability defect and a denial of service are the same defect here, because the proofs rest on membership.
+>
+> ⚠️ **And the allowlist was admitting names on the weaker of two tests.** It required both engines to COMPILE a name; its own docblock claimed a full-codepoint set comparison, and that had been done for three *aliases*. [`tools/property-parity`](../tools/property-parity/README.md) now makes the stronger claim for every publishable name — the 53 on the list plus all 213 script names ICU knows, since `Script=` is allowlisted by prefix — over **1,112,064 codepoints** each, in both engines. **228 agree exactly**, 38 script aliases compile in neither engine, and `Bidi_Mirrored` was the only divergence. Doing the stronger test for three names and the weaker one for fifty is how a claim outruns its evidence.
+>
+> ⚠️ Two apparent findings were **my instrument, not the code**, and are recorded because they change how this must be measured: comparing with `/u` instead of `/uD` invented three `$` divergences, and comparing *raw source* in both engines invented four more — `delimit()` already rewrites `.` and `\s` to explicit ECMAScript-equivalent classes. Raw-vs-raw reported 7 divergences; true fidelity reports 3, and the property sweep adds the fourth by a different method.
+>
+> ⚠️ **The count is scoped to ONE VERSION PAIR, and that is a limit of the method rather than a result.** The table above was measured on PCRE 10.48 with Node 22. Review demonstrated a **fourth** divergence on PCRE 10.44 with Node 24 — `\p{Cn}` on U+10940, unassigned to one engine's tables and assigned to the other's — which the newer pair agrees on. A harness runs the versions it has; it cannot see skew between versions it is not running.
+>
+> **So `Cn` and `C` are excluded from the portable categories on principle, not on measurement** — and the principle is narrower than "their membership moves between versions", because *every* category's membership moves. U+10940 is SIDETIC LETTER N01, **assigned in Unicode 17.0** with category `Lo`: a server at 15.1 and a client at 17.0 enforce different rules on `^\p{L}+$` for that one codepoint. No allowlist can fix that, and one that tried to would end up empty.
+>
+> **The line is whether there is a stable rule to converge on.** *"A letter"* is one — both engines are answering the same question, one of them has a shorter table, and each Unicode release brings them closer to what the author meant. *"Not yet assigned"* is not a rule at all; it is a description of the table's incompleteness, so the answer moves **away** from the author's intent with every release, in both polarities at once: `\p{Cn}` matches steadily less and `\P{Cn}` steadily more, and neither converges anywhere. `C` is excluded because it **contains** `Cn` (`Cc|Cf|Co|Cs|Cn`) and inherits that exactly — it was on the allowlist while `Cn` was off it, which is the same unportable set with one extra spelling. `Cc`, `Cf`, `Co` and `Cs` stay: each names *assigned* characters.
+>
+> One removal covers four spellings each — `\p{C}`, `\P{C}`, `[\p{C}]`, `[^\p{C}]` — because the refusal reads the property **name** and does not consult class context.
+>
+> ⚠️ **A property complement is admitted, deliberately.** `\P{L}` and `[^\p{L}]` do include unassigned characters, so a newly assigned letter leaves the complement — but `\p{L}` diverges on the *same* codepoint in the opposite direction, and on the same engine pair. Refusing one polarity while admitting the other would remove half of a symmetric pair and claim a portability the remaining half does not have either. So both are admitted and the limit is disclosed once, here: **a property claim is portable only to the extent the two engines share a Unicode version, and nothing in a pattern can assert that.** What makes `Cn` and `C` different is not their polarity — it is that neither polarity of them names a stable rule.
+>
+> ⚠️ A consequence worth expecting: the harness reports `\p{Cn}` and `\p{C}` as an *expressiveness cost*, because on the pair it runs the two engines agree — they share Unicode 17.0, and agree on all 1,114,112 codepoints for `L`, `N`, `Nd`, `C`, `Cn`, `Cf`, `P`, `S`, `Z` and `M`. That is the instrument being honest about what it can see, not a reason to re-admit the categories.
+>
+> ### The grammar
+>
+> A pattern is accepted when **every construct in it appears below**. Anything else is refused with the reason, whether or not anyone anticipated it.
+>
+> | Permitted | Notes |
+> |---|---|
+> | literal characters | a metacharacter must be escaped, from the portable punctuation set |
+> | `[...]`, `[^...]`, ranges `a-z` | with permitted escapes inside |
+> | `.` and `\s` `\S` | permitted **because `delimit()` normalises them** server-side to explicit ECMAScript-equivalent classes. They are the only constructs admitted by rewriting rather than by agreeing |
+> | `\p{...}` `\P{...}` | names from the published category, property and prefix allowlists — **excluding `Cn` and `C`**, which describe the absence of an assignment rather than a stable rule. Both polarities and both class forms are refused. A complement of any *other* property is permitted, symmetrically with the property |
+> | `^` `$` | `$` is portable only because `D` is set; it cannot be expressed in the published pattern and must never be dropped |
+> | `*` `+` `?` `{n}` `{n,}` `{n,m}` and lazy forms | upper bound **at most 65535** — measured: PCRE refuses to compile above it, ECMAScript allows far more |
+> | `(?:...)` `(...)` `(?=...)` `(?!...)` `(?<=...)` `(?<!...)` `(?<name>...)` | the existing group allowlist, unchanged |
+> | `\|` | alternation |
+> | `\1` `\k<name>` | only where the group **must** participate — see the rows above |
+> | `\t` `\n` `\r` `\f` `\xHH` | `\v` is excluded: vertical whitespace here, the letter `v` there |
+>
+> ### Seven rules the construct list cannot express
+>
+> ⚠️ **An allowlist of constructs is necessary and not sufficient**, and the third row of the divergence table above is why.
+>
+> ⚠️ **This section published three of these rules while the code enforced none of them**, and that is recorded rather than quietly corrected. Measured: `^(?=a)+a$`, `(?<=(a|aa))b\1$` and the example in rule 3 below were all *accepted* by `Pattern::unpublishable()`. The first two are exactly the two live defects the parity harness was reporting — the gap was visible the whole time, in the instrument built to find it. A published constraint the code does not keep is the failure invariant 14 exists for, and it is worse than an unwritten rule, because a reader has no reason to doubt it. All of them are enforced by `structuralRefusal()` and asserted by `StructuralGrammarTest`; the harness reports **zero** live defects. Two of the three were later found to leak and are now a single rule about a single property — see rule 3.
+>
+> 1. **No quantifier on an assertion.** `(?=a)+` is built from two permitted constructs and does not compile under ECMAScript `u`. Checked against **`u`-mode specifically**, because Annex B makes the unflagged dialect more permissive than the flagged one.
+> 2. **A lookbehind's alternatives must be equal length.** PCRE orders them by length, ECMAScript by written order, so a differing-length alternation changes which group captured what.
+> 3. **An unbounded repetition must have only one way to divide its subject.** That is the property; the rest is how it is established. `([a-zA-Z0-9]+\.?)+` is entirely permitted constructs and makes **neither** engine answer on adversarial input: `preg_match()` returns `false` after exhausting its backtrack limit, and ECMAScript is still searching when the harness deadline expires. This is **not a portability problem** — the two agree, in the sense that neither gives a verdict — it is catastrophic backtracking, and ADR-027's 1 vCPU floor is why it cannot be left to the consumer.
+>
+>     ⚠️ **This was two rules and they both leaked.** The pair published here was *"no unbounded quantifier over a group containing one"* plus *"not over ambiguous alternation"*, and review found `^(a{1,2})+$` slipping between them: the inner quantifier is **bounded**, so the first never fires, and there is no alternation, so the second does not either. Measured, 30 characters takes ECMAScript ~100 ms and 40 runs past three seconds while PCRE exhausts its backtrack limit. Worse, a test in this repository asserted `^([a-z]{1,8})+$` was *acceptable* — the same shape, measuring the same way. Two rules aimed at symptoms let a third symptom through and blessed a fourth.
+>
+>     Three ways to establish the property, and a body needs any one of them:
+>
+>     | Established by | Qualifies | Does not |
+>     |---|---|---|
+>     | **Fixed width, every alternation inside it unambiguous** | `(?:ab)+`, `(?:cat\|dog)+`, `(?:a(?:b\|c))+` | `(a{1,2})+`, `([a-z]{1,8})+`, `(a?)+` |
+>     | **Prefix-free literal alternatives** | `(?:ab\|c)+` at differing lengths | `(a\|aa)+`, `(?:cat\|ca)+`, `(?:a\|)+` |
+>     | **A delimited repetition** | `^[^,]+(?:,[^,]+)*$` | `(,+)*`, `(?:,[^;]+)*`, `(?:,(?:,?))*` |
+>
+>     ⚠️ **A forced division is not sufficient on its own**, and measuring is what established that. `(?:[a-z]|x)+` is fixed at one character, so every iteration consumes exactly one and there is only one way to divide the subject — and it is still catastrophic, because `x` lies inside `[a-z]`: on 30 `x` characters both branches match at every position, giving 2³⁰ branch choices. **ECMAScript 7.9 s, PCRE's backtrack limit exhausted** — while the same pattern on 30 `a` characters is instant, because only one branch can match there. One pattern, two subjects, and only one of them affordable, which is why the rule is about the construct rather than about any subject.
+>
+>     ⚠️ **And the proof once depended on which separator the author chose.** Both membership probes in `Pattern` hard-coded a `/`-delimited test pattern, so an atom holding a slash closed the delimiter early — `preg_match('/^[^/]$/uD', '/')` is not a question about `[^/]`, it is an invalid pattern, and PHP answers **false**, which both callers read as *"it matches"*. Failing closed there refused `^[^/]+(?:/[^/]+)*$`, the path pattern every schema has, while the byte-identical `^[^,]+(?:,[^,]+)*$` published. Measured against `a/a/a/…` at 5,000 characters the two are the same cost — **0.03 ms** and **0.04 ms** — and `delimit()` has always chosen its delimiter against the text, which is what the probes do now. `^[^,]+(?:/[^,]+)*$` stays refused: `[^,]` really can consume a slash.
+
+>     ⚠️ **The delimiter exemption is a proof, not a plausibility.** Stated without it, the rule refuses `^[^,]+(?:,[^,]+)*$` — the ordinary comma-separated list, and safe. If the repeated body starts with a **required literal** and no **variable-width** atom inside it can match that character, every iteration must begin at an occurrence of it and none can choose to consume one, so the subject's own delimiters force the division: one way to split, nothing to backtrack over. It measures out linear — 5,000 items in 0.04 ms under PCRE and 0.09 ms under ECMAScript, on input that fails at the very end. Class membership is asked of PCRE rather than parsed — of the *normalised* atom, for the reason two notes down — and anything uncertain fails closed.
+>
+>     ⚠️ **"Variable-width", not "unbounded", and the difference was a live defect.** The proof first asked only about *unbounded* atoms, which exempted `^(?:,,?)*X$` — the optional comma is bounded, and it can still either end the current iteration or start the next. Measured: 40 commas plus a `Y` takes ECMAScript about 1.3 seconds and grows exponentially. A **required** atom that matches the delimiter is still fine, because the ambiguity comes from the *choice* about consuming one rather than from consuming it: `,{2}[^,]+` splits one way. It is nevertheless refused, because the proof also requires the leading literal to be unquantified — conservative, and stated rather than hidden.
+>
+>     ⚠️ **A required group is transparent, and a bracket pair was enough to hide the same defect.** The scan jumped from a group's `(` to its `)` and asked only about the group's own quantifier, so `^(?:,(?:,?))*X$` — the line above with brackets around the optional comma — was exempted. **Node 22 spends 10.5 s** on the same 40-delimiter subject. The proof reads through any group that carries no unbounded quantifier, at any depth; a group that *is* unbounded-quantified still fails closed unread, because repeating a body without limit can consume the delimiter however the body is written.
+>
+>     ⚠️ **Forcing the split between iterations is not enough, and the body has to divide one way too.** Review found it by putting the ambiguity entirely *between* the non-delimiter atoms. `^(?:,a*a*)*X$` satisfies the proof exactly — neither `a*` can match a comma, so every iteration must begin at one and none can consume one — and each `,aa` segment still divides three ways between the two stars. **Node 22: 9 ms at 12 segments, 723 ms at 16, 58.8 SECONDS at 20.** The boundaries were forced; what happened inside them was never asked.
+>
+>     The added condition is the same proof one level in: **every variable-width atom must be separated from the next by a required literal the atom on its LEFT cannot match.** That is the precise condition rather than a convenient one — for `A+ s B+`, if `A` cannot match `s` then `A+` must stop at the *first* `s` and the division is forced whatever `B` can match; if `A` can, it may swallow one and leave a later one. So `^(?:,[^,]+-[^,]+)*X$` is refused (`[^,]` matches `-`, measured 610 ms at 24 segments and climbing) while `^(?:,[^,-]+-[^,-]+)*X$` is **published** (measured flat at 24 segments). The simpler rule "at most one variable-width atom" would have refused the second, which is why it is not the rule.
+>
+>     ⚠️ **The boundary is proved by a probe, and the probe answers a narrower question than the proof asks.** Whether an atom matches a character *on its own* and whether it can *consume* one agree for a one-character context-free atom and part company for everything else, which published three cubic shapes. `^(?:aa)+a*a*X$` eats `a` two at a time and measures **142.3 ms** at 500 characters, **244.1** at 1,000 and **1,932.4** at 2,000 — half of the refused `^a*a*a*X$`, because the group steps by two. `^(?:a(?=a))+a+a+X$` matches every `a` but the last while a one-character probe of it matches nothing at all, and measures **282.4 / 484.0 / 3,858.7 ms** against `^a+a+a+X$`'s 282.4 / 483.9 / 3,870.2. `^(?:(?<=x)a)+a+a+X$` is the lookbehind spelling. So a boundary is proved only from a predecessor that is **exactly one character wide** and **context-free**; the controls `^(?:aa)+bX$` and `^(?:a(?=a))+bX$` are 0.0–0.1 ms, and `^(?:a|b)+c+d+X$` — one character wide through a group — still publishes.
+>
+>     ⚠️ **A separator that can be ABSENT divides what is in front of it and hides it from what is behind**, and reading that as one question published a cubic pattern. `^a*a*(?:b)?a+X$` is `^a*a*a+X$` on every subject without a `b` — measured against all-`a`, **490.4 ms** at 1,000 characters, **1,649.8** at 1,500 and **3,862.4** at 2,000, which is the refused `^a*a*a+X$` to the millisecond, against 5.8 ms for `^a*a*bX$`. So the walk keeps the predecessors a nullable atom hides and takes the longest run over every allocation. Both directions are load-bearing: `^(?:,a*b?)*X$` is **published** and measures 0.0 ms at every length, because `a*` and `b?` cannot both match anything and each segment divides one way, while `^(?:,a*b?a*)*X$` puts an atom **behind** the nullable one and is **4,504.5 ms** at 16 segments and **57,368.2 ms** at 20.
+>
+>     ⚠️ **Three holes, one cause: the walk was not uniform.** Found by review in one round, and all three were the same defect seen from different sides — which is why the fix is a rewritten traversal rather than three patches.
+>
+>     | What was missed | Measured, Node 22.23.2 |
+>     |---|---|
+>     | **A pattern with no parentheses**, since every rule was driven by the frame list — `^a*a*a*a*a*a*b$` | **26.4 s** on 100 characters and a failing one |
+>     | **Any repetition with a finite bound**, since the gate read "unbounded" — `^(a\|aa){1,32}$` | **24.3 s** on 40 characters |
+>     | **A group holding both atoms**, since the pending atom was overwritten rather than compared — `^(?:,(?:a*a*))*X$` | **58 s** on 20 segments |
+>
+>     ⚠️ **A finite bound is not a safe bound, and there is deliberately no threshold.** The bound is the exponent and the *body* is the base, and nothing bounds the base: `^(a|aa){1,16}$` is 7 ms while `^(a|aa|aaa){1,16}$` is 3.4 s and `^(a|aa|aaa|aaaa){1,14}$` is 16.6 s. The safe bound *falls* as the body widens, so a constant is something a wider body defeats. Every repetition that can run twice is screened, and `^(a|aa){1,4}$` is now refused where this document previously published it with the reasoning *"a bounded outer quantifier caps the exponent, so the ambiguity costs nothing"*. It caps the exponent and not the base.
+>
+>     ⚠️ **The limit on adjacent atoms differs by context, because the cost class does.** Inside a repetition, k adjacent variable-width atoms give the repetition k choices per iteration and the total is **exponential**; at the top level the same k is a **polynomial of degree k**. So a repetition body admits **one** and the top level admits **two**:
+>
+>     | | k=2 | k=3 | k=4 | k=6 |
+>     |---|---|---|---|---|
+>     | `^a*…b$` at n=100 | 0 ms | 3 ms | 68 ms | **26.4 s** |
+>     | at n=1000 | 2 ms | 490 ms | — | — |
+>
+>     Two is quadratic in the value's length and it is what real patterns are made of: `^.+\.[a-z]+$` and `^[^@]+@[^@]+$` both measure 0 ms and both would have been refused by a limit of one. Three is cubic and already 490 ms at 1,000 characters.
+>
+>     ⚠️ **A group that can be SKIPPED is a sequence no rule was reading**, which is the worst false publish this grammar has had and took a pair of brackets and a `?`. `^(?:a*a*a*b)?$` published while the identical `^a*a*a*b$` is refused, and it is the cubic this rule exists to catch: **62.2 ms** at 500 characters, **485.3** at 1,000, **3,997.7** at 2,000 and **13,038.8** at 3,000, against 0.4 / 1.4 / 5.7 / 13.0 for the legitimate `^(?:a*a*b)?$` beside it — and the author picks the exponent, since `^(?:a*a*a*a*a*a*a*b)?$` is twenty-two characters. Three walks can reach a group's body and a skippable one satisfied none of them, so the body was **priced** at one grant and never **screened**. The question is now how often a group RUNS rather than whether it is required: at most once means this limit applies unchanged, more than once is the repetition rule's subject at its tighter one. The array bound asks the same walk and had the same hole — `costsQuadraticPerValue('^(?:a*a*b)?$')` answered false where `^a*a*b$` answers true.
+
+>     ⚠️ **An alternation inside a required group is not spliced into the run, and making `|` end a run was only half right.** A real branch boundary does end one; a **spliced** one does not, because the group's body was flattened into the enclosing list where its `|` means nothing. `^a*(?:b|a*)a*c$` read as two short runs when its second branch is `^a*a*a*c$` — Node 24 spends about **1.9 s on 2,001 characters** and past **15 s** on the 5,000 a `text` field admits. A multi-branch group stays whole and is priced by what it can match; its own branches are walked separately, because a run inside one branch is still a run.
+>
+>     ⚠️ **And "can it match two lengths" is the question, not "does it contain a variable atom".** `(?:a|aa)` holds neither quantifier nor class and matches one character or two, so the old question called it fixed and `^a*(?:a|aa)a*b$` published. `fixedWidth()` already reads branches, escapes and classes and returns null for anything it cannot measure, which is the conservative answer where it matters.
+>
+>     ⚠️ **AND THE ALLOWANCE REQUIRES `^`, which this paragraph's own premise needed and the rule did not ask for.** Review found it. Every measurement above is of an **anchored** pattern; an unanchored one is retried from every starting position, so the same two-atom run pays one more factor of the value's length and lands in exactly the cost class the limit of two exists to refuse. Measured on Node 22.23.2, all-`a` subjects that fail:
+>
+>     | n | `a*a*b` | `a*a*b$` | `^a*a*b` |
+>     |---|---|---|---|
+>     | 500 | 286.4 ms | 285.1 ms | 1.8 ms |
+>     | 1,000 | 489.7 ms | 491.5 ms | 1.5 ms |
+>     | 2,000 | 3,941.8 ms | 3,875.7 ms | 5.8 ms |
+>     | 5,000 — the `MAX_CONFIGURABLE_LENGTH` ceiling | **60,231.6 ms** | **60,339.4 ms** | 36.0 ms |
+>
+>     So the limit is **one** where nothing anchors the search, which is the same rule stated once rather than a second number: an unanchored search costs one degree more, so it may hold one atom fewer.
+>
+>     ⚠️ **A trailing `$` does not help**, which is the middle column — the retry is at the *start*, so only `^` removes it. Reasoning would have got that wrong in a plausible direction, which is why it is measured and why `anchorsTheSearch()` looks for `^` alone.
+>
+>     ⚠️ **PCRE pays none of it**: every cell in the first two columns is 0.0 ms through `delimit()` on PCRE 10.48, which auto-possessifies the stars and knows the subject must contain a `b`. The two engines **agree**, so no comparison of verdicts can find this — it is a cost the server never pays and the published constraint hands the consumer, which is rule 3 exactly, and ADR-027's floor is why it is not the consumer's problem to absorb.
+>
+>     ⚠️ **Anchoring is a property of the BRANCH, not of the pattern**, and it is read through what is transparent: a required group (`(?:^a*a*b)` anchors) and a leading assertion (`(?=x)^a*a*b` anchors), but not an alternation unless **every** branch does — `(?:^|,)a*a*b` is refused, and `a*a*b|^a*a*c` is refused for its first branch while its second would be fine alone.
+>
+>     ⚠️ **And a backreference is as wide as the capture it names**, which the rule was reading from the reference's own quantifier — `\1` carries none, so `^(a+)(a+)\1$` counted two variable-width atoms where there are three. It is a divergence as well as a cost: at 5,000 characters `preg_match()` exhausts its backtrack limit and returns **false** while Node 22.23.2 **matches** in 13.3 ms, so the published schema accepted a value the server rejects. `^(a)(a+)\1$` and `^(a{2})(a+)\1$` still publish, because a fixed-width capture makes the reference fixed too; `\k<name>` is not resolved and counts as variable, which costs at most a refusal of a shape that already has two variable atoms beside it.
+>
+>     ⚠️ **And a branch pays for that the way it pays for a run.** `^a+(?=a+c)` holds no adjacent-atom run, so the per-branch cost counted it as free — and **eighty-three** of them joined by `|` is 912 characters, inside every other limit, measuring **2,971.1 ms** on one 5,000-character value against 36.0 ms for one branch and 286.4 ms for eight. `maxItems()` cannot contain that: it bounds how many *values* an array carries, and this is one value's own cost. The branch pays the same grant a quadratic run pays, so eight reach the budget and nine pass it.
+>
+>     ⚠️ **And k of them after the same prefix cost k grants**, which that charge first answered yes-or-no. Every assertion past the prefix is rerun on every backtrack of it. Measured against 5,000 `a` then a `b`, where every assertion but the last succeeds: **40.6 ms** for one, **68.9 ms** for eight, **611.2 ms** for a hundred and forty-one — 990 characters. The charge is the grant **multiplied by the count**, not one grant apiece: ways to retry multiply when they *compose*, and these do not — each adds one more scan of the same suffix — so a grant apiece refused `^a+(?=a*b)(?=a*c)`, which measures 44 ms. Eight reach the budget exactly and nine pass it, which is the number eight alternation branches reach.
+>
+>     ⚠️ **The screen's own cost is part of the contract, and it had drifted.** Every rule added a walk, and the walks re-derived the same subpatterns: the worst admissible pattern — `(a)\1` two hundred times, `MAX_LENGTH` exactly — reached **703 ms** against a one-second budget, 231 ms of it in the ambiguity walk and 228 in the run walk. Memoising the atom list, the run verdict and the frame list, each a pure function of its body, took it to **23 ms**; the memos are cleared at every public entry point, because a cache nothing bounds is one bound traded for another. The nesting limit is refused before any walk runs, which is what makes it safe to leave the recursion depth out of the memo keys.
+>
+>     ⚠️ **And a variable-width PREFIX re-evaluates an assertion just as a repetition does.** `^a+(?=a+a+c)` has no repetition in it: the run is inside the assertion, and the `a+` in front scans it again for every character it gives back. Measured against all-`a`, cubic — **490.8 ms** at 1,000, **3,857.1 ms** at 2,000, **12,867.9 ms** at 3,000, where a `text` field admits 5,000. Three neighbours place the cause and each is 13 ms at 3,000: one atom inside the assertion, the prefix *after* the assertion, and a fixed-width prefix. So the assertion's body is held to the repetition limit whenever a variable-width atom precedes it — what multiplies it is how often it runs, not where it is written.
+>
+>     ⚠️ **And the CHARGE has to cross the bracket too, or the refusal reading through it is half a rule.** The cost walk reaches a group's body on its own recursion *without* the prefix in front of the brackets, so nothing priced the rescan that prefix causes: forty alternatives of `^a+(?:(?=a+c)a|z)` fit in 719 characters and published, at about **690 ms** for one permitted 5,000-character value — a single value's own cost, which `maxItems` cannot contain. A descended level charges only what an **inherited** prefix rescans, because the body's own prefixes are already priced by the recursion that reaches it; charging both would refuse `^(?:a+(?=a*b))$`, which is the published quadratic `^a+(?=a*b)$` with brackets round it. ⚠️ That last one was a **pre-existing** false refusal, fixed by the same discipline `ownAtoms()` already applies to the run charge: price at one level, refuse at every level.
+
+>     ⚠️ **And a group's body is a sequence this rule owns too.** A multi-branch or optional group is not spliced into the atom list, so every assertion inside one was invisible: `^a+(?:(?=a*a*c)q|z)$` published and measured **62.4 / 488.1 / 3,876.6 ms** at 500 / 1,000 / 2,000 characters — the refused `^a+(?=a*a*c)q$` to the millisecond. The walk reads through a group that runs at most once, carrying the run it has so far, so a prefix outside the brackets and a prefix inside one branch are both covered. The PRICING caller does not descend, because the same assertion is charged again when the cost model reaches that body.
+
+>     ⚠️ **A required atom the prefix cannot consume ends it**, and this rule refused one that does. `^a+b(?=a+a+c)` cannot reach the assertion twice — every character the `a+` gives back is an `a`, the `b` has to match there, and the retry dies before the lookahead. Measured against `a×n b a×n`, it tracks its control `^b(?=a+a+c)` on `b a×n` to the tenth of a millisecond: **0.4 ms** against 1.7 at n=500, **1.4** against 1.5 at 1,000, **5.7** against 5.7 at 2,000. It is the same proof that ends a run — a `b{2}` or a `(?:b\|c)` ends the prefix too — and it needs **both** halves of it. A separator that can be absent is not one: `^a+b?(?=a+a+c)` measures **276.9 ms**, **477.0** and **3,879.8** at those lengths. And it ends a prefix of **one**, because two variable-width atoms trade characters and reach the separator at the same position however they split the value — `^a*a*b(?=a+a+c)` and `^a+[ab]+c(?=a+a+d)` both measure **181 ms**, **1,432** and **11,385**, the cubic this rule is named for.
+>
+>     ⚠️ **And ONE atom inside that assertion is quadratic rather than cubic, so it is bounded rather than refused.** `^a+(?=a+c)` measures **1.5 ms** at 1,000 characters, **12.8 ms** at 3,000 and **36.0 ms** at 5,000 — the same order as `^a*a*b$`, which is publishable per value and bounded per array. `^a+(?=ac)` is 0.1 ms and `^a(?=a+c)` is 0.0, so both halves of the shape are load-bearing. The refusal above asks with the repetition limit; the item bound asks with zero.
+>
+>     ⚠️ **And k of them cost k times one**, which that rule evaluated one at a time: each is individually inside the allowance, and a hundred of them is 709 characters of pattern. Measured on a 5,000-character value, exactly linear — one **36.9 ms**, two **74.6 ms**, sixteen **586.9 ms**, a hundred **3,719.9 ms**. One is already at the quadratic allowance's own ceiling, so the aggregate budget is what one costs: a repetition may hold **one** assertion whose scan grows with the value. Fixed-width assertion bodies do not scan and are not counted — `^(?:a(?!ac)(?!ad)(?!ae))*X$` publishes.
+>
+>     ⚠️ **An assertion inside a repetition is paid for on every iteration**, and every other rule published it: `^(?:(?!a*a*c)a)*bX$` has a repeated body that is fixed width — the assertion consumes nothing and the `a` is one character — so this rule's first proof is satisfied and nothing descended into the lookahead. Its own body holds a run of two. Measured on a failing 2,002-character value: **3,894 ms**, against **6 ms** for `^(?:(?!a*c)a)*bX$`. The assertion is held to the REPETITION's limit, one variable-width atom, exactly as the body around it is.
+>
+>     ⚠️ **And a positive assertion can carry the anchor**, which was the mirror-image false refusal: `(?=^)` says the position is the start as surely as `^` does, and the anchor search skipped past it as it skips every assertion — so `(?=^)(?:a\|a)(?:a\|a)(?:a\|a)(?:a\|a)b` was refused under the unanchored ambiguity budget while the `^` spelling publishes. Only a **positive** assertion, and only when **every** branch of its body anchors: `(?!^)` asserts the opposite and `(?=^\|,)` asserts nothing about the start on its own.
+>
+>     ⚠️ **An anchor AFTER the assertion does not exempt it, and the round that reasoned otherwise was wrong.** The anchor search reads past assertions, so `(?=a)^a{0}a` was read as anchored and its dead markup exempted — and review measured that shape diverging on PCRE 10.44. The earlier note had called these shapes *"unmatchable nonsense either way"*, which one `preg_match()` disproves: at position 0 the lookahead holds, `^` holds, and the rest matches. The exemption rests on an anchor the assertion has already **passed** — `^b{0}(?=a)a` publishes, `(?=a)^a{0}a` does not.
+>
+>     ⚠️ **And a zero-width wrapper is transparent however it is quantified.** The unwrapping required exactly-once and said why it would not assume otherwise; review then measured `(?:(?=a)){2}a{0}a` diverging exactly as `(?=a)a{0}a` does. A zero-width body cannot make progress, so the repetition cannot run twice. Moving a leading prefix *out* of a group still requires exactly-once, because that changes what a repetition's later iterations see.
+>
+>     ⚠️ **A required group divides a run whatever its width.** `^a*a*(?:b|c)a*$` was refused: the group is fixed width, so the branch that applies the all-branch lead proof never ran, and a literal cannot be pulled out of a whole group — so the run survived it and the last `a*` counted as a third atom. Both branches lead with a literal `a*` cannot match, which is the proof already applied to a variable-width group; the width was never what made it work. `(?:b|a)` still refuses, because `a*` may swallow that branch's lead.
+>
+>     ⚠️ **Two more false refusals, both of them a walk stopping at something that consumes nothing.** `a{0}^a*a*b$` is `^a*a*b$` to both engines, and the search for the anchor stopped at the dead atom — so an anchored pattern was refused under the unanchored limit. And a literal with a **fixed** repetition did not end a run, because the check was skipped for any quantifier at all: `^a*a*b{1}a*$` is the accepted `^a*a*ba*$` written another way. Only a quantifier that can run **zero** times fails to force the boundary; one that runs a variable number of times is a variable-width atom, which the rule already counts.
+>
+>     ⚠️ **And a branch boundary ends a run**, which was a false refusal until review found it: `|` reached the run walk as an ordinary non-variable atom and nothing reset the state, so `^a*a*|^b*` was refused for three atoms in a row that no execution path contains. The cost of that one was an upgrade blocked by `--strict` over a harmless stored pattern.
+>
+>     ⚠️ **The obvious next question is whether an unanchored search multiplies the ambiguity ceiling and the delimiter proof too. It multiplies both, and this paragraph got one of them wrong.**
+>
+>     It said neither mattered, because both sat low enough to absorb a factor of the length — on the strength of sixteen copies of `(?:a|a)` then `b` measuring **178.6 ms unanchored against 0.0 ms anchored**. That measured **one shape**. Review sent another with the same product and two-character branches:
+>
+>     | at the ceiling, 5,000 characters, a failing subject | unanchored | anchored |
+>     |---|---|---|
+>     | 16 × `(?:a\|a)` then `b` | 142.7 ms | 0.2 ms |
+>     | 16 × `(?:ab\|\x61b)` then `c` | **736.2 ms** | 0.5 ms |
+>     | 16 × `(?:ab\|ab)` then `c` | **732.4 ms** | — |
+>
+>     736 ms here is seconds on ADR-027's floor, so the negative was **wrong rather than incomplete** — a measurement of one shape standing for a class, which is the error this section warns about in three other places. An unanchored pattern's ambiguity budget is now the anchored product divided by the longest value a field may hold: **65,536 over 5,000 is 13**, about three binary choices where an anchored pattern gets sixteen.
+>
+>     ⚠️ **A product of 8 still publishes unanchored**, and that is deliberate rather than an oversight: refusing any ambiguity without an anchor was the first version of this rule and it refused fifteen shapes in this repository's own tests — all products of 2, all linear at any length. A false refusal for a real cost is still a false refusal.
+>
+>     ⚠️ **And the product is the BRANCH's, not the pattern's** — found by reading the rule back rather than by measuring it. `^(?:ab|ab)(?:ab|ab)(?:ab|ab)(?:ab|ab)c|x` holds all its ambiguity in the anchored branch and a single literal in the other, and the whole pattern's product refused it for the `x`. An unanchored branch is only ever retried over its own ways to match.
+>
+>     **The delimiter proof was the half this paragraph got right**: the unanchored comma list `[^,]+(?:,[^,]+)*X` measures **57.5 ms** on 2,500 items, already past the ceiling, so it needs no rule of its own.
+>
+>     ⚠️ **That allowance needs a real ceiling on the value, and the sentence here used to claim one that did not exist** — "which `TextType` bounds by its configured `maxLength`, 255 by default". Review checked it: the setting had no upper bound, so quadratic meant whatever an org configured. Measured, `^a*a*b$` takes **6.2 s at 65,535 characters and 14.4 s at 100,000**. `TextType::MAX_CONFIGURABLE_LENGTH` caps it at **5,000**, which keeps the worst adversarial case — quadratic pattern, maximal value, subject failing at the end — at 36 ms here and inside half a second on the 1 vCPU floor. It is generous for a single-line field, and `textarea` and `rich_text` take no pattern, so neither is affected.
+>
+>     ⚠️ **AND THE CEILING BOUNDS ONE ELEMENT WHILE THE FIELD PUBLISHES AN ARRAY**, which review found one rule later. A multi-value `text` field applies its pattern to every item, and a cardinality of `-1` published no `maxItems` at all — so the bounded quadratic was multiplied by an unbounded item count. Measured on Node 22.23.2, an accepted `^a*a*b$` against all-`a` values that fail:
+>
+>     | items | 10 | 25 | 50 | 100 | 200 |
+>     |---|---|---|---|---|---|
+>     | 255 characters | 1.3 ms | 2.4 ms | 4.8 ms | 9.7 ms | 19.5 ms |
+>     | 1,000 | 14.4 ms | 36.5 ms | 73.2 ms | 145.4 ms | 290.6 ms |
+>     | 5,000 | 359.6 ms | 900.4 ms | **1,802.5 ms** | **3,595.8 ms** | **7,262.8 ms** |
+>
+>     Linear in the item count and quadratic in the length, so the work is `items × length²` and the bound that keeps it where one maximal element put it is `(5000 / length)²` — **384** items at the 255-character default, 25 at 1,000, and **1** at the ceiling itself. `TextType::maxItems()` derives it, `apiSchema()` publishes it as `maxItems` and `validationRules()` enforces the same number, because two expressions of one intent is how a published constraint and an enforced one drift apart.
+>
+>     ⚠️ **Only where the allowance is claimed.** A run of one variable-width atom is linear — a hundred maximal values against `^[a-z]+$` is half a million character tests — so the bound applies exactly when `Pattern::costsQuadraticPerValue()` says the pattern's cost grows with the square of the value. A declared cardinality is narrowed, never widened: two means two.
+>
+>     ⚠️ **And so does an assertion at every starting position**, which neither of the other two tests reaches: `(?=a*b)a` holds one variable-width atom inside a lookahead with no repetition anywhere, and the lookahead scans the remaining value wherever the unanchored search tries. **36.0 ms** at 5,000 characters against **0.0 ms** for `^(?=a*b)a` and for `(?=ab)a`. Both polarities count — whether a negative assertion's body is expensive depends on the value rather than on the pattern, and this section prices constructs rather than subjects everywhere else.
+>
+>     ⚠️ **A wide fixed repetition is a MULTIPLIER, and no rule had a term for it.** `a+a{999}X` is nine characters and measures **5.7 seconds** against 2,500 `a` — 29.8 at the 5,000 a `text` field admits — where `a+X` is 9.4 ms: every allocation of the `a+` re-tests the whole `{999}`, so the work is the base cost times the count. The run rule cannot see it, because a fixed repetition is not a variable-width atom and the run is one atom long. Found by fuzzing 93,703 generated patterns and timing every one that published. The ladder at 2,500 characters is linear in the count — **9.1 ms** at k=1, 91.3 at k=8, 589.3 at k=64, **5,673.0** at k=999 — while the divided `^a*a*b{k}$` is flat at 9 ms for every k, because the run cannot give back a character the repetition would re-test. Sequential counts **add** rather than multiplying — each allocation re-tests each repetition once, so `^a+a{64}a{64}a{64}X` costs what `^a+a{192}X` costs and both measure 3 ms — and a required bracket is transparent to the question, because `a+(?:a{999})X` is the same 5.7 seconds with parentheses round it. So the count is charged as a **factor on the cost** rather than capped as a limit, and the budgets say where the line falls: `^[a-z]+[a-z]{14}$` has a linear base, measures 0.1 ms and publishes; `^[ab]{2,}a*a{999}$` multiplies a quadratic base and measures **23.3 seconds**.
+
+>     ⚠️ **And a repeated assertion rescans the suffix on every iteration**, which neither of those tests sees: `^(?:a(?!a*b))*$` holds no run of two anywhere and anchors its search, and the lookahead walks the remaining value once per outer iteration. Measured on a 5,000-character value: **35.8 ms**, against **0.1 ms** for `^(?:a(?!ab))*$` — so the cost is the **variable-width** atom inside the assertion, not the assertion. A hundred of those in one valid array is 3.6 seconds. The pattern itself stays publishable: one value at 35.8 ms is inside the quadratic allowance, and it is the array that needs bounding.
+>
+>     ⚠️ **And an unanchored search supplies the second factor itself**, which the classification missed. `a*b` holds ONE variable-width atom, so the run rule calls it linear — and unanchored it is retried from every starting position, where the star takes the whole remaining value and the `b` refuses all of it. Measured on Node 22.23.2 with 5,000 `a`: **`a*b` 35.6 ms** against **`^a*b` 0.0 ms**, `a*b$` 35.6 ms, `.*x` 37.7 ms against `^.*x` 0.0 ms — the same order as the anchored quadratic this bound exists for. `[a-z]+` is the line, and it is measured rather than assumed: with nothing after it that can fail, every starting position matches at once or fails in constant time, so the retry adds a factor of nothing and the field keeps no bound.
+>
+>     ⚠️ **And that question is asked of the whole pattern, not of its top level.** The first version asked `quadraticRuns()`, which PRICES a sequence and reads its own atoms so the allowance is charged at exactly one level — so it never looks inside a group, and `^(?:a*a*)b$` came back linear while being the same expression as `^a*a*b$`. The walk that owns the whole pattern splices what runs once, descends into assertion bodies and into every branch of a multi-branch group, and fails closed on anything it cannot parse.
+>
+>     ⚠️ **And the FORM reads the same number.** `FieldValueRenderer` capped its repeater from `cardinality()` alone, so an author could add rows that validation and the published schema both refuse — three readings of one bound, and the form was the one that disagreed. `maxItems()` is on the `FieldType` contract for exactly that reason: published, enforced and rendered from one answer.
+>
+>     ⚠️ **It is an upgrade hazard whose refusal lands on an ENTRY**, so `kitsune:audit-patterns` reports it alongside the other two — and names the remedy, which is not the obvious one: cardinality is part of the locked shape once data exists, so what an author can still change is `maxLength` or the pattern.
+>
+>     ⚠️ **Ambiguity does not need a quantifier, and this is a different axis from every rule above.** Found by review. `^` then thirty copies of `(?:a|a)` then `b$` has no repetition anywhere and no variable-width atom, so nothing looked at it — each group offers two identical ways to match one character, and thirty offer 2³⁰. **PCRE exhausts its backtrack limit and Node 22 takes 50.2 s**, on a 240-character pattern.
+>
+>     A **product**, not a count, because the cost is measured to be exactly that — about 45 ns per combination on Node, linearly: 3 ms at 2¹⁶, 47 ms at 2²⁰, 3.1 s at 2²⁶. The bound is therefore on the cost (`MAX_AMBIGUITY_PRODUCT`, 65,536), which leaves an order of magnitude for ADR-027's floor while keeping sixteen ambiguous binary alternations publishable. Only **ambiguous** alternations count: thirty copies of `(?:a|b)` are linear, because at most one branch can match at a position.
+>
+>     ⚠️ **It took two flat models, wrong in opposite directions, before the cost was computed recursively** — and the second was the fix for the first. A flat walk over the frame list multiplied every level of a nest, because a child frame is recorded before its parent, so seventeen nestings of `(?:<previous>|a)` were refused as 131,072 combinations where 100,000 Node matches take **3 ms**. Sorting outermost-first and skipping covered children then *under*counted: an ambiguous outer alternation suppressed its children and contributed only its own branch count, so `^(?:` + 28 × `(?:a|a)` + `|` + 28 × `a` + `)$` read as **2** where the cost is **2²⁸** — 231 characters, and Node spends **10.8 s** on a 29-character subject.
+>
+>     A flat product cannot express either shape, because the cost of a group depends on what is inside it. Two rules do, and both cases then fall out rather than needing a rule of their own:
+>
+>     | | cost |
+>     |---|---|
+>     | a **sequence** | the **product** of its parts — each choice multiplies the ones beside it |
+>     | an **ambiguous** alternation | the **sum** of its branches — every branch must be tried |
+>     | a **prefix-free** alternation | the **max** — at most one branch can match at a position |
+>
+>     The sum is what makes nesting cheap again: `(?:X|a)` costs `cost(X) + 1`, so seventeen nestings cost 18 rather than 2¹⁷.
+>
+>     ⚠️ **Only a required literal the left atom cannot match ends a run, and a fixed width does not.** `a*[a-z]{2}a*` looks divided and is not: the middle atom is two characters wide but its *position* is still free. The argument is the delimiter proof's, and it is about distinguishability rather than width.
+>
+>     ⚠️ **Membership is tested against the pattern that is actually compiled**, which is not the one the author wrote. `delimit()` rewrites `.`, `\s` and `\S` to explicit ECMAScript-equivalent classes, and the two dialects disagree on three code points — so probing the raw text asks about a class that is never compiled. PCRE's `\s` excludes U+FEFF, so `^(?:<U+FEFF>\s?)*X$` was told its optional atom could not reach the delimiter and was exempted; **ECMAScript's `\s` includes the BOM, and Node 22 takes 17.2 s** on 40 of them. The same normalisation settles the opposite direction: `<U+FEFF>\S?` cannot consume a BOM in *either* dialect once compiled, so it stays exempt.
+>
+>     ⚠️ **Conservative where it cannot be sure.** `(?:a|[b-z])+` has disjoint branches and is refused, because deciding whether two character classes overlap is more analysis than belongs on an authoring request. The message names the portable ways out, and the harness reports the cost rather than hiding it.
+> 4. **A capturing group inside a lookbehind must be fixed length.** Also found by review, and measurement placed the line rather than a blanket ban: with a fixed width the engines agree, including two adjacent captures — `(?<=([ab]{2})([bc]{2}))\2\1$` matches in both. Make either variable and they part company, because the engines traverse a lookbehind in **opposite directions** and allocate the variable part to different groups. `(?<=(a+))\1$` on `aaaa`: PCRE errors, ECMAScript matches. `(?<=([ab]{1,2})([bc]{1,2}))\2\1$` on `abcbca`: PCRE says no, ECMAScript says yes.
+>
+>     ⚠️ **And a fixed-width capture under a repetition is not fixed either.** Found by review after the width rule. A width is a property of one iteration; *which* iteration's text remains captured is a property of the traversal, and the engines traverse a lookbehind in opposite directions. Measured on PCRE 10.48 with Node 22.23.2:
+>
+>     | | `aba` | `abb` | `aa` | `ab` | `aabaa` | `abab` |
+>     |---|---|---|---|---|---|---|
+>     | `([ab]){1,2}` PCRE | no | **match** | match | no | **match** | no |
+>     | `([ab]){1,2}` Node | **match** | no | match | no | no | **match** |
+>     | `([ab]){2}` PCRE | no | **match** | no | no | **match** | no |
+>     | `([ab]){2}` Node | **match** | no | no | no | no | **match** |
+>
+>     `{2}` is a **fixed** repetition of a **fixed-width** body — the width rule passes it — and it diverges on three of six subjects, which is what makes this a second property rather than a wider net on the first. An **ancestor's** repetition counts too, because `(?:([ab])){1,2}` measures identically: the capture is written once and still runs twice. `([ab]){1}` runs it once, has nothing to reallocate, agrees everywhere, and stays published.
+>
+>     ⚠️ **The first version of that table was my instrument, not the engines.** `php -r "… \\\\1 …"` through a shell is a literal backslash followed by `1` rather than a backreference, so PCRE was handed a different pattern from Node and reported `no` for every subject. It is the identical error `tools/pattern-parity/README.md` opens with, and the fix is the same: both readers get identical source text, from files rather than from a shell.
+>
+>     ⚠️ `(?<=(a{1,2}))\1$` and `(?<=(a?))\1$` *agree* on the subjects tried and are refused anyway. That agreement is subject-dependent luck rather than a property of the construct, and a rule that admitted them would be drawing its line at whichever subjects happened to get measured.
+>
+> ⚠️ That row was originally counted among the divergences, and review corrected it: comparing the harness's full result shapes made it look like disagreement, because only the ECMAScript side carries timeout metadata. It is now classified as *no verdict from either engine*, which is both accurate and a sharper statement of the same point — the danger here is the cost of the pattern, not a difference of opinion about it.
+>
+> 5. **A group bounded at zero repetitions may not hold an assertion.** `{0}` is dead markup that both engines skip — except that PCRE stops matching when the dead group's alternation *ends* in a positive lookahead. Measured at production fidelity on PCRE 10.48 and Node 22.23.2: `(?:a|(?=a)){0}` matches every subject under ECMAScript and **none** under PCRE, while `(?:(?=a)|a){0}`, `(?:a|(?<=a)){0}`, `(?:a){0}` and `a{0}` agree — so the branch order and the direction of the assertion both matter.
+>
+>     ⚠️ **AND `^` IS AN ASSERTION, which this rule was not reading.** It looked only at parenthesised frames, so `(?:a|^){0}` held one and reported none — and this was a **live defect on the pair this harness runs**, not insurance on another. Measured at production fidelity on PCRE 10.48 with Node 22.23.2:
+>
+>     | Pattern | PCRE | ECMAScript |
+>     |---|---|---|
+>     | `(?:a\|^){0}$` on `a` | no match | **match** |
+>     | `(?:^\|a){0}$` on `a` | match | match |
+>     | `^(?:a\|^){0}$` on `a` | no match | no match |
+>
+>     PCRE's start-anchor optimisation survives the dead group; ECMAScript skips the group outright. Branch order matters here exactly as it does for the lookahead form, and what encloses the group matters too — which is why the rule is about the shape rather than about the measured subject. Anchors are found by walking atoms rather than by searching for `^`: `\^` is an escaped literal and `[$]` is a class member, and only a parse tells them apart.
+>
+>     ⚠️ **The rule is wider than the quirk, deliberately.** *"An alternation whose last branch is a positive lookahead"* is a shape nobody can check by reading it. The `{0}` allowance exists only so dead markup does not fail an upgrade, and a dead group that also holds an assertion is not something anybody wrote on purpose.
+>
+>     ⚠️ **A frame under a zero-repeat ANCESTOR never runs either**, which review found: `^(?:(a|aa)+){0}$` was refused for the inner `+` although the group holding it executes zero times. Both engines match only the empty string, so `--strict` was blocking an upgrade over a harmless stored pattern.
+>
+> 6. **A positive lookahead may not assert what an adjacent optional atom consumes.** `(?=a)a?a` — the assertion says the next character is `a`, and the optional atom beside it can consume an `a`, so the assertion constrains nothing the atom does not.
+>
+>     ⚠️ **THIS ONE IS INSURANCE RATHER THAN A MEASUREMENT, and that is published rather than implied.** On PHP 8.4.25 / PCRE 10.48 / Node 22.23.2 both engines match `a` here, and so do `^(?=a)a?a$`, `(?=a)a?`, `(?=a)aa`, `a?a`, `(?=a)a*a` and `(?=ab)a?ab`. **Review measured PCRE 10.44 with Node 24.15 disagreeing** — PCRE rejecting `a` while ECMAScript matches it — and `composer.json` requires PHP `^8.4`, whose earliest releases bundle PCRE2 10.44. The shape is redundant, so refusing it costs approximately nothing; a rule that is right on one version pair is worth less than that.
+>
+>     ⚠️ **Either side, and a lead read through anything transparent.** Four review rounds found four ways past a narrower version of this rule and they were all one way — it read the pattern more narrowly than the shape occurs. A group hid the shape (`(?:(?=a)a?a)`), a group hid the asserted character (`(?=(?:a))(?:a)?a`), a quantifier hid it (`(?=a+)a?a`), and the optional atom sat in FRONT (`a{0}(?=a)a`, `a?(?=a)a`). A rule a pair of brackets defeats is not a rule.
+>
+>     ⚠️ **AND WITHOUT AN ANCHOR, ANY NULLABLE ATOM AFTER THE LOOKAHEAD IS ENOUGH — overlap or not.** Review measured `(?=a)b*a` on the same 10.44 pair: PCRE rejecting `a` while ECMAScript matches it, with `^(?=a)b*a` agreeing. `b*` cannot match the asserted `a`, so the overlap half above passes it on purpose, and the divergence is there one exemption away. It is redundant for a reason of its own: **a search may begin wherever it likes**, so an unanchored assertion in front of something that can match nothing decides nothing the search had not already decided — `(?=a)b*a` and `b*a` accept exactly the same values, and `preg_match()` and a JSON Schema `pattern` both ask only whether a match exists. Anchored, the assertion is doing work again, and `^(?=a)b*a` publishes.
+>
+>     ⚠️ **And two more ways past it, both in the walk that finds what the lookahead asserts.** Dead markup bought a third exemption — `^(?=b{0}a)a?a` published although the lookahead reduces to `(?=a)`, because an atom bounded at zero repetitions read as *uncertainty* rather than as markup that never runs; `neverRuns()` is asked first now, the same ordering the run rule uses. And an alternation whose branches AGREE was discarded: `^(?=(?:a|ab))a?a` published although both branches require `a` next. The lead is derived per branch and kept when they agree on the character, so `^(?=(?:a|b))a?a` still publishes — one branch's lead is not the alternation's.
+
+>     ⚠️ **And a sixth bracket defeated the PROBE rather than the question.** `^(?=a)(?:a(?=a))?a` published: the optional group really can consume the asserted `a`, and asking whether `(?:a(?=a))` matches `a` against a one-character subject says no, because the inner lookahead has nothing to look at. `^(?=a)(?:(?<=x)a)?a` is the same hole through a lookbehind. So where the probe cannot see the whole atom, what the atom can **begin with** is asked instead — precisely: `(?:a(?=a))` leads with `a` and is refused, `(?:b(?=b))` leads with `b` and publishes.
+
+>     ⚠️ **And that fallback is scoped, because the limit below is a decision rather than an oversight.** Asking what an atom begins with EVERYWHERE would refuse `^(?=a)(?:ab)?a`, and `(?=a)(?:ax)?y` shows why that would be wrong: its assertion excludes every subject starting `y`, so it does constrain something, and telling the two apart needs reasoning about what FOLLOWS the neighbour. Where the probe can see the whole atom its answer stands, and `^(?=a)(?:ab)?a`, `^(?=a)(?:aa)?a` and `^(?=a)(?:b?)a` all still publish.
+
+>     ⚠️ **A group that consumes nothing is not a group here either.** `(?:(?=a))a?a` wrapped the lookahead alone, so the recursion checked the assertion with no neighbour inside the wrapper and the outer walk read the wrapper as an ordinary atom — the `a?` outside was never compared with the assertion inside. Such wrappers are unwrapped before the walk, at any depth, and `(?:(?=a)x)a?a` still publishes because that group consumes.
+>
+>     ⚠️ **The neighbour is the next atom that CONSUMES something**, on both sides. A second assertion between the lookahead and the nullable atom hid the shape — `(?=a)(?!b)b*a`, and a negative lookbehind does the same — because the immediate neighbour was zero-width and the walk stopped there. So did an atom bounded at zero repetitions: `a?b{0}(?=a)a` read `b{0}` as the neighbour and skipped the `a?` behind it.
+>
+>     ⚠️ **And dead markup beside an unanchored lookahead is itself a divergence**, which is the same rule one step further out. `b{0}(?=a)a` is rejected by PCRE 10.44 and matched by Node 24.15 while `^b{0}(?=a)a` agrees, and `b` is not what the lookahead asserts — so the overlap half passes it deliberately and the disagreement is there anyway.
+>
+>     ⚠️ **That narrowed a refusal, and the narrowing is the honest half.** `a{0}(?=a)a` used to be refused as an *overlap*, as though `a{0}` could match the asserted `a`. It cannot match anything at all, so the reading was wrong where the verdict was right. `^(?:a{0}(?=a)a)$` therefore **publishes** now: anchored, the engines agree, and the `{0}` allowance exists precisely so dead markup in a stored pattern does not fail an upgrade.
+>
+>     ⚠️ **The overlap has to be PROVED, and this is where the rule stops.** Either PCRE answers class membership for a single-character lead, or the two atoms are written identically — which is what refuses `(?=[0-9])[0-9]?[0-9]`. So `^(?=[A-Za-z])[A-Za-z0-9]*$` still publishes: the assertion excludes a leading digit where the neighbour admits one, so it is not redundant, and an intersection test that guessed would refuse the identifier pattern every schema has. Deciding whether two **different** classes intersect is the primitive [#73](https://github.com/adamgreenwell/kitsune/issues/73) is open on, and it is the same missing question there.
+>
+> 7. **At most 32 levels of nested groups.** A limit rather than a judgement, and it is published because it was **silent and misdiagnosed** before: every recursive walk in `Pattern` stopped at 64 levels and reported *maximal ambiguity*, so `^` then 65 nested `(?:` around an `a` — 263 characters, identical in both engines — was refused for reaching a retry ceiling it does not reach.
+>
+>     ⚠️ **Raising the limit was the wrong fix, and measuring showed it.** The structural analysis is superlinear in depth, and it runs on every settings save and on every stored pattern in the migration audit:
+>
+>     | depth | 8 | 16 | 32 | 48 | 64 | 80 | 249 | 497 |
+>     |---|---|---|---|---|---|---|---|---|
+>     | | 2.5 ms | 2.7 ms | **16.2 ms** | 53.8 ms | 129.5 ms | 258.6 ms | 11.1 s | 43.1 s |
+>
+>     So the limit is 32, it is stated, and the refusal names it — nothing a field validation needs nests past three. The internal walks keep a bound of their own, because a walk with no bound can be made to recurse for ever by a pattern that never compiles; the difference is that only an inadmissible pattern now reaches it.
+>
+> ### What this costs
+>
+> Measured, so it is a number rather than a worry: of 231 candidates, **two** are refused today that both engines agree on — `\p{Lower}` and `\p{Alpha}`, POSIX-style aliases missing from the property allowlist. Widening a list is a reviewable, testable act; a denylist's gaps are found by accident. **Both are now on it, and `\p{Upper}` with them** — the obvious third of the family, added at the same time so the allowlist does not carry an arbitrary subset.
+>
+> ⚠️ **Added on a set comparison, not on compiling**, because compiling proves only that a name is accepted. Each alias was compared with its canonical spelling across all 1,114,112 codepoints in *both* engines and is exactly equal: `Lower`/`Lowercase` 2,595 members, `Alpha`/`Alphabetic` 147,421, `Upper`/`Uppercase` 2,006. `\p{Space}` is the reason this is measured one name at a time rather than adopted as a family — **PCRE compiles it and ECMAScript rejects the name**, so it stays out.
+>
+> The remaining `agrees BUT refused` rows are refusals on purpose, not gaps — **57** of them, and each has a reason that is not "nobody got round to it". ⚠️ This paragraph said *"six of them"* and the accounting below said *"of eleven rows"* while the harness reported twenty-three: the count stopped tracking as each structural rule landed, and an accounting that does not add up is worth less than no accounting, because it reads as complete. Every row the harness reports is in the table now, and the arithmetic under it is the check:
+>
+> | Refused | Why it is not a gap |
+> |---|---|
+> | `\bab\b` | A portable spelling exists and the message names it |
+> | `^\p{Cn}$`, `^\p{C}$` | Version skew the measured pair cannot show, because it shares one Unicode version |
+> | `^(a*)*b$` | Refused on **cost**, not portability — the engines agree here only because the harness's subject is benign |
+> | `^([a-zA-Z0-9]+\.?)+@x\.com$`, `^(a|aa)+$`, `^(a{1,2})+$`, `^([a-z]{1,8})+$`, `^(?:[a-z]|x)+$`, `^(a\|aa){1,32}$`, thirty copies of `(?:a\|a)`, one nested in a branch | Refused on cost, and neither engine gives a verdict at all: PCRE exhausts its backtrack limit while ECMAScript passes the deadline. They are counted here *and* as `no verdict`, because "both agree" and "neither answered" are the same shape to a comparison of results |
+> | `^(?:a*a*b\|a*a*c\|…)$`, `^a*(?:b\|a)*a*c$`, `^a*a*ba*a*c$`, `^()()…(,)(?:,\10?)*X$`, `a*a*b`, `a*a*b$`, `^a*(?:b\|a*)a*c$`, `^a*(?:a\|aa)a*b$`, `^(a+)(a+)\1$`, 16 × `(?:ab\|\x61b)` then `c`, `^(?:(?!a*a*c)a)*bX$`, `^(?:a(?!a*c)(?!a*c))*X$`, `^a+(?=a+a+c)`, nine branches of `^a+(?=a+c)`, nine assertions after one `^a+`, `^a+b?(?=a+a+c)`, `^a*a*b(?=a+a+c)`, `^a*a*(?:b)?a+X$`, `^(?:aa)+a*a*X$`, `^(?:a(?=a))+a+a+X$`, `^(?:a*a*a*b)?$`, `^a+(?:(?=a*a*c)q\|z)$`, five alternatives of `^a+(?:(?=a+c)a\|z)$`, `a+a{999}X`, `^a+(?:a(?!a*b))*x`, `a+(?:a{999})X`, `^z\|(?:a(?!a*b))*x` | Refused on cost, where the harness's subject is short enough to fail fast. The adversarial ones are measured and in the rules above: **6 s**, **20 s**, **1.5 s**, **60 s** for the two unanchored forms, and **1.9 s at 2,001 characters** for the spliced alternation |
+> | `(?=a)a?a`, `(?:(?=a)a?a)`, `a{0}(?=a)a`, `(?=(?:a))(?:a)?a`, `(?=a+)a?a`, `(?=[0-9])[0-9]?[0-9]`, `(?=a)(?:a?)a`, `(?=a)b*a`, `(?=a)(?!b)b*a`, `b{0}(?=a)a`, `(?:(?=a))a?a`, `(?=a)^a{0}a`, `(?:(?=a)){2}a{0}a`, `^(?=a)(?:a(?=a))?a`, `^(?=a)(?:(?<=x)a)?a`, `^(?=b{0}a)a?a`, `^(?=(?:a\|ab))a?a` | Rule 6, which is **insurance on a version pair this harness does not run** — PCRE 10.44, measured by review. Seventeen spellings of one shape, and the harness carries all seventeen because each was published until the round that found it — two of them found by probing the family rather than by review. ⚠️ This cell said *"thirteen spellings … all ten"*, which is two numbers for one list and neither of them the count: the arithmetic under this table is the only reason that was ever caught. `^(?=a)b*a` is in the corpus beside them and **publishes**, because the anchor is what makes the assertion do work |
+> | `^(?:a*a*b\|c*c*d\|…)$` — nine branches, distinct leads | The one **known over-refusal**, and it is filed rather than excused: eight of the nine branches fail on their first atom, so the real cost is one quadratic — **35.8 ms** against the 324.3 ms of the shared-lead shape beside it. Summing branch costs cannot see that, and [#73](https://github.com/adamgreenwell/kitsune/issues/73) is the atom-against-atom proof it needs |
+>
+> So of 57 rows: **three** are portability judgements (`\b` and the two `C` categories), **36** are cost refusals — eight where neither engine answers at all and twenty-eight where the harness's subject is simply benign — **seventeen** are rule 6's insurance against PCRE 10.44, and **one** is the over-refusal above. Three plus thirty-six plus seventeen plus one, and only the last is an omission anybody should want closed.
+>
+> ⚠️ **`divergent AND accepted` is now 0.** It was 2 before the structural rules above were enforced, and both entries were rules this document already claimed. That sentence used to count the rules — *"the five structural rules"* — and the count went stale the moment a sixth landed, which is the same rot as the stale candidate count this section already fixed once. A test pins the heading above to the list beneath it now.
+>
+> ⚠️ **And screening must return a verdict, never throw**, which two inputs did not. `(?<=a{9223372036854775807}a)b` overflowed a width multiply and then a width sum into a float and threw a `TypeError` out of a `?int` return; three bytes that are not valid UTF-8 handed `mb_strpos()` an offset past the end of what it could see and threw a `ValueError`. An author can paste anything into a settings field, so either was a **500 on a save** rather than a refusal. A width nothing can measure is not a fixed width — which is what null already means there — and an invalid-UTF-8 pattern cannot compile under the `u` flag in either engine, so it is refused first and told why. Every public entry point is asserted against both inputs, because `unpublishable()` is not the only way in: `TextType` asks `costsQuadraticPerValue()` for the item bound and the runtime rule asks `delimit()`.
+>
+> ⚠️ **Migration is not optional, and `kitsune:audit-patterns` is it.** Patterns already authored were accepted by the screen, not by the grammar, so any that fall outside it must be found before this lands — a pattern that saved yesterday and is refused today is a broken install, not a fixed one.
+>
+> This paragraph stood here for a while with **nothing implementing it**, which review found by searching for the migration it mandates. That is the same failure as a published rule with no enforcement, and this document had already made it once in this section.
+>
+> ```
+> php artisan kitsune:audit-patterns            # report; exits 0
+> php artisan kitsune:audit-patterns --strict   # gate; exits non-zero if any row is unpublishable
+> ```
+>
+> ⚠️ **It streams.** The first version collected every failing row and printed afterwards, so memory grew with the number of **failures** rather than with the chunk — `chunkById()` bounds only the database batch. An audit whose entire purpose is to run before an upgrade on a large installation could therefore exhaust ADR-027's 1 GB floor before printing anything, which is the worst possible moment to run out of memory: the operator learns nothing and cannot tell whether it found nothing or died. Rows are emitted as it walks and only the count is carried, which also puts the summary at the end where a reader of a long report finishes.
+>
+> ⚠️ **What an upgraded installation actually suffers is worse than "some patterns are now invalid".** A stored `^(a|aa)+$` keeps being published in the API schema and keeps being enforced server-side, because nothing revalidates a row that is not saved. Then the first *unrelated* edit to that field — a label, a help string — fails `guardSettingsAreUsable()`, and the author is told their pattern is invalid on a screen where they changed something else. The refusal is correct and the moment is incomprehensible.
+>
+> ⚠️ **There is no `--force`,** unlike `kitsune:schema-sync`. A pattern says what a field accepts, and only its owner knows what that should be, so there is nothing for a repair flag to do.
+
+
 The same applies to `\k<name>`: a named reference is a backreference. And optionality is **inherited** — `^((a))?\2$` and `^(?:(a))?\1$` both diverge, because the enclosing group carries the quantifier while the capture itself carries none, and the enclosing group need not be a capturing one.
 
 Participation is decided against the group's **own closing parenthesis**, not against nesting. `^((a)\2)$` and `^(a(b))\2$` sit inside an outer group that has not closed and **agree** in both engines, so refusing them would be a false refusal.
@@ -255,6 +600,11 @@ Some of those rows are judgement calls rather than compile failures, and the rul
 `\b` is where that rule earned its keep, by overruling the first answer. It looked like the case for recording — a word boundary has no shorthand to redirect an author to, and on ASCII content the engines agree. But the ASCII *definition* is portable when written out, and measuring it settled the question: across all 108 pattern/input combinations tried, `(?:(?<![A-Za-z0-9_])(?=[A-Za-z0-9_])|(?<=[A-Za-z0-9_])(?![A-Za-z0-9_]))` agrees with ECMAScript's `\b` on both engines. So a portable equivalent exists, and `\b` is refused with that spelling named. Inside a character class it is left alone, because `[\b]` is the backspace character in both dialects.
 
 `\p{L}` remains the case for the other half of the rule: refusing it would remove the ability to express a Unicode-letter constraint at all, so the construct is accepted and only its property name is screened.
+
+⚠️ **Two class shapes where the dialects disagree about what the pattern IS**, both found by review and both admitted by scans that were nearly right.
+
+- **A `]` in first position.** PCRE reads a literal member; ECMAScript under `u` reads `[]` as an EMPTY class. `[]]` was already refused as a closing bracket nothing opened, so the scan caught the shape where nothing rebalanced it and missed the shape where something did: **`[]a[]` compiles in both, PCRE matches `a`, and Node can never match** — it reads an empty class, then `a`, then another empty class. First position means after an optional `^`.
+- **A set escape as a range endpoint.** This is the cost of admitting a construct by *rewriting* it. `delimit()` splices `\s` into a character list, so PCRE compiles `[\b-\s]` and `compiles()` reports true — while ECMAScript refuses a character-set escape as a range endpoint and **does not compile the published pattern at all**. A rewrite is only equivalent where the syntax around it is equivalent too, and inside a range it is not. Both ends are checked, because `[\s-x]` inverts the same mistake.
 
 The escape rows above were found by **sweeping the whole escape alphabet** on both engines — every letter, digit and punctuation mark, inside a character class and outside one — rather than by collecting reports. That is what turned up `\a` beside a reported `\e`, and `\00` after a first fix had exempted `\0`. The sweep is kept as a test, so the surface stays closed as either engine moves.
 

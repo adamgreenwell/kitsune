@@ -113,8 +113,16 @@ final class FieldValueRenderer
                     ->hiddenLabel(),
             );
 
-        if (($max = $config->cardinality()) > 1) {
-            // Cardinality -1 means unbounded, so only a positive bound is applied.
+        /*
+         * ⚠️ THE TYPE'S EFFECTIVE BOUND, NOT THE DECLARED CARDINALITY, which review found this reading.
+         * `TextType::maxItems()` narrows the item count when a pattern costs quadratic work per value —
+         * an unlimited field with a 5,000-character ceiling publishes `maxItems: 1` — and a form capped
+         * from `cardinality()` alone let an author add rows that validation and the published schema
+         * both refuse. Three numbers for one bound, and the form was the one that disagreed.
+         *
+         * Null means unbounded, so only a bound is applied.
+         */
+        if (($max = self::maxItemsFor($config)) !== null) {
             $repeater = $repeater->maxItems($max);
         }
 
@@ -364,11 +372,24 @@ final class FieldValueRenderer
          *
          * -1 means unbounded, so only a positive bound is applied.
          */
-        if (($max = $config->cardinality()) > 1) {
+        if (($max = self::maxItemsFor($config)) !== null) {
             $picker = $picker->maxItems($max);
         }
 
         return $picker;
+    }
+
+    /**
+     * The effective item bound for a multi-value field: what the type publishes and enforces.
+     *
+     * ⚠️ ASKED OF THE TYPE RATHER THAN OF THE CONFIG, because the declared cardinality is not the whole
+     * answer any more: `TextType` narrows it when the pattern costs quadratic work per value, so the
+     * schema, the validator and this form have to read one number. Resolved through the registry, like
+     * `controlFor()` beside it.
+     */
+    private static function maxItemsFor(FieldConfig $config): ?int
+    {
+        return app(FieldTypeRegistry::class)->get((string) $config->storage->type)->maxItems($config);
     }
 
     /** The table column for a cell kind, before label or direction. */

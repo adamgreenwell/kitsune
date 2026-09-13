@@ -11,7 +11,9 @@ declare(strict_types=1);
 use Illuminate\Support\Facades\Validator;
 use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Fields\FieldTypeRegistry;
+use Kitsune\Core\Fields\Pattern;
 use Kitsune\Core\Fields\Types\NumberType;
+use Kitsune\Core\Fields\Types\TextType;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Field;
@@ -569,6 +571,233 @@ it('publishes the cardinality bound it already enforces', function (): void {
         ->and($type->apiSchema(configFor('text', [], 1)))->not->toHaveKey('maxItems');
 });
 
+it('keeps the pattern cost model and the length ceiling on the same number', function (): void {
+    /*
+     * ⚠️ TWO NUMBERS THAT MUST AGREE AND ARE WRITTEN TWICE. `Pattern`'s cost model is priced against
+     * the longest value a field may hold — every "measured at 5,000 characters" in that file, and the
+     * unanchored ambiguity budget, which is the anchored product divided by exactly this number. It
+     * cannot read `TextType::MAX_CONFIGURABLE_LENGTH`, because `TextType` depends on `Pattern` and the
+     * dependency cannot run both ways, so the number is stated in both places and pinned here.
+     *
+     * Lower the ceiling without lowering this and the cost model prices a value longer than any field
+     * accepts; raise it without raising this and the model under-prices what an author can store.
+     */
+    expect(Pattern::MAX_SUBJECT_LENGTH)->toBe(TextType::MAX_CONFIGURABLE_LENGTH);
+});
+
+describe('a quadratic pattern bounds how many items a text field admits', function (): void {
+    /*
+     * ⚠️ THE LENGTH CEILING BOUNDS ONE ELEMENT AND THE FIELD PUBLISHES AN ARRAY, which review found.
+     * `Pattern` permits two adjacent variable-width atoms on the strength of `MAX_CONFIGURABLE_LENGTH`
+     * bounding the value — and a cardinality of `-1` published no `maxItems` at all, so the pattern ran
+     * on every item of an array nothing bounded. Measured on Node 22.23.2, an accepted `^a*a*b$`
+     * against all-`a` values that fail: 5,000 characters cost 36 ms each, so 100 of them cost 3.6
+     * SECONDS in one schema-valid request.
+     *
+     * The work is `items × length²`, so the bound that keeps it where one maximal element put it is
+     * `(5000 / length)²`.
+     */
+    it('derives the bound from the configured length', function (int $length, ?int $expected): void {
+        $type = app(FieldTypeRegistry::class)->get('text');
+        $config = configFor('text', ['pattern' => '^a*a*b$', 'maxLength' => $length], -1);
+
+        expect($type->maxItems($config))->toBe($expected)
+            ->and($type->apiSchema($config)['maxItems'] ?? null)->toBe($expected);
+    })->with([
+        'the default length' => [255, 384],
+        'a thousand' => [1000, 25],
+        'the ceiling itself' => [5000, 1],
+    ]);
+
+    it('sees a quadratic run through a group', function (string $pattern): void {
+        /*
+         * ⚠️ THE FIRST VERSION ASKED THE PRICING QUESTION, which review found: `quadraticRuns()` reads a
+         * sequence's OWN atoms so that the allowance is charged at exactly one level, and it therefore
+         * never looks inside a group — so `^(?:a*a*)b$` came back linear and kept no item bound, while
+         * being the same expression as `^a*a*b$` and costing the same. The question here is about the
+         * whole pattern, so it is asked of the walk that owns the whole pattern.
+         */
+        $type = app(FieldTypeRegistry::class)->get('text');
+        $config = configFor('text', ['pattern' => $pattern, 'maxLength' => 1000], -1);
+
+        expect($type->maxItems($config))->toBe(25);
+    })->with([
+        '^(?:a*a*)b$',
+        '^(?:(?:a*a*))b$',
+        '^(?=a*a*b)x$',
+        '^(?:a|a*a*b)x$',
+    ]);
+
+    it('publishes and enforces the same number', function (): void {
+        /*
+         * ⚠️ ONE ANSWER, TWO CONSUMERS. The schema and the rules were two expressions of the same
+         * intent, and a bound narrowed in one of them would be a constraint the other does not keep —
+         * which is rule 3 of the contract read in the opposite direction.
+         */
+        $type = app(FieldTypeRegistry::class)->get('text');
+        $config = configFor('text', ['pattern' => '^a*a*b$', 'maxLength' => 1000], -1);
+
+        expect($type->apiSchema($config)['maxItems'])->toBe(25)
+            ->and($type->validationRules($config))->toContain('max:25');
+    });
+
+    it('counts the unanchored retry as the second factor', function (string $pattern): void {
+        /*
+         * ⚠️ ONE VARIABLE-WIDTH ATOM IS LINEAR ANCHORED AND QUADRATIC UNANCHORED, which review found the
+         * classification missing: the search itself supplies the second factor, because every starting
+         * position gives the star the whole remaining value and the required atom refuses all of it.
+         * Measured on Node 22.23.2 with 5,000 `a`:
+         *
+         *   a*b   35.6 ms      ^a*b   0.0 ms
+         *   a*b$  35.6 ms      ^.*x   0.0 ms
+         *   .*x   37.7 ms
+         *
+         * The same order as the anchored quadratic this bound exists for.
+         */
+        $type = app(FieldTypeRegistry::class)->get('text');
+
+        expect($type->maxItems(configFor('text', ['pattern' => $pattern, 'maxLength' => 1000], -1)))->toBe(25);
+    })->with([
+        'a*b',
+        'a*b$',
+        '.*x',
+        'a+x',
+        '[a-z]+@[a-z]+',
+    ]);
+
+    it('counts a repeated assertion scan as quadratic', function (string $pattern): void {
+        /*
+         * ⚠️ NEITHER OF THE TWO TESTS ABOVE SEES IT. `^(?:a(?!a*b))*$` holds no run of two anywhere and
+         * anchors its search, so both say linear — and the lookahead rescans the remaining value once
+         * per outer iteration. Measured on Node 22.23.2 with a 5,000-character value:
+         *
+         *   ^(?:a(?!a*b))*$   35.8 ms          ^(?:a(?!ab))*$   0.1 ms
+         *
+         * A hundred of those in one valid array is 3.6 seconds, which is the aggregate this bound exists
+         * for. The pattern itself stays publishable: one value at 35.8 ms is inside the quadratic
+         * allowance, and it is the ARRAY that needs bounding.
+         */
+        $type = app(FieldTypeRegistry::class)->get('text');
+
+        expect($type->maxItems(configFor('text', ['pattern' => $pattern, 'maxLength' => 1000], -1)))->toBe(25)
+            ->and(Pattern::unpublishable($pattern))->toBeNull("[{$pattern}] is publishable as one value");
+    })->with([
+        '^(?:a(?!a*b))*$',
+        '^(?:(?!,[^,]+),)*$',
+    ]);
+
+    it('counts an unanchored assertion scan too', function (string $pattern): void {
+        /*
+         * ⚠️ NEITHER THE RUN TEST NOR THE REPETITION TEST SEES THIS ONE. `(?=a*b)a` holds one
+         * variable-width atom, inside a lookahead, with no repetition anywhere — and the lookahead scans
+         * the remaining value at every position the unanchored search tries. Measured on Node 22.23.2
+         * with a failing 5,000-character value: **36.0 ms**, against 0.0 ms for `^(?=a*b)a`.
+         */
+        $type = app(FieldTypeRegistry::class)->get('text');
+
+        expect($type->maxItems(configFor('text', ['pattern' => $pattern, 'maxLength' => 1000], -1)))->toBe(25);
+    })->with([
+        '(?=a*b)a',
+        '(?!a*b)a',
+        '(?<=a*b)a',
+    ]);
+
+    it('counts a prefix that rescans an assertion, anchored or not', function (string $pattern): void {
+        /*
+         * ⚠️ ANCHORED AND STILL QUADRATIC, which the unanchored test above cannot see. `^a+(?=a+c)` holds
+         * ONE variable-width atom inside its lookahead — so the refusal rule leaves it alone, correctly —
+         * and the `a+` in front re-evaluates it once per character it gives back. Measured on Node
+         * 22.23.2 against all-`a`: 1.5 ms at 1,000 characters, 12.8 ms at 3,000, 36.0 ms at 5,000, which
+         * is the same order as `^a*a*b$` and the reason the array needs bounding.
+         */
+        $type = app(FieldTypeRegistry::class)->get('text');
+
+        expect($type->maxItems(configFor('text', ['pattern' => $pattern, 'maxLength' => 1000], -1)))->toBe(25);
+    })->with([
+        '^a+(?=a+c)',
+        '^a+(?!a+c)',
+        '^[a-z]+(?=a+c)',
+    ]);
+
+    it('leaves both halves of that shape alone when either is fixed', function (string $pattern): void {
+        // ⚠️ `^a+(?=ac)` is 0.1 ms at 5,000 characters and `^a(?=a+c)` is 0.0 — a fixed assertion body
+        // scans a fixed amount, and a fixed prefix has nothing to give back. Both halves are needed.
+        $type = app(FieldTypeRegistry::class)->get('text');
+
+        expect($type->maxItems(configFor('text', ['pattern' => $pattern, 'maxLength' => 1000], -1)))->toBeNull();
+    })->with([
+        '^a+(?=ac)',
+        '^a(?=a+c)',
+    ]);
+
+    it('leaves an anchored or fixed-width assertion scan alone', function (string $pattern): void {
+        // ⚠️ A fixed-width assertion body scans a fixed number of characters however long the value is,
+        // and an anchored search tries one starting position — so neither multiplies by anything.
+        $type = app(FieldTypeRegistry::class)->get('text');
+
+        expect($type->maxItems(configFor('text', ['pattern' => $pattern, 'maxLength' => 1000], -1)))->toBeNull();
+    })->with([
+        '^(?=a*b)a',
+        '(?=ab)a',
+        '^(?=ab)a',
+    ]);
+
+    it('leaves a fixed-width assertion body in a repetition alone', function (string $pattern): void {
+        // ⚠️ `(?!ab)` scans two characters however long the value is — 0.1 ms at 5,000 — so the cost the
+        // bound exists for is the VARIABLE-width atom inside the assertion, not the assertion itself.
+        $type = app(FieldTypeRegistry::class)->get('text');
+
+        expect($type->maxItems(configFor('text', ['pattern' => $pattern, 'maxLength' => 1000], -1)))->toBeNull();
+    })->with([
+        '^(?:a(?!ab))*$',
+        '^(?:a)*$',
+        '^(?!a*b)a*$',
+        '^(?:,[^,]+)*$',
+    ]);
+
+    it('leaves the anchored spelling and a tail that cannot fail alone', function (string $pattern): void {
+        /*
+         * ⚠️ `[a-z]+` IS THE LINE, and it is measured rather than assumed: with nothing after it that can
+         * fail, every starting position either matches at once or fails in constant time — 0.0 ms at
+         * 5,000 characters. A rule that said "unanchored plus any variable atom" would bound a field for
+         * nothing, which is the direction that costs authors.
+         */
+        $type = app(FieldTypeRegistry::class)->get('text');
+
+        expect($type->maxItems(configFor('text', ['pattern' => $pattern, 'maxLength' => 1000], -1)))->toBeNull();
+    })->with([
+        '^a*b',
+        '^.*x',
+        '[a-z]+',
+        'a*',
+    ]);
+
+    it('leaves a linear pattern and a bare field alone', function (array $settings): void {
+        /*
+         * ⚠️ ONLY WHERE THE ALLOWANCE IS CLAIMED. A run of ONE variable-width atom is linear, so a
+         * hundred maximal values against `^[a-z]+$` is half a million character tests — a bound there
+         * would cost expressiveness and buy nothing.
+         */
+        $type = app(FieldTypeRegistry::class)->get('text');
+        $config = configFor('text', $settings, -1);
+
+        expect($type->maxItems($config))->toBeNull()
+            ->and($type->apiSchema($config))->not->toHaveKey('maxItems');
+    })->with([
+        'a linear pattern' => [['pattern' => '^[a-z]+$', 'maxLength' => 5000]],
+        'a delimited list' => [['pattern' => '^[^,]+(?:,[^,]+)*$', 'maxLength' => 5000]],
+        'no pattern at all' => [['maxLength' => 5000]],
+    ]);
+
+    it('narrows a declared cardinality rather than replacing it', function (): void {
+        // ⚠️ A cardinality of two means TWO, whatever the work budget would allow.
+        $type = app(FieldTypeRegistry::class)->get('text');
+
+        expect($type->maxItems(configFor('text', ['pattern' => '^a*a*b$', 'maxLength' => 255], 2)))->toBe(2)
+            ->and($type->maxItems(configFor('text', ['pattern' => '^a*a*b$', 'maxLength' => 5000], 3)))->toBe(1);
+    });
+});
+
 describe('a multi-value scalar field stores an array of scalars', function (): void {
     it('converts each element rather than the array', function (string $handle, array $input, array $expected): void {
         $type = app(FieldTypeRegistry::class)->get($handle);
@@ -1008,4 +1237,101 @@ describe('the same refusal applies to input that arrives already decoded', funct
         expect(validate('json', ['f' => ['list' => ['a', 'b'], 'map' => ['k' => 'v']]])->fails())
             ->toBeFalse();
     });
+});
+
+it('caps a text field length, which is what the pattern screen\'s bound rests on', function (): void {
+    /*
+     * ⚠️ A CLAIM ABOUT A BOUND HAS TO NAME THE THING THAT ENFORCES IT, and review checked one of mine
+     * that did not. `Pattern` permits TWO adjacent variable-width atoms because the cost is quadratic
+     * in the value's length rather than exponential, and the docblock saying so added "which `TextType`
+     * bounds by its configured `maxLength`". The setting had no upper bound, so quadratic meant
+     * whatever an org configured. Measured on Node 22.23.2 against a subject that fails at the end:
+     *
+     *   1,000  1 ms     10,000  144 ms     65,535  6.2 SECONDS
+     *   5,000 36 ms     20,000  579 ms    100,000 14.4 SECONDS
+     *
+     * ⚠️ ONLY `TextType` TAKES A PATTERN, which is why the ceiling is here and not shared: `textarea`
+     * and `rich_text` carry long content and neither accepts one, so neither pays for this.
+     */
+    $type = app(FieldTypeRegistry::class)->get('text');
+
+    expect($type->validateSettings(['maxLength' => TextType::MAX_CONFIGURABLE_LENGTH]))->toBeNull()
+        ->and($type->validateSettings(['maxLength' => TextType::MAX_CONFIGURABLE_LENGTH + 1]))
+        ->toContain('limited to')
+        // ⚠️ Refused before the pattern is looked at, so an over-long field with a fine pattern still
+        // hears about the length rather than passing.
+        ->and($type->validateSettings([
+            'maxLength' => 65535,
+            'pattern' => '^[a-z]+$',
+        ]))->toContain('limited to');
+
+    /*
+     * ⚠️ AND A VALUE THAT IS NOT A WHOLE NUMBER IS REFUSED BEFORE THE CEILING IS APPLIED, which review
+     * found the guard missing: it CHECKED with `is_numeric()` and the rule SPENDS with `(int)`, and
+     * those two disagree. `is_numeric('100000x')` is false, so the ceiling stood aside — while
+     * `length()` casts the same string to 100000, so `max:` and an accepted quadratic pattern then ran
+     * on 100,000-character values. A trailing letter defeated the bound the pattern rules rest on.
+     *
+     * Settings arrive from `FieldStorage` and from a module, not only from the Filament numeric
+     * control, so "the UI would not send that" is not a guard.
+     *
+     * The test is the one the cast makes: a value is acceptable exactly when casting loses nothing.
+     */
+    expect($type->validateSettings(['maxLength' => '100000x']))->toContain('whole number')
+        ->and($type->validateSettings(['maxLength' => '1e3']))->toContain('whole number')
+        ->and($type->validateSettings(['maxLength' => 10.5]))->toContain('whole number')
+        ->and($type->validateSettings(['maxLength' => 'lots']))->toContain('whole number')
+        // ⚠️ And a numeric STRING still passes, because casting it loses nothing — a form sends one.
+        ->and($type->validateSettings(['maxLength' => '100']))->toBeNull()
+        ->and($type->validateSettings(['maxLength' => 100]))->toBeNull();
+
+    // ⚠️ And published, because invariant 14 is that an enforced constraint which is not published is
+    // one a consumer gets wrong.
+    expect($type->settingsSchema()['maxLength']['maximum'])->toBe(TextType::MAX_CONFIGURABLE_LENGTH);
+
+    // The textarea's own limit is untouched: it takes no pattern, so it pays nothing for this.
+    expect(app(FieldTypeRegistry::class)->get('textarea')->validateSettings(['maxLength' => 65535]))
+        ->toBeNull();
+});
+
+it('stops at the length rule rather than running the pattern on an oversized value', function (): void {
+    /*
+     * ⚠️ THE CEILING BOUNDS CONFIGURATION, NOT THE VALUE, which review found is the half it does not
+     * cover. `MAX_CONFIGURABLE_LENGTH` limits what an org may configure; it says nothing about the
+     * untrusted value a request submits, and without `bail` Laravel runs every rule — so a
+     * 100,000-character value was handed to the regex even though `max` had already failed. Measured
+     * before the fix: the pattern closure ran.
+     *
+     * The pattern screen permits shapes whose cost grows with the SQUARE of the value length on the
+     * strength of that length being bounded, so evaluating one on a value already known to exceed the
+     * bound is the exact case the bound exists to prevent.
+     */
+    $type = app(FieldTypeRegistry::class)->get('text');
+    $rules = $type->validationRules(configFor('text', ['maxLength' => 32, 'pattern' => '^[a-z]+$']));
+
+    $bail = array_search('bail', $rules, true);
+    $max = array_search('max:32', $rules, true);
+
+    /*
+     * ⚠️ ASSERTED AS "BEFORE THE LENGTH RULE" RATHER THAN "FIRST", because first is not the property
+     * that matters and my first version asserted it and failed: `validationRules()` prepends its own
+     * rules around the scalar ones, so `bail` sits at index 1. What has to hold is that it precedes the
+     * length rule and the pattern closure, since `bail` stops the rules that come after it.
+     */
+    expect($bail)->not->toBeFalse()
+        ->and($max)->not->toBeFalse()
+        ->and($bail)->toBeLessThan($max)
+        ->and($bail)->toBeLessThan(count($rules) - 1);
+
+    // And the pattern rule is still there for a value inside the ceiling.
+    expect(validate('text', ['f' => 'abc'], ['maxLength' => 32, 'pattern' => '^[a-z]+$'])->fails())
+        ->toBeFalse()
+        ->and(validate('text', ['f' => 'ABC'], ['maxLength' => 32, 'pattern' => '^[a-z]+$'])->fails())
+        ->toBeTrue();
+
+    // ⚠️ An over-long value reports the LENGTH and nothing else, which is what proves it stopped.
+    $failed = validate('text', ['f' => str_repeat('a', 64)], ['maxLength' => 32, 'pattern' => '^[a-z]+$']);
+
+    expect($failed->fails())->toBeTrue()
+        ->and($failed->errors()->get('f'))->toHaveCount(1);
 });

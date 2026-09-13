@@ -1301,7 +1301,14 @@ describe('settings that contradict themselves are refused', function (): void {
             'org_id' => $this->org->id, 'handle' => 'ref', 'type' => 'text',
             'pii_class' => 'none', 'cardinality' => 1,
             'settings' => ['maxLength' => 30, 'pattern' => '(?P<code>[A-Z]{2})'],
-        ]))->toThrow(RuntimeException::class, 'the JSON Schema dialect does not');
+            /*
+             * ⚠️ THE REASON, NOT THE WRAPPER. This asserted the sentence the wrapper used to add — "which
+             * PCRE understands and the JSON Schema dialect does not" — and review found that sentence
+             * being told to authors whose pattern is refused on COST, where nothing about a dialect is
+             * true. The wrapper is generic now and every reason names its own cause, so the assertion
+             * moved to the part that is specific to this refusal.
+             */
+        ]))->toThrow(RuntimeException::class, 'ECMAScript has only (?:, (?=, (?!, (?<=, (?<! and (?<name>');
     });
 
     it('accepts the ECMAScript spelling of a named group', function (): void {
@@ -1813,9 +1820,17 @@ describe('settings that contradict themselves are refused', function (): void {
         Pattern::unpublishable($groupHeavy);
         $elapsed = microtime(true) - $started;
 
-        // Measures ~3ms locally. A second is a budget a hostile input must not reach,
-        // not a performance target.
-        expect($elapsed)->toBeLessThan(1.0);
+        /*
+         * ⚠️ THIS SAID "~3ms locally" AND MEANT IT WHEN IT WAS WRITTEN. Every structural rule added since
+         * added a walk, and the walks re-derived the same subpatterns: by the round that added the
+         * per-branch assertion cost this pattern took 703 ms, and that round's first version took it to
+         * 1.54 SECONDS and failed here — which is this assertion doing its job.
+         *
+         * Three derivations are memoised now and it measures ~23 ms, so the budget is tightened to 200 ms
+         * rather than left at a second it no longer needs. Still loose by an order of magnitude, because
+         * a millisecond-scale timing assertion is the flaky test a loaded CI machine punishes.
+         */
+        expect($elapsed)->toBeLessThan(0.2);
     });
 
     it('refuses a pattern longer than it will screen', function (): void {
@@ -1956,8 +1971,15 @@ describe('settings that contradict themselves are refused', function (): void {
             // A valid quantifier followed by a stray brace: the first is consumed, the
             // second is not, which is the case a per-construct check has to get right.
             ->and(Pattern::unpublishable('a{2,4}b}'))->toContain('unmatched')
-            // PCRE reads `[]]` as a class containing `]`; ECMAScript rejects it.
-            ->and(Pattern::unpublishable('[]]'))->toContain('unmatched')
+            /*
+             * ⚠️ THIS ASSERTED `unmatched` AND THE REASON WAS WRONG, which review made visible one
+             * finding later. `[]]` is refused either way, but not for the bracket being unbalanced:
+             * PCRE reads a class containing `]` while ECMAScript under `u` reads an EMPTY class, so
+             * the dialects disagree about what the pattern IS. This test's own comment said as much
+             * and then asserted the incidental message — and a rule that fires on the unbalanced
+             * shape and not the balanced one let `[]a[]` through, which is what review found.
+             */
+            ->and(Pattern::unpublishable('[]]'))->toContain('whose first member is `]`')
             // ⚠️ And everything that legitimately closes something must still pass.
             // By the time the scanner reaches the refusal, a quantifier's brace has
             // been consumed above, a property's in the escape branch, a class's by the
@@ -2463,12 +2485,45 @@ describe('settings that contradict themselves are refused', function (): void {
         // Non-empty, or the assertion below would pass by testing nothing.
         expect($portable)->not->toBe([]);
 
+        /*
+         * ⚠️ THREE NAMES ARE REFUSED ON PURPOSE THOUGH BOTH ENGINES TAKE THEM, and they have to be
+         * named here or this assertion cannot tell a deliberate cost from an omission — which is
+         * the whole thing it exists to detect.
+         *
+         * `Cn` means "not yet assigned" and `C` contains it (Cc|Cf|Co|Cs|Cn). Both engines compile
+         * either, and on ONE Unicode version they agree — which is why they reach this line. Across
+         * versions they cannot: the set is defined by the table's incompleteness, so the answer
+         * moves away from the author's intent with every release in both polarities. U+10940 is
+         * SIDETIC LETTER N01, assigned in Unicode 17.0, which is the codepoint that shows it.
+         * See `PortablePropertyTest` and field-types.md §3.
+         *
+         * ⚠️ AND `Bidi_Mirrored` IS THE THIRD, which THIS ASSERTION COULD NEVER HAVE CAUGHT, because
+         * it asks whether both engines COMPILE a name. They do, and they mean different sets: 428
+         * codepoints under PCRE 10.48 and 554 under Node 22.23.2, one-directional, U+2202 `∂` among
+         * the 126. That is the weaker test this whole sweep rests on, and
+         * `tools/property-parity` is the stronger one — every publishable name compared over
+         * 1,112,064 codepoints in both engines, where 228 agree exactly and this was the only
+         * divergence.
+         */
+        $refusedOnPurpose = ['Cn', 'C', 'Bidi_Mirrored'];
+
         $falselyRefused = array_values(array_filter(
             $portable,
-            fn (string $name): bool => Pattern::unpublishable('^\p{'.$name.'}+$') !== null,
+            fn (string $name): bool => ! in_array($name, $refusedOnPurpose, true)
+                && Pattern::unpublishable('^\p{'.$name.'}+$') !== null,
         ));
 
         expect($falselyRefused)->toBe([]);
+
+        /*
+         * ⚠️ AND THE EXEMPTION LIST IS ITSELF ASSERTED, so it cannot quietly become a place where
+         * inconvenient names are parked. Every entry must actually be refused — a stale one would
+         * otherwise sit here exempting nothing while reading as a justified exclusion.
+         */
+        foreach ($refusedOnPurpose as $name) {
+            expect(Pattern::unpublishable('^\p{'.$name.'}+$'))
+                ->not->toBeNull("[\\p{{$name}}] is exempted here but is not actually refused");
+        }
     })->skip(function (): bool {
         exec('command -v node', $found, $status);
 

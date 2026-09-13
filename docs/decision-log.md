@@ -1431,6 +1431,198 @@ The inverse is a genuine gap and is named rather than solved: **KaaS then has no
 
 ---
 
+## ADR-031 — An authored pattern is validated against a published grammar, not screened for known divergences
+
+**Status:** Decided · 2026-09-10 · Amended 2026-09-10
+
+Issue #44. `Pattern::unpublishable()` began as a screen: a list of constructs known to diverge between PCRE and ECMAScript, refused by name. A screen is a denylist, and the failure mode of a denylist is the construct nobody thought of — which here means a pattern the server enforces and the published JSON Schema does not, or the reverse.
+
+`TextType` publishes the author's pattern into `scalarApiSchema()` and validates values with `patternRule()`. The two consumers are a generated client's regex engine and PCRE, so a divergence is not cosmetic: the client validates locally, the server validates authoritatively, and they disagree about the same string.
+
+### Decision
+
+**A pattern is accepted when every construct in it appears on a published allowlist. Anything else is refused, with the reason, whether or not anyone anticipated it.** The grammar is published in `docs/field-types.md` §3 and enforced by `Pattern::unpublishable()`.
+
+The direction of staleness is what settles this. An allowlist goes stale by refusing something portable: the author is blocked, sees a message naming what *is* allowed, and a maintainer adds the name — reviewable, testable, and visible. A denylist goes stale by *accepting* something unportable, and that is found by a consumer failing in production. There are also ~170 Unicode scripts, so a list naming them in order to refuse them would go stale on every Unicode release.
+
+**The allowlist was derived by measurement, not from the specifications.** Every candidate name was compiled in both engines and only the ones both took are on the list — which earned its keep immediately: `Assigned` and `Changes_When_NFKC_Casefolded` are in ECMAScript and PCRE rejects both, while `LC` is a group category both engines have that the first hand-written list omitted. `tools/pattern-parity/` is that measurement, landed as a harness so the claim is reproducible rather than asserted.
+
+### What the grammar guarantees, and what it cannot
+
+**It guarantees dialect portability:** the construct exists in both grammars and means the same *rule* in each. That is enforceable by an allowlist, and it is what this ADR delivers.
+
+**It cannot guarantee freedom from engine BUGS either, and what to do about one depends on what the shape costs.** Review measured `(?=a)a?a` diverging on PCRE 10.44 with Node 24 — PCRE not matching `a` — while on PCRE 10.48 with Node 22 both match, along with six neighbouring shapes. Both dialects define that pattern identically, so the disagreement is an upstream defect fixed between those releases rather than a portability property.
+
+**It is refused anyway, and the reason is the shape rather than the measurement.** A lookahead asserting the character the following optional atom consumes constrains nothing that atom does not — it is `a?a` with a no-op in front. Nobody authors it deliberately, so the expressiveness cost is approximately zero, while `composer.json` requires PHP `^8.4` whose earliest releases bundle PCRE2 10.44: the exposure is real. **Cheap insurance against a real deployment beats a rule that is right on one engine pair.**
+
+That calculus is what generalises, not the verdict. A divergence this project cannot reproduce is still worth refusing when the construct has no legitimate use; one that would cost authors a shape they actually write belongs in the harness, which reports it as a live defect on whichever pair still shows it, rather than in a grammar rule that outlives the bug.
+
+**It cannot guarantee Unicode-version stability**, and this is disclosed rather than implied. `\p{L}` gained SIDETIC LETTER N01 (U+10940) in Unicode 17.0, so a server at 15.1 and a client at 17.0 enforce different rules on `^\p{L}+$` for that codepoint. No allowlist can make two engines share a Unicode table, and the client's version is outside the operator's control entirely. A property claim is portable **only to the extent the two engines share a Unicode version.**
+
+`Cn` and `C` are excluded, and the reason is not that their membership moves — every category's membership moves. It is that neither polarity of them names a stable rule to converge on. *"A letter"* is a rule both engines are answering, one with a shorter table, converging with each release. *"Not yet assigned"* describes the table's incompleteness, so the answer moves *away* from the author's intent every release: `\p{Cn}` matches steadily less, `\P{Cn}` steadily more. `C` is `Cc|Cf|Co|Cs|Cn` and inherits that. Their complements are refused with them, and a complement of any *other* property is permitted — symmetrically with the property, since `\P{L}` and `\p{L}` diverge on the same codepoint in opposite directions and refusing one would claim a portability the other does not have.
+
+### Consequence
+
+**Migration is not optional.** Patterns already authored were accepted by the screen, not by the grammar, so any outside it must be found before this lands — a pattern that saved yesterday and is refused today is a broken install, not a fixed one.
+
+The measured expressiveness cost is three refusals of constructs both engines honour, and all three are deliberate: `\b`, which has a portable spelling to redirect an author to, and `\p{Cn}`/`\p{C}`, which the measured pair cannot show diverging because it shares one Unicode version. `\p{Lower}`, `\p{Alpha}` and `\p{Upper}` *were* omissions and are now on the list, added on a set comparison across all 1,114,112 codepoints rather than on compiling — `\p{Space}` compiles in PCRE and is rejected by ECMAScript, which is why the aliases were measured one at a time instead of adopted as a family.
+
+| Rejected | Why it lost |
+|---|---|
+| Keep the screen, add divergences as they are found | Its staleness mode is accepting an unportable construct, discovered by a consumer failing. Seven of the first eight "divergences" measured were artefacts of the harness rather than the code, which is how much confidence a by-name list of offenders deserves. |
+| Allow any name PCRE accepts | Publishes a JSON Schema the consumer cannot compile, and reports nothing when it happens. |
+| Exclude every version-sensitive property | Empties the list: `\p{L}`, `\p{Nd}` and every complement qualify. It also claims a guarantee no allowlist can keep, which is invariant 14's failure. |
+| Refuse the complements (`\P{L}`, `[^\p{L}]`) but keep the properties | Half of a symmetric pair. Both diverge on the same codepoint, in opposite directions, on the same engines. |
+
+### Amendment · 2026-09-10 — the allowlist is necessary and not sufficient
+
+Review found two patterns built entirely from permitted constructs that the grammar should not publish: `^(a|aa)+$`, which makes neither engine answer, and `(?<=([ab]{1,2})([bc]{1,2}))\2\1$`, on which PCRE and ECMAScript disagree outright. Checking them surfaced the larger problem.
+
+**`docs/field-types.md` §3 published three such rules and the code enforced none of them.** Measured: `^(?=a)+a$`, `(?<=(a|aa))b\1$` and the document's own example `^([a-zA-Z0-9]+\.?)+$` were all accepted by `Pattern::unpublishable()`. The first two are exactly the two `divergent AND accepted` rows the parity harness had been reporting — the instrument built to find this was reporting it, and the document was read as if it described the code.
+
+That is a worse failure than an unwritten rule. An unwritten rule leaves an author to discover a divergence; a written one that is not enforced tells them the divergence cannot happen. It is the same defect as the `\p{Lower}` claim corrected in the same commit, and both are invariant 14.
+
+**Decision: the grammar is an allowlist of constructs *and* a closed set of structural rules, enforced together.** `structuralRefusal()` holds four, each a property of how constructs fit together rather than of any construct:
+
+1. No quantifier on an assertion.
+2. A lookbehind's alternatives must be equal length.
+3. An unbounded repetition must have only one way to divide its subject.
+4. A capturing group inside a lookbehind must be fixed length.
+
+Rules 3 and 4 are review's in part. Rules 1–3 were already published, and are now true.
+
+**The two exemptions are proofs, not conveniences**, and both were forced by measuring the cost of the rule without them:
+
+- Rule 3 stated bluntly refuses `^[^,]+(?:,[^,]+)*$`, the ordinary delimited list. If the repeated body begins with a required literal and no unbounded quantifier inside it can match that character, every iteration must begin at an occurrence of it and none can consume one — so the subject's own delimiters force the split. One way to divide, nothing to backtrack over. Measured linear: 5,000 items in 0.04 ms (PCRE) and 0.09 ms (ECMAScript), on input that fails at the last character.
+- Rule 4 stated bluntly refuses `^(?:cat|dog)+$`. Prefix-freeness is exactly the condition under which at most one branch can match at a position, so the alternation is deterministic.
+
+**Rule 5's line was placed by measurement rather than by caution.** A blanket ban on captures inside lookbehinds was the obvious rule and is wrong: with a fixed width the engines agree, including two adjacent captures. Only variable width diverges, because the engines traverse a lookbehind in opposite directions. Two forms that *agree on the subjects tried* — `(?<=(a{1,2}))\1$` and `(?<=(a?))\1$` — are refused anyway, because that agreement is subject-dependent rather than a property of the construct.
+
+### Consequence
+
+The harness reports **0** `divergent AND accepted`, down from 2. The expressiveness cost is 6 rows, every one deliberate: `\b` has a portable spelling, `\p{Cn}` and `\p{C}` are version skew the measured pair cannot show, and three are refused on cost rather than portability.
+
+**Structural rules make the migration warning sharper, not softer.** A pattern that was accepted by the construct screen can now be refused for its shape, and `^(a|aa)+$` is a plausible thing to have authored. The audit before this lands must run `unpublishable()` over stored patterns, not just check them against the construct list.
+
+| Rejected | Why it lost |
+|---|---|
+| Leave the three rules as documentation | They read as enforced. A reader has no way to tell the difference, which is what made them worse than absent. |
+| Blanket rules with no exemptions | Refuses `^[^,]+(?:,[^,]+)*$` and `^(?:cat|dog)+$` — the commonest safe shapes there are. A validator paid for by every author is not free because the cost is invisible in the diff. |
+| Detect ambiguity in general | Not something to attempt in a validator on the authoring path. The exemptions are narrow, provable, and fail closed; everything else is refused with the portable spelling named. |
+| Ban captures inside lookbehinds | Measurement says fixed widths agree. It would have refused four working forms to catch two broken ones. |
+
+---
+
+### Amendment · 2026-09-10 — one property, not two rules; and the migration exists
+
+Three more from review, and each is a case where the previous amendment fixed a symptom rather than the property behind it.
+
+**Two rules were aimed at symptoms, and a third symptom walked between them.** The pair was "no unbounded quantifier over a group containing one" and "not over ambiguous alternation". `^(a{1,2})+$` satisfies neither trigger — the inner quantifier is bounded and there is no alternation — and measures at ECMAScript ~100 ms for 30 characters, past three seconds for 40, with PCRE's backtrack limit exhausted. Worse, a test in this repository asserted `^([a-z]{1,8})+$` was *acceptable*, under the heading "accepts a bounded outer quantifier". Same shape, same measurement. Two symptom rules let one symptom through and blessed another.
+
+They are now one rule about the property: **an unbounded repetition must have only one way to divide its subject.** A body establishes that by being fixed-width with every alternation inside it unambiguous, by having prefix-free literal alternatives, or by being delimited.
+
+**A forced division turned out not to be sufficient, which measurement established rather than reasoning.** `(?:[a-z]|x)+` is fixed at one character wide, so the division IS forced — and it is still catastrophic, because `x` lies inside `[a-z]`: on 30 `x` characters both branches match at every position, giving 2³⁰ branch choices. ECMAScript 7.9 s; PCRE's backtrack limit exhausted. The same pattern on 30 `a` characters is instant. So the fixed-width clause carries a second condition, checked recursively so that `(?:a(?:b|c))+` — as safe as `(?:ab|ac)+` — is not refused for having its alternation one level down.
+
+**Every scanner advanced past a backslash by exactly two characters**, which is right for `\.` and wrong for every escape with a payload. `fixedWidth()` read `\x61` as a `\x` atom plus the literals `6` and `1` and reported width 3 for a one-character escape, so `(?<=(\x61|aaa))b\1$` passed the equal-length lookbehind rule — PCRE says no on `aaaba`, ECMAScript says yes. One arithmetic error bypassed both lookbehind rules. `escapeSpan()` is now the single answer to "how long is this escape", used by every scan; the payload also matters for correctness rather than only precision, since `\c|` puts a `|` where a two-character step reads an alternation that is not there.
+
+**And the migration this ADR calls mandatory did not exist.** The consequence section said patterns outside the grammar "must be found before this lands"; review searched for the command and there was none. `kitsune:audit-patterns` reports every stored pattern the grammar refuses, with `--strict` as a deployment gate. It has no `--force`, deliberately unlike `kitsune:schema-sync`: a pattern says what a field accepts, and only its owner knows what that should be.
+
+That is the third time in this ADR's short life that something was published without being enforced — the three structural rules, the `\p{Lower}` allowlist claim, and now the migration itself. The pattern is worth naming: **prose describing intended behaviour reads exactly like prose describing actual behaviour**, and nothing in review catches the difference unless someone goes looking for the implementation.
+
+### Consequence
+
+Live defects remain **0**. The expressiveness cost is nine rows: three are portability judgements (`\b`, `\p{Cn}`, `\p{C}`) and six are cost refusals where the engines only appear to agree because the harness's subject is benign — for five of them neither engine gives a verdict at all.
+
+| Rejected | Why it lost |
+|---|---|
+| Keep two rules and add a third for bounded repeats | A fourth symptom would have followed. The property is "one way to divide", and rules that enumerate shapes will keep missing shapes. |
+| Treat fixed width as sufficient | Measured false: `(?:[a-z]|x)+` divides one way and still costs 7.9 s. |
+| Check alternations only at the body's top level | Refuses `(?:a(?:b|c))+`, which is exactly as safe as `(?:ab|ac)+`. |
+| Decide class overlap properly, so `(?:a|[b-z])+` publishes | Real analysis on an authoring request, to admit a pattern whose author can bound the repetition instead. Refused conservatively and the cost reported. |
+| Ship the enforcement and write the audit later | The audit is what makes the enforcement safe to deploy. "Later" is after somebody's install broke. |
+
+---
+
+## ADR-032 — The mark reduces to a unit, not to a lesser fox, and it is adopted provisionally
+
+**Status:** Provisional · 2026-09-12 — adopted for use, not for registration · vector source landed and measured the same day, see the amendment below
+
+Raised because a comp exists. It settles two things that were about to be settled by accident: what the mark system is, and whether having drawn one violates the roadmap's instruction not to spend on a logo before name clearance.
+
+### The comp is a direction, not an asset
+
+The artwork this decision was taken from is **raster only**. That makes it a design direction and nothing more — it cannot be placed at arbitrary size, its palette cannot be sampled reliably, its wordmark corresponds to no licensed typeface, and a registration cannot be filed on a JPEG. A vector redraw is in progress and every asset in [`brand/README.md`](../brand/README.md)'s manifest depends on it.
+
+This matters beyond convenience. **Five defects are visible in the comp and all five are cheap in vector and expensive afterwards** — the cream tail tips vanishing against white, the keyline haloing on dark grounds, the glyph's tip at small size, the absent horizontal lockup, and the unoutlined wordmark. They are listed in `brand/README.md` rather than here because that is where somebody opening the source will look.
+
+**Amended 2026-09-12 — the vector landed the same day, and three of those five defects did not exist.** The tail tips do not vanish on white: the white shapes are fully inset within the rust and read as notches on every ground tested. There is no keyline to halo, and there never was — the comp only appeared to have one. The wordmark was already outlined as paths, so no typeface licence question arises. **All three were reasoned from a rasterised comp and all three were wrong**, which is Standing Principle #9 arriving from the direction nobody watches: the failure mode is not only asserting a problem is absent, it is asserting one is present and spending the redraw on it.
+
+What measurement found instead was worse than what it cleared. **The teal wordmark fails on dark grounds at 2.19:1**, and no single hue serves both grounds — `#2E96A4` is the minimum that clears on dark and falls to 3.49:1 back on white, so the wordmark needs two colours. **The mark cannot sit on its own brand teal at all**: the legs and paws are `#00545D` against a `#00545D` ground, which is 1.00:1, and the render shows a fox with no legs. Neither was visible in the comp and neither was predicted. Both are in `brand/README.md` with the numbers.
+
+The two defects that survived are the two that were about absence rather than appearance — no horizontal lockup, and the glyph's tip below 24px. Absence was the thing reasoning could get right.
+
+### The ladder abstracts; it does not reduce
+
+Three marks — formal lockup, compact fox, single-tail glyph — and the rule that generates them is that **the smallest mark is one unit of the largest, not a shrunken copy of it.**
+
+A kitsune's tails are its counting unit; nine is the mature form. So the ladder drops the wordmark, then drops to the tail. Nine of the glyph is the logo.
+
+**Amended 2026-09-12 — the glyph is two tails, not one.** The original pick was a single tail, on the reasoning that one unit is the cleanest possible reduction. Rendering both at 16, 32 and 48px on white, dark and grey settled it the other way: **the mirrored pair carries structure that a single diagonal stroke does not**, because symmetry gives the eye an axis to resolve when detail is gone, and a lone tail at 16px is one stroke with a closing notch. Two-tailed kitsune are a stage in the folklore, so the count is still a count — the rule that the glyph is a tail-count and never a lesser fox is unchanged, and it is the rule rather than the number that this ADR fixes. The decision was made by looking at the thing at the size it will be used, which is the only way it could have been made correctly.
+
+**The rejected form is the one that looks most obvious: a one-tailed fox.** It fails three ways at once. Visually, a single orange fox at 32px is the most crowded image in software and sits closest to the marks a clearance search will surface. Structurally, it is a *reduction* — a shrunken picture of a complex mark, which is the thing that reliably turns to mud at favicon size. And in the folklore it is a juvenile kitsune, so the smallest and most-repeated mark would depict the least of what the name claims.
+
+The distinctiveness lives in the nine-tail fan and in the tail as a shape. It does not live in the fox, and a mark that reduces toward the fox reduces toward the generic — which is the wrong direction for something whose entire job at 16px is to not be mistaken for a competitor.
+
+The glyph reads secondarily as a flame. That was checked rather than assumed and is **on-myth**: *kitsunebi*, fox-fire, belongs to the same folklore. An abstract glyph whose two available readings are both correct is a better outcome than one with a single enforced reading.
+
+### Provisional, on the precedent this project already set
+
+Roadmap [#1](https://github.com/adamgreenwell/kitsune/issues/1) says clearance comes before spending on a logo, and the open question says the same. **Neither is violated, because designing a mark and registering one are different expenditures** — and the docs currently conflate them. Drawing costs nothing to reverse. Filing does.
+
+So the mark is adopted the way the domain was: **settled provisionally, 2026-09-12**, mirroring `kitsunecms.org`'s status of 2026-09-07. Provisional means the mark is used — README, the site, the admin, the manifest in `brand/` — while **registration stays gated on the software and SaaS class search in roadmap [#2](https://github.com/adamgreenwell/kitsune/issues/2).**
+
+The visual decision feeds back into that search rather than merely waiting on it. A distinctive mark is easier to protect and a generic one is harder; a fox-shaped mark alongside two existing "Kitsune" projects argues *for* confusion if there is ever a dispute, and the nine-tail fan argues against it. Choosing the more distinctive form is therefore a clearance input, not just an aesthetic preference. **This is not legal advice and does not substitute for the search.**
+
+### The bar for dropping "provisional"
+
+<!-- TODO(adam): the exit criteria. ADR-030's "The bar" is the shape to match — conditions
+     somebody who is not the maintainer can check, rather than conditions the maintainer can
+     satisfy by deciding they are satisfied. Candidates to weigh: clearance returning clean in
+     the relevant classes; the vector existing with the five comp defects resolved; the palette
+     measured rather than transcribed; TRADEMARK.md published. Whether a filing must be
+     *granted* or merely *filed* is the consequential one — granting can take a year or more,
+     and gating on it leaves the mark provisional through v1.0. -->
+
+### The licence boundary is drawn at the directory
+
+ADR-005 separates the code licence from the trademark, and GOVERNANCE.md restates it. **That separation only holds if the asset files are actually outside the MPL**, which is why they live in a top-level `brand/` with their own notice rather than anywhere under `packages/` or `skeleton/`. Shipping the mark as an MPL asset inside the package would license the one thing the trademark policy exists to withhold, and would do it silently.
+
+Two consequences follow. `skeleton/` never ships the mark as a default site logo — an operator's logo is `site_group.settings.logo` (ADR-022) and is unrelated content. And the split-publish of `kitsune/core` ([#8](https://github.com/adamgreenwell/kitsune/issues/8)) takes the `packages/core` subtree, so `brand/` stays out of the published dist without needing an export rule.
+
+### Accessibility is a property of the mark, not of its usage
+
+Pillar three is tested rather than claimed, so the brand carries requirements rather than guidance: a monochrome variant, dark-ground variants, a fixed alt-text convention, and measured contrast. **The palette is currently unmeasured and is recorded as such** — sampling it from a rasterised comp would be exactly the reasoned-not-measured failure invariant 15 and Standing Principle #9 exist to catch. Rust is *expected* near the 4.5:1 boundary on white; which side it lands on decides whether it may ever carry text, and that is a measurement nobody has taken.
+
+| Rejected | Why it lost |
+|---|---|
+| One-tailed fox as the small mark | The original proposal. Generic at exactly the size where distinctiveness matters most, adjacent to every other fox-named project, and a juvenile kitsune in the folklore the name comes from. |
+| Head-plus-fan glyph | Considered and dropped in favour of the tail. Still a reduction rather than an abstraction — a shrunken picture of the logo, with a face that becomes mud at 16px and a fan that becomes a lumpy halo. |
+| A single tail as the glyph | The original pick, reversed on 2026-09-12 by rendering both at icon sizes. One diagonal stroke with a notch has no axis to resolve at 16px; the mirrored pair does. |
+| Two marks instead of three | Forces one asset to serve 512px and 16px. Whichever size it is drawn for, it fails the other. |
+| Adopt outright and file now | Spends the clearance budget before knowing whether the name survives contact with the two existing "Kitsune" projects. The roadmap put clearance first for this reason. |
+| Hold the mark entirely until clearance returns | Leaves the README, the site and the admin with no mark for an unbounded period, to avoid a cost — redrawing — that is already sunk and was never large. Provisional adoption gets the same protection at a fraction of the delay. |
+| Ship the raster comp in the meantime | A logo that cannot scale, cannot be recoloured for dark grounds and cannot be filed is not a stopgap, it is a second migration. |
+| Brand assets under MPL with the rest of the repo | Contradicts ADR-005 outright. The trademark is the moat that ADR-005 identified when it concluded the licence is not; licensing it away by filing convenience is the most expensive possible clerical error. |
+
+**Cost, stated.** Four:
+
+- **Everything downstream waits on a vector that does not exist yet.** No favicon, no social card, no admin mark until the redraw lands.
+- **The mark may have to be abandoned.** If clearance comes back contested, provisional adoption means the README, the site and any published assets carry a mark that has to be pulled. The cost is bounded by keeping the manifest small until clearance returns — which is an argument against producing the full asset set early, and is why the manifest is a checklist rather than a batch job.
+- **A provisional mark invites treating it as settled.** Every use makes the reversal marginally more expensive, and nobody will notice the moment it stops being cheap. This paragraph is what to hold that against.
+- **The trademark notice in `brand/LICENSE.md` is not lawyer-reviewed.** It states the intent so the boundary exists from the moment assets land, and it is a placeholder for `TRADEMARK.md`. An unreviewed notice that overstates the position is worse than none, which is why it claims referential use is permitted rather than attempting to enumerate every restriction.
+
+---
+
 ## Open questions
 
 - Storage benchmark at 10k / 100k / 1M entries
@@ -1438,6 +1630,8 @@ The inverse is a genuine gap and is named rather than solved: **KaaS then has no
 - Revision storage growth — full-JSON snapshots get expensive; consider diffs
 - Do relations target the translation group or a specific locale row (ADR-017)? Group-targeting with an optional locale override is the leading candidate
 - **Name/trademark clearance** — no PHP/CMS collision, but Mozilla's support platform and a Rust ActivityPub project both use "Kitsune." Confirm availability in software/SaaS classes **before** spending on a logo.
+
+  **Mark settled provisionally, 2026-09-12 — ADR-032**, on the same pattern this bullet already set for the domain. The mark is used; the filing waits here. The bullet's own phrasing was the problem: "before spending on a logo" reads as a bar on designing one, when the expenditure it protects against is registration.
 
   **Domain settled provisionally, 2026-09-07: `kitsunecms.org`.** `kitsune.org` is held by another party and is being pursued; acquiring it would make it a redirect, not a rename. Naming the domain now unblocks ADR-026's installer, which cannot be served from a URL that might later move — a checksum-pinned script behind a redirect is exactly what that ADR refuses. **What runs at that domain, and when, is settled by ADR-030:** the site is Kitsune's first install, so it waits for Phase 5's Marketing Site blueprint to apply cleanly at the ADR-027 floor rather than being stood up on something else in the meantime.
 - KaaS deployment topology beneath the org- and site-aware core — now an ops decision, not architecture, though ADR-020 gives it a legal input via data residency

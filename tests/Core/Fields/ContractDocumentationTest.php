@@ -222,3 +222,126 @@ it('finds the contract block at all', function () use ($signaturesFromDocumentat
     expect($declared)->toBeGreaterThan(0, 'reflection over FieldType found no methods at all')
         ->and($signaturesFromDocumentation())->toHaveCount($declared);
 });
+
+it('pins the published structural rule count to the list beneath the heading', function (): void {
+    /*
+     * ⚠️ THE HEADING SAID FOUR AND THE CODE ENFORCED SIX. §4 published *"Four rules the construct list
+     * cannot express"* over a list that grew by two — the zero-repeat assertion rule and the lookahead
+     * overlap rule — and a paragraph below it still counted *"the five structural rules"*. Nobody
+     * miscounted: each rule landed in its own round and the prose around the list was never the thing
+     * being changed.
+     *
+     * ⚠️ IT IS THE SAME ROT AS THE STALE CANDIDATE COUNT beside it, and it costs more. A published
+     * grammar exists so an author can know what is accepted BEFORE they save; a heading that
+     * undercounts the rules tells them the list they just read is the whole of it.
+     *
+     * The section is sliced to the next heading rather than matched across the document, because the
+     * numbered-item pattern is not unique to it on principle — only in fact, today.
+     */
+    $markdown = (string) file_get_contents(dirname(__DIR__, 3).'/docs/field-types.md');
+
+    expect(preg_match('/^> ### (\\w+) rules the construct list cannot express$/m', $markdown, $heading))
+        ->toBe(1, 'docs/field-types.md §4 no longer heads the structural rules with a written-out count');
+
+    $section = mb_substr($markdown, mb_strpos($markdown, $heading[0]) + mb_strlen($heading[0]));
+    $end = mb_strpos($section, "\n> ### ");
+    $section = $end === false ? $section : mb_substr($section, 0, $end);
+
+    $written = [
+        'One' => 1, 'Two' => 2, 'Three' => 3, 'Four' => 4, 'Five' => 5,
+        'Six' => 6, 'Seven' => 7, 'Eight' => 8, 'Nine' => 9, 'Ten' => 10,
+    ];
+
+    /*
+     * ⚠️ NOT `toHaveKey($key, $message)`. Its second argument is the expected VALUE, not a message, so
+     * the first version of this line asserted that the count of "Six" equals the sentence explaining
+     * itself — and failed on correct documentation. The same trap as `toContain()` being variadic over
+     * needles, and the same remedy: read the signature rather than the name.
+     */
+    expect(array_key_exists($heading[1], $written))
+        ->toBeTrue("the heading counts \"{$heading[1]}\" rules, which is not a number this test can read");
+
+    $expected = $written[$heading[1]];
+    $listed = preg_match_all('/^> (\\d+)\\. \\*\\*/m', $section, $items);
+
+    expect($listed)->toBe($expected, "docs/field-types.md §4 heads {$expected} rules and lists {$listed}");
+
+    // ⚠️ Numbered 1..N in order, or two rules could share a number and still count right.
+    expect($items[1])->toBe(array_map(static fn (int $n): string => (string) $n, range(1, $expected)));
+});
+
+it('pins the published candidate count to the harness case file', function (): void {
+    /*
+     * ⚠️ THE NUMBER HAD NEVER BEEN TRUE. §4 published "103 candidate constructs" from the commit
+     * that landed the harness onwards, and `cases.json` held 123 in that same commit — then 126,
+     * 132, 138 and 141 as each review round added its own case, with the prose never moving. A
+     * measurement is a claim about a file; if the file is not consulted the number is decoration.
+     *
+     * ⚠️ AND IT IS THE ONE NUMBER THAT DISCREDITS THE REST. The harness README's own opening is
+     * that an earlier version reported seven divergences where there are three, and that either
+     * error "would discredit a real finding". A denominator nobody can reproduce does exactly
+     * that to every ratio built on it — including "of N candidates, two are refused today".
+     *
+     * Both spellings are checked, because they are two independent chances to update one of them.
+     */
+    $markdown = (string) file_get_contents(dirname(__DIR__, 3).'/docs/field-types.md');
+    $cases = json_decode(
+        (string) file_get_contents(dirname(__DIR__, 3).'/tools/pattern-parity/cases.json'),
+        true,
+        512,
+        JSON_THROW_ON_ERROR,
+    );
+
+    expect($cases)->toBeArray()->and($cases)->not->toBeEmpty();
+
+    $count = count($cases);
+
+    expect(mb_substr_count($markdown, "{$count} candidate constructs"))
+        ->toBe(1, "docs/field-types.md §4 does not say \"{$count} candidate constructs\", which is what cases.json holds")
+        ->and(mb_substr_count($markdown, "of {$count} candidates"))
+        ->toBe(1, "docs/field-types.md \"What this costs\" does not say \"of {$count} candidates\"");
+
+    /*
+     * ⚠️ Not vacuous: any OTHER number in either phrasing is a stale count the two assertions above
+     * cannot see, because they only look for the right one.
+     *
+     * ⚠️ SCOPED TO THESE TWO PHRASINGS, not to "candidate" anywhere. A first version matched
+     * `/(\d+) candidate/` and failed on §4's *"across 23 candidate names"* — a different
+     * measurement, of named-capture scripts, correct as written. A documentation test that fails on
+     * a true sentence teaches whoever hits it to loosen the test.
+     */
+    expect(preg_match_all('/(\d+) candidate constructs|of (\d+) candidates/', $markdown, $found, PREG_SET_ORDER))
+        ->toBe(2, 'docs/field-types.md no longer quotes the candidate count in both places');
+
+    foreach ($found as $match) {
+        $written = (int) ($match[1] !== '' ? $match[1] : $match[2]);
+
+        expect($written)->toBe($count, "docs/field-types.md quotes {$written} candidates; cases.json holds {$count}");
+    }
+});
+
+it('pins the two halves of the refusal accounting to each other', function (): void {
+    /*
+     * ⚠️ THIS NUMBER HAS ALREADY DRIFTED ONCE, and §4 says so in its own prose: the paragraph read
+     * "six of them" and the accounting under it "of eleven rows" while the harness reported
+     * twenty-three. It is quoted TWICE — once to introduce the table and once to check the
+     * arithmetic under it — which is two independent chances to update one and forget the other,
+     * and an accounting that does not add up reads as complete while being wrong.
+     *
+     * The harness itself cannot be the pin: it needs Node as well as PHP, and the default suite
+     * must run on a bare clone (AGENTS.md invariant 11). So this pins the two halves to EACH OTHER,
+     * which is the slip that actually happened; the total against the harness stays a manual step,
+     * recorded in the harness README.
+     */
+    $markdown = (string) file_get_contents(dirname(__DIR__, 3).'/docs/field-types.md');
+
+    expect(preg_match('/refusals on purpose, not gaps — \*\*(\d+)\*\* of them/', $markdown, $introduced))
+        ->toBe(1, 'docs/field-types.md "What this costs" no longer states how many rows are refused on purpose')
+        ->and(preg_match('/So of (\d+) rows:/', $markdown, $accounted))
+        ->toBe(1, 'docs/field-types.md no longer accounts for those rows one by one');
+
+    expect($accounted[1])->toBe(
+        $introduced[1],
+        "docs/field-types.md introduces {$introduced[1]} deliberate refusals and accounts for {$accounted[1]}",
+    );
+});
