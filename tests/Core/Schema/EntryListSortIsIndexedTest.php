@@ -46,16 +46,26 @@ it('indexes the column the entry list sorts by, behind the scope key', function 
     $sort = mb_strtolower(EntryResource::DEFAULT_SORT);
 
     /*
-     * ⚠️ ADR-021: the index has to LEAD with `site_id`. One ending on the sort column but starting
-     * elsewhere would serve a query that crossed sites, which is the one query this table must never make
-     * cheap — and it would not serve the list page, whose first predicate is the scope key.
+     * ⚠️ THE EXACT PREFIX THE QUERY USES, and a looser test than this was the first version — review found
+     * it. It accepted any site-leading index containing the sort column anywhere, so `(site_id, status,
+     * updated_at)` would have satisfied the gate while serving nothing: the list page constrains `site_id`
+     * and `entry_type_id` and does not constrain `status`, so an engine cannot reach `updated_at` through
+     * that index in order. An index is a safety net for the shape it compares — AGENTS.md invariant 4
+     * records that lesson about a UNIQUE constraint, and it holds for a lookup index too.
+     *
+     * ⚠️ ADR-021: it also has to LEAD with `site_id`. One ending on the sort column but starting elsewhere
+     * would serve a query that crossed sites, which is the one query this table must never make cheap.
+     *
+     * Trailing columns are permitted — `(site_id, entry_type_id, updated_at, id)` is a superset that serves
+     * the same order — so this pins a prefix rather than the whole list.
      */
-    $covering = $indexes->filter(
-        fn (array $columns): bool => ($columns[0] ?? null) === 'site_id' && in_array($sort, $columns, true),
-    );
+    $prefix = ['site_id', 'entry_type_id', $sort];
+
+    $covering = $indexes->filter(fn (array $columns): bool => array_slice($columns, 0, 3) === $prefix);
 
     expect($covering)->not->toBeEmpty(
-        "no index on `entries` leads with site_id and covers the entry list's sort column ({$sort}); ".
-        'the list page pays a full sort of every row in the site on every request',
+        'no index on `entries` begins ('.implode(', ', $prefix).'), which is the equality prefix the entry '
+        .'list constrains followed by the column it orders by; without it the list page pays a full sort of '
+        .'every row in the site on every request',
     );
 });

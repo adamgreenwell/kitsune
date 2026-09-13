@@ -10,6 +10,8 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Console;
 
+use Filament\Facades\Filament;
+use Filament\Models\Contracts\HasTenants;
 use Illuminate\Console\Command;
 use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Contracts\Http\Kernel as HttpKernel;
@@ -59,6 +61,15 @@ final class BenchmarkAdminCommand extends Command
     /** Rows this command created, and the only rows it will remove. */
     private const SLUG_PREFIX = 'bench-admin-';
 
+    /**
+     * The highest entry id that existed before this run inserted anything, or null if it inserted nothing.
+     *
+     * ⚠️ IDENTITY RATHER THAN PATTERN, because a pattern is a guess about somebody else's data. Review found
+     * that cleanup matching `bench-admin-%` would force-delete a customer's own entry if they happened to
+     * name one that way — on a run that created nothing.
+     */
+    private ?int $inserted = null;
+
     protected $signature = 'kitsune:benchmark-admin
         {--rows=100000 : Entries to have in scope for the measured site}
         {--as= : Email of the user to sign in as; defaults to the first on the installation}
@@ -78,7 +89,7 @@ final class BenchmarkAdminCommand extends Command
             return self::FAILURE;
         }
 
-        [$site, $type] = $this->fixture();
+        [$site, $type] = $this->fixture($user);
 
         if ($site === null || $type === null) {
             $this->error('That user reaches no site with an enabled entry type, so there is no admin to measure.');
@@ -180,6 +191,11 @@ final class BenchmarkAdminCommand extends Command
          */
         $entry = Entry::withoutGlobalScopes()
             ->where('site_id', $site->getKey())
+            // ⚠️ Of the selected TYPE, which review found missing. `EntryResource` filters records by the
+            // resolved type, so a midpoint record belonging to another type on the same site produced an
+            // id that 404s under this `{type}` — three page shapes silently unmeasured, reported as a
+            // failure of the command rather than of the fixture.
+            ->where('entry_type_id', $type->getKey())
             ->orderBy('id')
             ->skip(intdiv($seeded, 2))
             ->first();
@@ -355,10 +371,12 @@ final class BenchmarkAdminCommand extends Command
         return $user instanceof Authenticatable ? $user : null;
     }
 
-    /** @return array{0: ?Site, 1: ?EntryType} */
-    private function fixture(): array
+    /**
+     * @return array{0: ?Site, 1: ?EntryType}
+     */
+    private function fixture(Authenticatable $user): array
     {
-        $site = Site::withoutGlobalScopes()->orderBy('id')->first();
+        $site = $this->siteFor($user);
 
         if ($site === null) {
             return [null, null];
@@ -382,13 +400,66 @@ final class BenchmarkAdminCommand extends Command
         return [$site, $type instanceof EntryType ? $type : null];
     }
 
+    /**
+     * A site this user can actually reach, asked of the panel rather than of the table.
+     *
+     * ⚠️ THE FIRST SITE ON THE INSTALLATION IS NOT THE RIGHT ANSWER, and review found what that costs. On a
+     * box with more than one customer it is very likely ANOTHER customer's site — and `ensureVolume()` would
+     * write a hundred thousand rows into it before the first request discovered the mismatch and returned a
+     * redirect. With `--keep` those rows would stay there.
+     *
+     * ⚠️ ASKED THROUGH `HasTenants`, which is the panel's own contract for "the sites this user may enter".
+     * Reading `site_user` here would work and would also put a table name core does not own into a second
+     * place; and this command exists to measure the PANEL, so the panel's answer is the one it should use.
+     */
+    private function siteFor(Authenticatable $user): ?Site
+    {
+        if (! $user instanceof HasTenants) {
+            $this->error('That user model does not implement Filament\Models\Contracts\HasTenants, so '
+                .'there is no way to ask which sites it may enter — and guessing is how a benchmark writes '
+                .'rows into another org.');
+
+            return null;
+        }
+
+        /*
+         * ⚠️ THE DEFAULT PANEL, NOT A PANEL NAMED `admin`. `KitsunePanel::apply()` configures a panel the
+         * HOST application declares, so its id is the host's to choose — a literal here would work on the
+         * skeleton and fail on any install that named theirs something else.
+         */
+        $panel = Filament::getDefaultPanel();
+
+        foreach ($user->getTenants($panel) as $tenant) {
+            if ($tenant instanceof Site) {
+                return $tenant;
+            }
+        }
+
+        return null;
+    }
+
     private function ensureVolume(Site $site, EntryType $type, int $rows): int
     {
-        $existing = Entry::withoutGlobalScopes()->where('site_id', $site->getKey())->count();
+        /*
+         * ⚠️ THE TYPE'S ROWS, NOT THE SITE'S, and review found what counting the site cost. The entry list
+         * is scoped to one entry type, so on a site holding 99,000 products and one article a `--rows=100000`
+         * run would add a thousand articles, benchmark a list of about a thousand, and report success
+         * against the 100k criterion. The corpus the page pages through is the one that has to be sized.
+         */
+        $existing = $this->countOfType($site, $type);
 
         if ($existing >= $rows) {
             return $existing;
         }
+
+        /*
+         * ⚠️ THE HIGH-WATER MARK IS TAKEN BEFORE THE FIRST INSERT, so cleanup can delete by identity rather
+         * than by pattern. Review found the alternative: a legitimate entry whose slug happens to start with
+         * this prefix would have been force-deleted by a run that inserted nothing at all. Slugs do not
+         * reserve a namespace, so the prefix is a hint and the id range is the proof — and `$this->inserted`
+         * staying null is what makes a no-op run delete nothing.
+         */
+        $this->inserted = (int) Entry::withoutGlobalScopes()->max('id');
 
         $this->line('  seeding <info>'.($rows - $existing).'</info> entries…');
 
@@ -429,7 +500,16 @@ final class BenchmarkAdminCommand extends Command
             DB::table('entries')->insert($chunk);
         }
 
-        return Entry::withoutGlobalScopes()->where('site_id', $site->getKey())->count();
+        return $this->countOfType($site, $type);
+    }
+
+    /** Entries of this type on this site — the corpus the entry list actually pages through. */
+    private function countOfType(Site $site, EntryType $type): int
+    {
+        return Entry::withoutGlobalScopes()
+            ->where('site_id', $site->getKey())
+            ->where('entry_type_id', $type->getKey())
+            ->count();
     }
 
     /**
@@ -442,8 +522,13 @@ final class BenchmarkAdminCommand extends Command
      */
     private function cleanUp(Site $site): void
     {
+        if ($this->inserted === null) {
+            return;
+        }
+
         Entry::withoutGlobalScopes()
             ->where('site_id', $site->getKey())
+            ->where('id', '>', $this->inserted)
             ->where('slug', 'like', self::SLUG_PREFIX.'%')
             ->forceDelete();
     }
