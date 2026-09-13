@@ -20,6 +20,7 @@ use Kitsune\Core\Fields\Projection;
 use Kitsune\Core\Fields\StorageStrategy;
 use Kitsune\Core\Schema\GuardedStorageBuilder;
 use Kitsune\Core\Tenancy\Attributes\Unscoped;
+use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
 use RuntimeException;
 
 /**
@@ -37,6 +38,8 @@ use RuntimeException;
 #[Unscoped]
 class FieldStorage extends Model
 {
+    use EnforcesScope;
+
     public const TABLE = 'field_storage';
 
     /** GDPR Article 9 special-category data is `sensitive` (ADR-020). */

@@ -13,6 +13,7 @@ namespace Kitsune\Core\Models;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Kitsune\Core\Tenancy\Attributes\Unscoped;
+use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
 use RuntimeException;
 
 /**
@@ -36,6 +37,8 @@ use RuntimeException;
 #[Unscoped]
 class EntryRevision extends Model
 {
+    use EnforcesScope;
+
     /**
      * The entry columns erasure may rewrite on a revision.
      *

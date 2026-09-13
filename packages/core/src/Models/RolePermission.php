@@ -13,6 +13,7 @@ namespace Kitsune\Core\Models;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Kitsune\Core\Tenancy\Attributes\Unscoped;
+use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
 
 /**
  * One grant: a role holds a permission name — ADR-033.
@@ -33,6 +34,18 @@ use Kitsune\Core\Tenancy\Attributes\Unscoped;
 #[Unscoped]
 class RolePermission extends Model
 {
+    /**
+     * ⚠️ THE TRAIT BESIDE THE ATTRIBUTE, because the attribute alone is a LABEL. Review found it missing, and
+     * AGENTS.md invariant 2 exists because of exactly this: `User` carried `#[Unscoped]` without
+     * `EnforcesScope` for two phases and was "labelled correctly and completely unconstrained". Booting the
+     * trait is what runs `ScopeResolver`, which is what makes the declaration part of the fail-closed runtime
+     * contract rather than a comment with syntax.
+     *
+     * For an `#[Unscoped]` model the resolver applies no scope — that is the point of the declaration — so
+     * what this buys is the model being *checked* rather than merely annotated.
+     */
+    use EnforcesScope;
+
     /** A grant is created and destroyed, never edited — so there is nothing for timestamps to date. */
     public $timestamps = false;
 

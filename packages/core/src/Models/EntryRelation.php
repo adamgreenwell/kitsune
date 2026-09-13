@@ -14,6 +14,7 @@ use Illuminate\Database\Eloquent\Relations\Pivot;
 use Illuminate\Database\Query\Builder as QueryBuilder;
 use Kitsune\Core\Relations\GuardedRelationBuilder;
 use Kitsune\Core\Tenancy\Attributes\Unscoped;
+use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
 use RuntimeException;
 
 /**
@@ -47,6 +48,8 @@ use RuntimeException;
 #[Unscoped]
 class EntryRelation extends Pivot
 {
+    use EnforcesScope;
+
     public $incrementing = true;
 
     /**

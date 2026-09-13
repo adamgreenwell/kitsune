@@ -8,6 +8,7 @@
 
 declare(strict_types=1);
 
+use Illuminate\Database\Eloquent\Model;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryRevision;
 use Kitsune\Core\Models\EntryType;
@@ -20,6 +21,7 @@ use Kitsune\Core\Models\SiteGroup;
 use Kitsune\Core\Tenancy\Attributes\OrgScoped;
 use Kitsune\Core\Tenancy\Attributes\SiteScoped;
 use Kitsune\Core\Tenancy\Attributes\Unscoped;
+use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
 use Kitsune\Core\Tenancy\ScopeResolver;
 use Kitsune\Core\Tenancy\UndeclaredScopeException;
 use Kitsune\Core\Tests\Fixtures\UndeclaredThing;
@@ -57,6 +59,43 @@ it('explains what to do rather than just failing', function (): void {
             ->toContain('compare a column that is not there')
             ->toContain('readable across every org');
     }
+});
+
+it('adds the trait beside the attribute on every core model', function (): void {
+    /*
+     * ⚠️ AGENTS.md INVARIANT 2 SAYS "IF YOU ADD THE ATTRIBUTE, ADD THE TRAIT", and it was published and
+     * unenforced — review found `RolePermission` annotated and not enforcing, and the sweep then showed SEVEN
+     * more core models in the same state. The rule cites its own cause: `User` carried `#[Unscoped]` and no
+     * trait for two phases, "labelled correctly and completely unconstrained".
+     *
+     * ⚠️ IT COVERS `#[Unscoped]` TOO, WHICH IS THE PART THAT HAD DRIFTED. For an unscoped model the resolver
+     * applies no scope — that is what the declaration means — so what the trait buys is the model being
+     * CHECKED on boot rather than merely annotated. The attribute alone is a comment with syntax.
+     *
+     * This is the fourth rule in this project to need a test rather than attention, after the licence header,
+     * `field-types.md`'s refusal accounting, and documents promising files that already exist.
+     */
+    $models = [];
+
+    foreach (glob(dirname(__DIR__, 3).'/packages/core/src/Models/*.php') ?: [] as $file) {
+        $class = 'Kitsune\\Core\\Models\\'.basename($file, '.php');
+
+        if (! class_exists($class) || ! is_subclass_of($class, Model::class)) {
+            continue;
+        }
+
+        $models[] = $class;
+    }
+
+    // Not vacuous: an empty sweep would pass over nothing at all.
+    expect($models)->toContain(Entry::class)->toContain(Org::class);
+
+    $unenforced = array_values(array_filter(
+        $models,
+        static fn (string $class): bool => ! in_array(EnforcesScope::class, class_uses_recursive($class), true),
+    ));
+
+    expect($unenforced)->toBe([], 'these models declare a scope and do not enforce it: '.implode(', ', $unenforced));
 });
 
 it('resolves the declared scope for each core model', function (string $model, string $expected): void {
