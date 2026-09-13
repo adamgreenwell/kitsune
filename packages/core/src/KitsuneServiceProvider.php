@@ -14,6 +14,7 @@ use Filament\Support\Assets\Js;
 use Filament\Support\Facades\FilamentAsset;
 use Illuminate\Support\ServiceProvider;
 use Kitsune\Core\Console\AuditPatternsCommand;
+use Kitsune\Core\Console\BenchmarkAdminCommand;
 use Kitsune\Core\Console\BenchmarkFloorCommand;
 use Kitsune\Core\Console\BenchmarkStorageCommand;
 use Kitsune\Core\Console\SchemaSyncCommand;
@@ -80,6 +81,7 @@ final class KitsuneServiceProvider extends ServiceProvider
                 AuditPatternsCommand::class,
                 BenchmarkStorageCommand::class,
                 BenchmarkFloorCommand::class,
+                BenchmarkAdminCommand::class,
                 SchemaSyncCommand::class,
             ]);
         }

@@ -50,6 +50,17 @@ use Kitsune\Core\Validation\Rule;
  */
 class EntryResource extends Resource
 {
+    /**
+     * The column the entry list sorts by when the author has chosen nothing.
+     *
+     * ⚠️ A CONSTANT SO A SCHEMA TEST CAN READ IT. `EntryListSortIsIndexedTest` asserts that `entries`
+     * carries an index leading with the scope key and ending on this column — because nothing did until
+     * something measured the admin, and the list page paid a full sort of every row in the site on every
+     * request. Changing the sort here fails that test until an index covers the new one, which is the
+     * only way this stays true after the person who measured it has moved on.
+     */
+    public const DEFAULT_SORT = 'updated_at';
+
     protected static ?string $model = Entry::class;
 
     /** ADR-012: the type lives beneath this segment. */
@@ -202,7 +213,7 @@ class EntryResource extends Resource
             // Record links are exactly what 500s without isPersistent: true.
             ->recordActions([ViewAction::make(), EditAction::make()])
             ->toolbarActions([BulkActionGroup::make([DeleteBulkAction::make()])])
-            ->defaultSort('updated_at', 'desc');
+            ->defaultSort(self::DEFAULT_SORT, 'desc');
     }
 
     /**
