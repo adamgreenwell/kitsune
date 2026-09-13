@@ -10,12 +10,15 @@ declare(strict_types=1);
 
 namespace Kitsune\Core;
 
+use Filament\Support\Assets\Js;
+use Filament\Support\Facades\FilamentAsset;
 use Illuminate\Support\ServiceProvider;
 use Kitsune\Core\Console\AuditPatternsCommand;
 use Kitsune\Core\Console\BenchmarkFloorCommand;
 use Kitsune\Core\Console\BenchmarkStorageCommand;
 use Kitsune\Core\Console\SchemaSyncCommand;
 use Kitsune\Core\Fields\FieldTypeRegistry;
+use Kitsune\Core\Filament\RichText\BlockDirectionPlugin;
 use Kitsune\Core\Schema\RecordedRevisions;
 use Kitsune\Core\Tenancy\Context;
 
@@ -84,5 +87,29 @@ final class KitsuneServiceProvider extends ServiceProvider
         $this->publishes([
             __DIR__.'/../database/migrations' => database_path('migrations'),
         ], 'kitsune-migrations');
+
+        /*
+         * ⚠️ REGISTERED FOR EVERY REQUEST, NOT ONLY THE ADMIN'S, because `FilamentAsset` is a registry
+         * rather than a renderer: `filament:assets` publishes what is registered at that moment, so an
+         * asset registered behind a panel check is an asset the publish command cannot see. It costs an
+         * array entry per worker.
+         *
+         * The editor drops any attribute its document model does not declare, so this script is what
+         * keeps a block's `dir` alive while it is being edited — issue #67, and `BlockDirectionPlugin`
+         * carries the reasoning.
+         */
+        FilamentAsset::register([
+            /*
+             * ⚠️ `loadedOnRequest()`, AND THE FIRST VERSION WITHOUT IT THREW IN THE BROWSER. Filament's
+             * editor loads an extension by `import(url)` — the URL comes from the plugin below — so this
+             * file is an ES MODULE. Registered as an ordinary script it is ALSO injected into the page as
+             * a classic `<script src>`, and the browser then reads `export default` as a syntax error:
+             * measured as `Unexpected token 'export'` twice per page load, with the extension silently
+             * not applied. Marked loaded-on-request, the asset is published and addressable and nothing
+             * injects it, which is how Filament ships its own dynamically imported components.
+             */
+            Js::make(BlockDirectionPlugin::ASSET, __DIR__.'/../resources/js/rich-editor-direction.js')
+                ->loadedOnRequest(),
+        ], BlockDirectionPlugin::PACKAGE);
     }
 }
