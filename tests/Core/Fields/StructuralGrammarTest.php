@@ -2421,24 +2421,25 @@ describe('a prefix outside a bracket is charged for what it rescans inside', fun
      * body cannot see. Anything a prefix inside the body rescans is left to that recursion. The two
      * charges are then for two different prefixes.
      *
-     * ⚠️ THE CEILING BITES AT FIVE OF THESE, NOT NINE, and that is the alternation-ambiguity test being
-     * conservative rather than this charge being wrong: it cannot read a branch's lead through a leading
-     * assertion, so `(?:(?=a+c)a|z)` is priced as two ways to match rather than one, and each branch
-     * costs two grants of the eight the budget allows. Four publish, five do not. Recorded rather than
-     * widened, because widening the ambiguity test is a different rule and needs its own measurement.
+     * ⚠️ THE CEILING BIT AT FIVE OF THESE AND NOW BITES AT NINE, which is the conservatism this block
+     * recorded being closed rather than the charge changing. `(?:(?=a+c)a|z)` was priced as two ways to
+     * match because the alternation test could not tell that one branch begins with `a` and the other with
+     * `z`; issue #73's atom-against-atom primitive answers exactly that, so each branch costs one grant of
+     * the eight the budget allows. Measured on Node 22.23.2 with a 5,000-character all-`a` value: one
+     * branch 36.4 ms, eight 288.4 ms — the eight grants the model licenses — and nine 353.9 ms.
      */
     it('refuses more alternatives than the budget allows', function (int $branches): void {
         $pattern = implode('|', array_fill(0, $branches, '^a+(?:(?=a+c)a|z)'));
 
         expect(mb_strlen($pattern))->toBeLessThanOrEqual(Pattern::MAX_LENGTH)
             ->and(Pattern::unpublishable($pattern))->toContain('ways to retry');
-    })->with([5, 8, 40]);
+    })->with([9, 40]);
 
     it('leaves the alternatives the budget allows alone', function (int $branches): void {
         $pattern = implode('|', array_fill(0, $branches, '^a+(?:(?=a+c)a|z)'));
 
         expect(Pattern::unpublishable($pattern))->toBeNull("[{$branches} alternatives] is inside the budget");
-    })->with([1, 2, 4]);
+    })->with([1, 2, 4, 8]);
 
     /*
      * ⚠️ AND THE CHARGE HAD TO READ ITS OWN ATOMS, which is the sentence `ownAtoms()` already carries for
@@ -2742,6 +2743,99 @@ describe('a branch is its own search', function (): void {
         '^z|^(?:a(?!a*b))*x',
         '^(?:a(?!a*b))*x|^z',
     ]);
+});
+
+describe('two atoms that cannot match the same character', function (): void {
+    /*
+     * ⚠️ ISSUE #73's MISSING PRIMITIVE. `atomMatches()` answers atom-against-CHARACTER, and two questions
+     * in this file need atom-against-ATOM: whether one subject can engage two alternation branches, and
+     * whether a class divides a run. Both were answered conservatively, and the cost was measured:
+     *
+     *   `^[A-Z]{2,3}[0-9]{1,4}[A-Z]{1,2}$`   a UK postcode, refused for three atoms in a row
+     *   `[a-z]+[0-9]*`                       refused for two
+     *   nine branches of `b*b*B|c*c*C|…`     refused, and they cost what ONE costs
+     *
+     * Measured on Node 22.23.2 at 1,250 / 2,500 / 5,000 characters, the first two are 0.03 ms or less at
+     * every length, where the refused `^a*a*a*b$` is 15.4 ms, 119.7 and 949.9. The nine branches measure
+     * 35.8 ms against 36.3 for one branch alone.
+     *
+     * The primitive reads each atom as codepoint RANGES and intersects them, rather than probing
+     * characters — probing cannot prove a negative over 1,114,112 candidates. It fails closed on anything
+     * it cannot read, which is where properties and shorthands go.
+     */
+    it('proves a class cannot be consumed by the class before it', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))->toBeNull("[{$pattern}] is divided by its own alphabets");
+    })->with([
+        '^[A-Z]{2,3}[0-9]{1,4}[A-Z]{1,2}$',
+        '[a-z]+[0-9]*',
+        '^[a-z]+[0-9]+[a-z]+$',
+        '^[0-9]+[0-9]*$',
+        // A range that touches, rather than overlaps, is still disjoint.
+        '^[a-m]+[n-z]+[a-m]+$',
+    ]);
+
+    it('still refuses atoms whose alphabets meet', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))->not->toBeNull("[{$pattern}] shares characters");
+    })->with([
+        // One character of overlap is one way to re-divide the subject.
+        '^[a-n]+[n-z]+[a-n]+$',
+        '^[a-z]+[a-z]+[a-z]+x$',
+        '^[0-9]+[0-9]+[0-9]+x$',
+        // And a property is a set this cannot read, so it fails closed.
+        '^\p{L}+\p{L}+\p{L}+x$',
+    ]);
+
+    it('groups alternation branches by what can engage them', function (): void {
+        /*
+         * ⚠️ SUMMING EVERY BRANCH ASSUMES ONE SUBJECT CAN MAKE THEM ALL WORK. Nine branches that share an
+         * alphabet really do cost nine times one — 323.3 ms against 36.0 on 5,000 `a` — because every
+         * branch's `a*a*` consumes the same subject. Nine built from DIFFERENT characters cost one:
+         * 35.8 ms, because the subject that engages one leaves the other eight failing on their first atom.
+         */
+        $letters = 'bcdefghijklmnop';
+        $shared = '^(?:'.implode('|', array_map(
+            static fn (int $i): string => 'a*a*'.$letters[$i],
+            range(0, 8),
+        )).')$';
+        $distinct = '^(?:'.implode('|', array_map(
+            static fn (int $i): string => $letters[$i].'*'.$letters[$i].'*'.strtoupper($letters[$i]),
+            range(0, 8),
+        )).')$';
+
+        expect(Pattern::unpublishable($shared))->toContain('ways to retry')
+            ->and(Pattern::unpublishable($distinct))->toBeNull('distinct alphabets cost what one costs');
+    });
+
+    it('reads the lead through everything that can match nothing', function (): void {
+        /*
+         * ⚠️ THE CASE THE ISSUE NAMES AS THE ONE TO GET RIGHT, and the reason its own suggested fix would
+         * not have worked. `a*a*b` has no required FIRST atom — both stars can match nothing — so the
+         * characters it can begin with are `a` AND `b`. Comparing written first atoms would call `a*a*b`
+         * and `a*a*c` distinct, which is measurably wrong: they cost 323.3 ms together against 36.0 for
+         * one. Comparing first REQUIRED atoms would call them distinct too, since `b` and `c` differ.
+         */
+        expect(Pattern::unpublishable('^(?:a*a*b|a*a*c)$'))->toBeNull('two branches is inside the budget');
+
+        $nine = '^(?:'.implode('|', array_map(
+            static fn (int $i): string => 'a*a*'.chr(98 + $i),
+            range(0, 8),
+        )).')$';
+
+        // Nine of them is not, because the shared `a` means one subject engages all nine.
+        expect(Pattern::unpublishable($nine))->toContain('ways to retry');
+    });
+
+    it('does not let the grouping lose a combinatorial product', function (): void {
+        /*
+         * ⚠️ THE REGRESSION THE FIRST VERSION OF THIS CAUSED, kept as a row. Asking which atoms REPEAT
+         * instead of which characters a branch can BEGIN with published thirty `(?:a|a)` groups — a product
+         * of 2^30 — because neither `a` branch repeats anything, so "nothing expensive to share" separated
+         * two branches that match the same character. The cost of an alternation is not only its runs: two
+         * branches that both match the text are both TRIED.
+         */
+        expect(Pattern::unpublishable('^'.str_repeat('(?:a|a)', 30).'b$'))->toContain('ways to retry')
+            ->and(Pattern::unpublishable('^(?:a|a)(?:a|a)b$'))->toBeNull('two of them is harmless');
+    });
 });
 
 describe('the screen stays inside its budget', function (): void {
