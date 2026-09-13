@@ -2563,6 +2563,16 @@ describe('the screen answers about the author pattern, not about its own probe',
         "\xE8\xE9{",
         "\x80abc",
         'a{9223372036854775807}b',
+        /*
+         * ⚠️ REVIEW'S BYTES, AND THEY BROKE THE FIRST FIX. The round that added the UTF-8 guard put it at
+         * the entry point an AUTHOR reaches and missed the one a SCHEMA reaches — `TextType::maxItems()`
+         * calls `costsQuadraticPerValue()` without asking `unpublishable()` first, so these nine bytes
+         * turned schema and form generation into a 500 while the settings screen refused them politely.
+         * The test above passed on two OTHER invalid strings, which take a different path through the
+         * scanners. Two inputs are not a class, and this row is why the guard now sits at both entries.
+         */
+        "\x5A\xE5\x79\x67\xEC\x13\xBF\x0B\x7B",
+        "\x9C\x9E\xBD\x9A\x5C\x70\x7B\x7D",
     ]);
 });
 

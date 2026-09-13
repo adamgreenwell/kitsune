@@ -3899,6 +3899,22 @@ final class Pattern
         // nothing bounds is one bound traded for another. See `$atomLists`.
         self::forgetOneAnalysis();
 
+        /*
+         * ⚠️ THE SAME GUARD AS `unpublishable()`, AND REVIEW FOUND WHY ONE COPY WAS NOT ENOUGH. The
+         * round that added it put it at the entry point an AUTHOR reaches and missed the one a SCHEMA
+         * reaches: `TextType::maxItems()` calls this directly, without asking `unpublishable()` first, so
+         * `5a e5 79 67 ec 13 bf 0b 7b` turned schema and form generation into a 500 while the settings
+         * screen was refusing the same bytes politely. My own test for the first fix asserted all four
+         * entry points — against two OTHER invalid strings, which happen to take a different path
+         * through the scanners. Two inputs are not a class.
+         *
+         * True is the conservative answer: it bounds the array. A pattern that cannot be read as text
+         * cannot be published anyway, so the bound costs nothing and the crash cost a page.
+         */
+        if (! mb_check_encoding($pattern, 'UTF-8')) {
+            return true;
+        }
+
         if (self::atomRunExceeds($pattern, self::RUN_WITHOUT_COST)) {
             return true;
         }
