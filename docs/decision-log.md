@@ -1674,7 +1674,9 @@ Recorded here because the alternative is somebody discovering it while configuri
 
 ### An owner role, because the first user has to be able to act before any permission exists
 
-Bootstrap requires it: somebody must create the first entry type before a permission naming that type can exist. `roles.is_owner` resolves in `Gate::before`.
+Bootstrap requires it: somebody must create the first entry type before a permission naming that type can exist. `roles.is_owner` is the flag; a handle named `owner` would make the bypass depend on a string an org can rename.
+
+⚠️ **Amended 2026-09-13, during the wiring: it does NOT resolve in `Gate::before`,** which is what this ADR said first. A before-hook applies to **every** ability in the application, including policies the host application wrote for its own models — so core would be deciding that an org owner may do anything in somebody else's code, which is not core's decision to make. The bypass lives inside `Permissions::allows()`, where its blast radius is the permissions Kitsune defines and nothing else.
 
 ⚠️ **Issue #81 proposed auditing the bypass whenever it is what granted an action, and that is withdrawn on volume.** An authorization check runs per row: the entry list at 100k rows with the default page size fires ten `view` checks, a bulk delete fires one per record, and an owner browsing an admin would write audit rows faster than they write content. The log ADR-020 designed is for *actions*, and "somebody was permitted to look at a row" is not one.
 

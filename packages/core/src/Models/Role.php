@@ -67,6 +67,8 @@ class Role extends Model
         /** @var RolePermission $row */
         $row = $this->permissions()->firstOrCreate(['permission' => $permission]);
 
+        Permissions::forget();
+
         return $row;
     }
 
@@ -74,5 +76,7 @@ class Role extends Model
     public function revoke(string $permission): void
     {
         $this->permissions()->where('permission', $permission)->delete();
+
+        Permissions::forget();
     }
 }

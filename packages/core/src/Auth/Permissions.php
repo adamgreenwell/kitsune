@@ -13,6 +13,7 @@ namespace Kitsune\Core\Auth;
 use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Once;
 use InvalidArgumentException;
 use Kitsune\Core\Models\Role;
 use Kitsune\Core\Tenancy\Context;
@@ -197,6 +198,25 @@ final class Permissions
             ->unique()
             ->values()
             ->all();
+    }
+
+    /**
+     * Drop every memoised permission set, because a grant has changed one.
+     *
+     * ⚠️ "I changed the role and nothing happened" is the support burden `SettingsResolver::forget()` exists
+     * to avoid, and the same one applies here — a check that has already resolved in this process would
+     * answer from before the write.
+     *
+     * ⚠️ IT FLUSHES EVERYTHING `once()` HOLDS, not one key, and that is the price of using `once()` rather
+     * than a static array of its own. A static array would invalidate precisely — and would also survive
+     * between requests under Octane, where a stale permission set is not a slow answer but a wrong one.
+     * `once()` is flushed per request by the runtime, so the primitive that cannot be invalidated precisely
+     * is the primitive that cannot go stale across a boundary. A role write is rare; an over-broad flush of
+     * it costs a few re-resolved memos on the next read.
+     */
+    public static function forget(): void
+    {
+        Once::flush();
     }
 
     /** Does this user hold a role in the current org that bypasses permission checks? */

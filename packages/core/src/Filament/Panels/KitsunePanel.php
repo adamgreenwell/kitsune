@@ -15,6 +15,7 @@ use Filament\Navigation\NavigationBuilder;
 use Filament\Navigation\NavigationItem;
 use Filament\Pages\Dashboard;
 use Filament\Panel;
+use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Filament\Icons;
 use Kitsune\Core\Filament\Resources\Entries\EntryResource;
 use Kitsune\Core\Filament\Resources\EntryTypes\EntryTypeResource;
@@ -73,7 +74,23 @@ final class KitsunePanel
         $site = Filament::getTenant();
         $orgId = $site instanceof Site ? $site->org_id : app(Context::class)->orgId();
 
-        $types = EntryType::visibleFor($site instanceof Site ? $site : null, $orgId);
+        /*
+         * ⚠️ FILTERED BY THE `view` PERMISSION, and it has to happen HERE rather than in `EntryPolicy`.
+         * Navigation is supplied explicitly, so Filament never asks a resource whether each item should
+         * appear — and `EntryResource` is ONE resource for every type, so a single `viewAny` could not
+         * answer per item anyway. Without this a user sees a sidebar full of links that 403 when clicked.
+         *
+         * ⚠️ THE LINK IS NOT THE GUARANTEE. Hiding an item an authenticated user could still reach by
+         * typing the URL is the classic version of this bug, and ADR-024 says the PHP suite structurally
+         * cannot see it — so `e2e/permissions.spec.js` asserts the refusal at the URL as well as the
+         * absent link.
+         */
+        $user = Filament::auth()->user();
+
+        $types = EntryType::visibleFor($site instanceof Site ? $site : null, $orgId)
+            ->filter(fn (EntryType $type): bool => $user !== null && Permissions::allows(
+                $user, Permissions::forEntryType($type->handle, 'view'),
+            ));
 
         return $builder->items([
             NavigationItem::make('Dashboard')

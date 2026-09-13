@@ -13,12 +13,14 @@ namespace Database\Seeders;
 use App\Models\User;
 use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\Hash;
+use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\EntryTypeAvailability;
 use Kitsune\Core\Models\Field;
 use Kitsune\Core\Models\FieldStorage;
 use Kitsune\Core\Models\Org;
+use Kitsune\Core\Models\Role;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Models\SiteGroup;
 use Kitsune\Core\Tenancy\Context;
@@ -203,6 +205,55 @@ class DatabaseSeeder extends Seeder
             'scope_id' => $en->id,
             'is_enabled' => false,
         ]);
+
+        /*
+         * Roles, and a user who deliberately has almost none — ADR-033.
+         *
+         * ⚠️ THE CONTEXT IS SET PER ORG BEFORE EACH ROLE, because `Role` is `#[OrgScoped]` and
+         * `EnforcesScope` refuses a write that names a scope key with no context established: "a scope key
+         * nobody vouched for is how a row ends up visible to another org". The seeder is exactly the kind of
+         * caller that rule exists for.
+         *
+         * ⚠️ AND THE TWO EXISTING ADMINS BECOME OWNERS, which is not laziness. Every browser spec signs in
+         * as one of them, so without a role they would all start failing the moment the policy is wired —
+         * and the honest fixture for "the person who set this installation up" is an owner. The interesting
+         * fixture is the one below them.
+         */
+        $context->setOrg($orgA);
+
+        $ownerA = Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true]);
+        $user->roles()->attach($ownerA->id);
+        $rtlUser->roles()->attach($ownerA->id);
+
+        /*
+         * ⚠️ A COPY-EDITOR, because a permission system with only owners in it is a permission system
+         * nothing tests. `entry.article.view` and `entry.article.update`, and deliberately nothing else:
+         * no `create`, no `delete`, no `publish`, and nothing at all on products.
+         *
+         * ⚠️ THE COMBINATION IS CHOSEN SO EACH REFUSAL IS SEPARATELY OBSERVABLE, which is why it includes
+         * `update` rather than being the minimal grant. Without `update` the edit form is unreachable, and
+         * the one thing that cannot then be measured is the status control — the enforcement point for
+         * `publish`. A fixture that cannot reach the page it is meant to measure is a fixture that proves
+         * the refusal before it.
+         */
+        $reader = Role::create(['handle' => 'copy-editor', 'name' => 'Copy editor']);
+        $reader->grant(Permissions::forEntryType('article', 'view'));
+        $reader->grant(Permissions::forEntryType('article', 'update'));
+
+        $readerUser = User::create([
+            'name' => 'Reader User',
+            'email' => 'reader@kitsune.test',
+            'password' => Hash::make('password'),
+        ]);
+        $readerUser->sites()->attach([$en->id, $fr->id, $ar->id]);
+        $readerUser->orgs()->attach($orgA->id);
+        $readerUser->roles()->attach($reader->id);
+
+        // The rival org gets its own owner, so the cross-org specs measure a user who is fully
+        // authorised in their OWN org rather than one who is simply unauthorised everywhere.
+        $context->setOrg($orgB);
+        $ownerB = Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true]);
+        $rivalUser->roles()->attach($ownerB->id);
 
         $context->setSite($en);
         foreach (range(1, 6) as $i) {

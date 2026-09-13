@@ -12,7 +12,9 @@ namespace Kitsune\Core;
 
 use Filament\Support\Assets\Js;
 use Filament\Support\Facades\FilamentAsset;
+use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\ServiceProvider;
+use Kitsune\Core\Auth\EntryPolicy;
 use Kitsune\Core\Console\AuditPatternsCommand;
 use Kitsune\Core\Console\BenchmarkAdminCommand;
 use Kitsune\Core\Console\BenchmarkFloorCommand;
@@ -20,6 +22,7 @@ use Kitsune\Core\Console\BenchmarkStorageCommand;
 use Kitsune\Core\Console\SchemaSyncCommand;
 use Kitsune\Core\Fields\FieldTypeRegistry;
 use Kitsune\Core\Filament\RichText\BlockDirectionPlugin;
+use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Schema\RecordedRevisions;
 use Kitsune\Core\Tenancy\Context;
 
@@ -89,6 +92,17 @@ final class KitsuneServiceProvider extends ServiceProvider
         $this->publishes([
             __DIR__.'/../database/migrations' => database_path('migrations'),
         ], 'kitsune-migrations');
+
+        /*
+         * Per-type authorization — ADR-033, and Phase 4's last unchecked line.
+         *
+         * ⚠️ A POLICY AND DELIBERATELY NOT A `Gate::before` HOOK, which is a correction to ADR-033's own
+         * first draft. A before-hook granting everything to an org owner reaches EVERY ability in the
+         * application, including policies the host application wrote for its own models — so core would be
+         * deciding that an org owner may do anything in somebody else's code. The bypass belongs inside
+         * `Permissions::allows()`, where its blast radius is the permissions Kitsune defines.
+         */
+        Gate::policy(Entry::class, EntryPolicy::class);
 
         /*
          * ⚠️ REGISTERED FOR EVERY REQUEST, NOT ONLY THE ADMIN'S, because `FilamentAsset` is a registry

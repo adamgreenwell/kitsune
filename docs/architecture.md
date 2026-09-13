@@ -329,6 +329,18 @@ Filament's tenancy scopes Resources automatically **and nothing else.** Its own 
 
 One `Entry` model means one Eloquent policy for all types — neither routing design gives per-type authorization for free. `EntryPolicy` resolves permissions against `type_handle` and the RBAC layer, with permissions named `entry.{type_handle}.{view|create|update|delete|publish}`. Blueprints seed these when they create a type.
 
+> **Shipped 2026-09-13 — [ADR-033](decision-log.md), [#81](https://github.com/adamgreenwell/kitsune/issues/81).** The paragraph above fixed the naming and settled nothing about where any of it lives; the ADR settles that.
+>
+> **Where the type comes from.** With a record in hand it is the **record's own** `type_handle`, never the request's — a record reached through a URL for another type is exactly the confusion an attacker would arrange. Without one (`viewAny`, `create`) it is the type `IdentifyEntryType` bound into the container. **No type at all means no**, because a policy that fell back to "allowed" when it could not tell which type it was asked about would be an open door on every path that never establishes one — console commands, queue jobs, and anything a module adds.
+>
+> **Two actions the vocabulary does not name.** `restore` and `forceDelete` resolve against `delete`: both operate on a deleted row, so the authority that removed it governs it. Mapping them to `update` would let an editor who may not delete an entry resurrect one, or erase it permanently.
+>
+> ⚠️ **The owner bypass is NOT a `Gate::before` hook**, which is what ADR-033 said first and amends. A before-hook applies to every ability in the application, including policies the host wrote for its own models — so core would be deciding that an org owner may do anything in somebody else's code. It lives inside `Permissions::allows()`, where its blast radius is the permissions Kitsune defines.
+>
+> ⚠️ **Three enforcement points, and a hidden link is not one of them.** Navigation is filtered by `view`, because it is supplied explicitly and one resource serves every type — but a link that is absent while the URL still answers is the classic shape of this bug, and ADR-024 says this is the class the PHP suite structurally cannot see. `e2e/permissions.spec.js` asserts the **403 at the URL** as well as the absent link. The refusal is deliberately 403 and not 404: `IdentifyEntryType` 404s a type that does not exist, belongs to another org, or is disabled here, and conflating the two would hide a tenancy failure behind a permission message or the reverse.
+>
+> ⚠️ **`publish` is enforced rather than merely registered**, because AGENTS.md #14 forbids publishing a constraint that nothing consults — a permission a reader believes in and no code checks is worse than an absent one. `EntryResource` withholds the `published` option from the status control **and** refuses the value in validation, both from one method so they cannot drift. `archived` stays available: withholding the whole control would take a different action with it, and `archive` is not one of the five names above.
+
 ---
 
 ## 5. The kernel
