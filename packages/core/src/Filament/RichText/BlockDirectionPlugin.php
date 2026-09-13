@@ -31,7 +31,23 @@ use Filament\Support\Facades\FilamentAsset;
 class BlockDirectionPlugin implements RichContentPlugin
 {
     /**
-     * Every tag `Entry` stamps, and the editor node it becomes.
+     * Every tag `Entry` handles, and the editor node it becomes.
+     *
+     * ⚠️ THE LIST CONTAINERS ARE HERE, AND LEAVING THEM OUT LOST DATA — review found it. `Entry` does not
+     * STAMP `ul` or `ol`, because a direction on a container is inherited by children that should each
+     * resolve their own; but it does KEEP one an author wrote, and it then leaves the items unstamped
+     * precisely because they inherit that fixed ancestor. Measured:
+     *
+     *   <ul dir="rtl"><li>Mow</li><li>تنظيف</li></ul>   ->  unchanged, items unstamped
+     *   <ul><li>Mow</li><li>تنظيف</li></ul>             ->  <ul><li dir="auto">…</li>…</ul>
+     *
+     * So a list carrying `dir="rtl"` is a real stored shape, and it is the ONLY direction in it. An
+     * extension that does not declare the attribute on those nodes discards it: the editor renders the
+     * items in the chrome's direction, and the next save replaces the author's uniform `rtl` with per-item
+     * `auto`. The first version of this file left them out and called it deliberate — which conflated
+     * "never DEFAULT a direction onto a container" with "never DECLARE the attribute", and only the first
+     * of those is the rule. With a null default they are separable: what the author wrote round-trips, and
+     * an ordinary list still gains nothing.
      *
      * ⚠️ `figcaption` MAPS TO NOTHING ON PURPOSE, and it is listed rather than omitted so the absence is
      * a statement. Filament's editor has no figure or caption node — `image` is a leaf, and there is no
@@ -54,6 +70,8 @@ class BlockDirectionPlugin implements RichContentPlugin
         'blockquote' => 'blockquote',
         'pre' => 'codeBlock',
         'figcaption' => null,
+        'ul' => 'bulletList',
+        'ol' => 'orderedList',
     ];
 
     /** The asset id, shared with the service provider that registers it and the test that reads it. */

@@ -24,17 +24,60 @@ use Kitsune\Core\Models\Entry;
  * stopped matching the one it was derived from.
  */
 
-it('maps every tag the model stamps', function (): void {
+it('maps every tag the model gives a direction to', function (): void {
     /*
-     * ⚠️ BOTH DIRECTIONS, because either gap is a defect. A stamped tag missing from the map is a block
-     * whose direction the editor still drops — the original bug, narrowed. A mapped tag the model does not
-     * stamp is an attribute declared on a node that will never carry one, which reads as coverage and is
+     * ⚠️ BOTH DIRECTIONS, because either gap is a defect. A handled tag missing from the map is a block
+     * whose direction the editor still drops — the original bug, narrowed. A mapped tag the model never
+     * touches is an attribute declared on a node that will never carry one, which reads as coverage and is
      * not.
+     *
+     * ⚠️ `STAMPED_TAGS`, NOT `BLOCK_TAGS`, and review found the first version comparing the narrower one.
+     * `Entry` STAMPS the block tags, and it also KEEPS an author's direction on the list containers while
+     * leaving their items unstamped — so `ul` and `ol` carry directions this editor must not discard, even
+     * though nothing ever puts one there automatically. Comparing against the stamping list alone hid a
+     * path that loses data.
      */
-    $stamped = (new ReflectionClass(Entry::class))->getConstant('BLOCK_TAGS');
+    $handled = (new ReflectionClass(Entry::class))->getConstant('STAMPED_TAGS');
 
-    expect($stamped)->toBeArray()->not->toBeEmpty()
-        ->and(array_keys(BlockDirectionPlugin::EDITOR_NODES))->toBe($stamped);
+    expect($handled)->toBeArray()->not->toBeEmpty()
+        ->and(array_keys(BlockDirectionPlugin::EDITOR_NODES))->toBe($handled);
+});
+
+it('preserves a direction on a list without inventing one', function (): void {
+    /*
+     * ⚠️ THE DATA-LOSS PATH REVIEW FOUND, asserted at both ends. `Entry` keeps `<ul dir="rtl">` and leaves
+     * its items unstamped, because they inherit that fixed ancestor — measured:
+     *
+     *   <ul dir="rtl"><li>Mow</li><li>تنظيف</li></ul>  ->  unchanged, items unstamped
+     *   <ul><li>Mow</li><li>تنظيف</li></ul>            ->  <ul><li dir="auto">…</li>…</ul>
+     *
+     * So the list is sometimes the ONLY direction in the value. An extension that does not declare the
+     * attribute on those nodes discards it, and the next save replaces a uniform `rtl` with per-item
+     * `auto` — the author's choice quietly rewritten.
+     */
+    $entry = new Entry;
+    $stamp = new ReflectionMethod(Entry::class, 'stampedInto');
+    $stamp->setAccessible(true);
+
+    expect($stamp->invoke($entry, '<ul dir="rtl"><li>Mow</li><li>تنظيف</li></ul>'))
+        ->toBe('<ul dir="rtl"><li>Mow</li><li>تنظيف</li></ul>')
+        ->and(BlockDirectionPlugin::nodes())->toContain('bulletList')
+        ->and(BlockDirectionPlugin::nodes())->toContain('orderedList');
+
+    /*
+     * ⚠️ AND THE DEFAULT IS NULL ON BOTH SIDES, which is the property that keeps "preserve" from becoming
+     * "set". Filament's own `textDirection` extension is not used precisely because its option defaults a
+     * direction onto every node type, containers included.
+     */
+    $attributes = (new BlockDirection)->addGlobalAttributes()[0]['attributes']['dir'];
+
+    expect($attributes['default'])->toBeNull();
+
+    $javascript = (string) file_get_contents(
+        dirname(__DIR__, 3).'/packages/core/resources/js/rich-editor-direction.js',
+    );
+
+    expect(str_contains($javascript, 'default: null'))->toBeTrue('the browser half must not default it either');
 });
 
 it('declares the same node names in PHP and in the browser', function (): void {
@@ -120,13 +163,13 @@ it('names nodes the editor Filament ships actually has', function (): void {
     }
 
     /*
-     * ⚠️ AND THE CONTAINERS MUST NOT BE THERE. `bulletList` and `orderedList` exist in that bundle and are
-     * deliberately absent from the map: a direction on a list is inherited by every item, so an English
-     * first item would drag an Arabic second item left-to-right. This is the assertion that stops somebody
-     * "completing" the list.
+     * ⚠️ THE CONTAINERS ARE IN THE BUNDLE TOO, and they are in the map — to PRESERVE rather than to set.
+     * The property that stops a list acquiring a direction it never had is the null default, asserted
+     * above on both sides, rather than the node's absence here. The first version of this file asserted
+     * the absence and lost an author's `<ul dir="rtl">`.
      */
-    expect(BlockDirectionPlugin::nodes())->not->toContain('bulletList')
-        ->and(BlockDirectionPlugin::nodes())->not->toContain('orderedList');
+    expect(BlockDirectionPlugin::nodes())->toContain('bulletList')
+        ->and(BlockDirectionPlugin::nodes())->toContain('orderedList');
 })->skip(
     ! is_file(dirname(__DIR__, 3).'/skeleton/vendor/filament/forms/dist/components/rich-editor.js'),
     'the skeleton has no vendor directory, so the bundled editor cannot be read',

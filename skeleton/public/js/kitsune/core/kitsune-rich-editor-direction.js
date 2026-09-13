@@ -25,13 +25,13 @@
  * if this file and that map disagree. A JS list that drifts from the PHP one is the same defect one
  * layer out.
  *
- * ⚠️ AND IT DECLARES `dir` WITHOUT DEFAULTING IT. Filament ships a `textDirection` extension that would
- * also keep the attribute — but only when given a `direction` option, which then becomes the DEFAULT for
- * every node type including the containers `Entry` deliberately leaves undirected. `dir="auto"` on a
- * `ul` is not harmless bookkeeping: the stored shape is asserted, and a container that carries a
- * direction is the per-field failure this issue exists to undo, one level down. So this declares the
- * attribute and invents nothing: what the author wrote round-trips, and what was never there stays
- * absent.
+ * ⚠️ AND IT DECLARES `dir` WITHOUT DEFAULTING IT, which is the whole of the difference between this and
+ * the `textDirection` extension Filament already ships. That one keeps the attribute too — but only when
+ * given a `direction` option, which then becomes the DEFAULT for every node type. A `dir="auto"` invented
+ * on a `ul` is not harmless bookkeeping: a direction on a container is inherited by items that should each
+ * resolve their own, which is the per-field failure this issue exists to undo, one level down. Declaring
+ * with a null default keeps the two apart — what the author wrote round-trips, and what was never there
+ * stays absent.
  */
 export default () => {
     const { Extension } = window.FilamentRichEditor.tiptap.core
@@ -48,7 +48,14 @@ export default () => {
                     // ⚠️ IN THE ORDER `BlockDirectionPlugin::nodes()` DERIVES THEM, so the test can assert
                     // equality rather than set-equality — this list is a transcription of that one, and a
                     // transcription that has been reordered is one nobody can check at a glance.
-                    types: ['paragraph', 'listItem', 'heading', 'blockquote', 'codeBlock'],
+                    //
+                    // ⚠️ THE LIST CONTAINERS ARE HERE TO PRESERVE, NOT TO SET. `Entry` never stamps `ul`
+                    // or `ol` — a direction on a container is inherited by items that should each resolve
+                    // their own — but it KEEPS one an author wrote, and then leaves the items unstamped
+                    // because they inherit it. Declaring the attribute with a null default is what makes
+                    // those two facts survive the editor; leaving the nodes out discarded the author's
+                    // only direction, and the next save replaced a uniform `rtl` with per-item `auto`.
+                    types: ['paragraph', 'listItem', 'heading', 'blockquote', 'codeBlock', 'bulletList', 'orderedList'],
                     attributes: {
                         dir: {
                             default: null,

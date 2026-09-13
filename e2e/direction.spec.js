@@ -298,10 +298,12 @@ test.describe('a field value carries its own direction', () => {
          * Kitsune's own and would be a real regression: a `dir` on `ul` would be inherited
          * by every `li`, so an English first item would drag an Arabic second item
          * left-to-right — the per-field failure reproduced one level down. It holds in the
-         * editor because `BlockDirectionPlugin` declares `dir` on the block node types
-         * only — `bulletList` and `orderedList` are deliberately absent from that list, and
-         * Filament's own `textDirection` extension is deliberately not used because it
-         * would default the attribute onto every node type including these.
+         * editor because `BlockDirectionPlugin` declares `dir` with a NULL DEFAULT: the
+         * containers are in its node list so that an author's own `<ul dir="rtl">` survives
+         * the round trip, and nothing ever puts a direction there that was not written.
+         * Filament's own `textDirection` extension is deliberately not used because its
+         * option defaults the attribute onto every node type, which is what this asserts
+         * cannot happen.
          */
         const list = page.locator('.tiptap ul').first();
         await expect(list).toBeVisible();
