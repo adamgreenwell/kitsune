@@ -60,7 +60,7 @@ class BlockDirection extends Extension
      * The text flowed right-to-left while the item's own direction went left-to-right, which puts the
      * bullet on the wrong side — a visible regression in exchange for the gap it closed. No static default
      * can tell a top-level paragraph from one inside a list item, because they are the same node type; that
-     * needs a handler which knows a block's parent. The gap is recorded in
+     * needs a handler which knows a block's parent, filed as issue #76. The gap is recorded there and in
      * `docs/accessibility-inventory.md` rather than traded for this.
      *
      * @param  list<string>  $types

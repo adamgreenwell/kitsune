@@ -361,8 +361,8 @@ test.describe('a field value carries its own direction', () => {
      * The text flowed right-to-left while the item's own direction went left-to-right, which puts the
      * bullet on the wrong side. No static default can tell a top-level paragraph from one inside a list
      * item, because they are the same node type; closing the gap needs a handler that knows a block's
-     * parent, and that is recorded in `docs/accessibility-inventory.md` rather than traded for a visible
-     * regression in already-stored content.
+     * parent — filed as issue #76 and recorded in `docs/accessibility-inventory.md` — rather than traded
+     * for a visible regression in already-stored content.
      */
 
     test('typing RTL text into an empty field flips it live', async ({ page }) => {
