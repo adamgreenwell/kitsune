@@ -1621,6 +1621,16 @@ Pillar three is tested rather than claimed, so the brand carries requirements ra
 - **A provisional mark invites treating it as settled.** Every use makes the reversal marginally more expensive, and nobody will notice the moment it stops being cheap. This paragraph is what to hold that against.
 - **The trademark notice in `brand/LICENSE.md` is not lawyer-reviewed.** It states the intent so the boundary exists from the moment assets land, and it is a placeholder for `TRADEMARK.md`. An unreviewed notice that overstates the position is worse than none, which is why it claims referential use is permitted rather than attempting to enumerate every restriction.
 
+### Where this ADR actually landed, and why the commit does not say so
+
+⚠️ **This ADR, `brand/LICENSE.md`, `brand/README.md` and all twelve vector files reached `main` inside [`5b94182`](https://github.com/adamgreenwell/kitsune/commit/5b94182679daef5b8266cf1192511edc98f1bcbf) — the squash merge of [#64](https://github.com/adamgreenwell/kitsune/pull/64), "Enforce rule 3 by a published grammar, and land the parity harness."** That message describes the pattern grammar and mentions none of the branding. Anyone reading `git log` for when the brand was decided will not find it there. The same mixing happened one commit earlier on the branch, in `8807011`.
+
+It was noticed, and **it was deliberately not rewritten.** Fixing it means force-pushing `main` on a repository that ADR-014 made public from the first commit, breaking every clone and every branch built on `5b94182` — `feat/rbac-storage` and `feat/rich-editor-direction` both carry it. A rewrite is also the git form of the thing this log exists to refuse: the README's claim is that keeping reversals in is what separates an engineering record from a marketing document, and quietly deleting a messy commit is deleting a losing option. **The annotation is the honest fix; the force-push is the tidy one.**
+
+The raster exports were kept out of it and landed separately on `docs/brand-assets`, along with this paragraph.
+
+**The lesson is not "write better commit messages."** It is that a long session which touches one area while a branch is checked out for another will silently pool both into whatever commit comes next, and nothing in the tooling objects. The guard is to branch at the moment the subject changes, not at the moment the work is ready to commit.
+
 ---
 
 ## Open questions
