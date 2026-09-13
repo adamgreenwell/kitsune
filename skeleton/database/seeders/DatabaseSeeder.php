@@ -237,10 +237,23 @@ class DatabaseSeeder extends Seeder
                  * ⚠️ The list is here because `ul` must stay undirected while each `li` resolves
                  * separately: a container carrying a direction reproduces the per-field failure one
                  * level down, and only a fixture with both languages inside one list can show it.
+                 *
+                 * ⚠️ AND THE QUOTE CARRIES A FIXED `rtl` AROUND *TWO* PARAGRAPHS, the second opening
+                 * with a Latin word. That is the one shape that can show a generated default overriding
+                 * an author's decision, and both halves of its shape are load-bearing. `Entry` leaves
+                 * the paragraphs inside a fixed direction undirected so they inherit it; `auto` on the
+                 * second would resolve from `ACME` and render the Arabic left-to-right, undoing what the
+                 * author wrote one element up.
+                 *
+                 * ⚠️ TWO, BECAUSE ONE PARAGRAPH PROVES NOTHING. The first block inside a block yields
+                 * anyway — so a single-paragraph quote is left undirected by a rule that has nothing to
+                 * do with the author's choice, and a test on it passes with the inheritance rule removed.
+                 * Measured: it did.
                  */
                 'body' => '<p>Maintenance notes for week seven.</p>'
                     .'<p>ملاحظات الصيانة للأسبوع السابع.</p>'
-                    .'<ul><li>Mow the fairway</li><li>تنظيف الحواجز الرملية</li></ul>',
+                    .'<ul><li>Mow the fairway</li><li>تنظيف الحواجز الرملية</li></ul>'
+                    .'<blockquote dir="rtl"><p>اقتباس من الفريق.</p><p>ACME مرحبا بالعالم</p></blockquote>',
             ],
             'published_at' => now()->subDays(7),
         ]);

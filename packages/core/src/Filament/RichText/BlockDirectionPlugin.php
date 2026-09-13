@@ -88,15 +88,21 @@ class BlockDirectionPlugin implements RichContentPlugin
      * just made, which has nothing stored to keep. `Entry` stamps on the way INTO storage, which is too
      * late to help while typing.
      *
-     * ⚠️ `listItem` IS ABSENT, MEASURED. An item's text lives in a paragraph inside it, and `dir="auto"`
-     * resolves from an element's text EXCLUDING any descendant that has its own direction — so giving that
-     * paragraph `auto` left `LI[auto]=ltr` wrapping `P[auto]=rtl`: text flowing right-to-left with the
-     * bullet on the wrong side. The browser-side handler skips a paragraph whose parent is a list item,
-     * which a static default could not do, and this list is the PHP half of that decision so the two
-     * cannot drift.
+     * ⚠️ `listItem` IS HERE AND WAS ABSENT FOR ONE ROUND, which is the correction #77 carries. The
+     * measurement behind its absence was right and the conclusion drawn from it was not: `dir="auto"`
+     * resolves from an element's text EXCLUDING any descendant that has its own direction, so
+     * `<li dir="auto"><p dir="auto">` leaves the ITEM with nothing to read and it renders `ltr` with its
+     * text running right-to-left — the bullet on the wrong side. The item renders the marker and the
+     * indent, so the item is what has to resolve. Leaving BOTH undirected, as that round did, showed a new
+     * bullet in the chrome's direction while typing and stored the broken pair anyway, because
+     * `tiptap-php` renders an item's text into a `<p>` inside the `<li>` and `Entry` then stamped both.
+     *
+     * The rule that holds in both languages is one sentence: the block takes the direction and the first
+     * block inside it yields, so the outer one resolves from its text. `Entry::yieldsToOuterBlock()` is
+     * the storage half and `rich-editor-direction.js` is the editing half.
      *
      * The containers are absent for the reason they always were: a direction on a list is inherited by
-     * every item.
+     * every item, and each must resolve its own.
      *
      * @return list<string>
      */
@@ -104,7 +110,7 @@ class BlockDirectionPlugin implements RichContentPlugin
     {
         return array_values(array_diff(
             self::nodes(),
-            ['listItem', 'bulletList', 'orderedList'],
+            ['bulletList', 'orderedList'],
         ));
     }
 

@@ -866,3 +866,85 @@ it('lets a later ancestor choice reach a block this implementation already stamp
     expect(storedBody('<figure dir="rtl"><figcaption>ACME مرحبا</figcaption></figure>'))
         ->toBe('<figure dir="rtl"><figcaption>ACME مرحبا</figcaption></figure>');
 });
+
+it('lets a list item resolve its own direction, because the item renders the marker', function (): void {
+    /*
+     * ⚠️ THE SHAPE THE EDITOR PRODUCES ON EVERY SAVE, and it was stored broken. `tiptap-php` renders a
+     * list item as `<li>` with a content hole and an item's text lives in a paragraph, so one Arabic
+     * bullet leaves the editor as `<ul><li><p>مرحبا</p></li></ul>` — measured, not assumed. Stamping both
+     * halves of it gave `<li dir="auto"><p dir="auto">`, and `dir="auto"` reads an element's text
+     * EXCLUDING descendants that carry their own direction. Measured in a real browser under an LTR page:
+     *
+     *   <li dir="auto">مرحبا</li>                    ->  li=rtl            what a seeder stores
+     *   <li dir="auto"><p dir="auto">مرحبا</p></li>   ->  li=ltr,  p=rtl    what a save stored
+     *   <li dir="auto"><p>مرحبا</p></li>              ->  li=rtl,  p=rtl    this rule
+     *   <li><p dir="auto">مرحبا</p></li>              ->  li=ltr,  p=rtl
+     *
+     * The item was left with nothing to read and fell back to `ltr` while its text ran right-to-left —
+     * the bullet and the indent on the wrong side, which is the regression #74 recorded as the reason a
+     * static `auto` default could not be used, arriving through the save path instead.
+     */
+    expect(storedBody('<ul><li><p>مرحبا</p></li><li><p>Mow</p></li></ul>'))
+        ->toBe('<ul><li dir="auto"><p>مرحبا</p></li><li dir="auto"><p>Mow</p></li></ul>');
+
+    // ⚠️ And content already stored in the broken shape is repaired by the next save rather than kept.
+    expect(storedBody('<ul><li dir="auto"><p dir="auto">مرحبا</p></li></ul>'))
+        ->toBe('<ul><li dir="auto"><p>مرحبا</p></li></ul>');
+
+    // ⚠️ Idempotent, so a re-save does not hand the direction back down again.
+    expect(storedBody('<ul><li dir="auto"><p>مرحبا</p></li></ul>'))
+        ->toBe('<ul><li dir="auto"><p>مرحبا</p></li></ul>');
+
+    /*
+     * ⚠️ THE FIRST BLOCK YIELDS, NOT ALL OF THEM, which is what keeps issue #39 fixed INSIDE an item. The
+     * item resolves from the paragraph it sits beside and the second still resolves its own, so the marker
+     * agrees with the first run and the Arabic still renders right-to-left.
+     */
+    expect(storedBody('<ul><li><p>a</p><p>ب</p></li></ul>'))
+        ->toBe('<ul><li dir="auto"><p>a</p><p dir="auto">ب</p></li></ul>');
+
+    // ⚠️ The chain falls out of a local test: the blockquote is first in the item, the paragraph first in
+    // the blockquote, so the item reaches real text with no walk.
+    expect(storedBody('<ul><li><blockquote><p>مرحبا</p></blockquote></li></ul>'))
+        ->toBe('<ul><li dir="auto"><blockquote><p>مرحبا</p></blockquote></li></ul>');
+
+    // A quote outside a list is the same rule, one container along.
+    expect(storedBody('<blockquote><p>مرحبا</p></blockquote>'))
+        ->toBe('<blockquote dir="auto"><p>مرحبا</p></blockquote>');
+});
+
+it('writes no direction where it would resolve from nothing', function (): void {
+    /*
+     * ⚠️ `auto` IS AN INSTRUCTION TO READ, so on an element whose text is entirely inside descendants that
+     * carry their own it reads nothing — and the browser does not then inherit, it falls back to `ltr`.
+     * Writing nothing is strictly better, because nothing inherits.
+     */
+
+    // An author's fixed direction on the block inside takes the item's text out of its reach.
+    expect(storedBody('<ul><li><p dir="rtl">ACME مرحبا</p></li></ul>'))
+        ->toBe('<ul><li><p dir="rtl">ACME مرحبا</p></li></ul>');
+
+    // An item holding only a nested list has no text of its own; its items each resolve theirs.
+    expect(storedBody('<ul><li><ul><li><p>مرحبا</p></li></ul></li></ul>'))
+        ->toBe('<ul><li><ul><li dir="auto"><p>مرحبا</p></li></ul></li></ul>');
+
+    /*
+     * ⚠️ AND AN EMPTY BLOCK IS NOT THIS CASE, which is the distinction issue #76 turns on. A paragraph the
+     * author has just created holds no text either — but nothing inside it has taken any, so it still gets
+     * the `auto` that lets the first character typed decide.
+     */
+    expect(storedBody('<p></p><p>مرحبا</p>'))
+        ->toBe('<p dir="auto"></p><p dir="auto">مرحبا</p>');
+});
+
+it('does not let a block yield when the block around it has its own text to read', function (): void {
+    /*
+     * ⚠️ THE GUARD THE SUITE CAUGHT MISSING. Yielding exists so a block with nothing of its own can reach
+     * some text; a block that already has text needs no donation, and taking one changes which run
+     * decides. `<blockquote>English<p>عربي</p>עברית</blockquote>` is a container with loose runs of its
+     * own beside a block — yielding there handed the quote the Arabic to resolve from while the run that
+     * comes first is English.
+     */
+    expect(storedBody('<blockquote>English<p>عربي</p>עברית</blockquote>'))
+        ->toBe('<blockquote dir="auto"><p dir="auto">English</p><p dir="auto">عربي</p><p dir="auto">עברית</p></blockquote>');
+});
