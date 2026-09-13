@@ -29,6 +29,7 @@ use Kitsune\Core\Fields\Cell;
 use Kitsune\Core\Fields\Control;
 use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Fields\FieldTypeRegistry;
+use Kitsune\Core\Filament\RichText\BlockDirectionPlugin;
 use Kitsune\Core\Models\Entry;
 
 /**
@@ -244,7 +245,15 @@ final class FieldValueRenderer
             Control::Line => TextInput::make($path ?? 'value')
                 ->maxLength((int) $config->setting('maxLength', 255)),
             Control::Paragraph => Textarea::make($path ?? 'value')->rows(4),
-            Control::RichText => RichEditor::make($path ?? 'value'),
+            /*
+             * ⚠️ THE PLUGIN IS ATTACHED HERE RATHER THAN ON A MODEL, which is ADR-029's seam exactly:
+             * core describes a control and the panel builds it. Filament's other route is
+             * `registerRichContent()` on a model, and it would not fit a dynamic state path like
+             * `values.summary` anyway. See `BlockDirectionPlugin` — without it the editor drops the
+             * `dir` every stored block carries (issue #67).
+             */
+            Control::RichText => RichEditor::make($path ?? 'value')
+                ->plugins([new BlockDirectionPlugin]),
             Control::Number => TextInput::make($path ?? 'value')->numeric(),
             Control::Toggle => Toggle::make($path ?? 'value'),
             Control::Date => DatePicker::make($path ?? 'value'),

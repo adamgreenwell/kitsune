@@ -235,7 +235,7 @@ test.describe('a field value carries its own direction', () => {
         expect(await status.getAttribute('dir')).toBeNull();
     });
 
-    test('rich text carries a direction per block, and the editor drops it', async ({ page }) => {
+    test('rich text carries a direction per block, in the editor too', async ({ page }) => {
         /*
          * ⚠️ TWO FACTS, AND ONLY ONE OF THEM IS GOOD NEWS. Issue #39 called rich text the
          * awkward case, and it is awkward in a way the inventory did not anticipate.
@@ -249,18 +249,19 @@ test.describe('a field value carries its own direction', () => {
          *   <p dir="auto">ملاحظات الصيانة…</p>
          *   <ul><li dir="auto">Mow the fairway</li><li dir="auto">تنظيف…</li></ul>
          *
-         * The EDITOR is not. Filament's rich editor is TipTap/ProseMirror, which parses
-         * that HTML into its own document model and re-renders it — and its schema does
-         * not declare `dir`, so the attribute is dropped on load. Measured here: the
-         * Arabic list item inside the editor carries no `dir` at all and resolves to the
-         * chrome's `ltr`.
+         * The EDITOR was not, and issue #67 is that half. Filament's rich editor is
+         * TipTap/ProseMirror: it parses the stored HTML into its own document model and
+         * re-renders it, and TipTap drops every attribute a node's schema does not
+         * declare. So the value was right in the database, right for any consumer, and
+         * wrong in the one place an author looks while writing it.
          *
-         * ⚠️ THIS TEST ASSERTS THE GAP ON PURPOSE, which is unusual and deliberate. The
-         * alternative was to assume the limitation, and an assumption about somebody
-         * else's parser is exactly the kind of thing that silently stops being true. If a
-         * Filament or TipTap release starts preserving `dir`, this test fails, and the
-         * failure is the notification. Same reasoning as the dropdown ARIA finding: record
-         * what the dependency actually does, so the record cannot rot quietly.
+         * ⚠️ THIS TEST USED TO ASSERT THE GAP, on purpose — `dir` null and the resolved
+         * direction `ltr` on Arabic text — so that a Filament or TipTap release which
+         * started preserving the attribute would fail it and the failure would be the
+         * notification. `BlockDirectionPlugin` closes it from our side instead, by
+         * declaring `dir` on the node types `Entry` stamps, so the assertion is inverted:
+         * it now measures the direction the browser RESOLVED for each block inside the
+         * editor, which is the thing the issue's done-when names.
          */
         await page.goto(`/admin/${SITE}/c/article`);
         await page.getByRole('link', { name: ARABIC_TITLE }).first().click();
@@ -269,23 +270,100 @@ test.describe('a field value carries its own direction', () => {
         const arabicItem = page.locator('.tiptap li', { hasText: 'تنظيف' }).first();
         await expect(arabicItem).toBeVisible();
 
-        // The gap, measured rather than assumed: no attribute, and therefore the chrome's
-        // direction on Arabic text.
-        expect(await arabicItem.getAttribute('dir')).toBeNull();
-        expect(await resolvedDirection(arabicItem)).toBe('ltr');
+        /*
+         * ⚠️ THE RESOLVED DIRECTION, NOT THE ATTRIBUTE, for the reason this file opens with:
+         * `dir="auto"` can be present and resolve the wrong way. `rtl` here is the browser
+         * having read the first strong directional character of THIS list item.
+         */
+        expect(await resolvedDirection(arabicItem)).toBe('rtl');
+
+        /*
+         * ⚠️ AND THE ENGLISH SIBLING MUST STILL RESOLVE `ltr`, which is the half that says
+         * the direction is per block rather than per field. A `dir="rtl"` on the list, or
+         * one editor-wide direction, would pass the assertion above and fail this one.
+         */
+        const englishItem = page.locator('.tiptap li', { hasText: 'Mow the fairway' }).first();
+        await expect(englishItem).toBeVisible();
+        expect(await resolvedDirection(englishItem)).toBe('ltr');
+
+        // Both paragraphs, the same way: the stored value has one of each.
+        const arabicParagraph = page.locator('.tiptap p', { hasText: 'ملاحظات' }).first();
+        const englishParagraph = page.locator('.tiptap p', { hasText: 'Maintenance notes' }).first();
+        await expect(arabicParagraph).toBeVisible();
+        expect(await resolvedDirection(arabicParagraph)).toBe('rtl');
+        expect(await resolvedDirection(englishParagraph)).toBe('ltr');
 
         /*
          * ⚠️ AND THE CONTAINER MUST STAY UNDIRECTED EITHER WAY. This is the half that is
          * Kitsune's own and would be a real regression: a `dir` on `ul` would be inherited
          * by every `li`, so an English first item would drag an Arabic second item
          * left-to-right — the per-field failure reproduced one level down. It holds in the
-         * editor today because nothing sets it, and it must keep holding when TipTap
-         * starts preserving what `toStorage()` writes.
+         * editor because `BlockDirectionPlugin` declares `dir` with a NULL DEFAULT: the
+         * containers are in its node list so that an author's own `<ul dir="rtl">` survives
+         * the round trip, and nothing ever puts a direction there that was not written.
+         * Filament's own `textDirection` extension is deliberately not used because its
+         * option defaults the attribute onto every node type, which is what this asserts
+         * cannot happen.
          */
         const list = page.locator('.tiptap ul').first();
         await expect(list).toBeVisible();
         expect(await list.getAttribute('dir')).toBeNull();
     });
+
+    test('the editable editor resolves each block too, not only the read-only one', async ({ page }) => {
+        /*
+         * ⚠️ THE EDIT PAGE, NOT THE ONE THE LIST LINKS TO. Following an entry's title reaches its VIEW
+         * page, where the editor renders the stored content read-only — which is what the test above
+         * measures. This one measures the instance an author actually types into.
+         */
+        await page.goto(`/admin/${SITE}/c/article`);
+        await page.getByRole('link', { name: ARABIC_TITLE }).first().click();
+        await page.getByRole('link', { name: /^edit$/i }).first().click();
+        await page.waitForURL(/\/edit$/);
+
+        const editor = page.locator('.tiptap[contenteditable="true"]').first();
+        await expect(editor).toBeVisible();
+
+        const arabic = editor.locator('p', { hasText: 'ملاحظات' }).first();
+        const english = editor.locator('p', { hasText: 'Maintenance notes' }).first();
+        await expect(arabic).toBeVisible();
+
+        expect(await resolvedDirection(arabic)).toBe('rtl');
+        expect(await resolvedDirection(english)).toBe('ltr');
+
+        /*
+         * ⚠️ AND WHAT IS *NOT* ASSERTED HERE, recorded so the gap is a decision rather than an oversight.
+         * A block split — pressing Enter at the end of a directed block — must not copy that block's
+         * direction onto the new one, which is why the extension declares `keepOnSplit: false` against
+         * TipTap's default of true. That is asserted where it can be:
+         * `RichEditorDirectionAssetTest` reads it out of the module. It is NOT asserted here because the
+         * harness cannot place the caret: `click()`, `Control+Home` and arrow navigation all leave it at
+         * the document start, where a split truncates the first block rather than creating a new one — the
+         * one path `keepOnSplit` does not govern. A test written there passes with the option and without
+         * it, which is worse than no test. Proving it in the browser needs a way to focus the editor and a
+         * fixture with a FIXED direction, since the seeded value is `auto` throughout and inheriting
+         * `auto` is harmless.
+         */
+    });
+
+    /*
+     * ⚠️ WHAT IS NOT ASSERTED, AND WHY THE OBVIOUS FIX FOR IT IS WRONG. A block the author has just
+     * created has no stored direction to preserve — `Entry` stamps `auto` on the way INTO storage, which
+     * is too late to help while typing — so Arabic typed into a NEW paragraph renders in the chrome's
+     * direction until the value is saved. Review asked for a default of `auto` to close that.
+     *
+     * Measured, that default costs more than it buys. It also lands on the paragraph INSIDE a list item,
+     * and `dir="auto"` resolves from an element's text EXCLUDING any descendant that has its own
+     * direction — so on the seeded list the browser reported:
+     *
+     *   LI[auto]=ltr   wrapping   P[auto]=rtl
+     *
+     * The text flowed right-to-left while the item's own direction went left-to-right, which puts the
+     * bullet on the wrong side. No static default can tell a top-level paragraph from one inside a list
+     * item, because they are the same node type; closing the gap needs a handler that knows a block's
+     * parent — filed as issue #76 and recorded in `docs/accessibility-inventory.md` — rather than traded
+     * for a visible regression in already-stored content.
+     */
 
     test('typing RTL text into an empty field flips it live', async ({ page }) => {
         // `dir="auto"` is evaluated by the browser as the value changes, so a new entry
