@@ -87,10 +87,22 @@ class Role extends Model
      */
     public function delete(): ?bool
     {
+        /*
+         * ⚠️ THE FIFTH AUTHORITY PATH HAS TO ASK THE SAME QUESTION, and this one was not — review found it.
+         * Eloquent's instance delete writes by primary key without reapplying the global scope, and the
+         * `deleting` event enables the guarded builder, so a role that outlived an org-context switch could
+         * be deleted while running in another org — with its revocation audits attributed to that org.
+         */
+        $this->refuseIfNotCurrentOrg('delete');
+
         return DB::transaction(function (): ?bool {
-            if ($this->is_owner) {
-                $this->recordOwnerChange('unassigned');
-            }
+            /*
+             * ⚠️ EVERY HOLDER LOSES AUTHORITY, NOT ONLY AN OWNER'S, which review found the first version
+             * missing: the condition recorded revocations only for owner roles, while the database cascades
+             * `role_user` for every role and a role carrying ordinary grants is authority too. ADR-033's
+             * guarantee is about authority, so the log has to be as well.
+             */
+            $this->recordOwnerChange($this->is_owner ? 'unassigned' : null);
 
             return parent::delete();
         });
@@ -168,13 +180,23 @@ class Role extends Model
         }
 
         $this->recordOwnerChange($this->is_owner ? 'assigned' : 'unassigned');
+        // (the transition always concerns the owner flag, so the owner action is always the right one)
     }
 
-    /** One `role.owner_{assigned,unassigned}` row per person who holds this role right now. */
-    private function recordOwnerChange(string $verb): void
+    /**
+     * One row per person who holds this role right now.
+     *
+     * ⚠️ THE ACTION NAMES WHAT WAS LOST, which is why `null` is a case rather than an oversight: deleting a
+     * role revokes it from every holder whether or not it carried the owner bypass, and `role.unassigned` is
+     * what an ordinary role's holders lost. Recording only the owner case left a grant-bearing role
+     * disappearing from everybody with nothing in the log, which is the same gap one level down.
+     */
+    private function recordOwnerChange(?string $ownerVerb, string $plain = 'unassigned'): void
     {
+        $action = $ownerVerb === null ? "role.{$plain}" : "role.owner_{$ownerVerb}";
+
         foreach (DB::table('role_user')->where('role_id', $this->getKey())->pluck('user_id') as $userId) {
-            app(Auditor::class)->record("role.owner_{$verb}", $this->assignee((int) $userId));
+            app(Auditor::class)->record($action, $this->assignee((int) $userId));
         }
     }
 

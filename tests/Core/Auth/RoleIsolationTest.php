@@ -429,3 +429,44 @@ it('leaves no authority change behind when its audit cannot be written', functio
 })->skip(fn (): bool => DB::connection()->getDriverName() === 'sqlite'
     && ! DB::connection()->getPdo()->query('PRAGMA foreign_keys')->fetchColumn(),
     'foreign keys are not enforced on this connection, so the audit insert cannot be made to fail');
+
+it('refuses to delete a role that belongs to another org', function (): void {
+    /*
+     * ⚠️ THE FIFTH AUTHORITY PATH, and it was not asking — review found it. Eloquent's instance delete writes
+     * by primary key without reapplying the global scope, and the `deleting` event enables the guarded
+     * builder, so a role that outlived an org-context switch could be deleted while running in another org —
+     * with its revocation audits attributed to that org.
+     */
+    joinOrg($this->beta, $this->user);
+    app(Context::class)->setOrg($this->beta);
+
+    expect(fn () => $this->alphaRole->delete())
+        ->toThrow(RuntimeException::class, 'Refusing [delete]');
+
+    app(Context::class)->setOrg($this->alpha);
+
+    expect(Role::query()->whereKey($this->alphaRole->getKey())->exists())->toBeTrue();
+});
+
+it('records what every holder lost when a role is deleted, owner or not', function (): void {
+    /*
+     * ⚠️ NOT ONLY AN OWNER'S — review found the first version recording revocations for owner roles alone,
+     * while the database cascades `role_user` for every role and a role carrying ordinary grants is authority
+     * too. ADR-033's guarantee is about authority, so the log has to be as well.
+     */
+    app(Context::class)->setOrg($this->alpha);
+
+    $plain = Role::create(['handle' => 'contributor', 'name' => 'Contributor']);
+    $plain->grant('entry.article.update');
+    $plain->assignTo($this->user->getKey());
+    joinOrg($this->alpha, $this->user);
+
+    $mark = (int) AuditLog::query()->max('id');
+
+    $plain->delete();
+
+    expect(AuditLog::query()->where('id', '>', $mark)->pluck('action')->all())
+        ->toBe(['role.unassigned'])
+        ->and(AuditLog::query()->where('id', '>', $mark)->value('target_id'))
+        ->toBe($this->user->getKey());
+});
