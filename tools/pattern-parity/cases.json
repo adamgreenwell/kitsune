@@ -1366,5 +1366,23 @@
     "pattern": "^a+(?:a(?!a*b))*x",
     "subject": "aaax",
     "why": "One scanning assertion inside a repetition is a deliberate allowance, priced at 36.9 ms for a 5,000-character value — the quadratic allowance's own ceiling. That measurement was taken on a repetition ENTERED ONCE, and fuzzing found what happens when something enters it many times: the per-iteration scan multiplies again. Measured on Node 22.23.2 against all-`a` at 625 / 1,250 / 2,500 characters: the allowance `^(?:a(?!a*b))*x` is 0.6 / 2.3 / 8.9 ms; this pattern is 119.6 / 972.6 / 7,540.2; and the unanchored `(?:a(?!a*b))*x` is 121.7 / 951.6 / 7,536.5. Both multipliers are degrees the file already names elsewhere — an unanchored search reaches the repetition from every position, and a variable-width atom beside it is a run of two, which is the whole top-level allowance by itself — so the allowance now holds only where its measurement does."
+  },
+  {
+    "id": "bracket-hides-a-retested-repetition",
+    "pattern": "a+(?:a{999})X",
+    "subject": "aaaX",
+    "why": "A bracket round the multiplier, and the round that added the weight did not see through it: the pricing walk reads its OWN atoms, so the group was one fixed atom, while the recursion that prices the group's body no longer sees the `a+` in front of the brackets. Published, and 5,685.2 ms against 2,500 `a` on Node 22.23.2 — the refused `a+a{999}X` to the millisecond at 5,702.2. The group's first CONSUMING atom is now what the prefix re-tests, read through any depth of required-once brackets, and the first atom is the right one to ask about for the same reason the divides proof matters: `a+(?:ba{999})X` measures 9.1 ms because the `b` fails at once and nothing behind it is reached."
+  },
+  {
+    "id": "anchored-branch-beside-an-unanchored-one",
+    "pattern": "^z|(?:a(?!a*b))*x",
+    "subject": "aaax",
+    "why": "A whole-pattern anchor test read one branch's `^` as every branch's. The second alternative is still attempted from every starting position, and measured on Node 22.23.2 against all-`a` it is the same cubic as the bare unanchored spelling: 121.1 ms at 625 characters and 955.6 at 1,250, against 121.0 and 950.7. Branches are separate searches — which `RUN_WITHOUT_AN_ANCHOR` already says one rule along — so the repeated-assertion conditions ask the branch containing the repetition rather than the pattern. `^z|^(?:a(?!a*b))*x` publishes, because every branch anchors itself."
+  },
+  {
+    "id": "sequential-counts-add",
+    "pattern": "^a+a{64}a{64}a{64}X",
+    "subject": "aaaaX",
+    "why": "The weight multiplied where it should add. Each allocation of the atom in front re-tests each repetition ONCE, so the characters they cost add: this was refused at 64³ = 262,144 retry paths while the identical `^a+a{192}X` published, and both measure about 3 ms against 5,000 `a` (3.0 and 2.8). Fourteen of them — 896 characters of re-test — is 13.0 ms and publishes too, because the base is linear. A count split across adjacent atoms is the same count, and `--strict` would have blocked an upgrade over the spelling alone."
   }
 ]

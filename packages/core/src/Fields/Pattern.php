@@ -1390,7 +1390,18 @@ final class Pattern
              * top-level allowance on its own — the two together are cubic, so the pattern is held to the
              * repetition's limit rather than the top level's.
              */
-            if (self::scanningAssertionsInside($frames, $frame) > 0 && ! self::anchorsTheSearch($pattern)) {
+            /*
+             * ⚠️ THE BRANCH, NOT THE PATTERN, and review found the first version asking the wrong one.
+             * `^z|(?:a(?!a*b))*x` published because the whole-pattern test found the FIRST branch's `^`
+             * and read the second branch as anchored too — while the second is still attempted from every
+             * starting position. Measured on Node 22.23.2 against all-`a`, 121.1 ms at 625 characters and
+             * 955.6 at 1,250, against 121.0 and 950.7 for the bare unanchored spelling: the same cubic.
+             * An alternation's branches are separate searches, which is what `RUN_WITHOUT_AN_ANCHOR`
+             * already means one rule along.
+             */
+            $branch = self::branchAround($pattern, $frame['open']);
+
+            if (self::scanningAssertionsInside($frames, $frame) > 0 && ! self::anchorsTheSearch($branch)) {
                 return sprintf(
                     'an assertion whose scan grows with the value inside the repetition `%s`, in a '
                     .'pattern nothing anchors — so the repetition is attempted from every starting '
@@ -1404,7 +1415,7 @@ final class Pattern
             }
 
             if (self::scanningAssertionsInside($frames, $frame) > 0
-                && self::atomRunExceeds($pattern, self::RUN_INSIDE_REPETITION)) {
+                && self::atomRunExceeds($branch, self::RUN_INSIDE_REPETITION)) {
                 return sprintf(
                     'an assertion whose scan grows with the value inside the repetition `%s`, with a '
                     .'variable-width atom beside it — the repetition is re-entered once per character '
@@ -4123,14 +4134,25 @@ final class Pattern
     /**
      * How much a fixed repetition multiplies the retries of the variable-width atom in front of it.
      *
-     * ⚠️ ONE AT A TIME AND MULTIPLIED, because two of them compose: each allocation of the atom in front
-     * re-tests every repetition behind it. The atoms are the sequence's OWN — this prices, so a group's
-     * body is charged when the recursion reaches it and not again here.
+     * ⚠️ SUMMED, NOT MULTIPLIED, and review found the first version multiplying. Each allocation of the
+     * atom in front re-tests each repetition ONCE, so the characters they cost ADD:
+     * `^a+a{64}a{64}a{64}X` was refused at 64³ = 262,144 while the identical `^a+a{192}X` published, and
+     * both measure about 3 ms against 5,000 `a` on Node 22.23.2. A count split across adjacent atoms is
+     * the same count, and `--strict` would have blocked an upgrade over the spelling.
      *
      * ⚠️ AND ONLY WHAT THE ATOM CANNOT BE DIVIDED FROM. `dividesFrom()` is the same proof that ends a
-     * run: if the repetition begins with something the variable atom cannot consume, the atom cannot
-     * give back a character for it to re-test, and the count multiplies nothing — measured, `^a*a*b{k}$`
-     * is 9 ms at every k from 1 to 999.
+     * run, and the mechanism is worth stating exactly: the atom in front re-runs the whole suffix on
+     * every allocation either way, but a repetition it cannot feed FAILS AT ITS FIRST CHARACTER, so the
+     * re-test costs one rather than k. Measured, `^a*a*b{k}$` is 9 ms at every k from 1 to 999 while
+     * `a+a{k}X` is linear in k.
+     *
+     * ⚠️ AND A REQUIRED GROUP IS TRANSPARENT TO IT, which review found a bracket defeating:
+     * `a+(?:a{999})X` published and measures 5,684.8 ms against 2,500 `a` — the refused `a+a{999}X` to
+     * the millisecond at 5,702.2 — because `ownAtoms()` reads the group as one fixed atom while the
+     * recursion pricing its body no longer sees the `a+`. So the group's own FIRST consuming atom is
+     * what the prefix re-tests, read through any depth of required-once brackets. The first atom is the
+     * right one to ask about for the same reason the divides proof matters: if it fails immediately,
+     * nothing behind it is reached.
      *
      * @param  list<array{atom: string, quantifier: string, variable: bool, leads: list<string>|null, assertion: bool}>|null  $atoms
      */
@@ -4140,7 +4162,7 @@ final class Pattern
             return 1;
         }
 
-        $weight = 1;
+        $characters = 0;
         $previous = null;
 
         foreach ($atoms as $atom) {
@@ -4161,17 +4183,46 @@ final class Pattern
                 continue;
             }
 
-            $repeats = $atom['quantifier'] === '' ? 1 : self::fixedRepetitions($atom['quantifier']);
+            $candidate = self::throughRequiredBrackets($atom);
+            $repeats = $candidate['quantifier'] === '' ? 1 : self::fixedRepetitions($candidate['quantifier']);
 
             if ($previous !== null
                 && $repeats !== null
                 && $repeats >= 2
-                && ! self::dividesFrom($previous, $atom)) {
-                $weight = self::saturatingProduct($weight, $repeats);
+                && ! self::dividesFrom($previous, $candidate)) {
+                $characters = self::saturatingSum([$characters, $repeats]);
             }
         }
 
-        return $weight;
+        return max(1, $characters);
+    }
+
+    /**
+     * This atom, or the first atom it actually runs when it is a required bracket round one.
+     *
+     * ⚠️ REQUIRED AND AT MOST ONCE, or it is not transparent: a group that repeats runs its body many
+     * times and a group that can be skipped may run it none, and neither is "the atom in front re-tests
+     * this". `flatAtoms()` splices exactly that case, so nesting is handled by the same walk rather than
+     * by a loop here.
+     *
+     * @param  array{atom: string, quantifier: string, variable: bool, leads: list<string>|null, assertion: bool}  $atom
+     * @return array{atom: string, quantifier: string, variable: bool, leads: list<string>|null, assertion: bool}
+     */
+    private static function throughRequiredBrackets(array $atom): array
+    {
+        if (! str_starts_with($atom['atom'], '(')
+            || self::repeatsMoreThanOnce($atom['quantifier'])
+            || self::canMatchNothing($atom['atom'], $atom['quantifier'])) {
+            return $atom;
+        }
+
+        foreach (self::flatAtoms(self::frameBody($atom['atom'])) ?? [] as $inside) {
+            if (! $inside['assertion']) {
+                return $inside;
+            }
+        }
+
+        return $atom;
     }
 
     /**
@@ -5014,6 +5065,35 @@ final class Pattern
         }
 
         return count(array_unique($branches)) === count($branches);
+    }
+
+    /**
+     * The top-level branch that contains this offset, or the whole body when it has one branch.
+     *
+     * ⚠️ BRANCHES ARE SEPARATE SEARCHES, and a rule that asks about "the pattern" asks about all of them
+     * at once. `^z|(?:a(?!a*b))*x` was published because a whole-pattern anchor test found the first
+     * branch's `^` — so this exists to let a per-frame rule ask its own branch.
+     *
+     * ⚠️ ONE SCANNER, because two copies of this question would answer differently the first time either
+     * changed: the spans come from `topLevelBranches()`'s own split, measured off the pieces it returns.
+     * A separator is one character, so the arithmetic is exact.
+     */
+    private static function branchAround(string $body, int $offset): string
+    {
+        $at = 0;
+
+        foreach (self::topLevelBranches($body) as $branch) {
+            $end = $at + mb_strlen($branch);
+
+            if ($offset < $end) {
+                return $branch;
+            }
+
+            // Past the `|` that ended it.
+            $at = $end + 1;
+        }
+
+        return $body;
     }
 
     /**

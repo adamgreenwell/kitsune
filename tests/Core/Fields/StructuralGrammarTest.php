@@ -2663,6 +2663,87 @@ describe('the allowance for a repeated assertion holds only where it was measure
     ]);
 });
 
+describe('a bracket does not hide a multiplier, and sequential counts add', function (): void {
+    /*
+     * ⚠️ THREE CORRECTIONS TO THE ROUND THAT ADDED THE WEIGHT, all from review.
+     *
+     * A BRACKET HID IT. `a+(?:a{999})X` published and measures 5,685.2 ms against 2,500 `a` on Node
+     * 22.23.2 — the refused `a+a{999}X` to the millisecond at 5,702.2 — because the pricing walk reads
+     * its OWN atoms, so the group was one fixed atom, while the recursion that prices the body no longer
+     * sees the `a+` in front of the brackets. The group's first CONSUMING atom is what the prefix
+     * re-tests, read through any depth of required-once brackets.
+     *
+     * THE FIRST ATOM IS THE RIGHT ONE TO ASK ABOUT, which is the same reason the divides proof matters:
+     * `a+(?:ba{999})X` measures 9.1 ms, because the `b` fails at once and nothing behind it is reached.
+     *
+     * AND SEQUENTIAL COUNTS ADD RATHER THAN MULTIPLY. Each allocation re-tests each repetition once, so
+     * the characters they cost add: `^a+a{64}a{64}a{64}X` was refused at 64³ = 262,144 while the
+     * identical `^a+a{192}X` published, and both measure 3.0 and 2.8 ms against 5,000 `a`. Fourteen of
+     * them — 896 characters of re-test — is 13.0 ms and publishes, because the base is linear.
+     */
+    it('charges a repetition a required bracket wraps', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))->toContain('ways to retry');
+    })->with([
+        'a+(?:a{999})X',
+        'a+(?:(?:a{999}))X',
+        'a+a{999}X',
+    ]);
+
+    it('charges nothing for a repetition the prefix never reaches', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))->toBeNull("[{$pattern}] fails at its first character");
+    })->with([
+        // 9.1 ms at 2,500 characters: the `b` divides, so the `{999}` behind it is never re-tested.
+        'a+(?:ba{999})X',
+        '^a*a*b{999}$',
+    ]);
+
+    it('adds sequential counts rather than multiplying them', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))->toBeNull("[{$pattern}] costs what its total says");
+    })->with([
+        '^a+a{64}a{64}a{64}X',
+        '^a+a{192}X',
+        '^a+'.str_repeat('a{64}', 14).'X',
+    ]);
+
+    it('and the total still bites where the base is not linear', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))->toContain('ways to retry');
+    })->with([
+        // Unanchored, so the base is the search: the budget is 13 and the total is 14.
+        'a+a{14}X',
+        'a+a{7}a{7}X',
+        // Anchored, but the base is a quadratic run of two.
+        '^[ab]{2,}a*a{999}$',
+    ]);
+});
+
+describe('a branch is its own search', function (): void {
+    /*
+     * ⚠️ A WHOLE-PATTERN ANCHOR TEST READ ONE BRANCH'S `^` AS EVERY BRANCH'S, which review found in the
+     * round that added the condition: `^z|(?:a(?!a*b))*x` published because the first branch is anchored
+     * and the second is not — and the second is still attempted from every starting position. Measured on
+     * Node 22.23.2 against all-`a`, 121.1 ms at 625 characters and 955.6 at 1,250, against 121.0 and
+     * 950.7 for the bare unanchored spelling: the same cubic.
+     *
+     * `RUN_WITHOUT_AN_ANCHOR` already says a branch's anchoring is its own, one rule along; this makes
+     * the repeated-assertion conditions ask the same way.
+     */
+    it('refuses an unanchored branch beside an anchored one', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))->not->toBeNull("[{$pattern}] holds an unanchored branch");
+    })->with([
+        '^z|(?:a(?!a*b))*x',
+        '(?:a(?!a*b))*x|^z',
+        '^z|^y|(?:a(?!a*b))*x',
+    ]);
+
+    it('accepts one where every branch anchors itself', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))->toBeNull("[{$pattern}] anchors every branch");
+    })->with([
+        '^(?:a(?!a*b))*x',
+        '^z|^(?:a(?!a*b))*x',
+        '^(?:a(?!a*b))*x|^z',
+    ]);
+});
+
 describe('the screen stays inside its budget', function (): void {
     /*
      * ⚠️ THE GUARD'S OWN COST IS PART OF THE CONTRACT, and it had drifted: every rule added a walk, and
