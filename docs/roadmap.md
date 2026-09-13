@@ -241,7 +241,11 @@ Data model is specified in [`architecture.md`](architecture.md) §3.
 
 **Done when:** a non-developer builds a working "Products" entity with ten field types, relations and permissions entirely through the admin, on 100k rows, with no query over 200ms.
 
-**Where that stands.** The entity, its field types, its relations and its indexing are done and driven from the admin — the builder above is what makes that sentence true rather than aspirational. **One** thing is not: **permissions**, which wait on Phase 3's RBAC (see `EntryPolicy` above).
+**Where that stands.** The entity, its field types, its relations and its indexing are done and driven from the admin — the builder above is what makes that sentence true rather than aspirational. **One** thing is not, and the reason changed rather than went away: **permissions**.
+
+They are *enforced* — [ADR-033](decision-log.md) and `EntryPolicy` landed with [#81](https://github.com/adamgreenwell/kitsune/issues/81), and a user without a grant is refused at the URL rather than merely shown no link. They are not *administrable*: a role can only be created by a seeder, so handing somebody permission still takes a developer. The criterion says **entirely through the admin**, and [#84](https://github.com/adamgreenwell/kitsune/issues/84) is what closes the distance.
+
+⚠️ **The distance is not only a form.** `roles` is org-owned configuration and belongs in core; assignment writes `role_user` against the host application's `users` table, which core does not own — so the assignment UI belongs in the skeleton, and **neither half is useful alone**. #84 carries that decision.
 
 ⚠️ **This paragraph used to say three, and two of them were stale — [#80](https://github.com/adamgreenwell/kitsune/issues/80).** It called revisions "the last unchecked line of the checklist" after that line had been ticked, and it said the 100k-row measurement was missing because `benchmark-storage` only measured the ADR-027 floor — confusing it with `benchmark-floor`, while the 100k table sits twenty lines up this same document. Prose describing the state of something else, not derived from it.
 
