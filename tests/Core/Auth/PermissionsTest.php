@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Auth\Permissions;
+use Kitsune\Core\Models\AuditLog;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Role;
 use Kitsune\Core\Tenancy\Context;
@@ -154,4 +155,59 @@ it('refuses everything with no user and with no org context', function (): void 
 
     expect(Permissions::allows($user, 'entry.article.view'))->toBeFalse()
         ->and(Permissions::isOwner($user))->toBeFalse();
+});
+
+it('records the four operations that change authority, and nothing else', function (): void {
+    /*
+     * ⚠️ THIS EXISTS BECAUSE ADR-033 PUBLISHED THE CLAIM BEFORE ANYTHING ENFORCED IT. "What is audited is
+     * the assignment" was true of the intent and of no code for one commit — AGENTS.md #14's exact shape.
+     *
+     * ⚠️ AND THE AUDIT IS IN THE METHODS RATHER THAN AT A BUILDER, which is a departure from ADR-020's
+     * mechanism and has a reason: `AuditedBuilder` is bound to `Entry`, and `role_user` is a skeleton pivot
+     * with no core model in front of it, so there is no builder here to audit at. `$user->roles()->attach()`
+     * is the visible back door, in the sense that ADR already states about `toBase()`.
+     */
+    $role = Role::create(['handle' => 'editor', 'name' => 'Editor']);
+
+    /** @var TestUser $user */
+    $user = TestUser::create(['email' => 'audited@kitsune.test']);
+    DB::table('org_user')->insert(['org_id' => $this->org->getKey(), 'user_id' => $user->getKey()]);
+
+    // ⚠️ Creating the role recorded nothing, and that is the line rather than a gap: a role holding no
+    // grants and held by nobody is a name, not authority.
+    expect(AuditLog::query()->count())->toBe(0);
+
+    $role->grant('entry.article.update');
+    $role->assignTo($user->getKey());
+    $role->revoke('entry.article.update');
+    $role->removeFrom($user->getKey());
+
+    expect(AuditLog::query()->orderBy('id')->pluck('action')->all())
+        ->toBe(['role.granted', 'role.assigned', 'role.revoked', 'role.unassigned']);
+});
+
+it('records nothing for an operation that changed nothing', function (): void {
+    /*
+     * ⚠️ An idempotent call is not an event. Granting twice, revoking what was never held, assigning an
+     * existing holder — each leaves the same end state it found, and a log that recorded them would fill
+     * with rows that answer no question. It is the same reasoning ADR-020 gives for keeping the log to
+     * actions.
+     */
+    $role = Role::create(['handle' => 'editor', 'name' => 'Editor']);
+
+    /** @var TestUser $user */
+    $user = TestUser::create(['email' => 'idempotent@kitsune.test']);
+    DB::table('org_user')->insert(['org_id' => $this->org->getKey(), 'user_id' => $user->getKey()]);
+
+    $role->grant('entry.article.view');
+    $role->assignTo($user->getKey());
+
+    $before = AuditLog::query()->count();
+
+    $role->grant('entry.article.view');
+    $role->assignTo($user->getKey());
+    $role->revoke('entry.article.delete');
+    $role->removeFrom($user->getKey() + 1000);
+
+    expect(AuditLog::query()->count())->toBe($before);
 });

@@ -222,8 +222,8 @@ class DatabaseSeeder extends Seeder
         $context->setOrg($orgA);
 
         $ownerA = Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true]);
-        $user->roles()->attach($ownerA->id);
-        $rtlUser->roles()->attach($ownerA->id);
+        $ownerA->assignTo($user->id);
+        $ownerA->assignTo($rtlUser->id);
 
         /*
          * ⚠️ A COPY-EDITOR, because a permission system with only owners in it is a permission system
@@ -247,13 +247,13 @@ class DatabaseSeeder extends Seeder
         ]);
         $readerUser->sites()->attach([$en->id, $fr->id, $ar->id]);
         $readerUser->orgs()->attach($orgA->id);
-        $readerUser->roles()->attach($reader->id);
+        $reader->assignTo($readerUser->id);
 
         // The rival org gets its own owner, so the cross-org specs measure a user who is fully
         // authorised in their OWN org rather than one who is simply unauthorised everywhere.
         $context->setOrg($orgB);
         $ownerB = Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true]);
-        $rivalUser->roles()->attach($ownerB->id);
+        $ownerB->assignTo($rivalUser->id);
 
         $context->setSite($en);
         foreach (range(1, 6) as $i) {

@@ -1682,6 +1682,12 @@ Bootstrap requires it: somebody must create the first entry type before a permis
 
 **What is audited is the assignment** — who was made an owner of which org, and when — which is rare, high-value, and the question an auditor actually asks. One row per assignment instead of thousands per page.
 
+⚠️ **And that sentence was a published claim with nothing enforcing it for one commit**, which AGENTS.md #14 forbids and which is worth recording rather than quietly fixing. `AuditedBuilder` is bound to `Entry` — deliberately, and its docblock says to generalise it when a second case turns up to check the design against — and `role_user` is a skeleton pivot with no core model in front of it at all, so there was no builder to audit at.
+
+**So the audit lives in the four methods that change authority:** `Role::grant()`, `revoke()`, `assignTo()` and `removeFrom()`, recording `role.granted`, `role.revoked`, `role.assigned` and `role.unassigned`. `$user->roles()->attach()` remains an unaudited back door, in exactly the sense ADR-020 already states about `toBase()`: the guarantee is about the path core provides, reaching past it is explicit and visible in review, and claiming more would be claiming a guarantee the Eloquent layer cannot give.
+
+**Creating a role is deliberately not audited, and that is a line rather than a gap.** The log records changes to **authority**, and a role holding no grants and held by nobody is not authority — it is a name. Authority changes on the first grant or the first assignment, and both of those are recorded.
+
 ### Consequence
 
 - **Core's RBAC enforces nothing until the host application has run the skeleton's `role_user` migration.** Already true of org scoping, so it is a pattern rather than a new hole — but it is written down here rather than left in somebody's memory.

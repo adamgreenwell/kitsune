@@ -13,6 +13,8 @@ namespace Kitsune\Core\Models;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Support\Facades\DB;
+use Kitsune\Core\Audit\Auditor;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Tenancy\Attributes\OrgScoped;
 use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
@@ -67,6 +69,10 @@ class Role extends Model
         /** @var RolePermission $row */
         $row = $this->permissions()->firstOrCreate(['permission' => $permission]);
 
+        if ($row->wasRecentlyCreated) {
+            app(Auditor::class)->record('role.granted', $this);
+        }
+
         Permissions::forget();
 
         return $row;
@@ -75,7 +81,56 @@ class Role extends Model
     /** Remove a grant. Silent when it was not held, because the end state is what was asked for. */
     public function revoke(string $permission): void
     {
-        $this->permissions()->where('permission', $permission)->delete();
+        if ($this->permissions()->where('permission', $permission)->delete() > 0) {
+            app(Auditor::class)->record('role.revoked', $this);
+        }
+
+        Permissions::forget();
+    }
+
+    /**
+     * Give this role to a user, and record that somebody did.
+     *
+     * ⚠️ A METHOD IN CORE RATHER THAN `$user->roles()->attach()`, and the reason is the audit rather than
+     * convenience. `role_user` is a skeleton pivot with no core model in front of it, so there is no builder
+     * to audit at — the mechanism `AuditedBuilder` exists to provide for entries has nothing to attach to
+     * here. What core can offer is a path that records, and `attach()` remains the visible back door, in
+     * exactly the sense ADR-020 already says of `toBase()`: the guarantee is about the path core provides,
+     * and reaching past it is explicit in review.
+     *
+     * ⚠️ IT IS AN AUTHORITY CHANGE, WHICH IS WHY IT IS THE ONE WORTH RECORDING. ADR-033 withdrew auditing
+     * the owner BYPASS on volume — a check runs per row — and this is the other end of that decision: rare,
+     * high-value, and the question an auditor actually asks.
+     */
+    public function assignTo(int $userId): void
+    {
+        $existing = DB::table('role_user')
+            ->where('role_id', $this->getKey())
+            ->where('user_id', $userId)
+            ->exists();
+
+        if ($existing) {
+            return;
+        }
+
+        DB::table('role_user')->insert(['role_id' => $this->getKey(), 'user_id' => $userId]);
+
+        app(Auditor::class)->record('role.assigned', $this);
+
+        Permissions::forget();
+    }
+
+    /** Take it away again. Silent when the user did not hold it, because the end state is what was asked. */
+    public function removeFrom(int $userId): void
+    {
+        $removed = DB::table('role_user')
+            ->where('role_id', $this->getKey())
+            ->where('user_id', $userId)
+            ->delete();
+
+        if ($removed > 0) {
+            app(Auditor::class)->record('role.unassigned', $this);
+        }
 
         Permissions::forget();
     }
