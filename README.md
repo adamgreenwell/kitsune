@@ -51,7 +51,7 @@ If you're evaluating whether to build on Kitsune later, the decision log is the 
 
 ### Stack
 
-Not a plan. This is what CI runs on every push: PHP 8.4 and 8.5 across SQLite, PostgreSQL, MySQL and MariaDB, plus a bare-clone job declaring no service containers at all.
+Not a plan. This is what CI runs on every pull request and every push to `main`: PHP 8.4 and 8.5 across SQLite, PostgreSQL, MySQL and MariaDB, plus a bare-clone job declaring no service containers at all.
 
 | | |
 |---|---|
@@ -77,7 +77,7 @@ In plain terms:
 
 The project lives at **[kitsunecms.org](https://kitsunecms.org)**. `kitsune.org` is held by someone else and is being pursued; if it lands, this becomes a redirect rather than a rename, and nothing that references the project has to move.
 
-The **Kitsune name and logo are separate from the code license.** The code is yours to use; the name is not. A trademark policy will land alongside the first release. Short version, and it will not surprise anyone who knows the WordPress Foundation's: you may say your work is *built for Kitsune*; you may not name your fork, product, or domain Kitsune.
+The **Kitsune name and logo are separate from the code license.** The code is yours to use; the name is not. A trademark policy — `TRADEMARK.md` — will land alongside the first release. Short version, and it will not surprise anyone who knows the WordPress Foundation's: you may say your work is *built for Kitsune*; you may not name your fork, product, or domain Kitsune.
 
 ## Contributing
 

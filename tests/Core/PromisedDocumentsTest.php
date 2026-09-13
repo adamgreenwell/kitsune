@@ -21,9 +21,19 @@ declare(strict_types=1);
  * `field-types.md` and the licence header in `LicenceHeaderTest`. The shape repeats: prose checked by
  * attention holds until the day attention is elsewhere.
  *
- * ⚠️ A PROMISE OF A FILE THAT DOES NOT EXIST IS FINE, AND THAT IS THE POINT. `README.md` says a trademark
- * policy will land alongside the first release, which is true — there is no `TRADEMARK.md`. This test
- * starts failing on the commit that adds one, which is exactly when that sentence becomes a lie.
+ * ⚠️ A PROMISE OF A FILE THAT DOES NOT EXIST IS FINE, AND THAT IS THE POINT. `README.md` says
+ * `TRADEMARK.md` will land alongside the first release, which is true — there is no `TRADEMARK.md`. This
+ * test starts failing on the commit that adds one, which is exactly when that sentence becomes a lie.
+ *
+ * ⚠️ AND THAT GUARANTEE ONLY HOLDS BECAUSE THE PROMISE NAMES THE FILE, which review found it did not.
+ * The sentence read "a trademark policy will land", and this sweep matches a promise to a document by
+ * looking for the document's NAME on the same line — so the one regression the test advertised would have
+ * sailed past it. Reproduced: adding `TRADEMARK.md` put it in `$committed` and left `$broken` empty.
+ *
+ * The fix is in the README rather than here, and it is the better half of the trade: a promise that does
+ * not name what it promises cannot be checked by anything, and naming it costs two words. Widening the
+ * match instead — treating "a trademark policy" as a reference to `TRADEMARK.md` — would be guessing at
+ * English, and every guess of that kind is a false positive waiting for someone to delete the test.
  */
 
 /** Future-tense claims about a document. Deliberately literal: a broad match would flag prose about work. */
