@@ -2,7 +2,7 @@
 
 Thanks for looking. Read the short version first, because it will save you time:
 
-> **Kitsune is pre-alpha and there is no code yet.** Feature pull requests aren't being accepted, and the extension API is deliberately unstable until v1.2. If you build a plugin against anything you find here before then, it will break, and that is a promise rather than a risk.
+> **Kitsune is pre-alpha: nothing is released and nothing is stable.** There *is* code — a working admin, a runtime schema engine and a tenancy kernel — and [`docs/roadmap.md`](docs/roadmap.md) tracks what exists item by item. What is not open is feature pull requests, and the extension API is deliberately unstable until v1.2. If you build a plugin against anything you find here before then, it will break, and that is a promise rather than a risk.
 
 What *is* wanted right now is further down under [What's useful today](#whats-useful-today).
 
@@ -37,7 +37,7 @@ Concretely, in rough order of value:
 
 1. **Prior-art knowledge.** Have you shipped a runtime schema engine, a multi-tenant CMS, or a plugin ecosystem? Have you watched one fail? The Standing Principles in the decision log came from studying Drupal, October, Winter, Statamic, Directus, Strapi, Payload, Backdrop and ClassicPress. If you know where a body is buried, please say so.
 2. **Holes in the reasoning.** The decision log makes falsifiable claims. Falsify one.
-3. **The open questions.** Listed at the bottom of the decision log. The highest-risk unknown right now is whether Filament relation managers survive an extra route parameter.
+3. **The open questions.** Listed at the bottom of the decision log, and kept honest — an answered question is removed from that list rather than left on it, which is why the relation-manager unknown this line used to name is no longer there.
 4. **Documentation fixes.** Typos, broken links, unclear passages.
 
 ### A note on the wiki
@@ -237,7 +237,9 @@ Pull requests should:
 
 Data isolation between orgs, and between sites within an org, is the highest-severity category in this project — a cross-org leak is the worst thing that can happen to Kitsune, and it will be treated that way.
 
-`SECURITY.md` with a disclosure address will be published before the first release. Until then, contact the maintainer privately.
+[`SECURITY.md`](SECURITY.md) is published, and it routes disclosure through GitHub's **private vulnerability reporting** flow rather than an email address — encrypted in transit, and the report stays attached to its eventual fix.
+
+⚠️ **This paragraph used to say `SECURITY.md` *would* be published**, and told you to contact the maintainer privately in the meantime without naming a channel. It was stale from the day that file landed, and of everywhere in this document that could have gone stale it was the worst: a reporter following it is routed away from the disclosure path that exists, in the section whose only job is to describe it.
 
 ---
 

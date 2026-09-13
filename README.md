@@ -22,7 +22,7 @@ The name is the pitch: **Kitsune is meant to become whatever you need it to be.*
 These conflict, deliberately. Maximum flexibility fights ease of use; audit trails fight erasure; enterprise features tax small installs. [`docs/decision-log.md`](docs/decision-log.md) names each conflict where it lands rather than resolving it silently — because a pillar that never costs anything is a slogan, not a commitment.
 
 
-## Why this repository exists before the code does
+## Why the thinking is public too
 
 This project is being built in the open from the first commit, including the parts that are just thinking.
 
@@ -49,7 +49,9 @@ If you're evaluating whether to build on Kitsune later, the decision log is the 
 - **Headless-capable core** with an optional Blade theming layer
 - **Source-agnostic migration adapters**, so moving in from an existing CMS is a plugin rather than a rewrite
 
-### Planned stack
+### Stack
+
+Not a plan. This is what CI runs on every pull request and every push to `main`: PHP 8.4 and 8.5 across SQLite, PostgreSQL, MySQL and MariaDB, plus a bare-clone job declaring no service containers at all.
 
 | | |
 |---|---|
@@ -75,7 +77,7 @@ In plain terms:
 
 The project lives at **[kitsunecms.org](https://kitsunecms.org)**. `kitsune.org` is held by someone else and is being pursued; if it lands, this becomes a redirect rather than a rename, and nothing that references the project has to move.
 
-The **Kitsune name and logo are separate from the code license.** The code is yours to use; the name is not. A trademark policy will land alongside the first release. Short version, and it will not surprise anyone who knows the WordPress Foundation's: you may say your work is *built for Kitsune*; you may not name your fork, product, or domain Kitsune.
+The **Kitsune name and logo are separate from the code license.** The code is yours to use; the name is not. A trademark policy — `TRADEMARK.md` — will land alongside the first release. Short version, and it will not surprise anyone who knows the WordPress Foundation's: you may say your work is *built for Kitsune*; you may not name your fork, product, or domain Kitsune.
 
 ## Contributing
 
@@ -86,7 +88,7 @@ Feature PRs aren't open yet — the extension API is deliberately unstable and u
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — what is useful today, the invariants that fail the build, and why there is a CLA
 - [`GOVERNANCE.md`](GOVERNANCE.md) — who decides, the disclosed bus factor of one, and the binding commitments about what will never happen to the licence
 
-The CLA text is the one piece still outstanding; it will be published before the first external PR is accepted.
+The CLA text is published — [`CLA.md`](CLA.md), derived from the Apache Individual CLA v2.0 with a corporate section — and it carries its own *not yet in force* warning. The signing bot ships **switched off** until counsel has reviewed the agreement, because a bot collecting signatures against an unreviewed text produces a record that looks like consent and may not be.
 
 ## Prior art, gratefully
 
