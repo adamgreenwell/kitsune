@@ -1354,5 +1354,17 @@
     "pattern": "(?<=a{9223372036854775807}a)b",
     "subject": "aab",
     "why": "The second crash: a quantifier can name a number whose product — and whose SUM with the next atom's width — overflows to a float, and the width helper returns `?int`, so a TypeError came out of the lookbehind rule. A width nothing can measure is not a fixed width, which is exactly what null already means there and what every caller reads as 'variable' — the conservative direction. Both the multiply and the add are guarded now, and the pattern is refused for the reason it should be: a lookbehind whose length is not fixed."
+  },
+  {
+    "id": "wide-fixed-repetition-multiplies",
+    "pattern": "a+a{999}X",
+    "subject": "aaaaX",
+    "why": "Nine characters, published, and 5.7 SECONDS against 2,500 `a` on Node 22.23.2 — 29.8 at the 5,000 a text field admits — where `a+X` is 9.4 ms. Every allocation of the `a+` re-tests the whole `{999}`, so the work is the base cost TIMES the count, and no rule had a term for it: a fixed repetition is not a variable-width atom, so the run is one atom long and the run rule sees nothing. Found by fuzzing 93,703 generated patterns and timing every one that published. The ladder at 2,500 characters is linear in the count — 9.1 ms at k=1, 91.3 at k=8, 589.3 at k=64, 5,673.0 at k=999 — while the DIVIDED form `^a*a*b{k}$` is flat at 9 ms for every k, because the run cannot give back a character the repetition would re-test. So the count is charged as a factor on the cost rather than capped as a limit, and the budgets say where the line is: the unanchored budget of 13 refuses this, an anchored linear base tolerates a large count (`^[a-z]+[a-z]{14}$` measures 0.1 ms and publishes), and a quadratic base times 999 is refused (`^[ab]{2,}a*a{999}$`, 23.3 seconds)."
+  },
+  {
+    "id": "repeated-assertion-entered-many-times",
+    "pattern": "^a+(?:a(?!a*b))*x",
+    "subject": "aaax",
+    "why": "One scanning assertion inside a repetition is a deliberate allowance, priced at 36.9 ms for a 5,000-character value — the quadratic allowance's own ceiling. That measurement was taken on a repetition ENTERED ONCE, and fuzzing found what happens when something enters it many times: the per-iteration scan multiplies again. Measured on Node 22.23.2 against all-`a` at 625 / 1,250 / 2,500 characters: the allowance `^(?:a(?!a*b))*x` is 0.6 / 2.3 / 8.9 ms; this pattern is 119.6 / 972.6 / 7,540.2; and the unanchored `(?:a(?!a*b))*x` is 121.7 / 951.6 / 7,536.5. Both multipliers are degrees the file already names elsewhere — an unanchored search reaches the repetition from every position, and a variable-width atom beside it is a run of two, which is the whole top-level allowance by itself — so the allowance now holds only where its measurement does."
   }
 ]

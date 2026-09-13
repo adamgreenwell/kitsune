@@ -1371,6 +1371,52 @@ final class Pattern
              * `^a*a*b$` costs 36 ms at the same length. So the budget is the same equal-work rule the
              * other two unanchored bounds use: the aggregate may cost what ONE costs, which is one.
              */
+            /*
+             * ⚠️ THE ALLOWANCE ABOVE WAS MEASURED ON A REPETITION ENTERED ONCE, and review's fuzzing
+             * found what happens when something enters it many times. The 36.9 ms that justifies giving
+             * one scanning assertion a free pass is the cost of scanning the remaining value once per
+             * ITERATION; if the repetition itself is attempted once per starting position, or once per
+             * character a variable-width atom in front of it gives back, that cost multiplies again.
+             * Measured on Node 22.23.2 against all-`a`:
+             *
+             *                              n=625    n=1,250    n=2,500
+             *   `^(?:a(?!a*b))*x`          0.6 ms     2.3 ms      8.9 ms   the allowance, entered once
+             *   `^a+(?:a(?!a*b))*x`      119.6 ms   972.6 ms  7,540.2 ms   a prefix gives back n times
+             *   `(?:a(?!a*b))*x`         121.7 ms   951.6 ms  7,536.5 ms   unanchored: n starting points
+             *
+             * So the allowance holds only where its measurement does. An unanchored search reaches the
+             * repetition from every position, which `RUN_WITHOUT_AN_ANCHOR` already calls one degree
+             * more; and a variable-width atom beside the repetition is a run of two, which is the
+             * top-level allowance on its own — the two together are cubic, so the pattern is held to the
+             * repetition's limit rather than the top level's.
+             */
+            if (self::scanningAssertionsInside($frames, $frame) > 0 && ! self::anchorsTheSearch($pattern)) {
+                return sprintf(
+                    'an assertion whose scan grows with the value inside the repetition `%s`, in a '
+                    .'pattern nothing anchors — so the repetition is attempted from every starting '
+                    .'position and each attempt re-scans the value. Measured on Node 22.23.2 against '
+                    .'all-`a`, `(?:a(?!a*b))*x` takes 121.7 ms at 625 characters, 951.6 at 1,250 and '
+                    .'7,536.5 at 2,500 — cubic — where the anchored `^(?:a(?!a*b))*x` takes 0.6, 2.3 '
+                    .'and 8.9. '
+                    .'Anchor the pattern with `^`, or give the assertion a fixed-width body',
+                    self::excerpt($pattern, $frame['open'], $frame['close']),
+                );
+            }
+
+            if (self::scanningAssertionsInside($frames, $frame) > 0
+                && self::atomRunExceeds($pattern, self::RUN_INSIDE_REPETITION)) {
+                return sprintf(
+                    'an assertion whose scan grows with the value inside the repetition `%s`, with a '
+                    .'variable-width atom beside it — the repetition is re-entered once per character '
+                    .'that atom gives back, and each entry re-scans the value. Measured on Node '
+                    .'22.23.2 against all-`a`, `^a+(?:a(?!a*b))*x` takes 119.6 ms at 625 characters, '
+                    .'972.6 at 1,250 and 7,540.2 at 2,500 — cubic — where the same pattern without the '
+                    .'`a+` takes 0.6, 2.3 and 8.9. Separate them with a character neither can match, or '
+                    .'give the assertion a fixed-width body',
+                    self::excerpt($pattern, $frame['open'], $frame['close']),
+                );
+            }
+
             if (self::scanningAssertionsInside($frames, $frame) > 1) {
                 return sprintf(
                     'more than one assertion whose scan grows with the value inside the repetition `%s` '
@@ -2529,6 +2575,31 @@ final class Pattern
         if (($rescans = count(self::assertionsRescanned($body, 0, true))) > 0) {
             $cost = self::saturatingProduct($cost, self::quadraticBranchCost() * $rescans);
         }
+
+        /*
+         * ⚠️ A FIXED REPETITION THE ATOM BEFORE IT CAN MATCH IS A MULTIPLIER, and nothing charged it.
+         * `a+a{999}X` is NINE CHARACTERS and measures 5.7 SECONDS against 2,500 `a` on Node 22.23.2 —
+         * 29.8 at the 5,000 a `text` field admits — where `a+X` is 9.4 ms: every allocation of the `a+`
+         * re-tests the whole `{999}`, so the work is the base cost TIMES the count. The run rule cannot
+         * see it, because a fixed repetition is not a variable-width atom and the run is one atom long.
+         *
+         * Measured at 2,500 characters, the ladder is linear in the count and the divided form is flat:
+         *
+         *   k         1       4       8       9      16      64     256     999
+         *   a+a{k}X   9.1    55.6    91.3   100.8   208.8   589.3  1891.2  5673.0 ms
+         *   ^a*a*b{k}$ 9.0    9.3     8.8     9.1     9.0     9.4     9.1     9.0 ms
+         *
+         * `b{k}` is DIVIDED from the `a*` in front of it — the run cannot give back a character the
+         * repetition would re-test — so it multiplies nothing, whatever k is. That is the same proof
+         * that ends a run, asked of the same pair, which is why this is a factor rather than a limit:
+         * `^.*x{20}$` is linear and stays published, and `^[ab]{2,}a*a{999}$` multiplies a QUADRATIC
+         * base and measures 23.3 seconds.
+         *
+         * The factor is the count itself rather than a grant, because it multiplies time directly. The
+         * budgets do the rest: an anchored 8,192 survives ×8 and not ×9, and the unanchored budget of 13
+         * refuses `a+a{999}X` outright.
+         */
+        $cost = self::saturatingProduct($cost, self::retestedRepetitionWeight(self::ownAtoms($body)));
 
         for ($i = 0; $i < $length; $i++) {
             $token = self::atomAt($body, $i);
@@ -4031,6 +4102,60 @@ final class Pattern
     private static function quadraticBranchCost(): int
     {
         return intdiv(self::MAX_AMBIGUITY_PRODUCT, self::MAX_QUADRATIC_BRANCHES);
+    }
+
+    /**
+     * How much a fixed repetition multiplies the retries of the variable-width atom in front of it.
+     *
+     * ⚠️ ONE AT A TIME AND MULTIPLIED, because two of them compose: each allocation of the atom in front
+     * re-tests every repetition behind it. The atoms are the sequence's OWN — this prices, so a group's
+     * body is charged when the recursion reaches it and not again here.
+     *
+     * ⚠️ AND ONLY WHAT THE ATOM CANNOT BE DIVIDED FROM. `dividesFrom()` is the same proof that ends a
+     * run: if the repetition begins with something the variable atom cannot consume, the atom cannot
+     * give back a character for it to re-test, and the count multiplies nothing — measured, `^a*a*b{k}$`
+     * is 9 ms at every k from 1 to 999.
+     *
+     * @param  list<array{atom: string, quantifier: string, variable: bool, leads: list<string>|null, assertion: bool}>|null  $atoms
+     */
+    private static function retestedRepetitionWeight(?array $atoms): int
+    {
+        if ($atoms === null) {
+            return 1;
+        }
+
+        $weight = 1;
+        $previous = null;
+
+        foreach ($atoms as $atom) {
+            // Zero-width: it neither backtracks nor is re-tested.
+            if ($atom['assertion']) {
+                continue;
+            }
+
+            if ($atom['atom'] === '|') {
+                $previous = null;
+
+                continue;
+            }
+
+            if ($atom['variable']) {
+                $previous = $atom['atom'];
+
+                continue;
+            }
+
+            $repeats = $atom['quantifier'] === '' ? 1 : self::fixedRepetitions($atom['quantifier']);
+
+            if ($previous !== null
+                && $repeats !== null
+                && $repeats >= 2
+                && ! self::dividesFrom($previous, $atom)) {
+                $weight = self::saturatingProduct($weight, $repeats);
+            }
+        }
+
+        return $weight;
     }
 
     /**

@@ -2566,6 +2566,93 @@ describe('the screen answers about the author pattern, not about its own probe',
     ]);
 });
 
+describe('a wide fixed repetition is a multiplier, not a separator', function (): void {
+    /*
+     * ⚠️ FOUND BY FUZZING, NOT BY READING — 93,703 generated patterns screened and every published one
+     * timed. `a+a{999}X` is NINE CHARACTERS and measures 5.7 SECONDS against 2,500 `a` on Node 22.23.2,
+     * 29.8 at the 5,000 a `text` field admits, where `a+X` is 9.4 ms: every allocation of the `a+`
+     * re-tests the whole `{999}`, so the work is the base cost TIMES the count. The run rule cannot see
+     * it, because a fixed repetition is not a variable-width atom and the run is one atom long.
+     *
+     * The ladder at 2,500 characters is linear in the count, and the DIVIDED form is flat at every count:
+     *
+     *   k           1      4      8      9     16     64    256     999
+     *   a+a{k}X    9.1   55.6   91.3  100.8  208.8  589.3 1891.2  5673.0 ms
+     *   ^a*a*b{k}$ 9.0    9.3    8.8    9.1    9.0    9.4    9.1     9.0 ms
+     *
+     * `b{k}` is divided from the `a*` in front of it — the run cannot give back a character the
+     * repetition would re-test — so it multiplies nothing. That is why this is a factor on the cost
+     * rather than a limit on the count: the budgets then say where the line is, and an anchored pattern
+     * with a linear base tolerates a large count exactly as it should.
+     */
+    it('refuses a repetition that multiplies a base already at the allowance', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))->toContain('ways to retry');
+    })->with([
+        // Unanchored: the base is the search itself, and the unanchored budget is 13.
+        'a+a{999}X',
+        'a+a{14}X',
+        // Anchored, but the base is a quadratic run of two — 23.3 seconds at 5,000 characters.
+        '^[ab]{2,}a*a{999}$',
+    ]);
+
+    it('leaves a count nothing multiplies alone', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))->toBeNull("[{$pattern}] multiplies nothing");
+    })->with([
+        // Divided, so the count cannot be re-tested: flat at every k.
+        '^a*a*b{999}$',
+        // A linear base, so a large count is linear too: `^[a-z]+[a-z]{14}$` measures 0.1 ms.
+        '^.*x{20}$',
+        '^[a-z]+[a-z]{14}$',
+        '^[0-9]+[0-9]{4}$',
+        // Inside the unanchored budget.
+        'a+a{8}X',
+        'a+a{13}X',
+        // No variable-width atom in front of it at all.
+        '^[A-Za-z]{64}$',
+        '^(?:ab){50}$',
+        // And the shapes the run rule already decides, which must not change.
+        '^a*[a-z]{2}a*$',
+        '^a*a*b{1}a*$',
+    ]);
+});
+
+describe('the allowance for a repeated assertion holds only where it was measured', function (): void {
+    /*
+     * ⚠️ ONE SCANNING ASSERTION INSIDE A REPETITION IS A DELIBERATE ALLOWANCE, priced at 36.9 ms for a
+     * 5,000-character value — the quadratic allowance's own ceiling. That measurement was taken on a
+     * repetition ENTERED ONCE, and fuzzing found what happens when something enters it many times: the
+     * per-iteration scan multiplies again. Measured on Node 22.23.2 against all-`a`:
+     *
+     *                              n=625      n=1,250     n=2,500
+     *   `^(?:a(?!a*b))*x`          0.6 ms       2.3 ms      8.9 ms    entered once — the allowance
+     *   `^a+(?:a(?!a*b))*x`      119.6 ms     972.6 ms  7,540.2 ms    a prefix gives back n times
+     *   `(?:a(?!a*b))*x`         121.7 ms     951.6 ms  7,536.5 ms    unanchored: n starting points
+     *
+     * So the allowance holds where its measurement does. Unanchored, the repetition is reached from
+     * every position, which is the degree `RUN_WITHOUT_AN_ANCHOR` already names; beside a variable-width
+     * atom it is a run of two, which is the whole top-level allowance on its own.
+     */
+    it('refuses a scanning assertion in a repetition something re-enters', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))->toContain('re-scans the value');
+    })->with([
+        '^a+(?:a(?!a*b))*x',
+        '(?:a(?!a*b))*x',
+        '^a+(?:(?!a*c)a)*z$',
+        '^(?:a(?!a*b))*(?:a(?!a*c))*x',
+    ]);
+
+    it('keeps the allowance for the shape it was priced on', function (string $pattern): void {
+        expect(Pattern::unpublishable($pattern))->toBeNull("[{$pattern}] is entered once");
+    })->with([
+        '^(?:a(?!a*b))*$',
+        '^(?:a(?!a*b))*x',
+        '^(?:(?!a*c)a)*z$',
+        // A FIXED-width assertion body is not a scanning assertion at all, so nothing here applies.
+        '^(?:a(?!ab))*x',
+        '^a+(?:a(?!ab))*x',
+    ]);
+});
+
 describe('the screen stays inside its budget', function (): void {
     /*
      * ⚠️ THE GUARD'S OWN COST IS PART OF THE CONTRACT, and it had drifted: every rule added a walk, and
