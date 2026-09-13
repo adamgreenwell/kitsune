@@ -59,6 +59,16 @@ export default () => {
                     attributes: {
                         dir: {
                             default: null,
+                            /*
+                             * ⚠️ NOT CARRIED ACROSS A SPLIT, and TipTap's default is the opposite —
+                             * `keepOnSplit` defaults to true, and both `splitBlock` and `splitListItem`
+                             * honour it. So pressing Enter at the end of a stored `<li dir="rtl">` gave
+                             * the NEW item a copied `dir="rtl"`, which then renders English text
+                             * right-to-left and which `Entry` stores as an explicit choice rather than
+                             * replacing with `auto`. A direction is a property of a block's content, so a
+                             * block with no content yet has no direction to inherit.
+                             */
+                            keepOnSplit: false,
                             parseHTML: (element) => {
                                 const dir = element.getAttribute('dir')
 

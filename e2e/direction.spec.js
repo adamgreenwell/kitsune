@@ -310,6 +310,42 @@ test.describe('a field value carries its own direction', () => {
         expect(await list.getAttribute('dir')).toBeNull();
     });
 
+    test('the editable editor resolves each block too, not only the read-only one', async ({ page }) => {
+        /*
+         * ⚠️ THE EDIT PAGE, NOT THE ONE THE LIST LINKS TO. Following an entry's title reaches its VIEW
+         * page, where the editor renders the stored content read-only — which is what the test above
+         * measures. This one measures the instance an author actually types into.
+         */
+        await page.goto(`/admin/${SITE}/c/article`);
+        await page.getByRole('link', { name: ARABIC_TITLE }).first().click();
+        await page.getByRole('link', { name: /^edit$/i }).first().click();
+        await page.waitForURL(/\/edit$/);
+
+        const editor = page.locator('.tiptap[contenteditable="true"]').first();
+        await expect(editor).toBeVisible();
+
+        const arabic = editor.locator('p', { hasText: 'ملاحظات' }).first();
+        const english = editor.locator('p', { hasText: 'Maintenance notes' }).first();
+        await expect(arabic).toBeVisible();
+
+        expect(await resolvedDirection(arabic)).toBe('rtl');
+        expect(await resolvedDirection(english)).toBe('ltr');
+
+        /*
+         * ⚠️ AND WHAT IS *NOT* ASSERTED HERE, recorded so the gap is a decision rather than an oversight.
+         * A block split — pressing Enter at the end of a directed block — must not copy that block's
+         * direction onto the new one, which is why the extension declares `keepOnSplit: false` against
+         * TipTap's default of true. That is asserted where it can be:
+         * `RichEditorDirectionAssetTest` reads it out of the module. It is NOT asserted here because the
+         * harness cannot place the caret: `click()`, `Control+Home` and arrow navigation all leave it at
+         * the document start, where a split truncates the first block rather than creating a new one — the
+         * one path `keepOnSplit` does not govern. A test written there passes with the option and without
+         * it, which is worse than no test. Proving it in the browser needs a way to focus the editor and a
+         * fixture with a FIXED direction, since the seeded value is `auto` throughout and inheriting
+         * `auto` is harmless.
+         */
+    });
+
     test('typing RTL text into an empty field flips it live', async ({ page }) => {
         // `dir="auto"` is evaluated by the browser as the value changes, so a new entry
         // gets the same behaviour without the server knowing anything about direction.

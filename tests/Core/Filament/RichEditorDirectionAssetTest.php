@@ -24,6 +24,27 @@ use Kitsune\Core\Models\Entry;
  * stopped matching the one it was derived from.
  */
 
+/**
+ * The editor Filament ships, from wherever it is installed.
+ *
+ * ⚠️ THE ROOT FIRST, AND REVIEW FOUND WHY IT MATTERS. The first version read only
+ * `skeleton/vendor`, which exists in the Playwright job and NOT in the jobs that run Pest — so the skip
+ * was always true in CI and the compatibility assertion never ran anywhere but this machine. A guard that
+ * only runs locally is a guard that ships a renamed node.
+ */
+function bundledEditor(): ?string
+{
+    foreach (['/vendor', '/skeleton/vendor'] as $root) {
+        $path = dirname(__DIR__, 3).$root.'/filament/forms/dist/components/rich-editor.js';
+
+        if (is_file($path)) {
+            return $path;
+        }
+    }
+
+    return null;
+}
+
 it('maps every tag the model gives a direction to', function (): void {
     /*
      * ⚠️ BOTH DIRECTIONS, because either gap is a defect. A handled tag missing from the map is a block
@@ -78,6 +99,15 @@ it('preserves a direction on a list without inventing one', function (): void {
     );
 
     expect(str_contains($javascript, 'default: null'))->toBeTrue('the browser half must not default it either');
+
+    /*
+     * ⚠️ AND IT MUST NOT SURVIVE A SPLIT. TipTap's `keepOnSplit` defaults to TRUE, so pressing Enter at the
+     * end of a stored `<li dir="rtl">` copied `dir="rtl"` onto the new item — which then renders English
+     * right-to-left, and which `Entry` stores as an explicit choice rather than replacing with `auto`. A
+     * direction is a property of a block's content, and a block with no content yet has none to inherit.
+     */
+    expect(str_contains($javascript, 'keepOnSplit: false'))
+        ->toBeTrue('a new block must not inherit the direction of the one it was split from');
 });
 
 it('declares the same node names in PHP and in the browser', function (): void {
@@ -154,8 +184,7 @@ it('names nodes the editor Filament ships actually has', function (): void {
      * `codeBlock` are the two that would be easy to guess wrong (`list_item`, `pre`), so they are read out
      * of the editor Filament actually ships rather than out of TipTap's documentation.
      */
-    $bundle = dirname(__DIR__, 3).'/skeleton/vendor/filament/forms/dist/components/rich-editor.js';
-    $source = (string) file_get_contents($bundle);
+    $source = (string) file_get_contents(bundledEditor());
 
     foreach (BlockDirectionPlugin::nodes() as $node) {
         expect(str_contains($source, 'name:"'.$node.'"'))
@@ -171,8 +200,31 @@ it('names nodes the editor Filament ships actually has', function (): void {
     expect(BlockDirectionPlugin::nodes())->toContain('bulletList')
         ->and(BlockDirectionPlugin::nodes())->toContain('orderedList');
 })->skip(
-    ! is_file(dirname(__DIR__, 3).'/skeleton/vendor/filament/forms/dist/components/rich-editor.js'),
-    'the skeleton has no vendor directory, so the bundled editor cannot be read',
+    bundledEditor() === null,
+    'filament/forms is not installed, so the bundled editor cannot be read',
+);
+
+it('fails when the editor gains a node for the tag it has none for', function (): void {
+    /*
+     * ⚠️ THE ASSERTION BELOW CANNOT FAIL ON ITS OWN, which review pointed out: it reads Kitsune's own
+     * constant, so it keeps passing while the world changes around it. `figcaption` maps to null because
+     * Filament's editor has no caption node — and the moment it gains one, a stored caption's direction
+     * starts being discarded precisely when preserving it becomes possible. So the absence is asserted
+     * against the BUNDLE rather than against our own map.
+     *
+     * ⚠️ A NODE NAME, NOT THE WORD. The bundle contains the string `figcaption` today inside ProseMirror's
+     * table of block-level HTML tags — `{address:!0,article:!0,…,figcaption:!0,figure:!0,…}` — which is a
+     * list of tag names rather than a node definition. Searching for the word would fail today and teach
+     * the next reader to delete the test; searching for a declared node name is the question.
+     */
+    $source = (string) file_get_contents(bundledEditor());
+
+    expect(preg_match_all('/name:"([A-Za-z]*[Cc]aption[A-Za-z]*)"/', $source, $found))
+        ->toBe(0, 'the bundled editor declares a caption node now: '.implode(', ', $found[1] ?? []).
+            ' — map it in EDITOR_NODES so a stored caption keeps its direction');
+})->skip(
+    bundledEditor() === null,
+    'filament/forms is not installed, so the bundled editor cannot be read',
 );
 
 it('records the tag the editor has no node for', function (): void {
