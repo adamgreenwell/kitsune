@@ -714,3 +714,110 @@ it('refuses a bulk force-delete of roles', function (): void {
 
     expect(AuditLog::query()->where('id', '>', $mark)->where('action', 'role.unassigned')->count())->toBe(1);
 });
+
+it('refuses to transfer a role into the org the caller has moved to', function (): void {
+    /*
+     * ⚠️ THE OWNER-FLAG GUARD STOOD ASIDE AND `EnforcesScope` WAS SATISFIED, which is the hole review found
+     * one step past both. The flag check fires only when `is_owner` is dirty; `EnforcesScope` revalidates a
+     * scope key when it is dirty and validates the value being WRITTEN against the current context. So a
+     * role loaded under alpha, with `org_id` set to beta while the context is beta, passed everything — and
+     * moved alpha's role to beta carrying its grants and its assignments, taking alpha's owner with it and
+     * conferring authority in beta with no audit row anywhere.
+     *
+     * The stored org is what has to match. The value being written is the one a transfer is arranging.
+     */
+    assign($this->alphaRole, $this->user);
+    joinOrg($this->beta, $this->user);
+    app(Context::class)->setOrg($this->beta);
+
+    $this->alphaRole->org_id = $this->beta->getKey();
+
+    expect(fn () => $this->alphaRole->save())
+        ->toThrow(RuntimeException::class, 'it is stored under org '.$this->alphaRole->getOriginal('org_id'));
+
+    app(Context::class)->setOrg($this->alpha);
+
+    expect(Role::query()->whereKey($this->alphaRole->getKey())->value('org_id'))->toBe($this->alpha->getKey());
+
+    // And the grants and assignments went nowhere either, which is what the transfer would have carried.
+    expect(RolePermission::query()->where('role_id', $this->alphaRole->getKey())->count())->toBe(1)
+        ->and(DB::table('role_user')->where('role_id', $this->alphaRole->getKey())->count())->toBe(1);
+});
+
+it('refuses an ordinary save of another org\'s role, not only a transfer', function (): void {
+    /*
+     * The same guard, on the case that changes no scope key at all: a role loaded in alpha and saved while
+     * the context is beta is a write to another customer's row whatever column moved. The five authority
+     * helpers already refused it; `save()` was the path that did not.
+     */
+    app(Context::class)->setOrg($this->beta);
+
+    $this->alphaRole->name = 'Renamed from another org';
+
+    expect(fn () => $this->alphaRole->save())->toThrow(RuntimeException::class, 'Refusing to save role');
+
+    app(Context::class)->setOrg($this->alpha);
+
+    expect(Role::query()->whereKey($this->alphaRole->getKey())->value('name'))->toBe('Editor');
+});
+
+it('leaves the move in the other direction to the scope, which refuses it', function (): void {
+    /*
+     * ⚠️ ASSERTED RATHER THAN CLAIMED IN A DOCBLOCK. `refuseWritingAnotherOrgsRole()` asks "is this row mine
+     * to write", which cannot see a role of MINE being pushed into somebody else's org — that is a question
+     * about the VALUE, and `EnforcesScope::guardScopeKey()` is what refuses it. Two guards, two questions,
+     * and this is what keeps the second one from being assumed.
+     */
+    app(Context::class)->setOrg($this->alpha);
+
+    $this->alphaRole->org_id = $this->beta->getKey();
+
+    expect(fn () => $this->alphaRole->save())
+        ->toThrow(RuntimeException::class, 'Refusing to write Kitsune\Core\Models\Role with [org_id]');
+
+    expect(Role::query()->whereKey($this->alphaRole->getKey())->value('org_id'))->toBe($this->alpha->getKey());
+});
+
+it('does not keep the authority proof after a save that threw', function (): void {
+    /*
+     * ⚠️ `saved` CLEARS THE FLAG AND AN ABORTED SAVE NEVER REACHES `saved` — review found it. The audit
+     * insert in that listener can fail for a reason that has nothing to do with the role: a context holding
+     * a site another request has deleted is enough, since `audit_log.site_id` is a foreign key. The
+     * transaction rolls back, the caller catches, and the instance is left claiming its guards had run — so
+     * a retry through `saveQuietly()`, which fires no listener at all, would present that proof to
+     * `GuardedRoleBuilder` for a write nothing checked.
+     *
+     * `DerivesGuardedColumns` records the same rule: a proof belongs to one attempt, however the attempt
+     * ends.
+     */
+    app(Context::class)->setOrg($this->alpha);
+    assign($this->alphaRole, $this->user);
+
+    $site = Site::create([
+        'org_id' => $this->alpha->getKey(), 'handle' => 'doomed', 'slug' => 'doomed', 'name' => 'Doomed',
+        'locale' => 'en', 'url_strategy' => 'domain', 'base_url' => 'https://doomed.test',
+    ]);
+    app(Context::class)->setSite($site);
+
+    // The audit row's `site_id` now names a site that is gone, so `saved`'s insert fails inside the save.
+    Site::query()->whereKey($site->getKey())->withoutGlobalScopes()->delete();
+
+    $this->alphaRole->is_owner = true;
+
+    /*
+     * ⚠️ `QueryException`, NOT `Throwable`. Pest's `toThrow()` treats a first argument that is not a
+     * `class_exists()` CLASS as a message to match, and an interface is not one — so `toThrow(Throwable::class)`
+     * silently compares the string "Throwable" against the exception's message and fails on a test that is
+     * working. Recorded once already in this project; naming the concrete class is the answer.
+     */
+    expect(fn () => $this->alphaRole->save())->toThrow(QueryException::class);
+
+    // The flag is the whole point: a proof that survived would let the next quiet write past the builder.
+    expect($this->alphaRole->authorityGuarded)->toBeFalse();
+
+    app(Context::class)->setOrg($this->alpha);
+
+    expect(fn () => $this->alphaRole->saveQuietly())
+        ->toThrow(RuntimeException::class, 'bulk write to `is_owner`')
+        ->and(Role::query()->whereKey($this->alphaRole->getKey())->value('is_owner'))->toBeFalsy();
+});
