@@ -112,6 +112,26 @@ test.describe('a user holds only what was granted', () => {
         await expect(page.locator('.fi-sidebar').getByRole('link', { name: 'Entry types' })).toHaveCount(0);
     });
 
+    test('is refused role administration, at the URL and in the sidebar', async ({ page }) => {
+        /*
+         * ⚠️ THE SAME BOUNDARY AS THE SCHEMA BUILDER, AND FOR A SHARPER REASON — issue #84. Administering
+         * roles is administering the permission system itself: a user who could open this page could grant
+         * themselves everything, including the owner flag, which bypasses every check there is.
+         *
+         * Owner-only in v1.0, because `architecture.md` publishes five actions on ENTRIES and nothing else,
+         * so there is no `role.manage` to ask for and inventing a subject widens the extension surface
+         * Standing Principle #1 keeps shut until v1.2.
+         */
+        const refused = await page.goto(`/admin/${SITE}/roles`);
+        expect(refused?.status()).toBe(403);
+
+        const create = await page.goto(`/admin/${SITE}/roles/create`);
+        expect(create?.status()).toBe(403);
+
+        await page.goto(`/admin/${SITE}/c/article`);
+        await expect(page.locator('.fi-sidebar').getByRole('link', { name: 'Roles' })).toHaveCount(0);
+    });
+
     test('is offered no published status on a draft, because publishing is its own permission', async ({ page }) => {
         /*
          * ⚠️ THE OPTIONS ARE THE VISIBLE HALF ONLY. `EntryResource` also validates the value against the

@@ -1,0 +1,265 @@
+<?php
+
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
+ */
+
+declare(strict_types=1);
+
+namespace Kitsune\Core\Filament\Resources\Roles;
+
+use BackedEnum;
+use Filament\Actions\BulkActionGroup;
+use Filament\Actions\DeleteBulkAction;
+use Filament\Actions\EditAction;
+use Filament\Forms\Components\CheckboxList;
+use Filament\Forms\Components\TextInput;
+use Filament\Forms\Components\Toggle;
+use Filament\Resources\Resource;
+use Filament\Schemas\Components\Section;
+use Filament\Schemas\Schema;
+use Filament\Support\Icons\Heroicon;
+use Filament\Tables\Columns\IconColumn;
+use Filament\Tables\Columns\TextColumn;
+use Filament\Tables\Table;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\DB;
+use Kitsune\Core\Auth\Permissions;
+use Kitsune\Core\Filament\Resources\Roles\Pages\CreateRole;
+use Kitsune\Core\Filament\Resources\Roles\Pages\EditRole;
+use Kitsune\Core\Filament\Resources\Roles\Pages\ListRoles;
+use Kitsune\Core\Models\EntryType;
+use Kitsune\Core\Models\Role;
+use Kitsune\Core\Tenancy\Context;
+use Kitsune\Core\Validation\Rule;
+
+/**
+ * Defining a role, in the admin — issue #84, and the half of RBAC that lives in core.
+ *
+ * ⚠️ HALF. `roles` and `role_permissions` are org-owned configuration, like `entry_types`, so core owns
+ * them and this form. **Assignment is not here**: `role_user` references the host application's `users`
+ * table, which core did not create and must not own — the same boundary `org_user` and `site_user` sit on.
+ * The skeleton carries that half, through `Role::assignTo()`. Neither half is useful alone, and saying so
+ * is the point rather than an apology: a role nobody can be given is as unusable as an assignment screen
+ * with no roles in it.
+ *
+ * ⚠️ OWNER-ONLY, AND THE LIMITATION IS THE SAME ONE THE SCHEMA BUILDER HAS. `architecture.md` publishes a
+ * vocabulary of five actions on ENTRIES and nothing else, so there is no `role.manage` to ask for, and
+ * inventing a subject widens the extension surface Standing Principle #1 keeps shut until v1.2. An org
+ * cannot delegate role administration without making somebody an owner.
+ */
+class RoleResource extends Resource
+{
+    protected static ?string $model = Role::class;
+
+    protected static ?string $slug = 'roles';
+
+    protected static string|BackedEnum|null $navigationIcon = Heroicon::OutlinedKey;
+
+    /** Navigation is supplied explicitly by the panel (ADR-012). */
+    protected static bool $shouldRegisterNavigation = false;
+
+    /**
+     * ⚠️ FILAMENT'S TENANT IS THE SITE AND A ROLE IS ORG-OWNED, so its automatic scope is the wrong scope
+     * rather than a missing one — the same reason `EntryTypeResource` opts out, and the same 500 without it:
+     * `LogicException: The model [Role] does not have a relationship named [site]`.
+     *
+     * Isolation comes from `Role` being `#[OrgScoped]` with `EnforcesScope`, which is stronger than the
+     * panel's scope here: it applies to every query in the process rather than to this resource's.
+     *
+     * ⚠️ AND IT 500'd ON THE FIRST REQUEST, with the PHP suite green — the shape ADR-024 says this layer
+     * exists to catch, found by issuing a request rather than by reading the code.
+     */
+    protected static bool $isScopedToTenant = false;
+
+    protected static ?string $recordTitleAttribute = 'name';
+
+    /**
+     * The form state the role does not own, kept out of the model write.
+     *
+     * ⚠️ A GRANT IS A ROW IN ANOTHER TABLE, so it cannot ride along in the model's attributes — the same
+     * shape as a relation on an entry (ADR-015), and the same trap: `dehydrated(false)` suppresses the leaf
+     * and leaves the CONTAINER key in the form data, which the save then tries to write as a column.
+     * `SyncsRolePermissions` takes it out and writes it after.
+     */
+    public const PERMISSION_STATE = 'grants';
+
+    /** The state key for the explicit wildcard, kept out of the per-type map so `*` is never a path. */
+    public const ANY_TYPE_STATE = 'grants_any_type';
+
+    public static function form(Schema $schema): Schema
+    {
+        return $schema->components([
+            Section::make('Role')->schema([
+                TextInput::make('name')->required()->maxLength(255)
+                    ->extraAttributes(['dir' => 'auto']),
+
+                /*
+                 * ⚠️ `scopedUnique`, NOT Laravel's `unique`. AGENTS.md invariant 3: Laravel's rule does not
+                 * go through Eloquent, so it ignores global scopes — and would tell one org that another
+                 * org holds `editor`, which is both a false refusal and a disclosure.
+                 */
+                TextInput::make('handle')->required()->maxLength(255)
+                    ->rules(fn (?Role $record): array => [
+                        Rule::scopedUnique(Role::class, 'handle', $record?->getKey()),
+                    ]),
+
+                /*
+                 * ⚠️ THE WIDEST GRANT IN THE SYSTEM, and the helper text says so rather than the label
+                 * implying it. An owner bypasses every permission check, including the ones that govern
+                 * this page and the schema builder — so the toggle is the one control here that can hand
+                 * somebody the whole organisation.
+                 *
+                 * Taking the LAST one away is refused by `Role` itself, not by this form: an org that loses
+                 * its last owner cannot get one back, and a guard that only exists in a form is bypassed by
+                 * the API and the console.
+                 */
+                Toggle::make('is_owner')
+                    ->label('Owner')
+                    ->helperText('Bypasses every permission check, including the ones protecting this page '
+                        .'and the entry type builder. Give it to people who administer the organisation.'),
+            ])->columns(2),
+
+            /*
+             * ⚠️ ITS OWN SECTION, AND FIRST, because it is not one checkbox among two hundred. A grant here
+             * covers entry types that do not exist yet — that is what it is for (ADR-033) and also how
+             * somebody hands out more than they meant to. It is offered as a decision rather than hidden in
+             * a list where it reads like the others.
+             */
+            Section::make('Every entry type, including ones added later')
+                ->description('A type created next month is covered by these the day it appears. Leave them '
+                    .'empty and grant per type below.')
+                ->schema([
+                    CheckboxList::make(self::ANY_TYPE_STATE)
+                        ->hiddenLabel()
+                        ->options(self::actionOptions())
+                        ->columns(5)
+                        ->dehydrated(false),
+                ])
+                ->collapsible(),
+
+            ...self::perTypeSections(),
+        ]);
+    }
+
+    /**
+     * One section per entry type the org has.
+     *
+     * ⚠️ PER TYPE RATHER THAN ONE LIST OF EVERY PAIR, which is a readability decision with a cost stated.
+     * An org with forty types gets forty sections; the alternative is a single searchable list of two
+     * hundred `type.action` options, which is one control and no structure. The question an operator asks
+     * is *what may an editor do with articles*, so the shape follows the question — and a list of two
+     * hundred checkboxes is a list nobody audits.
+     *
+     * @return array<int, Section>
+     */
+    private static function perTypeSections(): array
+    {
+        $site = app(Context::class)->site();
+
+        return EntryType::visibleFor($site, app(Context::class)->orgId())
+            ->map(fn (EntryType $type): Section => Section::make($type->plural_name)
+                ->description('Permissions named entry.'.$type->handle.'.{action}')
+                ->schema([
+                    CheckboxList::make(self::PERMISSION_STATE.'.'.$type->handle)
+                        ->hiddenLabel()
+                        ->options(self::actionOptions())
+                        ->columns(5)
+                        ->dehydrated(false),
+                ])
+                ->collapsed())
+            ->all();
+    }
+
+    /**
+     * The five actions, from the registry rather than a literal.
+     *
+     * ⚠️ READ FROM `Permissions::ACTIONS`, so a form offering an action the registry would refuse is
+     * impossible rather than merely unlikely — `Role::grant()` fails closed on an unregistered action, and
+     * a control that could produce one would turn a save into an exception.
+     *
+     * @return array<string, string>
+     */
+    private static function actionOptions(): array
+    {
+        return array_combine(
+            Permissions::ACTIONS,
+            array_map(ucfirst(...), Permissions::ACTIONS),
+        );
+    }
+
+    public static function table(Table $table): Table
+    {
+        return $table
+            ->columns([
+                TextColumn::make('name')->searchable()->sortable()
+                    ->extraAttributes(['dir' => 'auto']),
+                TextColumn::make('handle')->badge(),
+                IconColumn::make('is_owner')->label('Owner')->boolean(),
+                TextColumn::make('permissions_count')->counts('permissions')->label('Grants'),
+
+                /*
+                 * ⚠️ Counted through the pivot rather than a relation, because `role_user` is the
+                 * skeleton's table and core declares no relation to a user model it does not own.
+                 */
+                TextColumn::make('holders')->label('Held by')
+                    ->state(fn (Role $record): int => DB::table('role_user')
+                        ->where('role_id', $record->getKey())->count()),
+            ])
+            ->recordActions([EditAction::make()])
+            ->toolbarActions([BulkActionGroup::make([DeleteBulkAction::make()])])
+            ->defaultSort('name');
+    }
+
+    public static function getPages(): array
+    {
+        return [
+            'index' => ListRoles::route('/'),
+            'create' => CreateRole::route('/create'),
+            'edit' => EditRole::route('/{record}/edit'),
+        ];
+    }
+
+    /**
+     * Administering roles is owner-only in v1.0 — ADR-033.
+     *
+     * ⚠️ THE ROUTE, NOT THE LINK, which is the argument `EntryTypeResource` makes at length and for the same
+     * reason: `canViewAny()` is what `canAccess()` returns, so this gates the URL rather than the sidebar
+     * item. Hiding a link an authenticated user can still type is the shape of bug ADR-024 says the PHP
+     * suite structurally cannot see.
+     */
+    public static function canViewAny(): bool
+    {
+        return self::mayAdministerRoles();
+    }
+
+    public static function canCreate(): bool
+    {
+        return self::mayAdministerRoles();
+    }
+
+    public static function canEdit(Model $record): bool
+    {
+        return self::mayAdministerRoles() && $record instanceof Role;
+    }
+
+    public static function canDelete(Model $record): bool
+    {
+        return self::mayAdministerRoles() && $record instanceof Role;
+    }
+
+    /** Filament asks this for the bulk action rather than `canDelete()` per row. */
+    public static function canDeleteAny(): bool
+    {
+        return self::mayAdministerRoles();
+    }
+
+    private static function mayAdministerRoles(): bool
+    {
+        $user = Permissions::currentUser();
+
+        return $user !== null && Permissions::isOwner($user);
+    }
+}

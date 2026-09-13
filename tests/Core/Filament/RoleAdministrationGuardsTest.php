@@ -1,0 +1,105 @@
+<?php
+
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
+ */
+
+declare(strict_types=1);
+
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
+use Kitsune\Core\Auth\Permissions;
+use Kitsune\Core\Filament\Resources\Roles\RoleResource;
+use Kitsune\Core\Models\Org;
+use Kitsune\Core\Models\Role;
+use Kitsune\Core\Tenancy\Context;
+use Kitsune\Core\Tests\Fixtures\TestUser;
+
+/*
+ * Who may administer roles — issue #84, ADR-033.
+ *
+ * ⚠️ ADMINISTERING ROLES IS ADMINISTERING THE PERMISSION SYSTEM ITSELF, which is why this is the narrowest
+ * gate in the panel: somebody who can open this page can grant themselves anything, including the owner flag
+ * that bypasses every check there is. Owner-only in v1.0 — there is no `role.manage` in the published
+ * vocabulary, and inventing a subject widens the extension surface that stays shut until v1.2.
+ *
+ * ⚠️ THE 403 IS ASSERTED IN THE BROWSER (ADR-024): there is no HTTP harness in this suite, so what is
+ * testable here is the predicate Filament aborts on. `e2e/permissions.spec.js` measures the refusal.
+ */
+
+beforeEach(function (): void {
+    config(['auth.providers.users.model' => TestUser::class]);
+
+    $this->org = Org::create(['slug' => 'alpha', 'name' => 'Alpha']);
+    app(Context::class)->setOrg($this->org);
+
+    /** @var TestUser $user */
+    $user = TestUser::create(['email' => 'member@kitsune.test']);
+    $this->user = $user;
+
+    DB::table('org_user')->insert(['org_id' => $this->org->getKey(), 'user_id' => $user->getKey()]);
+
+    Auth::guard('web')->setUser($user);
+});
+
+afterEach(function (): void {
+    Auth::guard('web')->logout();
+    app(Context::class)->forget();
+});
+
+it('refuses every entry point to somebody who is not an owner', function (): void {
+    // A member with real grants is still not an administrator: holding `entry.article.delete` says nothing
+    // about who may decide who holds it.
+    $role = Role::create(['handle' => 'editor', 'name' => 'Editor']);
+    $role->grant('entry.article.delete');
+    $role->assignTo($this->user->getKey());
+
+    expect(RoleResource::canViewAny())->toBeFalse()
+        ->and(RoleResource::canCreate())->toBeFalse()
+        ->and(RoleResource::canDeleteAny())->toBeFalse()
+        ->and(RoleResource::canEdit($role))->toBeFalse()
+        ->and(RoleResource::canDelete($role))->toBeFalse();
+});
+
+it('opens every entry point to an owner', function (): void {
+    $owner = Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true]);
+    $owner->assignTo($this->user->getKey());
+
+    expect(RoleResource::canViewAny())->toBeTrue()
+        ->and(RoleResource::canCreate())->toBeTrue()
+        ->and(RoleResource::canDeleteAny())->toBeTrue()
+        ->and(RoleResource::canEdit($owner))->toBeTrue();
+});
+
+it('refuses everything with nobody signed in', function (): void {
+    // Fail closed, the same answer `Permissions::allows()` gives with no user.
+    Auth::guard('web')->logout();
+
+    expect(RoleResource::canViewAny())->toBeFalse()
+        ->and(RoleResource::canCreate())->toBeFalse();
+});
+
+it('does not let an owner of another org administer this one\'s roles', function (): void {
+    /*
+     * ⚠️ The cross-org case, which has no framework safety net (ADR-021). The owner bypass is the widest
+     * grant in the system, so its scope is the one that matters most — `Permissions::isOwner()` resolves
+     * through the org-scoped `Role` query under the current context, and this is that claim made testable
+     * from the panel's side rather than the resolver's.
+     */
+    $beta = Org::create(['slug' => 'beta', 'name' => 'Beta']);
+
+    DB::table('org_user')->insert(['org_id' => $beta->getKey(), 'user_id' => $this->user->getKey()]);
+
+    app(Context::class)->setOrg($beta);
+    $elsewhere = Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true]);
+    $elsewhere->assignTo($this->user->getKey());
+
+    expect(RoleResource::canViewAny())->toBeTrue();
+
+    app(Context::class)->setOrg($this->org);
+
+    expect(RoleResource::canViewAny())->toBeFalse()
+        ->and(RoleResource::canCreate())->toBeFalse();
+});

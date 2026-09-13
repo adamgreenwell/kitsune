@@ -19,6 +19,7 @@ use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Filament\Icons;
 use Kitsune\Core\Filament\Resources\Entries\EntryResource;
 use Kitsune\Core\Filament\Resources\EntryTypes\EntryTypeResource;
+use Kitsune\Core\Filament\Resources\Roles\RoleResource;
 use Kitsune\Core\Http\Middleware\IdentifyEntryType;
 use Kitsune\Core\Http\Middleware\SetKitsuneContext;
 use Kitsune\Core\Http\Middleware\SetUiLocale;
@@ -56,7 +57,7 @@ final class KitsunePanel
                 SetUiLocale::class,
                 IdentifyEntryType::class,
             ], isPersistent: true)
-            ->resources([EntryResource::class, EntryTypeResource::class])
+            ->resources([EntryResource::class, EntryTypeResource::class, RoleResource::class])
             ->pages([Dashboard::class])
             ->navigation(self::navigation(...));
     }
@@ -125,6 +126,16 @@ final class KitsunePanel
                     ->icon('heroicon-o-squares-2x2')
                     ->url(fn (): string => EntryTypeResource::getUrl('index'))
                     ->isActiveWhen(fn (): bool => request()->routeIs('filament.*.resources.entry-types.*')),
+            ] : []),
+
+            // Roles sit beside the builder, and are hidden by the same rule for the same reason: both are
+            // owner-only, and `canViewAny()` is the URL's boundary rather than this link's.
+            ...(RoleResource::canViewAny() ? [
+                NavigationItem::make('Roles')
+                    ->group('Structure')
+                    ->icon('heroicon-o-key')
+                    ->url(fn (): string => RoleResource::getUrl('index'))
+                    ->isActiveWhen(fn (): bool => request()->routeIs('filament.*.resources.roles.*')),
             ] : []),
         ]);
     }
