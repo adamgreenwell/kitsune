@@ -11,6 +11,7 @@ declare(strict_types=1);
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Auth\Permissions;
+use Kitsune\Core\Models\AuditLog;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Role;
 use Kitsune\Core\Models\RolePermission;
@@ -283,3 +284,59 @@ it('writes no authority change when its audit row cannot be written', function (
     expect($this->alphaRole->permissions()->where('permission', 'entry.note.view')->exists())->toBeFalse();
 })->skip(fn (): bool => DB::connection()->getDriverName() === 'sqlite' && ! DB::connection()->getPdo()->query('PRAGMA foreign_keys')->fetchColumn(),
     'foreign keys are not enforced on this connection, so the audit insert cannot be made to fail');
+
+it('records an owner bypass gained by flipping the flag, not only by assignment', function (): void {
+    /*
+     * ⚠️ THE WIDEST GRANT IN THE SYSTEM ARRIVING UNRECORDED — review found it. Turning `is_owner` on for a
+     * role that already has holders gives every one of them the bypass immediately, and their assignment
+     * rows were logged as `role.assigned`, so nothing in the log said they were owners now. ADR-033 claims
+     * the trail answers *who was made an owner*, and this path defeated it.
+     */
+    app(Context::class)->setOrg($this->alpha);
+
+    assign($this->alphaRole, $this->user);
+    joinOrg($this->alpha, $this->user);
+
+    /** @var TestUser $colleague */
+    $colleague = TestUser::create(['email' => 'colleague@kitsune.test']);
+    assign($this->alphaRole, $colleague);
+    joinOrg($this->alpha, $colleague);
+
+    /*
+     * ⚠️ A HIGH-WATER MARK RATHER THAN A TRUNCATE, because the log is append-only by construction —
+     * `AuditLog::query()->delete()` throws: *"Retention is an operator policy applied to the table, not
+     * something application code decides (ADR-020)."* A test that wanted to clear it is a test arguing with
+     * the design.
+     */
+    $mark = (int) AuditLog::query()->max('id');
+
+    $this->alphaRole->update(['is_owner' => true]);
+
+    // ⚠️ One row per affected PERSON, because the question is about people rather than about the role. A
+    // single `role.updated` would record that something changed and leave the answer where it was.
+    $elevations = AuditLog::query()->where('id', '>', $mark)->get();
+
+    expect($elevations->pluck('action')->all())
+        ->toBe(['role.owner_assigned', 'role.owner_assigned'])
+        ->and($elevations->pluck('target_id')->map(intval(...))->sort()->values()->all())
+        ->toBe(collect([$this->user->getKey(), $colleague->getKey()])->sort()->values()->all());
+
+    $mark = (int) AuditLog::query()->max('id');
+
+    $this->alphaRole->update(['is_owner' => false]);
+
+    expect(AuditLog::query()->where('id', '>', $mark)->pluck('action')->all())
+        ->toBe(['role.owner_unassigned', 'role.owner_unassigned']);
+});
+
+it('records nothing when the flag did not move, or when nobody holds the role', function (): void {
+    // A flag flipped on a role nobody holds grants nothing — the same line ADR-033 draws about creating one.
+    app(Context::class)->setOrg($this->alpha);
+
+    $mark = (int) AuditLog::query()->max('id');
+
+    $this->alphaRole->update(['name' => 'Renamed']);
+    $this->alphaRole->update(['is_owner' => true]);
+
+    expect(AuditLog::query()->where('id', '>', $mark)->count())->toBe(0);
+});

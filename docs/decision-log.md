@@ -1694,6 +1694,8 @@ Bootstrap requires it: somebody must create the first entry type before a permis
 
 **Creating a role is deliberately not audited, and that is a line rather than a gap.** The log records changes to **authority**, and a role holding no grants and held by nobody is not authority — it is a name. Authority changes on the first grant or the first assignment, and both of those are recorded.
 
+⚠️ **And flipping `is_owner` is a third way authority changes, which the first version missed.** Review found it: turning the flag on for a role that already has holders gives every one of them the bypass immediately, and their assignment rows were logged as `role.assigned` — so nothing in the log said they were owners now, and this ADR's own question was unanswerable again. `Role` records `role.owner_assigned` for each affected holder on the transition, and `role.owner_unassigned` on the way back. **One row per person**, because the question is about people: a single `role.updated` would record that something changed and leave the answer exactly where it was.
+
 ### What the vocabulary does not cover, and what that costs
 
 `architecture.md` publishes five actions on **entries** and nothing else, so two things an org will want to delegate have no permission to ask for: **editing the schema** and **administering roles**. Both are owner-only in v1.0.

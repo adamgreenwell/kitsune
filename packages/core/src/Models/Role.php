@@ -60,13 +60,43 @@ class Role extends Model
      */
     protected static function booted(): void
     {
-        static::saved(static function (): void {
+        static::saved(static function (self $role): void {
+            $role->auditOwnerTransition();
+
             Permissions::forget();
         });
 
         static::deleted(static function (): void {
             Permissions::forget();
         });
+    }
+
+    /**
+     * Record an owner bypass gained or lost by flipping the flag rather than by assignment.
+     *
+     * ⚠️ REVIEW FOUND THE HOLE, AND IT IS THE WIDEST GRANT IN THE SYSTEM ARRIVING UNRECORDED. Turning
+     * `is_owner` on for a role that already has holders gives every one of them the bypass immediately —
+     * and their assignment rows were logged as `role.assigned`, so nothing in the log says they are owners
+     * now. ADR-033's claim is that the trail answers *who was made an owner*, and this path defeated it.
+     *
+     * ⚠️ ONE ROW PER AFFECTED PERSON, using the same actions an assignment writes, because the question is
+     * about people rather than about the role. A single `role.updated` would record that something changed
+     * and leave the answer exactly where it was.
+     *
+     * Silent when the flag did not move, and silent when nobody holds the role: a flag flipped on a role
+     * with no holders grants nothing, which is the same line ADR-033 draws about creating one.
+     */
+    private function auditOwnerTransition(): void
+    {
+        if (! $this->wasChanged('is_owner')) {
+            return;
+        }
+
+        $verb = $this->is_owner ? 'assigned' : 'unassigned';
+
+        foreach (DB::table('role_user')->where('role_id', $this->getKey())->pluck('user_id') as $userId) {
+            app(Auditor::class)->record("role.owner_{$verb}", $this->assignee((int) $userId));
+        }
     }
 
     /**
@@ -250,7 +280,18 @@ class Role extends Model
      */
     private function assignee(int $userId): ?Model
     {
-        $model = config('auth.providers.users.model');
+        /*
+         * ⚠️ THE PANEL'S PROVIDER NAMES THE MODEL, and this hard-coded `users` until review found it — the
+         * same fail-open shape as the membership check, one file along. A panel authenticating through a
+         * provider with another name recorded an unrelated model with the same id, or no target at all, so
+         * the audit row still could not say whose authority changed.
+         *
+         * ⚠️ THE CONFIG IS THE CONSOLE FALLBACK AND NOTHING MORE. `Permissions::userModel()` needs a panel,
+         * and a seeder or a command has none — so the default provider is the best available answer there,
+         * and a wrong one costs a thin audit row rather than a wrong guarantee. The row is written either
+         * way: an authority change that went unrecorded is worse than one recorded without a name.
+         */
+        $model = Permissions::userModel() ?? config('auth.providers.users.model');
 
         if (! is_string($model) || ! class_exists($model) || ! is_subclass_of($model, Model::class)) {
             return null;

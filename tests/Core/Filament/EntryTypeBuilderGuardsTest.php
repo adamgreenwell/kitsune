@@ -306,6 +306,17 @@ describe('the boundary is the ROUTE, not the button', function (): void {
         $global = EntryType::create(['org_id' => null, 'handle' => 'system_media', 'name' => 'M', 'plural_name' => 'Ms']);
         $mine = EntryType::create(['org_id' => $this->org->id, 'handle' => 'ours', 'name' => 'O', 'plural_name' => 'Os']);
 
+        /*
+         * ⚠️ AND THE OWNER CHECK BELONGS HERE TOO, one component deeper than the page — review found it
+         * missing. A non-owner correctly refused the edit page could still submit this component and
+         * create, edit or delete FIELDS, rewriting the schema through the back of the page they had just
+         * been refused. The comment above already says why in its own words.
+         */
+        expect(FieldsRelationManager::canViewForRecord($mine, EditEntryType::class))
+            ->toBeFalse('a member who is not an owner may not edit schema through the relation manager');
+
+        signInAsOwner($this->org);
+
         expect(FieldsRelationManager::canViewForRecord($global, EditEntryType::class))->toBeFalse()
             ->and(FieldsRelationManager::canViewForRecord($mine, EditEntryType::class))->toBeTrue();
     });

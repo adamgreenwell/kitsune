@@ -261,8 +261,15 @@ class EntryTypeResource extends Resource
         return self::mayEditSchema();
     }
 
-    /** Does the signed-in user hold the owner bypass in the current org? */
-    private static function mayEditSchema(): bool
+    /**
+     * Does the signed-in user hold the owner bypass in the current org?
+     *
+     * ⚠️ PUBLIC BECAUSE THE FIELDS RELATION MANAGER IS ITS OWN ROUTE and has to ask the same question —
+     * review found it authorizing on org ownership alone, so a non-owner refused the edit page could still
+     * submit that component and rewrite the schema through it. One predicate, asked twice, rather than two
+     * predicates that agree until somebody edits one.
+     */
+    public static function mayEditSchema(): bool
     {
         $user = Permissions::currentUser();
 

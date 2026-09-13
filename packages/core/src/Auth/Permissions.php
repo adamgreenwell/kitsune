@@ -274,6 +274,37 @@ final class Permissions
     }
 
     /**
+     * The user model this panel authenticates against, asked of the panel rather than of the config.
+     *
+     * ⚠️ THE PROVIDER NAMES IT, AND `config('auth.providers.users.model')` GUESSES. A panel may authenticate
+     * through a provider that is not named `users` — the name is the host's to choose — and review found the
+     * guess failing open in the membership check. The panel's own provider cannot be wrong about which model
+     * it loads.
+     *
+     * ⚠️ IT IS WHAT `Role::assignee()` RESOLVES AN AUDIT TARGET WITH, so an assignment row names the person
+     * whose authority changed rather than an unrelated model with the same id — review found that hard-coded
+     * to `users` after the membership check had already been fixed the same way.
+     *
+     * @return class-string<Model>|null
+     */
+    public static function userModel(): ?string
+    {
+        if (! app()->bound('filament')) {
+            return null;
+        }
+
+        $provider = Filament::getDefaultPanel()->auth()->getProvider();
+
+        if (! method_exists($provider, 'getModel')) {
+            return null;
+        }
+
+        $model = $provider->getModel();
+
+        return is_string($model) && is_subclass_of($model, Model::class) ? $model : null;
+    }
+
+    /**
      * Narrow an entry query to the types this user may view.
      *
      * ⚠️ ONE PREDICATE, EVERY PLACE ENTRIES ARE LISTED, and the relation picker's own docblock already
