@@ -8,11 +8,13 @@
 
 declare(strict_types=1);
 
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Role;
 use Kitsune\Core\Models\RolePermission;
+use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tests\Fixtures\TestUser;
 
@@ -226,3 +228,58 @@ it('drops the owner memo when the flag changes, not only when a helper runs', fu
 
     expect(Permissions::isOwner($this->user))->toBeFalse();
 });
+
+it('asks membership of the model that is actually signed in, not a configured name', function (): void {
+    /*
+     * ⚠️ REVIEW FOUND A FAIL-OPEN. The membership check read `config('auth.providers.users.model')` — but a
+     * panel may authenticate through a provider that is not named `users`, and the name is the host's to
+     * choose. Point the config elsewhere and the check either read an unrelated model or found none and took
+     * a permissive fallback, so a `role_user` row conferred grants on somebody who is not a member of the
+     * org at all.
+     *
+     * It asks the authenticated instance's own class now, which cannot be wrong about which model it is.
+     * Here the provider is deliberately misconfigured and the answer must be unchanged.
+     */
+    assign($this->alphaRole, $this->user);
+    joinOrg($this->alpha, $this->user);
+
+    app(Context::class)->setOrg($this->alpha);
+
+    config(['auth.providers.users.model' => null]);
+
+    expect(Permissions::allows($this->user, 'entry.article.update'))->toBeTrue();
+
+    // And a non-member is still refused with the config pointing nowhere.
+    /** @var TestUser $outsider */
+    $outsider = TestUser::create(['email' => 'outsider@kitsune.test']);
+    assign($this->alphaRole, $outsider);
+
+    expect(Permissions::allows($outsider, 'entry.article.update'))->toBeFalse();
+});
+
+it('writes no authority change when its audit row cannot be written', function (): void {
+    /*
+     * ⚠️ AN UNAUDITED AUTHORITY CHANGE IS THE THING ADR-020 REFUSES, and review found the write split in
+     * two: under autocommit the grant landed and the audit insert failed after it, so the caller saw an
+     * exception while the change stayed. `AuditedBuilder` puts an entry's insert and its audit row in one
+     * transaction for this reason; a write that is not an entry needs the same.
+     *
+     * The failure is forced the way it would really happen — a context naming a site that no longer exists,
+     * which `audit_log.site_id` refuses.
+     */
+    app(Context::class)->setOrg($this->alpha);
+
+    $site = Site::create(['org_id' => $this->alpha->getKey(), 'handle' => 'ghost', 'slug' => 'ghost', 'name' => 'Ghost']);
+    app(Context::class)->setSite($site);
+
+    DB::table('sites')->where('id', $site->getKey())->delete();
+
+    // ⚠️ `QueryException` rather than `Throwable`: Pest's `toThrow()` decides class-versus-message with
+    // `class_exists()`, which is false for an INTERFACE — so `Throwable::class` was compared against the
+    // exception's message and the test failed on a throw that had happened exactly as intended.
+    expect(fn () => $this->alphaRole->grant('entry.note.view'))->toThrow(QueryException::class);
+
+    // The grant did not survive the audit's failure.
+    expect($this->alphaRole->permissions()->where('permission', 'entry.note.view')->exists())->toBeFalse();
+})->skip(fn (): bool => DB::connection()->getDriverName() === 'sqlite' && ! DB::connection()->getPdo()->query('PRAGMA foreign_keys')->fetchColumn(),
+    'foreign keys are not enforced on this connection, so the audit insert cannot be made to fail');

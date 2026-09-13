@@ -176,15 +176,20 @@ final class Permissions
          * `use` variable: the next reader deletes it, tidily, and the memo silently narrows to the user.
          * The filter is what makes the parameter load-bearing, so the key cannot be removed by accident.
          */
-        return once(fn (): array => self::resolveHeld($userId, $orgId));
+        // ⚠️ The CLASS, captured as a scalar, is what makes the membership check belong to the user who is
+        // actually signed in — see `isMemberOfCurrentOrg()`. It is also a better memo key: two hosts' user
+        // models would otherwise share one.
+        $class = $user::class;
+
+        return once(fn (): array => self::resolveHeld($userId, $orgId, $class));
     }
 
     /**
      * @return list<string>
      */
-    private static function resolveHeld(int $userId, int $orgId): array
+    private static function resolveHeld(int $userId, int $orgId, string $class): array
     {
-        if (! self::isMemberOfCurrentOrg($userId)) {
+        if (! self::isMemberOfCurrentOrg($userId, $class)) {
             return [];
         }
 
@@ -315,13 +320,15 @@ final class Permissions
             return false;
         }
 
-        // The same key discipline as `held()`: both scalars, both used by the body it calls.
-        return once(fn (): bool => self::resolveIsOwner($userId, $orgId));
+        // The same key discipline as `held()`: scalars only, every one used by the body it calls.
+        $class = $user::class;
+
+        return once(fn (): bool => self::resolveIsOwner($userId, $orgId, $class));
     }
 
-    private static function resolveIsOwner(int $userId, int $orgId): bool
+    private static function resolveIsOwner(int $userId, int $orgId, string $class): bool
     {
-        if (! self::isMemberOfCurrentOrg($userId)) {
+        if (! self::isMemberOfCurrentOrg($userId, $class)) {
             return false;
         }
 
@@ -341,25 +348,30 @@ final class Permissions
      * org is the current one. In the panel the user could not get there, because Filament's tenancy gates
      * on `site_user` first; relying on that is exactly the reasoning ADR-021 says has no safety net.
      *
-     * ⚠️ ASKED THROUGH THE USER MODEL'S OWN SCOPED QUERY rather than by reading `org_user`. The membership
-     * question already has an owner — `#[OrgScopedThroughPivot]` on the host's user model, enforced by
-     * `OrgMembershipScope` — and naming the pivot table here would be a second copy of a name the host
-     * configures. A host whose user model declares `#[Unscoped]` gets no check, which is that host's
-     * declared choice: invariant 2 makes the declaration the contract.
+     * ⚠️ THE AUTHENTICATED USER'S OWN CLASS, NOT `config('auth.providers.users.model')`, and review found
+     * what the config lookup cost. A panel may authenticate through a provider that is not named `users` —
+     * the name is the host's to choose — and then this read an unrelated model, or no model at all and took
+     * the permissive fallback. A `role_user` row would have conferred grants on somebody who is not a member
+     * of the org. Asking the instance cannot be wrong about which model it is.
      *
-     * ⚠️ AND A NON-ELOQUENT `Authenticatable` GETS NO CHECK EITHER, stated rather than hidden. There is no
-     * scope to apply to something that is not a model, and refusing outright would make the contract this
-     * class accepts a lie.
+     * ⚠️ AND IT FAILS CLOSED WHEN IT CANNOT ASK. An `Authenticatable` that is not an Eloquent model has no
+     * scope to apply, and the earlier version returned true for it — "no check" reading as "allowed", which
+     * is the wrong direction for the one question with no framework safety net. Such a host resolves no
+     * permissions at all, loudly, rather than silently resolving everything.
+     *
+     * The membership question itself still has an owner: `#[OrgScopedThroughPivot]` on the host's user
+     * model, enforced by `OrgMembershipScope`. Naming its pivot table here would be a second copy of a name
+     * the host configures, so this asks the model's own scoped query instead.
+     *
+     * @param  class-string  $class
      */
-    private static function isMemberOfCurrentOrg(int $userId): bool
+    private static function isMemberOfCurrentOrg(int $userId, string $class): bool
     {
-        $model = config('auth.providers.users.model');
-
-        if (! is_string($model) || ! class_exists($model) || ! is_subclass_of($model, Model::class)) {
-            return true;
+        if (! is_subclass_of($class, Model::class)) {
+            return false;
         }
 
-        return $model::query()->whereKey($userId)->exists();
+        return $class::query()->whereKey($userId)->exists();
     }
 
     /**

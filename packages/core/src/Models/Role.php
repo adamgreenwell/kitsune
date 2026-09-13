@@ -126,12 +126,25 @@ class Role extends Model
 
         $permission = Permissions::validated($permission);
 
+        /*
+         * ⚠️ ONE TRANSACTION, BECAUSE AN UNAUDITED AUTHORITY CHANGE IS THE THING ADR-020 REFUSES. Review
+         * found the split write: under autocommit the grant lands, and if the audit insert then fails — a
+         * context holding a site that was concurrently deleted is enough, since `audit_log.site_id` is a
+         * foreign key — the caller gets an exception while the authority change stays. `AuditedBuilder` puts
+         * an entry's insert and its audit row in one transaction for exactly this reason; the same rule
+         * applies to a write that is not an entry.
+         */
         /** @var RolePermission $row */
-        $row = $this->permissions()->firstOrCreate(['permission' => $permission]);
+        $row = DB::transaction(function () use ($permission): RolePermission {
+            /** @var RolePermission $created */
+            $created = $this->permissions()->firstOrCreate(['permission' => $permission]);
 
-        if ($row->wasRecentlyCreated) {
-            app(Auditor::class)->record('role.granted', $this);
-        }
+            if ($created->wasRecentlyCreated) {
+                app(Auditor::class)->record('role.granted', $this);
+            }
+
+            return $created;
+        });
 
         Permissions::forget();
 
@@ -143,9 +156,11 @@ class Role extends Model
     {
         $this->refuseIfNotCurrentOrg('revoke');
 
-        if ($this->permissions()->where('permission', $permission)->delete() > 0) {
-            app(Auditor::class)->record('role.revoked', $this);
-        }
+        DB::transaction(function () use ($permission): void {
+            if ($this->permissions()->where('permission', $permission)->delete() > 0) {
+                app(Auditor::class)->record('role.revoked', $this);
+            }
+        });
 
         Permissions::forget();
     }
@@ -177,9 +192,11 @@ class Role extends Model
             return;
         }
 
-        DB::table('role_user')->insert(['role_id' => $this->getKey(), 'user_id' => $userId]);
+        DB::transaction(function () use ($userId): void {
+            DB::table('role_user')->insert(['role_id' => $this->getKey(), 'user_id' => $userId]);
 
-        app(Auditor::class)->record($this->assignmentAction('assigned'), $this->assignee($userId));
+            app(Auditor::class)->record($this->assignmentAction('assigned'), $this->assignee($userId));
+        });
 
         Permissions::forget();
     }
@@ -189,14 +206,16 @@ class Role extends Model
     {
         $this->refuseIfNotCurrentOrg('removeFrom');
 
-        $removed = DB::table('role_user')
-            ->where('role_id', $this->getKey())
-            ->where('user_id', $userId)
-            ->delete();
+        DB::transaction(function () use ($userId): void {
+            $removed = DB::table('role_user')
+                ->where('role_id', $this->getKey())
+                ->where('user_id', $userId)
+                ->delete();
 
-        if ($removed > 0) {
-            app(Auditor::class)->record($this->assignmentAction('unassigned'), $this->assignee($userId));
-        }
+            if ($removed > 0) {
+                app(Auditor::class)->record($this->assignmentAction('unassigned'), $this->assignee($userId));
+            }
+        });
 
         Permissions::forget();
     }
