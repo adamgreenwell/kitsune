@@ -31,6 +31,12 @@ use RuntimeException;
  * is set by the `saving` guard, which only a model event reaches; a bulk update dispatches nothing, so it
  * can never be set and the write is refused.
  *
+ * ⚠️ AND `update()` IS ONE DOOR OF FOUR. Review found three more, each forwarding past this class to the
+ * query builder: `increment()`, `decrement()` and their `…Each()` plurals carry an `$extra` map of ordinary
+ * assignments, and `forceDelete()` is sent straight down by Eloquent rather than through `delete()`. Every
+ * guarantee below was true of one method name at a time until they were covered too — which is this
+ * docblock's own lesson arriving a second time, one API call along.
+ *
  * ⚠️ IN `Auth/` RATHER THAN `Models/`, following `Audit/AuditedBuilder` and `Schema/GuardedStorageBuilder`:
  * a guarded builder lives beside the concern it guards, not beside the model. The declaration sweep also
  * reads `Models/` and asks every class there for a tenancy attribute, which a builder has no business
@@ -56,24 +62,56 @@ class GuardedRoleBuilder extends ScopedBuilder
      */
     public function update(array $values)
     {
-        if ($this->getModel()->authorityGuarded) {
-            return parent::update($values);
+        if (! $this->getModel()->authorityGuarded) {
+            $this->refusePerRowAuthority($values, 'a bulk write');
         }
 
+        return parent::update($values);
+    }
+
+    /**
+     * Refuse a write to a column whose guarantees are per row.
+     *
+     * ⚠️ EXTRACTED BECAUSE `update()` WAS NOT THE ONLY DOOR, which review found: the arithmetic family
+     * forwards straight to the query builder, so `Role::query()->increment('id', 0, ['is_owner' => true])`
+     * promoted every matching role — no per-holder audit, no lifecycle invalidation, no instance org check,
+     * and `Permissions`' memo left answering from before the write. Laravel's `$extra` map is a set of
+     * ordinary assignments; the method it arrives through does not change what it does.
+     *
+     * @param  array<string, mixed>  $values
+     */
+    private function refusePerRowAuthority(array $values, string $shape): void
+    {
         foreach (array_keys($values) as $column) {
             // Qualified names arrive from a join, so compare the column rather than the prefix.
             if (in_array(last(explode('.', (string) $column)), self::PER_ROW, true)) {
                 throw new RuntimeException(sprintf(
-                    'Refusing a bulk write to `%s` on roles: the owner flag is audited one row per HOLDER '
+                    'Refusing %s to `%s` on roles: the owner flag is audited one row per HOLDER '
                     .'and the scope key is guarded per row, and these paths dispatch nothing — so the '
                     .'authority would change with no trail of who gained or lost it (ADR-020, ADR-033). '
                     .'Load the role and save it.',
+                    $shape,
                     (string) last(explode('.', (string) $column)),
                 ));
             }
         }
+    }
 
-        return parent::update($values);
+    /**
+     * ⚠️ THE ARITHMETIC FAMILY IS REFUSED WITHOUT ASKING FOR THE FLAG, unlike `update()` and `delete()`,
+     * and the asymmetry is the point. The flag means "this instance's guards ran for the write in flight",
+     * and an instance save is never in flight here: `Model::performUpdate()` calls `update()`, and
+     * `Model::increment()` builds a fresh query outside any save. So there is no legitimate instance path
+     * through these four methods to stand aside for, and treating the flag as though there were would leave
+     * one more way to promote a role during somebody else's save.
+     *
+     * @param  array<string, mixed>  $values
+     */
+    protected function guardArithmetic(array $values): void
+    {
+        parent::guardArithmetic($values);
+
+        $this->refusePerRowAuthority($values, 'an arithmetic write');
     }
 
     /**
@@ -87,14 +125,41 @@ class GuardedRoleBuilder extends ScopedBuilder
      */
     public function delete()
     {
-        if (! $this->getModel()->authorityGuarded) {
-            throw new RuntimeException(
-                'Refusing a bulk delete of roles: deleting one revokes it from every holder, and that is '
-                .'audited per holder by `Role::delete()`. These paths dispatch nothing, so the bypass '
-                .'would disappear with no record of whose it was (ADR-033).'
-            );
-        }
+        $this->refuseUnguardedDeletion('delete');
 
         return parent::delete();
+    }
+
+    /**
+     * ⚠️ `forceDelete()` TOO, which review found open: Eloquent sends it STRAIGHT to the query builder
+     * rather than through `delete()`, so `Role::query()->forceDelete()` removed the roles and cascaded
+     * `role_user` with none of the per-holder revocation audits and no `Permissions::forget()` — cached
+     * grants stayed usable for the rest of the process, answering for authority that no longer existed.
+     * `ScopedBuilder` already carries this override for the cascade refusal and `AuditedBuilder` for the
+     * audit; roles are the third concern to need it, and the reason is the same each time.
+     *
+     * The same flag discipline as `delete()`, rather than a flat refusal, so the two doors cannot drift
+     * apart. `Role` does not soft-delete today, so no instance path reaches this one — which makes the
+     * refusal unconditional in practice and correct on the day that changes.
+     */
+    public function forceDelete()
+    {
+        $this->refuseUnguardedDeletion('force-delete');
+
+        return parent::forceDelete();
+    }
+
+    private function refuseUnguardedDeletion(string $shape): void
+    {
+        if ($this->getModel()->authorityGuarded) {
+            return;
+        }
+
+        throw new RuntimeException(sprintf(
+            'Refusing a bulk %s of roles: deleting one revokes it from every holder, and that is '
+            .'audited per holder by `Role::delete()`. These paths dispatch nothing, so the bypass '
+            .'would disappear with no record of whose it was (ADR-033).',
+            $shape,
+        ));
     }
 }

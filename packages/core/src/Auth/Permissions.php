@@ -77,23 +77,44 @@ final class Permissions
      */
     public static function validated(string $permission): string
     {
-        $parts = explode('.', $permission);
+        $refusal = self::refusalFor($permission);
 
-        if (count($parts) !== 3 || $parts[0] !== self::ENTRY) {
-            throw new InvalidArgumentException(
-                "Refusing the permission [{$permission}]: it must read ".self::ENTRY
-                .'.{type_handle}.{action} — ADR-033.'
-            );
+        if ($refusal !== null) {
+            throw new InvalidArgumentException($refusal);
         }
 
-        [, $type, $action] = $parts;
+        return $permission;
+    }
 
-        if (! in_array($action, self::ACTIONS, true)) {
-            throw new InvalidArgumentException(
-                "Refusing the permission [{$permission}]: [{$action}] is not a registered action. "
-                .'The registry is '.implode(', ', self::ACTIONS).' — ADR-033.'
-            );
+    /**
+     * Why this string is not a permission, or null when it is one.
+     *
+     * ⚠️ EXTRACTED SO `allows()` CAN ASK THE SAME QUESTION WITHOUT THROWING, which review found it needing:
+     * the wildcard match built `entry.*.{third segment}` out of ANY three-segment string, so a holder of
+     * `entry.*.view` was granted `site.settings.view` — a subject this vocabulary does not have, and a
+     * future one it must not answer for. The direct match above cannot fail that way, because a stored grant
+     * went through `validated()`; the wildcard is constructed at check time from the caller's string, so the
+     * caller's string is what has to be checked.
+     *
+     * ⚠️ ONE ENCODING OF THE GRAMMAR, and that is the point of the refactor rather than a tidy-up. A second
+     * copy of "is this a permission" inside `allows()` is a copy that drifts from the one grants are stored
+     * under — and the drift would be silent in the permissive direction, which is the direction this project
+     * refuses to be wrong in.
+     *
+     * ⚠️ AND `allows()` RETURNS FALSE RATHER THAN THROWING, while `validated()` throws. A grant being WRITTEN
+     * is a decision somebody is making and a typo there must be loud; an authorization question is asked from
+     * a Gate, where an exception is a 500 on a page that should have rendered a refusal. Same rule, two
+     * answers, because the callers are asking different things.
+     */
+    private static function refusalFor(string $permission): ?string
+    {
+        $outside = self::outsideTheVocabulary($permission);
+
+        if ($outside !== null) {
+            return $outside;
         }
+
+        $type = explode('.', $permission)[1];
 
         /*
          * ⚠️ THE TYPE SEGMENT IS CHECKED FOR SHAPE AND NOT FOR EXISTENCE, deliberately. A blueprint seeds
@@ -103,13 +124,40 @@ final class Permissions
          * strings that would never match anything and would look like grants.
          */
         if ($type !== self::ANY_TYPE && preg_match('/^[a-z][a-z0-9_]*$/', $type) !== 1) {
-            throw new InvalidArgumentException(
-                "Refusing the permission [{$permission}]: [{$type}] is not an entry type handle or "
-                .'['.self::ANY_TYPE.'] — ADR-033.'
-            );
+            return "Refusing the permission [{$permission}]: [{$type}] is not an entry type handle or "
+                .'['.self::ANY_TYPE.'] — ADR-033.';
         }
 
-        return $permission;
+        return null;
+    }
+
+    /**
+     * Why this string names nothing this vocabulary can ever grant, or null when it does.
+     *
+     * ⚠️ THE SUBJECT, THE ARITY AND THE ACTION — AND DELIBERATELY NOT THE TYPE'S SHAPE, which is the one
+     * part of the grammar that belongs to WRITING a grant rather than to answering one. `entry.*.view`
+     * legitimately covers every entry type, including a handle no form would have accepted: the panel's
+     * `regex:/^[a-z][a-z0-9_]*$/` guards the create screen, and a seeder or a blueprint reaches the model
+     * directly. Refusing `entry.blog-post.update` at CHECK time would therefore deny an owner an entry type
+     * the installation really has — a wrong answer, from a rule whose job was to prevent one.
+     *
+     * What is left is what the wildcard construction actually got wrong: the subject and the action.
+     */
+    private static function outsideTheVocabulary(string $permission): ?string
+    {
+        $parts = explode('.', $permission);
+
+        if (count($parts) !== 3 || $parts[0] !== self::ENTRY) {
+            return "Refusing the permission [{$permission}]: it must read ".self::ENTRY
+                .'.{type_handle}.{action} — ADR-033.';
+        }
+
+        if (! in_array($parts[2], self::ACTIONS, true)) {
+            return "Refusing the permission [{$permission}]: [{$parts[2]}] is not a registered action. "
+                .'The registry is '.implode(', ', self::ACTIONS).' — ADR-033.';
+        }
+
+        return null;
     }
 
     /**
@@ -125,6 +173,18 @@ final class Permissions
             return false;
         }
 
+        /*
+         * ⚠️ A STRING THIS VOCABULARY DOES NOT DEFINE IS REFUSED BEFORE ANYTHING ELSE, which review found
+         * the wildcard failing open on: `site.settings.view` is three segments ending in a registered
+         * action, so the match below built `entry.*.view` and a wildcard holder was granted a subject that
+         * does not exist. Checked before the owner bypass as well, so the answer to a question nobody can
+         * ask is the same for everybody — an owner who is told yes about `site.settings.view` is an owner
+         * whose caller now believes such a permission is real.
+         */
+        if (self::outsideTheVocabulary($permission) !== null) {
+            return false;
+        }
+
         if (self::isOwner($user)) {
             return true;
         }
@@ -136,13 +196,9 @@ final class Permissions
         }
 
         // The explicit wildcard, resolved here rather than expanded at grant time.
-        $parts = explode('.', $permission);
+        [, , $action] = explode('.', $permission);
 
-        if (count($parts) !== 3) {
-            return false;
-        }
-
-        return in_array(self::forEntryType(self::ANY_TYPE, $parts[2]), $held, true);
+        return in_array(self::forEntryType(self::ANY_TYPE, $action), $held, true);
     }
 
     /**

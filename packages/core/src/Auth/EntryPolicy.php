@@ -13,6 +13,7 @@ namespace Kitsune\Core\Auth;
 use Illuminate\Contracts\Auth\Authenticatable;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
+use Kitsune\Core\Tenancy\Context;
 
 /**
  * Per-type authorization for one `Entry` model — ADR-033, and Phase 4's last unchecked line.
@@ -30,6 +31,14 @@ use Kitsune\Core\Models\EntryType;
  *
  * ⚠️ NO TYPE AT ALL MEANS NO. A policy that fell back to "allowed" when it could not tell which type it was
  * being asked about would be an open door on every path that forgot to establish one.
+ *
+ * ⚠️ AND THE TYPE IS NOT THE ONLY QUESTION — THE RECORD HAS TO BE IN THIS SCOPE, which review found this
+ * asking nowhere. `SiteScope` constrains the query that LOADS an entry and says nothing about the object
+ * afterwards; an instance update or delete writes by primary key without reapplying it. So in a long-lived
+ * worker or a multi-site command, an entry loaded under site A survived a `Context` switch to B and a user
+ * in B holding the same `entry.{handle}.update` grant authorised the write — B's grant spending itself on
+ * A's row, with the audit attributed to B. `Role` carries the same guard for the same reason
+ * (`refuseIfNotCurrentOrg()`): a check on the query is not a check on the instance.
  */
 class EntryPolicy
 {
@@ -125,6 +134,10 @@ class EntryPolicy
 
     private function allowsOn(Authenticatable $user, Entry $entry, string $action): bool
     {
+        if ($entry->exists && ! $this->withinCurrentScope($entry)) {
+            return false;
+        }
+
         /*
          * ⚠️ An empty handle is refused rather than passed through. `type_handle` is denormalised for
          * routing and re-stamped on save, so it is non-empty for anything that went through the model —
@@ -135,6 +148,41 @@ class EntryPolicy
 
         return $handle !== ''
             && Permissions::allows($user, Permissions::forEntryType($handle, $action));
+    }
+
+    /**
+     * Would the current scope's own query return this row?
+     *
+     * ⚠️ THE SAME CLAUSE `SiteScope` APPLIES, in PHP, and the duplication is deliberate and pinned. The
+     * scope's version is SQL inside a `WHERE`, so it cannot be asked about an object already in memory —
+     * which is exactly the question here. `EntryPolicyScopeAgreesWithTheScopeTest` asserts the two answer
+     * identically for every shape, so the copy cannot drift into a wider or a narrower rule.
+     *
+     * ⚠️ `site_id IS NULL` IS ORG-SHARED AND STILL FENCED BY ORG (ADR-021). One media library serves eight
+     * brands, so a shared row is legitimately reachable from every site in its org — and a bare null check
+     * would make it reachable from every org's, which is the leak the scope's own comment warns about.
+     *
+     * ⚠️ NO CONTEXT MEANS NO, matching the scope: with no site established `SiteScope` adds `1 = 0` and the
+     * query returns nothing, so the policy must not answer yes about a row that query could not produce.
+     * `Permissions::allows()` already refuses when there is no ORG, and this adds the site half.
+     *
+     * ⚠️ ONLY FOR A ROW THAT EXISTS. An unsaved instance has no stored identity and no row to mutate — its
+     * scope keys are the INSERT's business, and `EnforcesScope` stamps and guards them there. Asking this of
+     * a new `Entry` would refuse `$entry->fill(...)`-shaped authorization questions that name nothing yet.
+     */
+    private function withinCurrentScope(Entry $entry): bool
+    {
+        $context = app(Context::class);
+
+        if (! $context->hasSite()) {
+            return false;
+        }
+
+        $site = $entry->site_id === null ? null : (int) $entry->site_id;
+
+        return $site === null
+            ? (int) $entry->org_id === $context->orgId()
+            : $site === $context->siteId();
     }
 
     private function allowsOnCurrentType(Authenticatable $user, string $action): bool

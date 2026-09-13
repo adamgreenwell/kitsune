@@ -26,6 +26,7 @@ use Filament\Tables\Columns\Column;
 use Filament\Tables\Columns\IconColumn;
 use Filament\Tables\Columns\TextColumn;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Model;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Fields\Cell;
 use Kitsune\Core\Fields\Control;
@@ -297,13 +298,10 @@ final class FieldValueRenderer
      */
     private static function entryPicker(string $path, FieldConfig $config): Select
     {
-        $targets = array_values(array_filter(
-            (array) ($config->setting('targetTypes', []) ?: []),
-            static fn (mixed $handle): bool => is_string($handle) && $handle !== '',
-        ));
+        $targets = self::relationTargets($config);
 
         /*
-         * ⚠️ ONE PREDICATE, THREE CALLBACKS. Review found the target constraint applied to the
+         * ⚠️ ONE PREDICATE, EVERY CALLBACK. Review found the target constraint applied to the
          * search only, so the label resolvers happily named an entry of a forbidden type — and
          * Filament uses `getOptionLabelsUsing()` to VALIDATE a multiple select's submitted
          * options. A forged id, or a selection whose entry type changed while the form was
@@ -312,7 +310,9 @@ final class FieldValueRenderer
          * than a validation message the author could act on.
          *
          * Defined once and applied everywhere, because three copies of a constraint is two
-         * places for it to be forgotten — which is what happened.
+         * places for it to be forgotten — which is what happened. `relationLabels()` is the
+         * label half of the same predicate: it applies both constraints and then makes ONE
+         * exception, for a link the record already holds. See its docblock.
          */
         /*
          * ⚠️ AND THE USER'S OWN `view` GRANTS NARROW IT FURTHER, which review found missing. A policy is
@@ -327,15 +327,7 @@ final class FieldValueRenderer
          */
         $user = Permissions::currentUser();
 
-        $constrain = static function (Builder $query) use ($targets, $user): Builder {
-            if ($targets !== []) {
-                $query->whereIn('type_handle', $targets);
-            }
-
-            return Permissions::constrainToViewable($query, $user);
-        };
-
-        $search = static function (string $search) use ($constrain): array {
+        $search = static function (string $search) use ($targets, $user): array {
             /*
              * ⚠️ `whereLike(..., caseSensitive: false)` RATHER THAN `like`, because `LIKE` is
              * case-SENSITIVE on PostgreSQL and case-insensitive on SQLite and a default MySQL
@@ -345,7 +337,8 @@ final class FieldValueRenderer
              * about, found by review. Laravel emits `ILIKE` on Postgres and folds case
              * elsewhere, so one expression means one thing on all three.
              */
-            $query = $constrain(Entry::query())->whereLike('title', '%'.$search.'%', caseSensitive: false);
+            $query = Permissions::constrainToViewable(self::relationScope($targets), $user)
+                ->whereLike('title', '%'.$search.'%', caseSensitive: false);
 
             // Bounded, because a search for "a" otherwise returns the whole table. The
             // author narrows; the control does not try to show everything.
@@ -355,10 +348,22 @@ final class FieldValueRenderer
         $picker = Select::make($path)
             ->searchable()
             ->getSearchResultsUsing($search)
-            // ⚠️ Needed as well as the search, or a SAVED value renders as its bare id: the
-            // options list is empty until the author types, so Filament has nothing to
-            // resolve the current selection against.
-            ->getOptionLabelUsing(static fn (mixed $value): ?string => $constrain(Entry::query())->whereKey($value)->value('title'))
+            /*
+             * ⚠️ Needed as well as the search, or a SAVED value renders as its bare id: the options list
+             * is empty until the author types, so Filament has nothing to resolve the current selection
+             * against.
+             *
+             * ⚠️ AND IT RESOLVES THROUGH `relationLabels()`, WHICH KNOWS THE RECORD — see that method. A
+             * resolver that only applied the viewer's grants withheld the label of a link the entry
+             * ALREADY holds, and Filament reads a missing label as an invalid option: the editor could
+             * not save a title change. `$record` is one of Filament's own evaluation parameters, so the
+             * callback can ask what this entry already points at.
+             */
+            ->getOptionLabelUsing(static fn (mixed $value, ?Model $record): ?string => self::relationLabels(
+                [$value],
+                $config,
+                $record,
+            )[(int) $value] ?? null)
             ->dehydrated(false);
 
         if (! $config->isMultiValue()) {
@@ -376,10 +381,11 @@ final class FieldValueRenderer
          */
         $picker = $picker
             ->multiple()
-            ->getOptionLabelsUsing(static fn (array $values): array => $constrain(Entry::query())
-                ->whereKey($values)
-                ->pluck('title', 'id')
-                ->all());
+            ->getOptionLabelsUsing(static fn (array $values, ?Model $record): array => self::relationLabels(
+                $values,
+                $config,
+                $record,
+            ));
 
         /*
          * ⚠️ A FINITE CARDINALITY IS A BOUND THE FORM MUST STATE, and omitting it turned a
@@ -401,6 +407,115 @@ final class FieldValueRenderer
         }
 
         return $picker;
+    }
+
+    /**
+     * The entry types a relation field may point at, empty meaning any.
+     *
+     * One reading of the setting, shared by the search and the label resolvers, because a relation's
+     * target list is the field's contract and three copies of it is two places to forget one.
+     *
+     * @return list<string>
+     */
+    private static function relationTargets(FieldConfig $config): array
+    {
+        return array_values(array_filter(
+            (array) ($config->setting('targetTypes', []) ?: []),
+            static fn (mixed $handle): bool => is_string($handle) && $handle !== '',
+        ));
+    }
+
+    /**
+     * What to call each of these entries in the picker — and what to call the ones it may not name.
+     *
+     * ⚠️ A MISSING LABEL IS AN INVALID OPTION, WHICH MADE THE FORM UNSAVABLE, and that is the defect review
+     * found. `SyncsFieldRelations::mutateFormDataBeforeFill()` hydrates every id the entry is related
+     * through, including ones pointing at a type this particular editor may not view — an owner links an
+     * article to a product, and the article's editor holds `entry.article.*` alone. Filament VALIDATES a
+     * select's submitted options against these callbacks (`Select::getInValidationRuleValues()`), so the
+     * withheld id failed the `in` rule and the editor could not save an unrelated title change: a
+     * permission narrowing one field silently froze the whole record.
+     *
+     * ⚠️ SO THE LABEL IS WITHHELD AND THE VALUE IS KEPT. What the grant protects is the TITLE — the
+     * enumeration channel `Permissions::constrainToViewable()` exists to close — and the id is already in
+     * the form state by the time this runs. Naming it `Entry #12` discloses nothing the page did not
+     * already hand over, and it lets the author see that something is linked, that it is not theirs to
+     * read, and remove it if they mean to.
+     *
+     * ⚠️ ONLY FOR A LINK THE RECORD ALREADY HOLDS, THROUGH THIS FIELD. That is what separates this from the
+     * hole the previous round closed: a FORGED id, or one whose type changed while the form was open, is
+     * still refused, because it is not among `relatedIdsForField()`. The set is asked of the entry rather
+     * than of the request.
+     *
+     * ⚠️ AND THE TARGET-TYPE CONSTRAINT STILL APPLIES TO IT. The permission is the only thing relaxed: a
+     * stored relation whose target type is no longer one the FIELD allows would be refused later by
+     * `EntryRelation::guardTargetType()`, so accepting it here would swap a validation message for an
+     * exception after the entry had saved — exactly the trade the earlier round reversed.
+     *
+     * @param  list<mixed>  $ids
+     * @return array<int, string>
+     */
+    public static function relationLabels(array $ids, FieldConfig $config, ?Model $record = null): array
+    {
+        $wanted = [];
+
+        foreach ($ids as $id) {
+            if ((is_int($id) || (is_string($id) && $id !== '')) && (int) $id > 0) {
+                $wanted[] = (int) $id;
+            }
+        }
+
+        $wanted = array_values(array_unique($wanted));
+
+        if ($wanted === []) {
+            return [];
+        }
+
+        $targets = self::relationTargets($config);
+        $labels = [];
+
+        foreach (
+            Permissions::constrainToViewable(self::relationScope($targets), Permissions::currentUser())
+                ->whereKey($wanted)
+                ->pluck('title', 'id') as $id => $title
+        ) {
+            $labels[(int) $id] = (string) $title;
+        }
+
+        $withheld = array_values(array_diff($wanted, array_keys($labels)));
+
+        if ($withheld === [] || ! $record instanceof Entry || ! $record->exists) {
+            return $labels;
+        }
+
+        $already = array_intersect($withheld, $record->relatedIdsForField($config->storage));
+
+        if ($already === []) {
+            return $labels;
+        }
+
+        foreach (self::relationScope($targets)->whereKey($already)->pluck('id') as $id) {
+            $labels[(int) $id] = sprintf('Entry #%d — you may not view this entry type', (int) $id);
+        }
+
+        return $labels;
+    }
+
+    /**
+     * Entries of the types a relation field targets, before the viewer's own grants.
+     *
+     * Site-scoped like every `Entry` query, so a withheld label is never resolved across a tenancy
+     * boundary: what this method leaves out is the PERMISSION filter, which is the one thing
+     * `relationLabels()` relaxes for a link the record already holds.
+     *
+     * @param  list<string>  $targets
+     * @return Builder<Entry>
+     */
+    private static function relationScope(array $targets): Builder
+    {
+        $query = Entry::query();
+
+        return $targets === [] ? $query : $query->whereIn('type_handle', $targets);
     }
 
     /**

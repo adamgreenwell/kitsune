@@ -843,12 +843,40 @@ class ScopedBuilder extends Builder
     }
 
     /**
+     * Every guard an ordinary `update()` runs, for a write shaped as arithmetic.
+     *
+     * ⚠️ THE PER-ROW REFUSAL WAS MISSING HERE, and review found it on the sibling builder: Laravel's
+     * arithmetic methods carry an `$extra` map of ORDINARY assignments, so
+     * `increment('id', 0, ['base_url' => 'https://x.test'])` is an update in every sense except the method
+     * name — and it reached the query builder without passing `refusePerRowColumns()`. Measured on `Site`
+     * before this: the same values refused through `update()` landed through `increment()`, leaving
+     * `canonical_host` describing the previous URL.
+     *
+     * ⚠️ AND THE INCREMENTED COLUMN COUNTS TOO, not only the extras. A per-row column is guarded because
+     * its correctness depends on the row; adding to it is no safer than assigning it, and
+     * `AuditedBuilder::increment()`'s own docblock already records why the incremented column belongs in
+     * what gets inspected.
+     *
+     * ⚠️ THE SUBCLASSES THAT ALREADY DID THIS STILL DO IT FIRST, deliberately. `AuditedBuilder` and
+     * `GuardedRoleBuilder` refuse before their auditing wrapper opens a transaction, which is the better
+     * place for a refusal; this is the floor under every model that has no builder of its own — `Site`,
+     * `Field` and `EntryType` all reach the arithmetic family through this class alone.
+     *
+     * @param  array<string, mixed>  $values
+     */
+    protected function guardArithmetic(array $values): void
+    {
+        $this->refuseScopeArithmetic($values);
+        $this->refusePerRowColumns($values);
+    }
+
+    /**
      * @param  string|Expression  $column
      * @param  array<string, mixed>  $extra
      */
     public function increment($column, $amount = 1, array $extra = [])
     {
-        $this->refuseScopeArithmetic([(string) $column => $amount, ...$extra]);
+        $this->guardArithmetic([(string) $column => $amount, ...$extra]);
 
         return parent::increment($column, $amount, $extra);
     }
@@ -859,7 +887,7 @@ class ScopedBuilder extends Builder
      */
     public function decrement($column, $amount = 1, array $extra = [])
     {
-        $this->refuseScopeArithmetic([(string) $column => $amount, ...$extra]);
+        $this->guardArithmetic([(string) $column => $amount, ...$extra]);
 
         return parent::decrement($column, $amount, $extra);
     }
@@ -870,7 +898,7 @@ class ScopedBuilder extends Builder
      */
     public function incrementEach(array $columns, array $extra = [])
     {
-        $this->refuseScopeArithmetic([...$columns, ...$extra]);
+        $this->guardArithmetic([...$columns, ...$extra]);
 
         return parent::incrementEach($columns, $extra);
     }
@@ -881,7 +909,7 @@ class ScopedBuilder extends Builder
      */
     public function decrementEach(array $columns, array $extra = [])
     {
-        $this->refuseScopeArithmetic([...$columns, ...$extra]);
+        $this->guardArithmetic([...$columns, ...$extra]);
 
         return parent::decrementEach($columns, $extra);
     }
