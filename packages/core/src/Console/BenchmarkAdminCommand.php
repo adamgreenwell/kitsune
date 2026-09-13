@@ -20,6 +20,7 @@ use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Site;
@@ -92,7 +93,9 @@ final class BenchmarkAdminCommand extends Command
         [$site, $type] = $this->fixture($user);
 
         if ($site === null || $type === null) {
-            $this->error('That user reaches no site with an enabled entry type, so there is no admin to measure.');
+            $this->error('That user reaches no site with an entry type they may view, so there is no admin '
+                .'to measure. Either they belong to no site, or they hold no `view` grant on any type '
+                .'enabled there.');
 
             return self::FAILURE;
         }
@@ -138,7 +141,16 @@ final class BenchmarkAdminCommand extends Command
              * timings beside it: a 404 from `IdentifyEntryType` renders in two milliseconds and would sit
              * at the top of this table looking like the best result on the page.
              */
+            /*
+             * ⚠️ THE STATUS IS NAMED RATHER THAN JUST FLAGGED, because the three ways a page fails to render
+             * want three different responses. A 403 is a FIXTURE result — this user holds no grant for that
+             * shape, which `EntryPolicy` (#81) made an ordinary outcome rather than a malfunction. A 404 is
+             * `IdentifyEntryType` refusing the type. Anything else is a defect. "Not a rendered page" was
+             * true of all three and useful for none.
+             */
             $flag = match (true) {
+                $status === 403 => ' ✗ refused: this user holds no grant for it',
+                $status === 404 => ' ✗ no such page for this type',
                 $status !== 200 => ' ✗ not a rendered page',
                 $slowest > self::BUDGET_MS => ' ⚠️ query over the 200ms bar',
                 $ms > self::BUDGET_MS => ' ⚠️ page over 200ms, every query inside it',
@@ -166,8 +178,14 @@ final class BenchmarkAdminCommand extends Command
         $this->newLine();
 
         if ($over > 0) {
-            $this->warn("  {$over} of ".count($results).' page shapes miss the bar.');
+            $this->warn("  {$over} of ".count($results).' page shapes were not measured or miss the bar.');
 
+            /*
+             * ⚠️ NON-ZERO EVEN WHEN THE CAUSE IS A PERMISSION, because the command did not measure what it
+             * said it would. A benchmark that reports success over shapes it never rendered is the failure
+             * mode this whole file exists to avoid — and the flag beside the row says which kind it was, so
+             * a reader can tell "grant this user more" from "fix the page".
+             */
             return self::FAILURE;
         }
 
@@ -394,8 +412,16 @@ final class BenchmarkAdminCommand extends Command
          * ⚠️ AN ENABLED TYPE, NOT MERELY AN EXISTING ONE. `IdentifyEntryType` 404s a `{type}` that is not
          * available for the current site (ADR-022), so a benchmark that picked any row would measure the
          * cost of a 404 and report it as a page.
+         *
+         * ⚠️ AND ONE THIS USER MAY VIEW, which is the same mistake as picking a site they cannot reach,
+         * one level in — it arrived with `EntryPolicy` (#81) after the site fix landed. An enabled type the
+         * signed-in user holds no `view` grant on renders a 403, so the command would seed a hundred
+         * thousand rows and then measure the cost of a refusal on every page shape.
          */
-        $type = EntryType::visibleFor($site)->first();
+        $type = EntryType::visibleFor($site)
+            ->first(fn (EntryType $candidate): bool => Permissions::allows(
+                $user, Permissions::forEntryType($candidate->handle, 'view'),
+            ));
 
         return [$site, $type instanceof EntryType ? $type : null];
     }
