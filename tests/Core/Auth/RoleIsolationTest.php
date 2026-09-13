@@ -224,6 +224,19 @@ it('drops the owner memo when the flag changes, not only when a helper runs', fu
 
     expect(Permissions::isOwner($this->user))->toBeTrue();
 
+    /*
+     * ⚠️ A SPARE OWNER FIRST, held by SOMEBODY ELSE. An org may not lose its last held owner role (#84), so
+     * without this the change below is refused — and held by another person because the same one would keep
+     * the bypass and the assertion would measure the guard instead of the thing under test. Two features
+     * written hours apart, and only their combination states the rule.
+     */
+    /** @var TestUser $spareHolder */
+    $spareHolder = TestUser::create(['email' => 'spare'.mt_rand(1, 1_000_000_000).'@kitsune.test']);
+    joinOrg($this->alpha, $spareHolder);
+
+    $spareOwner = Role::create(['handle' => 'owner-spare'.mt_rand(1, 1_000_000_000), 'name' => 'Owner spare', 'is_owner' => true]);
+    $spareOwner->assignTo($spareHolder->getKey());
+
     // And deleting it takes the bypass away again, in the same process.
     $this->alphaRole->delete();
 
@@ -321,6 +334,19 @@ it('records an owner bypass gained by flipping the flag, not only by assignment'
         ->and($elevations->pluck('target_id')->map(intval(...))->sort()->values()->all())
         ->toBe(collect([$this->user->getKey(), $colleague->getKey()])->sort()->values()->all());
 
+    /*
+     * ⚠️ A SPARE OWNER FIRST, held by SOMEBODY ELSE. An org may not lose its last held owner role (#84), so
+     * without this the change below is refused — and held by another person because the same one would keep
+     * the bypass and the assertion would measure the guard instead of the thing under test. Two features
+     * written hours apart, and only their combination states the rule.
+     */
+    /** @var TestUser $spareHolder */
+    $spareHolder = TestUser::create(['email' => 'spare'.mt_rand(1, 1_000_000_000).'@kitsune.test']);
+    joinOrg($this->alpha, $spareHolder);
+
+    $spareOwner = Role::create(['handle' => 'owner-spare'.mt_rand(1, 1_000_000_000), 'name' => 'Owner spare', 'is_owner' => true]);
+    $spareOwner->assignTo($spareHolder->getKey());
+
     $mark = (int) AuditLog::query()->max('id');
 
     $this->alphaRole->update(['is_owner' => false]);
@@ -397,6 +423,19 @@ it('records the revocation when an owner role is deleted out from under its hold
     $owner = Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true]);
     $owner->assignTo($this->user->getKey());
 
+    /*
+     * ⚠️ A SPARE OWNER FIRST, held by SOMEBODY ELSE. An org may not lose its last held owner role (#84), so
+     * without this the change below is refused — and held by another person because the same one would keep
+     * the bypass and the assertion would measure the guard instead of the thing under test. Two features
+     * written hours apart, and only their combination states the rule.
+     */
+    /** @var TestUser $spareHolder */
+    $spareHolder = TestUser::create(['email' => 'spare'.mt_rand(1, 1_000_000_000).'@kitsune.test']);
+    joinOrg($this->alpha, $spareHolder);
+
+    $spareOwner = Role::create(['handle' => 'owner-spare'.mt_rand(1, 1_000_000_000), 'name' => 'Owner spare', 'is_owner' => true]);
+    $spareOwner->assignTo($spareHolder->getKey());
+
     $mark = (int) AuditLog::query()->max('id');
 
     $owner->delete();
@@ -429,3 +468,82 @@ it('leaves no authority change behind when its audit cannot be written', functio
 })->skip(fn (): bool => DB::connection()->getDriverName() === 'sqlite'
     && ! DB::connection()->getPdo()->query('PRAGMA foreign_keys')->fetchColumn(),
     'foreign keys are not enforced on this connection, so the audit insert cannot be made to fail');
+
+it('refuses to remove the last owner role an org actually holds', function (): void {
+    /*
+     * ⚠️ AN ORG THAT LOSES ITS LAST OWNER CANNOT GET ONE BACK — issue #84. Schema editing and role
+     * administration are both owner-only in v1.0 (ADR-033), so the only person who could restore the flag is
+     * the one who just removed it, and the vocabulary has no permission that would let anybody else. A
+     * support ticket is the recovery path, and there is no support.
+     *
+     * ⚠️ AT THE MODEL RATHER THAN IN A FORM, which is the rule this project keeps relearning: the ROUTE is
+     * the boundary, not the button. A form guard is bypassed by the API, by a console command, and by the
+     * next page somebody writes.
+     */
+    app(Context::class)->setOrg($this->alpha);
+
+    $owner = Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true]);
+    $owner->assignTo($this->user->getKey());
+
+    expect(fn () => $owner->update(['is_owner' => false]))
+        ->toThrow(RuntimeException::class, 'only owner role')
+        ->and(fn () => $owner->delete())
+        ->toThrow(RuntimeException::class, 'only owner role');
+
+    // Still an owner role, and still held.
+    expect(Role::query()->where('is_owner', true)->count())->toBe(1);
+});
+
+it('allows it once a second owner role is held', function (): void {
+    // The guard is about the LAST one. A second holder is the way out, and it has to work.
+    app(Context::class)->setOrg($this->alpha);
+
+    $first = Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true]);
+    $first->assignTo($this->user->getKey());
+
+    /** @var TestUser $second */
+    $second = TestUser::create(['email' => 'second-owner@kitsune.test']);
+    joinOrg($this->alpha, $second);
+
+    $spare = Role::create(['handle' => 'owner-2', 'name' => 'Owner 2', 'is_owner' => true]);
+    $spare->assignTo($second->getKey());
+
+    $first->delete();
+
+    expect(Role::query()->where('is_owner', true)->count())->toBe(1);
+});
+
+it('does not stand in the way of an owner role nobody holds yet', function (): void {
+    /*
+     * ⚠️ IT ASKS WHETHER THIS CHANGE TAKES THE LAST ONE, not whether the result has any. A fresh install
+     * mid-seed has an owner role with no holders, and a guard that read the second question would refuse to
+     * let a seeder correct one.
+     */
+    app(Context::class)->setOrg($this->alpha);
+
+    $unheld = Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true]);
+
+    $unheld->update(['is_owner' => false]);
+    $unheld->delete();
+
+    expect(Role::query()->where('is_owner', true)->count())->toBe(0);
+});
+
+it('does not count another org\'s owners as this org\'s safety net', function (): void {
+    // The cross-org version: beta having owners must not make alpha safe to strip.
+    app(Context::class)->setOrg($this->beta);
+
+    /** @var TestUser $theirs */
+    $theirs = TestUser::create(['email' => 'beta-owner@kitsune.test']);
+    joinOrg($this->beta, $theirs);
+
+    $betaOwner = Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true]);
+    $betaOwner->assignTo($theirs->getKey());
+
+    app(Context::class)->setOrg($this->alpha);
+
+    $alphaOwner = Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true]);
+    $alphaOwner->assignTo($this->user->getKey());
+
+    expect(fn () => $alphaOwner->delete())->toThrow(RuntimeException::class, 'only owner role');
+});

@@ -112,6 +112,11 @@ class Role extends Model
      */
     protected static function booted(): void
     {
+        /*
+         * ⚠️ THE GUARDS RUN BEFORE THE WRITE AND THE AUDIT AFTER IT, which is the only ordering that is
+         * correct: a change refused by `refuseIfLastOwner()` must leave no audit row, and a change that
+         * happened must leave one.
+         */
         static::saving(static function (self $role): void {
             /*
              * ⚠️ A STALE INSTANCE MAY NOT CHANGE THE OWNER FLAG, which review found: `EnforcesScope`
@@ -124,11 +129,15 @@ class Role extends Model
                 $role->refuseIfNotCurrentOrg('change the owner flag on');
             }
 
+            $role->refuseIfLastOwner('clear the owner flag on');
+
             // Earned for this write only; `saved` clears it so the next one has to earn it again.
             $role->authorityGuarded = true;
         });
 
         static::deleting(static function (self $role): void {
+            $role->refuseIfLastOwner('delete');
+
             $role->authorityGuarded = true;
         });
 
@@ -176,6 +185,61 @@ class Role extends Model
         foreach (DB::table('role_user')->where('role_id', $this->getKey())->pluck('user_id') as $userId) {
             app(Auditor::class)->record("role.owner_{$verb}", $this->assignee((int) $userId));
         }
+    }
+
+    /**
+     * Refuse a change that would leave this org with nobody who can administer it — issue #84.
+     *
+     * ⚠️ AN ORG THAT LOSES ITS LAST OWNER CANNOT GET ONE BACK, which is what makes this worth a guard rather
+     * than a warning. Schema editing and role administration are both owner-only in v1.0 (ADR-033), so the
+     * only person who could restore the flag is the person who just removed it — and the vocabulary has no
+     * permission that would let anyone else. A support ticket is the recovery path, and there is no support.
+     *
+     * ⚠️ AT THE MODEL RATHER THAN IN THE FORM, which is the rule this project keeps relearning: the ROUTE is
+     * the boundary, not the button. A form guard is bypassed by the API, by a console command and by the
+     * next page somebody writes.
+     *
+     * ⚠️ AND IT ONLY FIRES WHERE THERE IS SOMETHING TO LOSE. An org with no held owner role yet — a fresh
+     * install, mid-seed — is not being locked out by creating one, so the check asks whether this change
+     * would take the LAST one rather than whether the result has any.
+     */
+    private function refuseIfLastOwner(string $operation): void
+    {
+        // Turning the flag ON, or any other edit to a role that is not an owner, cannot remove an owner.
+        if (! $this->exists || ! $this->getOriginal('is_owner')) {
+            return;
+        }
+
+        if ($operation !== 'delete' && $this->is_owner) {
+            return;
+        }
+
+        if (! $this->isOnlyHeldOwnerRole()) {
+            return;
+        }
+
+        throw new RuntimeException(sprintf(
+            'Refusing to %s role %s: it is the only owner role in this organisation with anybody holding '
+            .'it, and owner is the only role that may administer roles or edit the schema (ADR-033). '
+            .'Removing it would leave nobody able to put it back.',
+            $operation,
+            (string) $this->getKey(),
+        ));
+    }
+
+    /** Is this the only owner role in its org that anybody actually holds? */
+    private function isOnlyHeldOwnerRole(): bool
+    {
+        $held = static::query()
+            ->withoutGlobalScopes()
+            ->where('org_id', $this->org_id)
+            ->where('is_owner', true)
+            ->whereIn('id', DB::table('role_user')->select('role_id'))
+            ->pluck('id')
+            ->map(static fn (mixed $id): int => (int) $id)
+            ->all();
+
+        return $held === [(int) $this->getKey()];
     }
 
     /**
