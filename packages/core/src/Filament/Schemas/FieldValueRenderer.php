@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Filament\Schemas;
 
+use Filament\Facades\Filament;
 use Filament\Forms\Components\DatePicker;
 use Filament\Forms\Components\DateTimePicker;
 use Filament\Forms\Components\Field as FormField;
@@ -25,6 +26,7 @@ use Filament\Tables\Columns\Column;
 use Filament\Tables\Columns\IconColumn;
 use Filament\Tables\Columns\TextColumn;
 use Illuminate\Database\Eloquent\Builder;
+use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Fields\Cell;
 use Kitsune\Core\Fields\Control;
 use Kitsune\Core\Fields\FieldConfig;
@@ -312,12 +314,25 @@ final class FieldValueRenderer
          * Defined once and applied everywhere, because three copies of a constraint is two
          * places for it to be forgotten — which is what happened.
          */
-        $constrain = static function (Builder $query) use ($targets): Builder {
+        /*
+         * ⚠️ AND THE USER'S OWN `view` GRANTS NARROW IT FURTHER, which review found missing. A policy is
+         * asked about a record somebody already holds; Eloquent never consults one while BUILDING a query,
+         * so this picker returned titles of types the same user is refused at the URL — an article editor
+         * could enumerate product names through the search box. `EntryPolicy` cannot close that, because the
+         * leak is in the query rather than in the record.
+         *
+         * `null` means unrestricted — an owner, or the explicit `entry.*.view` wildcard — and an empty list
+         * means nothing, which `whereIn` renders as no rows. Collapsing those two is the mistake that would
+         * either open it to everybody or close it to owners.
+         */
+        $user = Permissions::currentUser();
+
+        $constrain = static function (Builder $query) use ($targets, $user): Builder {
             if ($targets !== []) {
                 $query->whereIn('type_handle', $targets);
             }
 
-            return $query;
+            return Permissions::constrainToViewable($query, $user);
         };
 
         $search = static function (string $search) use ($constrain): array {

@@ -180,7 +180,9 @@ ADR-012 removed the boot-order collision structurally — the route table no lon
 
   ⚠️ **Two guarantees rest on argument rather than on a column, so both are asserted from the attacker's side.** Every read starts at `Role`, the only scoped model in the layer — `RoleIsolationTest` asserts that a direct `RolePermission` query sees every customer's grants, so the cost is visible rather than remembered. And **a role assignment is not membership**: `role_user` knows nothing about orgs, so resolution also asks membership through the user model's own scoped query. Removing that check fails a test.
 
-  **Still open:** role administration through the panel (the seeder is the only way to create one today), and blueprint seeding, which Phase 5 depends on.
+  ⚠️ **Two things the vocabulary cannot express are owner-only, and that is a limitation rather than an omission.** `architecture.md` publishes five actions on **entries**, so editing the schema and administering roles have no permission to ask for — review found the entry-type builder still open to a copy-editor after this landed. Adding a subject widens the extension surface that Standing Principle #1 keeps shut until v1.2, so an org cannot delegate either without making somebody an owner.
+
+  **Still open:** role administration through the panel ([#84](https://github.com/adamgreenwell/kitsune/issues/84) — the seeder is the only way to create one today), and blueprint seeding, which Phase 5 depends on.
 
   ⚠️ **The attribute had never been enforced.** `User` carried `#[Unscoped]` and did not `use EnforcesScope`, so it was labelled correctly and completely unconstrained — a model can pass the declaration sweep and still be globally readable. AGENTS.md invariant 2 now says so.
 - [x] Audit log — **actor, action and target only, never payloads** (ADR-020), so erasure can reach everything it must.

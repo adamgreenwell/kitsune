@@ -89,6 +89,29 @@ test.describe('a user holds only what was granted', () => {
         await expect(sidebar.getByRole('link', { name: 'Products' })).toHaveCount(0);
     });
 
+    test('is refused the schema builder, at the URL and in the sidebar', async ({ page }) => {
+        /*
+         * ⚠️ RBAC EXISTING MADE THIS A HOLE RATHER THAN A DEFAULT — review found it. Before permissions,
+         * every member of an org could do everything the tenancy scopes allowed, so an unguarded entry-type
+         * builder was consistent. With them in place this copy-editor could still create, rewrite and delete
+         * the org's schema while being refused `/c/product`: a permission system that governs the content
+         * and not the shape of the content governs the smaller half.
+         *
+         * Schema editing is owner-only in v1.0. The vocabulary `architecture.md` publishes is five actions
+         * on ENTRIES and nothing else, so there is no `schema.manage` to ask for — and inventing one widens
+         * the extension surface, which Standing Principle #1 keeps shut until v1.2.
+         */
+        const refused = await page.goto(`/admin/${SITE}/entry-types`);
+        expect(refused?.status()).toBe(403);
+
+        const create = await page.goto(`/admin/${SITE}/entry-types/create`);
+        expect(create?.status()).toBe(403);
+
+        // And the link is gone, which is the half a user meets — the URL above is the one that matters.
+        await page.goto(`/admin/${SITE}/c/article`);
+        await expect(page.locator('.fi-sidebar').getByRole('link', { name: 'Entry types' })).toHaveCount(0);
+    });
+
     test('is offered no published status on a draft, because publishing is its own permission', async ({ page }) => {
         /*
          * ⚠️ THE OPTIONS ARE THE VISIBLE HALF ONLY. `EntryResource` also validates the value against the

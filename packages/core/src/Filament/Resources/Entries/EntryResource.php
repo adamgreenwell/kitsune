@@ -146,12 +146,12 @@ class EntryResource extends Resource
              * than silent: `archive` is not one of the five actions `architecture.md` publishes.
              */
             Select::make('status')
-                ->options(fn (?Entry $record): array => self::statusOptions(Filament::auth()->user(), $record?->status))
+                ->options(fn (?Entry $record): array => self::statusOptions(Permissions::currentUser(), $record?->status))
                 ->default('draft')
                 // A string rule rather than `Illuminate\Validation\Rule::in()`, because `Rule` in this
                 // file is Kitsune's own — the one that goes through Eloquent so global scopes apply.
                 ->rule(fn (?Entry $record): string => 'in:'.implode(',', array_keys(
-                    self::statusOptions(Filament::auth()->user(), $record?->status),
+                    self::statusOptions(Permissions::currentUser(), $record?->status),
                 )))
                 ->required(),
             ...self::fieldControls(),

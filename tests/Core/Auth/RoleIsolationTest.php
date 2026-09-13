@@ -165,3 +165,64 @@ it('reaches a grant only through its role, never around it', function (): void {
     expect(RolePermission::query()->count())->toBe(1)
         ->and($this->beta->roles()->count())->toBe(0);
 });
+
+it('refuses to change authority on a role from another org', function (): void {
+    /*
+     * ⚠️ A STALE INSTANCE OUTLIVES ITS SCOPE — review found it. `OrgScope` filters the QUERY that loaded a
+     * role and says nothing about the object afterwards, so in a multi-org command or a long-lived worker
+     * the context moves on while the instance does not. `assignTo()` would have written org A's role onto a
+     * user while operating in org B, and recorded the audit row under B — worse than no row, because it is
+     * a false one.
+     *
+     * The scope cannot catch it: `grant()` reaches the deliberately unscoped `role_permissions`, and
+     * `assignTo()` writes `role_user` with a raw id. So the refusal belongs where the authority changes.
+     */
+    joinOrg($this->beta, $this->user);
+
+    app(Context::class)->setOrg($this->beta);
+
+    expect(fn () => $this->alphaRole->grant('entry.article.view'))
+        ->toThrow(RuntimeException::class, 'Refusing [grant]')
+        ->and(fn () => $this->alphaRole->revoke('entry.article.update'))
+        ->toThrow(RuntimeException::class, 'Refusing [revoke]')
+        ->and(fn () => $this->alphaRole->assignTo($this->user->getKey()))
+        ->toThrow(RuntimeException::class, 'Refusing [assignTo]')
+        ->and(fn () => $this->alphaRole->removeFrom($this->user->getKey()))
+        ->toThrow(RuntimeException::class, 'Refusing [removeFrom]');
+
+    // And nothing was written on the way to the exception.
+    expect(DB::table('role_user')->count())->toBe(0)
+        ->and($this->alphaRole->permissions()->count())->toBe(1);
+});
+
+it('refuses the same operations with no org context at all', function (): void {
+    // The console case the refusal is really for: a command that never established one.
+    app(Context::class)->forget();
+
+    expect(fn () => $this->alphaRole->assignTo($this->user->getKey()))
+        ->toThrow(RuntimeException::class, 'the current context is none');
+});
+
+it('drops the owner memo when the flag changes, not only when a helper runs', function (): void {
+    /*
+     * ⚠️ THE FOUR HELPERS WERE NOT ENOUGH, and `is_owner` is the widest grant in the system. Flipping it
+     * through an ordinary `save()` left `Permissions::isOwner()` answering from before the write — a
+     * demoted owner keeping the bypass for the rest of the request, and a promotion that did not take.
+     */
+    assign($this->alphaRole, $this->user);
+    joinOrg($this->alpha, $this->user);
+
+    app(Context::class)->setOrg($this->alpha);
+
+    expect(Permissions::isOwner($this->user))->toBeFalse();
+
+    $this->alphaRole->is_owner = true;
+    $this->alphaRole->save();
+
+    expect(Permissions::isOwner($this->user))->toBeTrue();
+
+    // And deleting it takes the bypass away again, in the same process.
+    $this->alphaRole->delete();
+
+    expect(Permissions::isOwner($this->user))->toBeFalse();
+});

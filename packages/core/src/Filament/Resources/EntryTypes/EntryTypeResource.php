@@ -14,6 +14,7 @@ use BackedEnum;
 use Filament\Actions\BulkActionGroup;
 use Filament\Actions\DeleteBulkAction;
 use Filament\Actions\EditAction;
+use Filament\Facades\Filament;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
@@ -28,6 +29,7 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
+use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Filament\Icons;
 use Kitsune\Core\Filament\Resources\EntryTypes\Pages\CreateEntryType;
 use Kitsune\Core\Filament\Resources\EntryTypes\Pages\EditEntryType;
@@ -214,11 +216,57 @@ class EntryTypeResource extends Resource
             ])
             ->toolbarActions([
                 BulkActionGroup::make([
-                    DeleteBulkAction::make()->authorize(fn (): bool => true)
+                    DeleteBulkAction::make()->authorize(fn (): bool => self::canDeleteAny())
                         ->action(self::deleteSelected(...)),
                 ]),
             ])
             ->defaultSort('ordering');
+    }
+
+    /**
+     * Schema editing is owner-only in v1.0 — ADR-033, and review found it open.
+     *
+     * ⚠️ RBAC EXISTING MADE THIS A HOLE RATHER THAN A DEFAULT. Before #81 every member of an org could do
+     * everything the tenancy scopes allowed, so an unguarded builder was consistent. With permissions in
+     * place, the seeded copy-editor — `entry.article.view` and `entry.article.update` — could still reach
+     * `/admin/{site}/entry-types` and create, rewrite or delete the org's schema. A permission system that
+     * governs the content and not the shape of the content governs the smaller half.
+     *
+     * ⚠️ OWNER-ONLY, AND THE LIMITATION IS REAL. `architecture.md` publishes a vocabulary of five actions on
+     * ENTRIES and nothing else, so there is no `schema.manage` to ask for — and inventing one widens the
+     * extension surface, which Standing Principle #1 keeps shut until v1.2. So an org cannot delegate schema
+     * editing without making somebody an owner. That is written here and in the roadmap rather than left to
+     * be discovered.
+     *
+     * ⚠️ AND IT IS THE ROUTE RATHER THAN THE LINK, the same argument the next method makes: `canViewAny()`
+     * is what `canAccess()` returns, so this gates the URL and not merely the sidebar item.
+     */
+    public static function canViewAny(): bool
+    {
+        return self::mayEditSchema();
+    }
+
+    public static function canCreate(): bool
+    {
+        return self::mayEditSchema();
+    }
+
+    /**
+     * ⚠️ FILAMENT ASKS THIS FOR THE BULK ACTION, not `canDelete()` per row — and the action below carried
+     * `->authorize(fn (): bool => true)`, which is an explicit "always allowed" that predates there being
+     * anything to ask. `deleteSelected()` still refuses global types; this is the authority to reach it.
+     */
+    public static function canDeleteAny(): bool
+    {
+        return self::mayEditSchema();
+    }
+
+    /** Does the signed-in user hold the owner bypass in the current org? */
+    private static function mayEditSchema(): bool
+    {
+        $user = Permissions::currentUser();
+
+        return $user !== null && Permissions::isOwner($user);
     }
 
     /**
@@ -240,13 +288,13 @@ class EntryTypeResource extends Resource
      */
     public static function canEdit(Model $record): bool
     {
-        return $record instanceof EntryType && self::ownsRecord($record);
+        return self::mayEditSchema() && $record instanceof EntryType && self::ownsRecord($record);
     }
 
     /** Same boundary for deletion, which is the less recoverable half. */
     public static function canDelete(Model $record): bool
     {
-        return $record instanceof EntryType && self::ownsRecord($record);
+        return self::mayEditSchema() && $record instanceof EntryType && self::ownsRecord($record);
     }
 
     /**

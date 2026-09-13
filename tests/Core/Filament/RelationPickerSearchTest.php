@@ -9,14 +9,18 @@
 declare(strict_types=1);
 
 use Filament\Forms\Components\Select;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Filament\Schemas\FieldValueRenderer;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\FieldStorage;
 use Kitsune\Core\Models\Org;
+use Kitsune\Core\Models\Role;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
+use Kitsune\Core\Tests\Fixtures\TestUser;
 
 /**
  * What the relation picker offers, asked of the picker itself.
@@ -46,9 +50,34 @@ beforeEach(function (): void {
 
     Entry::create(['entry_type_id' => $this->article->id, 'title' => 'Course maintenance in week 3']);
     Entry::create(['entry_type_id' => $this->note->id, 'title' => 'Course notes, private']);
+
+    /*
+     * ⚠️ A PICKER IS USED BY SOMEBODY, and these tests had no user at all until the picker started applying
+     * the viewer's `view` grants (ADR-033, #81). That is not incidental setup: a policy governs a record
+     * somebody already holds and never the query that finds one, so this control is where the grant has to
+     * be applied — and with nobody signed in the honest answer is that nothing is viewable.
+     *
+     * The owner role keeps every assertion below about the TARGET-TYPE constraint, which is what this file
+     * is for. The permission constraint has its own test at the bottom.
+     */
+    config(['auth.providers.users.model' => TestUser::class]);
+
+    /** @var TestUser $user */
+    $user = TestUser::create(['email' => 'picker@kitsune.test']);
+    $this->user = $user;
+
+    DB::table('org_user')->insert(['org_id' => $this->org->getKey(), 'user_id' => $user->getKey()]);
+
+    $owner = Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true]);
+    $owner->assignTo($user->getKey());
+
+    Auth::guard('web')->setUser($user);
 });
 
-afterEach(fn () => app(Context::class)->forget());
+afterEach(function (): void {
+    Auth::guard('web')->logout();
+    app(Context::class)->forget();
+});
 
 /** The picker for a relation field, built the way the admin builds it. */
 function picker(Org $org, array $settings = [], int $cardinality = -1): Select
@@ -185,4 +214,38 @@ it('is not a multi-select at all when cardinality is 1', function (): void {
 
     expect($single->isMultiple())->toBeFalse()
         ->and($single->getMaxItems())->toBeNull();
+});
+
+it('offers no entry of a type the author may not view', function (): void {
+    /*
+     * ⚠️ A POLICY IS NOT A QUERY SCOPE, which is the whole of this finding. `EntryPolicy::view()` is asked
+     * about a record somebody already holds, and Eloquent never consults one while BUILDING a query — so a
+     * picker that queried `Entry` directly named the titles of a type the same user is refused at the URL.
+     * An article editor could enumerate note titles through the search box.
+     *
+     * The field targets nothing in particular here, which is the harder case: "any type" used to mean no
+     * constraint at all.
+     */
+    $editor = TestUser::create(['email' => 'editor@kitsune.test']);
+    DB::table('org_user')->insert(['org_id' => $this->org->getKey(), 'user_id' => $editor->getKey()]);
+
+    $role = Role::create(['handle' => 'article-only', 'name' => 'Article only']);
+    $role->grant('entry.article.view');
+    $role->assignTo($editor->getKey());
+
+    Auth::guard('web')->setUser($editor);
+
+    $options = array_values(picker($this->org)->getSearchResults('Course'));
+
+    expect($options)->toContain('Course maintenance in week 3')
+        ->and($options)->not->toContain('Course notes, private');
+});
+
+it('offers nothing at all to somebody who is not signed in', function (): void {
+    // Fail closed: the same answer `Permissions::allows()` gives with no user, rather than the convenient
+    // one. A picker rendered outside a panel is not a shape production produces, and it must not be the
+    // shape that discloses every title in the org.
+    Auth::guard('web')->logout();
+
+    expect(array_values(picker($this->org)->getSearchResults('Course')))->toBe([]);
 });

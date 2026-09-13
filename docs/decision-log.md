@@ -1688,6 +1688,20 @@ Bootstrap requires it: somebody must create the first entry type before a permis
 
 **Creating a role is deliberately not audited, and that is a line rather than a gap.** The log records changes to **authority**, and a role holding no grants and held by nobody is not authority — it is a name. Authority changes on the first grant or the first assignment, and both of those are recorded.
 
+### What the vocabulary does not cover, and what that costs
+
+`architecture.md` publishes five actions on **entries** and nothing else, so two things an org will want to delegate have no permission to ask for: **editing the schema** and **administering roles**. Both are owner-only in v1.0.
+
+⚠️ **That is a limitation rather than an omission, and it was found the hard way.** Review pointed out that after this ADR landed, the seeded copy-editor could still create, rewrite and delete entry types while being refused `/c/product` — a permission system governing the content and not the shape of the content governs the smaller half. Adding a subject (`schema.manage`, `role.manage`) widens the extension surface, and Standing Principle #1 keeps that shut until v1.2. So an org cannot delegate either without making somebody an owner, and that sentence belongs in the docs rather than in a support ticket.
+
+### A policy is not a query scope
+
+`EntryPolicy` answers about a record somebody already holds. Eloquent never consults a policy while **building** a query, so every place that LISTS entries has to apply the grant itself — review found three: the relation picker's search and label resolvers, the related-records table, and the attach dialog, each of which named titles of a type the same user is refused at the URL.
+
+`Permissions::constrainToViewable()` is that predicate, defined once and applied to all three. It returns **null for unrestricted** — an owner, or the explicit wildcard — and a **list** otherwise, because `whereIn` on an empty list matches nothing, which is the right answer for a user who may view nothing and exactly the wrong one for an owner who holds no grants at all.
+
+It hides relations that exist, and that cost is accepted rather than hidden: an editor may see fewer related entries than the entry has, because a title is the whole of what those views show.
+
 ### Consequence
 
 - **Core's RBAC enforces nothing until the host application has run the skeleton's `role_user` migration.** Already true of org scoping, so it is a pattern rather than a new hole — but it is written down here rather than left in somebody's memory.

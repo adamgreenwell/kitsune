@@ -8,6 +8,8 @@
 
 declare(strict_types=1);
 
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
 use Kitsune\Core\Fields\Pattern;
 use Kitsune\Core\Fields\Types\NumberType;
@@ -22,9 +24,35 @@ use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Field;
 use Kitsune\Core\Models\FieldStorage;
 use Kitsune\Core\Models\Org;
+use Kitsune\Core\Models\Role;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
+use Kitsune\Core\Tests\Fixtures\TestUser;
 use Kitsune\Core\Validation\Rule;
+
+/**
+ * Sign in as an owner of this org — the only role that may edit schema in v1.0 (ADR-033).
+ *
+ * ⚠️ `architecture.md` publishes a vocabulary of five actions on ENTRIES and nothing else, so there is no
+ * `schema.manage` to grant. An org cannot delegate schema editing without making somebody an owner, and
+ * that limitation is stated in the resource and in the roadmap rather than left to be found.
+ */
+function signInAsOwner(Org $org): TestUser
+{
+    config(['auth.providers.users.model' => TestUser::class]);
+
+    /** @var TestUser $user */
+    $user = TestUser::create(['email' => 'owner'.mt_rand(1, 1_000_000_000).'@kitsune.test']);
+
+    DB::table('org_user')->insert(['org_id' => $org->getKey(), 'user_id' => $user->getKey()]);
+
+    $role = Role::create(['handle' => 'owner'.mt_rand(1, 1_000_000_000), 'name' => 'Owner', 'is_owner' => true]);
+    $role->assignTo($user->getKey());
+
+    Auth::guard('web')->setUser($user);
+
+    return $user;
+}
 
 /*
  * The builder is an admin surface over org-owned schema, and EntryType is
@@ -239,11 +267,36 @@ describe('the boundary is the ROUTE, not the button', function (): void {
             ->and(EntryTypeResource::canDelete($theirs))->toBeFalse();
     });
 
-    it('authorizes the org\'s own type', function (): void {
+    it('authorizes the org\'s own type, for somebody who may edit schema at all', function (): void {
+        /*
+         * ⚠️ THE OWNER IS NEW HERE, AND IT IS THE POINT RATHER THAN SETUP. Until #81 every member of an org
+         * could rewrite its schema, so org ownership was the whole test. With RBAC in place it is one of two
+         * conditions — review found the builder still open to the seeded copy-editor, who could create,
+         * rewrite and delete entry types while being refused `/c/product`. A permission system that governs
+         * the content and not the shape of the content governs the smaller half.
+         */
         $mine = EntryType::create(['org_id' => $this->org->id, 'handle' => 'mine', 'name' => 'M', 'plural_name' => 'Ms']);
 
+        expect(EntryTypeResource::canEdit($mine))->toBeFalse('a member who is not an owner may not edit schema');
+
+        signInAsOwner($this->org);
+
         expect(EntryTypeResource::canEdit($mine))->toBeTrue()
-            ->and(EntryTypeResource::canDelete($mine))->toBeTrue();
+            ->and(EntryTypeResource::canDelete($mine))->toBeTrue()
+            ->and(EntryTypeResource::canViewAny())->toBeTrue()
+            ->and(EntryTypeResource::canCreate())->toBeTrue()
+            ->and(EntryTypeResource::canDeleteAny())->toBeTrue();
+    });
+
+    it('refuses the whole builder to somebody who is not an owner', function (): void {
+        /*
+         * ⚠️ `canViewAny()` IS WHAT `canAccess()` RETURNS, so this is the URL rather than the sidebar — the
+         * distinction the docblock above already insists on for editing, applied to reaching the list at all.
+         * `e2e/permissions.spec.js` asserts the 403; this is the predicate it aborts on.
+         */
+        expect(EntryTypeResource::canViewAny())->toBeFalse()
+            ->and(EntryTypeResource::canCreate())->toBeFalse()
+            ->and(EntryTypeResource::canDeleteAny())->toBeFalse();
     });
 
     it('refuses the FIELD relation manager for a global type', function (): void {

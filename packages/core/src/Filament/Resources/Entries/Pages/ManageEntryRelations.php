@@ -15,6 +15,8 @@ use Filament\Actions\DetachAction;
 use Filament\Resources\Pages\ManageRelatedRecords;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Table;
+use Illuminate\Database\Eloquent\Builder;
+use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Filament\Concerns\InteractsWithEntryType;
 use Kitsune\Core\Filament\Resources\Entries\EntryResource;
 
@@ -48,7 +50,25 @@ class ManageEntryRelations extends ManageRelatedRecords
                     ->extraAttributes(['dir' => 'auto']),
                 TextColumn::make('type_handle')->badge()->label('Type'),
             ])
-            ->headerActions([AttachAction::make()])
+            /*
+             * ⚠️ THE LISTED ROWS AND THE ATTACH DIALOG BOTH QUERY `Entry`, AND A POLICY GOVERNS NEITHER.
+             * Review found it: `EntryPolicy::view()` is asked about a record somebody already has, while
+             * Eloquent never consults one while BUILDING a query — so this page named the titles of types
+             * the same user is refused at the URL, and the attach dialog offered them for selection.
+             *
+             * ⚠️ IT HIDES RELATIONS THAT EXIST, and that cost is real and deliberate. An editor may see
+             * fewer related entries than the entry has, because the alternative is disclosing a title from a
+             * type they may not view — and a title is the whole of what this page shows. Failing closed is
+             * the direction ADR-020 takes everywhere else that a disclosure is the failure.
+             */
+            ->modifyQueryUsing(fn (Builder $query): Builder => Permissions::constrainToViewable(
+                $query, Permissions::currentUser(),
+            ))
+            ->headerActions([
+                AttachAction::make()->recordSelectOptionsQuery(
+                    fn (Builder $query): Builder => Permissions::constrainToViewable($query, Permissions::currentUser()),
+                ),
+            ])
             ->recordActions([DetachAction::make()]);
     }
 }

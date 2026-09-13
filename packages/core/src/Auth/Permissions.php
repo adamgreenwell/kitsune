@@ -10,11 +10,14 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Auth;
 
+use Filament\Facades\Filament;
 use Illuminate\Contracts\Auth\Authenticatable;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Once;
 use InvalidArgumentException;
+use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\Role;
 use Kitsune\Core\Tenancy\Context;
 
@@ -198,6 +201,90 @@ final class Permissions
             ->unique()
             ->values()
             ->all();
+    }
+
+    /**
+     * The entry type handles this user may view, or null when the answer is "any".
+     *
+     * ⚠️ A QUERY CONSTRAINT, BECAUSE A POLICY IS NOT ONE. Review found the gap: `EntryPolicy::view()` is
+     * asked about a record somebody already has, and Eloquent never consults it while BUILDING a query — so
+     * a relation picker that queried `Entry` directly happily returned titles of a type the user is refused
+     * at the URL. An article editor could enumerate product names through the picker's search box.
+     *
+     * ⚠️ NULL IS "UNRESTRICTED" AND AN EMPTY ARRAY IS "NOTHING", which is the distinction a caller must not
+     * collapse. `whereIn('type_handle', [])` matches no rows, which is the correct answer for a user who may
+     * view nothing — and it is exactly the wrong answer for an owner, who may view everything and holds no
+     * grants at all.
+     *
+     * ⚠️ DERIVED FROM THE GRANTS RATHER THAN FROM THE TYPE TABLE, so it costs no query of its own and cannot
+     * drift from what `allows()` would answer for the same handle.
+     *
+     * @return list<string>|null
+     */
+    public static function viewableEntryTypes(?Authenticatable $user): ?array
+    {
+        if ($user === null || app(Context::class)->orgId() === null) {
+            return [];
+        }
+
+        if (self::isOwner($user)) {
+            return null;
+        }
+
+        $held = self::held($user);
+
+        if (in_array(self::forEntryType(self::ANY_TYPE, 'view'), $held, true)) {
+            return null;
+        }
+
+        $handles = [];
+
+        foreach ($held as $permission) {
+            $parts = explode('.', $permission);
+
+            if (count($parts) === 3 && $parts[0] === self::ENTRY && $parts[2] === 'view' && $parts[1] !== self::ANY_TYPE) {
+                $handles[] = $parts[1];
+            }
+        }
+
+        return array_values(array_unique($handles));
+    }
+
+    /**
+     * The signed-in user, asked of the panel when there is one and of the guard otherwise.
+     *
+     * ⚠️ THE BINDING CHECK IS NOT DEFENSIVE STYLE, it is the difference between a class the package suite
+     * can reach and one it cannot. `Filament::auth()` resolves the `filament` binding, which core's tests
+     * never register — ADR-024 puts the panel layer in the browser — so reaching for it inside anything the
+     * PHP suite exercises fails with `Target class [filament] does not exist`. That happened twice on this
+     * branch before it was worth a method.
+     *
+     * ⚠️ AND `auth()->user()` IS NOT A WEAKER ANSWER, because a panel is the only place these call sites run
+     * in production, and outside one there is no panel guard to prefer. What it is NOT is a licence to skip
+     * the user: every caller still treats null as "may view nothing".
+     */
+    public static function currentUser(): ?Authenticatable
+    {
+        return app()->bound('filament') ? Filament::auth()->user() : auth()->user();
+    }
+
+    /**
+     * Narrow an entry query to the types this user may view.
+     *
+     * ⚠️ ONE PREDICATE, EVERY PLACE ENTRIES ARE LISTED, and the relation picker's own docblock already
+     * records why: a constraint written three times is two places for it to be forgotten, which is exactly
+     * how that picker ended up applying its target filter to the search and not to the label resolvers.
+     * Review found the permission version of the same shape — the picker, the relations table and the
+     * attach dialog each query `Entry`, and a policy governs none of them.
+     *
+     * @param  Builder<Entry>  $query
+     * @return Builder<Entry>
+     */
+    public static function constrainToViewable(Builder $query, ?Authenticatable $user): Builder
+    {
+        $viewable = self::viewableEntryTypes($user);
+
+        return $viewable === null ? $query : $query->whereIn('type_handle', $viewable);
     }
 
     /**

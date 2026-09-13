@@ -18,6 +18,8 @@ use Kitsune\Core\Audit\Auditor;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Tenancy\Attributes\OrgScoped;
 use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
+use Kitsune\Core\Tenancy\Context;
+use RuntimeException;
 
 /**
  * A named set of permissions, owned by one org — ADR-033.
@@ -42,6 +44,62 @@ class Role extends Model
 
     protected $casts = ['is_owner' => 'boolean'];
 
+    /**
+     * Any change to a role can change who may do what, so the memo goes — review found the gap.
+     *
+     * ⚠️ THE FOUR HELPERS WERE NOT ENOUGH, and `is_owner` is why. Flipping it through an ordinary
+     * `save()` or `update()`, or deleting the role outright, changed the widest grant in the system while
+     * `Permissions::isOwner()` kept answering from before the write. A demoted owner kept the bypass for
+     * the rest of the request; a promotion did not take.
+     *
+     * ⚠️ A MODEL EVENT HERE, THOUGH ADR-020 REJECTS THEM FOR AUDITING, and the difference is what a miss
+     * costs. A missed audit row is a permanent hole in a record that cannot be reconstructed, so that guard
+     * has to sit at the builder where `saveQuietly()` cannot step around it. A missed cache flush is a
+     * stale answer inside one process, and `saveQuietly()` on a role is the same visible back door as
+     * `attach()` — worth closing cheaply here rather than not at all.
+     */
+    protected static function booted(): void
+    {
+        static::saved(static function (): void {
+            Permissions::forget();
+        });
+
+        static::deleted(static function (): void {
+            Permissions::forget();
+        });
+    }
+
+    /**
+     * Refuse to act on a role that does not belong to the org the context names.
+     *
+     * ⚠️ A STALE INSTANCE OUTLIVES ITS SCOPE, which is what review found. `OrgScope` filters the QUERY that
+     * loaded a role; it says nothing about the object afterwards. In a multi-org command or a long-lived
+     * worker the context moves on and the instance does not, so `assignTo()` would have written org A's role
+     * onto a user while operating in org B — and recorded the audit row under B, which is worse than no row
+     * because it is a false one.
+     *
+     * The scope cannot catch it: `grant()` reaches `role_permissions`, which is deliberately unscoped, and
+     * `assignTo()` writes `role_user` with a raw id. So the check belongs where the authority changes.
+     */
+    private function refuseIfNotCurrentOrg(string $operation): void
+    {
+        $current = app(Context::class)->orgId();
+
+        if ($current !== null && (int) $this->org_id === $current) {
+            return;
+        }
+
+        throw new RuntimeException(sprintf(
+            'Refusing [%s] on role %s: it belongs to org %s and the current context is %s. A role loaded '
+            .'under one org and used under another writes authority into the wrong customer, and records '
+            .'an audit row that names the wrong one (ADR-021, ADR-033).',
+            $operation,
+            (string) $this->getKey(),
+            (string) $this->org_id,
+            $current === null ? 'none' : (string) $current,
+        ));
+    }
+
     /** @return BelongsTo<Org, $this> */
     public function org(): BelongsTo
     {
@@ -64,6 +122,8 @@ class Role extends Model
      */
     public function grant(string $permission): RolePermission
     {
+        $this->refuseIfNotCurrentOrg('grant');
+
         $permission = Permissions::validated($permission);
 
         /** @var RolePermission $row */
@@ -81,6 +141,8 @@ class Role extends Model
     /** Remove a grant. Silent when it was not held, because the end state is what was asked for. */
     public function revoke(string $permission): void
     {
+        $this->refuseIfNotCurrentOrg('revoke');
+
         if ($this->permissions()->where('permission', $permission)->delete() > 0) {
             app(Auditor::class)->record('role.revoked', $this);
         }
@@ -104,6 +166,8 @@ class Role extends Model
      */
     public function assignTo(int $userId): void
     {
+        $this->refuseIfNotCurrentOrg('assignTo');
+
         $existing = DB::table('role_user')
             ->where('role_id', $this->getKey())
             ->where('user_id', $userId)
@@ -123,6 +187,8 @@ class Role extends Model
     /** Take it away again. Silent when the user did not hold it, because the end state is what was asked. */
     public function removeFrom(int $userId): void
     {
+        $this->refuseIfNotCurrentOrg('removeFrom');
+
         $removed = DB::table('role_user')
             ->where('role_id', $this->getKey())
             ->where('user_id', $userId)
