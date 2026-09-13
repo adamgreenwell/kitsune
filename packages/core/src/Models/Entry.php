@@ -889,7 +889,18 @@ class Entry extends Model implements RequiresModelSave
          */
         foreach (self::STAMPED_TAGS as $tag) {
             foreach (iterator_to_array($document->getElementsByTagName($tag)) as $element) {
-                if (self::ownDirection($element) === 'auto' && self::fixedAncestorDirection($element) !== null) {
+                if (self::ownDirection($element) !== 'auto') {
+                    continue;
+                }
+
+                /*
+                 * ⚠️ AND A GENERATED `auto` ON THE FIRST BLOCK INSIDE A BLOCK IS REMOVED FOR THE SAME
+                 * REASON, one level down: it is not blocking an ancestor's DECISION, it is blocking an
+                 * ancestor's RESOLUTION. `<li dir="auto"><p dir="auto">مرحبا</p></li>` is what every save
+                 * stored before this rule existed, and the item resolved from nothing and rendered `ltr`
+                 * with its text running right-to-left. See `yieldsToOuterBlock()`.
+                 */
+                if (self::fixedAncestorDirection($element) !== null || self::yieldsToOuterBlock($element)) {
                     $element->removeAttribute('dir');
                 }
             }
@@ -928,6 +939,26 @@ class Entry extends Model implements RequiresModelSave
                  * again to write nothing rather than to write the right thing.
                  */
                 if (self::nearestDirection($element) !== null) {
+                    continue;
+                }
+
+                /*
+                 * ⚠️ THE FIRST BLOCK INSIDE A BLOCK GETS NOTHING, so the block around it can resolve. This
+                 * is the shape the editor produces on every save — `tiptap-php` renders a list item's text
+                 * into a `<p>` inside the `<li>` — and stamping both halves put the bullet on the wrong
+                 * side. `yieldsToOuterBlock()` carries the measurement.
+                 */
+                if (self::yieldsToOuterBlock($element)) {
+                    continue;
+                }
+
+                /*
+                 * ⚠️ AND NOTHING IS WRITTEN WHERE IT WOULD RESOLVE FROM NOTHING. `auto` is an instruction
+                 * to read the element's own text, so on an element whose text is entirely inside
+                 * descendants that carry directions it reads no text at all — and falls back to `ltr`
+                 * rather than inheriting, which is strictly worse than writing nothing.
+                 */
+                if (self::resolvesFromNothing($element)) {
                     continue;
                 }
 
@@ -1362,6 +1393,199 @@ class Entry extends Model implements RequiresModelSave
      * value was never checked. An attribute that establishes no direction must read as null here, or
      * it suppresses a wrapper while doing nothing itself.
      */
+    /**
+     * Is this block the FIRST block inside another block, and therefore the one that block resolves from?
+     *
+     * ⚠️ THIS IS THE SHAPE THE EDITOR PRODUCES ON EVERY SAVE, measured rather than imagined. `tiptap-php`
+     * renders a list item as `<li>` with a content hole, and a list item's text lives in a paragraph — so
+     * the editor's own output for one Arabic bullet is `<ul><li><p>مرحبا</p></li></ul>`, and stamping both
+     * halves of it gave `<li dir="auto"><p dir="auto">`. Four shapes in a real browser under an LTR page:
+     *
+     *   <li dir="auto">مرحبا</li>                    ->  li=rtl            what a seeder stores
+     *   <li dir="auto"><p dir="auto">مرحبا</p></li>   ->  li=ltr,  p=rtl    what a save stored
+     *   <li dir="auto"><p>مرحبا</p></li>              ->  li=rtl,  p=rtl    this rule
+     *   <li><p dir="auto">مرحبا</p></li>              ->  li=ltr,  p=rtl
+     *
+     * `dir="auto"` resolves from an element's text EXCLUDING descendants that carry their own direction,
+     * so stamping both left the item with nothing to read and it fell back to `ltr` while its text ran
+     * right-to-left — the bullet and the indent on the wrong side. The marker is rendered by the ITEM, so
+     * the item is what has to resolve, and the way to let it is to write nothing on the block inside it.
+     *
+     * ⚠️ THE FIRST, NOT ALL OF THEM, and that is what keeps issue #39 fixed inside a list item.
+     * `<li><p>a</p><p>ب</p></li>` leaves the first paragraph undirected so the item resolves from it, and
+     * still stamps the second — the marker agrees with the paragraph it sits beside, and the Arabic
+     * paragraph still renders right-to-left. Stamping neither would put both under one direction; stamping
+     * both is the defect above.
+     *
+     * ⚠️ THE CHAIN FALLS OUT OF A LOCAL TEST, with no walk. `<li><blockquote><p>x</p></blockquote></li>`
+     * skips the blockquote because it is the first block in the item and skips the paragraph because it is
+     * the first block in the blockquote, so the item reaches real text. Only `li` and `blockquote` may
+     * legally hold blocks, so this fires nowhere else in the vocabulary.
+     *
+     * ⚠️ AND `ul`/`ol` ARE NOT BLOCK_TAGS, which is what stops it firing on a list item itself: an item's
+     * parent is a list, a list is not a block that carries text, and every item still resolves its own.
+     */
+    private static function yieldsToOuterBlock(DOMNode $element): bool
+    {
+        $parent = $element->parentNode;
+
+        if (! $parent instanceof DOMElement || ! in_array(strtolower($parent->nodeName), self::BLOCK_TAGS, true)) {
+            return false;
+        }
+
+        /*
+         * ⚠️ ONLY WHEN THE BLOCK AROUND IT HAS NOTHING ELSE TO READ, which the suite caught the moment
+         * this rule was written without it. `<blockquote>English<p>عربي</p>עברית</blockquote>` is a
+         * container with loose runs of its OWN beside a block, and yielding there handed the blockquote
+         * the Arabic to resolve from while the run that comes first is English. A block yields so that an
+         * ancestor with no text of its own can reach some; an ancestor that already has text needs no
+         * donation, and taking one changes which run decides.
+         */
+        if (self::carriesLooseText($parent)) {
+            return false;
+        }
+
+        foreach ($parent->childNodes as $sibling) {
+            if (! $sibling instanceof DOMElement || ! in_array(strtolower($sibling->nodeName), self::BLOCK_TAGS, true)) {
+                continue;
+            }
+
+            return $sibling === $element;
+        }
+
+        return false;
+    }
+
+    /**
+     * Does this element hold text of its own — text that no block inside it has taken?
+     *
+     * ⚠️ BLOCK CHILDREN ARE SKIPPED RATHER THAN DESCENDED INTO, because their text is theirs: each one
+     * resolves its own direction, so none of it is available to the element around them. Everything else
+     * IS descended into — a `<strong>` or an `<a>` carries no direction, so the text inside it belongs to
+     * the nearest block, which is this element.
+     */
+    private static function carriesLooseText(DOMNode $element): bool
+    {
+        foreach ($element->childNodes as $child) {
+            if (! $child instanceof DOMElement) {
+                if (trim($child->textContent) !== '') {
+                    return true;
+                }
+
+                continue;
+            }
+
+            if (in_array(strtolower($child->nodeName), self::BLOCK_TAGS, true)) {
+                continue;
+            }
+
+            if (self::carriesLooseText($child)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Would `auto` on this element read no text at all?
+     *
+     * ⚠️ `auto` IS NOT A DIRECTION, IT IS AN INSTRUCTION TO READ, and an element whose text is entirely
+     * inside descendants that carry their own directions has nothing left to read. The browser does not
+     * inherit in that case — it falls back to `ltr` — so writing `auto` there is strictly worse than
+     * writing nothing, which at least inherits. It is the same sentence as the two rules above: a default
+     * fills a gap and must not replace an answer that was already right.
+     *
+     * ⚠️ AN EMPTY BLOCK IS NOT THIS CASE, and the distinction is load-bearing rather than pedantic. A
+     * paragraph the author has just created has no text either, but it has no directed descendant taking
+     * it — and `auto` on it is exactly what issue #76 is about, so it must still be written.
+     *
+     * ⚠️ IT ASKS WHAT THE PASS WILL DO, NOT WHAT IT HAS DONE, and the first version asked the wrong one.
+     * Reading `dir` off the descendants makes the answer depend on the order the tags are walked in:
+     * `getElementsByTagName('li')` yields an outer item before the inner one, so an item holding only a
+     * nested list was judged before that list's items had been stamped, saw undirected text, and took a
+     * direction that then resolved from nothing. A block that is not yielding WILL carry one, which is a
+     * structural fact and true whenever it is asked.
+     *
+     * ⚠️ NON-WHITESPACE RATHER THAN STRONG-DIRECTIONAL, which is an approximation and is stated as one.
+     * `dir="auto"` resolves from the first STRONG directional character, so an element whose own text is
+     * `— ` reads as having text here and resolves from nothing in the browser. Classifying bidi character
+     * types to close that would be a Unicode table in a stamping pass, for a shape nothing produces; the
+     * cost of the approximation is one element that inherits nothing instead of inheriting.
+     */
+    private static function resolvesFromNothing(DOMNode $element): bool
+    {
+        return ! self::availableText($element) && self::holdsASpokenForBlock($element);
+    }
+
+    /**
+     * Is there any text here that nothing inside has taken?
+     *
+     * ⚠️ NEARLY `carriesLooseText()` AND DELIBERATELY NOT IT, which is the distinction the suite caught
+     * when they were one method. That one skips EVERY block child, because it answers "has this block
+     * enough of its own to read that nothing need yield to it". This one descends into a block that
+     * YIELDS, because a yielding block carries no direction and its text is therefore this element's to
+     * resolve from — which is the whole point of yielding. Merging them made `<li><p>a</p><p>ب</p></li>`
+     * look textless and cost the item its direction.
+     */
+    private static function availableText(DOMNode $element): bool
+    {
+        foreach ($element->childNodes as $child) {
+            if (! $child instanceof DOMElement) {
+                if (trim($child->textContent) !== '') {
+                    return true;
+                }
+
+                continue;
+            }
+
+            if (self::ownDirection($child) !== null) {
+                continue;
+            }
+
+            if (in_array(strtolower($child->nodeName), self::BLOCK_TAGS, true) && ! self::yieldsToOuterBlock($child)) {
+                continue;
+            }
+
+            if (self::availableText($child)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Is there a block inside this one that will carry a direction of its own?
+     *
+     * ⚠️ A YIELDING BLOCK IS DESCENDED INTO RATHER THAN COUNTED, and that is what makes the two halves
+     * agree. A block that yields carries nothing, so its text is this element's to resolve from — which is
+     * exactly the case `carriesLooseText()` cannot see, because that one skips block children by design.
+     * Together they answer the real question: is there text here that nothing else has taken?
+     */
+    private static function holdsASpokenForBlock(DOMNode $element): bool
+    {
+        foreach ($element->childNodes as $child) {
+            if (! $child instanceof DOMElement) {
+                continue;
+            }
+
+            if (self::ownDirection($child) !== null) {
+                return true;
+            }
+
+            if (in_array(strtolower($child->nodeName), self::BLOCK_TAGS, true) && ! self::yieldsToOuterBlock($child)) {
+                return true;
+            }
+
+            if (self::holdsASpokenForBlock($child)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private static function ownDirection(DOMNode $container): ?string
     {
         if (! $container instanceof DOMElement) {

@@ -60,8 +60,14 @@ class BlockDirection extends Extension
      * The text flowed right-to-left while the item's own direction went left-to-right, which puts the
      * bullet on the wrong side — a visible regression in exchange for the gap it closed. No static default
      * can tell a top-level paragraph from one inside a list item, because they are the same node type; that
-     * needs a handler which knows a block's parent, filed as issue #76. The gap is recorded there and in
-     * `docs/accessibility-inventory.md` rather than traded for this.
+     * needs a handler which knows a block's parent, and `rich-editor-direction.js` carries one now — an
+     * `appendTransaction` implementing the rule both halves share: every text-bearing block resolves its
+     * own direction, except the first block inside another block, which is left undirected so the block
+     * around it resolves from its text (issues #76 and #77).
+     *
+     * The PHP half stays defaultless because it converts STORED content, which `Entry` has already stamped
+     * under that same rule — `Entry::yieldsToOuterBlock()`. There is no gap here to fill, and a default
+     * would fill one that does not exist with an answer that contradicts the stamping.
      *
      * @param  list<string>  $types
      * @return array<string, mixed>

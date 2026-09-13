@@ -346,24 +346,161 @@ test.describe('a field value carries its own direction', () => {
          */
     });
 
-    /*
-     * ⚠️ WHAT IS NOT ASSERTED, AND WHY THE OBVIOUS FIX FOR IT IS WRONG. A block the author has just
-     * created has no stored direction to preserve — `Entry` stamps `auto` on the way INTO storage, which
-     * is too late to help while typing — so Arabic typed into a NEW paragraph renders in the chrome's
-     * direction until the value is saved. Review asked for a default of `auto` to close that.
-     *
-     * Measured, that default costs more than it buys. It also lands on the paragraph INSIDE a list item,
-     * and `dir="auto"` resolves from an element's text EXCLUDING any descendant that has its own
-     * direction — so on the seeded list the browser reported:
-     *
-     *   LI[auto]=ltr   wrapping   P[auto]=rtl
-     *
-     * The text flowed right-to-left while the item's own direction went left-to-right, which puts the
-     * bullet on the wrong side. No static default can tell a top-level paragraph from one inside a list
-     * item, because they are the same node type; closing the gap needs a handler that knows a block's
-     * parent — filed as issue #76 and recorded in `docs/accessibility-inventory.md` — rather than traded
-     * for a visible regression in already-stored content.
-     */
+    test('a block authored right now resolves its own direction, before any save', async ({ page }) => {
+        /*
+         * ⚠️ THE CASE THE STORAGE FIX CANNOT REACH, and the one an author meets first. A block that has
+         * just been created has no stored direction to preserve: `Entry` stamps `auto` on the way INTO
+         * storage, which is too late to help while typing. So Arabic typed into a new paragraph rendered in
+         * the chrome's direction until the value was saved — the complaint #39 opens with, surviving in the
+         * one place #67 was meant to fix it. Issue #76 carried it; this is the handler it asked for.
+         *
+         * ⚠️ A DEFAULT OF `auto` WOULD HAVE BEEN WRONG, measured: it also lands on the paragraph INSIDE a
+         * list item, and `dir="auto"` resolves from an element's text EXCLUDING any descendant that has its
+         * own direction — so the seeded list rendered `LI[auto]=ltr` around `P[auto]=rtl`, bullet on the
+         * wrong side. A transaction can see a block's PARENT, which is what a static default cannot, so a
+         * list item's paragraph is left alone. The test below this one is the half that guards it.
+         *
+         * ⚠️ THE CREATE PAGE, because that is where a caret can be placed: the editor on an existing
+         * entry's edit page cannot be focused from this harness — every attempt lands at the document
+         * start — while an empty editor takes a click.
+         */
+        await page.goto(`/admin/${SITE}/c/article/create`);
+
+        const editor = page.locator('.tiptap[contenteditable="true"]').first();
+        await expect(editor).toBeVisible();
+        await editor.click();
+
+        await page.keyboard.type('ملاحظات جديدة');
+        await page.keyboard.press('Enter');
+        await page.keyboard.type('A second block, in English.');
+
+        const blocks = editor.locator('p');
+        await expect(blocks).toHaveCount(2);
+
+        // Each block resolves from its OWN text, in an LTR admin, with nothing saved yet.
+        expect(await resolvedDirection(blocks.nth(0))).toBe('rtl');
+        expect(await resolvedDirection(blocks.nth(1))).toBe('ltr');
+    });
+
+    test('and filling a new block does not disturb a list', async ({ page }) => {
+        /*
+         * ⚠️ THE GUARD ON THE HANDLER ABOVE. It gives a new text-bearing block `auto` — including a list
+         * ITEM — and it must not give one to the paragraph inside that item: the paragraph's text is what
+         * the item's own `auto` reads, and a direction on the paragraph takes it out of the item's reach.
+         * Measured with the default that did that: `LI[auto]=ltr` wrapping `P[auto]=rtl`, bullet on the
+         * wrong side.
+         *
+         * So this asserts the shape as well as the resolution — the items carry the direction, their
+         * paragraphs carry none, and the list carries none.
+         */
+        await page.goto(`/admin/${SITE}/c/article`);
+        await page.getByRole('link', { name: ARABIC_TITLE }).first().click();
+        await page.waitForURL(/\/(edit|\d+)$/);
+
+        const editor = page.locator('.tiptap').first();
+        await expect(editor).toBeVisible();
+
+        const shape = await editor.evaluate((el) => [...el.querySelectorAll('ul li, ul li p, ul')]
+            .map((node) => node.tagName + '[' + (node.getAttribute('dir') || '-') + ']')
+            .join(' '));
+
+        // Document order, so the items and their paragraphs interleave.
+        expect(shape).toBe('UL[-] LI[auto] P[-] LI[auto] P[-]');
+
+        const arabicItem = editor.locator('li', { hasText: 'تنظيف' }).first();
+        expect(await resolvedDirection(arabicItem)).toBe('rtl');
+    });
+
+    test('an author\'s fixed direction is not undone by a generated one below it', async ({ page }) => {
+        /*
+         * ⚠️ THE OTHER HALF REVIEW FOUND, and it is the oldest mistake in this feature arriving through a
+         * new door. `Entry` leaves the paragraph inside `<blockquote dir="rtl">` undirected on purpose, so
+         * it inherits the author's decision — `auto` there would resolve from the Latin word that opens it
+         * and render the Arabic left-to-right, replacing a decision with a default.
+         *
+         * The storage half has asserted that for several rounds. The EDITING half did not: the transaction
+         * saw an undirected paragraph, checked only its immediate parent, and filled it in on the first
+         * keystroke anywhere in the document. So the author's choice survived the save and was masked while
+         * they were looking at it.
+         */
+        await page.goto(`/admin/${SITE}/c/article`);
+        await page.getByRole('link', { name: ARABIC_TITLE }).first().click();
+        await page.getByRole('link', { name: /^edit$/i }).first().click();
+        await page.waitForURL(/\/edit$/);
+
+        const editor = page.locator('.tiptap[contenteditable="true"]').first();
+        await expect(editor).toBeVisible();
+
+        const quote = editor.locator('blockquote').first();
+        const inside = quote.locator('p');
+        await expect(inside).toHaveCount(2);
+
+        /*
+         * ⚠️ THE SECOND PARAGRAPH IS THE ONE THAT MEASURES ANYTHING, and the first version of this test
+         * asserted about the first — which passes with the inheritance rule deleted, because the first
+         * block inside a block yields for an unrelated reason. Measured: removing the guard left it green.
+         * The second yields to nothing, opens with `ACME`, and so resolves `ltr` under `auto` and `rtl`
+         * under the author's choice. Those differ, which is the whole requirement for a test here.
+         */
+        const second = inside.nth(1);
+        await expect(second).toBeVisible();
+
+        // The stored shape, before anything is typed.
+        expect(await quote.getAttribute('dir')).toBe('rtl');
+        expect(await inside.nth(0).getAttribute('dir')).toBeNull();
+        expect(await second.getAttribute('dir')).toBeNull();
+
+        /*
+         * ⚠️ AND AFTER A DOCUMENT CHANGE, which is what runs the handler at all. Typing anywhere is enough
+         * — the transaction walks the whole document, so a keystroke in the first paragraph is what filled
+         * this one in.
+         */
+        await editor.click();
+        await page.keyboard.type('x');
+
+        expect(await second.getAttribute('dir')).toBeNull();
+        expect(await resolvedDirection(second)).toBe('rtl');
+    });
+
+    test('toggling a list moves the direction onto the item rather than leaving it below', async ({ page }) => {
+        /*
+         * ⚠️ THE AUTHORING PATH THE SHAPE TEST ABOVE CANNOT SEE, because that one loads a list that was
+         * already stored in the right shape. Review found this: the handler gives a new paragraph `auto`
+         * while the author types in it, and toggling a list WRAPS that existing paragraph node — the
+         * bundled editor's `wrapInList` keeps its attributes — so the `auto` written a keystroke earlier
+         * arrives inside a list item and stays. That is `<li><p dir="auto">`, the item resolving `ltr` from
+         * nothing while its text runs right-to-left, and the next save stores it: `Entry` stamps the
+         * undirected `li` and keeps the paragraph's `auto`.
+         *
+         * So a direction is taken back OFF a block that has come to yield, and that is what this measures —
+         * on the create page, where a caret can be placed.
+         */
+        await page.goto(`/admin/${SITE}/c/article/create`);
+
+        const editor = page.locator('.tiptap[contenteditable="true"]').first();
+        await expect(editor).toBeVisible();
+        await editor.click();
+
+        // Type into the paragraph first, so it is carrying `auto` by the time the list wraps it.
+        await page.keyboard.type('مرحبا');
+        await expect(editor.locator('p[dir="auto"]')).toHaveCount(1);
+
+        // `- ` at the start of the block is the editor's own input rule for a bullet list.
+        await page.keyboard.press('Home');
+        await page.keyboard.type('- ');
+
+        await expect(editor.locator('ul li')).toHaveCount(1);
+
+        const shape = await editor.evaluate((el) => [...el.querySelectorAll('ul, ul li, ul li p')]
+            .map((node) => node.tagName + '[' + (node.getAttribute('dir') || '-') + ']')
+            .join(' '));
+
+        expect(shape).toBe('UL[-] LI[auto] P[-]');
+
+        // And the item — the element that renders the marker — resolves from the text inside it.
+        const item = editor.locator('ul li').first();
+        expect(await resolvedDirection(item)).toBe('rtl');
+    });
 
     test('typing RTL text into an empty field flips it live', async ({ page }) => {
         // `dir="auto"` is evaluated by the browser as the value changes, so a new entry
