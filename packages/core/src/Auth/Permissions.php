@@ -285,6 +285,11 @@ final class Permissions
      * whose authority changed rather than an unrelated model with the same id — review found that hard-coded
      * to `users` after the membership check had already been fixed the same way.
      *
+     * ⚠️ AND KNOWING IT IS WHAT LETS CORE OFFER ROLE ASSIGNMENT AT ALL, which is a decision #84 reversed on
+     * this evidence: the assignment UI was going to live in the skeleton because core must not own a user
+     * MODEL. It still does not own one — it asks the panel — and putting the screen here avoids opening an
+     * extension point in core's navigation before the extension API exists (Standing Principle #1).
+     *
      * @return class-string<Model>|null
      */
     public static function userModel(): ?string

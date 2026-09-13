@@ -1710,6 +1710,14 @@ Bootstrap requires it: somebody must create the first entry type before a permis
 
 It hides relations that exist, and that cost is accepted rather than hidden: an editor may see fewer related entries than the entry has, because a title is the whole of what those views show.
 
+### Administering roles, and where that screen lives
+
+⚠️ **Issue #84 said the assignment screen would live in the skeleton, and this reverses it on evidence.** The argument was that `role_user` references a `users` table core did not create and must not own — which still holds: **core owns no user model.** What changed is that it does not need one. `Permissions::userModel()` asks the **panel's own auth provider**, which is the same lesson review taught about the membership check: the provider cannot be wrong about which model it loads, and `config('auth.providers.users.model')` was a guess that failed open.
+
+The alternative cost more than it bought. A resource in the skeleton needs a navigation entry; navigation is supplied explicitly by `KitsunePanel` (ADR-012); so letting a host add one means opening an extension point in core **before the extension API exists**, which is exactly what Standing Principle #1 keeps shut until v1.2.
+
+**An org may not lose its last held owner role.** Refused by `Role` itself rather than by the form, because an org that loses its last owner cannot get one back: schema editing and role administration are both owner-only, so the only person who could restore the flag is the one who just removed it. The guard asks whether this change takes the **last held** one rather than whether the result has any — a fresh install mid-seed has an owner role nobody holds yet, and the second question would refuse to let a seeder correct one.
+
 ### Consequence
 
 - **Core's RBAC enforces nothing until the host application has run the skeleton's `role_user` migration.** Already true of org scoping, so it is a pattern rather than a new hole — but it is written down here rather than left in somebody's memory.

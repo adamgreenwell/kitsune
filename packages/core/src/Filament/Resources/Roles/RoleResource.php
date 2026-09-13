@@ -15,6 +15,7 @@ use Filament\Actions\BulkActionGroup;
 use Filament\Actions\DeleteBulkAction;
 use Filament\Actions\EditAction;
 use Filament\Forms\Components\CheckboxList;
+use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Toggle;
 use Filament\Resources\Resource;
@@ -89,6 +90,9 @@ class RoleResource extends Resource
     /** The state key for the explicit wildcard, kept out of the per-type map so `*` is never a path. */
     public const ANY_TYPE_STATE = 'grants_any_type';
 
+    /** The state key for who holds this role — `role_user`, which is another table again. */
+    public const HOLDER_STATE = 'holders';
+
     public static function form(Schema $schema): Schema
     {
         return $schema->components([
@@ -140,8 +144,128 @@ class RoleResource extends Resource
                 ])
                 ->collapsible(),
 
+            /*
+             * ⚠️ ASSIGNMENT IS HERE, AND ISSUE #84 SAID IT WOULD BE IN THE SKELETON — reversed on evidence,
+             * which is what the reasoning was waiting for. The argument for the skeleton was that
+             * `role_user` references a `users` table core did not create and must not own, and that still
+             * holds: core owns no user model. What changed is that it does not need one. The PANEL names its
+             * provider's model (`Permissions::userModel()`), which is the same lesson review taught about the
+             * membership check — the provider cannot be wrong about which model it loads, and
+             * `config('auth.providers.users.model')` was a guess that failed open.
+             *
+             * The alternative cost more than it bought: a resource in the skeleton would need a navigation
+             * entry, navigation is supplied explicitly by `KitsunePanel` (ADR-012), and letting the host add
+             * one means opening an extension point in core before the extension API exists — exactly what
+             * Standing Principle #1 keeps shut until v1.2.
+             *
+             * ⚠️ IT WRITES THROUGH `Role::assignTo()` / `removeFrom()`, which is the audited path. A page
+             * that touched the pivot directly would record nothing, and ADR-033 names assignment as the
+             * audited security event.
+             */
+            Section::make('Held by')
+                ->description('Everybody in this organisation who has this role. Assigning one is recorded.')
+                ->schema([
+                    Select::make(self::HOLDER_STATE)
+                        ->hiddenLabel()
+                        ->multiple()
+                        ->searchable()
+                        /*
+                         * ⚠️ SEARCH RESULTS RATHER THAN A PRELOADED LIST, the same reasoning the relation
+                         * picker records: an org's user table is not a dropdown. Smaller than an entry table
+                         * today and the same shape of cost at scale.
+                         */
+                        ->getSearchResultsUsing(self::searchHolders(...))
+                        ->getOptionLabelUsing(fn (mixed $value): ?string => self::holderLabel((int) $value))
+                        /*
+                         * ⚠️ THE PLURAL RESOLVER IS NOT OPTIONAL ON A `multiple()` SELECT, and leaving it out
+                         * is a 500 rather than a missing label: *"Filament failed to validate the
+                         * [data.holders] field's selected options because it did not have an [options()] or
+                         * [getOptionLabelsUsing()] configuration."* Filament validates a multi-select's
+                         * submitted options through it.
+                         *
+                         * `FieldValueRenderer::entryPicker()` records the same trap — review found it there
+                         * when an unconstrained resolver let a forged id pass form validation — and I read
+                         * that docblock and hit it anyway, which is the argument for it being a docblock
+                         * rather than a memory.
+                         */
+                        ->getOptionLabelsUsing(fn (array $values): array => self::holderLabels($values))
+                        ->dehydrated(false),
+                ]),
+
             ...self::perTypeSections(),
         ]);
+    }
+
+    /**
+     * Members of the current org whose name or email matches.
+     *
+     * ⚠️ THROUGH THE USER MODEL'S OWN SCOPED QUERY, so `#[OrgScopedThroughPivot]` decides who is visible —
+     * this must never become a way to enumerate another customer's people. `OrgAwareUserProvider` documents
+     * the same exposure from the other side: the carve-out that lets authentication find one user by
+     * identifier is deliberately not a licence to LIST users.
+     *
+     * @return array<int, string>
+     */
+    private static function searchHolders(string $search): array
+    {
+        $model = Permissions::userModel();
+
+        if ($model === null) {
+            return [];
+        }
+
+        return $model::query()
+            ->where(fn ($query) => $query
+                ->where('name', 'like', '%'.$search.'%')
+                ->orWhere('email', 'like', '%'.$search.'%'))
+            ->orderBy('name')
+            ->limit(25)
+            ->get()
+            ->mapWithKeys(fn (Model $user): array => [(int) $user->getKey() => self::describe($user)])
+            ->all();
+    }
+
+    /**
+     * @param  array<int, mixed>  $ids
+     * @return array<int, string>
+     */
+    private static function holderLabels(array $ids): array
+    {
+        $model = Permissions::userModel();
+
+        if ($model === null) {
+            return [];
+        }
+
+        return $model::query()
+            ->whereKey(array_map(intval(...), array_filter($ids, is_numeric(...))))
+            ->get()
+            ->mapWithKeys(fn (Model $user): array => [(int) $user->getKey() => self::describe($user)])
+            ->all();
+    }
+
+    private static function holderLabel(int $id): ?string
+    {
+        $model = Permissions::userModel();
+
+        if ($model === null) {
+            return null;
+        }
+
+        $user = $model::query()->whereKey($id)->first();
+
+        return $user instanceof Model ? self::describe($user) : null;
+    }
+
+    /** A person, as an administrator would recognise them. */
+    private static function describe(Model $user): string
+    {
+        $name = $user->getAttribute('name');
+        $email = $user->getAttribute('email');
+
+        return is_string($name) && $name !== ''
+            ? $name.(is_string($email) ? ' ('.$email.')' : '')
+            : (is_string($email) ? $email : '#'.$user->getKey());
     }
 
     /**

@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Filament\Resources\Roles\Concerns;
 
+use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Filament\Resources\Roles\RoleResource;
 use Kitsune\Core\Models\Role;
@@ -45,6 +46,11 @@ trait SyncsRolePermissions
 
         $data[RoleResource::PERMISSION_STATE] = [];
         $data[RoleResource::ANY_TYPE_STATE] = [];
+        $data[RoleResource::HOLDER_STATE] = DB::table('role_user')
+            ->where('role_id', $record->getKey())
+            ->pluck('user_id')
+            ->map(static fn (mixed $id): int => (int) $id)
+            ->all();
 
         foreach ($record->permissions()->pluck('permission') as $permission) {
             $parts = explode('.', (string) $permission);
@@ -88,11 +94,13 @@ trait SyncsRolePermissions
     protected function afterCreate(): void
     {
         $this->syncGrants();
+        $this->syncHolders();
     }
 
     protected function afterSave(): void
     {
         $this->syncGrants();
+        $this->syncHolders();
     }
 
     /**
@@ -101,7 +109,11 @@ trait SyncsRolePermissions
      */
     private function withoutGrantState(array $data): array
     {
-        unset($data[RoleResource::PERMISSION_STATE], $data[RoleResource::ANY_TYPE_STATE]);
+        unset(
+            $data[RoleResource::PERMISSION_STATE],
+            $data[RoleResource::ANY_TYPE_STATE],
+            $data[RoleResource::HOLDER_STATE],
+        );
 
         return $data;
     }
@@ -115,6 +127,46 @@ trait SyncsRolePermissions
      * `revoke()` are already silent about a no-op, so the diff falls out of calling them only for a real
      * change.
      */
+    /**
+     * Bring the role's holders in line with the form.
+     *
+     * ⚠️ THROUGH `assignTo()` / `removeFrom()`, never the pivot, for the reason the class docblock gives:
+     * those are the audited path, and ADR-033 names assignment as the audited security event. They also
+     * refuse a role from another org and drop the memoised permission sets — three guarantees a direct
+     * `DB::table('role_user')` write would skip in one line.
+     *
+     * ⚠️ AND A DIFF, so the log records the change rather than the save. Both helpers are silent about a
+     * no-op, so calling them only for a real difference is what keeps `role.assigned` meaning somebody was
+     * assigned.
+     */
+    private function syncHolders(): void
+    {
+        $record = $this->getRecord();
+
+        if (! $record instanceof Role) {
+            return;
+        }
+
+        $desired = array_map(
+            intval(...),
+            array_filter((array) ($this->form->getRawState()[RoleResource::HOLDER_STATE] ?? []), is_numeric(...)),
+        );
+
+        $held = DB::table('role_user')
+            ->where('role_id', $record->getKey())
+            ->pluck('user_id')
+            ->map(static fn (mixed $id): int => (int) $id)
+            ->all();
+
+        foreach (array_diff($desired, $held) as $userId) {
+            $record->assignTo($userId);
+        }
+
+        foreach (array_diff($held, $desired) as $userId) {
+            $record->removeFrom($userId);
+        }
+    }
+
     private function syncGrants(): void
     {
         $record = $this->getRecord();

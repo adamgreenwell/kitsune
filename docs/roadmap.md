@@ -182,7 +182,11 @@ ADR-012 removed the boot-order collision structurally — the route table no lon
 
   ⚠️ **Two things the vocabulary cannot express are owner-only, and that is a limitation rather than an omission.** `architecture.md` publishes five actions on **entries**, so editing the schema and administering roles have no permission to ask for — review found the entry-type builder still open to a copy-editor after this landed. Adding a subject widens the extension surface that Standing Principle #1 keeps shut until v1.2, so an org cannot delegate either without making somebody an owner.
 
-  **Still open:** role administration through the panel ([#84](https://github.com/adamgreenwell/kitsune/issues/84) — the seeder is the only way to create one today), and blueprint seeding, which Phase 5 depends on.
+  ✅ **Role administration landed 2026-09-13** ([#84](https://github.com/adamgreenwell/kitsune/issues/84)): a `RoleResource` in core defines a role, its grants and who holds it, owner-only and refused at the URL rather than merely unlinked. Grants and assignments are written through `Role::grant()` / `assignTo()` — the audited path — and as a **diff**, so the log records the change rather than the save.
+
+  ⚠️ **#84 said assignment would live in the skeleton, and that was reversed on evidence.** Core owns no user model and still does not; it asks the **panel's** auth provider, which is the same lesson review taught about the membership check. Putting the screen in the skeleton would have needed an extension point in core's navigation before the extension API exists.
+
+  **Still open:** blueprint seeding, which Phase 5 depends on.
 
   ⚠️ **The attribute had never been enforced.** `User` carried `#[Unscoped]` and did not `use EnforcesScope`, so it was labelled correctly and completely unconstrained — a model can pass the declaration sweep and still be globally readable. AGENTS.md invariant 2 now says so.
 - [x] Audit log — **actor, action and target only, never payloads** (ADR-020), so erasure can reach everything it must.

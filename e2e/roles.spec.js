@@ -84,6 +84,56 @@ test.describe('a role can be defined in the admin', () => {
         expect(actions).toEqual(['View', 'Create', 'Update', 'Delete', 'Publish']);
     });
 
+    test('assigns somebody to a role, and records that it happened', async ({ page }) => {
+        /*
+         * ⚠️ ASSIGNMENT IS THE HALF #84 EXPECTED TO PUT IN THE SKELETON, reversed once the panel turned out
+         * to name its own provider's user model — core still owns no user model, it asks. The alternative
+         * needed an extension point in core's navigation before the extension API exists.
+         *
+         * ⚠️ AND IT MUST GO THROUGH `Role::assignTo()`, which is the audited path. A page writing the pivot
+         * directly would work and record nothing, which is the failure ADR-033 singles out as the one worth
+         * logging — so this checks the audit row as well as the assignment.
+         */
+        await page.goto(`/admin/${SITE}/roles`);
+        await page.getByRole('link', { name: 'Copy editor' }).first().click();
+        await page.waitForURL(/\/edit$/);
+
+        const holders = sectionFor(page, 'Held by');
+
+        // The seeded copy-editor is already held by somebody, which is the hydration working.
+        await expect(holders).toContainText('Reader User');
+
+        await holders.getByRole('combobox').first().click();
+
+        /*
+         * ⚠️ `fill()` RATHER THAN `keyboard.type()`, because the search box keeps what was typed before it.
+         * A single Backspace left `Riva` and the next search read `RivaAlpha User`, which matches nobody —
+         * a test failing on its own typing rather than on the code.
+         */
+        const search = page.getByRole('textbox', { name: 'Search' });
+
+        await search.fill('Rival');
+
+        /*
+         * The rival belongs to another org, so the org-scoped user query must not offer them.
+         *
+         * ⚠️ Asserted on the OPTION rather than on the "no options" message: Filament renders that message
+         * twice, once visibly and once for a screen reader, so a text locator matches two elements and
+         * fails strict mode. Asking whether an option for Rival exists is also the question being asked.
+         */
+        await expect(page.getByRole('option', { name: /Rival/ })).toHaveCount(0);
+
+        await search.fill('Alpha User');
+        await page.getByRole('option', { name: /Alpha User/ }).first().click();
+
+        await page.getByRole('button', { name: /^save changes$/i }).first().click();
+        await expect(page.getByText(/saved/i).first()).toBeVisible();
+
+        // Reopened, because the assignment is a row in a table the role's own save does not touch.
+        await page.reload();
+        await expect(sectionFor(page, 'Held by')).toContainText('Alpha User');
+    });
+
     test('lists the roles the seeder made, with what they hold', async ({ page }) => {
         await page.goto(`/admin/${SITE}/roles`);
 
