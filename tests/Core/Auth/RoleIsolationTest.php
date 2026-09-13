@@ -340,3 +340,92 @@ it('records nothing when the flag did not move, or when nobody holds the role', 
 
     expect(AuditLog::query()->where('id', '>', $mark)->count())->toBe(0);
 });
+
+it('refuses a bulk write to the owner flag, and a bulk delete', function (): void {
+    /*
+     * ⚠️ EVERY GUARANTEE ABOUT THE OWNER FLAG LIVED IN A LIFECYCLE HOOK, which is to say it was true of the
+     * row-at-a-time path and of nothing else — review named the idiom: `Role::query()->update(['is_owner' =>
+     * …])` dispatches no event, so holders gained the bypass with no audit rows and a memoised answer stayed
+     * stale. The third time this project has learned that a guard belongs where the write is (`AuditedBuilder`
+     * for entries, `GuardedStorageBuilder` for field storage).
+     *
+     * Bulk DELETE is refused outright, because deleting a role revokes it from every holder by cascade and
+     * that audit is per holder too.
+     */
+    app(Context::class)->setOrg($this->alpha);
+
+    expect(fn () => Role::query()->update(['is_owner' => true]))
+        ->toThrow(RuntimeException::class, 'bulk write to `is_owner`')
+        ->and(fn () => Role::query()->whereKey($this->alphaRole->getKey())->delete())
+        ->toThrow(RuntimeException::class, 'bulk delete of roles');
+
+    // The ordinary paths still work — the flag is what tells them apart, not the shape of the call.
+    $this->alphaRole->update(['name' => 'Still editable']);
+    $this->alphaRole->delete();
+
+    expect(Role::query()->count())->toBe(0);
+});
+
+it('refuses to change the owner flag on a role from another org', function (): void {
+    /*
+     * ⚠️ `EnforcesScope` REVALIDATES A SCOPE KEY ONLY WHEN IT IS DIRTY, which review found: an org A role
+     * retained after a worker moved to org B could still be promoted, and the audit row was then written
+     * under B — or dropped silently with no context at all. The four authority helpers already refused this;
+     * the flag was the fifth way authority changes and was not asking.
+     */
+    joinOrg($this->beta, $this->user);
+    app(Context::class)->setOrg($this->beta);
+
+    expect(fn () => $this->alphaRole->update(['is_owner' => true]))
+        ->toThrow(RuntimeException::class, 'Refusing [change the owner flag on]');
+
+    // A change that does not touch the flag is still refused by nothing here — that is the scope's job.
+    expect($this->alphaRole->fresh()?->is_owner)->toBeFalse();
+});
+
+it('records the revocation when an owner role is deleted out from under its holders', function (): void {
+    /*
+     * ⚠️ THE DATABASE CASCADES `role_user` AND NOTHING WAS RECORDING IT — review found it. Deleting an owner
+     * role took the bypass away from every holder with no `role.owner_unassigned` anywhere, while ADR-033
+     * says the trail answers who gained or lost that authority.
+     *
+     * The rows go in before the delete and inside the same transaction, because afterwards there is no
+     * `role_user` left to read them from.
+     */
+    app(Context::class)->setOrg($this->alpha);
+
+    $owner = Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true]);
+    $owner->assignTo($this->user->getKey());
+
+    $mark = (int) AuditLog::query()->max('id');
+
+    $owner->delete();
+
+    expect(AuditLog::query()->where('id', '>', $mark)->pluck('action')->all())
+        ->toBe(['role.owner_unassigned'])
+        ->and(AuditLog::query()->where('id', '>', $mark)->value('target_id'))
+        ->toBe($this->user->getKey());
+});
+
+it('leaves no authority change behind when its audit cannot be written', function (): void {
+    /*
+     * ⚠️ THE AUDIT RUNS IN `saved`, WHICH IS AFTER THE ROW COMMITS under autocommit — so an audit failure
+     * left the caller with an exception and every holder's authority already changed. With several holders
+     * it could leave a PARTIAL trail, which is worse than none because it reads as complete. The whole save
+     * is one transaction now.
+     */
+    app(Context::class)->setOrg($this->alpha);
+
+    $owner = Role::create(['handle' => 'owner', 'name' => 'Owner']);
+    $owner->assignTo($this->user->getKey());
+
+    $site = Site::create(['org_id' => $this->alpha->getKey(), 'handle' => 'ghost2', 'slug' => 'ghost2', 'name' => 'Ghost']);
+    app(Context::class)->setSite($site);
+    DB::table('sites')->where('id', $site->getKey())->delete();
+
+    expect(fn () => $owner->update(['is_owner' => true]))->toThrow(QueryException::class);
+
+    expect($owner->fresh()?->is_owner)->toBeFalse();
+})->skip(fn (): bool => DB::connection()->getDriverName() === 'sqlite'
+    && ! DB::connection()->getPdo()->query('PRAGMA foreign_keys')->fetchColumn(),
+    'foreign keys are not enforced on this connection, so the audit insert cannot be made to fail');

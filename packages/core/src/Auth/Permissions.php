@@ -293,7 +293,15 @@ final class Permissions
             return null;
         }
 
-        $provider = Filament::getDefaultPanel()->auth()->getProvider();
+        /*
+         * ⚠️ THE PANEL HANDLING THE REQUEST, NOT THE DEFAULT ONE — review found the second version still
+         * asking for the default. A host may run several panels, and a non-default one may authenticate
+         * through another provider entirely; asking the default then names a model from somebody else's
+         * panel, so an audit row records an unrelated row with the same id.
+         */
+        $panel = Filament::getCurrentPanel() ?? Filament::getDefaultPanel();
+
+        $provider = $panel->auth()->getProvider();
 
         if (! method_exists($provider, 'getModel')) {
             return null;

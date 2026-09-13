@@ -13,8 +13,10 @@ namespace Kitsune\Core\Models;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Query\Builder;
 use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Audit\Auditor;
+use Kitsune\Core\Auth\GuardedRoleBuilder;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Tenancy\Attributes\OrgScoped;
 use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
@@ -45,6 +47,56 @@ class Role extends Model
     protected $casts = ['is_owner' => 'boolean'];
 
     /**
+     * True only while THIS instance's guards have run for the write in flight.
+     *
+     * ⚠️ How `GuardedRoleBuilder` tells an instance save from a bulk one. Both arrive at the builder,
+     * because `Model::performUpdate()` writes through it — so refusing every bulk-shaped write would refuse
+     * `$role->save()` as well. The flag is set by the `saving` guard, which only a model event reaches; a
+     * bulk update dispatches nothing, so it can never be set and the builder refuses.
+     *
+     * The same mechanism `FieldStorage::$shapeGuarded` uses, for the same reason.
+     */
+    public bool $authorityGuarded = false;
+
+    /** @param  Builder  $query */
+    public function newEloquentBuilder($query): GuardedRoleBuilder
+    {
+        return new GuardedRoleBuilder($query, $this);
+    }
+
+    /**
+     * ⚠️ THE WHOLE SAVE IS ONE TRANSACTION, because the owner audit runs in `saved` — AFTER the row has
+     * committed under autocommit. Review found it: an audit insert failing there left the caller with an
+     * exception and every holder's authority already changed, and with several holders it could leave a
+     * PARTIAL trail, which is worse than none because it reads as complete.
+     *
+     * @param  array<string, mixed>  $options
+     */
+    public function save(array $options = []): bool
+    {
+        return (bool) DB::transaction(fn (): bool => parent::save($options));
+    }
+
+    /**
+     * ⚠️ AND DELETING A ROLE REVOKES IT FROM EVERY HOLDER, which the database does by cascade and nothing
+     * was recording. Review found it: deleting an owner role took the bypass away from all of them with no
+     * `role.owner_unassigned` anywhere, while ADR-033 says the trail answers who gained or lost it.
+     *
+     * The rows are written BEFORE the delete and inside the same transaction, because afterwards there is
+     * no `role_user` left to read them from.
+     */
+    public function delete(): ?bool
+    {
+        return DB::transaction(function (): ?bool {
+            if ($this->is_owner) {
+                $this->recordOwnerChange('unassigned');
+            }
+
+            return parent::delete();
+        });
+    }
+
+    /**
      * Any change to a role can change who may do what, so the memo goes — review found the gap.
      *
      * ⚠️ THE FOUR HELPERS WERE NOT ENOUGH, and `is_owner` is why. Flipping it through an ordinary
@@ -60,13 +112,36 @@ class Role extends Model
      */
     protected static function booted(): void
     {
+        static::saving(static function (self $role): void {
+            /*
+             * ⚠️ A STALE INSTANCE MAY NOT CHANGE THE OWNER FLAG, which review found: `EnforcesScope`
+             * revalidates a scope key only when it is DIRTY, so an org A role retained after a worker moved
+             * to org B could still be promoted — and the audit row was then written under B, or dropped
+             * silently when there was no context at all. The four authority helpers already refuse this;
+             * the flag is the fifth way authority changes and was not asking.
+             */
+            if ($role->exists && $role->isDirty('is_owner')) {
+                $role->refuseIfNotCurrentOrg('change the owner flag on');
+            }
+
+            // Earned for this write only; `saved` clears it so the next one has to earn it again.
+            $role->authorityGuarded = true;
+        });
+
+        static::deleting(static function (self $role): void {
+            $role->authorityGuarded = true;
+        });
+
         static::saved(static function (self $role): void {
             $role->auditOwnerTransition();
+            $role->authorityGuarded = false;
 
             Permissions::forget();
         });
 
-        static::deleted(static function (): void {
+        static::deleted(static function (self $role): void {
+            $role->authorityGuarded = false;
+
             Permissions::forget();
         });
     }
@@ -92,8 +167,12 @@ class Role extends Model
             return;
         }
 
-        $verb = $this->is_owner ? 'assigned' : 'unassigned';
+        $this->recordOwnerChange($this->is_owner ? 'assigned' : 'unassigned');
+    }
 
+    /** One `role.owner_{assigned,unassigned}` row per person who holds this role right now. */
+    private function recordOwnerChange(string $verb): void
+    {
         foreach (DB::table('role_user')->where('role_id', $this->getKey())->pluck('user_id') as $userId) {
             app(Auditor::class)->record("role.owner_{$verb}", $this->assignee((int) $userId));
         }
