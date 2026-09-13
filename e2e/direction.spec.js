@@ -235,7 +235,7 @@ test.describe('a field value carries its own direction', () => {
         expect(await status.getAttribute('dir')).toBeNull();
     });
 
-    test('rich text carries a direction per block, and the editor drops it', async ({ page }) => {
+    test('rich text carries a direction per block, in the editor too', async ({ page }) => {
         /*
          * ⚠️ TWO FACTS, AND ONLY ONE OF THEM IS GOOD NEWS. Issue #39 called rich text the
          * awkward case, and it is awkward in a way the inventory did not anticipate.
@@ -249,18 +249,19 @@ test.describe('a field value carries its own direction', () => {
          *   <p dir="auto">ملاحظات الصيانة…</p>
          *   <ul><li dir="auto">Mow the fairway</li><li dir="auto">تنظيف…</li></ul>
          *
-         * The EDITOR is not. Filament's rich editor is TipTap/ProseMirror, which parses
-         * that HTML into its own document model and re-renders it — and its schema does
-         * not declare `dir`, so the attribute is dropped on load. Measured here: the
-         * Arabic list item inside the editor carries no `dir` at all and resolves to the
-         * chrome's `ltr`.
+         * The EDITOR was not, and issue #67 is that half. Filament's rich editor is
+         * TipTap/ProseMirror: it parses the stored HTML into its own document model and
+         * re-renders it, and TipTap drops every attribute a node's schema does not
+         * declare. So the value was right in the database, right for any consumer, and
+         * wrong in the one place an author looks while writing it.
          *
-         * ⚠️ THIS TEST ASSERTS THE GAP ON PURPOSE, which is unusual and deliberate. The
-         * alternative was to assume the limitation, and an assumption about somebody
-         * else's parser is exactly the kind of thing that silently stops being true. If a
-         * Filament or TipTap release starts preserving `dir`, this test fails, and the
-         * failure is the notification. Same reasoning as the dropdown ARIA finding: record
-         * what the dependency actually does, so the record cannot rot quietly.
+         * ⚠️ THIS TEST USED TO ASSERT THE GAP, on purpose — `dir` null and the resolved
+         * direction `ltr` on Arabic text — so that a Filament or TipTap release which
+         * started preserving the attribute would fail it and the failure would be the
+         * notification. `BlockDirectionPlugin` closes it from our side instead, by
+         * declaring `dir` on the node types `Entry` stamps, so the assertion is inverted:
+         * it now measures the direction the browser RESOLVED for each block inside the
+         * editor, which is the thing the issue's done-when names.
          */
         await page.goto(`/admin/${SITE}/c/article`);
         await page.getByRole('link', { name: ARABIC_TITLE }).first().click();
@@ -269,18 +270,38 @@ test.describe('a field value carries its own direction', () => {
         const arabicItem = page.locator('.tiptap li', { hasText: 'تنظيف' }).first();
         await expect(arabicItem).toBeVisible();
 
-        // The gap, measured rather than assumed: no attribute, and therefore the chrome's
-        // direction on Arabic text.
-        expect(await arabicItem.getAttribute('dir')).toBeNull();
-        expect(await resolvedDirection(arabicItem)).toBe('ltr');
+        /*
+         * ⚠️ THE RESOLVED DIRECTION, NOT THE ATTRIBUTE, for the reason this file opens with:
+         * `dir="auto"` can be present and resolve the wrong way. `rtl` here is the browser
+         * having read the first strong directional character of THIS list item.
+         */
+        expect(await resolvedDirection(arabicItem)).toBe('rtl');
+
+        /*
+         * ⚠️ AND THE ENGLISH SIBLING MUST STILL RESOLVE `ltr`, which is the half that says
+         * the direction is per block rather than per field. A `dir="rtl"` on the list, or
+         * one editor-wide direction, would pass the assertion above and fail this one.
+         */
+        const englishItem = page.locator('.tiptap li', { hasText: 'Mow the fairway' }).first();
+        await expect(englishItem).toBeVisible();
+        expect(await resolvedDirection(englishItem)).toBe('ltr');
+
+        // Both paragraphs, the same way: the stored value has one of each.
+        const arabicParagraph = page.locator('.tiptap p', { hasText: 'ملاحظات' }).first();
+        const englishParagraph = page.locator('.tiptap p', { hasText: 'Maintenance notes' }).first();
+        await expect(arabicParagraph).toBeVisible();
+        expect(await resolvedDirection(arabicParagraph)).toBe('rtl');
+        expect(await resolvedDirection(englishParagraph)).toBe('ltr');
 
         /*
          * ⚠️ AND THE CONTAINER MUST STAY UNDIRECTED EITHER WAY. This is the half that is
          * Kitsune's own and would be a real regression: a `dir` on `ul` would be inherited
          * by every `li`, so an English first item would drag an Arabic second item
          * left-to-right — the per-field failure reproduced one level down. It holds in the
-         * editor today because nothing sets it, and it must keep holding when TipTap
-         * starts preserving what `toStorage()` writes.
+         * editor because `BlockDirectionPlugin` declares `dir` on the block node types
+         * only — `bulletList` and `orderedList` are deliberately absent from that list, and
+         * Filament's own `textDirection` extension is deliberately not used because it
+         * would default the attribute onto every node type including these.
          */
         const list = page.locator('.tiptap ul').first();
         await expect(list).toBeVisible();
