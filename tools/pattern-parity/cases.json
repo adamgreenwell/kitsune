@@ -1396,5 +1396,11 @@
     "pattern": "^[a-m]+[n-z]+[a-m]+$",
     "subject": "abnoab",
     "why": "The arithmetic rather than the syntax: `[a-m]` and `[n-z]` touch without overlapping, so no character matches both and the boundary is forced twice over. Its neighbour `^[a-n]+[n-z]+[a-n]+$` shares exactly one character — `n` — and stays refused, which is the assertion that says this is an intersection test rather than a comparison of range endpoints."
+  },
+  {
+    "id": "costly-assertions-before-disjoint-branches",
+    "pattern": "^(?:(?=a*a*b)c|(?=a*a*d)e|(?=a*a*f)g|(?=a*a*h)i|(?=a*a*j)k|(?=a*a*l)m|(?=a*a*n)o|(?=a*a*p)q|(?=a*a*r)s)$",
+    "subject": "aaab",
+    "why": "The blind spot in the branch grouping that #73 introduced, found by review the round after it landed. An assertion consumes nothing, so it cannot be a branch's first CHARACTER — but it still RUNS, at every position the branch is tried, before anything it precedes is looked at. These nine branches have first characters `c`, `e`, `g`, … which are disjoint, so the grouping took the maximum while every lookahead ran anyway. Measured on a 5,000-character all-`a` value, and NEITHER engine hoists the character test in front: Node 22.23.2 takes 35.9 ms for one branch, 143.6 for four and 325.8 for nine; PCRE 10.48 takes 4.1 ms for one and 36.5 for nine. Both are exactly nine times one, and nine is past the eight-grant ceiling the sum exists to enforce. A branch whose leading assertion can SCAN now reports no first characters at all — unknown, which shares a subject with everything and adds. A fixed-width assertion body costs nothing to run and is still stepped over, so nine of `(?=bb)c|(?=dd)e|…` publish."
   }
 ]

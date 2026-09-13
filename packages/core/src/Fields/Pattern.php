@@ -2959,8 +2959,33 @@ final class Pattern
         $first = [];
 
         foreach ($atoms as $atom) {
-            // Zero-width: it consumes nothing, so the first consumed character is still ahead.
-            if ($atom['assertion'] || $atom['atom'] === '|') {
+            if ($atom['assertion']) {
+                /*
+                 * ⚠️ ZERO-WIDTH IS NOT FREE, and review found this walk treating it as though it were.
+                 * An assertion consumes nothing, so it cannot be a branch's first CHARACTER — but it
+                 * still RUNS, at every position the branch is tried, before anything it precedes is
+                 * looked at. Nine branches of `(?=a*a*b)c|(?=a*a*d)e|…` published: their first
+                 * characters are `c`, `e`, … and disjoint, so the grouping took the maximum, while every
+                 * lookahead runs anyway. Measured on 5,000 `a`, and both engines add them up rather than
+                 * hoisting the character test in front:
+                 *
+                 *   Node 22.23.2   one branch 35.9 ms   four 143.6   nine 325.8
+                 *   PCRE 10.48     one branch  4.1 ms                nine  36.5
+                 *
+                 * Nine is past the eight-grant ceiling, which is what the sum exists to enforce. So a
+                 * branch whose leading assertion can SCAN reports no first characters at all: unknown,
+                 * which shares a subject with everything and adds. A fixed-width assertion costs nothing
+                 * to run and is still stepped over.
+                 */
+                if (self::atomRunExceeds(self::frameBody($atom['atom']), 0)) {
+                    return null;
+                }
+
+                continue;
+            }
+
+            // A branch boundary: the first consumed character is still ahead.
+            if ($atom['atom'] === '|') {
                 continue;
             }
 
