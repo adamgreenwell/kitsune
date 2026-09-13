@@ -48,4 +48,10 @@ class Org extends Model
     {
         return $this->hasMany(Site::class);
     }
+
+    /** @return HasMany<Role, $this> */
+    public function roles(): HasMany
+    {
+        return $this->hasMany(Role::class);
+    }
 }

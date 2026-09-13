@@ -1623,6 +1623,72 @@ Pillar three is tested rather than claimed, so the brand carries requirements ra
 
 ---
 
+## ADR-033 — Kitsune owns its RBAC, and a permission is a string a role holds
+
+**Status:** Decided · 2026-09-13
+
+Issue #81. Phase 4's last unchecked line is `EntryPolicy`, blocked rather than deferred: a policy needs roles and permissions to resolve against. `architecture.md` §4 already fixes the naming — `entry.{type_handle}.{view|create|update|delete|publish}`, resolved against `type_handle`, seeded by blueprints — and settles nothing about where any of it lives.
+
+### Decision
+
+**Kitsune authors its own RBAC.** Three tables: `roles` and `role_permissions` in core, `role_user` in the skeleton. A permission is a **string** a role holds, validated against a published registry at write time. Assignment is per-org.
+
+### Why not `spatie/laravel-permission`
+
+It is mature, audited, and adopting it would save real work — including a resolution cache this now owns and will have bugs in. Four reasons it does not fit, in descending order of how hard they are to work around:
+
+- **AGENTS.md invariant 2: every model declares its scope.** A vendor model cannot carry `#[OrgScoped]` and cannot `use EnforcesScope`. The package's `teams` feature models **one** scoping axis; Kitsune has two that scope data and one that does not (ADR-021). An authorization table with no declared scope is precisely the shape invariant 2 exists to refuse, and it would be the first one in the schema.
+- **Permissions here are derived from schema rather than enumerated by an operator.** Entry types are created at runtime through the admin, so the permission set changes when content modelling changes. A design whose mental model is a fixed list maintained in a seeder is fighting the flagship feature.
+- **Standing Principle #1.** The extension API is deliberately unstable until v1.2. Adopting a package puts its public API inside Kitsune's surface before Kitsune has one, and taking it back out later is the ecosystem break that principle exists to avoid.
+- **ADR-025** already sets the bar: a runtime dependency of core gets argued for rather than assumed.
+
+### Why a table rather than a JSON column on the role
+
+A JSON array of permission names on `roles` is one fewer table and cannot drift. It was rejected on **ADR-015's own argument, applied to a different subject**: relations are a real table "so reverse lookups and referential integrity work". Authorization asks the reverse question constantly — *who can publish articles?*, *what will break if this entry type is deleted?*, *which roles hold the grant this incident report is about?* — and a JSON blob answers none of those without decoding every row.
+
+### A permission is a string, and what that costs
+
+`role_permissions (role_id, permission)`, unique on the pair.
+
+A normalised `permissions` table with a foreign key was rejected because it makes deleting an entry type a **cascade decision about authorization**: rows would have to be created as types are created and destroyed as types are destroyed, so a content-modelling change becomes a security change, and the failure mode of getting that wrong is silent over-permission.
+
+**The cost is that a misspelled permission is silently never granted.** It fails closed, which is the right direction, and invisibly, which is not. Three mitigations, in the order they fire:
+
+1. **A published registry of actions, enforced at write time, fail-closed.** `Permissions::REGISTERED` names the actions; a grant whose shape or action is not on it is refused with the reason — the `pii_class` pattern from ADR-020, for the same reason: the answer is required *now* and getting it wrong is a security defect rather than a formatting one.
+2. **The registry validates SHAPE, not existence.** A grant may legitimately name a type that does not exist yet, because a blueprint seeds permissions alongside the type it creates and the two arrive in one operation. So `entry.product.view` is accepted on an installation with no `product` type.
+3. **A report of grants naming a type that no longer exists** — the same shape as `EntryType::withoutSubjectIdentifier()`, which lists the holes a subject-access request cannot see. A grant pointing at nothing is not dangerous; it is *confusing*, and the way to keep it from becoming a belief about what a role can do is to be able to list it.
+
+### No implicit wildcard, and an explicit one that is a decision
+
+**`entry.*.{action}` is a grant somebody writes, never one a role gets by default.** A wildcard applied silently means an entry type created next month grants access to data that did not exist when the role was written — a privacy failure mode, and this project's answer to those is to fail closed.
+
+It is resolved at **check** time rather than expanded at grant time, because expanding it would make it precisely *not* cover types added later, which is the only reason to write it.
+
+The alternative — no wildcard at all — was rejected on arithmetic: an org with 40 entry types and 6 roles maintains 240 grants by hand, and the predictable response to that is a script nobody reviews. An explicit, visible, single-row opt-in is better than a bypass invented in the field.
+
+### Assignment is per-org, and the site dimension is deferred rather than absent
+
+`architecture.md` says per-org, and this keeps it. A user who should edit on one site and only read on another is **not** served, and that is a real limitation rather than an oversight: `site_user` already decides which sites a user reaches, so what v1.0 offers is *which sites you can enter* × *what you may do in the org*.
+
+Recorded here because the alternative is somebody discovering it while configuring a customer.
+
+### An owner role, because the first user has to be able to act before any permission exists
+
+Bootstrap requires it: somebody must create the first entry type before a permission naming that type can exist. `roles.is_owner` resolves in `Gate::before`.
+
+⚠️ **Issue #81 proposed auditing the bypass whenever it is what granted an action, and that is withdrawn on volume.** An authorization check runs per row: the entry list at 100k rows with the default page size fires ten `view` checks, a bulk delete fires one per record, and an owner browsing an admin would write audit rows faster than they write content. The log ADR-020 designed is for *actions*, and "somebody was permitted to look at a row" is not one.
+
+**What is audited is the assignment** — who was made an owner of which org, and when — which is rare, high-value, and the question an auditor actually asks. One row per assignment instead of thousands per page.
+
+### Consequence
+
+- **Core's RBAC enforces nothing until the host application has run the skeleton's `role_user` migration.** Already true of org scoping, so it is a pattern rather than a new hole — but it is written down here rather than left in somebody's memory.
+- **`role_permissions` is `#[Unscoped]`, and the reason is the one `EntryRelation` and `EntryRevision` give**: it is reached only through `Role`, which is `#[OrgScoped]` and enforces it. Its index leads with `role_id` rather than a scope key, which satisfies invariant 4 by the invariant's own argument — a role is globally unique and belongs to exactly one org, exactly as a site does.
+- **A `role_user` row pairing a user with a role in an org they do not belong to resolves nothing**, because resolution runs through the org-scoped `Role` query under the current org context. Fail-closed by construction rather than by a guard, and asserted from the attacker's side.
+- **We own the resolution cache, the wildcard semantics, and the bugs in both.**
+
+---
+
 ## Open questions
 
 - Storage benchmark at 10k / 100k / 1M entries

@@ -57,10 +57,44 @@ return new class extends Migration
             $table->primary(['org_id', 'pivot_scoped_thing_id']);
             $table->index(['pivot_scoped_thing_id', 'org_id']);
         });
+
+        /*
+         * The host application's `users`, and the skeleton's `role_user` — ADR-033.
+         *
+         * ⚠️ THEY ARE HERE BECAUSE CORE DOES NOT OWN THEM AND THE RESOLVER READS THEM ANYWAY. `role_user`
+         * lives in the skeleton, for the reason `org_user` and `site_user` do: it references a `users` table
+         * core did not create. So the core suite would have nothing to resolve against, and the cross-org
+         * tests — the ones with no framework safety net (ADR-021) — would have to be written against a
+         * stub of the very join they are supposed to distrust.
+         *
+         * Shaped exactly as the skeleton's migration shapes it, `constrained()` included, so the cascade
+         * the test relies on is the cascade production has.
+         */
+        Schema::create('users', function (Blueprint $table): void {
+            $table->id();
+            $table->string('email')->unique();
+        });
+
+        Schema::create('org_user', function (Blueprint $table): void {
+            $table->foreignId('org_id')->constrained()->cascadeOnDelete();
+            $table->foreignId('user_id')->constrained()->cascadeOnDelete();
+            $table->primary(['org_id', 'user_id']);
+            $table->index(['user_id', 'org_id']);
+        });
+
+        Schema::create('role_user', function (Blueprint $table): void {
+            $table->foreignId('role_id')->constrained()->cascadeOnDelete();
+            $table->foreignId('user_id')->constrained()->cascadeOnDelete();
+            $table->primary(['role_id', 'user_id']);
+            $table->index(['user_id', 'role_id']);
+        });
     }
 
     public function down(): void
     {
+        Schema::dropIfExists('role_user');
+        Schema::dropIfExists('org_user');
+        Schema::dropIfExists('users');
         Schema::dropIfExists('pivot_scoped_thing_org');
         Schema::dropIfExists('pivot_scoped_things');
         Schema::dropIfExists('shared_things');
