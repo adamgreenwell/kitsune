@@ -442,9 +442,12 @@ class Role extends Model
      */
     private function storedOrgId(): ?int
     {
+        // ⚠️ Locked for the reason `storedOwnerFlag()` gives: it feeds the owner count, which is the
+        // invariant itself, so a snapshot read here would be the race the locks were added to close.
         $org = static::query()
             ->withoutGlobalScopes()
             ->whereKey($this->getKeyForSaveQuery())
+            ->lockForUpdate()
             ->value('org_id');
 
         return $org === null ? null : (int) $org;
@@ -840,9 +843,18 @@ class Role extends Model
      */
     private function storedOwnerFlag(): bool
     {
+        /*
+         * ⚠️ UNDER THE SAME LOCK AS THE DECISION, which the lock test caught this read taking without. The
+         * flag names an AUDIT ACTION rather than deciding the invariant — but under MySQL's and MariaDB's
+         * REPEATABLE READ an ordinary read answers from the transaction's snapshot, so a demotion committed
+         * while this change queued would have the guard see the truth and the audit row name the old value.
+         * An audit that describes a different grant from the one that changed is the defect this whole method
+         * exists to prevent, so it reads currently too.
+         */
         return (bool) static::query()
             ->withoutGlobalScopes()
             ->whereKey($this->getKeyForSaveQuery())
+            ->lockForUpdate()
             ->value('is_owner');
     }
 
