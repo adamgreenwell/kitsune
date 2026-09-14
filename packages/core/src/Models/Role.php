@@ -88,6 +88,14 @@ class Role extends Model
     private bool $updateWasPerformed = false;
 
     /**
+     * The owner flag as the DATABASE held it before this write, captured under the write's own lock.
+     *
+     * Null means no write of the flag was attempted, which is how a save that did not touch it is told apart
+     * from one that set it to the value it already had.
+     */
+    private ?bool $ownerFlagBeforeUpdate = null;
+
+    /**
      * Whether a write to `role_permissions` is inside `grant()` or `revoke()`.
      *
      * ⚠️ THE OPENER IS NOT A METHOD, which is the whole point — review found the first version's window
@@ -315,6 +323,20 @@ class Role extends Model
              */
             if ($role->exists && $role->isDirty('is_owner')) {
                 $role->refuseIfNotCurrentOrg('change the owner flag on');
+
+                /*
+                 * ⚠️ THE TRANSITION IS A FACT ABOUT THE ROW, NOT ABOUT THIS INSTANCE'S ORIGINALS — review
+                 * found the audit double-counting because of the difference. Two requests that both load a
+                 * non-owner role and both set the flag serialise on the lock, and the second one's update
+                 * writes `true` over `true`: nothing transitions, but `wasChanged('is_owner')` compares its
+                 * own stale original and says it did, so every holder got a second `role.owner_assigned`.
+                 * A log that reports two promotions where one happened is the same defect as one that
+                 * reports none.
+                 *
+                 * Captured here because this is inside the write's transaction and `storedOwnerFlag()` is a
+                 * locking read: the value cannot move between this line and the commit.
+                 */
+                $role->ownerFlagBeforeUpdate = $role->storedOwnerFlag();
             }
 
             /*
@@ -385,11 +407,25 @@ class Role extends Model
         $performed = $this->updateWasPerformed;
         $this->updateWasPerformed = false;
 
-        if (! $performed || ! $this->wasChanged('is_owner')) {
+        $before = $this->ownerFlagBeforeUpdate;
+        $this->ownerFlagBeforeUpdate = null;
+
+        if (! $performed || $before === null) {
             return;
         }
 
-        $this->recordOwnerChange($this->is_owner ? 'assigned' : 'unassigned');
+        $after = (bool) $this->is_owner;
+
+        /*
+         * ⚠️ THE STORED VALUE BEFORE THE WRITE AGAINST THE VALUE WRITTEN, not `wasChanged()`. The instance's
+         * originals describe what it was loaded with, which a concurrent promotion has already made false —
+         * see the capture in `booted()`. Equal values mean the row did not move, whatever this object thought.
+         */
+        if ($before === $after) {
+            return;
+        }
+
+        $this->recordOwnerChange($after ? 'assigned' : 'unassigned');
         // (the transition always concerns the owner flag, so the owner action is always the right one)
     }
 

@@ -327,7 +327,24 @@ final class Permissions
      */
     public static function currentUser(): ?Authenticatable
     {
-        return app()->bound('filament') ? Filament::auth()->user() : auth()->user();
+        /*
+         * ⚠️ THE BINDING IS NOT THE REQUEST, which review found after this method had already been fixed once
+         * for asking the wrong guard. `app()->bound('filament')` is true for the whole application as soon as
+         * the package is installed — so on a NON-panel route with its own guard (an API route, a custom web
+         * guard) this asked the panel's guard, which has nobody, and returned null for a request a real person
+         * made. `Auditor` then wrote an unattributed row, and `Entry::refuseUnpermittedRepublication()` read
+         * that null as "the system is acting" and allowed a restore it exists to refuse.
+         *
+         * `getCurrentPanel()` is set by Filament's own `SetUpPanel` middleware, so it is non-null exactly when
+         * a panel is serving the request — and outside one, Laravel's `auth()` names the guard that the `auth`
+         * middleware actually authenticated with (it calls `Auth::shouldUse()`), which is the honest answer to
+         * "who is making this request".
+         */
+        if (app()->bound('filament') && Filament::getCurrentPanel() !== null) {
+            return Filament::auth()->user();
+        }
+
+        return auth()->user();
     }
 
     /**

@@ -743,6 +743,44 @@ it('refuses to delete the user holding the last owner role', function (): void {
         ->and(DB::table('role_user')->where('role_id', $owner->getKey())->count())->toBe(1);
 });
 
+it('records one owner transition when two saves write the same flag', function (): void {
+    /*
+     * ⚠️ `wasChanged()` COMPARES THIS INSTANCE'S ORIGINALS, AND A CONCURRENT PROMOTION HAS ALREADY MOVED THE
+     * ROW — review found the audit double-counting because of it. Two requests that both load a non-owner
+     * role and both set the flag serialise on the role lock, and the second one's update writes `true` over
+     * `true`: nothing transitions, but its stale original says otherwise and every holder got a second
+     * `role.owner_assigned`. A trail that reports two promotions where one happened is as wrong as one that
+     * reports none — the question ADR-033 asks of it is *who was made an owner, and when*.
+     *
+     * The sequential form of that race: another instance promotes the row, then this one saves the same
+     * value from its stale original.
+     */
+    app(Context::class)->setOrg($this->alpha);
+
+    $role = Role::create(['handle' => 'owner', 'name' => 'Owner']);
+    $role->assignTo($this->user->getKey());
+    joinOrg($this->alpha, $this->user);
+
+    /** @var Role $stale */
+    $stale = Role::query()->whereKey($role->getKey())->firstOrFail();
+
+    // The other request's promotion, committed.
+    $role->is_owner = true;
+    $role->save();
+
+    $mark = (int) AuditLog::query()->max('id');
+
+    expect(AuditLog::query()->where('action', 'role.owner_assigned')->count())->toBe(1);
+
+    // The second request writes the same value from an original that says false.
+    $stale->is_owner = true;
+    $stale->save();
+
+    expect($stale->wasChanged('is_owner'))->toBeTrue('the instance still believes it changed something')
+        ->and(AuditLog::query()->where('id', '>', $mark)->where('action', 'role.owner_assigned')->count())
+        ->toBe(0, 'the row did not transition, so nothing should have been recorded');
+});
+
 it('refuses to delete a role that belongs to another org', function (): void {
     /*
      * ⚠️ THE FIFTH AUTHORITY PATH, and it was not asking — review found it. Eloquent's instance delete writes

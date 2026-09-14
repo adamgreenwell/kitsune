@@ -290,6 +290,25 @@ class DatabaseSeeder extends Seeder
             ]);
         }
 
+        /*
+         * ⚠️ ONE ARTICLE THAT WAS PUBLISHED AND THEN DEMOTED, because a permission test needs a shape the
+         * ordinary rows do not have. Restoring a version that was published PUBLISHES the entry, so the
+         * copy-editor — who holds `update` and not `publish` — must be offered that restore as unavailable
+         * rather than as a server error (ADR-033). Every other seeded article's history contains only the
+         * status it was created with, so nothing here could have measured it.
+         */
+        $demoted = Entry::create([
+            'entry_type_id' => $article->id,
+            'title' => 'Bunker renovation, pulled back to draft',
+            'slug' => 'bunker-renovation-pulled-back',
+            'status' => 'published',
+            'values' => ['summary' => 'Published once, then pulled back for a rewrite.'],
+            'published_at' => now()->subDays(9),
+        ]);
+
+        $demoted->status = 'draft';
+        $demoted->save();
+
         // ⚠️ An RTL title in an otherwise LTR org, because issue #39's failure only
         // appears with bidirectional content in ONE admin — which ADR-018 rule 2 says is
         // the designed case. Without a row like this the direction tests would have

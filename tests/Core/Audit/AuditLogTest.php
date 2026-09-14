@@ -203,6 +203,17 @@ describe('what gets recorded', function (): void {
             {
                 return Auth::guard('panel');
             }
+
+            /*
+             * ⚠️ A PANEL IS SERVING THIS REQUEST, and saying so is now part of the stand-in — review found
+             * that the BINDING is not the request. Filament's `SetUpPanel` middleware sets the current panel,
+             * so a non-null answer here is what "a panel is handling this" means; the test below is the same
+             * binding with nobody serving.
+             */
+            public function getCurrentPanel(): ?object
+            {
+                return $this;
+            }
         });
 
         $entry = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Attributed to the panel']);
@@ -211,6 +222,42 @@ describe('what gets recorded', function (): void {
 
         // ⚠️ Not vacuous: both users are authenticated, so an actor of 5 is the defect and 12 is the fix.
         expect(auth()->id())->toBe(5);
+    });
+
+    it('asks the application guard when no panel is serving the request', function (): void {
+        /*
+         * ⚠️ THE `filament` BINDING IS APPLICATION-WIDE AND THE REQUEST IS NOT, which review found after the
+         * panel fix above. Installing the package binds `filament` for every route — so on an API or custom-guard
+         * route this asked the PANEL's guard, which has nobody signed in, and recorded an unattributed row for
+         * an action a real person took. Worse, `Entry::refuseUnpermittedRepublication()` reads a null actor as
+         * "the system is acting" and stands aside, so the wrong answer here opens a guard elsewhere.
+         *
+         * The binding is present and no panel is current, which is exactly a non-panel route.
+         */
+        config(['auth.guards.panel' => ['driver' => 'session', 'provider' => 'users']]);
+
+        $onTheApiRoute = new AuthUser;
+        $onTheApiRoute->forceFill(['id' => 31]);
+        Auth::login($onTheApiRoute);
+
+        app()->instance('filament', new class
+        {
+            public function auth(): StatefulGuard
+            {
+                return Auth::guard('panel');
+            }
+
+            public function getCurrentPanel(): ?object
+            {
+                return null;
+            }
+        });
+
+        $entry = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Made outside a panel']);
+
+        // ⚠️ Not vacuous: the panel's guard has nobody, so a null actor is the defect and 31 is the fix.
+        expect(Auth::guard('panel')->user())->toBeNull()
+            ->and(AuditLog::for($entry)->where('action', 'entry.created')->value('actor_id'))->toBe(31);
     });
 
     it('leaves the actor NULL when the system acts on its own', function (): void {

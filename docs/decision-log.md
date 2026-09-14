@@ -620,6 +620,15 @@ A field that has not been classified does not save. Same discipline as the tenan
 > carries `actor_type` beside it now, written from `getMorphClass()` exactly as the target is, and the
 > `(org_id, actor_type, actor_id)` index mirrors the target's. An `Authenticatable` that is not an Eloquent
 > model records its class name instead: it still acted, and a class is a better answer than a number.
+>
+> ⚠️ **And the BINDING is not the request, which is the same column wrong a third way.** `app()->bound('filament')`
+> is true application-wide the moment the package is installed, so on a non-panel route with its own guard —
+> an API route, a custom web guard — the actor was resolved from the PANEL's guard, which has nobody, and a
+> real person's action was recorded unattributed. `Filament::getCurrentPanel()` is set by Filament's own
+> middleware, so it is non-null exactly when a panel is serving; outside one, Laravel's `auth()` names the
+> guard the `auth` middleware actually authenticated with. The knock-on is why this is a P1 rather than a
+> tidy-up: `Entry::refuseUnpermittedRepublication()` reads a null actor as "the system is acting" and stands
+> aside, so a wrong answer here opened a guard three files away.
 
 **5. A replayable erasure log.** Backups cannot be rewritten. The workable answer is a documented retention window plus erasure re-applied on restore — which requires core to keep a record of what was erased, containing no erased content.
 
@@ -1744,11 +1753,33 @@ refuses a restore that would move an entry into the published state without the 
 transaction and under the lock it already takes. The rule is the same one the form draws — keeping a published
 state is not moving into it — enforced on the route a form rule cannot reach.
 
+⚠️ **And a model guard the panel still offers is a 500, not an answer.** Review made the point immediately
+after that fix landed: the history table rendered Restore unconditionally, so an editor without `publish`
+confirmed a modal and met a server error. The predicate lives on the model as one public method, asked by the
+guard that enforces it and by the action that offers it — disabled with a tooltip naming the missing
+permission, rather than hidden, because a row whose only action has silently vanished explains nothing. The
+browser suite asserts both directions on a seeded article that was published and then pulled back, since no
+ordinary row has a published version in its history.
+
 ⚠️ **A BULK publish is deliberately still allowed**, and that is not an oversight to be swept up with this.
 `Entry::query()->update(['status' => 'published'])` is a supported write that this project audits and
 versions on purpose (`AuditLogTest` and `recordBulkRevision()` both say so), and it carries no acting
 identity to check a permission against. Authorization belongs to the routes people use; the builder's job is
 that nothing happens untraced.
+
+⚠️ **And the INSTANCE write does ask, which reverses what the paragraph above concluded.** The sentence that
+lost is kept because it was published: I argued the form's stale-read window could not be exploited, since
+Eloquent writes dirty attributes and an instance loaded as `published` submitting `published` writes no
+status at all. Review's third framing of it steps around that entirely — an instance loaded as **draft**,
+with the stored row published while validation ran and demoted again before the save, submits a `published`
+that IS dirty, and the write lands. So the transition is decided inside the write now, from the locked row,
+and the form's `in` rule is the courtesy that returns a validation error rather than an exception.
+
+What survives from the reasoning that lost is the SCOPE, and it is what makes the two compatible: the guard
+asks only of an instance write — `exists` and a key, the same discriminator the stale-row guard uses — so the
+bulk write above arrives on a prototype and is untouched. A test asserts that it still works, beside the one
+asserting the instance write is refused, because a limitation nobody asserts is a limitation that quietly
+becomes a defect.
 
 So a link the record **already holds** keeps its value and loses its title: it renders as `Entry #12 — you may not view this entry type`, which discloses nothing the form did not already hand over, and the id stays in the selection so an unrelated edit saves. The exception is deliberately narrow — **this record, this field, and the field's own target types still apply** — because a forged id must still fail validation rather than reach `EntryRelation::guardTargetType()` as an exception after the entry has saved.
 
@@ -1951,6 +1982,13 @@ because a disabled control is a rendering decision and the raw form state is sub
   update and the force-delete were refused.
 
 - **An owner transition is audited once per UPDATE, not once per `save()`.** `wasChanged()` outlives the write that set it: Eloquent refreshes `$changes` in `finishSave()`, and a later `save()` with nothing dirty never calls `performUpdate()` — so `$changes` still described the previous write and the transition was recorded again. Measured: one promotion and three no-op saves produced four `role.owner_assigned` rows per holder. A trail that grows every time somebody calls `save()` reports authority changes that did not happen, to whoever is reading the log to find out what did. The model now carries a one-shot proof that an update actually ran, consumed by the `saved` listener whether or not the flag moved.
+
+  ⚠️ **And it is a fact about the ROW, not about the instance's originals** — the same guard, one concurrency
+  step further out. Two requests that both load a non-owner role and both set the flag serialise on the lock,
+  and the second one writes `true` over `true`: nothing transitions, but `wasChanged()` compares its own stale
+  original and says it did, so every holder got a second `role.owner_assigned`. The stored flag is captured
+  under the write's own lock now and compared with the value written. A log that reports two promotions where
+  one happened fails the same question as one that reports none.
 
 - **`assignTo()` asks whether the assignment already exists INSIDE the lock.** It asked before the transaction, so two requests assigning the same person to the same role both passed, the first inserted, and the second collided with the `(role_id, user_id)` primary key — where the documented behaviour is to be idempotent and silent. "Already holds it" has to be asked where the answer cannot change underneath.
 
