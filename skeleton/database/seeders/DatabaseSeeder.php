@@ -204,6 +204,21 @@ class DatabaseSeeder extends Seeder
             ]);
         }
 
+        /*
+         * ⚠️ PRODUCT HAD NO FIELDS, so it opened onto a form holding a title and nothing else, and the alpha pass read
+         * it as a broken type rather than a second example of one. A SKU and a price are what a product is known by.
+         * Optional, like every field here: the product spec creates one with a title alone.
+         */
+        foreach ([['sku', 'text', 'SKU'], ['price', 'number', 'Price']] as $index => [$handle, $fieldType, $label]) {
+            $storage = FieldStorage::create([
+                'org_id' => $orgA->id, 'handle' => $handle, 'type' => $fieldType, 'pii_class' => 'none', 'cardinality' => 1,
+            ]);
+
+            Field::create([
+                'entry_type_id' => $product->id, 'field_storage_id' => $storage->id, 'label' => $label, 'ordering' => $index + 1,
+            ]);
+        }
+
         // Belongs to the other org — must be unreachable from Golfdom's admin.
         EntryType::create(['org_id' => $orgB->id, 'handle' => 'confidential', 'name' => 'Confidential', 'plural_name' => 'Confidential']);
 
@@ -218,6 +233,17 @@ class DatabaseSeeder extends Seeder
             'scope_id' => $en->id,
             'is_enabled' => false,
         ]);
+
+        // And a podcast is known by its length and where to hear it — the same gap as product, for the same reason.
+        foreach ([['duration_minutes', 'number', 'Duration (minutes)'], ['episode_url', 'text', 'Episode URL']] as $index => [$handle, $fieldType, $label]) {
+            $storage = FieldStorage::create([
+                'org_id' => $orgA->id, 'handle' => $handle, 'type' => $fieldType, 'pii_class' => 'none', 'cardinality' => 1,
+            ]);
+
+            Field::create([
+                'entry_type_id' => $podcast->id, 'field_storage_id' => $storage->id, 'label' => $label, 'ordering' => $index + 1,
+            ]);
+        }
 
         /*
          * Roles, and a user who deliberately has almost none — ADR-033.
