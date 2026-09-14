@@ -12,6 +12,8 @@ namespace Kitsune\Core\Console\Concerns;
 
 use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Models\Site;
+use Symfony\Component\Console\Input\InputInterface;
+use Symfony\Component\Console\Output\OutputInterface;
 
 /**
  * The entries a benchmark inserted, and the only entries it removes — for all three benchmarks, which each had
@@ -30,8 +32,22 @@ use Kitsune\Core\Models\Site;
  */
 trait RemovesOnlyWhatItInserted
 {
-    /** The highest entry id before this run inserted anything, or null if it inserted nothing. */
+    /** The highest entry id before this invocation inserted anything, or null if it inserted nothing. */
     private ?int $insertedAbove = null;
+
+    /**
+     * ⚠️ THE MARK IS RESET HERE, ON EVERY INVOCATION, RATHER THAN LEFT TO EACH `handle()`. Artisan resolves a
+     * command once and keeps the object, so state on it outlives the run that set it. Review found a `--keep` run's
+     * mark surviving into the next run, and a run that inserted nothing — its volume already met — removing every
+     * row above it, which were exactly the rows `--keep` had kept. Wrapping `execute()` puts the reset beside the
+     * state it protects, so no command using this trait can leave it out.
+     */
+    protected function execute(InputInterface $input, OutputInterface $output): int
+    {
+        $this->insertedAbove = null;
+
+        return parent::execute($input, $output);
+    }
 
     /** Take the mark. Called immediately before the first insert, and only when there will be one. */
     private function markBeforeInserting(): void

@@ -106,6 +106,24 @@ it('removes only the rows its own run inserted, and keeps a corpus an earlier ru
     expect(benchmarkFootprint())->toBe($kept);
 });
 
+it('forgets the previous invocation\'s mark, so a run that inserts nothing removes nothing', function (): void {
+    /*
+     * ⚠️ ONE COMMAND OBJECT SERVES EVERY INVOCATION in an application — Artisan resolves a command once and keeps
+     * it — so a mark held on the object outlives the run that took it. Review found a `--keep` run leaving its mark
+     * behind, and a second run whose volume was already met, inserting nothing and taking no mark of its own,
+     * cleaning up above the first run's mark: deleting exactly the rows `--keep` had kept.
+     */
+    $this->artisan('kitsune:benchmark-floor', ['--entries' => 5, '--keep' => true])->assertSuccessful();
+
+    $kept = benchmarkFootprint();
+
+    $this->artisan('kitsune:benchmark-floor', ['--entries' => 5])
+        ->assertSuccessful()
+        ->expectsOutputToContain('content in scope: 5 entries');
+
+    expect(benchmarkFootprint())->toBe($kept);
+});
+
 it('drops only the generated columns its own run added, and keeps those an earlier run kept', function (): void {
     /*
      * ⚠️ REVIEW FOUND CLEANUP DROPPING EVERY `bench_idx_*` IT COUNTED, whether or not this run had added it, so a
