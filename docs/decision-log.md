@@ -1916,6 +1916,20 @@ Filament's own opt-in for exactly that, and it is off by default.
   opposite orders and hold each other's rows. `(org_id, id)` is a shared order every sweep follows — the same
   lock-ordering lesson as the owner sweep, one layer out.
 
+  ⚠️ **And membership is authority in both directions, which the guard's first version treated as a refusal
+  and nothing more.** Review found the successful paths unrecorded: detaching a role holder took every grant
+  they held with no row, and attaching them again gave it all back — the assignments survive — just as
+  silently, while a memo taken before either went on answering the old way for the rest of the request. Both
+  directions are now one transaction with the org row first, write one row per person under the org the
+  membership belongs to (`org.member_removed` / `org.owner_removed`, `org.member_added` / `org.owner_added`,
+  owner-ness in the action as for assignments), and drop the permission memo once they commit. Only a role
+  holder's membership writes a row, because a member with no role there gains or loses nothing `Permissions`
+  resolves. The relation's pairs are sorted by `(org, user)` before any lock, for the reason the sweep is:
+  two detaches naming the same orgs in opposite orders held each other's rows. ⚠️ Ordering them turned up a
+  worse defect on the same line — a detach with no ids read the user's own pivot column for the org ids, so
+  `$user->orgs()->detach()` asked the guard about the wrong organisation and removed the last owner's
+  membership with every other.
+
   ⚠️ **And the sweep is one transaction, which review found it was not.** A user holding roles in two
   organisations could have the first revoked and audited and the second refused by the last-owner guard: the
   deletion failed and the person kept their account while permanently losing authority the refusal existed to
