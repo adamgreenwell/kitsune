@@ -13,6 +13,7 @@ namespace Kitsune\Core\Console;
 use Filament\Facades\Filament;
 use Filament\Models\Contracts\HasTenants;
 use Illuminate\Console\Command;
+use Illuminate\Console\ConfirmableTrait;
 use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Contracts\Http\Kernel as HttpKernel;
 use Illuminate\Database\Eloquent\Model;
@@ -49,6 +50,8 @@ use Kitsune\Core\Tenancy\Context;
  */
 final class BenchmarkAdminCommand extends Command
 {
+    use ConfirmableTrait;
+
     /**
      * The Phase 4 bar.
      *
@@ -73,12 +76,18 @@ final class BenchmarkAdminCommand extends Command
     protected $signature = 'kitsune:benchmark-admin
         {--rows=100000 : Entries to have in scope for the measured site}
         {--as= : Email of the user to sign in as; defaults to the first on the installation}
-        {--keep : Leave the generated rows in place}';
+        {--keep : Leave the generated rows in place}
+        {--force : Run without asking when the application is in production}';
 
     protected $description = 'Measure admin page cost at scale against Phase 4\'s 200ms bar';
 
     public function handle(): int
     {
+        // It writes up to a hundred thousand rows into a site a real user can see.
+        if (! $this->confirmToProceed()) {
+            return self::FAILURE;
+        }
+
         $rows = max(1, (int) $this->option('rows'));
 
         $user = $this->user();

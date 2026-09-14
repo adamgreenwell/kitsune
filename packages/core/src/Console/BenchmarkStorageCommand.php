@@ -11,6 +11,7 @@ declare(strict_types=1);
 namespace Kitsune\Core\Console;
 
 use Illuminate\Console\Command;
+use Illuminate\Console\ConfirmableTrait;
 use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Fields\LogicalType;
 use Kitsune\Core\Fields\Projection;
@@ -38,16 +39,24 @@ use Kitsune\Core\Tenancy\Context;
  */
 final class BenchmarkStorageCommand extends Command
 {
+    use ConfirmableTrait;
+
     protected $signature = 'kitsune:benchmark-storage
         {--rows=10000 : How many entries to generate}
         {--locales=1 : Locale count, to model ADR-017 row multiplication}
         {--indexed=0 : Generated columns to create before writing}
-        {--keep : Leave the generated rows in place}';
+        {--keep : Leave the generated rows and the benchmark org in place}
+        {--force : Run without asking when the application is in production}';
 
     protected $description = 'Measure entry storage and query cost at scale (spike #13)';
 
     public function handle(): int
     {
+        // It adds columns to `entries` and writes thousands of rows, on whatever installation it is run on.
+        if (! $this->confirmToProceed()) {
+            return self::FAILURE;
+        }
+
         $rows = max(1, (int) $this->option('rows'));
         $locales = max(1, (int) $this->option('locales'));
         $indexed = max(0, (int) $this->option('indexed'));
@@ -109,7 +118,7 @@ final class BenchmarkStorageCommand extends Command
             return self::SUCCESS;
         } finally {
             if (! $this->option('keep')) {
-                $this->cleanUp($org, $site, $indexed, $driver);
+                $this->cleanUp($org, $site, $type, $indexed, $driver);
             }
         }
     }
@@ -125,8 +134,14 @@ final class BenchmarkStorageCommand extends Command
      * Cleanup also has to drop the generated columns. Leaving them attached
      * means a later --indexed=0 run still computes and maintains them, so
      * results depend on the order the benchmarks were run in.
+     *
+     * ⚠️ AND THE FIXTURE, which it used to leave: every run removed its entries
+     * and left a `benchmark` org, site and entry type in the host's database.
+     * An org this run created is force-deleted — `Org` soft-deletes, and a
+     * trashed org is still residue — and the database removes what hangs off
+     * it. An org that was already there keeps everything this run did not add.
      */
-    private function cleanUp(Org $org, Site $site, int $indexed, SchemaDriver $driver): void
+    private function cleanUp(Org $org, Site $site, EntryType $type, int $indexed, SchemaDriver $driver): void
     {
         Entry::query()
             ->where('org_id', $org->getKey())
@@ -143,6 +158,20 @@ final class BenchmarkStorageCommand extends Command
                 DB::statement($driver->dropIndexSql('entries', "entries_bench_{$i}"));
                 DB::statement($driver->dropGeneratedColumnSql('entries', $column));
             }
+        }
+
+        if ($org->wasRecentlyCreated) {
+            $org->forceDelete();
+
+            return;
+        }
+
+        if ($type->wasRecentlyCreated) {
+            $type->delete();
+        }
+
+        if ($site->wasRecentlyCreated) {
+            $site->delete();
         }
     }
 
