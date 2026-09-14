@@ -21,6 +21,7 @@ use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Audit\AuditedBuilder;
+use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Fields\FieldType;
 use Kitsune\Core\Fields\FieldTypeRegistry;
@@ -2919,6 +2920,44 @@ class Entry extends Model implements RequiresModelSave
      * — once on the caller's instance and once on the locked row — and two copies
      * of the same rule are how the pre-lock and post-lock answers drift apart.
      */
+    /**
+     * Refuse a restore that would move this entry into the published state on somebody's behalf.
+     *
+     * The comparison is the STORED status against the snapshot's: restoring a published version onto an entry
+     * that is already published changes nothing about publication, and allowing that is what lets an editor
+     * restore an older title on a live article. It is the same distinction `EntryResource` draws between
+     * keeping the published state and moving into it, enforced on the other route into it.
+     */
+    private function refuseUnpermittedRepublication(EntryRevision $revision): void
+    {
+        if ($revision->status !== 'published' || $this->status === 'published') {
+            return;
+        }
+
+        $user = Permissions::currentUser();
+
+        if ($user === null) {
+            return;
+        }
+
+        $handle = (string) $this->type_handle;
+
+        if (Permissions::allows($user, Permissions::forEntryType($handle, 'publish'))) {
+            return;
+        }
+
+        throw new RuntimeException(sprintf(
+            'Refusing to restore revision %s onto entry %s: that version was published and this entry is '
+            .'[%s], so the restore would publish it — and moving an entry into the published state is '
+            .'[entry.%s.publish], which the acting user does not hold (ADR-033). Restore a version that was '
+            .'not published, or ask somebody who may publish.',
+            (string) $revision->getKey(),
+            (string) $this->getKey(),
+            (string) $this->status,
+            $handle,
+        ));
+    }
+
     private function refuseForeignRevision(EntryRevision $revision): void
     {
         if ($revision->entry_id !== $this->getKey()) {
@@ -3026,6 +3065,24 @@ class Entry extends Model implements RequiresModelSave
                     (string) $this->entry_type_id,
                 ));
             }
+
+            /*
+             * ⚠️ A RESTORE MOVES `status`, SO IT CAN PUBLISH, AND NOTHING ASKED. Found by following review's
+             * question about the form's `in` rule into the routes a form rule cannot reach:
+             * `EntryRevision::SNAPSHOT_ATTRIBUTES` carries `status`, so restoring a version that was published
+             * publishes the entry. An editor holding only `entry.{type}.update` could undo somebody else's
+             * demotion by asking for last Tuesday, and ADR-033 registers `publish` as the permission to move
+             * INTO that state — enforced, until now, only by the status control on the form.
+             *
+             * ⚠️ HERE RATHER THAN IN THE RELATION MANAGER'S BUTTON, which is this project's standing lesson:
+             * the button is not the boundary. And under the lock this transaction already holds, so the stored
+             * status the decision rests on cannot move between the decision and the write.
+             *
+             * ⚠️ AND SKIPPED WITH NOBODY SIGNED IN, the same rule `Auditor` follows for the actor: a console
+             * restore, a seeder and a replayed erasure act as the system and have no permission to consult.
+             * This asks about a person's authority; it is not a lock on the operation.
+             */
+            $this->refuseUnpermittedRepublication($revision);
 
             $state = $revision->relation_state;
 

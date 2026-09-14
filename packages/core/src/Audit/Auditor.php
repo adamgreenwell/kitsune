@@ -61,6 +61,7 @@ final class Auditor
     public function record(string $action, ?Model $target = null): ?AuditLog
     {
         $orgId = $this->context->orgId();
+        $actor = Permissions::currentUser();
 
         if ($orgId === null) {
             return null;
@@ -92,7 +93,22 @@ final class Auditor
              * One encoding, used by both layers, rather than a second copy
              * here to drift from it.
              */
-            'actor_id' => Permissions::currentUser()?->getAuthIdentifier(),
+            /*
+             * ⚠️ AND ITS CLASS, because an id alone is not an identity — review found the asymmetry with
+             * `target_type` directly below. Two providers mean two user models with two sequences, so an
+             * unqualified 7 names whichever row the reader assumes. `getMorphClass()` is what `target_type`
+             * already stores, so the two halves of a row now answer the same way.
+             *
+             * ⚠️ `getMorphClass()` IS A MODEL METHOD AND AN ACTOR NEED NOT BE ONE. An `Authenticatable` that
+             * is not Eloquent — an LDAP or SSO identity — still acted, and its class name is a better answer
+             * than a bare id; it simply cannot be looked up through a morph map, which nothing here does.
+             */
+            'actor_type' => match (true) {
+                $actor === null => null,
+                $actor instanceof Model => $actor->getMorphClass(),
+                default => $actor::class,
+            },
+            'actor_id' => $actor?->getAuthIdentifier(),
             'action' => $action,
             'target_type' => $target?->getMorphClass(),
             'target_id' => $target?->getKey(),

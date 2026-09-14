@@ -38,6 +38,14 @@ return new class extends Migration
             // migration, a replayed erasure. An audit row with no actor is
             // more honest than one attributing it to whoever happened to be
             // logged in.
+            /*
+             * ⚠️ THE ACTOR IS A (TYPE, ID) PAIR LIKE THE TARGET, which review found it was not. A host may
+             * authenticate its panel through a provider backed by another user model on another table, and
+             * two models have two sequences — so both have a user 1 and a bare id names neither. The target
+             * has been polymorphic since ADR-020 for exactly this reason; the actor was not, in the column
+             * that answers "at whose hand".
+             */
+            $table->string('actor_type')->nullable();
             $table->foreignId('actor_id')->nullable();
             $table->string('action');
             // Both nullable: plenty of auditable actions have no model behind
@@ -50,7 +58,7 @@ return new class extends Migration
             // ADR-021: composite indexes lead with the scope key.
             $table->index(['org_id', 'created_at']);
             $table->index(['org_id', 'target_type', 'target_id']);
-            $table->index(['org_id', 'actor_id']);
+            $table->index(['org_id', 'actor_type', 'actor_id']);
         });
 
         /*

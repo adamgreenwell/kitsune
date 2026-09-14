@@ -146,16 +146,60 @@ class EntryResource extends Resource
              * than silent: `archive` is not one of the five actions `architecture.md` publishes.
              */
             Select::make('status')
-                ->options(fn (?Entry $record): array => self::statusOptions(Permissions::currentUser(), $record?->status))
+                ->options(fn (?Entry $record): array => self::statusOptionsFor(Permissions::currentUser(), $record))
                 ->default('draft')
                 // A string rule rather than `Illuminate\Validation\Rule::in()`, because `Rule` in this
                 // file is Kitsune's own — the one that goes through Eloquent so global scopes apply.
                 ->rule(fn (?Entry $record): string => 'in:'.implode(',', array_keys(
-                    self::statusOptions(Permissions::currentUser(), $record?->status),
+                    self::statusOptionsFor(Permissions::currentUser(), $record),
                 )))
                 ->required(),
             ...self::fieldControls(),
         ]);
+    }
+
+    /**
+     * The statuses this user may set on THIS entry, asked of the database rather than of the instance.
+     *
+     * ⚠️ THE CONCESSION IS ABOUT THE STORED ROW, AND IT WAS READING A LOADED ATTRIBUTE — review found the
+     * gap between the sentence this file already published and the value it passed. `published` stays
+     * available to somebody who may not publish only because the entry IS published; `$record->status` is
+     * what the instance was loaded with, so a form held open across a demotion by somebody else kept
+     * offering the option, and the `in` rule kept accepting it.
+     *
+     * ⚠️ MEASURED BEFORE FIXING, BECAUSE THE REPORTED CONSEQUENCE DID NOT REPRODUCE: a save from that stale
+     * instance does not put the entry back — Eloquent writes dirty attributes, and an instance whose
+     * original is `published` submitting `published` writes no status at all, so the newer draft survives.
+     * `EntryStatusOptionsTest` pins that, because it is the only reason the window was not an unpermitted
+     * publication, and it is a fact about the framework rather than about this guard.
+     *
+     * What was wrong either way is the question being asked. A permission decided from an attribute the
+     * request carries is decided from the request; one keyed read is what makes the answer the row's.
+     *
+     * @return array<string, string>
+     */
+    public static function statusOptionsFor(?Authenticatable $user, ?Entry $record): array
+    {
+        return self::statusOptions($user, self::storedStatus($record));
+    }
+
+    /**
+     * The status the database holds for an entry right now.
+     *
+     * ⚠️ THROUGH THE SCOPED QUERY AND THE ORIGINAL KEY. Scoped, because a status read outside the tenancy
+     * scope would answer about another org's row; the original key, because that is the row an instance
+     * write lands on — `getKeyForAuthorization()` exists for exactly this, and `EntryPolicy` already asks
+     * the same way.
+     */
+    private static function storedStatus(?Entry $record): ?string
+    {
+        if ($record === null || ! $record->exists || $record->getKeyForAuthorization() === null) {
+            return null;
+        }
+
+        $stored = Entry::query()->whereKey($record->getKeyForAuthorization())->value('status');
+
+        return is_string($stored) ? $stored : null;
     }
 
     /**

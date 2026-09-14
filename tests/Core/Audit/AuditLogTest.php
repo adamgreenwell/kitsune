@@ -23,6 +23,7 @@ use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
+use Kitsune\Core\Tests\Fixtures\TestUser;
 
 /*
  * ADR-020 primitive 4. What is ABSENT from this table is the design.
@@ -56,7 +57,8 @@ it('records actor, action and target — AND NOTHING ELSE', function (): void {
     sort($columns);
 
     expect($columns)->toBe([
-        'action', 'actor_id', 'created_at', 'id', 'org_id', 'site_id', 'target_id', 'target_type',
+        'action', 'actor_id', 'actor_type', 'created_at', 'id', 'org_id', 'site_id', 'target_id',
+        'target_type',
     ]);
 });
 
@@ -121,6 +123,38 @@ describe('what gets recorded', function (): void {
         $entry = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Attributed']);
 
         expect(AuditLog::for($entry)->where('action', 'entry.created')->value('actor_id'))->toBe(47);
+    });
+
+    it('names the actor\'s MODEL as well as its id', function (): void {
+        /*
+         * ⚠️ An id is not an identity, which review found after the guard had already learned to ask the
+         * panel's provider. Two providers mean two user models on two tables with two sequences, so both
+         * have a user 7 — and `target_type` has been polymorphic since ADR-020 for exactly that reason
+         * while `actor_id` was a bare number in the column that answers "at whose hand".
+         *
+         * The two rows below differ ONLY in the actor's class, which is what makes this a test of the
+         * discriminator rather than of the id.
+         */
+        $first = new AuthUser;
+        $first->forceFill(['id' => 7]);
+        Auth::login($first);
+
+        $entry = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Acted on twice']);
+
+        $second = new TestUser;
+        $second->forceFill(['id' => 7]);
+        Auth::login($second);
+
+        $entry->update(['title' => 'Edited by the other user 7']);
+
+        $created = AuditLog::for($entry)->where('action', 'entry.created')->firstOrFail();
+        $updated = AuditLog::for($entry)->where('action', 'entry.updated')->firstOrFail();
+
+        expect($created->actor_id)->toBe(7)
+            ->and($updated->actor_id)->toBe(7)
+            ->and($created->actor_type)->toBe(AuthUser::class)
+            ->and($updated->actor_type)->toBe(TestUser::class)
+            ->and($created->actor_type)->not->toBe($updated->actor_type);
     });
 
     it('records the actor on a BULK write too', function (): void {

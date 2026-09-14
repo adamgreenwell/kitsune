@@ -137,3 +137,54 @@ it('leaves a bulk update to the scope, which is what narrows it', function (): v
 
     expect(DB::table('entries')->where('id', $this->entry->getKey())->value('title'))->toBe('Renamed in bulk');
 });
+
+it('refuses instance arithmetic over a row that moved', function (): void {
+    /*
+     * ⚠️ THE GUARD WENT INTO TWO DOORS AND THERE WERE SIX — review found the four arithmetic ones. Eloquent
+     * sends `$entry->increment()` to `setKeysForSaveQuery($this->newQueryWithoutScopes())->increment()`: an
+     * instance write, by the ORIGINAL key, with the scope removed, that never passes through `update()`.
+     * So the one check standing between a stale instance and the row it no longer holds was not asked.
+     */
+    DB::table('entries')->where('id', $this->entry->getKey())->update(['origin_id' => 5]);
+
+    /** @var Entry $stale */
+    $stale = Entry::query()->whereKey($this->entry->getKey())->firstOrFail();
+
+    retypeStoredRow($this->entry, $this->product);
+
+    expect(fn () => $stale->increment('origin_id'))
+        ->toThrow(RuntimeException::class, 'somebody else moved or retyped it while this instance was in hand')
+        ->and(fn () => $stale->decrement('origin_id'))
+        ->toThrow(RuntimeException::class, 'somebody else moved or retyped it while this instance was in hand')
+        ->and(fn () => $stale->incrementEach(['origin_id' => 1]))
+        ->toThrow(RuntimeException::class, 'somebody else moved or retyped it while this instance was in hand')
+        ->and(fn () => $stale->decrementEach(['origin_id' => 1]))
+        ->toThrow(RuntimeException::class, 'somebody else moved or retyped it while this instance was in hand');
+
+    // Nothing moved, which is the half that says the refusals were refusals and not four exceptions.
+    expect((int) DB::table('entries')->where('id', $this->entry->getKey())->value('origin_id'))->toBe(5);
+});
+
+it('asks about the row the write will land on, not the key attribute', function (): void {
+    /*
+     * ⚠️ `getKey()` DECIDED WHETHER TO CHECK, AND THE WRITE USES `getKeyForSaveQuery()` — review found the
+     * gap, and it is the third time this project has met it: Eloquent writes and deletes by
+     * `$this->original['id'] ?? $this->getKey()`, so nulling the attribute in memory left the guard's
+     * condition false while the delete still targeted the row it was loaded from. The instance that had been
+     * tampered with was the one instance the guard skipped.
+     *
+     * A force-delete is the shape that matters: it carries no payload, so nothing else objects to a null key.
+     */
+    /** @var Entry $stale */
+    $stale = Entry::query()->whereKey($this->entry->getKey())->firstOrFail();
+
+    retypeStoredRow($this->entry, $this->product);
+
+    $stale->id = null;
+
+    expect(fn () => $stale->forceDelete())
+        ->toThrow(RuntimeException::class, 'somebody else moved or retyped it while this instance was in hand');
+
+    // The row the write would have destroyed is still there.
+    expect(DB::table('entries')->where('id', $this->entry->getKey())->exists())->toBeTrue();
+});

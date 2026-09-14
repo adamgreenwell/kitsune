@@ -558,3 +558,62 @@ it('does not answer a reloaded instance from the memo of an older type', functio
 
     expect($this->policy->update($this->user, $reloaded))->toBeTrue();
 });
+
+it('does not answer a reloaded instance from the memo of an older site', function (): void {
+    /*
+     * ⚠️ THE SAME FINDING WITH THE OTHER COLUMN, sent one round after the type was added to the key. A row
+     * authorised while it was in site A, MOVED to site B without being retyped, and then reloaded produced
+     * the identical memo key — row, current site, current org, loaded type — so A's handle came back with no
+     * read at all. And the reloaded instance's originals match B, so the write guard has nothing to refuse
+     * either: A's permission editing B's row, with both guards satisfied.
+     *
+     * The rule is one rule, so the memo now carries every column `refuseIfTheRowMovedUnderneath()` compares.
+     */
+    $home = siteFor($this->org, 'home');
+    $elsewhere = siteFor($this->org, 'elsewhere');
+    $entry = entryOn($home);
+
+    app(Context::class)->setSite($home);
+    $this->role->grant('entry.article.update');
+    Permissions::forget();
+
+    // The first check, while it really is in this site: memoised.
+    expect($this->policy->update($this->user, $entry))->toBeTrue();
+
+    // Another transaction moves it, without touching its type.
+    DB::table('entries')->where('id', $entry->getKey())->update(['site_id' => $elsewhere->getKey()]);
+
+    /*
+     * Reloaded without the scope, which is the only way to hold it at all now — and the shape the memo
+     * answered wrongly: same row, same context, same loaded type, a different site underneath.
+     */
+    /** @var Entry $reloaded */
+    $reloaded = Entry::query()->withoutGlobalScopes()->whereKey($entry->getKey())->firstOrFail();
+
+    expect((int) $reloaded->site_id)->toBe($elsewhere->getKey())
+        ->and($reloaded->type_handle)->toBe('article')
+        ->and($this->policy->update($this->user, $reloaded))->toBeFalse();
+
+    // And the scope agrees, which is the oracle this policy is a copy of.
+    expect(Entry::query()->whereKey($entry->getKey())->exists())->toBeFalse();
+
+    /*
+     * ⚠️ AND THE STALE INSTANCE IS REFUSED EVEN WHERE THE ROW NOW IS, which is the half the memo key alone
+     * does not give. Follow the row to `elsewhere` and the stored row is squarely in scope — but this object
+     * was loaded when it was somewhere else, and the policy answers about the row an instance is HOLDING.
+     * Without the comparison in the body the key would still be fresh here and the answer would be yes, so
+     * this is what makes those columns load-bearing rather than decoration (AGENTS.md #13).
+     */
+    app(Context::class)->setSite($elsewhere);
+    Permissions::forget();
+
+    expect((int) $entry->getRawOriginal('site_id'))->toBe($home->getKey())
+        ->and($this->policy->update($this->user, $entry))->toBeFalse();
+
+    // Asked from where it actually is, with an instance that was loaded there, the same grant still works —
+    // or this would be a refusal of everything.
+    /** @var Entry $there */
+    $there = Entry::query()->whereKey($entry->getKey())->firstOrFail();
+
+    expect($this->policy->update($this->user, $there))->toBeTrue();
+});

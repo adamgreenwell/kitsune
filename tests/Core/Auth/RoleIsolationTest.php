@@ -660,6 +660,31 @@ it('refuses to count owners through a model the assignments are not about', func
         ->exists())->toBeTrue();
 });
 
+it('refuses a quiet save whose key attribute has been nulled', function (): void {
+    /*
+     * ⚠️ THE CONDITION IN FRONT OF THE GUARD WAS THE FORGEABLE PART, which review found after the guard
+     * itself had been fixed twice. `GuardedRoleBuilder` asked whether `getKey()` was non-null before asking
+     * the model anything — and Eloquent writes by `getKeyForSaveQuery()`, the ORIGINAL key. So nulling the
+     * attribute in memory after an org switch skipped the check entirely and `saveQuietly()` renamed
+     * another org's role by primary key: the one instance that had been tampered with was the one instance
+     * nothing asked about.
+     */
+    joinOrg($this->beta, $this->user);
+    app(Context::class)->setOrg($this->beta);
+
+    $key = $this->alphaRole->getKey();
+
+    $this->alphaRole->name = 'Renamed from another org';
+    $this->alphaRole->id = null;
+
+    expect(fn () => $this->alphaRole->saveQuietly())
+        ->toThrow(RuntimeException::class, 'primary key has been changed in memory');
+
+    app(Context::class)->setOrg($this->alpha);
+
+    expect(Role::query()->whereKey($key)->value('name'))->toBe('Editor');
+});
+
 it('refuses to delete a role that belongs to another org', function (): void {
     /*
      * ⚠️ THE FIFTH AUTHORITY PATH, and it was not asking — review found it. Eloquent's instance delete writes
@@ -1621,13 +1646,20 @@ it('stays idempotent when the same assignment arrives twice', function (): void 
                 $lock = $position;
             }
 
-            if ($check === null && str_contains($sql, 'exists') && str_contains($sql, 'role_user')) {
+            if ($check === null && str_contains($sql, 'from role_user') && str_contains($sql, 'for update')) {
                 $check = $position;
             }
         }
 
+        /*
+         * ⚠️ A LOCKING READ, not merely a read in the right place — review found that distinction after the
+         * ordering was fixed. Under REPEATABLE READ a plain `select` inside a caller's outer transaction
+         * answers from a snapshot taken before this method ran, so it can miss a row the rival committed
+         * while this request waited for the role lock. So the assertion is about the SQL, not the order
+         * alone: the check has to carry `for update`.
+         */
         expect($lock)->not->toBeNull('the assignment never locked the role')
-            ->and($check)->not->toBeNull('the assignment never asked whether the pivot row already existed')
+            ->and($check)->not->toBeNull('the pivot check was not a locking read of role_user')
             ->and($lock)->toBeLessThan($check, 'the existence check ran before the role was locked');
     }
 });
