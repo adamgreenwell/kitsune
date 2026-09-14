@@ -2929,16 +2929,19 @@ class Entry extends Model implements RequiresModelSave
      * keeping the published state and moving into it, enforced on the other route into it.
      */
     /**
-     * Would restoring this revision publish the entry on behalf of somebody who may not publish?
+     * Is moving this entry from `$storedStatus` into the published state something the acting user may not do?
      *
-     * ⚠️ PUBLIC AND SHARED WITH THE BUTTON, which review asked for and this project has learned twice over:
-     * the model refusing what the panel still offers is a 500 rather than an answer. The relation manager
-     * disables the action with this same predicate, so the guard below is the backstop and not the message —
-     * and there is ONE copy of the rule, because a constraint written twice is one place for it to drift.
+     * ⚠️ ONE PREDICATE FOR TWO ROUTES, because the rule is one rule: `publish` is permission to move INTO the
+     * published state, so a row that is already published is not being published again. The restore guard and
+     * the write guard both ask it, and the panel's Restore button asks it through the restore one.
+     *
+     * ⚠️ AND A NULL ACTOR IS THE SYSTEM. A seeder, a console command, a queued job and a replayed erasure have
+     * no permission to consult — `Auditor` treats a null actor the same way, and `Permissions::currentUser()`
+     * only answers about a request a guard is actually serving.
      */
-    public function restoreWouldPublishWithoutPermission(EntryRevision $revision): bool
+    private function publishingRefused(string $storedStatus, string $handle): bool
     {
-        if ($revision->status !== 'published' || $this->status === 'published') {
+        if ($storedStatus === 'published' || $handle === '') {
             return false;
         }
 
@@ -2948,7 +2951,71 @@ class Entry extends Model implements RequiresModelSave
             return false;
         }
 
-        return ! Permissions::allows($user, Permissions::forEntryType((string) $this->type_handle, 'publish'));
+        return ! Permissions::allows($user, Permissions::forEntryType($handle, 'publish'));
+    }
+
+    /**
+     * Refuse an instance write that would publish this entry without the permission to publish.
+     *
+     * ⚠️ THIS REVERSES A POSITION I ARGUED ON THE REVIEW, and the argument it reverses is worth keeping: I
+     * said the form's stale-read window could not be used because Eloquent writes only dirty attributes, so
+     * an instance loaded as published submitting published writes no status at all. True — and review's third
+     * framing steps around it. An instance loaded as DRAFT, with the stored row published at validation time
+     * and demoted again before the write, submits `published` that IS dirty, and the write lands.
+     *
+     * ⚠️ AND THE OBJECTION THAT KEPT IT OUT OF HERE IS ANSWERED BY SCOPE. `Entry::query()->update(['status'
+     * => 'published'])` is a supported, audited, versioned write with no acting identity to check; it arrives
+     * on a prototype that does not exist, so `exists` and a key keep it out of this guard entirely. What is
+     * left is an instance write, which always comes from somebody.
+     *
+     * The read is locked and inside the write's own transaction, so unlike the form's rule the answer cannot
+     * move between the decision and the update.
+     */
+    public function refuseUnpermittedPublication(): void
+    {
+        $stored = static::withTrashed()
+            ->withoutGlobalScopes()
+            ->whereKey($this->getKeyForSaveQuery())
+            ->lockForUpdate()
+            ->first(['status', 'type_handle']);
+
+        if ($stored === null) {
+            // The row is gone; `refuseIfTheRowMovedUnderneath()` is the guard that speaks to that.
+            return;
+        }
+
+        $handle = (string) $stored->type_handle;
+
+        if (! $this->publishingRefused((string) $stored->status, $handle)) {
+            return;
+        }
+
+        throw new RuntimeException(sprintf(
+            'Refusing to publish entry %s: the stored row is [%s] and this write would make it published — '
+            .'which is [entry.%s.publish], and the acting user does not hold it (ADR-033). The permission is '
+            .'about the TRANSITION, so it is decided from the row inside the write rather than from the form '
+            .'that was rendered.',
+            (string) $this->getKey(),
+            (string) $stored->status,
+            $handle,
+        ));
+    }
+
+    /**
+     * Would restoring this revision publish the entry on behalf of somebody who may not publish?
+     *
+     * ⚠️ PUBLIC AND SHARED WITH THE BUTTON, which review asked for and this project has learned twice over:
+     * the model refusing what the panel still offers is a 500 rather than an answer. The relation manager
+     * disables the action with this same predicate, so the guard below is the backstop and not the message —
+     * and there is ONE copy of the rule, because a constraint written twice is one place for it to drift.
+     */
+    public function restoreWouldPublishWithoutPermission(EntryRevision $revision): bool
+    {
+        if ($revision->status !== 'published') {
+            return false;
+        }
+
+        return $this->publishingRefused((string) $this->status, (string) $this->type_handle);
     }
 
     private function refuseUnpermittedRepublication(EntryRevision $revision): void

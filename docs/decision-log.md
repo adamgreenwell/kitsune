@@ -1767,6 +1767,20 @@ versions on purpose (`AuditLogTest` and `recordBulkRevision()` both say so), and
 identity to check a permission against. Authorization belongs to the routes people use; the builder's job is
 that nothing happens untraced.
 
+⚠️ **And the INSTANCE write does ask, which reverses what the paragraph above concluded.** The sentence that
+lost is kept because it was published: I argued the form's stale-read window could not be exploited, since
+Eloquent writes dirty attributes and an instance loaded as `published` submitting `published` writes no
+status at all. Review's third framing of it steps around that entirely — an instance loaded as **draft**,
+with the stored row published while validation ran and demoted again before the save, submits a `published`
+that IS dirty, and the write lands. So the transition is decided inside the write now, from the locked row,
+and the form's `in` rule is the courtesy that returns a validation error rather than an exception.
+
+What survives from the reasoning that lost is the SCOPE, and it is what makes the two compatible: the guard
+asks only of an instance write — `exists` and a key, the same discriminator the stale-row guard uses — so the
+bulk write above arrives on a prototype and is untouched. A test asserts that it still works, beside the one
+asserting the instance write is refused, because a limitation nobody asserts is a limitation that quietly
+becomes a defect.
+
 So a link the record **already holds** keeps its value and loses its title: it renders as `Entry #12 — you may not view this entry type`, which discloses nothing the form did not already hand over, and the id stays in the selection so an unrelated edit saves. The exception is deliberately narrow — **this record, this field, and the field's own target types still apply** — because a forged id must still fail validation rather than reach `EntryRelation::guardTargetType()` as an exception after the entry has saved.
 
 ### Consequence

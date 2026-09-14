@@ -362,6 +362,7 @@ class AuditedBuilder extends ScopedBuilder
          */
         return $this->auditing($this->actionFor($values), function () use ($values) {
             $this->refuseIfTheRowMoved('update');
+            $this->refuseUnpermittedPublication($values);
 
             return parent::update($values);
         }, $values);
@@ -381,6 +382,33 @@ class AuditedBuilder extends ScopedBuilder
 
             return parent::forceDelete();
         });
+    }
+
+    /**
+     * Refuse an INSTANCE write that would move an entry into the published state without the permission.
+     *
+     * ⚠️ INSTANCE WRITES ONLY, WHICH IS WHAT MAKES THIS COMPATIBLE WITH THE BULK PUBLISH THIS PROJECT
+     * SUPPORTS. `Entry::query()->update(['status' => 'published'])` is audited and versioned on purpose and
+     * carries no acting identity; it arrives on a prototype that does not exist, so the same `exists` and key
+     * test that scopes the stale-row guard keeps it out of this one. See
+     * `Entry::refuseUnpermittedPublication()` for the reversal this represents and why review was right.
+     *
+     * ⚠️ A BULK UPDATE THAT NAMES `status` QUALIFIED gets the same treatment as an unqualified one, because a
+     * joined update qualifies its columns — the same reason `actionFor()` checks both spellings.
+     *
+     * @param  array<string, mixed>  $values
+     */
+    private function refuseUnpermittedPublication(array $values): void
+    {
+        $model = $this->getModel();
+        $table = $model->getTable();
+        $status = $values['status'] ?? $values[$table.'.status'] ?? null;
+
+        if ($status !== 'published' || ! $model->exists || $model->getKeyForAuthorization() === null) {
+            return;
+        }
+
+        $model->refuseUnpermittedPublication();
     }
 
     /**

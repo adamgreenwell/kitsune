@@ -222,3 +222,66 @@ it('refuses a restore that would publish, from somebody who may not', function (
 
     expect(DB::table('entries')->where('id', $entry->getKey())->value('status'))->toBe('published');
 });
+
+it('refuses an instance write that publishes, whatever the form allowed', function (): void {
+    /*
+     * ⚠️ THIS IS REVIEW'S THIRD FRAMING OF THE SAME WINDOW, AND IT DEFEATS THE ARGUMENT I PUBLISHED AGAINST
+     * CLOSING IT. I said the stale form could not put an entry back because Eloquent writes dirty attributes:
+     * an instance loaded as `published` submitting `published` writes no status at all. That is true and it is
+     * not enough — an instance loaded as DRAFT, with the stored row published while validation ran and demoted
+     * again before the save, submits a `published` that IS dirty, and the write lands.
+     *
+     * So the transition is now decided inside the write, from the locked row, and the form's rule is the
+     * courtesy that gives a validation error instead of an exception.
+     */
+    $this->role->grant(Permissions::forEntryType('article', 'update'));
+
+    $entry = publishedArticle($this->org);
+
+    $entry->status = 'draft';
+    $entry->save();
+
+    Auth::login($this->user);
+    Permissions::forget();
+
+    // The form rendered `published` as an option; this instance was loaded as a draft.
+    $entry->status = 'published';
+
+    expect(fn () => $entry->save())->toThrow(RuntimeException::class, 'entry.article.publish')
+        ->and(DB::table('entries')->where('id', $entry->getKey())->value('status'))->toBe('draft');
+
+    /*
+     * ⚠️ AND IT IS A PERMISSION RATHER THAN A LOCK: the same write, by somebody who may publish, lands. Without
+     * this half the guard could be refusing every publication and the test would not notice.
+     */
+    $this->role->grant(Permissions::forEntryType('article', 'publish'));
+    Permissions::forget();
+
+    $entry->save();
+
+    expect(DB::table('entries')->where('id', $entry->getKey())->value('status'))->toBe('published');
+});
+
+it('leaves the supported bulk publish alone, which is the limitation stated in ADR-033', function (): void {
+    /*
+     * ⚠️ THE OTHER HALF OF THE DECISION, asserted so it cannot be tightened by accident.
+     * `Entry::query()->update(['status' => 'published'])` is a write this project deliberately allows, audits
+     * and versions — it arrives on a prototype with no key, carries no acting identity, and the scope is what
+     * narrows it. A guard that refused it would break the supported path; one that skipped it silently would
+     * be claiming a boundary it does not have. This test is the claim, in the form that fails if either
+     * changes.
+     */
+    $this->role->grant(Permissions::forEntryType('article', 'update'));
+
+    $entry = publishedArticle($this->org);
+
+    $entry->status = 'draft';
+    $entry->save();
+
+    Auth::login($this->user);
+    Permissions::forget();
+
+    Entry::query()->whereKey($entry->getKey())->update(['status' => 'published']);
+
+    expect(DB::table('entries')->where('id', $entry->getKey())->value('status'))->toBe('published');
+});
