@@ -8,17 +8,17 @@
 
 declare(strict_types=1);
 
-use Illuminate\Console\CacheCommandMutex;
-use Illuminate\Console\CommandMutex;
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Database\QueryException;
-use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Schema;
+use Kitsune\Core\Console\BenchmarkFloorCommand;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Schema\DriverFactory;
 use Kitsune\Core\Tenancy\Context;
+use Symfony\Component\Process\Process;
 
 /*
  * The benchmarks run on an operator's installation — ADR-027's floor is a claim a host can check on its own
@@ -60,10 +60,22 @@ function benchmarkContext(): array
     return [app(Context::class)->orgId(), app(Context::class)->siteId()];
 }
 
-/** The lock a benchmark run holds — the command mutex `--isolated` uses, resolved the way `Command` resolves it. */
-function benchmarkMutex(): CommandMutex
+/** Whether a benchmark's run lock is free on this host — asked the way a second run asks, and let go at once. */
+function benchmarkLockIsFree(string $command): bool
 {
-    return app()->bound(CommandMutex::class) ? app(CommandMutex::class) : app(CacheCommandMutex::class);
+    $path = BenchmarkFloorCommand::runLockPath($command);
+    File::ensureDirectoryExists(dirname($path));
+
+    $handle = fopen($path, 'c');
+    $free = flock($handle, LOCK_EX | LOCK_NB);
+
+    if ($free) {
+        flock($handle, LOCK_UN);
+    }
+
+    fclose($handle);
+
+    return $free;
 }
 
 /*
@@ -88,10 +100,10 @@ it('leaves the installation as it found it after the floor benchmark', function 
 
     $this->artisan('kitsune:benchmark-floor', ['--entries' => 25])->assertSuccessful();
 
-    // And the run lock goes with the run, or the next run of it is refused for an hour.
+    // And the run lock goes with the run, or the next run of it is refused.
     expect(benchmarkFootprint())->toBe($before)
         ->and(benchmarkContext())->toBe($context)
-        ->and(benchmarkMutex()->exists(Artisan::all()['kitsune:benchmark-floor']))->toBeFalse();
+        ->and(benchmarkLockIsFree('kitsune:benchmark-floor'))->toBeTrue();
 });
 
 it('leaves the installation as it found it after the storage benchmark', function (): void {
@@ -320,18 +332,23 @@ it('creates its fixture whole or not at all', function (string $command, string 
     'storage' => ['kitsune:benchmark-storage', 'benchmark'],
 ]);
 
-it('refuses a second run of a benchmark while one is in progress, and leaves that run its lock', function (string $command): void {
+it('refuses a second run while another process holds the lock, and runs again once that process is gone', function (string $command): void {
     /*
      * ⚠️ OVERLAPPING RUNS SHARE WHAT NO PER-RUN TOKEN DIVIDES — review found the storage benchmark's generated
-     * columns dropped under a longer run, and a fixture joined without inserting anything deleted under the run
-     * that joined it. So a benchmark takes the command mutex `--isolated` would take, unconditionally.
+     * columns dropped under a longer run, and a fixture joined without inserting anything deleted under the run that
+     * joined it. So a run holds a lock for as long as its process lives.
      *
-     * The run in progress is stood in for by holding its lock, which is all a real one would hold. And the refused
-     * run must not release it: forgetting a lock it failed to get would let a third run in beside the first.
+     * ⚠️ HELD BY ANOTHER PROCESS, AND THEN KILLED. The first lock was a cache lock on a clock: it expired under a long
+     * run, and a run killed before its `finally` left it held for an hour. A holder in a separate process is what a
+     * real second run faces, and SIGKILL runs none of the holder's cleanup — so a free lock afterwards is the
+     * operating system's release, not anything a command did.
      */
-    $running = Artisan::all()[$command];
+    $path = BenchmarkFloorCommand::runLockPath($command);
+    File::ensureDirectoryExists(dirname($path));
 
-    expect(benchmarkMutex()->create($running))->toBeTrue();
+    $holder = new Process([PHP_BINARY, '-r', '$h = fopen($argv[1], "c"); flock($h, LOCK_EX); echo "held\n"; sleep(60);', $path]);
+    $holder->start();
+    $holder->waitUntil(static fn (string $type, string $output): bool => str_contains($output, 'held'));
 
     $before = benchmarkFootprint();
 
@@ -339,10 +356,16 @@ it('refuses a second run of a benchmark while one is in progress, and leaves tha
         $this->artisan($command)->expectsOutputToContain('already in progress')->assertFailed();
 
         expect(benchmarkFootprint())->toBe($before)
-            ->and(benchmarkMutex()->exists($running))->toBeTrue();
+            ->and(benchmarkLockIsFree($command))->toBeFalse();
     } finally {
-        benchmarkMutex()->forget($running);
+        if ($holder->isRunning()) {
+            $holder->signal(9);
+        }
+
+        $holder->wait();
     }
+
+    expect(benchmarkLockIsFree($command))->toBeTrue();
 })->with(['kitsune:benchmark-floor', 'kitsune:benchmark-storage', 'kitsune:benchmark-admin']);
 
 it('asks before writing to a production installation', function (string $command): void {

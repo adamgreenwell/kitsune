@@ -11,10 +11,12 @@ declare(strict_types=1);
 namespace Kitsune\Core\Console\Concerns;
 
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\File;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
 use LogicException;
+use RuntimeException;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
 
@@ -45,28 +47,42 @@ trait LeavesNothingBehind
     private ?string $runToken = null;
 
     /**
+     * The file whose lock serializes runs of one benchmark on this host.
+     *
+     * Public so a test can hold the lock from another process; nothing else has a reason to know where it is.
+     */
+    public static function runLockPath(string $command): string
+    {
+        return storage_path('framework/'.str_replace(':', '-', $command).'.lock');
+    }
+
+    /**
      * ⚠️ PER INVOCATION, HERE RATHER THAN IN EACH `handle()`. Artisan resolves a command once and keeps the
      * object, so state on it outlives the run that set it: review found a `--keep` run's mark surviving into the
      * next run, whose volume was already met, and that run removing the kept rows. A fresh token for every
      * invocation, and the context given back however the invocation ends, sit beside the state they protect —
      * so no command using this trait can leave either out.
      *
-     * ⚠️ AND ONE RUN OF A BENCHMARK AT A TIME. Review found overlapping runs of one command sharing what no per-run
-     * token can divide: a fixture a second run joins without inserting anything, and the storage benchmark's
-     * generated columns on `entries`, which a shorter run dropped while a longer one still had a query to make
-     * against them. So each run takes Laravel's command mutex — the lock `--isolated` takes, made unconditional —
-     * and a second run is refused before it touches anything. The lock expires after Laravel's hour, so a run that
-     * outlives it can be overlapped again: the token and `removeCreatedOrgUnlessJoined()` still hold for rows and
-     * fixtures then, and the storage benchmark's schema is the part that does not.
+     * ⚠️ AND ONE RUN OF A BENCHMARK AT A TIME, FOR AS LONG AS THAT RUN'S PROCESS LIVES. Review found overlapping runs
+     * of one command sharing what no per-run token can divide: a fixture a second run joins without inserting
+     * anything, and the storage benchmark's generated columns on `entries`, which a shorter run dropped while a
+     * longer one still had a query to make against them. The first lock was Laravel's command mutex, and review
+     * found it wrong on the point that matters: a cache lock on a clock expired after an hour while its run could
+     * still be going, and a run killed before its `finally` left it held for the rest of that hour. The lock is now
+     * an exclusive `flock` the running process holds, which the operating system releases when the process ends,
+     * however it ends.
+     *
+     * Its stated limit is the host: runs started on two machines against one database are not serialized, and the
+     * token and `removeCreatedOrgUnlessJoined()` are what hold for them.
      */
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
-        $mutex = $this->commandIsolationMutex();
+        $lock = $this->takeRunLock();
 
-        if (! $mutex->create($this)) {
+        if ($lock === null) {
             $this->error(sprintf(
-                'Another [%s] run is already in progress on this installation. Runs of a benchmark share its fixture '
-                .'and, for the storage benchmark, generated columns on entries, so they run one at a time.',
+                'Another [%s] run is already in progress on this host. Runs of a benchmark share its fixture and, '
+                .'for the storage benchmark, generated columns on entries, so they run one at a time.',
                 $this->getName(),
             ));
 
@@ -98,8 +114,35 @@ trait LeavesNothingBehind
                 $context->setOrg($restoreOrg);
             }
 
-            $mutex->forget($this);
+            flock($lock, LOCK_UN);
+            fclose($lock);
         }
+    }
+
+    /**
+     * This benchmark's run lock, taken without waiting — or null when another process holds it.
+     *
+     * @return resource|null
+     */
+    private function takeRunLock()
+    {
+        $path = self::runLockPath((string) $this->getName());
+
+        File::ensureDirectoryExists(dirname($path));
+
+        $handle = fopen($path, 'c');
+
+        if ($handle === false) {
+            throw new RuntimeException(sprintf('Could not open the benchmark run lock at [%s].', $path));
+        }
+
+        if (! flock($handle, LOCK_EX | LOCK_NB)) {
+            fclose($handle);
+
+            return null;
+        }
+
+        return $handle;
     }
 
     /** The prefix every slug this run inserts starts with: the command's own prefix, then this run's token. */
@@ -132,8 +175,9 @@ trait LeavesNothingBehind
      * missing org rather than losing rows it already had.
      *
      * A fixture two overlapping runs shared therefore outlives both. That is residue, and it is the only
-     * alternative to deleting rows a running benchmark is still using. Runs of one benchmark are serialized — see
-     * `execute()` — so two can overlap only once a run has outlived its lock; this is what still holds then.
+     * alternative to deleting rows a running benchmark is still using. Runs of one benchmark are serialized on a
+     * host — see `execute()` — so two overlap only when they were started on different hosts; this is what still
+     * holds for them, for rows they inserted, and not for a run that joined without inserting any.
      */
     private function removeCreatedOrgUnlessJoined(Org $org): void
     {
