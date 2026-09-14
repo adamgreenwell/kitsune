@@ -71,10 +71,9 @@ php skeleton/artisan migrate --seed    # schema and a small demo organisation
 php skeleton/artisan serve             # http://127.0.0.1:8000/admin
 ```
 
-Sign in as `alpha@kitsune.test` with the password `password`. The seeded organisation is **Golfdom**, and
-`reader@kitsune.test` (same password) is a copy-editor who holds `entry.article.view` and
-`entry.article.update` and nothing else — the account the permission tests drive, and the quickest way to see
-the authorization layer refuse something.
+Sign in as `alpha@kitsune.test` with the password `password`. The seeded organisation is **Golfdom**, with a
+second organisation and a user of its own — `rival@kitsune.test` — because most of what is interesting about a
+multi-tenant kernel is only visible when there are two tenants to keep apart.
 
 ⚠️ **`composer install -d skeleton` on its own does not work, and the reason is temporary.** `kitsune/core`
 is not on Packagist yet ([#8](https://github.com/adamgreenwell/kitsune/issues/8)), so the skeleton resolves
@@ -87,9 +86,14 @@ version"*.
 
 ```bash
 vendor/bin/pest                        # the whole suite, SQLite in memory, no services required
-vendor/bin/pint --test                 # formatting, the way CI invokes it
+vendor/bin/pint --test                 # formatting: the monorepo
+vendor/bin/pint --test skeleton --config skeleton/pint.json   # and the skeleton, which has its own config
 vendor/bin/phpstan analyse             # level 6, no baseline
 ```
+
+⚠️ **Both Pint invocations, because the root config excludes `skeleton`.** The skeleton is an installable
+Laravel application with Laravel's own conventions, so it is formatted against its own config — and running
+only the first command passes locally while failing CI on any skeleton change.
 
 The browser suite needs Node and a browser binary, and it starts its own server:
 
@@ -103,8 +107,16 @@ The four-engine matrix CI runs is reproducible locally with the containers in `c
 
 ```bash
 docker compose up -d
-DB_CONNECTION=pgsql DB_PORT=55432 DB_DATABASE=kitsune DB_USERNAME=kitsune DB_PASSWORD=kitsune vendor/bin/pest
+
+vendor/bin/pest                                                    # SQLite, the default — no container
+DB_CONNECTION=pgsql   DB_PORT=55432 DB_DATABASE=kitsune DB_USERNAME=kitsune DB_PASSWORD=kitsune vendor/bin/pest
+DB_CONNECTION=mysql   DB_PORT=53306 DB_DATABASE=kitsune DB_USERNAME=kitsune DB_PASSWORD=kitsune vendor/bin/pest
+DB_CONNECTION=mariadb DB_PORT=53307 DB_DATABASE=kitsune DB_USERNAME=kitsune DB_PASSWORD=kitsune vendor/bin/pest
 ```
+
+⚠️ **`DB_PORT` is not optional and its absence looks like a code regression.** The containers publish on
+non-default ports; without it every test fails at setup with *"Connection refused"*, which reads as a broken
+suite rather than a missing variable.
 
 ## Licensing
 

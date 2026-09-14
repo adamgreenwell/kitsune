@@ -50,6 +50,32 @@ it('names only composer scripts that exist', function (): void {
     expect($missing)->toBe([], 'the README names composer scripts that do not exist: '.implode(', ', $missing));
 });
 
+it('names only sign-in accounts the seeder creates', function (): void {
+    /*
+     * ⚠️ THIS IS THE ERROR THAT GOT THROUGH THE FIRST VERSION OF THIS FILE. The README was written while a
+     * feature branch was checked out, so it advertised a copy-editor account the seeder on this branch does
+     * not create — an onboarding instruction that fails at the one step a newcomer cannot debug. The test
+     * above checks COMMANDS; a credential is the same kind of promise and was not checked at all.
+     */
+    $root = dirname(__DIR__, 2);
+    $readme = (string) file_get_contents($root.'/README.md');
+    $seeder = (string) file_get_contents($root.'/skeleton/database/seeders/DatabaseSeeder.php');
+
+    preg_match_all('/[a-z0-9._-]+@kitsune\.test/i', $readme, $matches);
+
+    $documented = array_values(array_unique($matches[0]));
+
+    // ⚠️ Not vacuous: the README has to name at least one account for this to be about anything.
+    expect($documented)->not->toBeEmpty();
+
+    $unseeded = array_values(array_filter(
+        $documented,
+        static fn (string $address): bool => ! str_contains($seeder, $address),
+    ));
+
+    expect($unseeded)->toBe([], 'the README names accounts the seeder does not create: '.implode(', ', $unseeded));
+});
+
 it('keeps the skeleton resolvable the way the README says it is', function (): void {
     $root = dirname(__DIR__, 2);
 
