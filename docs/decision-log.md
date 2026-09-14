@@ -1809,6 +1809,22 @@ So a link the record **already holds** keeps its value and loses its title: it r
   is narrower than "every guard gets a hatch" — **a hatch is only safe where the thing it suspends is the only
   thing the guard protects.**
 
+- **The role row is the mutex for everything that changes its authority.** Each operation was locally
+  transactional and the PAIR still lost a row from the trail: an assignment inserted the pivot and read the
+  owner flag as false, recording `role.assigned`, while a concurrent promotion could not see the uncommitted
+  pivot and audited no holder at all. Both committed, and the person was an owner with nothing in the log
+  saying so — the per-person guarantee above, defeated by two individually correct operations. A promotion
+  writes the role row, so it takes that lock on its own account; `assignTo()` and `removeFrom()` take it
+  explicitly **before** touching `role_user`, and the holders read takes it from the other side so a
+  transition waits for an assignment in flight rather than counting past it.
+
+- **A quiet save is still asked which org's row it is touching.** "Every save of an existing role asks it" was
+  true of noisy saves only: `saveQuietly()` and `updateQuietly()` suppress the `saving` listener, and what was
+  left refused the per-row COLUMNS alone — so a quiet `name` or `handle` change on another org's role went
+  through, written by primary key. The builder asks the row question itself now, for an instance write that
+  has lost its proof; a genuine bulk update arrives with a prototype that does not exist and is narrowed by
+  the global scope, which is the distinction every guard on this model has had to make.
+
 - **A revocation is recorded only once the deletion has succeeded.** The rows went in first, which read as
   correct until an application observer returning `false` from `deleting` aborted the delete: the role and
   every assignment survived while the log said their authority was revoked, and a retry added another set of

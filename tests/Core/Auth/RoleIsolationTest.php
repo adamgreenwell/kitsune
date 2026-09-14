@@ -8,6 +8,7 @@
 
 declare(strict_types=1);
 
+use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Auth\Permissions;
@@ -949,4 +950,140 @@ it('does not keep the lifecycle proof when a save aborts in its saved listener',
     expect(fn () => $this->alphaRole->saveQuietly())
         ->toThrow(RuntimeException::class, 'bulk write to `is_owner`')
         ->and((bool) Role::query()->whereKey($this->alphaRole->getKey())->value('is_owner'))->toBeFalse();
+});
+
+it('refuses a quiet save of another org\'s role, columns or not', function (): void {
+    /*
+     * ⚠️ ROUND 11's "EVERY SAVE OF AN EXISTING ROLE ASKS IT" WAS TRUE OF NOISY SAVES ONLY — review found the
+     * hole in the boundary I had just drawn. `saveQuietly()` and `updateQuietly()` suppress the `saving`
+     * listener that asks whether the row belongs to the current org, and the builder was refusing only the
+     * per-row COLUMNS on that path: so a quiet `name` or `handle` change on another org's role went through,
+     * written by primary key, with nothing in the log and nothing to stop it.
+     *
+     * The builder asks the row question itself now, for an instance write that has lost its proof.
+     */
+    joinOrg($this->beta, $this->user);
+    app(Context::class)->setOrg($this->beta);
+
+    $this->alphaRole->name = 'Renamed quietly from another org';
+
+    expect(fn () => $this->alphaRole->saveQuietly())
+        ->toThrow(RuntimeException::class, 'Refusing [a save with no lifecycle guards]');
+
+    $this->alphaRole->handle = 'quietly-rehandled';
+
+    expect(fn () => $this->alphaRole->updateQuietly(['handle' => 'quietly-rehandled']))
+        ->toThrow(RuntimeException::class, 'Refusing [a save with no lifecycle guards]');
+
+    app(Context::class)->setOrg($this->alpha);
+
+    expect(Role::query()->whereKey($this->alphaRole->getKey())->first()->only(['name', 'handle']))
+        ->toBe(['name' => 'Editor', 'handle' => 'editor']);
+
+    /*
+     * ⚠️ And a quiet save of one's OWN role still works, or this would be a refusal of the method rather than
+     * of the boundary — the distinction every guard on this class has had to make.
+     */
+    $mine = Role::query()->whereKey($this->alphaRole->getKey())->firstOrFail();
+    $mine->name = 'Renamed quietly at home';
+    $mine->saveQuietly();
+
+    expect(Role::query()->whereKey($mine->getKey())->value('name'))->toBe('Renamed quietly at home');
+
+    // ⚠️ And a genuine BULK update is still narrowed by the scope rather than refused outright.
+    Role::query()->update(['name' => 'Renamed in bulk']);
+
+    expect(Role::query()->whereKey($mine->getKey())->value('name'))->toBe('Renamed in bulk');
+});
+
+it('locks the role before it touches the pivot, and reads holders under that lock', function (): void {
+    /*
+     * ⚠️ EACH OPERATION WAS LOCALLY TRANSACTIONAL AND THE PAIR STILL LOST A ROW FROM THE TRAIL — review found
+     * the interleaving. An assignment inserted the pivot and read the owner flag as false, recording
+     * `role.assigned`; a concurrent promotion could not see the uncommitted pivot and so audited no holder at
+     * all. Both committed, and the person was an owner with nothing in the log saying so — which is exactly
+     * the per-person guarantee ADR-033 claims.
+     *
+     * The role row is the mutex: a promotion writes it, so it takes that lock on its own account, and an
+     * assignment or removal takes it explicitly BEFORE touching `role_user`. The holders read takes it too,
+     * from the other side, so a transition waits for an assignment in flight rather than counting past it.
+     *
+     * ⚠️ WHAT THIS ASSERTS IS THE ORDER AND THE CLAUSE, not the interleaving. That `FOR UPDATE` makes the
+     * second transaction wait is the engine's guarantee, tested by its authors; `OwnerLockOutRaceTest` makes
+     * the same division. What can go wrong HERE is the lock being dropped, taken after the write, or the
+     * holders read losing its clause — and all three are visible in the emitted SQL.
+     */
+    app(Context::class)->setOrg($this->alpha);
+
+    $seen = [];
+
+    DB::listen(function (QueryExecuted $query) use (&$seen): void {
+        if ($query->connectionName !== DB::getDefaultConnection()) {
+            return;
+        }
+
+        // ⚠️ Quotes stripped: identifier quoting is dialect, and matching it counts nothing on half the matrix.
+        $sql = str_replace(['"', '`'], '', $query->sql);
+
+        foreach (['pg_constraint', 'information_schema', 'sqlite_master'] as $introspection) {
+            if (str_contains($sql, $introspection)) {
+                return;
+            }
+        }
+
+        if (str_contains($sql, 'from roles') || str_contains($sql, 'role_user')) {
+            $seen[] = $sql;
+        }
+    });
+
+    $this->alphaRole->assignTo($this->user->getKey());
+
+    $lockedRole = null;
+    $pivotWrite = null;
+
+    foreach ($seen as $position => $sql) {
+        if ($lockedRole === null && str_contains($sql, 'from roles') && str_contains($sql, 'for update')) {
+            $lockedRole = $position;
+        }
+
+        if ($pivotWrite === null && str_starts_with($sql, 'insert into role_user')) {
+            $pivotWrite = $position;
+        }
+    }
+
+    /*
+     * ⚠️ SQLITE EMITS NO CLAUSE AT ALL, and that is not a gap: it serialises writers at the database level,
+     * so the order is what matters there and the lock is what matters elsewhere. The pivot write is asserted
+     * on every engine; the clause and its position only where the engine has one.
+     */
+    expect($pivotWrite)->not->toBeNull('the assignment never wrote the pivot, so this measured nothing');
+
+    if (DB::connection()->getDriverName() !== 'sqlite') {
+        expect($lockedRole)->not->toBeNull('the role row was never locked during the assignment')
+            ->and($lockedRole)->toBeLessThan($pivotWrite, 'the role was locked AFTER the pivot was written');
+
+    }
+
+    /*
+     * ⚠️ THE HOLDERS READ BELONGS TO A DIFFERENT OPERATION, which the first version of this test got wrong:
+     * `assignTo()` names the audit action and never enumerates holders, so asserting that read here was
+     * asserting about SQL the operation does not emit — it failed on an empty list while the guard worked.
+     * The read happens on an owner TRANSITION and on deletion, so it is measured where it lives.
+     */
+    $seen = [];
+
+    $this->alphaRole->update(['is_owner' => true]);
+
+    if (DB::connection()->getDriverName() !== 'sqlite') {
+        $holderReads = array_values(array_filter(
+            $seen,
+            static fn (string $sql): bool => str_starts_with($sql, 'select user_id from role_user'),
+        ));
+
+        expect($holderReads)->not->toBe([], 'the owner transition enumerated no holders, so this measured nothing');
+
+        foreach ($holderReads as $sql) {
+            expect($sql)->toContain('for update');
+        }
+    }
 });

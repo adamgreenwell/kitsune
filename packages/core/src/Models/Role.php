@@ -340,8 +340,16 @@ class Role extends Model
          * succeeds — an observer can veto it (see `delete()`). Reading them here is right for the owner-flag
          * transition, where nothing has been removed.
          */
+        /*
+         * ⚠️ A LOCKING READ, which is the other half of the interleaving `assignTo()` describes. An owner
+         * transition that read the holders without a lock could not see a pivot row an assignment had
+         * inserted but not yet committed — so the promotion audited nobody while the assignment audited an
+         * ordinary `role.assigned`, and the person ended up an owner with no row saying so. Under a lock the
+         * transition waits for that assignment and then counts it.
+         */
         $holders ??= DB::table('role_user')
             ->where('role_id', $this->getKey())
+            ->lockForUpdate()
             ->pluck('user_id')
             ->map(static fn (mixed $id): int => (int) $id)
             ->all();
@@ -363,7 +371,15 @@ class Role extends Model
      * The scope cannot catch it: `grant()` reaches `role_permissions`, which is deliberately unscoped, and
      * `assignTo()` writes `role_user` with a raw id. So the check belongs where the authority changes.
      */
-    private function refuseIfNotCurrentOrg(string $operation): void
+    /**
+     * ⚠️ PUBLIC SO THE BUILDER CAN ASK IT, which review made necessary: `saveQuietly()` and `updateQuietly()`
+     * suppress the `saving` listener that calls this, and `GuardedRoleBuilder` was refusing only the per-row
+     * COLUMNS on that path — so a quiet `name` or `handle` change on another org's role went through by
+     * primary key, and round 11's "every save of an existing role asks it" was true of noisy saves only.
+     *
+     * Public is safe in the direction that matters: calling a guard can only refuse, never permit.
+     */
+    public function refuseIfNotCurrentOrg(string $operation): void
     {
         /*
          * ⚠️ THE ESCAPE HATCH WAS HONOURED HERE FOR ONE ROUND AND IS NOT ANY MORE, which review was right
@@ -543,6 +559,19 @@ class Role extends Model
         }
 
         DB::transaction(function () use ($userId): void {
+            /*
+             * ⚠️ THE ROLE IS LOCKED BEFORE THE PIVOT, and review found the interleaving that needs it: an
+             * assignment and a concurrent promotion were each locally transactional and together produced an
+             * incomplete trail. The assignment inserted the pivot and read the flag as false — `role.assigned`
+             * — while the promotion could not see the uncommitted pivot and so audited no holder. Both
+             * committed, and the person was an owner with nothing in the log saying so.
+             *
+             * Locking the role row first is what makes them one order: a promotion writes that row, so it
+             * takes the same lock, and whichever arrives second sees the other's work. `recordOwnerChange()`
+             * reads the holders under a lock for the same reason, from the other side.
+             */
+            $this->lockRow();
+
             DB::table('role_user')->insert(['role_id' => $this->getKey(), 'user_id' => $userId]);
 
             app(Auditor::class)->record($this->assignmentAction('assigned'), $this->assignee($userId));
@@ -557,6 +586,10 @@ class Role extends Model
         $this->refuseIfNotCurrentOrg('removeFrom');
 
         DB::transaction(function () use ($userId): void {
+            // ⚠️ Locked before the pivot, for the reason `assignTo()` records: a removal and a concurrent
+            // owner transition have to be one order, or the trail records one of them and not the other.
+            $this->lockRow();
+
             $removed = DB::table('role_user')
                 ->where('role_id', $this->getKey())
                 ->where('user_id', $userId)
@@ -587,6 +620,26 @@ class Role extends Model
     private function assignmentAction(string $verb): string
     {
         return $this->storedOwnerFlag() ? "role.owner_{$verb}" : "role.{$verb}";
+    }
+
+    /**
+     * Take the role row's write lock, so an authority change and a concurrent one are ordered.
+     *
+     * ⚠️ THE ROLE ROW IS THE MUTEX FOR EVERYTHING THAT CHANGES ITS AUTHORITY, which is the shape review
+     * asked for: a promotion writes it, so it takes this lock on its own account, and an assignment or a
+     * removal takes it explicitly before touching `role_user`. One order, one lock, no interleaving that
+     * records half of what happened.
+     *
+     * SQLite compiles the clause away and serialises writers at the database level, which is the same
+     * guarantee by another route — `Site::lockHostClaim()` records the same pair of facts.
+     */
+    private function lockRow(): void
+    {
+        static::query()
+            ->withoutGlobalScopes()
+            ->whereKey($this->getKeyForSaveQuery())
+            ->lockForUpdate()
+            ->value('id');
     }
 
     /**
