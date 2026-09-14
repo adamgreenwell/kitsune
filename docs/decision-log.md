@@ -1722,6 +1722,15 @@ So a link the record **already holds** keeps its value and loses its title: it r
 
 ### Administering roles, and where that screen lives
 
+⚠️ **A holder who is no longer a member keeps a label, and loses their name.** `role_user` carries no
+membership constraint — the consequence list below says so in as many words — so somebody removed from an org
+can keep an assignment that resolves nothing. The form hydrates that id, the org-scoped user query cannot see
+it, and Filament validates a multiple select's submitted options through the label resolver: the owner could
+not rename the role or change a grant until they noticed the one chip that would not save. The id is named
+and the person is not, and only an id that is ALREADY assigned gets that treatment, so it cannot become a way
+to add somebody the org cannot see. `FieldValueRenderer::relationLabels()` makes the same trade for the same
+reason — the second time this exact shape has appeared, which is what makes it a pattern rather than a bug.
+
 ⚠️ **Issue #84 said the assignment screen would live in the skeleton, and this reverses it on evidence.** The argument was that `role_user` references a `users` table core did not create and must not own — which still holds: **core owns no user model.** What changed is that it does not need one. `Permissions::userModel()` asks the **panel's own auth provider**, which is the same lesson review taught about the membership check: the provider cannot be wrong about which model it loads, and `config('auth.providers.users.model')` was a guess that failed open.
 
 The alternative cost more than it bought. A resource in the skeleton needs a navigation entry; navigation is supplied explicitly by `KitsunePanel` (ADR-012); so letting a host add one means opening an extension point in core **before the extension API exists**, which is exactly what Standing Principle #1 keeps shut until v1.2.

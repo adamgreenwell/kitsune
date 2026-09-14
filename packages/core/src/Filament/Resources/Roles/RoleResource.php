@@ -229,7 +229,16 @@ class RoleResource extends Resource
      * @param  array<int, mixed>  $ids
      * @return array<int, string>
      */
-    private static function holderLabels(array $ids): array
+    /**
+     * ⚠️ PUBLIC SO A TEST CAN REACH IT, which is the same trade `FieldValueRenderer::relationLabels()` makes
+     * and for the same reason: the resolver's answer is the thing that decides whether the form can be saved,
+     * and building the form itself needs a Livewire component the package suite has no way to make (ADR-024
+     * puts that layer in the browser). The wiring — that the select actually uses this — is asserted there.
+     *
+     * @param  list<mixed>  $ids
+     * @return array<int, string>
+     */
+    public static function holderLabels(array $ids): array
     {
         $model = Permissions::userModel();
 
@@ -237,11 +246,60 @@ class RoleResource extends Resource
             return [];
         }
 
-        return $model::query()
-            ->whereKey(array_map(intval(...), array_filter($ids, is_numeric(...))))
+        $wanted = array_values(array_unique(array_map(intval(...), array_filter($ids, is_numeric(...)))));
+
+        $labels = $model::query()
+            ->whereKey($wanted)
             ->get()
             ->mapWithKeys(fn (Model $user): array => [(int) $user->getKey() => self::describe($user)])
             ->all();
+
+        return $labels + self::labelsForFormerMembers($wanted, array_keys($labels));
+    }
+
+    /**
+     * A non-disclosing label for somebody who still holds the role but is no longer a member.
+     *
+     * ⚠️ A MISSING LABEL IS AN INVALID OPTION, AND IT FROZE THE FORM — the same defect review found on the
+     * relation picker, in the place it was always going to appear next. `role_user` has no membership
+     * constraint (ADR-033 says so in as many words), so a user removed from the org can keep an assignment;
+     * `mutateFormDataBeforeFill()` hydrates that id, the org-scoped user query cannot see it, and Filament
+     * validates a multiple select's submitted options through this resolver — so the owner could not rename
+     * the role or change a grant until they noticed the one chip that would not save.
+     *
+     * ⚠️ THE ID IS NAMED AND THE PERSON IS NOT. Whoever it is, they are not in this org, so the panel has no
+     * business resolving their name through a query that deliberately cannot see them — and the id is already
+     * in the form state by the time this runs. `FieldValueRenderer::relationLabels()` makes the same trade for
+     * the same reason.
+     *
+     * ⚠️ AND ONLY FOR AN ID THAT IS ALREADY ASSIGNED. A value nobody holds is still refused, so this cannot
+     * become a way to add somebody the org cannot see: the set comes from `role_user`, not from the request.
+     *
+     * @param  list<int>  $wanted
+     * @param  list<int>  $resolved
+     * @return array<int, string>
+     */
+    private static function labelsForFormerMembers(array $wanted, array $resolved): array
+    {
+        $missing = array_values(array_diff($wanted, $resolved));
+
+        if ($missing === []) {
+            return [];
+        }
+
+        $assigned = DB::table('role_user')
+            ->whereIn('user_id', $missing)
+            ->pluck('user_id')
+            ->map(static fn (mixed $id): int => (int) $id)
+            ->unique();
+
+        $labels = [];
+
+        foreach ($assigned as $id) {
+            $labels[$id] = sprintf('User #%d — no longer a member of this organisation', $id);
+        }
+
+        return $labels;
     }
 
     private static function holderLabel(int $id): ?string
@@ -254,7 +312,13 @@ class RoleResource extends Resource
 
         $user = $model::query()->whereKey($id)->first();
 
-        return $user instanceof Model ? self::describe($user) : null;
+        if ($user instanceof Model) {
+            return self::describe($user);
+        }
+
+        // ⚠️ The singular resolver renders a saved value; it withholds the same name for the same reason —
+        // see `labelsForFormerMembers()`.
+        return self::labelsForFormerMembers([$id], [])[$id] ?? null;
     }
 
     /** A person, as an administrator would recognise them. */

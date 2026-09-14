@@ -103,3 +103,47 @@ it('does not let an owner of another org administer this one\'s roles', function
     expect(RoleResource::canViewAny())->toBeFalse()
         ->and(RoleResource::canCreate())->toBeFalse();
 });
+
+it('keeps a label for a holder who is no longer a member of the org', function (): void {
+    /*
+     * ⚠️ A MISSING LABEL IS AN INVALID OPTION, AND IT FROZE THE FORM — the same defect review found on the
+     * relation picker, in the place it was always going to appear next. `role_user` carries no membership
+     * constraint (ADR-033 says so in as many words), so somebody removed from the org can keep an assignment:
+     * `mutateFormDataBeforeFill()` hydrates that id, the org-scoped user query cannot see it, and Filament
+     * validates a multiple select's submitted options through the label resolver — so the owner could not
+     * rename the role or change a grant until they noticed the one chip that would not save.
+     *
+     * The id is named and the person is not: they are not in this org, so the panel has no business resolving
+     * their name through a query that deliberately cannot see them.
+     */
+    app(Context::class)->setOrg($this->org);
+
+    /** @var TestUser $departed */
+    $departed = TestUser::create(['email' => 'departed@kitsune.test']);
+    DB::table('org_user')->insert(['org_id' => $this->org->getKey(), 'user_id' => $departed->getKey()]);
+
+    $role = Role::create(['handle' => 'editor', 'name' => 'Editor']);
+    $role->assignTo($departed->getKey());
+
+    // They leave the org; ADR-033 is explicit that the assignment row survives and resolves nothing.
+    DB::table('org_user')->where('user_id', $departed->getKey())->delete();
+    Permissions::forget();
+
+    expect(TestUser::query()->whereKey($departed->getKey())->exists())->toBeFalse()
+        ->and(DB::table('role_user')->where('user_id', $departed->getKey())->exists())->toBeTrue();
+
+    $labels = RoleResource::holderLabels([$departed->getKey()]);
+
+    expect($labels)->toHaveKey($departed->getKey())
+        ->and($labels[$departed->getKey()])->toContain('no longer a member')
+        ->and($labels[$departed->getKey()])->not->toContain('departed@kitsune.test');
+
+    /*
+     * ⚠️ AND ONLY FOR AN ID THAT IS ALREADY ASSIGNED, or this would become a way to add somebody the org
+     * cannot see. The set comes from `role_user`, not from the request.
+     */
+    /** @var TestUser $stranger */
+    $stranger = TestUser::create(['email' => 'stranger@kitsune.test']);
+
+    expect(RoleResource::holderLabels([$stranger->getKey()]))->toBe([]);
+});
