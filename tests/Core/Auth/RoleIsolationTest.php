@@ -1122,3 +1122,52 @@ it('locks the role before it touches the pivot, and reads holders under that loc
         }
     }
 });
+
+it('records an owner transition once, however many times the instance is saved', function (): void {
+    /*
+     * ⚠️ `wasChanged()` OUTLIVES THE WRITE THAT SET IT — review found it and a probe confirmed it in one run.
+     * Eloquent refreshes `$changes` in `finishSave()` from what the update wrote, and a later `save()` with
+     * nothing dirty never calls `performUpdate()` at all: `$changes` still describes the PREVIOUS write, so
+     * `wasChanged('is_owner')` was still true and the transition was audited again. Measured before the fix —
+     * one promotion and three no-op saves produced FOUR `role.owner_assigned` rows per holder:
+     *
+     *   after the real transition: 1
+     *   after a no-op save:        2
+     *   after two more no-op saves: 4
+     *
+     * An audit row is a statement that something happened, and a trail that grows every time somebody calls
+     * `save()` is worse than a thin one: it reports authority changes that did not occur, to whoever is
+     * reading the log to find out what did.
+     */
+    app(Context::class)->setOrg($this->alpha);
+    assign($this->alphaRole, $this->user);
+
+    $mark = (int) AuditLog::query()->max('id');
+
+    $this->alphaRole->update(['is_owner' => true]);
+
+    $promotions = fn (): int => AuditLog::query()
+        ->where('id', '>', $mark)
+        ->where('action', 'role.owner_assigned')
+        ->count();
+
+    expect($promotions())->toBe(1);
+
+    $this->alphaRole->save();
+    $this->alphaRole->save();
+    $this->alphaRole->save();
+
+    expect($promotions())->toBe(1);
+
+    /*
+     * ⚠️ And a REAL second transition is still recorded, or the fix would have traded a false trail for a
+     * missing one — which is the direction that cannot be noticed from the log itself.
+     */
+    $this->alphaRole->update(['is_owner' => false]);
+
+    expect(AuditLog::query()->where('id', '>', $mark)->where('action', 'role.owner_unassigned')->count())->toBe(1);
+
+    $this->alphaRole->save();
+
+    expect(AuditLog::query()->where('id', '>', $mark)->where('action', 'role.owner_unassigned')->count())->toBe(1);
+});

@@ -1831,6 +1831,8 @@ So a link the record **already holds** keeps its value and loses its title: it r
   identity skipped the one case that destroys something. Measured — the soft delete went through while the
   update and the force-delete were refused.
 
+- **An owner transition is audited once per UPDATE, not once per `save()`.** `wasChanged()` outlives the write that set it: Eloquent refreshes `$changes` in `finishSave()`, and a later `save()` with nothing dirty never calls `performUpdate()` — so `$changes` still described the previous write and the transition was recorded again. Measured: one promotion and three no-op saves produced four `role.owner_assigned` rows per holder. A trail that grows every time somebody calls `save()` reports authority changes that did not happen, to whoever is reading the log to find out what did. The model now carries a one-shot proof that an update actually ran, consumed by the `saved` listener whether or not the flag moved.
+
 - **The role row is the mutex for everything that changes its authority.** Each operation was locally
   transactional and the PAIR still lost a row from the trail: an assignment inserted the pivot and read the
   owner flag as false, recording `role.assigned`, while a concurrent promotion could not see the uncommitted
