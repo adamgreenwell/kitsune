@@ -8,6 +8,7 @@
 
 declare(strict_types=1);
 
+use Composer\InstalledVersions;
 use Kitsune\Core\Kitsune;
 use Kitsune\Core\KitsuneServiceProvider;
 
@@ -19,6 +20,13 @@ it('resolves Kitsune as a singleton', function (): void {
     expect(app(Kitsune::class))->toBe(app(Kitsune::class));
 });
 
-it('reports a version', function (): void {
-    expect(Kitsune::version())->toBeString()->not->toBeEmpty();
+it('reports the version Composer installed', function (): void {
+    /*
+     * ⚠️ THE VERSION WAS A LITERAL, AND THIS ASSERTED ONLY THAT IT WAS NOT EMPTY — so it passed while every
+     * tagged release would have reported `0.0.1-dev`. Asserted against Composer's own record now, which is what
+     * a host's lock file says was installed.
+     */
+    expect(InstalledVersions::isInstalled('kitsune/core'))->toBeTrue()
+        ->and(Kitsune::version())->toBe(InstalledVersions::getPrettyVersion('kitsune/core'))
+        ->and(Kitsune::version())->not->toBe('0.0.1-dev');
 });
