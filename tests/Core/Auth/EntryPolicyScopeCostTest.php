@@ -68,7 +68,14 @@ it('reads the stored scope once per row, however many abilities are asked', func
          */
         $sql = str_replace(['"', '`'], '', $q->sql);
 
-        if (str_contains($sql, 'select site_id, org_id from entries')) {
+        /*
+         * ⚠️ THE COLUMN LIST IS PART OF THE SHAPE, and it changed under this test once already: the scope read
+         * grew `type_handle` when review found the policy resolving the permission from the record's mutable
+         * attribute, and this filter stopped matching — reporting 0 reads, which is exactly the "the guard
+         * stopped asking the database" failure the assertion below watches for. It failed loudly rather than
+         * going quiet, which is the whole reason it names the shape instead of grepping for the table.
+         */
+        if (str_contains($sql, 'select site_id, org_id, type_handle from entries')) {
             $seen++;
         }
     });

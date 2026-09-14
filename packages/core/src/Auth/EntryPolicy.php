@@ -134,19 +134,32 @@ class EntryPolicy
 
     private function allowsOn(Authenticatable $user, Entry $entry, string $action): bool
     {
-        if ($entry->exists && ! $this->withinCurrentScope($entry)) {
-            return false;
-        }
-
         /*
+         * ⚠️ THE TYPE COMES FROM THE STORED ROW TOO, AND FIXING ONLY THE SCOPE WAS HALF A FIX — review found
+         * the other half. `type_handle` is a public attribute, so a caller holding `entry.product.update` could
+         * load an ARTICLE, set the attribute to `product`, and pass this check: an instance delete then removed
+         * the stored article, and a save re-stamps the handle from `entry_type_id` only AFTER authorization.
+         * The scope read was already going to the database; the handle comes back in the same query.
+         *
          * ⚠️ An empty handle is refused rather than passed through. `type_handle` is denormalised for
          * routing and re-stamped on save, so it is non-empty for anything that went through the model —
          * and a row written around it would otherwise resolve `entry..view`, a permission string nobody
          * can hold but which no longer looks like a missing type.
          */
-        $handle = $entry->type_handle;
+        if (! $entry->exists) {
+            /*
+             * An unsaved instance names no row, so the attribute is all there is — and it is the caller's own
+             * object rather than somebody else's record. `EnforcesScope` stamps and guards the keys on insert.
+             */
+            $handle = (string) $entry->type_handle;
 
-        return $handle !== ''
+            return $handle !== ''
+                && Permissions::allows($user, Permissions::forEntryType($handle, $action));
+        }
+
+        $handle = $this->storedTypeInScope($entry);
+
+        return $handle !== null && $handle !== ''
             && Permissions::allows($user, Permissions::forEntryType($handle, $action));
     }
 
@@ -170,12 +183,12 @@ class EntryPolicy
      * scope keys are the INSERT's business, and `EnforcesScope` stamps and guards them there. Asking this of
      * a new `Entry` would refuse `$entry->fill(...)`-shaped authorization questions that name nothing yet.
      */
-    private function withinCurrentScope(Entry $entry): bool
+    private function storedTypeInScope(Entry $entry): ?string
     {
         $context = app(Context::class);
 
         if (! $context->hasSite()) {
-            return false;
+            return null;
         }
 
         /*
@@ -202,7 +215,7 @@ class EntryPolicy
         $stored = $entry->getKeyForAuthorization();
 
         if ((string) $stored !== (string) $entry->getKey()) {
-            return false;
+            return null;
         }
 
         $site = $context->siteId();
@@ -230,6 +243,13 @@ class EntryPolicy
     }
 
     /**
+     * The row's own type handle, or null when the row is not one this scope may see.
+     *
+     * One read answers both questions, which is why they are one method: the scope keys and the handle come
+     * out of the same `first()` and neither can be the caller's pending edit.
+     */
+
+    /**
      * Is the row this key names inside that site and org, as the DATABASE holds it?
      *
      * ⚠️ THE STORED KEYS ARE READ AND COMPARED HERE, which is the difference from the version review found:
@@ -249,27 +269,29 @@ class EntryPolicy
      * A static frame has no object to key on, so the key is the call site plus the three arguments — which is
      * also what makes the scope part of it, per invariant 13.
      */
-    private static function scopeAllows(mixed $key, ?int $site, ?int $org): bool
+    private static function scopeAllows(mixed $key, ?int $site, ?int $org): ?string
     {
-        return once(static fn (): bool => self::storedRowIsInScope($key, $site, $org));
+        return once(static fn (): ?string => self::storedRowIsInScope($key, $site, $org));
     }
 
-    private static function storedRowIsInScope(mixed $key, ?int $site, ?int $org): bool
+    private static function storedRowIsInScope(mixed $key, ?int $site, ?int $org): ?string
     {
         $row = Entry::withTrashed()
             ->withoutGlobalScopes()
             ->whereKey($key)
-            ->first(['site_id', 'org_id']);
+            ->first(['site_id', 'org_id', 'type_handle']);
 
         if ($row === null) {
-            return false;
+            return null;
         }
 
         $rowSite = $row->site_id === null ? null : (int) $row->site_id;
 
-        return $rowSite === null
+        $inScope = $rowSite === null
             ? (int) $row->org_id === $org
             : $rowSite === $site;
+
+        return $inScope ? (string) $row->type_handle : null;
     }
 
     private function allowsOnCurrentType(Authenticatable $user, string $action): bool

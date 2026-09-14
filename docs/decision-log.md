@@ -1800,6 +1800,15 @@ So a link the record **already holds** keeps its value and loses its title: it r
   which also refuses a transfer in flight, and which every save of an existing role now asks as well. It
   honours `withoutScopeBecause()`, like every other write guard in the tenancy layer.
 
+  ⚠️ **Amended: it does NOT honour it any more, and the sentence above is left standing because the reasoning
+  was published.** `withoutScopeBecause()` suspends the SCOPE and cannot suspend `Auditor`, which derives the
+  audit row's org from the context — so an authority change made under the hatch committed with a row naming
+  the wrong org, or with no row at all, which is the unaudited authority change ADR-020 refuses outright.
+  Nothing in the codebase called it, so nothing needed it: the way to act on another org's role is to
+  establish that org's context, which is also what makes the audit true. The rule the two attempts produced
+  is narrower than "every guard gets a hatch" — **a hatch is only safe where the thing it suspends is the only
+  thing the guard protects.**
+
 - **A revocation is recorded only once the deletion has succeeded.** The rows went in first, which read as
   correct until an application observer returning `false` from `deleting` aborted the delete: the role and
   every assignment survived while the log said their authority was revoked, and a retry added another set of

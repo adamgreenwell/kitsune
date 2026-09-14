@@ -461,3 +461,45 @@ it('refuses a record whose primary key has been edited', function (): void {
 
     expect($this->policy->delete($this->user, $mine))->toBeFalse();
 });
+
+it('resolves the permission from the stored type, not the attribute', function (): void {
+    /*
+     * ⚠️ FIXING THE SCOPE AND LEAVING THE TYPE WAS HALF A FIX — review found the other half. `type_handle` is
+     * a public attribute, so somebody holding `entry.product.update` could load an ARTICLE, set the attribute
+     * to `product`, and pass: an instance delete then removes the stored article, and a save re-stamps the
+     * handle from `entry_type_id` only AFTER authorization has already said yes.
+     *
+     * The scope read was already going to the database; the handle comes back in the same query now.
+     */
+    $home = siteFor($this->org, 'home');
+    $article = entryOn($home);
+
+    app(Context::class)->setSite($home);
+
+    // This user may do anything to products and nothing to articles.
+    foreach (['view', 'update', 'delete'] as $action) {
+        $this->role->grant('entry.product.'.$action);
+    }
+    Permissions::forget();
+
+    expect($this->policy->update($this->user, $article))->toBeFalse();
+
+    // The forgery: the record now calls itself a product.
+    $article->type_handle = 'product';
+
+    expect($article->type_handle)->toBe('product')
+        ->and($this->policy->update($this->user, $article))->toBeFalse()
+        ->and($this->policy->delete($this->user, $article))->toBeFalse()
+        ->and($this->policy->view($this->user, $article))->toBeFalse();
+
+    // And a `syncOriginal()` that makes the edit look clean changes nothing.
+    $article->syncOriginal();
+
+    expect($this->policy->update($this->user, $article))->toBeFalse();
+
+    // The grant that DOES match the stored type still works, or this would be a refusal of everything.
+    $this->role->grant('entry.article.update');
+    Permissions::forget();
+
+    expect($this->policy->update($this->user, $article))->toBeTrue();
+});
