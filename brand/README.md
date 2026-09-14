@@ -24,33 +24,34 @@ The glyph is **two tails**, decided 2026-09-12 by render rather than by argument
 
 Never a one-tailed *fox*. That form is both the most generic image in software and, in the folklore, a juvenile kitsune. The ladder drops the wordmark, then drops to the unit — it never depicts a lesser fox.
 
-## Asset manifest
+## Assets
 
-Nothing here is built yet. This is what to export while the vector source is open.
+Everything below is built. Vector in [`source/`](source/), raster in [`raster/`](raster/).
 
-### Formal
-- [x] `kitsune-lockup.svg` — mark left, wordmark right
-- [x] `kitsune-lockup-dark.svg`
-- [x] `kitsune-lockup-compact.svg` / `-dark.svg` — glyph + wordmark, for ≤70px
-- [x] `kitsune-logo.svg` — mark above wordmark
-- [x] `kitsune-logo-dark.svg`
-- [x] `kitsune-logo-mono.svg` — one ink, knockouts, `currentColor`
+### Vector — `source/`
 
-### Compact
-- [x] `kitsune-fox.svg`, `kitsune-fox-dark.svg`
-- [x] `kitsune-fox-mono.svg`
-- [ ] `compact-128.png`, `compact-256.png`, `compact-512.png`
+| | Light | Dark | Mono |
+|---|---|---|---|
+| Stacked lockup | `kitsune-logo.svg` | `kitsune-logo-dark.svg` | `kitsune-logo-mono.svg` |
+| Horizontal lockup | `kitsune-lockup.svg` | `kitsune-lockup-dark.svg` | — |
+| Compact lockup | `kitsune-lockup-compact.svg` | `kitsune-lockup-compact-dark.svg` | — |
+| Fox | `kitsune-fox.svg` | `kitsune-fox-dark.svg` | `kitsune-fox-mono.svg` |
+| Glyph | `kitsune-glyph.svg` | n/a — no teal in it | `kitsune-glyph-mono.svg` |
 
-### Glyph
-- [x] `kitsune-glyph.svg` — square, centred, namespaced
-- [x] `kitsune-glyph-mono.svg` (the glyph has no teal, so it needs no dark variant)
-- [ ] `favicon.ico` — 16 / 32 / 48 multi-resolution
-- [ ] `apple-touch-icon.png` — 180×180, no transparency, no rounding (iOS masks it)
-- [ ] `maskable-512.png` — glyph inside the inner 80% safe area; anything outside gets cropped
-- [ ] `glyph-16.png`, `glyph-32.png`, `glyph-48.png`
+### Raster — `raster/`
 
-### Social
-- [ ] `og-card.png` — 1200×630, formal horizontal on a solid ground
+| File | Size | Ground |
+|---|---|---|
+| `favicon.ico` | 16 / 32 / 48 | transparent, PNG-payload entries |
+| `glyph-16.png` `-32` `-48` | as named | transparent |
+| `apple-touch-icon.png` | 180×180 | opaque brand teal, white mono glyph |
+| `maskable-512.png` | 512×512 | opaque brand teal; ink 181px from centre against a 205px safe radius |
+| `compact-128.png` `-256` `-512` | 128×97 · 256×194 · 512×389 | transparent, the fox's natural 1.32:1 |
+| `og-card.png` | 1200×630 | opaque white, horizontal lockup at 66% width |
+
+The app icons use the **white mono glyph on brand teal** rather than the colour glyph. A home-screen icon needs a ground that survives any wallpaper, and teal is the one ground the colour mark may not use — so the mono variant is what makes it available. Contrast is white on `#00545D`, 8.66:1.
+
+**Regenerating.** There is no SVG rasteriser on this machine, so the PNGs are produced by rendering through `qlmanage` twice — once on white, once on black — and solving `C_w − C_b = 255(1−α)` per pixel to recover straight alpha. `qlmanage` always returns a square and flattens onto white, so each source is first centred in a square viewBox with a full-bleed ground and the result cropped back to the true aspect. Skipping that step silently produces **opaque white letterbox bars** on every non-square export, which is exactly what the first run did.
 
 ## Source
 

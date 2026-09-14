@@ -42,7 +42,7 @@
 <body>
     <main>
         <h1>Kitsune</h1>
-        <p class="sub">{{ $phase }}</p>
+        <p class="sub">The admin is ready. This public page is a placeholder.</p>
 
         <dl>
             <dt>Core</dt>
@@ -59,8 +59,9 @@
         </dl>
 
         <p class="note">
-            There is no admin panel yet. It arrives with the tenancy kernel and
-            the schema engine — see the roadmap.
+            Kitsune's first release is the admin — sign in at
+            <a href="{{ $adminUrl }}" data-testid="admin-link">{{ $adminUrl }}</a>.
+            A public site that renders your entries is theming, planned for v1.1.
         </p>
     </main>
 </body>
