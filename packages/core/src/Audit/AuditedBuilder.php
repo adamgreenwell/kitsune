@@ -396,6 +396,11 @@ class AuditedBuilder extends ScopedBuilder
      * ⚠️ A BULK UPDATE THAT NAMES `status` QUALIFIED gets the same treatment as an unqualified one, because a
      * joined update qualifies its columns — the same reason `actionFor()` checks both spellings.
      *
+     * ⚠️ AND THE ARITHMETIC DOORS ASK IT TOO, which review found missing one round after the same omission
+     * was fixed for the stale-row guard. Laravel's `$extra` map is a set of ordinary assignments, so
+     * `$entry->increment('id', 0, ['status' => 'published'])` is a publication wearing another method's name.
+     * Four doors, one guard — again.
+     *
      * @param  array<string, mixed>  $values
      */
     private function refuseUnpermittedPublication(array $values): void
@@ -466,6 +471,7 @@ class AuditedBuilder extends ScopedBuilder
             'updated',
             function () use ($column, $amount, $extra) {
                 $this->refuseIfTheRowMoved('increment');
+                $this->refuseUnpermittedPublication($extra);
 
                 return parent::increment($column, $amount, $extra);
             },
@@ -486,6 +492,7 @@ class AuditedBuilder extends ScopedBuilder
             'updated',
             function () use ($column, $amount, $extra) {
                 $this->refuseIfTheRowMoved('decrement');
+                $this->refuseUnpermittedPublication($extra);
 
                 return parent::decrement($column, $amount, $extra);
             },
@@ -511,6 +518,7 @@ class AuditedBuilder extends ScopedBuilder
             'updated',
             function () use ($columns, $extra) {
                 $this->refuseIfTheRowMoved('increment');
+                $this->refuseUnpermittedPublication([...$columns, ...$extra]);
 
                 return parent::incrementEach($columns, $extra);
             },
@@ -531,6 +539,7 @@ class AuditedBuilder extends ScopedBuilder
             'updated',
             function () use ($columns, $extra) {
                 $this->refuseIfTheRowMoved('decrement');
+                $this->refuseUnpermittedPublication([...$columns, ...$extra]);
 
                 return parent::decrementEach($columns, $extra);
             },

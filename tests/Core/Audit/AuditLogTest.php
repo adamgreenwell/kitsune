@@ -79,7 +79,7 @@ describe('what gets recorded', function (): void {
 
         expect($row->action)->toBe('entry.created')
             ->and($row->target_type)->toBe($entry->getMorphClass())
-            ->and($row->target_id)->toBe($entry->getKey())
+            ->and($row->target_id)->toBe((string) $entry->getKey())
             ->and($row->org_id)->toBe($this->org->id)
             ->and($row->site_id)->toBe($this->site->id);
     });
@@ -122,7 +122,7 @@ describe('what gets recorded', function (): void {
 
         $entry = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Attributed']);
 
-        expect(AuditLog::for($entry)->where('action', 'entry.created')->value('actor_id'))->toBe(47);
+        expect(AuditLog::for($entry)->where('action', 'entry.created')->value('actor_id'))->toBe('47');
     });
 
     it('names the actor\'s MODEL as well as its id', function (): void {
@@ -150,8 +150,8 @@ describe('what gets recorded', function (): void {
         $created = AuditLog::for($entry)->where('action', 'entry.created')->firstOrFail();
         $updated = AuditLog::for($entry)->where('action', 'entry.updated')->firstOrFail();
 
-        expect($created->actor_id)->toBe(7)
-            ->and($updated->actor_id)->toBe(7)
+        expect($created->actor_id)->toBe('7')
+            ->and($updated->actor_id)->toBe('7')
             ->and($created->actor_type)->toBe(AuthUser::class)
             ->and($updated->actor_type)->toBe(TestUser::class)
             ->and($created->actor_type)->not->toBe($updated->actor_type);
@@ -168,7 +168,7 @@ describe('what gets recorded', function (): void {
 
         Entry::query()->whereKey($entry->getKey())->update(['status' => 'published']);
 
-        expect(AuditLog::for($entry)->where('action', 'entry.updated')->value('actor_id'))->toBe(91);
+        expect(AuditLog::for($entry)->where('action', 'entry.updated')->value('actor_id'))->toBe('91');
     });
 
     it('asks the PANEL\'s guard for the actor, not the application default', function (): void {
@@ -218,7 +218,7 @@ describe('what gets recorded', function (): void {
 
         $entry = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Attributed to the panel']);
 
-        expect(AuditLog::for($entry)->where('action', 'entry.created')->value('actor_id'))->toBe(12);
+        expect(AuditLog::for($entry)->where('action', 'entry.created')->value('actor_id'))->toBe('12');
 
         // ⚠️ Not vacuous: both users are authenticated, so an actor of 5 is the defect and 12 is the fix.
         expect(auth()->id())->toBe(5);
@@ -257,7 +257,31 @@ describe('what gets recorded', function (): void {
 
         // ⚠️ Not vacuous: the panel's guard has nobody, so a null actor is the defect and 31 is the fix.
         expect(Auth::guard('panel')->user())->toBeNull()
-            ->and(AuditLog::for($entry)->where('action', 'entry.created')->value('actor_id'))->toBe(31);
+            ->and(AuditLog::for($entry)->where('action', 'entry.created')->value('actor_id'))->toBe('31');
+    });
+
+    it('records an actor whose identifier is not an integer', function (): void {
+        /*
+         * ⚠️ AN IDENTIFIER IS THE HOST'S TO CHOOSE, and this column assumed integers one round after it
+         * learned to record a model that need not be Eloquent at all. A UUID-keyed users table, or an LDAP
+         * subject, made every audited write by that person fail its INSERT on PostgreSQL and strict MySQL —
+         * and since the audit row shares a transaction with the write it records, the content write rolled
+         * back with it. "Cannot record who" became "cannot write at all".
+         */
+        $actor = new class extends AuthUser
+        {
+            public function getAuthIdentifier(): string
+            {
+                return '018f2b7c-1d6a-7e3f-9a0b-5c8d4e2f1a33';
+            }
+        };
+
+        Auth::login($actor);
+
+        $entry = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Written by a UUID']);
+
+        expect(AuditLog::for($entry)->where('action', 'entry.created')->value('actor_id'))
+            ->toBe('018f2b7c-1d6a-7e3f-9a0b-5c8d4e2f1a33');
     });
 
     it('leaves the actor NULL when the system acts on its own', function (): void {

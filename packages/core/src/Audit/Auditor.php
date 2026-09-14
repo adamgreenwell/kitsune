@@ -58,6 +58,19 @@ final class Auditor
         );
     }
 
+    /**
+     * An identifier as the log stores it: a string, or null.
+     *
+     * ⚠️ WHATEVER THE HOST'S KEYS ARE. An integer id, a UUID, an LDAP subject — the column is a string so
+     * that recording the actor never fails, because an audit insert that fails takes the write it was
+     * recording with it (they share a transaction by design). Anything that cannot be expressed as a scalar
+     * is recorded as nothing rather than as a guess.
+     */
+    private static function identifier(mixed $id): ?string
+    {
+        return is_int($id) || is_string($id) ? (string) $id : null;
+    }
+
     public function record(string $action, ?Model $target = null): ?AuditLog
     {
         $orgId = $this->context->orgId();
@@ -108,10 +121,10 @@ final class Auditor
                 $actor instanceof Model => $actor->getMorphClass(),
                 default => $actor::class,
             },
-            'actor_id' => $actor?->getAuthIdentifier(),
+            'actor_id' => self::identifier($actor?->getAuthIdentifier()),
             'action' => $action,
             'target_type' => $target?->getMorphClass(),
-            'target_id' => $target?->getKey(),
+            'target_id' => self::identifier($target?->getKey()),
             'created_at' => now(),
         ]);
     }

@@ -274,6 +274,21 @@ class Role extends Model
                 $deleted = parent::delete();
 
                 if ($deleted === false) {
+                    /*
+                     * ⚠️ A VETOED DELETION LEAVES THE PROOF STANDING, which review found. The `deleting`
+                     * listener earns `$guardsRan` and `performDeleteOnModel()` clears it in a `finally` —
+                     * but an application observer returning false means `parent::delete()` returns before
+                     * that method is ever entered. The proof then survives on the instance, and a later
+                     * `saveQuietly()` supplies the other half: `authorityProven()` accepts it and the quiet
+                     * save writes `is_owner` or `org_id` with no org check, no per-holder audit and no cache
+                     * invalidation.
+                     *
+                     * The same shape as every other finding in this family — a proof that outlives the write
+                     * it was earned for — reached through somebody else's veto rather than a forged
+                     * attribute.
+                     */
+                    $this->guardsRan = false;
+
                     return $deleted;
                 }
 

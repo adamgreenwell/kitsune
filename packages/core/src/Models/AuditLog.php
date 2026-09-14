@@ -33,10 +33,10 @@ use RuntimeException;
  * @property int $org_id
  * @property int|null $site_id
  * @property string|null $actor_type
- * @property int|null $actor_id
+ * @property string|null $actor_id
  * @property string $action
  * @property string $target_type
- * @property int|null $target_id
+ * @property string|null $target_id
  */
 #[OrgScoped]
 class AuditLog extends Model
@@ -111,6 +111,8 @@ class AuditLog extends Model
     public function scopeFor(Builder $query, Model $target): Builder
     {
         return $query->where('target_type', $target->getMorphClass())
-            ->where('target_id', $target->getKey());
+            // ⚠️ Cast, because the column is a string and a bound integer is a type error on
+            // PostgreSQL rather than a coercion — see the migration for why it is a string.
+            ->where('target_id', (string) $target->getKey());
     }
 }

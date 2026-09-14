@@ -629,6 +629,16 @@ A field that has not been classified does not save. Same discipline as the tenan
 > guard the `auth` middleware actually authenticated with. The knock-on is why this is a P1 rather than a
 > tidy-up: `Entry::refuseUnpermittedRepublication()` reads a null actor as "the system is acting" and stands
 > aside, so a wrong answer here opened a guard three files away.
+>
+> ⚠️ **And the column assumed an integer, which is the fourth thing wrong with the same row and the worst
+> failure of the four.** An identifier is the HOST's to choose: a UUID-keyed users table, or the LDAP and SSO
+> identities this primitive had just learned to name, produced a string — and `actor_id` was an
+> unsigned-bigint. On PostgreSQL and strict MySQL the audit INSERT then failed, and because the audit row
+> shares a transaction with the write it records, **the content write rolled back with it**. "Cannot record
+> who" became "cannot write at all" for every action by that person. Both identifier columns are strings now
+> — `target_id` too, swept rather than waited for, because `role.assigned` names a host user on the other
+> half of the same row. Neither column ever carried a foreign key (erasing a user must not destroy the
+> trail), so the type was holding an assumption rather than a constraint.
 
 **5. A replayable erasure log.** Backups cannot be rewritten. The workable answer is a documented retention window plus erasure re-applied on restore — which requires core to keep a record of what was erased, containing no erased content.
 
@@ -2002,6 +2012,12 @@ failure semantics of every action in the admin at once is a decision with its ow
   `update()`. The guard is one method called from all six now — the same shape as the `is_owner` arithmetic
   finding one model over, which is twice this family has been found through the same door.
 
+  ⚠️ **And the publication guard repeated the mistake one round later.** The transition check went into
+  `update()` alone, so `increment('id', 0, ['status' => 'published'])` published without it — Laravel's
+  `$extra` map is a set of ordinary assignments, which is the same sentence this file already carried about
+  `is_owner`. Three guards have now been added to `update()` and forgotten at the arithmetic family; the
+  helper is called from all six doors for each of them.
+
   ⚠️ **And the condition asked for the wrong key.** `getKey()` decided whether to check while the write uses
   `getKeyForSaveQuery()`, so nulling the `id` attribute in memory turned the guard off and left the delete
   pointing at the row it was loaded from — the tampered instance was the one instance that skipped the
@@ -2041,6 +2057,13 @@ failure semantics of every action in the admin at once is a decision with its ow
   `refuseIfTheRowMovedUnderneath()` compares, because it is one rule and not three.
 
 - **The role row is the mutex for everything that changes its authority.** Each operation was locally
+
+- **A vetoed deletion clears the proof it earned.** `performDeleteOnModel()` clears the guard proof in a
+  `finally`, and an application observer returning false means that method is never entered — so the proof
+  survived on the instance and a later `saveQuietly()` supplied the other half, after which a quiet write to
+  `is_owner` or `org_id` skipped the org check, the per-holder audit and the cache invalidation. The same
+  family as every other finding here — a proof outliving the write it was earned for — reached through
+  somebody else's veto rather than through a forged attribute.
   transactional and the PAIR still lost a row from the trail: an assignment inserted the pivot and read the
   owner flag as false, recording `role.assigned`, while a concurrent promotion could not see the uncommitted
   pivot and audited no holder at all. Both committed, and the person was an owner with nothing in the log
