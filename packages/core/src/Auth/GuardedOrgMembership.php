@@ -133,6 +133,65 @@ class GuardedOrgMembership extends BelongsToMany
     }
 
     /**
+     * ⚠️ `sync()` IS ONE CHANGE, AND LARAVEL MAKES IT TWO — review found it. It calls `detach()` and then `attach()`,
+     * each of which commits on its own, so a sync that removed one membership and then failed to add another — a
+     * foreign key naming an org that does not exist — had already committed and audited the removal, and reported
+     * failure after taking the person's authority away. One transaction around the call makes a sync stand or fall
+     * as the single change it was asked for. `syncWithoutDetaching()` and `syncWithPivotValues()` come through here.
+     *
+     * @param  mixed  $ids
+     * @param  bool  $detaching
+     * @return array<string, array<int, mixed>>
+     */
+    public function sync($ids, $detaching = true)
+    {
+        return DB::transaction(fn (): array => parent::sync($ids, $detaching));
+    }
+
+    /**
+     * `toggle()` detaches and attaches in turn as well, so it is one transaction for the same reason as `sync()`.
+     *
+     * @param  mixed  $ids
+     * @param  bool  $touch
+     * @return array<string, array<int, mixed>>
+     */
+    public function toggle($ids, $touch = true)
+    {
+        return DB::transaction(fn (): array => parent::toggle($ids, $touch));
+    }
+
+    /**
+     * ⚠️ A MEMBERSHIP'S KEYS ARE THE MEMBERSHIP, SO CHANGING ONE IS A DETACH AND AN ATTACH — review found this door
+     * open. `updateExistingPivot()` writes the pivot row directly and calls neither override above, so
+     * `$user->orgs()->updateExistingPivot($old, ['org_id' => $new])` moved the last owner out of an org with no
+     * last-owner check, no audit row, no lock and no memo drop. A key change is refused with the way to make it;
+     * any other column a host's pivot carries is updated as before.
+     *
+     * @param  mixed  $id
+     * @param  array<string, mixed>  $attributes
+     * @param  bool  $touch
+     * @return int
+     */
+    public function updateExistingPivot($id, array $attributes, $touch = true)
+    {
+        foreach (array_keys($attributes) as $column) {
+            $bare = str_contains($column, '.') ? substr($column, (int) strrpos($column, '.') + 1) : $column;
+
+            if ($bare === $this->foreignPivotKey || $bare === $this->relatedPivotKey) {
+                throw new RuntimeException(sprintf(
+                    'Refusing to change [%s] on an org membership in place: the keys are the membership, so moving '
+                    .'one removes a person from one organisation and adds them to another, and both of those go '
+                    .'through detach() and attach(), where the last-owner guard, the audit and the permission memo '
+                    .'are (ADR-033).',
+                    $column,
+                ));
+            }
+        }
+
+        return parent::updateExistingPivot($id, $attributes, $touch);
+    }
+
+    /**
      * The other end of each membership an attach names, read the way Laravel reads it.
      *
      * ⚠️ `attach([5 => ['role' => …]])` NAMES 5, NOT ITS ATTRIBUTES. Laravel's `extractAttachIdAndAttributes()`

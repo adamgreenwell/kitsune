@@ -1992,6 +1992,12 @@ Filament's own opt-in for exactly that, and it is off by default.
   read and checked, so a membership another transaction attached in between went with no lock, no check and no
   audit row. The delete names what was read.
 
+  ⚠️ **And two more doors went around the relation's own methods, which review found last.** Laravel's `sync()` detaches and
+  then attaches, each committing alone, so a sync whose attach failed had already committed and audited a removal;
+  `sync()` and `toggle()` are one transaction now. And `updateExistingPivot()` wrote the pivot row directly, so
+  moving a membership's `org_id` in place skipped every guard above; `org_user` is nothing but its two keys, so a
+  key change there is refused with the way to make it.
+
   ⚠️ **And the sweep is one transaction, which review found it was not.** A user holding roles in two
   organisations could have the first revoked and audited and the second refused by the last-owner guard: the
   deletion failed and the person kept their account while permanently losing authority the refusal existed to

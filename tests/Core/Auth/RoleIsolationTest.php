@@ -1422,6 +1422,44 @@ it('removes only the memberships it checked when told to remove them all', funct
         )->all())->toBe([$this->beta->getKey()]);
 });
 
+it('refuses to move a membership by updating its keys in place', function (): void {
+    /*
+     * ⚠️ `updateExistingPivot()` WRITES THE PIVOT ROW DIRECTLY — review found the door. It calls neither `attach()` nor
+     * `detach()`, so moving the last owner's membership to another org skipped every guard this relation exists for.
+     */
+    app(Context::class)->setOrg($this->alpha);
+    joinOrg($this->alpha, $this->user);
+
+    $owner = Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true]);
+    $owner->assignTo($this->user->getKey());
+
+    expect(fn () => $this->user->orgs()->updateExistingPivot($this->alpha->getKey(), ['org_id' => $this->beta->getKey()]))
+        ->toThrow(RuntimeException::class, 'the keys are the membership');
+
+    expect(DB::table('org_user')->where('user_id', $this->user->getKey())->pluck('org_id')->map(
+        static fn (mixed $id): int => (int) $id,
+    )->all())->toBe([$this->alpha->getKey()]);
+});
+
+it('keeps a sync whole, so a failed attach leaves no committed removal behind', function (): void {
+    /*
+     * ⚠️ LARAVEL'S `sync()` DETACHES AND THEN ATTACHES, EACH IN ITS OWN TRANSACTION — review found a sync that removed a
+     * membership, then failed to add one naming an org that does not exist, having already committed and audited the
+     * removal. The person lost their authority and the call reported failure.
+     */
+    app(Context::class)->setOrg($this->alpha);
+    joinOrg($this->alpha, $this->user);
+    assign($this->alphaRole, $this->user);
+
+    $missing = (int) Org::query()->withTrashed()->max('id') + 1000;
+
+    expect(fn () => $this->user->orgs()->sync([$missing]))->toThrow(QueryException::class);
+
+    expect(DB::table('org_user')->where('user_id', $this->user->getKey())->pluck('org_id')->map(
+        static fn (mixed $id): int => (int) $id,
+    )->all())->toBe([$this->alpha->getKey()]);
+});
+
 it('refuses to delete a role that belongs to another org', function (): void {
     /*
      * ⚠️ THE FIFTH AUTHORITY PATH, and it was not asking — review found it. Eloquent's instance delete writes
