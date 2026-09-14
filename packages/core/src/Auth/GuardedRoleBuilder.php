@@ -26,10 +26,17 @@ use RuntimeException;
  * `Entry`, and it is the third time: a guard belongs where the write is, and a model event is not where
  * the write is.
  *
- * ⚠️ THE FLAG IS HOW AN INSTANCE SAVE IS TOLD FROM A BULK ONE, because `Model::performUpdate()` writes
- * through this builder too — so refusing every bulk-shaped write would refuse `$role->save()` as well. It
- * is set by the `saving` guard, which only a model event reaches; a bulk update dispatches nothing, so it
- * can never be set and the write is refused.
+ * ⚠️ THE PROOF IS HOW AN INSTANCE SAVE IS TOLD FROM A BULK ONE, because `Model::performUpdate()` writes
+ * through this builder too — so refusing every bulk-shaped write would refuse `$role->save()` as well. It is
+ * two private facts on the model: the `saving`/`deleting` listeners record that this instance's guards ran,
+ * and `performUpdate()`/`performDeleteOnModel()` record the write they ran for. A bulk update dispatches
+ * nothing and is inside nobody's save, so it can present neither.
+ *
+ * ⚠️ IT USED TO BE A PUBLIC BOOLEAN, WHICH REVIEW CORRECTLY CALLED A FORGERY: `Builder::getModel()` is
+ * public, so `$q = Role::query(); $q->getModel()->authorityGuarded = true; $q->update([…])` armed the proof
+ * from outside and promoted every matching role. `RequiresModelSave`'s docblock records the same attack on
+ * `exists` and `getIncrementing()` — measured, twice — and the answer there is the answer here: ask for
+ * something only Eloquent's own save path can be inside.
  *
  * ⚠️ AND `update()` IS ONE DOOR OF FOUR. Review found three more, each forwarding past this class to the
  * query builder: `increment()`, `decrement()` and their `…Each()` plurals carry an `$extra` map of ordinary
@@ -62,7 +69,7 @@ class GuardedRoleBuilder extends ScopedBuilder
      */
     public function update(array $values)
     {
-        if (! $this->getModel()->authorityGuarded) {
+        if (! $this->getModel()->authorityProven($this)) {
             $this->refusePerRowAuthority($values, 'a bulk write');
         }
 
@@ -151,7 +158,7 @@ class GuardedRoleBuilder extends ScopedBuilder
 
     private function refuseUnguardedDeletion(string $shape): void
     {
-        if ($this->getModel()->authorityGuarded) {
+        if ($this->getModel()->deletionProven()) {
             return;
         }
 

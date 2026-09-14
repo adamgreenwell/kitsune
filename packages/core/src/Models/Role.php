@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Models;
 
+use Illuminate\Database\Eloquent\Builder as EloquentBuilder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
@@ -21,6 +22,7 @@ use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Tenancy\Attributes\OrgScoped;
 use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
 use Kitsune\Core\Tenancy\Context;
+use Kitsune\Core\Tenancy\ScopeWrites;
 use RuntimeException;
 
 /**
@@ -47,21 +49,105 @@ class Role extends Model
     protected $casts = ['is_owner' => 'boolean'];
 
     /**
-     * True only while THIS instance's guards have run for the write in flight.
+     * Whether this instance's own guards have run for the write in flight.
      *
-     * ⚠️ How `GuardedRoleBuilder` tells an instance save from a bulk one. Both arrive at the builder,
-     * because `Model::performUpdate()` writes through it — so refusing every bulk-shaped write would refuse
-     * `$role->save()` as well. The flag is set by the `saving` guard, which only a model event reaches; a
-     * bulk update dispatches nothing, so it can never be set and the builder refuses.
+     * ⚠️ PRIVATE, AND A PUBLIC BOOLEAN WAS A FORGERY WAITING TO HAPPEN — review found it, and this project
+     * had already recorded the attack once: `Builder::getModel()` is public, so
+     * `$q = Role::query(); $q->getModel()->authorityGuarded = true; $q->update(['is_owner' => true])`
+     * presented a proof nothing had earned and promoted every matching role. `RequiresModelSave`'s docblock
+     * records the same shape for `exists` and `getIncrementing()`, measured, twice.
      *
-     * The same mechanism `FieldStorage::$shapeGuarded` uses, for the same reason.
+     * So the proof is now two private facts a caller cannot arrange, and the builder asks for both:
+     * `$guardsRan` is armed by the `saving`/`deleting` listeners, which only a model event reaches; and
+     * `$writingThrough`/`$deletingItself` are set inside `performUpdate()`/`performDeleteOnModel()`, which
+     * are true only for the dynamic extent of a real save. Neither has a setter.
      */
-    public bool $authorityGuarded = false;
+    private bool $guardsRan = false;
+
+    /**
+     * The builder this instance is being saved through, or null when no save is in flight.
+     *
+     * The identity check is what a quiet save cannot manufacture: `setModel()` can hand any builder any
+     * model, but a model handed to `setModel()` is not inside its own `performUpdate()`.
+     */
+    private ?object $writingThrough = null;
+
+    /** True only inside this instance's own `performDeleteOnModel()`. */
+    private bool $deletingItself = false;
+
+    /**
+     * Whether a write to `role_permissions` is inside `grant()` or `revoke()`.
+     *
+     * ⚠️ THE OPENER IS NOT A METHOD, which is the whole point — review found the first version's window
+     * opener PUBLIC on `RolePermission`, so any caller could hold it open around a write of their own and
+     * `role_permissions` was as reachable as before. The flag is private static, armed inline by the two
+     * methods below and closed in their `finally`; `GuardedGrantBuilder` can read it and nothing can set it.
+     */
+    private static bool $writingGrants = false;
 
     /** @param  Builder  $query */
     public function newEloquentBuilder($query): GuardedRoleBuilder
     {
         return new GuardedRoleBuilder($query, $this);
+    }
+
+    /**
+     * Are this write's per-row guarantees proven — for THIS builder, by THIS instance's own guards?
+     *
+     * Both halves are needed and neither is enough. The guards having run says a lifecycle check validated
+     * the values; the builder identity says the write in flight is the one they ran for, which is what a
+     * `saveQuietly()` retry and a hand-armed `setModel()` both fail.
+     */
+    public function authorityProven(object $through): bool
+    {
+        return $this->guardsRan && $this->writingThrough === $through;
+    }
+
+    /** The same question for a deletion, where the builder is created inside `performDeleteOnModel()`. */
+    public function deletionProven(): bool
+    {
+        return $this->guardsRan && $this->deletingItself;
+    }
+
+    /** Whether `role_permissions` is being written from inside `grant()` or `revoke()`. */
+    public static function grantsAreBeingWritten(): bool
+    {
+        return self::$writingGrants;
+    }
+
+    /**
+     * ⚠️ THE ONLY PLACE THE WRITE IDENTITY IS SET, and it is set on the way into Eloquent's own update path
+     * rather than by anything a caller can reach. Cleared in a `finally`, so an aborted save leaves no proof
+     * behind — the rule `DerivesGuardedColumns` records for the four `RequiresModelSave` models.
+     *
+     * @param  EloquentBuilder<static>  $query
+     */
+    protected function performUpdate(EloquentBuilder $query)
+    {
+        $this->writingThrough = $query;
+
+        try {
+            return parent::performUpdate($query);
+        } finally {
+            $this->writingThrough = null;
+        }
+    }
+
+    /**
+     * ⚠️ AND FOR A DELETION THERE IS NO QUERY TO CAPTURE, because Eloquent builds it inside this method — so
+     * the proof is the dynamic extent itself. A caller cannot be inside another instance's
+     * `performDeleteOnModel()`, and `newModelQuery()` sets that builder's model to this instance, so the
+     * builder is asking the object that is actually being deleted.
+     */
+    protected function performDeleteOnModel(): void
+    {
+        $this->deletingItself = true;
+
+        try {
+            parent::performDeleteOnModel();
+        } finally {
+            $this->deletingItself = false;
+        }
     }
 
     /**
@@ -158,23 +244,35 @@ class Role extends Model
                 $role->refuseIfNotCurrentOrg('change the owner flag on');
             }
 
+            /*
+             * ⚠️ AND EVERY SAVE OF AN EXISTING ROLE, not only one that touches the flag. The check above fires
+             * on a dirty `is_owner`; `EnforcesScope` fires on a dirty scope key and validates the value being
+             * WRITTEN — which is the value a transfer arranges. So a role loaded under org A and saved while
+             * the context is B moved there with its grants and its assignments, and an ordinary rename wrote
+             * to another customer's row. Both are the same question — is this ROW ours — and the scoped query
+             * inside the guard is what answers it.
+             */
+            if ($role->exists) {
+                $role->refuseIfNotCurrentOrg('save');
+            }
+
             // Earned for this write only; `saved` clears it so the next one has to earn it again.
-            $role->authorityGuarded = true;
+            $role->guardsRan = true;
         });
 
         static::deleting(static function (self $role): void {
-            $role->authorityGuarded = true;
+            $role->guardsRan = true;
         });
 
         static::saved(static function (self $role): void {
             $role->auditOwnerTransition();
-            $role->authorityGuarded = false;
+            $role->guardsRan = false;
 
             Permissions::forget();
         });
 
         static::deleted(static function (self $role): void {
-            $role->authorityGuarded = false;
+            $role->guardsRan = false;
 
             Permissions::forget();
         });
@@ -250,19 +348,40 @@ class Role extends Model
      */
     private function refuseIfNotCurrentOrg(string $operation): void
     {
+        /*
+         * ⚠️ THE ESCAPE HATCH IS HONOURED HERE LIKE EVERYWHERE ELSE IN THE TENANCY LAYER. Provisioning and
+         * cross-org admin tooling are the legitimate cross-scope callers, and `withoutScopeBecause()` makes
+         * each one greppable and requires a written reason. A guard with no way through is a guard somebody
+         * eventually reaches past with raw SQL.
+         */
+        if (ScopeWrites::suspended()) {
+            return;
+        }
+
         $current = app(Context::class)->orgId();
 
-        if ($current !== null && (int) $this->org_id === $current) {
+        /*
+         * ⚠️ THE ROW IS ASKED, NOT THE ATTRIBUTE, which review found to be the difference between a guard and
+         * a suggestion. `$this->org_id` is a mutable property: after retaining an org A role, code in org B
+         * could set it to B in memory and every one of these paths passed — while the writes they perform go
+         * by PRIMARY KEY, so A's authority changed and the audit row named B. `getOriginal()` is no better,
+         * because `syncOriginal()` is public too.
+         *
+         * The scoped query cannot be arranged: it asks the database, through `OrgScope`, whether the stored
+         * row is one this context may see. It also covers a transfer in flight — the row the key names still
+         * belongs to the org it came from — which is why `save()` asks the same question.
+         */
+        if ($current !== null && $this->getKey() !== null && static::query()->whereKey($this->getKey())->exists()) {
             return;
         }
 
         throw new RuntimeException(sprintf(
-            'Refusing [%s] on role %s: it belongs to org %s and the current context is %s. A role loaded '
-            .'under one org and used under another writes authority into the wrong customer, and records '
-            .'an audit row that names the wrong one (ADR-021, ADR-033).',
+            'Refusing [%s] on role %s: the current context is %s and no role with that key belongs to it. A '
+            .'role loaded under one org and used under another writes authority into the wrong customer, and '
+            .'records an audit row that names the wrong one (ADR-021, ADR-033). Use withoutScopeBecause() if '
+            .'this is deliberate.',
             $operation,
-            (string) $this->getKey(),
-            (string) $this->org_id,
+            $this->getKey() === null ? 'none' : (string) $this->getKey(),
             $current === null ? 'none' : (string) $current,
         ));
     }
@@ -307,18 +426,28 @@ class Role extends Model
          * clause to narrow — so `RolePermission::create([...])` could attach a grant to another org's role
          * and `RolePermission::query()->delete()` could revoke every org's. The window says the write came
          * through here, where the org question has already been asked.
+         *
+         * ⚠️ ARMED INLINE RATHER THAN THROUGH A HELPER ANYTHING CAN CALL, which is the correction review
+         * asked for: the first version's opener was a public method on `RolePermission`, so a caller could
+         * hold the window open around a write of their own and nothing had changed.
          */
-        /** @var RolePermission $row */
-        $row = RolePermission::throughRole(fn (): RolePermission => DB::transaction(function () use ($permission): RolePermission {
-            /** @var RolePermission $created */
-            $created = $this->permissions()->firstOrCreate(['permission' => $permission]);
+        self::$writingGrants = true;
 
-            if ($created->wasRecentlyCreated) {
-                app(Auditor::class)->record('role.granted', $this);
-            }
+        try {
+            /** @var RolePermission $row */
+            $row = DB::transaction(function () use ($permission): RolePermission {
+                /** @var RolePermission $created */
+                $created = $this->permissions()->firstOrCreate(['permission' => $permission]);
 
-            return $created;
-        }));
+                if ($created->wasRecentlyCreated) {
+                    app(Auditor::class)->record('role.granted', $this);
+                }
+
+                return $created;
+            });
+        } finally {
+            self::$writingGrants = false;
+        }
 
         Permissions::forget();
 
@@ -330,13 +459,17 @@ class Role extends Model
     {
         $this->refuseIfNotCurrentOrg('revoke');
 
-        RolePermission::throughRole(function () use ($permission): void {
+        self::$writingGrants = true;
+
+        try {
             DB::transaction(function () use ($permission): void {
                 if ($this->permissions()->where('permission', $permission)->delete() > 0) {
                     app(Auditor::class)->record('role.revoked', $this);
                 }
             });
-        });
+        } finally {
+            self::$writingGrants = false;
+        }
 
         Permissions::forget();
     }
@@ -440,6 +573,20 @@ class Role extends Model
         $model = Permissions::userModel() ?? config('auth.providers.users.model');
 
         if (! is_string($model) || ! class_exists($model) || ! is_subclass_of($model, Model::class)) {
+            return null;
+        }
+
+        /*
+         * ⚠️ AND IT HAS TO BE THE MODEL THE ASSIGNMENT IS ABOUT, which review found it need not be. An
+         * assignment is a row in `role_user`, whose `user_id` names the table that table's foreign key
+         * references — so if the panel's provider reads some OTHER table, this would name an unrelated row
+         * with the same id and the audit would be a false statement about a real person. `Permissions`
+         * settles that question for resolution; the audit target has to ask it too, or the log and the
+         * resolver disagree about who a grant belongs to.
+         *
+         * A thin row beats a wrong one: null target rather than the wrong name, and the row is still written.
+         */
+        if (! Permissions::assignmentsAreAbout($model)) {
             return null;
         }
 

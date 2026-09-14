@@ -1756,6 +1756,17 @@ So a link the record **already holds** keeps its value and loses its title: it r
   discriminator is a narrow window rather than a per-instance flag, because `firstOrCreate()` builds its own
   instance and a flag armed on the model in hand never reaches it.
 
+  ⚠️ **Twice more before it held.** The first version's window opener was a PUBLIC method on
+  `RolePermission`, so the capability stayed public — any caller could hold it open around a write of their
+  own. The flag is private static on `Role` now, armed inline by `grant()` and `revoke()` and exposed only as
+  a reader. And the builder's docblock claimed the insert-or-ignore family was "already refused by
+  `ScopedBuilder` for every model", which is false for this one: `refuseBulkCreate()` returns early for
+  anything that is not `RequiresModelSave`, and `guardEveryInsertedRow()` inspects scope keys, of which an
+  `#[Unscoped]` table has none. Four doors — `insertOrIgnore()`, `insertUsing()`, `insertOrIgnoreUsing()`,
+  `insertOrIgnoreReturning()` — measured open. A claim about somebody else's code is the kind that rots
+  quietly, so the write surface is now enumerated in a test that fails when Laravel grows a method it has not
+  been taught about.
+
 - **A numeric user id is not an identity.** The memo and the membership check both learned to carry the
   authenticated model's class; the assignment lookup still matched on `user_id` alone. A host running two
   panels through two providers has two user models on two tables with two independent sequences, so both have
@@ -1765,6 +1776,29 @@ So a link the record **already holds** keeps its value and loses its title: it r
   `role_user` declares no foreign key gives nothing to compare, and that case is allowed rather than
   refused** — breaking RBAC outright on a schema that is merely undocumented would be the worse failure, and
   the narrower exposure is recorded here rather than implied.
+
+  ⚠️ **And the table name alone still conflated two databases**, which review found next: an identity
+  connection whose table is also called `users` matched, while `role_user` and the foreign key live on the
+  default one — so membership was checked in one database and assignments read from another. The connection is
+  part of the comparison now. **The audit target asks the same question**: `assignTo()` writes the
+  FK-referenced identity, so resolving the row from the panel's provider could name an unrelated person with
+  the same id. A null target beats a wrong name, and the row is still written.
+
+- **The proof that an instance's guards ran is not something a caller can present.** It was a public boolean,
+  and `Builder::getModel()` is public — so `$q = Role::query(); $q->getModel()->authorityGuarded = true;
+  $q->update(['is_owner' => true])` promoted every matching role with no per-holder audit and no cache
+  invalidation. `RequiresModelSave`'s docblock records the same attack on `exists` and `getIncrementing()`,
+  measured, twice; this is the third. The proof is now two private facts with no setters: the lifecycle
+  listeners record that this instance's guards ran, and `performUpdate()`/`performDeleteOnModel()` record the
+  write they ran for. A quiet save has the second and not the first; a hand-armed builder can have neither.
+
+- **Which org a role belongs to is asked of the stored ROW, not of the attribute.** `$role->org_id` is a
+  mutable property, so after retaining an org A role, code in org B could set it to B in memory and every
+  authority path passed — while the writes they perform go by primary key, so A's grants and assignments
+  changed and the audit row named B. `getOriginal()` is no better, because `syncOriginal()` is public too.
+  The guard asks `OrgScope`'s own query whether the row this key names is one the current context may see,
+  which also refuses a transfer in flight, and which every save of an existing role now asks as well. It
+  honours `withoutScopeBecause()`, like every other write guard in the tenancy layer.
 
 - **A revocation is recorded only once the deletion has succeeded.** The rows went in first, which read as
   correct until an application observer returning `false` from `deleting` aborted the delete: the role and

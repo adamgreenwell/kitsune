@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Auth;
 
+use Illuminate\Support\Collection;
 use Kitsune\Core\Models\Role;
 use Kitsune\Core\Models\RolePermission;
 use Kitsune\Core\Tenancy\ScopedBuilder;
@@ -34,6 +35,11 @@ use RuntimeException;
  * so a flag armed on the model in hand never reaches the object that gets saved. `ScopeWrites` already
  * solves the same shape for the tenancy guards: a narrow, explicit window opened by the one caller that is
  * allowed to write, and closed in a `finally` so an exception cannot leave it open.
+ *
+ * ⚠️ AND THE WINDOW IS OPENED INSIDE `Role`, WHICH REVIEW HAD TO POINT OUT TWICE OVER. A first version put a
+ * public opener on `RolePermission` — which made the capability public, so a caller could hold the window
+ * open around a write of their own and this class was decoration. `Role` arms a private static inline in
+ * `grant()` and `revoke()`; the reader below is all that is exposed, and a reader cannot open anything.
  *
  * What that window does NOT claim is that the write is correct — `Role::grant()` validates the permission,
  * refuses a role outside the current org, audits, and flushes the memo. This only makes it the sole path.
@@ -83,8 +89,6 @@ class GuardedGrantBuilder extends ScopedBuilder
     /**
      * ⚠️ `insertGetId()` IS `performInsert()`'S PATH for an incrementing model, so it is the one a legitimate
      * `Role::grant()` takes — and it is publicly callable, so it needs the window like everything else.
-     * `ScopedBuilder` already refuses `insertOrIgnore()`, the `…Using` forms, `upsert()`, `updateOrInsert()`
-     * and `truncate()` for every model, which is why they are absent here.
      *
      * @param  array<string, mixed>  $values
      * @param  string|null  $sequence
@@ -96,6 +100,67 @@ class GuardedGrantBuilder extends ScopedBuilder
 
         return parent::insertGetId($values, $sequence);
     }
+
+    /**
+     * ⚠️ AND THE INSERT-OR-IGNORE FAMILY, WHICH THIS CLASS CLAIMED WAS ALREADY COVERED AND WAS NOT — review
+     * checked the claim. `ScopedBuilder` refuses them through `refuseBulkCreate()`, which returns early for a
+     * model that is not `RequiresModelSave`, and `guardEveryInsertedRow()` inspects SCOPE KEYS, of which an
+     * `#[Unscoped]` table has none. So both guards stood aside and every one of these was a working door:
+     * `RolePermission::query()->insertOrIgnore([...])` attached a grant to any role on the installation.
+     *
+     * A docblock that says "already handled one layer down" is a claim about somebody else's code, and this
+     * is the second time in this project that one has been wrong. The methods are listed here instead.
+     *
+     * @param  array<string, mixed>  $values
+     */
+    public function insertOrIgnore(array $values): int
+    {
+        $this->refuseUnlessThroughRole('insertOrIgnore()');
+
+        return parent::insertOrIgnore($values);
+    }
+
+    /**
+     * @param  array<int, string>  $columns
+     * @param  mixed  $query
+     */
+    public function insertUsing(array $columns, $query): int
+    {
+        $this->refuseUnlessThroughRole('insertUsing()');
+
+        return parent::insertUsing($columns, $query);
+    }
+
+    /**
+     * @param  array<int, string>  $columns
+     * @param  mixed  $query
+     */
+    public function insertOrIgnoreUsing(array $columns, $query): int
+    {
+        $this->refuseUnlessThroughRole('insertOrIgnoreUsing()');
+
+        return parent::insertOrIgnoreUsing($columns, $query);
+    }
+
+    /**
+     * @param  array<string, mixed>  $values
+     * @param  array<int, string>  $returning
+     * @param  array<int, string>|string|null  $uniqueBy
+     * @return Collection<int, mixed>
+     */
+    public function insertOrIgnoreReturning(array $values, array $returning = ['*'], array|string|null $uniqueBy = null): Collection
+    {
+        $this->refuseUnlessThroughRole('insertOrIgnoreReturning()');
+
+        return parent::insertOrIgnoreReturning($values, $returning, $uniqueBy);
+    }
+
+    /**
+     * ⚠️ `upsert()`, `updateOrInsert()` and `truncate()` ARE the ones `ScopedBuilder` refuses for every model
+     * — outright, with no window to open — so they are absent here on purpose rather than by assumption.
+     * `RolePermissionWriteDoorsTest` walks the whole public write surface of the model and fails if a method
+     * that changes rows is reachable, which is what keeps this list honest as Laravel adds to it.
+     */
 
     /**
      * The arithmetic family reaches the query builder without passing `update()` — the hole review found on
@@ -112,7 +177,7 @@ class GuardedGrantBuilder extends ScopedBuilder
 
     private function refuseUnlessThroughRole(string $method): void
     {
-        if (RolePermission::writingThroughRole()) {
+        if (Role::grantsAreBeingWritten()) {
             return;
         }
 

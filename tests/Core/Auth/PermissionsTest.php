@@ -14,6 +14,7 @@ use Kitsune\Core\Models\AuditLog;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Role;
 use Kitsune\Core\Tenancy\Context;
+use Kitsune\Core\Tests\Fixtures\ElsewhereUser;
 use Kitsune\Core\Tests\Fixtures\TestUser;
 
 /*
@@ -304,4 +305,28 @@ it('records nothing for an operation that changed nothing', function (): void {
     $role->removeFrom($user->getKey() + 1000);
 
     expect(AuditLog::query()->count())->toBe($before);
+});
+
+it('does not treat a same-named table on another connection as the assignment identity', function (): void {
+    /*
+     * ⚠️ THE TABLE NAME ALONE STILL CONFLATED TWO DATABASES, which review found one layer past the numeric-id
+     * finding. A host may authenticate against an identity database on its own connection whose table is also
+     * called `users`, while `role_user` and its foreign key live on the default one. The names then agree,
+     * membership is checked on the identity database, and `roleIdsFor()` reads the default — so an overlapping
+     * numeric id collects the DEFAULT user's roles. Assignments live wherever `role_user` lives.
+     *
+     * ⚠️ ASSERTED ON THE PREDICATE RATHER THAN END TO END, and that is the honest instrument here. Reaching
+     * `held()` would need a second database carrying the same schema, and under `RefreshDatabase` a second
+     * connection cannot see this test's uncommitted rows — so the resolution would return nothing for a
+     * reason that has nothing to do with the fix, which is a vacuous test wearing a passing badge.
+     */
+    config(['database.connections.identity' => config('database.connections.'.config('database.default'))]);
+
+    expect(Permissions::assignmentsAreAbout(TestUser::class))->toBeTrue()
+        ->and(Permissions::assignmentsAreAbout(ElsewhereUser::class))->toBeFalse();
+
+    // Not vacuous in the other direction either: the two differ ONLY in their connection.
+    expect((new ElsewhereUser)->getTable())->toBe((new TestUser)->getTable())
+        ->and((new ElsewhereUser)->getConnectionName())->toBe('identity')
+        ->and((new TestUser)->getConnectionName())->toBeNull();
 });

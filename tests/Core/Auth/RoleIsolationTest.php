@@ -562,17 +562,22 @@ it('does not resolve one user model\'s assignments for another model\'s matching
     $owner = Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true]);
     $owner->assignTo($this->user->getKey());
 
-    $impostor = TestImpostor::create(['name' => 'Also number one']);
+    /*
+     * ⚠️ THE COLLISION IS CONSTRUCTED, NOT HOPED FOR — and hoping for it failed on Postgres in the full
+     * suite. Two tables have two sequences, and a Postgres sequence does not roll back with the transaction
+     * `RefreshDatabase` wraps each test in, so which ids these two tables hand out depends on how many rows
+     * every earlier test created in each. The assertion below caught it rather than the test going quiet,
+     * which is what that assertion is for; the id is now assigned so the shape holds on every engine.
+     */
+    $impostor = new TestImpostor(['name' => 'Also number one']);
+    $impostor->id = $this->user->getKey();
+    $impostor->save();
+
     DB::table('pivot_scoped_thing_org')->insert([
         'org_id' => $this->alpha->getKey(),
         'pivot_scoped_thing_id' => $impostor->getKey(),
     ]);
 
-    /*
-     * ⚠️ THE IDS HAVE TO COLLIDE OR THIS MEASURES NOTHING — two tables, two sequences, both starting at 1.
-     * Asserted rather than assumed, because a fixture that drifted to id 2 would make the test pass against
-     * the defect.
-     */
     expect($impostor->getKey())->toBe($this->user->getKey());
 
     // The real user holds both, which is what makes the impostor's answers meaningful.
@@ -648,4 +653,163 @@ it('does not record a revocation for a deletion an observer vetoed', function ()
         ->and(Role::query()->whereKey($this->alphaRole->getKey())->exists())->toBeTrue()
         ->and(DB::table('role_user')->where('role_id', $this->alphaRole->getKey())->count())->toBe(1)
         ->and(AuditLog::query()->where('id', '>', $mark)->count())->toBe(0);
+});
+
+it('cannot be handed a forged proof that the guards ran', function (): void {
+    /*
+     * ⚠️ THE PROOF WAS A PUBLIC BOOLEAN, AND `Builder::getModel()` IS PUBLIC — review found the forgery, and
+     * this project had already measured the same attack twice on `exists` and `getIncrementing()`
+     * (`RequiresModelSave`'s docblock records both). The old code allowed this:
+     *
+     *     $q = Role::query(); $q->getModel()->authorityGuarded = true; $q->update(['is_owner' => true]);
+     *
+     * — every matching role promoted, no per-holder audit, no cache invalidation, no org check.
+     *
+     * The proof is now two private facts: the listeners record that this instance's guards ran, and
+     * `performUpdate()` records the builder they ran for. `setModel()` can still hand a builder any model —
+     * what it cannot do is put that model inside its own save.
+     */
+    app(Context::class)->setOrg($this->alpha);
+
+    // A real save first, so the instance has genuinely been through its guards at some point.
+    $this->alphaRole->update(['name' => 'Legitimately saved']);
+
+    /*
+     * ⚠️ THIS ASSERTS THE SHAPE, BECAUSE THE ATTACK IS NO LONGER EXPRESSIBLE — and saying so is more honest
+     * than a behavioural test that would pass either way. The old hole needed a public property to assign;
+     * there is none now, so `$q->getModel()->… = true` does not compile into anything. What can still be
+     * checked is that nothing outside the model's own lifecycle arms the proof, which is the property the
+     * fix actually buys.
+     */
+    expect(property_exists(Role::class, 'authorityGuarded'))->toBeFalse();
+
+    foreach (['guardsRan', 'writingThrough', 'deletingItself'] as $name) {
+        expect((new ReflectionProperty(Role::class, $name))->isPrivate())
+            ->toBeTrue($name.' has to be private, or the proof is settable from outside');
+    }
+
+    $source = explode("\n", (string) file_get_contents((string) (new ReflectionClass(Role::class))->getFileName()));
+    $armedIn = [];
+
+    foreach ($source as $number => $line) {
+        if (preg_match('/\$(role|this)->(guardsRan|writingThrough|deletingItself) = (true|\$query)/', $line) !== 1) {
+            continue;
+        }
+
+        for ($back = $number; $back >= 0; $back--) {
+            if (preg_match('/function (\w+)\(/', $source[$back], $match) === 1) {
+                $armedIn[] = $match[1];
+
+                break;
+            }
+        }
+    }
+
+    /*
+     * The closures inside `booted()` report as `booted`, which is the point: a model event is the only
+     * caller-reachable way in, and `performUpdate()`/`performDeleteOnModel()` are Eloquent's own.
+     */
+    sort($armedIn);
+
+    expect(array_values(array_unique($armedIn)))->toBe(['booted', 'performDeleteOnModel', 'performUpdate']);
+
+    // And the ordinary instance path still works, or the proof would be unobtainable rather than unforgeable.
+    $this->alphaRole->update(['is_owner' => true]);
+
+    expect(Role::query()->whereKey($this->alphaRole->getKey())->value('is_owner'))->toBeTruthy();
+
+    // A builder handed this model is still refused, which is the half that was already true and must stay so.
+    $query = Role::query();
+    $query->setModel($this->alphaRole);
+
+    expect(fn () => $query->update(['is_owner' => false]))
+        ->toThrow(RuntimeException::class, 'bulk write to `is_owner`');
+});
+
+it('asks the stored row which org a role belongs to, not the attribute', function (): void {
+    /*
+     * ⚠️ `$role->org_id` IS A MUTABLE PROPERTY, so the guard was a suggestion — review found it. After
+     * retaining an org A role, code in org B could set the attribute to B in memory and every authority
+     * method passed: they write by PRIMARY KEY, so A's grants and A's assignments changed while the audit row
+     * named B. `getOriginal()` is no better, because `syncOriginal()` is public too.
+     *
+     * The scoped query cannot be arranged. It asks the database whether the row this key names is one the
+     * current context may see.
+     */
+    assign($this->alphaRole, $this->user);
+
+    /*
+     * ⚠️ THE MARK IS TAKEN UNDER THE ORG IT WILL BE READ UNDER, and taking it under beta made this test
+     * fail against a correct fix: `AuditLog` is `#[OrgScoped]`, so `max('id')` from beta could not see
+     * alpha's rows at all and returned null — a mark of 0, which then counted the assignment row this
+     * fixture had just written. The log obeying the boundary it records is the point of that scope; a test
+     * reading across it is measuring its own confusion.
+     */
+    $mark = (int) AuditLog::query()->max('id');
+
+    joinOrg($this->beta, $this->user);
+    app(Context::class)->setOrg($this->beta);
+
+    // The forgery: the instance now claims to belong to beta, which is the current context.
+    $this->alphaRole->org_id = $this->beta->getKey();
+
+    expect((int) $this->alphaRole->org_id)->toBe($this->beta->getKey());
+
+    foreach ([
+        'grant' => fn () => $this->alphaRole->grant('entry.article.delete'),
+        'revoke' => fn () => $this->alphaRole->revoke('entry.article.update'),
+        'assignTo' => fn () => $this->alphaRole->assignTo($this->user->getKey()),
+        'removeFrom' => fn () => $this->alphaRole->removeFrom($this->user->getKey()),
+        'delete' => fn () => $this->alphaRole->delete(),
+        'save' => fn () => $this->alphaRole->save(),
+    ] as $operation => $attempt) {
+        expect($attempt)->toThrow(RuntimeException::class, 'Refusing ['.($operation === 'save' ? 'save' : $operation).']');
+    }
+
+    // Alpha's authority is untouched, and nothing was recorded under beta.
+    app(Context::class)->setOrg($this->alpha);
+
+    expect(Role::query()->whereKey($this->alphaRole->getKey())->value('org_id'))->toBe($this->alpha->getKey())
+        ->and(RolePermission::query()->where('role_id', $this->alphaRole->getKey())->pluck('permission')->all())
+        ->toBe(['entry.article.update'])
+        ->and(DB::table('role_user')->where('role_id', $this->alphaRole->getKey())->count())->toBe(1)
+        ->and(AuditLog::query()->where('id', '>', $mark)->count())->toBe(0);
+});
+
+it('names no audit target when the panel\'s provider is not what assignments are about', function (): void {
+    /*
+     * ⚠️ THE ASSIGNMENT AND THE AUDIT TARGET HAVE TO BE THE SAME IDENTITY, which review found they need not
+     * be: `assignTo($id)` writes `role_user.user_id`, whose meaning comes from the table that column
+     * references — and the audit target was resolved from the PANEL's provider, which may read another table
+     * entirely. The row would then name an unrelated person with the same id, which is a false statement
+     * about somebody real, in the log that exists to be trusted.
+     *
+     * A thin row beats a wrong one, so the target is null and the row is still written.
+     */
+    app(Context::class)->setOrg($this->alpha);
+
+    // The provider now names a model on another table — `TestImpostor` lives on `pivot_scoped_things`.
+    config(['auth.providers.users.model' => TestImpostor::class]);
+
+    /*
+     * ⚠️ AND THERE HAS TO BE A ROW FOR IT TO NAME WRONGLY, which the first version of this test forgot: with
+     * that table empty, `find()` returned null and the target was null for a reason that had nothing to do
+     * with the fix. Measured — the test passed with the guard reverted. The impostor is given the same id as
+     * the real assignee, which is the whole shape of the defect.
+     */
+    $impostor = new TestImpostor(['name' => 'Not the assignee']);
+    $impostor->id = $this->user->getKey();
+    $impostor->save();
+
+    expect($impostor->getKey())->toBe($this->user->getKey());
+
+    $mark = (int) AuditLog::query()->max('id');
+
+    $this->alphaRole->assignTo($this->user->getKey());
+
+    $row = AuditLog::query()->where('id', '>', $mark)->where('action', 'role.assigned')->first();
+
+    expect($row)->not->toBeNull()
+        ->and($row->target_type)->toBeNull()
+        ->and($row->target_id)->toBeNull();
 });
