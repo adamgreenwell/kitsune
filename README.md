@@ -60,6 +60,52 @@ Not a plan. This is what CI runs on every pull request and every push to `main`:
 | Admin | Filament `^5.4` — Livewire + Alpine, server-rendered |
 | Database | PostgreSQL primary; MySQL 8.0+ / MariaDB 10.6+; SQLite for small single-site installs |
 
+## Running it locally
+
+Measured on a clean clone, not written from memory — four commands, under a minute on a warm cache:
+
+```bash
+composer install                       # the monorepo: core, the skeleton's dev tooling, the test suite
+composer skeleton:install              # the skeleton's own dependencies, .env, app key and SQLite file
+php skeleton/artisan migrate --seed    # schema and a small demo organisation
+php skeleton/artisan serve             # http://127.0.0.1:8000/admin
+```
+
+Sign in as `alpha@kitsune.test` with the password `password`. The seeded organisation is **Golfdom**, and
+`reader@kitsune.test` (same password) is a copy-editor who holds `entry.article.view` and
+`entry.article.update` and nothing else — the account the permission tests drive, and the quickest way to see
+the authorization layer refuse something.
+
+⚠️ **`composer install -d skeleton` on its own does not work, and the reason is temporary.** `kitsune/core`
+is not on Packagist yet ([#8](https://github.com/adamgreenwell/kitsune/issues/8)), so the skeleton resolves
+it through a path repository that `composer skeleton:install` writes and then reverts — which keeps the
+committed `skeleton/composer.json` honest about what a real installation will look like. Run the script, not
+the bare install, and the error you would otherwise get is *"kitsune/core could not be found in any
+version"*.
+
+### Running the tests
+
+```bash
+vendor/bin/pest                        # the whole suite, SQLite in memory, no services required
+vendor/bin/pint --test                 # formatting, the way CI invokes it
+vendor/bin/phpstan analyse             # level 6, no baseline
+```
+
+The browser suite needs Node and a browser binary, and it starts its own server:
+
+```bash
+npm ci
+npx playwright install chromium
+npx playwright test
+```
+
+The four-engine matrix CI runs is reproducible locally with the containers in `compose.yaml`:
+
+```bash
+docker compose up -d
+DB_CONNECTION=pgsql DB_PORT=55432 DB_DATABASE=kitsune DB_USERNAME=kitsune DB_PASSWORD=kitsune vendor/bin/pest
+```
+
 ## Licensing
 
 Kitsune core is licensed under the **[Mozilla Public License 2.0](LICENSE)**.
