@@ -61,50 +61,17 @@ class RolePermission extends Model
     protected $guarded = [];
 
     /**
-     * Whether a write to this table is inside the one path allowed to make one.
+     * ⚠️ THE WINDOW THAT AUTHORISES A WRITE HERE LIVES ON `Role`, NOT ON THIS CLASS, and review is the reason.
+     * The first version put a public `throughRole()` opener here, which made the capability public: any
+     * caller could hold it open around a write of their own and the claim that grants change only through
+     * `Role::grant()`/`revoke()` was still unenforced. `Role` arms a private static inline and exposes a
+     * reader, so the door can be OBSERVED from here and opened only from there.
      *
-     * ⚠️ A WINDOW RATHER THAN A PER-INSTANCE FLAG, and `firstOrCreate()` is why. `Role::grant()` reaches
-     * this table through its relation, which builds its own instance — so a flag armed on the model in hand
-     * never reaches the object that gets saved, and `GuardedGrantBuilder` would be checking the wrong
-     * object. `ScopeWrites` uses the same shape for the tenancy guards, for the same reason.
-     *
-     * Private with a reader, so nothing outside this class can arm it; `Role` opens it through
-     * `throughRole()`, which closes it in a `finally`.
+     * @param  Builder  $query
      */
-    private static bool $writingThroughRole = false;
-
-    /** @param  Builder  $query */
     public function newEloquentBuilder($query): GuardedGrantBuilder
     {
         return new GuardedGrantBuilder($query, $this);
-    }
-
-    /**
-     * Run the one kind of write this table allows.
-     *
-     * ⚠️ CLOSED IN A `finally`, because a grant that throws — a validation refusal, a failing audit insert —
-     * must not leave the door open for whatever the caller does next. Nested calls are not a case: `grant()`
-     * and `revoke()` each open it once around their own transaction.
-     *
-     * @template TReturn
-     *
-     * @param  callable(): TReturn  $write
-     * @return TReturn
-     */
-    public static function throughRole(callable $write): mixed
-    {
-        self::$writingThroughRole = true;
-
-        try {
-            return $write();
-        } finally {
-            self::$writingThroughRole = false;
-        }
-    }
-
-    public static function writingThroughRole(): bool
-    {
-        return self::$writingThroughRole;
     }
 
     /** @return BelongsTo<Role, $this> */

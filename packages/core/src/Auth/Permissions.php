@@ -531,18 +531,32 @@ final class Permissions
      * schema of its own, so there is nothing to compare it against; two schemas each holding a `users` table
      * is a shape this does not distinguish.
      *
+     * ⚠️ AND THE CONNECTION, WHICH THE NAME ALONE DID NOT SETTLE — review found the next layer of the same
+     * mistake. A host may authenticate against an identity database on its own connection whose table is
+     * also called `users`, while `role_user` and the FK read here belong to the default one: the names then
+     * agree, membership is checked on the identity database, and `roleIdsFor()` reads the default — so an
+     * overlapping numeric id collects the DEFAULT user's roles. The assignments live wherever `role_user`
+     * lives, which is the default connection, so a model reading from anywhere else is not what they are
+     * about.
+     *
      * @param  class-string  $class
      */
-    private static function assignmentsAreAbout(string $class): bool
+    public static function assignmentsAreAbout(string $class): bool
     {
         if (! is_subclass_of($class, Model::class)) {
             return false;
         }
 
-        $referenced = self::assignmentTable();
-
         /** @var Model $prototype */
         $prototype = new $class;
+
+        // `getConnectionName()` is null for a model that takes whatever the default is, which is the
+        // connection `role_user` and the schema read below both use.
+        if (($prototype->getConnectionName() ?? DB::getDefaultConnection()) !== DB::getDefaultConnection()) {
+            return false;
+        }
+
+        $referenced = self::assignmentTable();
 
         return $referenced === null || $referenced === $prototype->getTable();
     }
