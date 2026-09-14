@@ -411,8 +411,17 @@ class Role extends Model
      */
     private function refuseIfLastOwner(string $operation): void
     {
-        // Turning the flag ON, or any other edit to a role that is not an owner, cannot remove an owner.
-        if (! $this->exists || ! $this->getOriginal('is_owner')) {
+        /*
+         * ⚠️ THE STORED FLAG, NOT `getOriginal()` — review found the stale-instance case, and it is the
+         * concurrency half of the family this branch has been sweeping. An ordinary role held in memory while
+         * ANOTHER transaction promotes that row to the org's only owner keeps `getOriginal('is_owner')` false,
+         * so this returned immediately and the stale instance deleted the row that had become the only thing
+         * standing between the org and nobody being able to administer it.
+         *
+         * The read is locked, so it also cannot answer from a snapshot taken before that promotion committed.
+         * Turning the flag ON, or any other edit to a role that is not an owner, still cannot remove an owner.
+         */
+        if (! $this->exists || ! $this->storedOwnerFlag()) {
             return;
         }
 
@@ -792,7 +801,13 @@ class Role extends Model
      */
     private function refuseLosingTheLastOwner(int $userId): void
     {
-        if (! $this->is_owner) {
+        /*
+         * ⚠️ THE STORED FLAG AGAIN, for the reason `refuseIfLastOwner()` records: an ordinary role in memory
+         * while another transaction promotes the stored row leaves `$this->is_owner` false, and this early
+         * return skipped both the locking owner reads and the last-holder check — after which `removeFrom()`
+         * performs a raw pivot delete with nothing behind it and takes the sole effective owner's role away.
+         */
+        if (! $this->storedOwnerFlag()) {
             return;
         }
 

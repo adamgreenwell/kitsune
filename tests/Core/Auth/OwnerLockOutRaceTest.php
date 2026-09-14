@@ -75,9 +75,8 @@ afterAll(function (): void {
 
         $sweep = DB::connection('sweep');
 
-        $org = $sweep->table('orgs')->where('slug', 'race-org')->value('id');
-
-        if ($org !== null) {
+        // Every org these tests commit, by prefix — one per test, so the unique slug index cannot collide.
+        foreach ($sweep->table('orgs')->where('slug', 'like', 'race-org%')->pluck('id') as $org) {
             $roles = $sweep->table('roles')->where('org_id', $org)->pluck('id');
 
             $sweep->table('role_user')->whereIn('role_id', $roles)->delete();
@@ -309,6 +308,66 @@ it('sees the owner set another transaction committed, not an older snapshot', fu
         ->toThrow(RuntimeException::class, 'last member of this organisation');
 
     expect(DB::table('role_user')->where('role_id', $first)->where('user_id', $keeper)->count())->toBe(1);
+})->skip(
+    fn (): bool => DB::connection()->getDriverName() === 'sqlite',
+    'SQLite gives a second connection to :memory: a different, empty database, so there is no other transaction to have committed',
+);
+
+it('sees a promotion another transaction committed before it deletes', function (): void {
+    /*
+     * ⚠️ THE STALE-INSTANCE HALF OF THE RACE, which review found after the locking reads went in. An ORDINARY
+     * role held in memory while another transaction promotes that row to the org's only owner keeps
+     * `getOriginal('is_owner')` false — so `refuseIfLastOwner()` returned immediately, skipped the effective
+     * owner count entirely, and the stale instance deleted the row that had just become the only thing
+     * standing between the org and nobody able to administer it.
+     *
+     * The guard reads the STORED flag now, under the same lock as the decision, so a promotion that committed
+     * while this change queued is part of the answer.
+     */
+    $rival = rivalConnectionForOwners();
+
+    /*
+     * ⚠️ ITS OWN SLUG, because these rows are COMMITTED by another connection and only swept in `afterAll` —
+     * so a second test reusing `race-org` collides on the unique index and fails for a reason that has
+     * nothing to do with the race. Passed alone, failed in the file, on all three locking engines.
+     */
+    $orgId = $rival->table('orgs')->insertGetId([
+        'slug' => 'race-org-promoted', 'name' => 'Race promoted', 'created_at' => now(), 'updated_at' => now(),
+    ]);
+
+    $holder = $rival->table('users')->insertGetId(['email' => 'race-promoted@kitsune.test']);
+    $rival->table('org_user')->insert(['org_id' => $orgId, 'user_id' => $holder]);
+
+    // Ordinary when this instance is loaded.
+    $role = $rival->table('roles')->insertGetId([
+        'org_id' => $orgId, 'handle' => 'ordinary', 'name' => 'Ordinary',
+        'is_owner' => false, 'created_at' => now(), 'updated_at' => now(),
+    ]);
+    $rival->table('role_user')->insert(['role_id' => $role, 'user_id' => $holder]);
+
+    $pinned = Role::query()->withoutGlobalScopes()->where('org_id', $orgId)->where('is_owner', true)->count();
+
+    expect($pinned)->toBe(0);
+
+    $org = Org::query()->whereKey($orgId)->first();
+    app(Context::class)->setOrg($org);
+
+    /** @var Role $loaded */
+    $loaded = Role::query()->withoutGlobalScopes()->whereKey($role)->first();
+
+    expect((bool) $loaded->is_owner)->toBeFalse()
+        ->and((bool) $loaded->getOriginal('is_owner'))->toBeFalse();
+
+    // The other transaction promotes it, and commits.
+    $rival->table('roles')->where('id', $role)->update(['is_owner' => true]);
+
+    // The stale instance still says ordinary — and the guard must not.
+    expect((bool) $loaded->is_owner)->toBeFalse();
+
+    expect(fn () => $loaded->delete())
+        ->toThrow(RuntimeException::class, 'only owner role in this organisation');
+
+    expect($rival->table('roles')->where('id', $role)->exists())->toBeTrue();
 })->skip(
     fn (): bool => DB::connection()->getDriverName() === 'sqlite',
     'SQLite gives a second connection to :memory: a different, empty database, so there is no other transaction to have committed',
