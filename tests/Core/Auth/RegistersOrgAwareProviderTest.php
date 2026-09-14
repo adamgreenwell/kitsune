@@ -29,6 +29,33 @@ beforeEach(function (): void {
     config(['auth.providers.users.model' => User::class]);
 });
 
+it('makes the provider behind the panel\'s guard org-aware, whatever the host named it', function (): void {
+    /*
+     * ⚠️ `users` IS A CONVENTION, NOT A CONTRACT. A host whose panel authenticates through a provider called
+     * `admins` kept Laravel's stock provider when this rewrote `users` unconditionally — and the user model's
+     * membership scope matches nobody before an org exists, so every sign-in failed as a wrong password does.
+     */
+    config([
+        'auth.providers.admins' => ['driver' => 'eloquent', 'model' => User::class],
+        'auth.guards.admin' => ['driver' => 'session', 'provider' => 'admins'],
+    ]);
+
+    RegistersOrgAwareProvider::on($this->app, 'admins');
+
+    expect(config('auth.providers.admins.driver'))->toBe(RegistersOrgAwareProvider::DRIVER)
+        ->and($this->app->make('auth')->guard('admin')->getProvider())->toBeInstanceOf(OrgAwareUserProvider::class)
+        // Only what was named: a host's other providers are its own.
+        ->and(config('auth.providers.users.driver'))->toBe('eloquent');
+});
+
+it('refuses a provider name the auth config does not define', function (): void {
+    // A misspelt name would otherwise create a provider with no model, failing later and somewhere else.
+    expect(fn () => RegistersOrgAwareProvider::on($this->app, 'admin'))
+        ->toThrow(InvalidArgumentException::class, 'no auth provider named [admin]');
+
+    expect(config('auth.providers.admin'))->toBeNull();
+});
+
 it('registers the driver for an auth manager that does not exist yet', function (): void {
     RegistersOrgAwareProvider::on($this->app);
 

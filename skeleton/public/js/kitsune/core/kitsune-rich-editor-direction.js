@@ -20,6 +20,12 @@
  * module's `default`, calling it if it is a function. A hand-written ES module is therefore a valid
  * extension: no bundler, no dependency, no lockfile entry.
  *
+ * ⚠️ AND THAT OBJECT IS WHY CORE REQUIRES `filament/filament ^5.6`. `filament/forms` began exposing
+ * `window.FilamentRichEditor.tiptap` in 5.6.0. On 5.4.0–5.5.2 the destructuring below throws, Filament's
+ * loader logs "Failed to load rich editor custom extension" and carries on, and every rich text field
+ * silently loses per-block `dir` while editing — issue #67 reopened, with no error on the server. A
+ * dependency floor below the release that ships the contract this file relies on installs a broken editor.
+ *
  * ⚠️ THE NODE LIST IS NOT WRITTEN TWICE. It comes from `BlockDirectionPlugin::EDITOR_NODES`, which maps
  * the tags `Entry` stamps to the node names this editor uses, and `RichEditorDirectionAssetTest` fails
  * if this file and that map disagree. A JS list that drifts from the PHP one is the same defect one

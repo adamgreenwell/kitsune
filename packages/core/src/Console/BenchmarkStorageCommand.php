@@ -11,7 +11,9 @@ declare(strict_types=1);
 namespace Kitsune\Core\Console;
 
 use Illuminate\Console\Command;
+use Illuminate\Console\ConfirmableTrait;
 use Illuminate\Support\Facades\DB;
+use Kitsune\Core\Console\Concerns\LeavesNothingBehind;
 use Kitsune\Core\Fields\LogicalType;
 use Kitsune\Core\Fields\Projection;
 use Kitsune\Core\Models\Entry;
@@ -38,16 +40,28 @@ use Kitsune\Core\Tenancy\Context;
  */
 final class BenchmarkStorageCommand extends Command
 {
+    use ConfirmableTrait;
+    use LeavesNothingBehind;
+
+    /** The start of every slug this command inserts; each run adds its own token after it — see LeavesNothingBehind. */
+    private const SLUG_PREFIX = 'bench-';
+
     protected $signature = 'kitsune:benchmark-storage
         {--rows=10000 : How many entries to generate}
         {--locales=1 : Locale count, to model ADR-017 row multiplication}
         {--indexed=0 : Generated columns to create before writing}
-        {--keep : Leave the generated rows in place}';
+        {--keep : Leave the generated rows and the benchmark org in place}
+        {--force : Run without asking when the application is in production}';
 
     protected $description = 'Measure entry storage and query cost at scale (spike #13)';
 
     public function handle(): int
     {
+        // It adds columns to `entries` and writes thousands of rows, on whatever installation it is run on.
+        if (! $this->confirmToProceed()) {
+            return self::FAILURE;
+        }
+
         $rows = max(1, (int) $this->option('rows'));
         $locales = max(1, (int) $this->option('locales'));
         $indexed = max(0, (int) $this->option('indexed'));
@@ -57,6 +71,10 @@ final class BenchmarkStorageCommand extends Command
         $this->line("engine: <info>{$driver->name()}</info>  rows: <info>{$total}</info> ({$rows} × {$locales} locales)  indexed columns: <info>{$indexed}</info>");
 
         [$org, $site, $type] = $this->fixture();
+
+        // What this run adds to the schema, recorded as each statement succeeds — the only schema cleanup removes.
+        $addedColumns = [];
+        $addedIndexes = [];
 
         try {
 
@@ -70,7 +88,10 @@ final class BenchmarkStorageCommand extends Command
                     DB::statement($driver->addGeneratedColumnSql(
                         'entries', $column, 'values', "f{$i}", new Projection(LogicalType::Decimal),
                     ));
+                    $addedColumns[] = $column;
+
                     DB::statement($driver->createIndexSql('entries', "entries_bench_{$i}", 'site_id', $column));
+                    $addedIndexes[] = "entries_bench_{$i}";
                 }
             }
 
@@ -84,7 +105,7 @@ final class BenchmarkStorageCommand extends Command
                 // the slugs carry a locale suffix, so the old probe looked for a
                 // row that never existed and timed an index MISS.
                 ['slug lookup (unique index)', $this->measure(fn () => Entry::where('entry_type_id', $type->getKey())
-                    ->where('slug', $locales === 1 ? 'bench-'.intdiv($rows, 2) : 'bench-'.intdiv($rows, 2).'-0')
+                    ->where('slug', $this->runPrefix(self::SLUG_PREFIX).intdiv($rows, 2).($locales === 1 ? '' : '-0'))
                     ->first())],
                 ['title LIKE (no index)', $this->measure(fn () => Entry::where('title', 'like', '%500%')->limit(25)->get())],
             ];
@@ -109,7 +130,7 @@ final class BenchmarkStorageCommand extends Command
             return self::SUCCESS;
         } finally {
             if (! $this->option('keep')) {
-                $this->cleanUp($org, $site, $indexed, $driver);
+                $this->cleanUp($org, $site, $type, $addedIndexes, $addedColumns, $driver);
             }
         }
     }
@@ -125,46 +146,84 @@ final class BenchmarkStorageCommand extends Command
      * Cleanup also has to drop the generated columns. Leaving them attached
      * means a later --indexed=0 run still computes and maintains them, so
      * results depend on the order the benchmarks were run in.
+     *
+     * ⚠️ BUT ONLY THE ONES THIS RUN ADDED. Review found every `bench_idx_*` it
+     * counted dropped whether or not it had created it, so a run without
+     * --keep removed the columns and indexes an earlier run had kept. A kept
+     * run's schema is that run's, as its rows are.
+     *
+     * ⚠️ AND THE FIXTURE, which it used to leave: every run removed its entries
+     * and left a `benchmark` org, site and entry type in the host's database.
+     * An org this run created is force-deleted — `Org` soft-deletes, and a
+     * trashed org is still residue — and the database removes what hangs off
+     * it, unless another run has joined it. An org that was already there
+     * keeps everything this run did not add, its audit log included — see
+     * LeavesNothingBehind.
+     *
+     * @param  list<string>  $addedIndexes
+     * @param  list<string>  $addedColumns
      */
-    private function cleanUp(Org $org, Site $site, int $indexed, SchemaDriver $driver): void
+    private function cleanUp(Org $org, Site $site, EntryType $type, array $addedIndexes, array $addedColumns, SchemaDriver $driver): void
     {
-        Entry::query()
-            ->where('org_id', $org->getKey())
-            ->where('site_id', $site->getKey())
-            ->where('slug', 'like', 'bench-%')
-            ->forceDelete();
+        $this->removeInserted($site, self::SLUG_PREFIX);
 
-        for ($i = 0; $i < $indexed; $i++) {
-            $column = "bench_idx_{$i}";
+        // Indexes first: a generated column cannot be dropped while an
+        // index references it, and SQLite refuses outright.
+        foreach ($addedIndexes as $index) {
+            DB::statement($driver->dropIndexSql('entries', $index));
+        }
 
-            if (in_array($column, DB::getSchemaBuilder()->getColumnListing('entries'), true)) {
-                // Index first: a generated column cannot be dropped while an
-                // index references it, and SQLite refuses outright.
-                DB::statement($driver->dropIndexSql('entries', "entries_bench_{$i}"));
-                DB::statement($driver->dropGeneratedColumnSql('entries', $column));
-            }
+        foreach ($addedColumns as $column) {
+            DB::statement($driver->dropGeneratedColumnSql('entries', $column));
+        }
+
+        if ($org->wasRecentlyCreated) {
+            // Its site and type go with it — or, if another run has joined it, all three stay for that run.
+            $this->removeCreatedOrgUnlessJoined($org);
+
+            return;
+        }
+
+        if ($type->wasRecentlyCreated) {
+            $type->delete();
+        }
+
+        if ($site->wasRecentlyCreated) {
+            $site->delete();
         }
     }
 
-    /** @return array{0: Org, 1: Site, 2: EntryType} */
+    /**
+     * The org, site and entry type to measure in, found or created.
+     *
+     * ⚠️ IN ONE TRANSACTION, because cleanup cannot begin until this returns. A site slug is unique across the
+     * installation, so another org already owning `benchmark` failed the site insert after the org was created
+     * — and the org stayed.
+     *
+     * @return array{0: Org, 1: Site, 2: EntryType}
+     */
     private function fixture(): array
     {
-        $org = Org::firstOrCreate(['slug' => 'benchmark'], ['name' => 'Benchmark']);
-        app(Context::class)->setOrg($org);
+        return DB::transaction(static function (): array {
+            $org = Org::firstOrCreate(['slug' => 'benchmark'], ['name' => 'Benchmark']);
+            app(Context::class)->setOrg($org);
 
-        $site = Site::firstOrCreate(['slug' => 'benchmark'], ['org_id' => $org->id, 'handle' => 'benchmark', 'name' => 'Benchmark']);
-        app(Context::class)->setSite($site);
+            $site = Site::firstOrCreate(['slug' => 'benchmark'], ['org_id' => $org->id, 'handle' => 'benchmark', 'name' => 'Benchmark']);
+            app(Context::class)->setSite($site);
 
-        $type = EntryType::firstOrCreate(
-            ['org_id' => $org->id, 'handle' => 'article'],
-            ['name' => 'Article', 'plural_name' => 'Articles'],
-        );
+            $type = EntryType::firstOrCreate(
+                ['org_id' => $org->id, 'handle' => 'article'],
+                ['name' => 'Article', 'plural_name' => 'Articles'],
+            );
 
-        return [$org, $site, $type];
+            return [$org, $site, $type];
+        });
     }
 
     private function seed(Org $org, Site $site, EntryType $type, int $rows, int $locales): void
     {
+        $prefix = $this->runPrefix(self::SLUG_PREFIX);
+
         $now = now();
         $chunk = [];
 
@@ -179,7 +238,7 @@ final class BenchmarkStorageCommand extends Command
                     'entry_type_id' => $type->id,
                     'type_handle' => 'article',
                     'status' => $i % 3 === 0 ? 'draft' : 'published',
-                    'slug' => $locales === 1 ? "bench-{$i}" : "bench-{$i}-{$l}",
+                    'slug' => $locales === 1 ? $prefix.$i : $prefix."{$i}-{$l}",
                     'title' => "Benchmark entry {$i}",
                     'values' => json_encode(['f0' => $i % 500, 'summary' => str_repeat('x', 120)]),
                     'published_at' => $now,

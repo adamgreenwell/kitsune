@@ -79,6 +79,14 @@ it('refuses the request itself when no site matches', function () use ($routeSou
      * reports absence by leaving Context empty — it must, because most public routes are not
      * site-scoped — and a route that REQUIRES a site is the thing entitled to refuse. Without this
      * the fallback would render the placeholder for every unmatched URL in the application.
+     *
+     * ⚠️ THE REFUSAL LIVES IN `WelcomeController::site()`, which the fallback is routed to. Both public
+     * routes render one page from one place now, because the phase string each closure typed went stale
+     * in both. So the assertion follows the refusal there — and pins that the fallback is routed to the
+     * method that refuses, not to `home()`, which serves `/` and must not.
      */
-    expect($routeSource())->toContain('abort_if(app(Context::class)->site() === null, 404)');
+    $controller = (string) file_get_contents(__DIR__.'/../../../skeleton/app/Http/Controllers/WelcomeController.php');
+
+    expect($routeSource())->toContain("Route::fallback([WelcomeController::class, 'site'])")
+        ->and($controller)->toContain('abort_if($context->site() === null, 404)');
 });

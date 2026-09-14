@@ -1,14 +1,14 @@
 name: Split packages
 
-# Mirrors packages/* out to their own read-only repositories on every tag,
-# the way laravel/framework splits illuminate/*. Contributions go through
-# this monorepo; the split repositories are mirrors and take no pull requests.
+# Publishes each package in packages/* to its own read-only mirror when a release is tagged, the way
+# laravel/framework publishes illuminate/*: a `git subtree split`, so the mirror carries the package's real
+# history. Contributions go through this monorepo; the mirrors take no pull requests.
 #
 # SETUP REQUIRED before this can run:
-#   1. Create the `kitsune-cms` GitHub organisation, then an EMPTY PUBLIC repo
-#      `kitsune-cms/core` inside it. Empty means no README, licence or
-#      .gitignore: the split action force-pushes a synthesised history and
-#      would overwrite them.
+#   1. Create the `kitsune-cms` GitHub organisation, then an EMPTY public repository `kitsune-cms/core`
+#      inside it — no README, licence or .gitignore. The split is pushed without force, so a mirror with a
+#      commit of its own is refused rather than silently replaced; creating it empty is what lets the first
+#      release through.
 #   2. On THIS repository, add a secret ACCESS_TOKEN. Prefer a fine-grained PAT
 #      scoped to `kitsune-cms/core` alone with Contents: read and write — a
 #      classic `repo`-scope token grants write access to every repository the
@@ -17,7 +17,19 @@ name: Split packages
 #   3. Register `kitsune/core` on Packagist pointed at the MIRROR, not at this
 #      monorepo, and add Packagist's webhook so it updates on push.
 #
-# Until then this workflow is inert: it only fires on tags, and none exist.
+# Until then this workflow is inert: it fires only on a `v*` tag, and none exist.
+#
+# ⚠️ IT WAS A MARKETPLACE ACTION, AND RUNNING IT FOUND SEVEN DEFECTS (issue #8). Following step 1 as it was then
+# written made the first release fail and publish nothing; a manual dispatch from a branch pushed unreleased
+# code to the mirror's main; every tag rewrote main, so a release published late dragged it backwards; the tag
+# name reached a shell unescaped, in the job holding the write token; that job ran third-party code by a movable
+# tag; and this comment described a force-pushed, history-preserving split the action did not perform. The
+# publishing is now `.github/scripts/split-package.sh`, which does what this comment says, and is exercised
+# against a real bare repository by `tests/Core/Release/SplitPackageScriptTest.php` on every pull request.
+#
+# ⚠️ AND THERE IS NO CONCURRENCY GROUP, DELIBERATELY. A group queues only one pending run and cancels any older
+# pending one, so three tags pushed together would silently lose the middle release. Runs may overlap instead:
+# tags are distinct refs, and the script moves main without force, re-reading the mirror when it loses a race.
 #
 # ⚠️ The mirror lives in an ORGANISATION rather than a personal namespace, and
 # the name is deliberate. `adamgreenwell/core` said nothing about the project and
@@ -33,7 +45,6 @@ on:
   push:
     tags:
       - 'v*'
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -50,20 +61,25 @@ jobs:
             repository: core
 
     steps:
-      - uses: actions/checkout@v5
+      # ⚠️ PINNED BY COMMIT, because this job holds a token that can write to the mirror, and a tag can be moved.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          # The whole history: the split replays it, and the script asks whether the tag is on main.
+          fetch-depth: 0
+          # The mirror is pushed with its own token; this repository's needs nowhere to be kept.
+          persist-credentials: false
 
       # Tests deliberately live at the monorepo root, not inside the package
       # (Pest resolves its test directory from the project root with no config
       # hook), so the mirror carries source without a suite. That is the same
       # arrangement illuminate/* have, and why the mirror is read-only.
+      #
+      # ⚠️ Every value reaches the script through `env`, never interpolated into `run`: a tag's name is data.
       - name: Split packages/${{ matrix.package }}
-        uses: danharrin/monorepo-split-github-action@v2.4.5
         env:
-          GITHUB_TOKEN: ${{ secrets.ACCESS_TOKEN }}
-        with:
-          tag: ${{ github.ref_name }}
-          package_directory: packages/${{ matrix.package }}
-          repository_organization: kitsune-cms
-          repository_name: ${{ matrix.repository }}
-          user_name: 'github-actions[bot]'
-          user_email: '41898282+github-actions[bot]@users.noreply.github.com'
+          TAG: ${{ github.ref_name }}
+          SOURCE_SHA: ${{ github.sha }}
+          PREFIX: packages/${{ matrix.package }}
+          MAIN_REF: origin/main
+          REMOTE: https://x-access-token:${{ secrets.ACCESS_TOKEN }}@github.com/kitsune-cms/${{ matrix.repository }}.git
+        run: bash .github/scripts/split-package.sh

@@ -27,7 +27,12 @@ test.describe('admin', () => {
     test('lists entries of a type', async ({ page }) => {
         await page.goto(`/admin/${SITE}/c/article`);
 
-        await expect(page).toHaveTitle(/Entries/);
+        // ⚠️ Headed by the type, as the sidebar is. One Resource serves every type, and until the labels read
+        // the bound type this page said "Entries" under a sidebar item reading "Articles".
+        await expect(page).toHaveTitle(/Articles/);
+        await expect(page.getByRole('heading', { name: 'Articles', exact: true })).toBeVisible();
+        await expect(page.locator('.fi-breadcrumbs')).toContainText('Articles');
+        await expect(page.locator('.fi-breadcrumbs')).not.toContainText('Entries');
         await expect(page.getByText('Course maintenance in week 1')).toBeVisible();
     });
 

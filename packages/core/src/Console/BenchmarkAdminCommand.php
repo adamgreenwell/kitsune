@@ -13,6 +13,7 @@ namespace Kitsune\Core\Console;
 use Filament\Facades\Filament;
 use Filament\Models\Contracts\HasTenants;
 use Illuminate\Console\Command;
+use Illuminate\Console\ConfirmableTrait;
 use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Contracts\Http\Kernel as HttpKernel;
 use Illuminate\Database\Eloquent\Model;
@@ -21,6 +22,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Auth\Permissions;
+use Kitsune\Core\Console\Concerns\LeavesNothingBehind;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Site;
@@ -50,6 +52,9 @@ use Kitsune\Core\Tenancy\Context;
  */
 final class BenchmarkAdminCommand extends Command
 {
+    use ConfirmableTrait;
+    use LeavesNothingBehind;
+
     /**
      * The Phase 4 bar.
      *
@@ -59,27 +64,24 @@ final class BenchmarkAdminCommand extends Command
      */
     private const BUDGET_MS = 200.0;
 
-    /** Rows this command created, and the only rows it will remove. */
+    /** The start of every slug this command inserts; each run adds its own token after it — see LeavesNothingBehind. */
     private const SLUG_PREFIX = 'bench-admin-';
-
-    /**
-     * The highest entry id that existed before this run inserted anything, or null if it inserted nothing.
-     *
-     * ⚠️ IDENTITY RATHER THAN PATTERN, because a pattern is a guess about somebody else's data. Review found
-     * that cleanup matching `bench-admin-%` would force-delete a customer's own entry if they happened to
-     * name one that way — on a run that created nothing.
-     */
-    private ?int $inserted = null;
 
     protected $signature = 'kitsune:benchmark-admin
         {--rows=100000 : Entries to have in scope for the measured site}
         {--as= : Email of the user to sign in as; defaults to the first on the installation}
-        {--keep : Leave the generated rows in place}';
+        {--keep : Leave the generated rows in place}
+        {--force : Run without asking when the application is in production}';
 
     protected $description = 'Measure admin page cost at scale against Phase 4\'s 200ms bar';
 
     public function handle(): int
     {
+        // It writes up to a hundred thousand rows into a site a real user can see.
+        if (! $this->confirmToProceed()) {
+            return self::FAILURE;
+        }
+
         $rows = max(1, (int) $this->option('rows'));
 
         $user = $this->user();
@@ -478,14 +480,7 @@ final class BenchmarkAdminCommand extends Command
             return $existing;
         }
 
-        /*
-         * ⚠️ THE HIGH-WATER MARK IS TAKEN BEFORE THE FIRST INSERT, so cleanup can delete by identity rather
-         * than by pattern. Review found the alternative: a legitimate entry whose slug happens to start with
-         * this prefix would have been force-deleted by a run that inserted nothing at all. Slugs do not
-         * reserve a namespace, so the prefix is a hint and the id range is the proof — and `$this->inserted`
-         * staying null is what makes a no-op run delete nothing.
-         */
-        $this->inserted = (int) Entry::withoutGlobalScopes()->max('id');
+        $prefix = $this->runPrefix(self::SLUG_PREFIX);
 
         $this->line('  seeding <info>'.($rows - $existing).'</info> entries…');
 
@@ -508,7 +503,7 @@ final class BenchmarkAdminCommand extends Command
                 'entry_type_id' => $type->getKey(),
                 'type_handle' => $type->handle,
                 'status' => $i % 3 === 0 ? 'draft' : 'published',
-                'slug' => self::SLUG_PREFIX.$i,
+                'slug' => $prefix.$i,
                 'title' => "Benchmark entry {$i}",
                 'values' => json_encode(['summary' => str_repeat('x', 120)]),
                 'published_at' => $stamp,
@@ -544,18 +539,11 @@ final class BenchmarkAdminCommand extends Command
      * ⚠️ SCOPED TO THE SITE AND TO THIS COMMAND'S OWN PREFIX, and that is not defensive style. The storage
      * benchmark's first version force-deleted every row whose slug matched a pattern across every customer
      * on the installation — on a box with real content that is data loss rather than cleanup. This one
-     * borrows a real site, so the same mistake here would delete a customer's content.
+     * borrows a real site, so the same mistake here would delete a customer's content — and removing
+     * through `Entry` left that customer's audit log a row per benchmark entry. See LeavesNothingBehind.
      */
     private function cleanUp(Site $site): void
     {
-        if ($this->inserted === null) {
-            return;
-        }
-
-        Entry::withoutGlobalScopes()
-            ->where('site_id', $site->getKey())
-            ->where('id', '>', $this->inserted)
-            ->where('slug', 'like', self::SLUG_PREFIX.'%')
-            ->forceDelete();
+        $this->removeInserted($site, self::SLUG_PREFIX);
     }
 }

@@ -85,6 +85,36 @@ class EntryResource extends Resource
      */
     protected static bool $shouldRegisterNavigation = false;
 
+    /**
+     * The type's own name, so the page says what the sidebar said.
+     *
+     * ⚠️ ONE RESOURCE FOR EVERY TYPE MEANT ONE LABEL FOR EVERY TYPE. Filament derives the list title, the
+     * breadcrumb and "Create …" from the model, so a list scoped to articles was headed "Entries" beneath a
+     * sidebar item reading "Articles", and the breadcrumb read "Entries › List". The navigation already
+     * names each type by `plural_name` (`KitsunePanel::navigation()`); these read the same two columns off the
+     * type `IdentifyEntryType` bound, which is the one this request is about.
+     *
+     * ⚠️ AS THE OPERATOR WROTE THEM, not lowercased to Filament's convention. Filament's title-case variants only
+     * capitalise, so "FAQ" stays "FAQ" — and a sentence reading "No Articles" is the smaller cost than a
+     * heading reading "Faq".
+     *
+     * Outside `/c/{type}` nothing is bound, and Filament's own label stands — the same guard as
+     * `currentFields()`, for the same reason: reaching for the type unguarded is what 500s the dashboard.
+     */
+    public static function getModelLabel(): string
+    {
+        return app()->bound(EntryType::class) && filled($name = app(EntryType::class)->name)
+            ? (string) $name
+            : parent::getModelLabel();
+    }
+
+    public static function getPluralModelLabel(): string
+    {
+        return app()->bound(EntryType::class) && filled($name = app(EntryType::class)->plural_name)
+            ? (string) $name
+            : parent::getPluralModelLabel();
+    }
+
     public static function form(Schema $schema): Schema
     {
         return $schema->components([
