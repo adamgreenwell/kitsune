@@ -3176,6 +3176,21 @@ class Entry extends Model implements RequiresModelSave
             // are still the ones computed before.
             $this->refuseForeignRevision($revision);
 
+            // ⚠️ And the row must still be WHERE THE CALLER LOADED IT, because the
+            // refresh below adopts wherever it is now.
+            //
+            // The lock above is taken without scopes and `refresh()` reads without
+            // them, so an entry moved between the caller's authorization and this
+            // lock — into another site, or out of one into org-shared — came back
+            // carrying its new `site_id`, and nothing after it compared. The
+            // restore then wrote content into a site the caller was never
+            // authorized for, and the audit row named the site they were in. The
+            // scope guards cannot catch it: they judge a scope key when it is
+            // written, and this save writes none. Compared with what was loaded
+            // rather than re-read through the scopes, because a console restore
+            // has no site context and every scoped read would refuse it.
+            $this->refuseMovedSinceLoaded();
+
             // ⚠️ And the refresh is needed for a second, separate reason: a model
             // from `create()` holds only the attributes the caller set, so `slug`
             // and `published_at` are in neither `$attributes` nor `$original`.
@@ -3274,6 +3289,38 @@ class Entry extends Model implements RequiresModelSave
         });
 
         return $this;
+    }
+
+    /**
+     * Refuse a restore onto a row that is no longer in the org and site this instance was loaded from.
+     *
+     * Called under the row lock, before `refresh()` would adopt the row's current placement — see
+     * `restoreRevision()`. Whoever authorized the restore did so for where the entry was; wherever it is now,
+     * nobody has been asked.
+     */
+    private function refuseMovedSinceLoaded(): void
+    {
+        $stored = self::query()->withoutGlobalScopes()->whereKey($this->getKey())->first(['org_id', 'site_id']);
+
+        $key = static fn (mixed $value): ?int => $value === null ? null : (int) $value;
+
+        $loaded = [$key($this->getOriginal('org_id')), $key($this->getOriginal('site_id'))];
+        $current = [$key($stored?->getAttribute('org_id')), $key($stored?->getAttribute('site_id'))];
+
+        if ($loaded === $current) {
+            return;
+        }
+
+        throw new RuntimeException(sprintf(
+            'Refusing to restore entry [%s]: it was loaded from site [%s] of org [%s] and is now in site [%s] of '
+            .'org [%s]. The restore was authorized for where it was, and writing it where it is would put content '
+            .'in a place nobody asked about (ADR-021). Load the entry again where it is now.',
+            (string) $this->getKey(),
+            $loaded[1] === null ? 'shared' : (string) $loaded[1],
+            (string) $loaded[0],
+            $current[1] === null ? 'shared' : (string) $current[1],
+            (string) $current[0],
+        ));
     }
 
     /**
