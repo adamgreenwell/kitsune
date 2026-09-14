@@ -252,7 +252,18 @@ class EntryPolicy
          * worker — must not be answered from another scope's memo, so both ids are captured AND used by the
          * body below rather than passed and ignored.
          */
-        return self::scopeAllows($stored, $site, $org, $loadedType);
+        /*
+         * ⚠️ AND THE SCOPE IT WAS LOADED WITH, for the same reason and found the same way — review sent the
+         * MOVE after the retype. With the type alone in the key, an entry authorised in site A, moved to
+         * site B without changing its type, and reloaded gives the same key: A's memoised handle comes back
+         * without a read, and the reloaded instance's originals match B, so the write guard has nothing to
+         * refuse either. The rule is one rule — an instance whose loaded row no longer matches the stored
+         * one is stale — so all three columns `refuseIfTheRowMovedUnderneath()` compares are asked here.
+         */
+        $loadedSite = $entry->getRawOriginal('site_id');
+        $loadedOrg = $entry->getRawOriginal('org_id');
+
+        return self::scopeAllows($stored, $site, $org, $loadedType, $loadedSite, $loadedOrg);
     }
 
     /**
@@ -282,13 +293,27 @@ class EntryPolicy
      * A static frame has no object to key on, so the key is the call site plus the three arguments — which is
      * also what makes the scope part of it, per invariant 13.
      */
-    private static function scopeAllows(mixed $key, ?int $site, ?int $org, mixed $loadedType): ?string
-    {
-        return once(static fn (): ?string => self::storedRowIsInScope($key, $site, $org, $loadedType));
+    private static function scopeAllows(
+        mixed $key,
+        ?int $site,
+        ?int $org,
+        mixed $loadedType,
+        mixed $loadedSite,
+        mixed $loadedOrg,
+    ): ?string {
+        return once(static fn (): ?string => self::storedRowIsInScope(
+            $key, $site, $org, $loadedType, $loadedSite, $loadedOrg,
+        ));
     }
 
-    private static function storedRowIsInScope(mixed $key, ?int $site, ?int $org, mixed $loadedType): ?string
-    {
+    private static function storedRowIsInScope(
+        mixed $key,
+        ?int $site,
+        ?int $org,
+        mixed $loadedType,
+        mixed $loadedSite,
+        mixed $loadedOrg,
+    ): ?string {
         $row = Entry::withTrashed()
             ->withoutGlobalScopes()
             ->whereKey($key)
@@ -304,8 +329,16 @@ class EntryPolicy
          * `Entry::refuseIfTheRowMovedUnderneath()` enforces at the write, asked one layer earlier — and it is
          * what makes the loaded type load-bearing in the memo key rather than decoration.
          */
-        if ((string) $row->entry_type_id !== (string) $loadedType) {
-            return null;
+        $loaded = [
+            'entry_type_id' => $loadedType,
+            'site_id' => $loadedSite,
+            'org_id' => $loadedOrg,
+        ];
+
+        foreach ($loaded as $column => $value) {
+            if ((string) $row->{$column} !== (string) $value) {
+                return null;
+            }
         }
 
         $rowSite = $row->site_id === null ? null : (int) $row->site_id;

@@ -360,13 +360,8 @@ class AuditedBuilder extends ScopedBuilder
          * A genuine bulk update arrives with a prototype that does not exist, so it is excluded by `exists`
          * and stays narrowed by the scope, which is what a bulk write has instead of a row to compare.
          */
-        $model = $this->getModel();
-        $checkRow = $model->exists && $model->getKey() !== null;
-
-        return $this->auditing($this->actionFor($values), function () use ($values, $model, $checkRow) {
-            if ($checkRow) {
-                $model->refuseIfTheRowMovedUnderneath('update');
-            }
+        return $this->auditing($this->actionFor($values), function () use ($values) {
+            $this->refuseIfTheRowMoved('update');
 
             return parent::update($values);
         }, $values);
@@ -379,18 +374,42 @@ class AuditedBuilder extends ScopedBuilder
 
     public function forceDelete()
     {
-        $model = $this->getModel();
-        $checkRow = $model->exists && $model->getKey() !== null;
-
-        return $this->auditing('force_deleted', function () use ($model, $checkRow) {
+        return $this->auditing('force_deleted', function () {
             // ⚠️ The destructive half, and the reason that guard exists at all: an update is a field somebody
             // may not have been allowed to touch, and this is a row that is gone.
-            if ($checkRow) {
-                $model->refuseIfTheRowMovedUnderneath('force-delete');
-            }
+            $this->refuseIfTheRowMoved('force-delete');
 
             return parent::forceDelete();
         });
+    }
+
+    /**
+     * Refuse an INSTANCE write whose row has moved or been retyped since it was loaded.
+     *
+     * ⚠️ ONE METHOD BECAUSE IT WAS TWO AND SHOULD HAVE BEEN SIX. The check went into `update()` and
+     * `forceDelete()`, and review found the four arithmetic methods going straight past it: Eloquent sends
+     * `$entry->increment()` to `setKeysForSaveQuery($this->newQueryWithoutScopes())->increment()`, which is
+     * this builder without the scope and without that guard — an instance write by the original key, which is
+     * exactly what the guard exists for.
+     *
+     * ⚠️ AND IT ASKS FOR THE KEY THE WRITE WILL USE, not the attribute. Review found `getKey()` deciding
+     * whether to check: setting a loaded entry's `id` to null in memory made the condition false while
+     * Eloquent still wrote by `$this->original['id']`, so the guard was skipped on precisely the instance
+     * that had been tampered with. `getKeyForAuthorization()` is the original key — the same one
+     * `EntryPolicy` asks about, and the same lesson `Role` learned about an edited primary key.
+     *
+     * A genuine BULK write arrives on a prototype that does not exist, so it is excluded here and stays
+     * narrowed by the scope, which is what it has instead of a row to compare.
+     */
+    private function refuseIfTheRowMoved(string $operation): void
+    {
+        $model = $this->getModel();
+
+        if (! $model->exists || $model->getKeyForAuthorization() === null) {
+            return;
+        }
+
+        $model->refuseIfTheRowMovedUnderneath($operation);
     }
 
     /**
@@ -417,7 +436,11 @@ class AuditedBuilder extends ScopedBuilder
 
         return $this->auditing(
             'updated',
-            fn () => parent::increment($column, $amount, $extra),
+            function () use ($column, $amount, $extra) {
+                $this->refuseIfTheRowMoved('increment');
+
+                return parent::increment($column, $amount, $extra);
+            },
             [(string) $column => $amount, ...$extra],
         );
     }
@@ -433,7 +456,11 @@ class AuditedBuilder extends ScopedBuilder
 
         return $this->auditing(
             'updated',
-            fn () => parent::decrement($column, $amount, $extra),
+            function () use ($column, $amount, $extra) {
+                $this->refuseIfTheRowMoved('decrement');
+
+                return parent::decrement($column, $amount, $extra);
+            },
             [(string) $column => $amount, ...$extra],
         );
     }
@@ -454,7 +481,11 @@ class AuditedBuilder extends ScopedBuilder
 
         return $this->auditing(
             'updated',
-            fn () => parent::incrementEach($columns, $extra),
+            function () use ($columns, $extra) {
+                $this->refuseIfTheRowMoved('increment');
+
+                return parent::incrementEach($columns, $extra);
+            },
             [...$columns, ...$extra],
         );
     }
@@ -470,7 +501,11 @@ class AuditedBuilder extends ScopedBuilder
 
         return $this->auditing(
             'updated',
-            fn () => parent::decrementEach($columns, $extra),
+            function () use ($columns, $extra) {
+                $this->refuseIfTheRowMoved('decrement');
+
+                return parent::decrementEach($columns, $extra);
+            },
             [...$columns, ...$extra],
         );
     }

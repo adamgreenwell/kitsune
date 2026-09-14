@@ -1826,6 +1826,19 @@ So a link the record **already holds** keeps its value and loses its title: it r
   importer and a console command do not have, so the window is closed by refusing the write rather than by
   re-deciding the permission.
 
+
+  ⚠️ **And it went into two doors when there are six.** Review found the arithmetic family walking past it:
+  Eloquent sends `$entry->increment()` to `setKeysForSaveQuery($this->newQueryWithoutScopes())->increment()`,
+  which is an instance write by the original key, with the scope removed, that never passes through
+  `update()`. The guard is one method called from all six now — the same shape as the `is_owner` arithmetic
+  finding one model over, which is twice this family has been found through the same door.
+
+  ⚠️ **And the condition asked for the wrong key.** `getKey()` decided whether to check while the write uses
+  `getKeyForSaveQuery()`, so nulling the `id` attribute in memory turned the guard off and left the delete
+  pointing at the row it was loaded from — the tampered instance was the one instance that skipped the
+  check. The third time this project has met the original-key rule: `Role`'s edited primary key, the policy's
+  `getKeyForAuthorization()`, and now the builder's own condition.
+
   ⚠️ The discriminator is `exists` and a key rather than `isPerformingModelSave()`, and a soft delete is why:
   `runSoftDelete()` builds its own query and calls `update()` directly, outside `performUpdate()`, so the save
   identity skipped the one case that destroys something. Measured — the soft delete went through while the
@@ -1835,7 +1848,21 @@ So a link the record **already holds** keeps its value and loses its title: it r
 
 - **`assignTo()` asks whether the assignment already exists INSIDE the lock.** It asked before the transaction, so two requests assigning the same person to the same role both passed, the first inserted, and the second collided with the `(role_id, user_id)` primary key — where the documented behaviour is to be idempotent and silent. "Already holds it" has to be asked where the answer cannot change underneath.
 
+  ⚠️ **Inside the lock is not the same as current**, which review found next. Under MySQL's default
+  REPEATABLE READ a plain `select` answers from the transaction's snapshot, and inside a caller-owned outer
+  transaction that snapshot predates this method — so the role lock makes the second request wait for the
+  first to commit, and its non-locking read still cannot see what committed. The check is `lockForUpdate()`
+  now, which reads the latest committed version. `insertOrIgnore()` would also be atomic and was rejected on
+  driver divergence: MySQL's `INSERT IGNORE` downgrades a foreign-key violation to a warning, so an id naming
+  nobody would be reported as "already holds it" while Postgres refused it.
+
 - **The policy's memo carries the type the instance was loaded with**, and the body uses it. Keyed on the row and the scope alone, a request that checked an entry as an article, saw it retyped, and then RELOADED the model got the memoised article handle — and the reloaded instance's originals match the retyped row, so the write guard had nothing to refuse either. An instance whose loaded type no longer matches the stored row is stale, and a stale instance is refused; within one request a stale instance keeps its memoised answer and the WRITE is what refuses it, which is the layering rather than a hole.
+
+  ⚠️ **The site and org too, sent the round after the type.** A row authorised in one site, MOVED to another
+  without being retyped and then reloaded produced the identical key, so the first site's handle came back
+  with no read — and the reloaded instance's originals match the new site, so the write guard had nothing to
+  refuse either. Fixing one column and not the other two was the mistake: the memo now carries every column
+  `refuseIfTheRowMovedUnderneath()` compares, because it is one rule and not three.
 
 - **The role row is the mutex for everything that changes its authority.** Each operation was locally
   transactional and the PAIR still lost a row from the trail: an assignment inserted the pivot and read the

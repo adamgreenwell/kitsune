@@ -608,11 +608,23 @@ class Role extends Model
              *
              * Inside the lock the second request sees the first's row and returns, which is what "already
              * holds it" is supposed to mean.
+             *
+             * ⚠️ AND IT IS A LOCKING READ, WHICH IS NOT THE SAME AS A READ INSIDE THE LOCK — review found the
+             * half the previous fix left. Under MySQL's default REPEATABLE READ a plain `select` answers from
+             * the transaction's SNAPSHOT, and inside a caller-owned outer transaction that snapshot is older
+             * than this method: the role lock makes this request wait for the rival to commit, and the
+             * non-locking read then still cannot see the row it committed. `lockForUpdate()` reads the latest
+             * committed version, which is the only version this decision may be made from.
+             *
+             * `insertOrIgnore()` would be atomic and was rejected on driver divergence (AGENTS.md #5): MySQL's
+             * `INSERT IGNORE` downgrades a foreign-key violation to a warning, so assigning an id that names
+             * nobody would report "already holds it" and write nothing, while Postgres would still refuse.
              */
             if (DB::table('role_user')
                 ->where('role_id', $this->getKey())
                 ->where('user_id', $userId)
-                ->exists()
+                ->lockForUpdate()
+                ->first() !== null
             ) {
                 return;
             }
