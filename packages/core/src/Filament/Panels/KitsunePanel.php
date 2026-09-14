@@ -35,7 +35,7 @@ use Kitsune\Core\Tenancy\Context;
 final class KitsunePanel
 {
     /**
-     * The container key naming the panel Kitsune was applied to.
+     * The container key holding the panel Kitsune was applied to.
      *
      * ⚠️ IN THE CONTAINER RATHER THAN A STATIC, so it lives exactly as long as the application that configured the
      * panel, and one test's application cannot inherit another's.
@@ -50,8 +50,13 @@ final class KitsunePanel
          * default — on a host that runs a second panel marked default, that panel, whose provider may name another
          * model. An audit row would then name an unrelated row with the same id. Found by the completeness check on
          * #8's split install.
+         *
+         * ⚠️ THE PANEL ITSELF, NOT ITS ID — review found the id read too early. A host may call
+         * `KitsunePanel::apply($panel)->id('admin')`, and reading `getId()` before `id()` is an uninitialised
+         * property that aborts the panel's registration; an id changed after `apply()` would also leave a stale one
+         * recorded. This is the same object Filament registers, and by the time anything asks, it is configured.
          */
-        app()->instance(self::PANEL_BINDING, $panel->getId());
+        app()->instance(self::PANEL_BINDING, $panel);
 
         return $panel
             // ADR-021: Filament's tenant IS the Site. Its automatic scope

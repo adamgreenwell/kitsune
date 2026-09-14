@@ -78,7 +78,13 @@ it('names the model of Kitsune\'s own panel outside a request, not the host\'s d
     ]);
 
     app(PanelRegistry::class)->panels['host'] = Panel::make()->id('host')->default()->authGuard('host');
-    app(PanelRegistry::class)->panels['admin'] = KitsunePanel::apply(Panel::make()->id('admin')->authGuard('web'));
+
+    /*
+     * ⚠️ `apply()` BEFORE `id()`, the order review found breaking registration: the first version read the panel's id
+     * inside `apply()`, and on a panel not yet given one that is an uninitialised property.
+     */
+    $kitsune = KitsunePanel::apply(Panel::make())->id('admin')->authGuard('web');
+    app(PanelRegistry::class)->panels['admin'] = $kitsune;
 
     // The host's panel is the default, and nothing is handling a request.
     expect(Filament::getDefaultPanel()->getId())->toBe('host')

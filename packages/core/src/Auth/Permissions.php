@@ -419,9 +419,9 @@ final class Permissions
             return null;
         }
 
-        $id = app(KitsunePanel::PANEL_BINDING);
+        $panel = app(KitsunePanel::PANEL_BINDING);
 
-        return is_string($id) ? app(PanelRegistry::class)->get($id) : null;
+        return $panel instanceof Panel ? $panel : null;
     }
 
     /**
