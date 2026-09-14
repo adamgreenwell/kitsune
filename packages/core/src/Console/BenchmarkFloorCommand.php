@@ -13,7 +13,7 @@ namespace Kitsune\Core\Console;
 use Illuminate\Console\Command;
 use Illuminate\Console\ConfirmableTrait;
 use Illuminate\Support\Facades\DB;
-use Kitsune\Core\Console\Concerns\RemovesOnlyWhatItInserted;
+use Kitsune\Core\Console\Concerns\LeavesNothingBehind;
 use Kitsune\Core\Kitsune;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
@@ -43,9 +43,9 @@ use Kitsune\Core\Tenancy\Context;
 final class BenchmarkFloorCommand extends Command
 {
     use ConfirmableTrait;
-    use RemovesOnlyWhatItInserted;
+    use LeavesNothingBehind;
 
-    /** Rows this command inserts, and — above the mark it takes — the only rows it removes. */
+    /** The start of every slug this command inserts; each run adds its own token after it — see LeavesNothingBehind. */
     private const SLUG_PREFIX = 'floor-';
 
     protected $signature = 'kitsune:benchmark-floor
@@ -188,7 +188,7 @@ final class BenchmarkFloorCommand extends Command
             return $existing;
         }
 
-        $this->markBeforeInserting();
+        $prefix = $this->runPrefix(self::SLUG_PREFIX);
 
         $now = now();
         $rows = [];
@@ -200,7 +200,7 @@ final class BenchmarkFloorCommand extends Command
                 'entry_type_id' => $type->id,
                 'type_handle' => 'article',
                 'status' => 'published',
-                'slug' => self::SLUG_PREFIX.$i,
+                'slug' => $prefix.$i,
                 'title' => "Floor benchmark entry {$i}",
                 'values' => json_encode(['summary' => str_repeat('x', 120)]),
                 'published_at' => $now,
@@ -228,8 +228,8 @@ final class BenchmarkFloorCommand extends Command
      * the entry type, the inserted entries and the audit rows the fixture wrote. `forceDelete()`, because `Org`
      * soft-deletes and a trashed org is precisely the residue this exists to stop leaving.
      *
-     * ⚠️ AN ORG THAT WAS ALREADY THERE KEEPS EVERYTHING THIS RUN DID NOT ADD. Only rows above the id mark, a site
-     * or a type this run created, are removed — the org may be somebody's, or a previous run's with `--keep`.
+     * ⚠️ AN ORG THAT WAS ALREADY THERE KEEPS EVERYTHING THIS RUN DID NOT ADD. Only rows carrying this run's token, a
+     * site or a type this run created, are removed — the org may be somebody's, or a previous run's with `--keep`.
      */
     private function cleanUp(Org $org, Site $site, EntryType $type): void
     {

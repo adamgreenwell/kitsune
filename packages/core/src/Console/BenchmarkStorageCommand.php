@@ -13,7 +13,7 @@ namespace Kitsune\Core\Console;
 use Illuminate\Console\Command;
 use Illuminate\Console\ConfirmableTrait;
 use Illuminate\Support\Facades\DB;
-use Kitsune\Core\Console\Concerns\RemovesOnlyWhatItInserted;
+use Kitsune\Core\Console\Concerns\LeavesNothingBehind;
 use Kitsune\Core\Fields\LogicalType;
 use Kitsune\Core\Fields\Projection;
 use Kitsune\Core\Models\Entry;
@@ -41,9 +41,9 @@ use Kitsune\Core\Tenancy\Context;
 final class BenchmarkStorageCommand extends Command
 {
     use ConfirmableTrait;
-    use RemovesOnlyWhatItInserted;
+    use LeavesNothingBehind;
 
-    /** Rows this command inserts, and — above the mark it takes — the only rows it removes. */
+    /** The start of every slug this command inserts; each run adds its own token after it — see LeavesNothingBehind. */
     private const SLUG_PREFIX = 'bench-';
 
     protected $signature = 'kitsune:benchmark-storage
@@ -105,7 +105,7 @@ final class BenchmarkStorageCommand extends Command
                 // the slugs carry a locale suffix, so the old probe looked for a
                 // row that never existed and timed an index MISS.
                 ['slug lookup (unique index)', $this->measure(fn () => Entry::where('entry_type_id', $type->getKey())
-                    ->where('slug', $locales === 1 ? self::SLUG_PREFIX.intdiv($rows, 2) : self::SLUG_PREFIX.intdiv($rows, 2).'-0')
+                    ->where('slug', $this->runPrefix(self::SLUG_PREFIX).intdiv($rows, 2).($locales === 1 ? '' : '-0'))
                     ->first())],
                 ['title LIKE (no index)', $this->measure(fn () => Entry::where('title', 'like', '%500%')->limit(25)->get())],
             ];
@@ -157,7 +157,7 @@ final class BenchmarkStorageCommand extends Command
      * An org this run created is force-deleted — `Org` soft-deletes, and a
      * trashed org is still residue — and the database removes what hangs off
      * it. An org that was already there keeps everything this run did not add,
-     * its audit log included — see RemovesOnlyWhatItInserted.
+     * its audit log included — see LeavesNothingBehind.
      *
      * @param  list<string>  $addedIndexes
      * @param  list<string>  $addedColumns
@@ -220,7 +220,7 @@ final class BenchmarkStorageCommand extends Command
 
     private function seed(Org $org, Site $site, EntryType $type, int $rows, int $locales): void
     {
-        $this->markBeforeInserting();
+        $prefix = $this->runPrefix(self::SLUG_PREFIX);
 
         $now = now();
         $chunk = [];
@@ -236,7 +236,7 @@ final class BenchmarkStorageCommand extends Command
                     'entry_type_id' => $type->id,
                     'type_handle' => 'article',
                     'status' => $i % 3 === 0 ? 'draft' : 'published',
-                    'slug' => $locales === 1 ? self::SLUG_PREFIX.$i : self::SLUG_PREFIX."{$i}-{$l}",
+                    'slug' => $locales === 1 ? $prefix.$i : $prefix."{$i}-{$l}",
                     'title' => "Benchmark entry {$i}",
                     'values' => json_encode(['f0' => $i % 500, 'summary' => str_repeat('x', 120)]),
                     'published_at' => $now,

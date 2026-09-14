@@ -8,6 +8,7 @@
 
 declare(strict_types=1);
 
+use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -42,6 +43,20 @@ function benchmarkFootprint(): array
         ->all();
 }
 
+/**
+ * The tenancy context a benchmark was called in, which it has to give back.
+ *
+ * ⚠️ A FIXTURE SETS THE APPLICATION'S ONE `Context`, and review found nothing restoring it: a caller running more
+ * than one command in an application was left scoped to the benchmark's org — one a failed fixture had rolled
+ * back, or cleanup had just removed.
+ *
+ * @return array{0: ?int, 1: ?int}
+ */
+function benchmarkContext(): array
+{
+    return [app(Context::class)->orgId(), app(Context::class)->siteId()];
+}
+
 /*
  * ⚠️ THE ENVIRONMENT GOES BACK BEFORE TEARDOWN, OR EVERY OTHER TEST FAILS IN THE FULL SUITE — and never alone.
  *
@@ -60,18 +75,22 @@ afterEach(function (): void {
 
 it('leaves the installation as it found it after the floor benchmark', function (): void {
     $before = benchmarkFootprint();
+    $context = benchmarkContext();
 
     $this->artisan('kitsune:benchmark-floor', ['--entries' => 25])->assertSuccessful();
 
-    expect(benchmarkFootprint())->toBe($before);
+    expect(benchmarkFootprint())->toBe($before)
+        ->and(benchmarkContext())->toBe($context);
 });
 
 it('leaves the installation as it found it after the storage benchmark', function (): void {
     $before = benchmarkFootprint();
+    $context = benchmarkContext();
 
     $this->artisan('kitsune:benchmark-storage', ['--rows' => 20])->assertSuccessful();
 
-    expect(benchmarkFootprint())->toBe($before);
+    expect(benchmarkFootprint())->toBe($before)
+        ->and(benchmarkContext())->toBe($context);
 });
 
 it('keeps what it made when asked to', function (): void {
@@ -106,12 +125,13 @@ it('removes only the rows its own run inserted, and keeps a corpus an earlier ru
     expect(benchmarkFootprint())->toBe($kept);
 });
 
-it('forgets the previous invocation\'s mark, so a run that inserts nothing removes nothing', function (): void {
+it('gives each invocation its own rows, so a run that inserts nothing removes nothing', function (): void {
     /*
      * ⚠️ ONE COMMAND OBJECT SERVES EVERY INVOCATION in an application — Artisan resolves a command once and keeps
-     * it — so a mark held on the object outlives the run that took it. Review found a `--keep` run leaving its mark
+     * it — so state held on the object outlives the run that set it. Review found a `--keep` run leaving its mark
      * behind, and a second run whose volume was already met, inserting nothing and taking no mark of its own,
-     * cleaning up above the first run's mark: deleting exactly the rows `--keep` had kept.
+     * cleaning up above the first run's mark: deleting exactly the rows `--keep` had kept. A token belongs to one
+     * invocation, as the mark did not.
      */
     $this->artisan('kitsune:benchmark-floor', ['--entries' => 5, '--keep' => true])->assertSuccessful();
 
@@ -122,6 +142,50 @@ it('forgets the previous invocation\'s mark, so a run that inserts nothing remov
         ->expectsOutputToContain('content in scope: 5 entries');
 
     expect(benchmarkFootprint())->toBe($kept);
+});
+
+it('removes none of the rows another run inserts while it is running', function (): void {
+    /*
+     * ⚠️ AN ID RANGE IS NOT OWNERSHIP ONCE TWO RUNS OVERLAP — review found it. A run's rows were everything in its
+     * site above the mark it took, and a second run on the same site inserts above that mark too, so whichever run
+     * cleaned up first removed the other's rows along with its own.
+     *
+     * The other run's rows are written inside this one, as its first chunk lands, rather than hoped for from a
+     * second process. The fixture is kept from an earlier run, so cleanup cannot pass by removing a whole org.
+     */
+    $this->artisan('kitsune:benchmark-floor', ['--entries' => 0, '--keep' => true])->assertSuccessful();
+
+    $written = false;
+
+    DB::listen(function (QueryExecuted $query) use (&$written): void {
+        if ($written || ! str_starts_with(str_replace(['"', '`'], '', $query->sql), 'insert into entries')) {
+            return;
+        }
+
+        $written = true;
+        $ours = DB::table('entries')->where('slug', 'like', 'floor-%')->first();
+
+        DB::table('entries')->insert(array_map(static fn (int $i): array => [
+            'site_id' => $ours->site_id,
+            'org_id' => $ours->org_id,
+            'entry_type_id' => $ours->entry_type_id,
+            'type_handle' => 'article',
+            'status' => 'published',
+            'slug' => "floor-another-run-{$i}",
+            'title' => "Another run's entry {$i}",
+            'values' => json_encode([]),
+            'published_at' => now(),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ], [1, 2, 3]));
+    });
+
+    $this->artisan('kitsune:benchmark-floor', ['--entries' => 5])->assertSuccessful();
+
+    // The other run's three rows survive; this run's five are gone.
+    expect($written)->toBeTrue()
+        ->and(DB::table('entries')->where('slug', 'like', 'floor-another-run-%')->count())->toBe(3)
+        ->and(DB::table('entries')->where('slug', 'like', 'floor-%')->count())->toBe(3);
 });
 
 it('drops only the generated columns its own run added, and keeps those an earlier run kept', function (): void {
@@ -177,7 +241,9 @@ it('creates its fixture whole or not at all', function (string $command, string 
 
     expect(fn () => $this->artisan($command)->run())->toThrow(QueryException::class);
 
-    expect(benchmarkFootprint())->toBe($before);
+    // Nothing left in the database, and the caller's context back — not the org the fixture rolled back.
+    expect(benchmarkFootprint())->toBe($before)
+        ->and(benchmarkContext())->toBe([$someone->getKey(), null]);
 })->with([
     'floor' => ['kitsune:benchmark-floor', 'floor-benchmark'],
     'storage' => ['kitsune:benchmark-storage', 'benchmark'],

@@ -21,7 +21,7 @@ use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
-use Kitsune\Core\Console\Concerns\RemovesOnlyWhatItInserted;
+use Kitsune\Core\Console\Concerns\LeavesNothingBehind;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Site;
@@ -52,7 +52,7 @@ use Kitsune\Core\Tenancy\Context;
 final class BenchmarkAdminCommand extends Command
 {
     use ConfirmableTrait;
-    use RemovesOnlyWhatItInserted;
+    use LeavesNothingBehind;
 
     /**
      * The Phase 4 bar.
@@ -63,7 +63,7 @@ final class BenchmarkAdminCommand extends Command
      */
     private const BUDGET_MS = 200.0;
 
-    /** Rows this command inserts, and — above the mark it takes — the only rows it removes. */
+    /** The start of every slug this command inserts; each run adds its own token after it — see LeavesNothingBehind. */
     private const SLUG_PREFIX = 'bench-admin-';
 
     protected $signature = 'kitsune:benchmark-admin
@@ -454,7 +454,7 @@ final class BenchmarkAdminCommand extends Command
             return $existing;
         }
 
-        $this->markBeforeInserting();
+        $prefix = $this->runPrefix(self::SLUG_PREFIX);
 
         $this->line('  seeding <info>'.($rows - $existing).'</info> entries…');
 
@@ -477,7 +477,7 @@ final class BenchmarkAdminCommand extends Command
                 'entry_type_id' => $type->getKey(),
                 'type_handle' => $type->handle,
                 'status' => $i % 3 === 0 ? 'draft' : 'published',
-                'slug' => self::SLUG_PREFIX.$i,
+                'slug' => $prefix.$i,
                 'title' => "Benchmark entry {$i}",
                 'values' => json_encode(['summary' => str_repeat('x', 120)]),
                 'published_at' => $stamp,
@@ -514,7 +514,7 @@ final class BenchmarkAdminCommand extends Command
      * benchmark's first version force-deleted every row whose slug matched a pattern across every customer
      * on the installation — on a box with real content that is data loss rather than cleanup. This one
      * borrows a real site, so the same mistake here would delete a customer's content — and removing
-     * through `Entry` left that customer's audit log a row per benchmark entry. See RemovesOnlyWhatItInserted.
+     * through `Entry` left that customer's audit log a row per benchmark entry. See LeavesNothingBehind.
      */
     private function cleanUp(Site $site): void
     {
