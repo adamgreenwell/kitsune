@@ -1761,7 +1761,7 @@ It hides relations that exist, and that cost is accepted rather than hidden: an 
 keeps the `published` option on an entry that is already published — otherwise a copy-editor cannot fix a typo
 without demoting the article — and the first version read that current value off the loaded instance. A form
 held open across somebody else's demotion therefore kept offering the option, and the rule kept accepting it.
-One keyed read makes the answer the row's rather than the request's. ⚠️ The consequence review described —
+One keyed read makes the answer the row's rather than the request's. ⚠️ And the type is the one the entry will be: a save that retypes a draft and publishes it in the same write asks the destination type's `publish`, which review found being asked of the source. ⚠️ The consequence review described —
 the stale form putting the entry back — **did not reproduce**: Eloquent writes dirty attributes, and an
 instance loaded as published submitting published writes no status at all. That measurement is pinned in a
 test rather than recorded here alone, because it is a fact about the framework that nothing else would notice

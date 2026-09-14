@@ -3017,7 +3017,15 @@ class Entry extends Model implements RequiresModelSave
             return;
         }
 
-        $handle = (string) $stored->type_handle;
+        /*
+         * ⚠️ THE TYPE THE ENTRY WILL BE, NOT THE ONE IT WAS — review found a retype and a publication in one save
+         * authorised by the source type. `publish` is per type: somebody who may publish articles moved a draft
+         * into the product type and published it in the same write, and this read the stored `article` handle
+         * while the write re-stamped `product`. The destination is the instance's `entry_type_id` — pending when
+         * this write retypes, the loaded value otherwise, which the moved-row guard compares with the stored row —
+         * and its handle is asked of the database by id, as the creation guard asks it.
+         */
+        $handle = (string) EntryType::query()->withoutGlobalScopes()->whereKey($this->entry_type_id)->value('handle');
 
         if (! $this->publishingRefused((string) $stored->status, $handle)) {
             return;

@@ -254,6 +254,51 @@ it('answers whether a restore would publish from the stored row, so the button a
         ->toThrow(RuntimeException::class, 'entry.article.publish');
 });
 
+it('asks the destination type for publish when one save retypes and publishes', function (): void {
+    /*
+     * ⚠️ `publish` IS PER TYPE, AND A RETYPE MOVED THE QUESTION — review found it. Somebody who may publish articles
+     * and holds nothing on products loaded a draft article, set its type to product and its status to published,
+     * and saved: the guard asked the stored `article` handle while the write re-stamped `product`.
+     */
+    $this->role->grant(Permissions::forEntryType('article', 'update'));
+    $this->role->grant(Permissions::forEntryType('article', 'publish'));
+
+    $article = publishedArticle($this->org);
+    DB::table('entries')->where('id', $article->getKey())->update(['status' => 'draft']);
+
+    /** @var Entry $entry */
+    $entry = Entry::query()->whereKey($article->getKey())->firstOrFail();
+
+    $product = EntryType::create([
+        'org_id' => $this->org->getKey(), 'handle' => 'product',
+        'name' => 'Product', 'plural_name' => 'Products',
+    ]);
+
+    Auth::login($this->user);
+    Permissions::forget();
+
+    $entry->entry_type_id = $product->getKey();
+    $entry->status = 'published';
+
+    expect(fn () => $entry->save())->toThrow(RuntimeException::class, 'entry.product.publish');
+
+    $stored = DB::table('entries')->where('id', $entry->getKey())->first(['status', 'type_handle']);
+
+    expect($stored->status)->toBe('draft')
+        ->and($stored->type_handle)->toBe('article');
+
+    // ⚠️ And it is the destination's permission, not a refusal of retyping: with product's publish, it lands.
+    $this->role->grant(Permissions::forEntryType('product', 'publish'));
+    Permissions::forget();
+
+    $entry->save();
+
+    $stored = DB::table('entries')->where('id', $entry->getKey())->first(['status', 'type_handle']);
+
+    expect($stored->status)->toBe('published')
+        ->and($stored->type_handle)->toBe('product');
+});
+
 it('refuses an instance write that publishes, whatever the form allowed', function (): void {
     /*
      * ⚠️ THIS IS REVIEW'S THIRD FRAMING OF THE SAME WINDOW, AND IT DEFEATS THE ARGUMENT I PUBLISHED AGAINST
