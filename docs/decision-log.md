@@ -1833,6 +1833,10 @@ So a link the record **already holds** keeps its value and loses its title: it r
 
 - **An owner transition is audited once per UPDATE, not once per `save()`.** `wasChanged()` outlives the write that set it: Eloquent refreshes `$changes` in `finishSave()`, and a later `save()` with nothing dirty never calls `performUpdate()` — so `$changes` still described the previous write and the transition was recorded again. Measured: one promotion and three no-op saves produced four `role.owner_assigned` rows per holder. A trail that grows every time somebody calls `save()` reports authority changes that did not happen, to whoever is reading the log to find out what did. The model now carries a one-shot proof that an update actually ran, consumed by the `saved` listener whether or not the flag moved.
 
+- **`assignTo()` asks whether the assignment already exists INSIDE the lock.** It asked before the transaction, so two requests assigning the same person to the same role both passed, the first inserted, and the second collided with the `(role_id, user_id)` primary key — where the documented behaviour is to be idempotent and silent. "Already holds it" has to be asked where the answer cannot change underneath.
+
+- **The policy's memo carries the type the instance was loaded with**, and the body uses it. Keyed on the row and the scope alone, a request that checked an entry as an article, saw it retyped, and then RELOADED the model got the memoised article handle — and the reloaded instance's originals match the retyped row, so the write guard had nothing to refuse either. An instance whose loaded type no longer matches the stored row is stale, and a stale instance is refused; within one request a stale instance keeps its memoised answer and the WRITE is what refuses it, which is the layering rather than a hole.
+
 - **The role row is the mutex for everything that changes its authority.** Each operation was locally
   transactional and the PAIR still lost a row from the trail: an assignment inserted the pivot and read the
   owner flag as false, recording `role.assigned`, while a concurrent promotion could not see the uncommitted

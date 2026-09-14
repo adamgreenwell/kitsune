@@ -585,15 +585,6 @@ class Role extends Model
     {
         $this->refuseIfNotCurrentOrg('assignTo');
 
-        $existing = DB::table('role_user')
-            ->where('role_id', $this->getKey())
-            ->where('user_id', $userId)
-            ->exists();
-
-        if ($existing) {
-            return;
-        }
-
         DB::transaction(function () use ($userId): void {
             /*
              * ⚠️ THE ROLE IS LOCKED BEFORE THE PIVOT, and review found the interleaving that needs it: an
@@ -607,6 +598,24 @@ class Role extends Model
              * reads the holders under a lock for the same reason, from the other side.
              */
             $this->lockRow();
+
+            /*
+             * ⚠️ ASKED AFTER THE LOCK, AND IT USED TO BE ASKED BEFORE THE TRANSACTION — review found the
+             * collision. Two requests assigning the same person to the same role both passed an `exists()`
+             * check outside any lock; the first inserted and committed, and the second then inserted into the
+             * `(role_id, user_id)` primary key and died with a constraint violation — where the documented
+             * behaviour of this method is to be idempotent and silent.
+             *
+             * Inside the lock the second request sees the first's row and returns, which is what "already
+             * holds it" is supposed to mean.
+             */
+            if (DB::table('role_user')
+                ->where('role_id', $this->getKey())
+                ->where('user_id', $userId)
+                ->exists()
+            ) {
+                return;
+            }
 
             DB::table('role_user')->insert(['role_id' => $this->getKey(), 'user_id' => $userId]);
 

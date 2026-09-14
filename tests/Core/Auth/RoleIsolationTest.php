@@ -1171,3 +1171,72 @@ it('records an owner transition once, however many times the instance is saved',
 
     expect(AuditLog::query()->where('id', '>', $mark)->where('action', 'role.owner_unassigned')->count())->toBe(1);
 });
+
+it('stays idempotent when the same assignment arrives twice', function (): void {
+    /*
+     * ⚠️ THE EXISTENCE CHECK WAS OUTSIDE ANY LOCK, which review found: two requests assigning the same person
+     * to the same role both passed it, the first inserted and committed, and the second then inserted into the
+     * `(role_id, user_id)` primary key and died on a constraint violation — where this method's documented
+     * behaviour is to be idempotent and silent. "Already holds it" has to be asked where the answer cannot
+     * change underneath, which is inside the transaction, after the role's lock.
+     *
+     * The sequential case is what a test can assert directly: a second call adds no row and no audit trail.
+     * The concurrent case is the same statement one lock down, and the lock ordering is asserted separately.
+     */
+    app(Context::class)->setOrg($this->alpha);
+
+    $this->alphaRole->assignTo($this->user->getKey());
+
+    $mark = (int) AuditLog::query()->max('id');
+
+    $this->alphaRole->assignTo($this->user->getKey());
+    $this->alphaRole->assignTo($this->user->getKey());
+
+    expect(DB::table('role_user')->where('role_id', $this->alphaRole->getKey())->count())->toBe(1)
+        ->and(AuditLog::query()->where('id', '>', $mark)->count())->toBe(0);
+
+    // ⚠️ And the check is inside the lock, not merely inside the transaction: the role must be locked first,
+    // or the second request can still read `role_user` before the first one's insert is visible to it.
+    $seen = [];
+
+    DB::listen(function (QueryExecuted $query) use (&$seen): void {
+        if ($query->connectionName !== DB::getDefaultConnection()) {
+            return;
+        }
+
+        $sql = str_replace(['"', '`'], '', $query->sql);
+
+        foreach (['pg_constraint', 'information_schema', 'sqlite_master'] as $introspection) {
+            if (str_contains($sql, $introspection)) {
+                return;
+            }
+        }
+
+        if (str_contains($sql, 'from roles') || str_contains($sql, 'role_user')) {
+            $seen[] = $sql;
+        }
+    });
+
+    $other = TestUser::create(['email' => 'second-holder@kitsune.test']);
+    joinOrg($this->alpha, $other);
+    $this->alphaRole->assignTo($other->getKey());
+
+    if (DB::connection()->getDriverName() !== 'sqlite') {
+        $lock = null;
+        $check = null;
+
+        foreach ($seen as $position => $sql) {
+            if ($lock === null && str_contains($sql, 'from roles') && str_contains($sql, 'for update')) {
+                $lock = $position;
+            }
+
+            if ($check === null && str_contains($sql, 'exists') && str_contains($sql, 'role_user')) {
+                $check = $position;
+            }
+        }
+
+        expect($lock)->not->toBeNull('the assignment never locked the role')
+            ->and($check)->not->toBeNull('the assignment never asked whether the pivot row already existed')
+            ->and($lock)->toBeLessThan($check, 'the existence check ran before the role was locked');
+    }
+});
