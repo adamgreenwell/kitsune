@@ -72,8 +72,8 @@ php skeleton/artisan serve             # http://127.0.0.1:8000/admin
 ```
 
 Sign in as `alpha@kitsune.test` with the password `password`. The seeded organisation is **Golfdom**, with a
-second organisation and a user of its own — `rival@kitsune.test` — because most of what is interesting about a
-multi-tenant kernel is only visible when there are two tenants to keep apart.
+second organisation and a user of its own — `rival@kitsune.test` — because most of what is interesting about
+the scoping kernel is only visible when there are two orgs to keep apart.
 
 ⚠️ **`composer install -d skeleton` on its own does not work, and the reason is temporary.** `kitsune/core`
 is not on Packagist yet ([#8](https://github.com/adamgreenwell/kitsune/issues/8)), so the skeleton resolves
