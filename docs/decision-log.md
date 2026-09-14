@@ -1992,8 +1992,12 @@ So a link the record **already holds** keeps its value and loses its title: it r
   ⚠️ **And revision restore went around it, which review found.** `restoreRevision()` locks the row and calls
   `refresh()` before its save, so an entry moved between the caller's authorization and that lock came back
   carrying its new `site_id` — the originals the guard compares against were already the moved row's, and the
-  restore wrote content into a site nobody had authorised it for. It now refuses under the lock, before the
-  refresh, when the stored `org_id` or `site_id` differs from what the instance was loaded with.
+  restore wrote content into a site nobody had authorised it for. It now takes its lock through
+  `refuseIfTheRowMovedUnderneath()` itself — by the original key, comparing the type as well as the scope keys —
+  after a first fix that copied the guard and left the type out; and it refuses outright a restore through an
+  instance whose key has been edited, which had locked one row, checked another's revision and written a third.
+  The History button asks the stored row whether a restore would publish, not the instance, so the button and the
+  guard cannot disagree across somebody else's demotion.
 
 
   ⚠️ **And it went into two doors when there are six.** Review found the arithmetic family walking past it:

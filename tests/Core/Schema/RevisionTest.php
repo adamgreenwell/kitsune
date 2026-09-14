@@ -134,32 +134,60 @@ describe('restoring puts state back as a NEW version', function (): void {
             ->toThrow(RuntimeException::class, 'belongs to another entry');
     });
 
-    it('refuses to restore onto an entry that moved after it was loaded', function (string $move): void {
+    it('refuses to restore onto an entry that moved or was retyped after it was loaded', function (string $move): void {
         /*
-         * ⚠️ AUTHORIZED WHERE IT WAS, WRITTEN WHERE IT IS — review found the restore adopting a move. The row
-         * lock and `refresh()` both read without scopes, so an entry moved between the caller's load and the
-         * lock came back carrying its new site, and the restore wrote there under the old one's authority.
+         * ⚠️ AUTHORIZED FOR WHAT IT WAS, WRITTEN ONTO WHAT IT IS — review found the restore adopting a move. The row
+         * lock and `refresh()` both read without scopes, so an entry moved between the caller's load and the lock
+         * came back carrying its new site, and the restore wrote there under the old one's authority. A retype is
+         * the same window for the type: the permission was decided for the type it was loaded as.
          *
-         * The move is made beneath the model, which is how a concurrent request's committed move looks to an
-         * instance loaded before it.
+         * The change is made beneath the model, which is how a concurrent request's committed write looks to an
+         * instance loaded before it. The refusal is the moved-row guard every other instance write uses.
          */
         $entry = anEntry();
         $original = $entry->revisions()->first();
         $entry->update(['title' => 'Changed']);
 
-        $elsewhere = $move === 'into another site'
-            ? Site::create(['org_id' => $this->org->id, 'handle' => 'second', 'slug' => 'rev-second', 'name' => 'Second'])->getKey()
-            : null;
+        $change = match ($move) {
+            'into another site' => ['site_id' => Site::create(['org_id' => $this->org->id, 'handle' => 'second', 'slug' => 'rev-second', 'name' => 'Second'])->getKey()],
+            'out to org-shared' => ['site_id' => null],
+            'retyped' => [
+                'entry_type_id' => EntryType::create(['org_id' => $this->org->id, 'handle' => 'page', 'name' => 'Page', 'plural_name' => 'Pages'])->getKey(),
+                'type_handle' => 'page',
+            ],
+        };
 
-        DB::table('entries')->where('id', $entry->getKey())->update(['site_id' => $elsewhere]);
+        DB::table('entries')->where('id', $entry->getKey())->update($change);
 
         expect(fn () => $entry->restoreRevision($original))
-            ->toThrow(RuntimeException::class, 'Refusing to restore entry');
+            ->toThrow(RuntimeException::class, 'somebody else moved or retyped it while this instance was in hand');
 
         // Nothing was written: the title is the one from before, and no version was added.
         expect(DB::table('entries')->where('id', $entry->getKey())->value('title'))->toBe('Changed')
             ->and($entry->revisions()->count())->toBe(2);
-    })->with(['into another site', 'out to org-shared']);
+    })->with(['into another site', 'out to org-shared', 'retyped']);
+
+    it('refuses to restore through an instance whose key has been changed', function (): void {
+        /*
+         * ⚠️ `id` IS AN ATTRIBUTE, AND EVERY STEP OF A RESTORE FOLLOWED IT — review found it. An instance loaded
+         * as one entry and re-keyed to another locked the other row and passed the ownership check with the
+         * other entry's revision, while `refresh()` and the save went by the original key: the other entry's
+         * content written over the one that had been authorised.
+         */
+        $mine = anEntry();
+        $theirs = anEntry(['title' => 'Theirs', 'slug' => 'theirs']);
+        $theirs->update(['title' => 'Theirs, changed']);
+        $theirFirst = $theirs->revisions()->orderBy('id')->first();
+
+        $mine->id = $theirs->getKey();
+
+        expect(fn () => $mine->restoreRevision($theirFirst))
+            ->toThrow(RuntimeException::class, 'its key has been changed since');
+
+        // Neither entry was written.
+        expect(DB::table('entries')->where('id', $mine->getKeyForAuthorization())->value('title'))->toBe('First')
+            ->and(DB::table('entries')->where('id', $theirs->getKey())->value('title'))->toBe('Theirs, changed');
+    });
 });
 
 it('keeps a bounded history, because full JSON snapshots are not free', function (): void {

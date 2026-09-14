@@ -3078,7 +3078,26 @@ class Entry extends Model implements RequiresModelSave
             return false;
         }
 
-        return $this->publishingRefused((string) $this->status, (string) $this->type_handle);
+        /*
+         * ⚠️ AND IT ASKS THE STORED ROW, NOT THE INSTANCE — review found the button and the guard disagreeing
+         * again, by a different road. An owner instance that still said `published` after another request had
+         * demoted the entry answered "keeping published is not moving into it", so the action stayed enabled;
+         * the restore then refreshed, asked the same question about `draft`, and refused — the server error
+         * this predicate exists to prevent. Both callers now read the same thing: the row by its original key,
+         * and its type by `entry_type_id` rather than a denormalised handle an instance can carry stale.
+         */
+        $stored = static::withTrashed()
+            ->withoutGlobalScopes()
+            ->whereKey($this->getKeyForAuthorization())
+            ->first(['status', 'entry_type_id']);
+
+        if ($stored === null) {
+            return false;
+        }
+
+        $handle = (string) EntryType::query()->withoutGlobalScopes()->whereKey($stored->entry_type_id)->value('handle');
+
+        return $this->publishingRefused((string) $stored->status, $handle);
     }
 
     private function refuseUnpermittedRepublication(EntryRevision $revision): void
@@ -3120,6 +3139,24 @@ class Entry extends Model implements RequiresModelSave
      */
     public function restoreRevision(EntryRevision $revision): self
     {
+        /*
+         * ⚠️ THE ROW THIS INSTANCE WAS LOADED FROM, OR NOTHING — review found every step below following the
+         * mutable key. `id` is an attribute, so an instance authorised for one entry and re-keyed to another
+         * locked the other row and passed the ownership check with the other entry's revision, while `refresh()`
+         * and the save still went by the ORIGINAL key: another entry's content written over the one that was
+         * authorised, or the reverse. Every other instance write goes by `getKeyForAuthorization()`; a restore
+         * through an edited key is refused outright, because there is no reading of it that is not a mistake.
+         */
+        if ((string) $this->getKey() !== (string) $this->getKeyForAuthorization()) {
+            throw new RuntimeException(sprintf(
+                'Refusing to restore a revision through entry %s: this instance was loaded as entry %s and its key '
+                .'has been changed since, so the row it would lock, the row it would check and the row it would '
+                .'write are not the same row (ADR-033). Load the entry you mean to restore.',
+                (string) $this->getKey(),
+                (string) $this->getKeyForAuthorization(),
+            ));
+        }
+
         // ⚠️ A courtesy check, and NOT the one that decides. It reads the caller's
         // instance before any lock exists, so it can only report what was true
         // when that instance was loaded. The authoritative check is the identical
@@ -3142,7 +3179,13 @@ class Entry extends Model implements RequiresModelSave
         // guard; it is a hint.
         DB::transaction(function () use ($revision): void {
             // The lock first, so nothing below can be answered from stale state.
-            self::query()->withoutGlobalScopes()->whereKey($this->getKey())->lockForUpdate()->get();
+            //
+            // ⚠️ TAKEN BY THE GUARD EVERY OTHER INSTANCE WRITE USES, which locks the row by its ORIGINAL key
+            // and refuses one that was moved or retyped since this instance was loaded — `refresh()` below would
+            // otherwise adopt wherever the row had gone, and write there under authority decided about where it
+            // was. Review found this path locking the mutable key and then comparing only the scope keys, in a
+            // copy of that guard that left the type out; the copy is gone.
+            $this->refuseIfTheRowMovedUnderneath('restore');
 
             // ⚠️ And the REVISION is re-read under the same lock, because the
             // caller's instance can be stale in the one way that matters.
@@ -3175,21 +3218,6 @@ class Entry extends Model implements RequiresModelSave
             // under the lock is only half the job if the answers derived from it
             // are still the ones computed before.
             $this->refuseForeignRevision($revision);
-
-            // ⚠️ And the row must still be WHERE THE CALLER LOADED IT, because the
-            // refresh below adopts wherever it is now.
-            //
-            // The lock above is taken without scopes and `refresh()` reads without
-            // them, so an entry moved between the caller's authorization and this
-            // lock — into another site, or out of one into org-shared — came back
-            // carrying its new `site_id`, and nothing after it compared. The
-            // restore then wrote content into a site the caller was never
-            // authorized for, and the audit row named the site they were in. The
-            // scope guards cannot catch it: they judge a scope key when it is
-            // written, and this save writes none. Compared with what was loaded
-            // rather than re-read through the scopes, because a console restore
-            // has no site context and every scoped read would refuse it.
-            $this->refuseMovedSinceLoaded();
 
             // ⚠️ And the refresh is needed for a second, separate reason: a model
             // from `create()` holds only the attributes the caller set, so `slug`
@@ -3289,38 +3317,6 @@ class Entry extends Model implements RequiresModelSave
         });
 
         return $this;
-    }
-
-    /**
-     * Refuse a restore onto a row that is no longer in the org and site this instance was loaded from.
-     *
-     * Called under the row lock, before `refresh()` would adopt the row's current placement — see
-     * `restoreRevision()`. Whoever authorized the restore did so for where the entry was; wherever it is now,
-     * nobody has been asked.
-     */
-    private function refuseMovedSinceLoaded(): void
-    {
-        $stored = self::query()->withoutGlobalScopes()->whereKey($this->getKey())->first(['org_id', 'site_id']);
-
-        $key = static fn (mixed $value): ?int => $value === null ? null : (int) $value;
-
-        $loaded = [$key($this->getOriginal('org_id')), $key($this->getOriginal('site_id'))];
-        $current = [$key($stored?->getAttribute('org_id')), $key($stored?->getAttribute('site_id'))];
-
-        if ($loaded === $current) {
-            return;
-        }
-
-        throw new RuntimeException(sprintf(
-            'Refusing to restore entry [%s]: it was loaded from site [%s] of org [%s] and is now in site [%s] of '
-            .'org [%s]. The restore was authorized for where it was, and writing it where it is would put content '
-            .'in a place nobody asked about (ADR-021). Load the entry again where it is now.',
-            (string) $this->getKey(),
-            $loaded[1] === null ? 'shared' : (string) $loaded[1],
-            (string) $loaded[0],
-            $current[1] === null ? 'shared' : (string) $current[1],
-            (string) $current[0],
-        ));
     }
 
     /**

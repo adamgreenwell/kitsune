@@ -223,6 +223,37 @@ it('refuses a restore that would publish, from somebody who may not', function (
     expect(DB::table('entries')->where('id', $entry->getKey())->value('status'))->toBe('published');
 });
 
+it('answers whether a restore would publish from the stored row, so the button and the guard agree', function (): void {
+    /*
+     * ⚠️ THE BUTTON AND THE GUARD DISAGREED THROUGH A STALE INSTANCE — review found it. The predicate the History
+     * table disables Restore with read the owner instance's `status`, so an entry demoted by somebody else while
+     * that instance was in hand still said `published`: keeping published is not moving into it, so Restore stayed
+     * enabled. The restore then refreshed, asked the same question about `draft`, and refused — a server error
+     * for an action the panel had just offered.
+     */
+    $this->role->grant(Permissions::forEntryType('article', 'update'));
+
+    $entry = publishedArticle($this->org);
+    $publishedVersion = EntryRevision::query()
+        ->where('entry_id', $entry->getKey())
+        ->where('status', 'published')
+        ->firstOrFail();
+
+    // Somebody who may publish demotes it while this instance is in hand.
+    DB::table('entries')->where('id', $entry->getKey())->update(['status' => 'draft']);
+
+    Auth::login($this->user);
+    Permissions::forget();
+
+    // The instance still says published; the answer comes from the row the restore would write.
+    expect($entry->status)->toBe('published')
+        ->and($entry->restoreWouldPublishWithoutPermission($publishedVersion))->toBeTrue();
+
+    // And the guard says the same thing the button now says.
+    expect(fn () => $entry->restoreRevision($publishedVersion))
+        ->toThrow(RuntimeException::class, 'entry.article.publish');
+});
+
 it('refuses an instance write that publishes, whatever the form allowed', function (): void {
     /*
      * ⚠️ THIS IS REVIEW'S THIRD FRAMING OF THE SAME WINDOW, AND IT DEFEATS THE ARGUMENT I PUBLISHED AGAINST
