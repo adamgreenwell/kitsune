@@ -39,13 +39,18 @@ beforeEach(function (): void {
     config(['auth.providers.users.model' => TestUser::class]);
 });
 
-it('names no panel model, rather than throwing, when no panel is registered', function (): void {
+/*
+ * ⚠️ ON THIS BRANCH THE ANSWER IS THE CONFIGURED MODEL, NOT NULL. `userModel()` carries its own panel-less
+ * fallback here — the configured provider — so a host with no usable panel is told what that provider loads,
+ * which is the answer a seeder or a console command already gets.
+ */
+it('names the configured model, rather than throwing, when no panel is registered', function (): void {
     expect(app()->bound('filament'))->toBeTrue()
         ->and(Filament::getPanels())->toBe([])
-        ->and(Permissions::userModel())->toBeNull();
+        ->and(Permissions::userModel())->toBe(TestUser::class);
 });
 
-it('names no panel model when panels exist and none of them is the default', function (): void {
+it('names the configured model when panels exist and none of them is the default', function (): void {
     /*
      * ⚠️ The case a `getPanels() !== []` pre-check would miss: the registry is not empty and still has no default.
      *
@@ -55,11 +60,11 @@ it('names no panel model when panels exist and none of them is the default', fun
     app(PanelRegistry::class)->panels['side'] = Panel::make()->id('side');
 
     expect(Filament::getPanels())->toHaveCount(1)
-        ->and(Permissions::userModel())->toBeNull();
+        ->and(Permissions::userModel())->toBe(TestUser::class);
 });
 
 it('still assigns a role through the configured model when there is no default panel', function (): void {
-    // The consequence the host actually met: the null is what lets the caller take its configured fallback.
+    // The consequence the host actually met: the throw stopped the assignment before the fallback was reached.
     $org = Org::create(['slug' => 'alpha', 'name' => 'Alpha']);
     app(Context::class)->setOrg($org);
 

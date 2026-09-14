@@ -253,6 +253,16 @@ class DatabaseSeeder extends Seeder
         $reader->grant(Permissions::forEntryType('article', 'view'));
         $reader->grant(Permissions::forEntryType('article', 'update'));
 
+        /*
+         * ⚠️ A GRANT ON A TYPE THAT IS DISABLED FOR THE PRIMARY SITE, which is the only fixture that can show
+         * a site-specific form silently revoking one. `podcast` is turned off for `golfdom` above, so its
+         * section is absent from the role form there — and the save used to read an absent section as
+         * "unchecked" and revoke the grant, so editing a role's name from one site removed permissions
+         * another site needed. `e2e/roles.spec.js` saves from `golfdom` and then reads the grant back from
+         * `golfdom-fr`, where the section does appear.
+         */
+        $reader->grant(Permissions::forEntryType('podcast', 'view'));
+
         $readerUser = User::create([
             'name' => 'Reader User',
             'email' => 'reader@kitsune.test',

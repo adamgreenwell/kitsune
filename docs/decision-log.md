@@ -1875,9 +1875,160 @@ becomes a defect.
 
 So a link the record **already holds** keeps its value and loses its title: it renders as `Entry #12 — you may not view this entry type`, which discloses nothing the form did not already hand over, and the id stays in the selection so an unrelated edit saves. The exception is deliberately narrow — **this record, this field, and the field's own target types still apply** — because a forged id must still fail validation rather than reach `EntryRelation::guardTargetType()` as an exception after the entry has saved.
 
+### Administering roles, and where that screen lives
+
+⚠️ **A holder who is no longer a member keeps a label, and loses their name.** `role_user` carries no
+membership constraint — the consequence list below says so in as many words — so somebody removed from an org
+can keep an assignment that resolves nothing. The form hydrates that id, the org-scoped user query cannot see
+it, and Filament validates a multiple select's submitted options through the label resolver: the owner could
+not rename the role or change a grant until they noticed the one chip that would not save. The id is named
+and the person is not, and only an id that is ALREADY assigned gets that treatment, so it cannot become a way
+to add somebody the org cannot see. `FieldValueRenderer::relationLabels()` makes the same trade for the same
+reason — the second time this exact shape has appeared, which is what makes it a pattern rather than a bug.
+
+⚠️ **And "already assigned" was not narrow enough, which review found in the next round.** The fallback
+filtered `role_user` on the user id alone, so an id holding ANY role — another role, another org — earned a
+label; Filament accepts a labelled option and the form assigns every submitted id, so the exception that
+keeps a record saveable became a way to add somebody this org cannot see, and a way to ask whether an
+arbitrary id holds a role anywhere. It is scoped to the role being edited now: a labelled id is one that role
+already holds, and assigning it again is what `assignTo()` is already idempotent about. The pattern survives
+the correction and gains a second half — **name the id, withhold the person, and only for the row in hand.**
+
+⚠️ **Issue #84 said the assignment screen would live in the skeleton, and this reverses it on evidence.** The argument was that `role_user` references a `users` table core did not create and must not own — which still holds: **core owns no user model.** What changed is that it does not need one. `Permissions::userModel()` asks the **panel's own auth provider**, which is the same lesson review taught about the membership check: the provider cannot be wrong about which model it loads, and `config('auth.providers.users.model')` was a guess that failed open.
+
+The alternative cost more than it bought. A resource in the skeleton needs a navigation entry; navigation is supplied explicitly by `KitsunePanel` (ADR-012); so letting a host add one means opening an extension point in core **before the extension API exists**, which is exactly what Standing Principle #1 keeps shut until v1.2.
+
+**An org may not lose its last held owner role.** Refused by `Role` itself rather than by the form, because an org that loses its last owner cannot get one back: schema editing and role administration are both owner-only, so the only person who could restore the flag is the one who just removed it. The guard asks whether this change takes the **last held** one rather than whether the result has any — a fresh install mid-seed has an owner role nobody holds yet, and the second question would refuse to let a seeder correct one.
+
+⚠️ **And it was a check-then-act that two requests could both pass, which review found.** "This org still has somebody who can administer it" is a count across `roles`, `role_user` and the host's membership pivot, so no constraint expresses it and there is nothing to fall back on: two transactions demoting the last two held owner roles could each read the OTHER, pass, and commit. Each change is individually safe and the pair locks the org out permanently. `removeFrom()` was worse than the others — its check ran **before** its transaction opened, so whatever it read was released before the write.
+
+The owner reads are now **locking reads inside the write's own transaction**. Both transactions want a lock on the same row set — the org's owner roles — so the second waits and then re-reads; and a locking read is also what makes the re-read CURRENT under MySQL's and MariaDB's REPEATABLE READ, where an ordinary read answers from a snapshot that may predate the demotion this change queued behind. `Site::lockHostClaim()` records the same pair of reasons. The membership query is deliberately **not** locked: locking the host's `users` rows would put this guard in a lock order with every unrelated write to them.
+
+What the suite measures is that the clause is emitted, that the check runs at a transaction depth inside the write, and that the re-read sees another connection's committed demotion. That `FOR UPDATE` makes the second transaction wait is the engine's guarantee, and re-testing it here would be asserting InnoDB.
+
+⚠️ **Only a write of the flag itself is a demotion**, which reading the stored value made necessary to say: an ordinary role in memory while another transaction promotes its row arrives with the stored flag true and the instance's false, and a RENAME was then refused as though it were a demotion. Eloquent's update payload does not contain `is_owner` at all in that case — it preserves the owner rather than removing it. A guard that refuses a safe operation teaches people to route around it, and this is the one somebody meets while trying to fix their own org.
+
+⚠️ **And the guards read the STORED owner flag, not the instance's.** Review found the stale-instance half of the same race: an ordinary role held in memory while another transaction promotes that row to the org's only owner keeps `getOriginal('is_owner')` false, so `refuseIfLastOwner()` returned immediately and the stale instance deleted the row that had just become the org's last administrator. `removeFrom()`'s guard had the same early return on `$this->is_owner`, after which the raw pivot delete runs with nothing behind it. Both read the stored flag under the same lock as the decision now — the rule the whole family of findings produced, applied to the one place where the TIMING rather than the caller was the forger.
+
+⚠️ **The count excludes an ASSIGNMENT, not a person** — the other half of the same review round. A member holding two owner roles who gives one up is still an owner through the other, and excluding them from every owner role reported nobody left and refused a safe removal. Being told "this would lock you out" while demonstrably not is what teaches somebody to reach past the model.
+
+⚠️ **And the count itself asked the wrong model, which is the same finding one layer down.** Membership was
+tested through whatever user model the installation resolves — but `role_user.user_id` means whatever table
+it REFERENCES, and a host running two panels has two user models on two tables with two sequences. An id
+matching an unrelated row made a phantom owner out of a departed holder, and the last real owner's removal
+then passed a check that had already been fixed to require membership. `Permissions::roleIdsFor()` refuses
+assignments resolved through the wrong model; this count now refuses to answer at all, because the two guesses
+are not symmetric — a wrong "somebody is left" locks an org out permanently, and there is no recovery path.
+
+⚠️ **And the SELECTOR was the third place that check belonged.** `roleIdsFor()` refuses assignments resolved
+through a model the pivot does not reference and the owner count refuses to answer through one — while the
+holder picker went on listing that model's users, and the form assigns whatever ids come back. The panel would
+show one name and the grant would land on whoever holds that id in the table `role_user` actually references.
+The control is disabled with the reason on it, and `syncHolders()` asks the same question again at the write,
+because a disabled control is a rendering decision and the raw form state is submitted by the browser.
+
+⚠️ **And the picker assumed a user schema core does not own**, which review found once the model was the right
+one. It searched and ordered on `name` and `email` whatever the table had, so a host whose users carry `username`
+met a database error instead of a list. It now asks the table: `name` and `email` where they exist, an exact id
+where neither does. People are labelled through Filament's `HasName` when the model implements it — the contract
+the panel already names the signed-in user by — so a host describes its users once, to Filament, not twice.
+
+⚠️ **And disabling a control does not stop it NAMING people**, which is the same finding one layer in. The
+label resolver still went to that model, so a form nobody could change still stated that an unrelated person
+held real authority. The assignment is real and the identity is not available — two different statements — so
+the id is shown and the name is withheld.
+
+⚠️ **The role form is one transaction, which it was not.** Filament wraps `save()` and its `afterSave` hook
+already; the panel simply does not enable it. So an edit that changed grants and then tried to take the last
+owner away committed the role row and every grant, with their audit rows, before `syncHolders()` threw — a
+form reporting a failure that had already half happened, which is the same partial-authority-change shape the
+deletion observer produced a round earlier. Enabled on these pages rather than panel-wide: changing the
+failure semantics of every action in the admin at once is a decision with its own evidence to gather.
+
+⚠️ **And the bulk delete was the same thing on the list page.** Filament deletes selected records one at a
+time and `Role::delete()` opens a transaction of its own, so a selection holding a deletable role and then
+the org's last held owner role deleted the first — its assignments and its grants with it — and then threw.
+The operator is told the operation failed while part of it is permanently gone. `databaseTransaction()` is
+Filament's own opt-in for exactly that, and it is off by default.
+
 ### Consequence
 
 - **Core's RBAC enforces nothing until the host application has run the skeleton's `role_user` migration.** Already true of org scoping, so it is a pattern rather than a new hole — but it is written down here rather than left in somebody's memory.
+
+- **Deleting a user revokes their assignments through the audited path, or it does not happen.** Review found
+  the cascade: `role_user.user_id` references the host's users table, so deleting a user removed every
+  assignment they held with no `role.unassigned` row and without consulting the last-owner guard — one
+  deletion could leave an organisation unable to administer roles or edit its schema, permanently, with
+  nothing in the log. `RevokesRoleAssignments` is an observer the host attaches (`#[ObservedBy]`, the same
+  declarative shape as the scope attributes, because core owns no user model); it revokes through
+  `Role::removeFrom()` and lets the last-owner guard refuse the deletion outright. The migration's foreign key
+  is `restrictOnDelete()` beside it, so a host that has not attached the observer fails loudly instead of
+  quietly losing an owner. ⚠️ Soft deletes are deliberately untouched: a trashed user cannot authenticate, so
+  the assignment confers nothing, and revoking it would make a restore return somebody with no authority.
+
+- **And removing somebody's MEMBERSHIP is the same authority change, guarded the same way.** Review found
+  every guard on this branch protecting one half: `Permissions` requires an assignment AND membership of the
+  org, so `$user->orgs()->detach($orgId)` takes the last owner's authority away exactly as removing their
+  role would — while firing no model event, consulting no guard and writing no audit row. The surviving
+  `role_user` row then resolves nothing and the organisation cannot administer itself. `GuardedOrgMembership`
+  refuses that removal, and the host opts in the way it opts into the deletion observer, because core owns no
+  user model. ⚠️ A relation rather than an observer, because Laravel fires no events for `attach()` and
+  `detach()` — not even with a pivot model; `GuardedBelongsToMany` made the same move for entry relations for
+  the same reason. ⚠️ And it refuses only the removal that leaves nobody: an ordinary member's departure, and
+  a departure that leaves another effective owner, both go through.
+
+  ⚠️ **The cross-org sweep is ordered, too.** Each iteration of the deletion observer takes an org mutex
+  through `removeFrom()`, so two users holding roles in the same pair of organisations could be swept in
+  opposite orders and hold each other's rows. `(org_id, id)` is a shared order every sweep follows — the same
+  lock-ordering lesson as the owner sweep, one layer out.
+
+  ⚠️ **And membership is authority in both directions, which the guard's first version treated as a refusal
+  and nothing more.** Review found the successful paths unrecorded: detaching a role holder took every grant
+  they held with no row, and attaching them again gave it all back — the assignments survive — just as
+  silently, while a memo taken before either went on answering the old way for the rest of the request. Both
+  directions are now one transaction with the org row first, write one row per person under the org the
+  membership belongs to (`org.member_removed` / `org.owner_removed`, `org.member_added` / `org.owner_added`,
+  owner-ness in the action as for assignments), and drop the permission memo once they commit. Only a role
+  holder's membership writes a row, because a member with no role there gains or loses nothing `Permissions`
+  resolves. The relation's pairs are sorted by `(org, user)` before any lock, for the reason the sweep is:
+  two detaches naming the same orgs in opposite orders held each other's rows. ⚠️ Ordering them turned up a
+  worse defect on the same line — a detach with no ids read the user's own pivot column for the org ids, so
+  `$user->orgs()->detach()` asked the guard about the wrong organisation and removed the last owner's
+  membership with every other.
+
+  ⚠️ **And the guard asked about membership in the wrong place twice more, which review found.** It read
+  holders through the user model's membership scope, which constrains to whatever org the *context* names — so
+  a detach made from another org, or from a console sweep with no org at all, counted nobody as a member of the
+  org being left and let its last owner go. It now asks under that org and gives the caller's context back. And
+  a detach of every membership deleted every row the user held by the time of the delete, not the ones it had
+  read and checked, so a membership another transaction attached in between went with no lock, no check and no
+  audit row. The delete names what was read.
+
+  ⚠️ **And two more doors went around the relation's own methods, which review found last.** Laravel's `sync()` detaches and
+  then attaches, each committing alone, so a sync whose attach failed had already committed and audited a removal;
+  `sync()` and `toggle()` are one transaction now. And `updateExistingPivot()` wrote the pivot row directly, so
+  moving a membership's `org_id` in place skipped every guard above; `org_user` is nothing but its two keys, so a
+  key change there is refused with the way to make it.
+
+  ⚠️ **And the sweep is one transaction, which review found it was not.** A user holding roles in two
+  organisations could have the first revoked and audited and the second refused by the last-owner guard: the
+  deletion failed and the person kept their account while permanently losing authority the refusal existed to
+  protect — two individually correct operations, wrong together, for the third time on this branch. What one
+  transaction still cannot cover is stated rather than implied: `Model::delete()` opens none of its own, so a
+  host that needs the revocation and the deletion to be atomic wraps the call.
+
+  ⚠️ **A trashed org's assignments are still rows.** `Org::query()` excludes soft-deleted orgs, so the sweep
+  skipped those roles, the pivot survived, and the restrictive key then refused the deletion with a database
+  error rather than an audited revocation or a stated refusal. Resolved `withTrashed()`.
+
+  ⚠️ **And `setOrg()` clears the site**, so a sweep through another organisation left the request with no site
+  at all — after which everything site-scoped fails closed and later audit rows lose their attribution. The
+  site is captured and restored with the org.
+
+  ⚠️ **The test schema mirrors the reference migration**, because it did not: the fixture cascaded while the
+  skeleton restricts, so the suite could never exercise the backstop and would have silently erased an
+  assignment the observer missed. A fixture more forgiving than the shipped schema tests a different
+  application.
 
 - **RBAC requires integer user keys, and that is a constraint on the HOST rather than a preference.**
   `role_user.user_id` is a bigint foreign key to the host's `users` table, so an installation whose users
@@ -1911,7 +2062,11 @@ So a link the record **already holds** keeps its value and loses its title: it r
 
 - **A stale instance may not change the owner flag.** `EnforcesScope` revalidates a scope key only when it is *dirty*, so an org A role retained after a worker moved to org B could still be promoted — and the audit row was then written under B, or dropped silently with no context at all. The four authority helpers already refused that; the flag was the fifth way authority changes and was not asking.
 
-- **Deleting a role records the revocation before the cascade takes it** — for **every** holder, not only an owner's. The database cascades `role_user` for any role, and a role carrying ordinary grants is authority too, so `role.unassigned` is what its holders lost. The rows go in first and inside the same transaction, because afterwards there is no `role_user` left to read them from.
+  ⚠️ **And a stale instance may not be SAVED at all, which is the same finding one step further out.** The guard above fires only when `is_owner` is dirty, and `EnforcesScope` validates the value being *written* against the current context — so a role loaded under A, with `org_id` then set to B while the context is B, passed everything and **moved**, carrying its grants and its assignments, taking A's last owner with it and conferring authority in B with nothing in the log. The opposite move — one of the current org's roles pushed into another's — is refused by `EnforcesScope::guardScopeKey()`, and `RoleIsolationTest` asserts that rather than this list claiming it. ⚠️ **Its first fix compared `getOriginal('org_id')`, which review found forgeable too** — `syncOriginal()` is public — so this and the five authority helpers all ask `OrgScope`'s own query about the stored row instead, which is the one answer a caller cannot arrange.
+
+- **The builder's proof is consumed by the attempt, however the attempt ends.** `saved` clears the flag that tells `GuardedRoleBuilder` an instance save's guards have run, and an aborted save never reaches `saved` — a failing audit insert in that listener (a context naming a concurrently deleted site is enough) left the instance still claiming it. A caller catching that and retrying through `saveQuietly()`, which fires no listener at all, would have presented the proof for a write nothing checked. Cleared in a `finally` around both `save()` and `delete()`, which is the rule `DerivesGuardedColumns` already records for the four `RequiresModelSave` models.
+
+- **Deleting a role records the revocation for **every** holder, not only an owner's.** The database cascades `role_user` for any role, and a role carrying ordinary grants is authority too, so `role.unassigned` is what its holders lost. ⚠️ **The ORDER was wrong for a round**, and this bullet said so: the rows went in before the delete, which a `deleting` observer returning `false` turned into a false record the transaction then committed. The holders are read first — the cascade takes them with the role — and the rows are written once the delete has succeeded, all inside the one transaction. See the revocation bullet below.
 
 - **Deletion is the fifth authority path and asks the same org question as the other four.** Eloquent's instance delete writes by primary key without reapplying the global scope, so a role that outlived a context switch could be deleted from another org — with its revocation audits attributed to that org.
 
@@ -2078,6 +2233,24 @@ So a link the record **already holds** keeps its value and loses its title: it r
   writes the role row, so it takes that lock on its own account; `assignTo()` and `removeFrom()` take it
   explicitly **before** touching `role_user`, and the holders read takes it from the other side so a
   transition waits for an assignment in flight rather than counting past it.
+
+  ⚠️ **And the ORG row is the mutex above it, because the owner sweep locks a SET.** Review found the cycle:
+  a demotion locks its own role and then `effectiveOwners()` locks every owner role in the org, so two
+  demotions of different roles each hold a row the other wants — the database resolves that as a deadlock
+  rather than as one success and one last-owner refusal, which is the serialisation these guards were
+  written for, defeated by the ORDER they acquire locks in. One row every such operation takes FIRST turns a
+  cycle into a queue, and the org is the natural one: the invariant is "this organisation still has somebody
+  who can administer it". ⚠️ Taken from the CONTEXT rather than the role's stored row, because reading that
+  would be another role lock before this one — every path has already established the role belongs to the
+  current org. ⚠️ And not in `assignTo()`, which locks its own role and sweeps nothing: it cannot be half of
+  a cycle, and a lock taken for tidiness is contention with no invariant behind it.
+
+  ⚠️ **The first version of that fix was in the wrong place and the first version of its test could not tell.**
+  The mutex went inside the last-owner guard — after `refuseIfNotCurrentOrg()` and `storedOwnerFlag()`, both
+  locking reads of the role — so the first role lock was already taken. And the test compared the first org
+  lock with the first role lock across the WHOLE test, so a removal's mutex satisfied the assertion on a
+  demotion's behalf: reverting the demotion's mutex left it green. Each operation is measured in its own
+  window now.
 
 - **A vetoed deletion clears the proof it earned.** `performDeleteOnModel()` clears the guard proof in a
   `finally`, and an application observer returning false means that method is never entered — so the proof

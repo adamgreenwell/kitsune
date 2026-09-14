@@ -199,20 +199,25 @@ class Role extends Model
      */
     public function save(array $options = []): bool
     {
+        /*
+         * ⚠️ THE FLAG IS CONSUMED BY THE ATTEMPT, HOWEVER THE ATTEMPT ENDS, which review found it was not.
+         * `saved` clears it, and an aborted save never reaches `saved` — so an audit insert throwing in that
+         * listener (the stale-site foreign key, which `RoleIsolationTest` already exercises) rolled the
+         * transaction back and left this instance still claiming its guards had run. Catching that and
+         * retrying with `saveQuietly()` would then present a proof to `GuardedRoleBuilder` for a write whose
+         * lifecycle checks never ran at all.
+         *
+         * `DerivesGuardedColumns` records the same rule for the same reason, in a `finally` around
+         * `performInsert()`/`performUpdate()`: a proof belongs to ONE attempt.
+         *
+         * ⚠️ AND A VETO IS THE SAME EXIT, which #83's review found separately. An application observer registered
+         * after this model's own, returning `false` from `saving`, makes Eloquent return before `performUpdate()`
+         * and before `saved` — so `$writingThrough` is dropped here too, rather than left for a quiet retry to
+         * present beside nothing.
+         */
         try {
             return (bool) DB::transaction(fn (): bool => parent::save($options));
         } finally {
-            /*
-             * ⚠️ A VETO LEAVES THROUGH THE FRONT DOOR, which neither clear could see — review found it. The
-             * `saving` listener arms `$guardsRan`; `performUpdate()`'s `finally` and the `saved` listener disarm
-             * it. An application observer registered after this model's own, returning `false` from `saving`,
-             * makes Eloquent return before either — so the proof stayed armed, and a `saveQuietly()` on the
-             * same instance then supplied a matching `$writingThrough` beside it and wrote `is_owner` or
-             * `org_id` with no per-holder audit and no org check.
-             *
-             * `save()` is the one boundary every exit passes, the veto included, so the proof is dropped here as
-             * well. The inner clears stay: each is where its own path ends.
-             */
             $this->guardsRan = false;
             $this->writingThrough = null;
         }
@@ -236,67 +241,80 @@ class Role extends Model
          */
         $this->refuseIfNotCurrentOrg('delete');
 
-        return DB::transaction(function (): ?bool {
-            /*
-             * ⚠️ THE HOLDERS ARE READ BEFORE THE DELETE AND RECORDED AFTER IT, and doing both before was a
-             * false record waiting to happen — review found it. An application observer returning `false`
-             * from `deleting` aborts the delete, `parent::delete()` returns false, and this transaction
-             * commits normally: the role and every assignment survive while the log says their authority was
-             * revoked. Repeating the attempt would add another set of false rows.
-             *
-             * They cannot be read afterwards either, because the database cascades `role_user` away with the
-             * role — so the read has to come first and the write has to come second.
-             */
-            /*
-             * ⚠️ THE ROLE FIRST, THEN ITS PIVOT ROWS — and the order was inverted here, which review caught.
-             * Every other path takes the role's lock before touching `role_user` (`assignTo()` records why),
-             * and this one read the holders first: two paths in opposite orders is a deadlock waiting for
-             * load, and in between the two statements an assignment could commit, so the cascade removed a
-             * different set of rows than the audit recorded. A holder assigned in that window lost authority
-             * with no `role.unassigned`; one removed in it could be audited twice.
-             *
-             * `storedOwnerFlag()` is a locked read of the role, so calling it first takes that lock and costs
-             * no extra query — the flag was needed anyway.
-             */
-            $wasOwner = $this->storedOwnerFlag();
-
-            $holders = DB::table('role_user')
-                ->where('role_id', $this->getKey())
-                ->lockForUpdate()
-                ->pluck('user_id')
-                ->map(static fn (mixed $id): int => (int) $id)
-                ->all();
-
-            $deleted = parent::delete();
-
-            if ($deleted === false) {
+        // ⚠️ And the proof is cleared however this ends — see `save()` and `performUpdate()`. `deleted` is
+        // not reached when the revocation audit throws, and the instance would keep a proof it no longer
+        // earned.
+        try {
+            return DB::transaction(function (): ?bool {
                 /*
-                 * ⚠️ A VETOED DELETION LEAVES THE PROOF STANDING, which review found. The `deleting`
-                 * listener earns `$guardsRan` and `performDeleteOnModel()` clears it in a `finally` — but an
-                 * application observer returning false means `parent::delete()` returns before that method
-                 * is ever entered. The proof then survives on the instance, and a later `saveQuietly()`
-                 * supplies the other half: `authorityProven()` accepts it and the quiet save writes
-                 * `is_owner` or `org_id` with no org check, no per-holder audit and no cache invalidation.
+                 * ⚠️ THE ROLE FIRST, THEN ITS PIVOT ROWS — and the order was inverted here, which review
+                 * caught. Every other path takes the role's lock before touching `role_user` (`assignTo()`
+                 * records why), and this one read the holders first: two paths in opposite orders is a
+                 * deadlock waiting for load, and in between the two statements an assignment could commit,
+                 * so the cascade removed a different set of rows than the audit recorded. A holder assigned
+                 * in that window lost authority with no `role.unassigned`; one removed in it could be
+                 * audited twice.
                  *
-                 * The same shape as every other finding in this family — a proof that outlives the write it
-                 * was earned for — reached this time through somebody else's veto rather than through a
-                 * forged attribute.
+                 * `storedOwnerFlag()` is a locked read of the role, so calling it first takes that lock and
+                 * costs no extra query — the flag was needed anyway.
                  */
-                $this->guardsRan = false;
+                // ⚠️ And the shared org row before that read, which is itself a role lock — the `deleting`
+                // listener takes the same one, and taking it twice in a transaction costs nothing.
+                $this->lockSharedOrgRow();
+
+                $wasOwner = $this->storedOwnerFlag();
+
+                /*
+                 * ⚠️ THE HOLDERS ARE READ BEFORE THE DELETE AND RECORDED AFTER IT, and doing both before was
+                 * a false record waiting to happen — review found it. An application observer returning
+                 * `false` from `deleting` aborts the delete, `parent::delete()` returns false, and this
+                 * transaction commits normally: the role and every assignment survive while the log says
+                 * their authority was revoked. Repeating the attempt would add another set of false rows.
+                 *
+                 * They cannot be read afterwards either, because the database cascades `role_user` away with
+                 * the role — so the read has to come first and the write has to come second.
+                 */
+                $holders = DB::table('role_user')
+                    ->where('role_id', $this->getKey())
+                    ->lockForUpdate()
+                    ->pluck('user_id')
+                    ->map(static fn (mixed $id): int => (int) $id)
+                    ->all();
+
+                $deleted = parent::delete();
+
+                if ($deleted === false) {
+                    /*
+                     * ⚠️ A VETOED DELETION LEAVES THE PROOF STANDING, which review found. The `deleting`
+                     * listener earns `$guardsRan` and `performDeleteOnModel()` clears it in a `finally` —
+                     * but an application observer returning false means `parent::delete()` returns before
+                     * that method is ever entered. The proof then survives on the instance, and a later
+                     * `saveQuietly()` supplies the other half: `authorityProven()` accepts it and the quiet
+                     * save writes `is_owner` or `org_id` with no org check, no per-holder audit and no cache
+                     * invalidation.
+                     *
+                     * The same shape as every other finding in this family — a proof that outlives the write
+                     * it was earned for — reached through somebody else's veto rather than a forged
+                     * attribute.
+                     */
+                    $this->guardsRan = false;
+
+                    return $deleted;
+                }
+
+                /*
+                 * ⚠️ EVERY HOLDER LOSES AUTHORITY, NOT ONLY AN OWNER'S, which review found the first version
+                 * missing: the condition recorded revocations only for owner roles, while the database
+                 * cascades `role_user` for every role and a role carrying ordinary grants is authority too.
+                 * ADR-033's guarantee is about authority, so the log has to be as well.
+                 */
+                $this->recordOwnerChange($wasOwner ? 'unassigned' : null, holders: $holders);
 
                 return $deleted;
-            }
-
-            /*
-             * ⚠️ EVERY HOLDER LOSES AUTHORITY, NOT ONLY AN OWNER'S, which review found the first version
-             * missing: the condition recorded revocations only for owner roles, while the database cascades
-             * `role_user` for every role and a role carrying ordinary grants is authority too. ADR-033's
-             * guarantee is about authority, so the log has to be as well.
-             */
-            $this->recordOwnerChange($wasOwner ? 'unassigned' : null, holders: $holders);
-
-            return $deleted;
-        });
+            });
+        } finally {
+            $this->guardsRan = false;
+        }
     }
 
     /**
@@ -315,6 +333,11 @@ class Role extends Model
      */
     protected static function booted(): void
     {
+        /*
+         * ⚠️ THE GUARDS RUN BEFORE THE WRITE AND THE AUDIT AFTER IT, which is the only ordering that is
+         * correct: a change refused by `refuseIfLastOwner()` must leave no audit row, and a change that
+         * happened must leave one.
+         */
         static::saving(static function (self $role): void {
             /*
              * ⚠️ A STALE INSTANCE MAY NOT CHANGE THE OWNER FLAG, which review found: `EnforcesScope`
@@ -323,6 +346,20 @@ class Role extends Model
              * silently when there was no context at all. The four authority helpers already refuse this;
              * the flag is the fifth way authority changes and was not asking.
              */
+            /*
+             * ⚠️ THE SHARED ORG ROW FIRST, BEFORE ANY GUARD READS A ROLE ROW — see `lockSharedOrgRow()`.
+             * `refuseIfNotCurrentOrg()` and `storedOwnerFlag()` are both locking reads of THIS role, so
+             * putting the mutex inside the last-owner guard was too late: the first role lock had already
+             * been taken and the cycle was already possible. Measured on PostgreSQL, where the test reads
+             * the lock order rather than trusting it.
+             *
+             * The condition needs no read: a save reaches the owner sweep only when the flag is being
+             * written, and a delete always does.
+             */
+            if ($role->exists && $role->isDirty('is_owner')) {
+                $role->lockSharedOrgRow();
+            }
+
             if ($role->exists && $role->isDirty('is_owner')) {
                 $role->refuseIfNotCurrentOrg('change the owner flag on');
 
@@ -348,16 +385,30 @@ class Role extends Model
              * the context is B moved there with its grants and its assignments, and an ordinary rename wrote
              * to another customer's row. Both are the same question — is this ROW ours — and the scoped query
              * inside the guard is what answers it.
+             *
+             * ⚠️ THIS REPLACED AN ATTRIBUTE-BASED VERSION OF THE SAME GUARD rather than joining it. That one
+             * compared `getOriginal('org_id')` to the context, which review then pointed out is forgeable —
+             * `syncOriginal()` is public — so one guard asking the database is both stronger and the only one
+             * left to keep honest.
              */
             if ($role->exists) {
                 $role->refuseIfNotCurrentOrg('save');
             }
+
+            $role->refuseIfLastOwner('clear the owner flag on');
 
             // Earned for this write only; `saved` clears it so the next one has to earn it again.
             $role->guardsRan = true;
         });
 
         static::deleting(static function (self $role): void {
+            // ⚠️ The same mutex, for the same reason: a delete always reaches the owner sweep.
+            if ($role->exists) {
+                $role->lockSharedOrgRow();
+            }
+
+            $role->refuseIfLastOwner('delete');
+
             $role->guardsRan = true;
         });
 
@@ -458,6 +509,319 @@ class Role extends Model
 
         foreach ($holders as $userId) {
             app(Auditor::class)->record($action, $this->assignee((int) $userId));
+        }
+    }
+
+    /**
+     * Refuse a change that would leave this org with nobody who can administer it — issue #84.
+     *
+     * ⚠️ AN ORG THAT LOSES ITS LAST OWNER CANNOT GET ONE BACK, which is what makes this worth a guard rather
+     * than a warning. Schema editing and role administration are both owner-only in v1.0 (ADR-033), so the
+     * only person who could restore the flag is the person who just removed it — and the vocabulary has no
+     * permission that would let anyone else. A support ticket is the recovery path, and there is no support.
+     *
+     * ⚠️ AT THE MODEL RATHER THAN IN THE FORM, which is the rule this project keeps relearning: the ROUTE is
+     * the boundary, not the button. A form guard is bypassed by the API, by a console command and by the
+     * next page somebody writes.
+     *
+     * ⚠️ AND IT ONLY FIRES WHERE THERE IS SOMETHING TO LOSE. An org with no held owner role yet — a fresh
+     * install, mid-seed — is not being locked out by creating one, so the check asks whether this change
+     * would take the LAST one rather than whether the result has any.
+     *
+     * ⚠️ IT RUNS INSIDE THE WRITE'S OWN TRANSACTION, which is what makes the lock in `effectiveOwners()`
+     * worth anything: a lock released before the write lands serialises nothing. Both callers are model
+     * events — `saving` and `deleting` — and `save()` and `delete()` each wrap `parent::` in a transaction
+     * for the audit rows, so the check, the lock and the write are one unit. `removeFrom()` had its check
+     * OUTSIDE its transaction and review found it; it does not any more.
+     */
+    private function refuseIfLastOwner(string $operation): void
+    {
+        /*
+         * ⚠️ THE STORED FLAG, NOT `getOriginal()` — review found the stale-instance case, and it is the
+         * concurrency half of the family this branch has been sweeping. An ordinary role held in memory while
+         * ANOTHER transaction promotes that row to the org's only owner keeps `getOriginal('is_owner')` false,
+         * so this returned immediately and the stale instance deleted the row that had become the only thing
+         * standing between the org and nobody being able to administer it.
+         *
+         * The read is locked, so it also cannot answer from a snapshot taken before that promotion committed.
+         * Turning the flag ON, or any other edit to a role that is not an owner, still cannot remove an owner.
+         */
+        if (! $this->exists) {
+            return;
+        }
+
+        if (! $this->storedOwnerFlag()) {
+            return;
+        }
+
+        /*
+         * ⚠️ ONLY A WRITE OF THE FLAG ITSELF IS A DEMOTION, which review found this getting wrong the moment
+         * the guard started reading the STORED value. An ordinary role in memory while another transaction
+         * promotes its row arrives here with the stored flag true and `$this->is_owner` false — and an
+         * unrelated save, a rename, was then treated as a demotion and refused. Eloquent's update payload
+         * does not contain `is_owner` at all in that case: it would preserve the owner, not remove it.
+         *
+         * So a non-delete operation asks whether the flag is actually being WRITTEN, and only then whether it
+         * is being cleared. The delete path skips this, because deleting an owner role removes the flag
+         * whether or not anybody touched it.
+         */
+        if ($operation !== 'delete' && (! $this->isDirty('is_owner') || $this->is_owner)) {
+            return;
+        }
+
+        if (! $this->isOnlyHeldOwnerRole()) {
+            return;
+        }
+
+        throw new RuntimeException(sprintf(
+            'Refusing to %s role %s: it is the only owner role in this organisation with anybody holding '
+            .'it, and owner is the only role that may administer roles or edit the schema (ADR-033). '
+            .'Removing it would leave nobody able to put it back.',
+            $operation,
+            (string) $this->getKey(),
+        ));
+    }
+
+    /**
+     * The org the row belongs to, as the database holds it.
+     *
+     * ⚠️ ONE READ, SHARED BY THE GUARDS THAT MUST NOT TRUST AN ATTRIBUTE. `storedOwnerFlag()` exists for the
+     * same reason on the same row; both are cheap because an authority change is rare, and both answer the
+     * question five review findings kept asking in different words — whose row is this, really.
+     */
+    private function storedOrgId(): ?int
+    {
+        // ⚠️ Locked for the reason `storedOwnerFlag()` gives: it feeds the owner count, which is the
+        // invariant itself, so a snapshot read here would be the race the locks were added to close.
+        $org = static::query()
+            ->withoutGlobalScopes()
+            ->whereKey($this->getKeyForSaveQuery())
+            ->lockForUpdate()
+            ->value('org_id');
+
+        return $org === null ? null : (int) $org;
+    }
+
+    /** Is this the only owner role in its org that anybody actually holds? */
+    private function isOnlyHeldOwnerRole(): bool
+    {
+        return $this->effectiveOwners() !== [] && $this->effectiveOwners(exceptRole: (int) $this->getKey()) === [];
+    }
+
+    /**
+     * The people who can actually administer this org right now.
+     *
+     * ⚠️ HOLDING AN OWNER ROLE IS NOT ENOUGH — THEY HAVE TO BE A MEMBER, which review found the guard
+     * ignoring. `assignTo()` is public and membership can be removed afterwards, so a `role_user` row may
+     * name somebody this org no longer contains. The old check counted that inert pivot as a held owner role
+     * — so demoting the last role held by a real member passed, while `Permissions` refuses the remaining
+     * assignee and nobody can administer the org. The guard has to ask the same question the resolver asks.
+     *
+     * ⚠️ MEMBERSHIP IS ASKED THROUGH THE USER MODEL'S OWN SCOPED QUERY under this role's org, which is the
+     * one place that knows what membership means (`#[OrgScopedThroughPivot]`). With no resolvable user model
+     * — a console context with no panel — every holder counts, because refusing to believe in any of them
+     * would make the guard refuse every change on an installation it cannot inspect.
+     *
+     * ⚠️ THE OWNER READS ARE LOCKING READS, AND THAT IS WHAT SERIALISES THE GUARD — review found the race.
+     * This is a check-then-act on a condition no index can express, so two transactions demoting the last
+     * two held owner roles could each read the OTHER, pass, and commit: an org with no administrator, from
+     * two changes that were each individually safe. `FOR UPDATE` on the org's owner roles is the mutex,
+     * because both transactions want a lock on the same row set — whichever arrives second waits, and then
+     * re-reads and refuses.
+     *
+     * ⚠️ AND IT IS ALSO WHAT MAKES THE RE-READ CURRENT. Under MySQL's and MariaDB's REPEATABLE READ an
+     * ordinary read answers from the transaction's snapshot, so a demotion committed while this change
+     * queued would be invisible and the guard would pass on data from before it waited. A locking read sees
+     * the latest committed row. `Site::lockHostClaim()` records the same pair of reasons; SQLite compiles the
+     * clause to nothing and serialises writers at the database level, which is the same guarantee by another
+     * route.
+     *
+     * ⚠️ THE MEMBERSHIP QUERY IS DELIBERATELY NOT LOCKED. Locking the host's `users` rows would put this
+     * guard in a lock order with every unrelated write to them, and membership changing under a concurrent
+     * owner change is a different invariant — `Permissions` asks the same question at check time, so the
+     * answer is re-derived rather than frozen here.
+     *
+     * ⚠️ `$exceptHolder` EXCLUDES ONE ASSIGNMENT, NOT ONE PERSON, which review found this getting wrong: a
+     * member holding TWO owner roles who gives up one is still an owner through the other, and excluding
+     * them from every owner role reported nobody left and refused a safe removal. The pair is what is being
+     * removed, so the pair is what the count has to leave out.
+     *
+     * @return list<int>
+     */
+    private function effectiveOwners(?int $exceptRole = null, ?int $exceptHolder = null): array
+    {
+        /*
+         * ⚠️ THE ORG COMES FROM THE STORED ROW, NOT FROM THE ATTRIBUTE — found by sweeping the family review
+         * had already found five members of, rather than by waiting for it to find the sixth. `$this->org_id`
+         * is a pending edit until it is saved, and `refuseIfNotCurrentOrg()` only establishes that the stored
+         * ROW is in the current org: point the attribute at somebody else's org and this counted THEIR owners
+         * as this org's safety net, so the last held owner role here could be demoted because another
+         * customer has one.
+         */
+        $roles = static::query()
+            ->withoutGlobalScopes()
+            ->where('org_id', $this->storedOrgId())
+            ->where('is_owner', true)
+            ->when($exceptRole !== null, fn ($query) => $query->whereKeyNot($exceptRole))
+            ->lockForUpdate()
+            ->pluck('id');
+
+        $holders = DB::table('role_user')
+            ->whereIn('role_id', $roles)
+            /*
+             * ⚠️ Written as `role_id <> this OR user_id <> them` rather than as a negated pair, because
+             * that is one clause every engine plans the same way and neither column is nullable. It means
+             * NOT (this role AND this holder) — every other row of theirs still counts.
+             */
+            ->when($exceptHolder !== null, fn (Builder $query) => $query->where(
+                fn (Builder $row) => $row->where('role_id', '!=', $this->getKey())
+                    ->orWhere('user_id', '!=', $exceptHolder),
+            ))
+            ->lockForUpdate()
+            ->pluck('user_id')
+            ->map(static fn (mixed $id): int => (int) $id)
+            ->unique()
+            ->values()
+            ->all();
+
+        if ($holders === []) {
+            return [];
+        }
+
+        return self::membersAmong($holders, (int) $this->storedOrgId());
+    }
+
+    /**
+     * Would this organisation lose its last effective owner if this person stopped being a member?
+     *
+     * ⚠️ MEMBERSHIP IS THE OTHER HALF OF AUTHORITY, and review found the guard protecting only one of them.
+     * `Permissions` requires a role assignment AND membership of the org, so detaching `org_user` takes
+     * somebody's authority away exactly as removing their role does — and `$user->orgs()->detach($orgId)`
+     * fires no model event, runs no guard, and writes no audit row. The last-owner guarantee ADR-033 makes
+     * was defeasible by removing the wrong row.
+     *
+     * ⚠️ TRUE ONLY IF THEY ARE ONE NOW. Somebody who holds no owner role takes nothing with them, and an org
+     * whose owner roles nobody holds is not being locked out by anybody leaving — the same line
+     * `refuseIfLastOwner()` draws.
+     *
+     * The reads are locked and the caller is expected to hold the org row already, so the answer cannot move
+     * between the decision and the delete.
+     */
+    public static function orgWouldLoseItsLastOwner(int $orgId, int $userId): bool
+    {
+        $roles = static::query()
+            ->withoutGlobalScopes()
+            ->where('org_id', $orgId)
+            ->where('is_owner', true)
+            ->lockForUpdate()
+            ->pluck('id');
+
+        if ($roles->isEmpty()) {
+            return false;
+        }
+
+        $holders = DB::table('role_user')
+            ->whereIn('role_id', $roles)
+            ->lockForUpdate()
+            ->pluck('user_id')
+            ->map(static fn (mixed $id): int => (int) $id)
+            ->unique()
+            ->values()
+            ->all();
+
+        $effective = self::membersAmong($holders, $orgId);
+
+        return in_array($userId, $effective, true)
+            && array_values(array_diff($effective, [$userId])) === [];
+    }
+
+    /**
+     * Which of these holders can actually exercise authority in this org right now?
+     *
+     * ⚠️ EXTRACTED SO A SECOND CALLER CAN ASK THE SAME QUESTION, not for tidiness. Removing somebody's org
+     * MEMBERSHIP takes their authority away exactly as removing the role does — `Permissions` requires both
+     * — so the guard protecting the last owner has to be reachable from the membership side too, and two
+     * copies of "who really has authority here" is one copy that drifts.
+     *
+     * @param  list<int>  $holders
+     * @return list<int>
+     */
+    private static function membersAmong(array $holders, int $orgId): array
+    {
+        $model = Permissions::userModel();
+
+        if ($model === null) {
+            /*
+             * ⚠️ NOTHING TO ASK, WHICH IS NOT THE SAME AS ASKING THE WRONG THING. With no resolvable user
+             * model there is no membership query to run and no authenticated person for the answer to be
+             * wrong about, so the assignment rows are the only evidence there is and they are used as-is.
+             * The limitation is that an assignment whose holder has left is counted; it is stated here
+             * rather than hidden, and the case below is the one that had to change.
+             */
+            return $holders;
+        }
+
+        /*
+         * ⚠️ A MODEL THE ASSIGNMENTS ARE NOT ABOUT ANSWERS A DIFFERENT QUESTION, and review found this
+         * counting ITS rows as owners. `role_user.user_id` means whatever table it references; a host running
+         * two panels has two user models on two tables with two sequences, so both have a user 9 —
+         * `Permissions::roleIdsFor()` already refuses assignments resolved through the wrong one, and this
+         * count did not. The failure is the worst one this guard has: a departed holder's id matching an
+         * unrelated row made a phantom owner, the last REAL owner's removal passed the check, and an org
+         * that cannot administer itself has no recovery path (ADR-033).
+         *
+         * Refusing rather than falling back to the raw holders, because the fallback is what causes the
+         * lock-out: both answers are guesses, and only one of them is unrecoverable. In this configuration
+         * `Permissions` confers no role authority at all, so refusing to change owner authority is the same
+         * sentence said at the other end — and the configuration is fixable, which the lock-out is not.
+         */
+        if (! Permissions::assignmentsAreAbout($model)) {
+            throw new RuntimeException(sprintf(
+                'Refusing to answer who can administer organisation %s: assignments are rows in role_user, and the '
+                .'user model this installation resolves (%s) is not the one that column references — it is '
+                .'on another table or another connection. Who would still be able to administer this '
+                .'organisation cannot be determined from it, and guessing wrong locks the organisation out '
+                .'permanently (ADR-033). Point the panel or auth provider at the model role_user '
+                .'references.',
+                (string) $orgId,
+                $model,
+            ));
+        }
+
+        /*
+         * ⚠️ UNDER THE ORG BEING ASKED ABOUT, NOT THE CALLER'S — review found the membership scope reading the
+         * context. `OrgMembershipScope` constrains to whatever org the context names, so a detach made from
+         * another org's context, or from a console sweep with none, found no members of the org being left at
+         * all: its only owner looked like nobody, and the guard let the org lose them. Switched for the read and
+         * restored after, as the membership audit rows are — so "member" means exactly what `Permissions` asks
+         * under that org, rather than a second description of it.
+         */
+        $org = Org::query()->withTrashed()->whereKey($orgId)->first();
+
+        if (! $org instanceof Org) {
+            return [];
+        }
+
+        $context = app(Context::class);
+
+        // The site too, because `setOrg()` clears a site that belongs to another org.
+        $restoreOrg = $context->org();
+        $restoreSite = $context->site();
+
+        try {
+            $context->setOrg($org);
+
+            return $model::query()
+                ->whereIn('id', $holders)
+                ->pluck('id')
+                ->map(static fn (mixed $id): int => (int) $id)
+                ->all();
+        } finally {
+            if ($restoreSite !== null) {
+                $context->setSite($restoreSite);
+            } else {
+                $context->setOrg($restoreOrg);
+            }
         }
     }
 
@@ -709,9 +1073,18 @@ class Role extends Model
         $this->refuseIfNotCurrentOrg('removeFrom');
 
         DB::transaction(function () use ($userId): void {
+            /*
+             * ⚠️ THE SHARED ORG ROW BEFORE THIS ROLE'S — see `lockSharedOrgRow()`. This path reaches the
+             * owner sweep through `refuseLosingTheLastOwner()`, which locks every owner role in the org, so
+             * it has to join the same queue as a demotion or the two can hold each other's rows.
+             */
+            $this->lockSharedOrgRow();
+
             // ⚠️ Locked before the pivot, for the reason `assignTo()` records: a removal and a concurrent
             // owner transition have to be one order, or the trail records one of them and not the other.
             $this->lockRow();
+
+            $this->refuseLosingTheLastOwner($userId);
 
             $removed = DB::table('role_user')
                 ->where('role_id', $this->getKey())
@@ -724,6 +1097,48 @@ class Role extends Model
         });
 
         Permissions::forget();
+    }
+
+    /**
+     * Refuse to take the last owner role away from the last member holding one.
+     *
+     * ⚠️ TAKING THE LAST OWNER'S ROLE AWAY IS THE SAME LOCK-OUT AS DELETING THE ROLE, and review found this
+     * door open while the other was shut: the role form calls `removeFrom()` for every holder dropped from
+     * the selection, so an owner could remove the final holder — themselves — and permanently lose role and
+     * schema administration on the next request. `refuseIfLastOwner()` guards the ROLE; this guards its last
+     * holder.
+     *
+     * ⚠️ INSIDE THE TRANSACTION THAT DELETES THE ROW, which review found it was not: the check ran before
+     * `DB::transaction()` opened, so the lock `effectiveOwners()` takes was released before the delete and
+     * two concurrent removals could each see the other's holder. A guard that does not hold its lock until
+     * the write commits is a guard that reads the past.
+     *
+     * ⚠️ AND THE EXCLUSION IS THE ASSIGNMENT RATHER THAN THE PERSON — see `effectiveOwners()`. A member
+     * holding two owner roles who gives up one keeps the other, and the earlier version refused that.
+     */
+    private function refuseLosingTheLastOwner(int $userId): void
+    {
+        /*
+         * ⚠️ THE STORED FLAG AGAIN, for the reason `refuseIfLastOwner()` records: an ordinary role in memory
+         * while another transaction promotes the stored row leaves `$this->is_owner` false, and this early
+         * return skipped both the locking owner reads and the last-holder check — after which `removeFrom()`
+         * performs a raw pivot delete with nothing behind it and takes the sole effective owner's role away.
+         */
+        if (! $this->storedOwnerFlag()) {
+            return;
+        }
+
+        if ($this->effectiveOwners() === [] || $this->effectiveOwners(exceptHolder: $userId) !== []) {
+            return;
+        }
+
+        throw new RuntimeException(sprintf(
+            'Refusing to take role %s from user %s: they are the last member of this organisation '
+            .'holding an owner role, and owner is the only role that may administer roles or edit the '
+            .'schema (ADR-033). Removing it would leave nobody able to put it back.',
+            (string) $this->getKey(),
+            (string) $userId,
+        ));
     }
 
     /**
@@ -756,6 +1171,40 @@ class Role extends Model
      * SQLite compiles the clause away and serialises writers at the database level, which is the same
      * guarantee by another route — `Site::lockHostClaim()` records the same pair of facts.
      */
+    /**
+     * Take the ORG's row before any role row, so concurrent authority changes serialise instead of deadlock.
+     *
+     * ⚠️ THE OWNER SWEEP LOCKS A SET, AND EVERY CALLER ALREADY HOLDS ONE OF ITS MEMBERS — review found the
+     * cycle that makes. A demotion of role A locks A (`storedOwnerFlag()`) and then asks `effectiveOwners()`,
+     * which locks every owner role in the org including B; a concurrent demotion of B holds B and wants A.
+     * Each waits for a row the other holds, and the database resolves it as a deadlock rather than as one
+     * success and one last-owner refusal — the serialisation these guards were written for, defeated by the
+     * ORDER they acquire locks in.
+     *
+     * One row that every such operation takes FIRST turns a cycle into a queue. The org is the natural one:
+     * the invariant being protected is "this organisation still has somebody who can administer it", so the
+     * mutex is the organisation.
+     *
+     * ⚠️ FROM THE CONTEXT RATHER THAN THE ROW, deliberately. Reading the role's stored org first would be
+     * another role lock before this one, which is the problem. Every path here has already established that
+     * the role belongs to the current org — `refuseIfNotCurrentOrg()` runs first and refuses otherwise — so
+     * the context names the same organisation, and with no context the operation is refused anyway.
+     *
+     * ⚠️ AND NOT IN `assignTo()`, which locks its own role and sweeps nothing: it can never be the second
+     * half of a cycle, and taking the org lock there would serialise every assignment in an organisation for
+     * no invariant. A lock taken for tidiness is contention without a reason.
+     */
+    private function lockSharedOrgRow(): void
+    {
+        $orgId = app(Context::class)->orgId();
+
+        if ($orgId === null) {
+            return;
+        }
+
+        Org::query()->withoutGlobalScopes()->whereKey($orgId)->lockForUpdate()->value('id');
+    }
+
     private function lockRow(): void
     {
         static::query()
@@ -817,7 +1266,7 @@ class Role extends Model
          * and a wrong one costs a thin audit row rather than a wrong guarantee. The row is written either
          * way: an authority change that went unrecorded is worse than one recorded without a name.
          */
-        $model = Permissions::userModel() ?? config('auth.providers.users.model');
+        $model = Permissions::userModel();
 
         if (! is_string($model) || ! class_exists($model) || ! is_subclass_of($model, Model::class)) {
             return null;

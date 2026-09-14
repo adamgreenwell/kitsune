@@ -8,11 +8,15 @@
 
 declare(strict_types=1);
 
+use App\Models\User;
+use Illuminate\Database\Eloquent\Attributes\ObservedBy;
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use Kitsune\Core\Auth\GuardedOrgMembership;
 use Kitsune\Core\Auth\Permissions;
+use Kitsune\Core\Auth\RevokesRoleAssignments;
 use Kitsune\Core\Models\AuditLog;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
@@ -24,6 +28,7 @@ use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tests\Fixtures\AttributeOnlyUser;
 use Kitsune\Core\Tests\Fixtures\TestImpostor;
 use Kitsune\Core\Tests\Fixtures\TestUser;
+use Kitsune\Core\Tests\Fixtures\UnobservedUser;
 use Kitsune\Core\Tests\Fixtures\UnscopedUser;
 
 /*
@@ -269,6 +274,19 @@ it('drops the owner memo when the flag changes, not only when a helper runs', fu
 
     expect(Permissions::isOwner($this->user))->toBeTrue();
 
+    /*
+     * ⚠️ A SPARE OWNER FIRST, held by SOMEBODY ELSE. An org may not lose its last held owner role (#84), so
+     * without this the change below is refused — and held by another person because the same one would keep
+     * the bypass and the assertion would measure the guard instead of the thing under test. Two features
+     * written hours apart, and only their combination states the rule.
+     */
+    /** @var TestUser $spareHolder */
+    $spareHolder = TestUser::create(['email' => 'spare'.mt_rand(1, 1_000_000_000).'@kitsune.test']);
+    joinOrg($this->alpha, $spareHolder);
+
+    $spareOwner = Role::create(['handle' => 'owner-spare'.mt_rand(1, 1_000_000_000), 'name' => 'Owner spare', 'is_owner' => true]);
+    $spareOwner->assignTo($spareHolder->getKey());
+
     // And deleting it takes the bypass away again, in the same process.
     $this->alphaRole->delete();
 
@@ -373,6 +391,19 @@ it('records an owner bypass gained by flipping the flag, not only by assignment'
         ->and($elevations->pluck('target_id')->map(static fn (mixed $id): int => (int) $id)->sort()->values()->all())
         ->toBe(collect([$this->user->getKey(), $colleague->getKey()])->sort()->values()->all());
 
+    /*
+     * ⚠️ A SPARE OWNER FIRST, held by SOMEBODY ELSE. An org may not lose its last held owner role (#84), so
+     * without this the change below is refused — and held by another person because the same one would keep
+     * the bypass and the assertion would measure the guard instead of the thing under test. Two features
+     * written hours apart, and only their combination states the rule.
+     */
+    /** @var TestUser $spareHolder */
+    $spareHolder = TestUser::create(['email' => 'spare'.mt_rand(1, 1_000_000_000).'@kitsune.test']);
+    joinOrg($this->alpha, $spareHolder);
+
+    $spareOwner = Role::create(['handle' => 'owner-spare'.mt_rand(1, 1_000_000_000), 'name' => 'Owner spare', 'is_owner' => true]);
+    $spareOwner->assignTo($spareHolder->getKey());
+
     $mark = (int) AuditLog::query()->max('id');
 
     $this->alphaRole->update(['is_owner' => false]);
@@ -449,6 +480,19 @@ it('records the revocation when an owner role is deleted out from under its hold
     $owner = Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true]);
     $owner->assignTo($this->user->getKey());
 
+    /*
+     * ⚠️ A SPARE OWNER FIRST, held by SOMEBODY ELSE. An org may not lose its last held owner role (#84), so
+     * without this the change below is refused — and held by another person because the same one would keep
+     * the bypass and the assertion would measure the guard instead of the thing under test. Two features
+     * written hours apart, and only their combination states the rule.
+     */
+    /** @var TestUser $spareHolder */
+    $spareHolder = TestUser::create(['email' => 'spare'.mt_rand(1, 1_000_000_000).'@kitsune.test']);
+    joinOrg($this->alpha, $spareHolder);
+
+    $spareOwner = Role::create(['handle' => 'owner-spare'.mt_rand(1, 1_000_000_000), 'name' => 'Owner spare', 'is_owner' => true]);
+    $spareOwner->assignTo($spareHolder->getKey());
+
     $mark = (int) AuditLog::query()->max('id');
 
     $owner->delete();
@@ -482,6 +526,195 @@ it('leaves no authority change behind when its audit cannot be written', functio
     && ! DB::connection()->getPdo()->query('PRAGMA foreign_keys')->fetchColumn(),
     'foreign keys are not enforced on this connection, so the audit insert cannot be made to fail');
 
+it('refuses to remove the last owner role an org actually holds', function (): void {
+    /*
+     * ⚠️ AN ORG THAT LOSES ITS LAST OWNER CANNOT GET ONE BACK — issue #84. Schema editing and role
+     * administration are both owner-only in v1.0 (ADR-033), so the only person who could restore the flag is
+     * the one who just removed it, and the vocabulary has no permission that would let anybody else. A
+     * support ticket is the recovery path, and there is no support.
+     *
+     * ⚠️ AT THE MODEL RATHER THAN IN A FORM, which is the rule this project keeps relearning: the ROUTE is
+     * the boundary, not the button. A form guard is bypassed by the API, by a console command, and by the
+     * next page somebody writes.
+     */
+    app(Context::class)->setOrg($this->alpha);
+
+    $owner = Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true]);
+    $owner->assignTo($this->user->getKey());
+
+    // ⚠️ Membership as well as assignment, because the guard counts only holders who are MEMBERS — holding
+    // a role in an org you have left confers nothing, so it cannot be the org's safety net either.
+    joinOrg($this->alpha, $this->user);
+
+    expect(fn () => $owner->update(['is_owner' => false]))
+        ->toThrow(RuntimeException::class, 'only owner role')
+        ->and(fn () => $owner->delete())
+        ->toThrow(RuntimeException::class, 'only owner role');
+
+    // Still an owner role, and still held.
+    expect(Role::query()->where('is_owner', true)->count())->toBe(1);
+});
+
+it('allows it once a second owner role is held', function (): void {
+    // The guard is about the LAST one. A second holder is the way out, and it has to work.
+    app(Context::class)->setOrg($this->alpha);
+
+    $first = Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true]);
+    $first->assignTo($this->user->getKey());
+
+    /** @var TestUser $second */
+    $second = TestUser::create(['email' => 'second-owner@kitsune.test']);
+    joinOrg($this->alpha, $second);
+
+    $spare = Role::create(['handle' => 'owner-2', 'name' => 'Owner 2', 'is_owner' => true]);
+    $spare->assignTo($second->getKey());
+
+    $first->delete();
+
+    expect(Role::query()->where('is_owner', true)->count())->toBe(1);
+});
+
+it('does not stand in the way of an owner role nobody holds yet', function (): void {
+    /*
+     * ⚠️ IT ASKS WHETHER THIS CHANGE TAKES THE LAST ONE, not whether the result has any. A fresh install
+     * mid-seed has an owner role with no holders, and a guard that read the second question would refuse to
+     * let a seeder correct one.
+     */
+    app(Context::class)->setOrg($this->alpha);
+
+    $unheld = Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true]);
+
+    $unheld->update(['is_owner' => false]);
+    $unheld->delete();
+
+    expect(Role::query()->where('is_owner', true)->count())->toBe(0);
+});
+
+it('does not count another org\'s owners as this org\'s safety net', function (): void {
+    // The cross-org version: beta having owners must not make alpha safe to strip.
+    app(Context::class)->setOrg($this->beta);
+
+    /** @var TestUser $theirs */
+    $theirs = TestUser::create(['email' => 'beta-owner@kitsune.test']);
+    joinOrg($this->beta, $theirs);
+
+    $betaOwner = Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true]);
+    $betaOwner->assignTo($theirs->getKey());
+
+    app(Context::class)->setOrg($this->alpha);
+
+    $alphaOwner = Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true]);
+    $alphaOwner->assignTo($this->user->getKey());
+    joinOrg($this->alpha, $this->user);
+
+    expect(fn () => $alphaOwner->delete())->toThrow(RuntimeException::class, 'only owner role');
+});
+
+it('does not take away an owner role from its last member holder', function (): void {
+    /*
+     * ⚠️ THE OTHER HALF OF THE LOCK-OUT, which review found open while deleting the role was shut. The role
+     * form calls `removeFrom()` for every holder taken out of the selection, so an owner could remove the
+     * final holder — themselves — and lose role and schema administration on the next request.
+     * `refuseIfLastOwner()` guards the ROLE; this guards its last holder.
+     */
+    app(Context::class)->setOrg($this->alpha);
+
+    $owner = Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true]);
+    $owner->assignTo($this->user->getKey());
+    joinOrg($this->alpha, $this->user);
+
+    expect(fn () => $owner->removeFrom($this->user->getKey()))
+        ->toThrow(RuntimeException::class, 'last member of this organisation holding an owner role');
+
+    // A second member holding one is the way out, and it has to work.
+    /** @var TestUser $colleague */
+    $colleague = TestUser::create(['email' => 'second-admin@kitsune.test']);
+    joinOrg($this->alpha, $colleague);
+    $owner->assignTo($colleague->getKey());
+
+    $owner->removeFrom($this->user->getKey());
+
+    expect(DB::table('role_user')->where('role_id', $owner->getKey())->count())->toBe(1);
+});
+
+it('counts only holders who are members of the org as owners', function (): void {
+    /*
+     * ⚠️ HOLDING AN OWNER ROLE IS NOT ENOUGH — review found the guard ignoring membership. `assignTo()` is
+     * public and membership can be removed afterwards, so a `role_user` row may name somebody this org no
+     * longer contains. Counting that inert pivot let the last role held by a REAL member be demoted, while
+     * `Permissions` refuses the remaining assignee and nobody can administer the org.
+     */
+    app(Context::class)->setOrg($this->alpha);
+
+    $held = Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true]);
+    $held->assignTo($this->user->getKey());
+    joinOrg($this->alpha, $this->user);
+
+    // An owner role assigned to somebody who is NOT a member of this org.
+    /** @var TestUser $outsider */
+    $outsider = TestUser::create(['email' => 'not-a-member@kitsune.test']);
+
+    $inert = Role::create(['handle' => 'owner-inert', 'name' => 'Owner inert', 'is_owner' => true]);
+    $inert->assignTo($outsider->getKey());
+
+    // The inert one must not count as this org's safety net.
+    expect(fn () => $held->delete())
+        ->toThrow(RuntimeException::class, 'only owner role');
+});
+
+it('refuses to count owners through a model the assignments are not about', function (): void {
+    /*
+     * ⚠️ A NUMERIC ID IS NOT AN IDENTITY, AND THE LOCK-OUT GUARD WAS TAKING IT FOR ONE — review found the
+     * count doing what `Permissions::roleIdsFor()` had already been fixed not to do. `role_user.user_id`
+     * means whatever table it references; a host running two panels has two user models on two tables with
+     * two sequences, so both have a user with this id. Filtering the holders through the WRONG one invents
+     * an owner out of an unrelated row — and the guard then permits the removal of the only real one.
+     *
+     * That failure has no recovery path: owner is the only role that may administer roles (ADR-033), so an
+     * org with no effective owner cannot get one back. Refusing is the other guess, and it is the reversible
+     * one — in this configuration `Permissions` confers no role authority at all, so there is nothing being
+     * withheld that would otherwise work.
+     */
+    app(Context::class)->setOrg($this->alpha);
+
+    $owner = Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true]);
+    $owner->assignTo($this->user->getKey());
+    joinOrg($this->alpha, $this->user);
+
+    /*
+     * A departed holder of the same role: the assignment survives, the membership does not, so they are not
+     * an effective owner — which is what makes the impostor with their id the phantom.
+     */
+    /** @var TestUser $departed */
+    $departed = TestUser::create(['email' => 'departed-owner@kitsune.test']);
+    $owner->assignTo($departed->getKey());
+
+    // The collision is constructed rather than hoped for; a Postgres sequence does not roll back.
+    $impostor = new TestImpostor(['name' => 'Not the holder']);
+    $impostor->id = $departed->getKey();
+    $impostor->save();
+
+    DB::table('pivot_scoped_thing_org')->insert([
+        'org_id' => $this->alpha->getKey(),
+        'pivot_scoped_thing_id' => $impostor->getKey(),
+    ]);
+
+    expect($impostor->getKey())->toBe($departed->getKey());
+
+    // The provider now names that model: on another table, with a row for the departed holder's id.
+    config(['auth.providers.users.model' => TestImpostor::class]);
+    Permissions::forget();
+
+    expect(fn () => $owner->removeFrom($this->user->getKey()))
+        ->toThrow(RuntimeException::class, 'is not the one that column references');
+
+    // And the real owner still holds the role, which is the consequence the guard exists for.
+    expect(DB::table('role_user')
+        ->where('role_id', $owner->getKey())
+        ->where('user_id', $this->user->getKey())
+        ->exists())->toBeTrue();
+});
+
 it('refuses a quiet save whose key attribute has been nulled', function (): void {
     /*
      * ⚠️ THE CONDITION IN FRONT OF THE GUARD WAS THE FORGEABLE PART, which review found after the guard
@@ -505,6 +738,177 @@ it('refuses a quiet save whose key attribute has been nulled', function (): void
     app(Context::class)->setOrg($this->alpha);
 
     expect(Role::query()->whereKey($key)->value('name'))->toBe('Editor');
+});
+
+it('revokes a deleted user\'s assignments through the audited path', function (): void {
+    /*
+     * ⚠️ THE CASCADE IS A LOCK-OUT WAITING TO HAPPEN, which review found in the skeleton's own migration.
+     * `role_user.user_id` references the host's users table, so deleting a user removed every assignment they
+     * held with no `role.unassigned` row and without consulting the guard that refuses taking the last owner
+     * away. ADR-033 promises both; a foreign key knows neither.
+     */
+    app(Context::class)->setOrg($this->alpha);
+    joinOrg($this->alpha, $this->user);
+
+    $editor = Role::create(['handle' => 'copy', 'name' => 'Copy editor']);
+    $editor->assignTo($this->user->getKey());
+
+    $mark = (int) AuditLog::query()->max('id');
+
+    $this->user->delete();
+
+    expect(DB::table('role_user')->where('user_id', $this->user->getKey())->exists())->toBeFalse()
+        ->and(AuditLog::query()->where('id', '>', $mark)->where('action', 'role.unassigned')->count())->toBe(1);
+});
+
+it('revokes every assignment or none of them', function (): void {
+    /*
+     * ⚠️ TWO INDIVIDUALLY CORRECT OPERATIONS, WRONG TOGETHER — the failure this branch keeps producing, found
+     * by review in the observer an hour after it landed. A user holding roles in two organisations had the
+     * first revoked and audited, and the second refused by the last-owner guard: the deletion failed and the
+     * person kept their account while permanently losing authority the refusal was supposed to protect.
+     */
+    app(Context::class)->setOrg($this->alpha);
+    joinOrg($this->alpha, $this->user);
+    joinOrg($this->beta, $this->user);
+
+    $ordinary = Role::create(['handle' => 'copy', 'name' => 'Copy editor']);
+    $ordinary->assignTo($this->user->getKey());
+
+    app(Context::class)->setOrg($this->beta);
+    $owner = Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true]);
+    $owner->assignTo($this->user->getKey());
+
+    app(Context::class)->setOrg($this->alpha);
+    $mark = (int) AuditLog::query()->max('id');
+
+    expect(fn () => $this->user->delete())
+        ->toThrow(RuntimeException::class, 'last member of this organisation');
+
+    // The refusal rolled the earlier revocation back: both assignments stand, and nothing was recorded.
+    expect(DB::table('role_user')->where('user_id', $this->user->getKey())->count())->toBe(2)
+        ->and(AuditLog::query()->where('id', '>', $mark)->where('action', 'role.unassigned')->count())->toBe(0);
+});
+
+it('revokes an assignment in an org that has been soft-deleted', function (): void {
+    /*
+     * ⚠️ A TRASHED ORG'S ASSIGNMENTS ARE STILL ROWS, which the restrictive foreign key turned from a
+     * curiosity into a failure: `Org::query()` excludes trashed orgs, so the sweep skipped that role, the
+     * pivot row survived, and the deletion died on a constraint error instead of being audited or refused.
+     */
+    app(Context::class)->setOrg($this->beta);
+    joinOrg($this->beta, $this->user);
+
+    $role = Role::create(['handle' => 'copy', 'name' => 'Copy editor']);
+    $role->assignTo($this->user->getKey());
+
+    $this->beta->delete();
+
+    app(Context::class)->setOrg($this->alpha);
+
+    expect(Org::query()->whereKey($this->beta->getKey())->exists())->toBeFalse('the org is trashed')
+        ->and(fn () => $this->user->delete())->not->toThrow(RuntimeException::class);
+
+    expect(DB::table('role_user')->where('user_id', $this->user->getKey())->exists())->toBeFalse();
+});
+
+it('leaves the request\'s site context where it found it', function (): void {
+    /*
+     * ⚠️ `setOrg()` CLEARS THE SITE when the site belongs to another org, so a sweep through somebody else's
+     * organisation left this request with no site at all — after which everything site-scoped fails closed
+     * and any audit row written later loses its attribution.
+     */
+    $site = Site::create(['org_id' => $this->alpha->getKey(), 'handle' => 'main', 'slug' => 'main', 'name' => 'Main']);
+
+    app(Context::class)->setSite($site);
+    joinOrg($this->alpha, $this->user);
+    joinOrg($this->beta, $this->user);
+
+    app(Context::class)->setOrg($this->beta);
+    $theirs = Role::create(['handle' => 'copy', 'name' => 'Copy editor']);
+    $theirs->assignTo($this->user->getKey());
+
+    app(Context::class)->setSite($site);
+
+    $this->user->delete();
+
+    expect(app(Context::class)->site()?->getKey())->toBe($site->getKey())
+        ->and(app(Context::class)->orgId())->toBe($this->alpha->getKey());
+});
+
+it('refuses to delete a holder whose model does not revoke', function (): void {
+    /*
+     * ⚠️ THE BACKSTOP, which is what the restrictive foreign key is for: a host that has not attached the
+     * observer must fail loudly rather than lose an assignment quietly. Without this the fixture schema and
+     * the shipped migration could drift apart and nothing would notice.
+     */
+    app(Context::class)->setOrg($this->alpha);
+
+    /** @var UnobservedUser $stranger */
+    $stranger = UnobservedUser::create(['email' => 'unobserved@kitsune.test']);
+
+    // ⚠️ No membership needed: this is about the constraint, and `assignTo()` takes a raw id by design.
+
+    $role = Role::create(['handle' => 'copy', 'name' => 'Copy editor']);
+    $role->assignTo($stranger->getKey());
+
+    /*
+     * ⚠️ INSIDE A NESTED TRANSACTION, BECAUSE POSTGRES POISONS THE OUTER ONE. A failed statement aborts the
+     * whole transaction there — `RefreshDatabase` has one open around every test — so the assertion below
+     * died with "current transaction is aborted" on pgsql while passing on SQLite. Laravel turns a nested
+     * `DB::transaction()` into a SAVEPOINT and rolls back to it, which keeps the surrounding test usable and
+     * makes the expectation mean the same thing on all four engines.
+     */
+    expect(fn () => DB::transaction(fn () => $stranger->delete()))->toThrow(QueryException::class);
+
+    expect(DB::table('role_user')->where('user_id', $stranger->getKey())->exists())->toBeTrue();
+})->skip(
+    fn (): bool => DB::connection()->getDriverName() === 'sqlite'
+        && ! DB::connection()->getPdo()->query('PRAGMA foreign_keys')->fetchColumn(),
+    'SQLite without foreign key enforcement cannot refuse this',
+);
+
+it('ships that behaviour on the reference host\'s own user model', function (): void {
+    /*
+     * ⚠️ THE FIXTURE PROVING THE BEHAVIOUR IS NOT THE MODEL ANYBODY RUNS, and a trait nothing applies is
+     * documentation. The skeleton is the reference host — its `User` is what a real installation copies — so
+     * the wiring is asserted here rather than left to a reader of the migration. `ScopeDeclarationTest` makes
+     * the same argument for the scope attribute, and review caught that sweep missing the skeleton once.
+     */
+    $observed = (new ReflectionClass(User::class))->getAttributes(ObservedBy::class);
+
+    expect($observed)->not->toBeEmpty('the skeleton\'s User declares no observer at all')
+        ->and((array) $observed[0]->newInstance()->classes)->toContain(RevokesRoleAssignments::class);
+});
+
+it('ships the guarded membership relation on the reference host too', function (): void {
+    /*
+     * ⚠️ THE FIXTURE MIRRORS THE SKELETON AND IS NOT IT. `TestUser::orgs()` is what the tests above drive;
+     * this asserts that the model a real installation copies returns the guarded relation as well, because a
+     * guard the reference host does not use is a guard nobody has.
+     */
+    expect((new User)->orgs())->toBeInstanceOf(GuardedOrgMembership::class);
+});
+
+it('refuses to delete the user holding the last owner role', function (): void {
+    /*
+     * ⚠️ AND THE GUARD IS ALLOWED TO REFUSE, which is the point of routing a deletion through `removeFrom()`
+     * rather than letting the database do it: deleting this person would leave the org with nobody who can
+     * administer roles or edit the schema, and there is no way back (ADR-033). A loud failure naming the
+     * organisation beats a successful delete and a support ticket with no support behind it.
+     */
+    app(Context::class)->setOrg($this->alpha);
+    joinOrg($this->alpha, $this->user);
+
+    $owner = Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true]);
+    $owner->assignTo($this->user->getKey());
+
+    expect(fn () => $this->user->delete())
+        ->toThrow(RuntimeException::class, 'last member of this organisation');
+
+    // Both the person and their authority survive the refusal.
+    expect(TestUser::query()->whereKey($this->user->getKey())->exists())->toBeTrue()
+        ->and(DB::table('role_user')->where('role_id', $owner->getKey())->count())->toBe(1);
 });
 
 it('records one owner transition when two saves write the same flag', function (): void {
@@ -615,6 +1019,447 @@ it('refuses a publication smuggled through the arithmetic family', function (): 
     Auth::logout();
 });
 
+it('takes the org row before any role row, so two demotions queue rather than deadlock', function (): void {
+    /*
+     * ⚠️ THE OWNER SWEEP LOCKS A SET AND EVERY CALLER ALREADY HOLDS ONE OF ITS MEMBERS — review found the
+     * cycle that makes. Demoting role A locks A and then asks `effectiveOwners()`, which locks every owner
+     * role in the org including B; a concurrent demotion of B holds B and wants A. Each waits for a row the
+     * other holds, and the database calls that a deadlock instead of giving one success and one last-owner
+     * refusal — the serialisation these guards exist for, defeated by the ORDER locks are taken in.
+     *
+     * ⚠️ ASSERTED PER OPERATION, and the first version of this test was not. It captured every locking read
+     * of the whole test and compared the FIRST org lock with the FIRST role lock — so the removal's mutex
+     * satisfied the assertion on the demotion's behalf, and removing the demotion's mutex left it green.
+     * Measured: the revert passed. Each operation now gets its own window, because what has to be true is
+     * true of each one separately.
+     */
+    app(Context::class)->setOrg($this->alpha);
+    joinOrg($this->alpha, $this->user);
+
+    $first = Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true]);
+    $first->assignTo($this->user->getKey());
+
+    $second = Role::create(['handle' => 'owner-2', 'name' => 'Owner 2', 'is_owner' => true]);
+    $second->assignTo($this->user->getKey());
+
+    $seen = [];
+
+    DB::listen(function (QueryExecuted $query) use (&$seen): void {
+        if ($query->connectionName !== DB::getDefaultConnection()) {
+            return;
+        }
+
+        $sql = str_replace(['"', '`'], '', $query->sql);
+
+        foreach (['pg_constraint', 'information_schema', 'sqlite_master'] as $introspection) {
+            if (str_contains($sql, $introspection)) {
+                return;
+            }
+        }
+
+        if (str_contains($sql, 'for update')) {
+            $seen[] = $sql;
+        }
+    });
+
+    $orgFirst = function (array $window, string $operation): void {
+        if (DB::connection()->getDriverName() === 'sqlite') {
+            return;
+        }
+
+        $org = null;
+        $role = null;
+
+        foreach ($window as $position => $sql) {
+            if ($org === null && str_contains($sql, 'from orgs')) {
+                $org = $position;
+            }
+
+            if ($role === null && str_contains($sql, 'from roles')) {
+                $role = $position;
+            }
+        }
+
+        expect($org)->not->toBeNull("{$operation} never locked the org row")
+            ->and($role)->not->toBeNull("{$operation} never locked a role row")
+            ->and($org)->toBeLessThan($role, "{$operation} locked a role row before the shared org row");
+    };
+
+    /*
+     * ⚠️ THE REMOVAL FIRST, AND THE ORDER IS THE FIXTURE BEING HONEST. Demoting `$second` leaves `$first` as
+     * the org's only owner role, after which taking its holder away is what the last-owner guard refuses —
+     * the guard doing its job, not a test in its way.
+     */
+    $seen = [];
+    $second->removeFrom($this->user->getKey());
+    $orgFirst($seen, 'removeFrom()');
+
+    $seen = [];
+    $second->is_owner = false;
+    $second->save();
+    $orgFirst($seen, 'a demotion');
+
+    // And the guards still did their job: the org keeps an owner role that somebody holds.
+    expect(Role::query()->whereKey($second->getKey())->value('is_owner'))->toBeFalsy()
+        ->and(DB::table('role_user')->where('role_id', $first->getKey())->count())->toBe(1);
+});
+
+it('refuses to remove the last owner\'s org membership', function (): void {
+    /*
+     * ⚠️ MEMBERSHIP IS THE OTHER HALF OF AUTHORITY, and every guard on this branch protected only one half.
+     * `Permissions` requires an assignment AND membership, so detaching `org_user` takes somebody's
+     * authority away exactly as removing their role does — and a `belongsToMany` detach fires no model
+     * event, consults no guard and writes no audit row. The surviving `role_user` row then resolves
+     * nothing: the lock-out ADR-033 exists to prevent, reached by removing a different row.
+     */
+    app(Context::class)->setOrg($this->alpha);
+    joinOrg($this->alpha, $this->user);
+
+    $owner = Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true]);
+    $owner->assignTo($this->user->getKey());
+
+    expect(fn () => $this->user->orgs()->detach($this->alpha->getKey()))
+        ->toThrow(RuntimeException::class, 'last member of it holding an owner role');
+
+    // Membership and the assignment both survive the refusal.
+    expect(DB::table('org_user')->where('user_id', $this->user->getKey())->count())->toBe(1)
+        ->and(Permissions::isOwner($this->user))->toBeTrue();
+});
+
+it('lets membership go once somebody else can administer the org', function (): void {
+    /*
+     * ⚠️ THE OTHER DIRECTION, or the guard would be a lock rather than a guarantee: it refuses the removal
+     * that leaves nobody, not every removal.
+     */
+    app(Context::class)->setOrg($this->alpha);
+    joinOrg($this->alpha, $this->user);
+
+    /** @var TestUser $second */
+    $second = TestUser::create(['email' => 'second-owner@kitsune.test']);
+    joinOrg($this->alpha, $second);
+
+    $owner = Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true]);
+    $owner->assignTo($this->user->getKey());
+    $owner->assignTo($second->getKey());
+
+    $this->user->orgs()->detach($this->alpha->getKey());
+
+    expect(DB::table('org_user')->where('user_id', $this->user->getKey())->count())->toBe(0);
+
+    // And somebody can still administer it, which is the invariant rather than the row count.
+    Permissions::forget();
+    expect(Permissions::isOwner($second))->toBeTrue();
+});
+
+it('leaves an ordinary member\'s departure alone', function (): void {
+    // Somebody who holds no owner role takes nothing with them.
+    app(Context::class)->setOrg($this->alpha);
+    joinOrg($this->alpha, $this->user);
+
+    assign($this->alphaRole, $this->user);
+
+    $this->user->orgs()->detach($this->alpha->getKey());
+
+    expect(DB::table('org_user')->where('user_id', $this->user->getKey())->count())->toBe(0);
+});
+
+it('forgets what it resolved once membership goes', function (): void {
+    /*
+     * ⚠️ THE MEMO OUTLIVED THE ROW — review found it. `isOwner()` and `held()` memoise per request, and a
+     * successful detach dropped nothing, so a check made before it went on granting the departed user their
+     * owner bypass and their grants for the rest of the request. Every role authority change already calls
+     * `Permissions::forget()`; the membership half did not.
+     */
+    app(Context::class)->setOrg($this->alpha);
+    joinOrg($this->alpha, $this->user);
+
+    /** @var TestUser $second */
+    $second = TestUser::create(['email' => 'second-owner@kitsune.test']);
+    joinOrg($this->alpha, $second);
+
+    $owner = Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true]);
+    $owner->assignTo($this->user->getKey());
+    $owner->assignTo($second->getKey());
+    $this->alphaRole->assignTo($this->user->getKey());
+
+    // Asked first, so there is a memo to go stale.
+    expect(Permissions::isOwner($this->user))->toBeTrue()
+        ->and(Permissions::held($this->user))->toContain('entry.article.update');
+
+    $this->user->orgs()->detach($this->alpha->getKey());
+
+    // ⚠️ No `Permissions::forget()` here: the detach is what has to have done it.
+    expect(Permissions::isOwner($this->user))->toBeFalse()
+        ->and(Permissions::held($this->user))->toBe([]);
+
+    /*
+     * ⚠️ AND BACK. The assignments survived the departure, so re-attaching gives every grant back — and the
+     * memo just taken says "nothing". The attach has to drop it too, or a returning owner is refused for the
+     * rest of the request.
+     */
+    $this->user->orgs()->attach($this->alpha->getKey());
+
+    expect(Permissions::isOwner($this->user))->toBeTrue()
+        ->and(Permissions::held($this->user))->toContain('entry.article.update');
+});
+
+it('records the authority a membership change takes or gives back', function (): void {
+    /*
+     * ⚠️ A ROLE HOLDER'S MEMBERSHIP IS AUTHORITY, and it changed with no row — review found it. Detaching took
+     * every grant they held and the trail went on showing the assignments with nothing to say when they
+     * stopped meaning anything; attaching again gives it all back just as silently. One row per person, under
+     * the org it happened in, with owner-ness in the action.
+     *
+     * ⚠️ PERFORMED FROM ANOTHER ORG'S CONTEXT, because "under the removed org" is only a claim if the caller's
+     * context is somewhere else — and the context has to come back afterwards.
+     */
+    app(Context::class)->setOrg($this->alpha);
+    joinOrg($this->alpha, $this->user);
+
+    /** @var TestUser $leavingOwner */
+    $leavingOwner = TestUser::create(['email' => 'leaving-owner@kitsune.test']);
+    /** @var TestUser $stayingOwner */
+    $stayingOwner = TestUser::create(['email' => 'staying-owner@kitsune.test']);
+    /** @var TestUser $bystander */
+    $bystander = TestUser::create(['email' => 'bystander@kitsune.test']);
+
+    foreach ([$leavingOwner, $stayingOwner, $bystander] as $member) {
+        joinOrg($this->alpha, $member);
+    }
+
+    $this->alphaRole->assignTo($this->user->getKey());
+
+    $owner = Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true]);
+    $owner->assignTo($leavingOwner->getKey());
+    $owner->assignTo($stayingOwner->getKey());
+
+    // ⚠️ The mark under alpha, the org the assertion reads under — an org-scoped max from beta is zero.
+    $mark = (int) AuditLog::query()->max('id');
+
+    app(Context::class)->setOrg($this->beta);
+
+    $this->user->orgs()->detach($this->alpha->getKey());
+    $leavingOwner->orgs()->detach($this->alpha->getKey());
+    $bystander->orgs()->detach($this->alpha->getKey());
+    $this->user->orgs()->attach($this->alpha->getKey());
+
+    expect(app(Context::class)->orgId())->toBe($this->beta->getKey());
+
+    app(Context::class)->setOrg($this->alpha);
+
+    $rows = AuditLog::query()
+        ->where('id', '>', $mark)
+        ->orderBy('id')
+        ->get(['action', 'target_id'])
+        ->map(static fn (AuditLog $row): array => [$row->action, $row->target_id])
+        ->all();
+
+    // The bystander held no role, so their departure moved no authority and wrote nothing.
+    expect($rows)->toBe([
+        ['org.member_removed', (string) $this->user->getKey()],
+        ['org.owner_removed', (string) $leavingOwner->getKey()],
+        ['org.member_added', (string) $this->user->getKey()],
+    ]);
+});
+
+it('records nothing for a membership on a model the assignments are not about', function (): void {
+    /*
+     * ⚠️ `role_user.user_id` NAMES THE TABLE ITS FOREIGN KEY REFERENCES, and a relation may be over another one.
+     * An impostor on its own table sharing a role holder's id has none of that holder's authority —
+     * `Permissions` resolves no assignment for it — so auditing its departure from the holder's rows would
+     * record an authority change that did not happen, naming somebody it did not happen to.
+     *
+     * The collision is constructed rather than hoped for, as the other impostor tests do.
+     */
+    app(Context::class)->setOrg($this->alpha);
+
+    /** @var TestUser $holder */
+    $holder = TestUser::create(['email' => 'role-holder@kitsune.test']);
+    joinOrg($this->alpha, $holder);
+    $this->alphaRole->assignTo($holder->getKey());
+
+    $impostor = new TestImpostor(['name' => 'Shares the holder\'s id']);
+    $impostor->id = $holder->getKey();
+    $impostor->save();
+
+    DB::table('pivot_scoped_thing_org')->insert([
+        'org_id' => $this->alpha->getKey(),
+        'pivot_scoped_thing_id' => $impostor->getKey(),
+    ]);
+
+    expect($impostor->getKey())->toBe($holder->getKey())
+        ->and(Permissions::assignmentsAreAbout(TestImpostor::class))->toBeFalse();
+
+    $mark = (int) AuditLog::query()->max('id');
+
+    (new GuardedOrgMembership(
+        Org::query(), $impostor, 'pivot_scoped_thing_org', 'pivot_scoped_thing_id', 'org_id', 'id', 'id',
+    ))->detach($this->alpha->getKey());
+
+    expect(DB::table('pivot_scoped_thing_org')->where('pivot_scoped_thing_id', $impostor->getKey())->count())->toBe(0)
+        ->and(AuditLog::query()->where('id', '>', $mark)->count())->toBe(0);
+});
+
+it('takes org locks in one order whatever order it is handed', function (): void {
+    /*
+     * ⚠️ INPUT ORDER IS THE CALLER'S, AND EACH PAIR TAKES AN ORG MUTEX — review found the cycle. Two detaches
+     * naming the same orgs in opposite orders each held the first org row while waiting for the other's: the
+     * deadlock the deletion sweep was already ordered out of, one relation along.
+     *
+     * Observed as the order org rows are first read, which every engine reports — `lockForUpdate()` compiles to
+     * nothing on SQLite, so a filter on `for update` would pass there measuring nothing.
+     */
+    joinOrg($this->alpha, $this->user);
+    joinOrg($this->beta, $this->user);
+
+    expect($this->alpha->getKey())->toBeLessThan($this->beta->getKey());
+
+    $touched = [];
+
+    DB::listen(function (QueryExecuted $query) use (&$touched): void {
+        if ($query->connectionName !== DB::getDefaultConnection()) {
+            return;
+        }
+
+        $sql = str_replace(['"', '`'], '', $query->sql);
+
+        if (str_starts_with($sql, 'select id from orgs where orgs.id = ?')) {
+            $touched[] = (int) $query->bindings[0];
+        }
+    });
+
+    $this->user->orgs()->detach([$this->beta->getKey(), $this->alpha->getKey()]);
+
+    expect($touched)->toBe([$this->alpha->getKey(), $this->beta->getKey()])
+        ->and(DB::table('org_user')->where('user_id', $this->user->getKey())->count())->toBe(0);
+});
+
+it('refuses a detach of every membership that would take the last owner with it', function (): void {
+    /*
+     * ⚠️ FOUND WHILE ORDERING THE LOCKS. With no ids the pairs came from `foreignPivotKey`, which from the user's
+     * side is the user's own column — so `$user->orgs()->detach()` asked the last-owner guard about
+     * "organisation <user id>" and then removed every real membership, the last owner's included.
+     *
+     * ⚠️ AND THE FIXTURE MUST NOT LET THE BUG GUESS RIGHT. Where the user's id happens to equal alpha's — a fresh
+     * SQLite database gives both 1 — the wrong column names the right org and the defect passes. So the leaver
+     * is a user whose id is not alpha's.
+     */
+    app(Context::class)->setOrg($this->alpha);
+
+    $n = 0;
+
+    do {
+        /** @var TestUser $leaver */
+        $leaver = TestUser::create(['email' => 'leaver-'.(++$n).'@kitsune.test']);
+    } while ($leaver->getKey() === $this->alpha->getKey());
+
+    joinOrg($this->alpha, $leaver);
+
+    $owner = Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true]);
+    $owner->assignTo($leaver->getKey());
+
+    expect(fn () => $leaver->orgs()->detach())
+        ->toThrow(RuntimeException::class, 'last member of it holding an owner role');
+
+    expect(DB::table('org_user')->where('user_id', $leaver->getKey())->count())->toBe(1);
+});
+
+it('asks who can still administer an org under that org, whatever context the caller is in', function (string $caller): void {
+    /*
+     * ⚠️ THE MEMBERSHIP SCOPE READS THE CONTEXT, and review found the last-owner guard reading membership through
+     * the caller's. A detach made from another org, or from a console sweep with no org at all, found no members
+     * of the org being left: its only owner looked like nobody, and the guard let the org lose them.
+     *
+     * The user is a member of beta only, so alpha's context cannot see them for a reason that is the defect.
+     */
+    app(Context::class)->setOrg($this->beta);
+    joinOrg($this->beta, $this->user);
+
+    $owner = Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true]);
+    $owner->assignTo($this->user->getKey());
+
+    $caller === 'another org'
+        ? app(Context::class)->setOrg($this->alpha)
+        : app(Context::class)->forget();
+
+    expect(fn () => $this->user->orgs()->detach($this->beta->getKey()))
+        ->toThrow(RuntimeException::class, 'last member of it holding an owner role');
+
+    // The membership survives the refusal, and the caller's context comes back as it was.
+    expect(DB::table('org_user')->where('user_id', $this->user->getKey())->count())->toBe(1)
+        ->and(app(Context::class)->orgId())->toBe($caller === 'another org' ? $this->alpha->getKey() : null);
+})->with(['another org', 'no org']);
+
+it('removes only the memberships it checked when told to remove them all', function (): void {
+    /*
+     * ⚠️ A DETACH OF EVERY MEMBERSHIP READ THE LIST, THEN DELETED EVERY ROW — review found the gap between. A
+     * membership another transaction attached after the read was never locked, checked or audited, and the
+     * delete took it anyway: authority removed with no `org.member_removed` row and no last-owner check.
+     *
+     * The concurrent attach is placed exactly in that gap — as the org lock for what was read is taken, which is
+     * after the read and before the delete — rather than hoped for from a second connection.
+     */
+    joinOrg($this->alpha, $this->user);
+
+    $attached = false;
+
+    DB::listen(function (QueryExecuted $query) use (&$attached): void {
+        if ($attached || $query->connectionName !== DB::getDefaultConnection()) {
+            return;
+        }
+
+        if (str_starts_with(str_replace(['"', '`'], '', $query->sql), 'select id from orgs where orgs.id = ?')) {
+            $attached = true;
+            joinOrg($this->beta, $this->user);
+        }
+    });
+
+    $this->user->orgs()->detach();
+
+    expect($attached)->toBeTrue()
+        ->and(DB::table('org_user')->where('user_id', $this->user->getKey())->pluck('org_id')->map(
+            static fn (mixed $id): int => (int) $id,
+        )->all())->toBe([$this->beta->getKey()]);
+});
+
+it('refuses to move a membership by updating its keys in place', function (): void {
+    /*
+     * ⚠️ `updateExistingPivot()` WRITES THE PIVOT ROW DIRECTLY — review found the door. It calls neither `attach()` nor
+     * `detach()`, so moving the last owner's membership to another org skipped every guard this relation exists for.
+     */
+    app(Context::class)->setOrg($this->alpha);
+    joinOrg($this->alpha, $this->user);
+
+    $owner = Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true]);
+    $owner->assignTo($this->user->getKey());
+
+    expect(fn () => $this->user->orgs()->updateExistingPivot($this->alpha->getKey(), ['org_id' => $this->beta->getKey()]))
+        ->toThrow(RuntimeException::class, 'the keys are the membership');
+
+    expect(DB::table('org_user')->where('user_id', $this->user->getKey())->pluck('org_id')->map(
+        static fn (mixed $id): int => (int) $id,
+    )->all())->toBe([$this->alpha->getKey()]);
+});
+
+it('keeps a sync whole, so a failed attach leaves no committed removal behind', function (): void {
+    /*
+     * ⚠️ LARAVEL'S `sync()` DETACHES AND THEN ATTACHES, EACH IN ITS OWN TRANSACTION — review found a sync that removed a
+     * membership, then failed to add one naming an org that does not exist, having already committed and audited the
+     * removal. The person lost their authority and the call reported failure.
+     */
+    app(Context::class)->setOrg($this->alpha);
+    joinOrg($this->alpha, $this->user);
+    assign($this->alphaRole, $this->user);
+
+    $missing = (int) Org::query()->withTrashed()->max('id') + 1000;
+
+    expect(fn () => $this->user->orgs()->sync([$missing]))->toThrow(QueryException::class);
+
+    expect(DB::table('org_user')->where('user_id', $this->user->getKey())->pluck('org_id')->map(
+        static fn (mixed $id): int => (int) $id,
+    )->all())->toBe([$this->alpha->getKey()]);
+});
+
 it('refuses to delete a role that belongs to another org', function (): void {
     /*
      * ⚠️ THE FIFTH AUTHORITY PATH, and it was not asking — review found it. Eloquent's instance delete writes
@@ -723,6 +1568,121 @@ it('refuses a bulk force-delete of roles', function (): void {
     $this->alphaRole->delete();
 
     expect(AuditLog::query()->where('id', '>', $mark)->where('action', 'role.unassigned')->count())->toBe(1);
+});
+
+it('refuses to transfer a role into the org the caller has moved to', function (): void {
+    /*
+     * ⚠️ THE OWNER-FLAG GUARD STOOD ASIDE AND `EnforcesScope` WAS SATISFIED, which is the hole review found
+     * one step past both. The flag check fires only when `is_owner` is dirty; `EnforcesScope` revalidates a
+     * scope key when it is dirty and validates the value being WRITTEN against the current context. So a
+     * role loaded under alpha, with `org_id` set to beta while the context is beta, passed everything — and
+     * moved alpha's role to beta carrying its grants and its assignments, taking alpha's owner with it and
+     * conferring authority in beta with no audit row anywhere.
+     *
+     * The stored org is what has to match. The value being written is the one a transfer is arranging.
+     */
+    assign($this->alphaRole, $this->user);
+    joinOrg($this->beta, $this->user);
+    app(Context::class)->setOrg($this->beta);
+
+    $this->alphaRole->org_id = $this->beta->getKey();
+
+    /*
+     * ⚠️ THE MESSAGE MOVED WITH THE GUARD, and the guard moved because review found the first one forgeable:
+     * it compared `getOriginal('org_id')` to the context, and `syncOriginal()` is public. The refusal now
+     * comes from `refuseIfNotCurrentOrg('save')`, which asks `OrgScope`'s own query about the stored row —
+     * same behaviour, stronger evidence, and one guard instead of two.
+     */
+    expect(fn () => $this->alphaRole->save())
+        ->toThrow(RuntimeException::class, 'Refusing [save] on role '.$this->alphaRole->getKey());
+
+    app(Context::class)->setOrg($this->alpha);
+
+    expect(Role::query()->whereKey($this->alphaRole->getKey())->value('org_id'))->toBe($this->alpha->getKey());
+
+    // And the grants and assignments went nowhere either, which is what the transfer would have carried.
+    expect(RolePermission::query()->where('role_id', $this->alphaRole->getKey())->count())->toBe(1)
+        ->and(DB::table('role_user')->where('role_id', $this->alphaRole->getKey())->count())->toBe(1);
+});
+
+it('refuses an ordinary save of another org\'s role, not only a transfer', function (): void {
+    /*
+     * The same guard, on the case that changes no scope key at all: a role loaded in alpha and saved while
+     * the context is beta is a write to another customer's row whatever column moved. The five authority
+     * helpers already refused it; `save()` was the path that did not.
+     */
+    app(Context::class)->setOrg($this->beta);
+
+    $this->alphaRole->name = 'Renamed from another org';
+
+    expect(fn () => $this->alphaRole->save())->toThrow(RuntimeException::class, 'Refusing [save] on role');
+
+    app(Context::class)->setOrg($this->alpha);
+
+    expect(Role::query()->whereKey($this->alphaRole->getKey())->value('name'))->toBe('Editor');
+});
+
+it('leaves the move in the other direction to the scope, which refuses it', function (): void {
+    /*
+     * ⚠️ ASSERTED RATHER THAN CLAIMED IN A DOCBLOCK. The guard in `saving` asks "is this ROW mine to write",
+     * which cannot see a role of MINE being pushed into somebody else's org — that is a question about the
+     * VALUE, and `EnforcesScope::guardScopeKey()` is what refuses it. Two guards, two questions, and this is
+     * what keeps the second one from being assumed.
+     */
+    app(Context::class)->setOrg($this->alpha);
+
+    $this->alphaRole->org_id = $this->beta->getKey();
+
+    expect(fn () => $this->alphaRole->save())
+        ->toThrow(RuntimeException::class, 'Refusing to write Kitsune\Core\Models\Role with [org_id]');
+
+    expect(Role::query()->whereKey($this->alphaRole->getKey())->value('org_id'))->toBe($this->alpha->getKey());
+});
+
+it('does not keep the authority proof after a save that threw', function (): void {
+    /*
+     * ⚠️ `saved` CLEARS THE FLAG AND AN ABORTED SAVE NEVER REACHES `saved` — review found it. The audit
+     * insert in that listener can fail for a reason that has nothing to do with the role: a context holding
+     * a site another request has deleted is enough, since `audit_log.site_id` is a foreign key. The
+     * transaction rolls back, the caller catches, and the instance is left claiming its guards had run — so
+     * a retry through `saveQuietly()`, which fires no listener at all, would present that proof to
+     * `GuardedRoleBuilder` for a write nothing checked.
+     *
+     * `DerivesGuardedColumns` records the same rule: a proof belongs to one attempt, however the attempt
+     * ends.
+     */
+    app(Context::class)->setOrg($this->alpha);
+    assign($this->alphaRole, $this->user);
+
+    $site = Site::create([
+        'org_id' => $this->alpha->getKey(), 'handle' => 'doomed', 'slug' => 'doomed', 'name' => 'Doomed',
+        'locale' => 'en', 'url_strategy' => 'domain', 'base_url' => 'https://doomed.test',
+    ]);
+    app(Context::class)->setSite($site);
+
+    // The audit row's `site_id` now names a site that is gone, so `saved`'s insert fails inside the save.
+    Site::query()->whereKey($site->getKey())->withoutGlobalScopes()->delete();
+
+    $this->alphaRole->is_owner = true;
+
+    /*
+     * ⚠️ `QueryException`, NOT `Throwable`. Pest's `toThrow()` treats a first argument that is not a
+     * `class_exists()` CLASS as a message to match, and an interface is not one — so `toThrow(Throwable::class)`
+     * silently compares the string "Throwable" against the exception's message and fails on a test that is
+     * working. Recorded once already in this project; naming the concrete class is the answer.
+     */
+    expect(fn () => $this->alphaRole->save())->toThrow(QueryException::class);
+
+    /*
+     * ⚠️ ASSERTED THROUGH THE BUILDER RATHER THAN ON A PROPERTY, because the property is private now — review
+     * found the public version forgeable and the fix removed the thing this line used to read. What matters
+     * was never the boolean but what it buys: a retry that fires no listener must not be accepted as guarded.
+     */
+    app(Context::class)->setOrg($this->alpha);
+
+    expect(fn () => $this->alphaRole->saveQuietly())
+        ->toThrow(RuntimeException::class, 'bulk write to `is_owner`')
+        ->and(Role::query()->whereKey($this->alphaRole->getKey())->value('is_owner'))->toBeFalsy();
 });
 
 it('does not resolve one user model\'s assignments for another model\'s matching id', function (): void {
@@ -1135,9 +2095,58 @@ it('does not keep the lifecycle proof when a save aborts in its saved listener',
         ->and((bool) Role::query()->whereKey($this->alphaRole->getKey())->value('is_owner'))->toBeFalse();
 });
 
+it('counts only the stored org\'s owners as its safety net', function (): void {
+    /*
+     * ⚠️ FOUND BY SWEEPING THE FAMILY RATHER THAN BY THE NEXT REVIEW ROUND. Five findings had established
+     * that an in-memory attribute cannot decide an authority question; `effectiveOwners()` was still filtering
+     * on `$this->org_id`. `refuseIfNotCurrentOrg()` establishes that the stored ROW is in the current org — it
+     * says nothing about the attribute — so pointing `org_id` at another org made this count THEIR owners as
+     * this org's safety net, and the last held owner role here could be demoted because a different customer
+     * has one.
+     */
+    app(Context::class)->setOrg($this->alpha);
+
+    /*
+     * ⚠️ THE HOLDER HAS TO BE A MEMBER, or there is nothing to lose and the guard stands aside — the fixture's
+     * `beforeEach` does not join anybody to alpha. Without this line the test passed with the fix reverted,
+     * because `effectiveOwners()` was empty for a reason that had nothing to do with which org it asked about.
+     */
+    joinOrg($this->alpha, $this->user);
+
+    // Alpha has exactly one held owner role: taking it away is the lock-out the guard exists to refuse.
+    $owner = Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true]);
+    $owner->assignTo($this->user->getKey());
+
+    // Beta has one too, held by a member of beta — irrelevant to alpha, and the attribute now claims it.
+    app(Context::class)->setOrg($this->beta);
+    /** @var TestUser $betaUser */
+    $betaUser = TestUser::create(['email' => 'beta-owner@kitsune.test']);
+    joinOrg($this->beta, $betaUser);
+    $betaOwner = Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true]);
+    $betaOwner->assignTo($betaUser->getKey());
+
+    app(Context::class)->setOrg($this->alpha);
+
+    $owner->org_id = $this->beta->getKey();
+
+    /*
+     * ⚠️ THROUGH `removeFrom()`, BECAUSE A SAVE CANNOT REACH IT — worth recording, since the first version of
+     * this test tried `update(['is_owner' => false])` and was refused by `EnforcesScope` instead: a dirty
+     * scope key is caught by the `updating` guard, so the forged org never produces an outcome there.
+     * `removeFrom()` performs a raw pivot delete with no scope guard behind it, so it is the path where a
+     * wrong answer from `effectiveOwners()` actually locks an org out.
+     */
+    expect(fn () => $owner->removeFrom($this->user->getKey()))
+        ->toThrow(RuntimeException::class, 'last member of this organisation');
+
+    expect(DB::table('role_user')->where('role_id', $owner->getKey())->count())->toBe(1)
+        ->and((bool) Role::query()->whereKey($owner->getKey())->value('is_owner'))->toBeTrue();
+});
+
 it('does not keep the lifecycle proof when an application observer vetoes the save', function (): void {
     /*
-     * ⚠️ THE OTHER WAY OUT OF A SAVE THAT NEVER REACHES EITHER CLEAR — review found it beside the one above. The
+     * ⚠️ THE OTHER WAY OUT OF A SAVE THAT NEVER REACHES EITHER CLEAR — review found it beside the aborted `saved`
+     * listener tested earlier in this file. The
      * `saving` listener arms `$guardsRan`; `performUpdate()`'s `finally` and the `saved` listener disarm it. A
      * host observer registered after this model's own, returning `false` from `saving`, makes Eloquent return
      * before both — and a `saveQuietly()` on the same instance then wrote `is_owner` past the builder's

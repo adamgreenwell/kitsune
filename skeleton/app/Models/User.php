@@ -14,11 +14,14 @@ use Filament\Models\Contracts\FilamentUser;
 use Filament\Models\Contracts\HasTenants;
 use Filament\Panel;
 use Illuminate\Contracts\Translation\HasLocalePreference;
+use Illuminate\Database\Eloquent\Attributes\ObservedBy;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Illuminate\Support\Collection;
+use Kitsune\Core\Auth\GuardedOrgMembership;
+use Kitsune\Core\Auth\RevokesRoleAssignments;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Role;
 use Kitsune\Core\Models\Site;
@@ -51,6 +54,14 @@ use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
  * Nothing listed users yet, which is why it was a gap rather than an
  * incident (issue #21).
  */
+/*
+ * ⚠️ THE OBSERVER IS WHAT KEEPS A DELETION FROM LOSING AUTHORITY SILENTLY. `role_user` is a pivot on this
+ * table, and review found that deleting a user removed every assignment they held with no audit row and
+ * without consulting the last-owner guard — so deleting one person could lock an organisation out of role and
+ * schema administration for good (ADR-033). `RevokesRoleAssignments` revokes through `Role::removeFrom()`
+ * first; the migration's `restrictOnDelete()` is what happens to a host that has not attached it.
+ */
+#[ObservedBy(RevokesRoleAssignments::class)]
 #[OrgScopedThroughPivot(table: 'org_user', foreignKey: 'user_id')]
 class User extends Authenticatable implements FilamentUser, HasLocalePreference, HasTenants
 {
@@ -98,7 +109,22 @@ class User extends Authenticatable implements FilamentUser, HasLocalePreference,
     /** @return BelongsToMany<Org, $this> */
     public function orgs(): BelongsToMany
     {
-        return $this->belongsToMany(Org::class, 'org_user');
+        /*
+         * ⚠️ GUARDED, BECAUSE A DETACH IS AN AUTHORITY CHANGE. `Permissions` requires a role assignment AND
+         * membership, so removing the last owner's membership locks the organisation out exactly as removing
+         * their role would — and a plain `detach()` fires no event and consults no guard. See
+         * `GuardedOrgMembership`.
+         */
+        return new GuardedOrgMembership(
+            Org::query(),
+            $this,
+            'org_user',
+            'user_id',
+            'org_id',
+            $this->getKeyName(),
+            (new Org)->getKeyName(),
+            __FUNCTION__,
+        );
     }
 
     /**

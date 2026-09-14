@@ -363,35 +363,46 @@ final class Permissions
      * whose authority changed rather than an unrelated model with the same id — review found that hard-coded
      * to `users` after the membership check had already been fixed the same way.
      *
+     * ⚠️ AND KNOWING IT IS WHAT LETS CORE OFFER ROLE ASSIGNMENT AT ALL, which is a decision #84 reversed on
+     * this evidence: the assignment UI was going to live in the skeleton because core must not own a user
+     * MODEL. It still does not own one — it asks the panel — and putting the screen here avoids opening an
+     * extension point in core's navigation before the extension API exists (Standing Principle #1).
+     *
      * @return class-string<Model>|null
      */
     public static function userModel(): ?string
     {
-        if (! app()->bound('filament')) {
-            return null;
-        }
-
         /*
          * ⚠️ THE PANEL HANDLING THE REQUEST, NOT THE DEFAULT ONE — review found the second version still
          * asking for the default. A host may run several panels, and a non-default one may authenticate
          * through another provider entirely; asking the default then names a model from somebody else's
          * panel, so an audit row records an unrelated row with the same id.
          */
-        $panel = Filament::getCurrentPanel() ?? self::defaultPanel();
+        if (app()->bound('filament') && ($panel = Filament::getCurrentPanel() ?? self::defaultPanel()) !== null) {
+            $provider = $panel->auth()->getProvider();
 
-        if ($panel === null) {
-            return null;
+            if (method_exists($provider, 'getModel')) {
+                $model = $provider->getModel();
+
+                if (is_string($model) && is_subclass_of($model, Model::class)) {
+                    return $model;
+                }
+            }
         }
 
-        $provider = $panel->auth()->getProvider();
+        /*
+         * ⚠️ THE CONFIGURED PROVIDER IS THE PANEL-LESS FALLBACK, AND IT LIVES HERE SO THERE IS ONE ANSWER.
+         * A seeder, a console command and the package test suite have no panel at all, and two callers
+         * needed this — the audit target and the lock-out guard's membership test — so resolving it twice
+         * was two places for the rule to drift. What it is NOT is a licence to skip the user: every caller
+         * still treats null as "cannot tell", and `isMemberOfCurrentOrg()` deliberately asks the
+         * AUTHENTICATED instance's own class instead, because there a wrong answer fails open.
+         */
+        $configured = config('auth.providers.users.model');
 
-        if (! method_exists($provider, 'getModel')) {
-            return null;
-        }
-
-        $model = $provider->getModel();
-
-        return is_string($model) && is_subclass_of($model, Model::class) ? $model : null;
+        return is_string($configured) && class_exists($configured) && is_subclass_of($configured, Model::class)
+            ? $configured
+            : null;
     }
 
     /**
@@ -401,7 +412,8 @@ final class Permissions
      * a real host auto-discovers its provider — so the guard above never stood aside outside this package's own
      * suite, where Testbench discovers nothing. A host with no panel, or with panels none of which is marked
      * `default()`, then met `NoDefaultPanelSetException` from `Role::assignTo()` before it wrote anything: the
-     * fallback its callers take on null was unreachable. Found by installing the split into a bare Laravel host.
+     * configured-provider fallback in `userModel()` was unreachable. Found by installing the split into a bare
+     * Laravel host.
      *
      * Caught rather than pre-checked with `getPanels() !== []`, because that misses the second case. Asked of the
      * registry, which is what the facade forwards to, because `getDefault()` is where the exception is declared.

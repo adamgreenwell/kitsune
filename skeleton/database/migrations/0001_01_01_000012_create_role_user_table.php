@@ -32,7 +32,18 @@ return new class extends Migration
     {
         Schema::create('role_user', function (Blueprint $table): void {
             $table->foreignId('role_id')->constrained()->cascadeOnDelete();
-            $table->foreignId('user_id')->constrained()->cascadeOnDelete();
+            /*
+             * ⚠️ RESTRICT RATHER THAN CASCADE, which review found the difference between. A cascade removes
+             * every assignment a deleted user held — with no `role.unassigned` row, and without consulting
+             * the guard that refuses taking the last owner away, so deleting one person could lock an
+             * organisation out of role and schema administration permanently (ADR-033).
+             *
+             * `RevokesRoleAssignmentsOnDeletion` is the path that makes an ordinary deletion work: it
+             * revokes through `Role::removeFrom()` first, so by the time the user row goes there is nothing
+             * here to restrict. This constraint is what happens to a host that has not applied it — a loud
+             * failure instead of a quiet loss of authority.
+             */
+            $table->foreignId('user_id')->constrained()->restrictOnDelete();
             $table->primary(['role_id', 'user_id']);
 
             // The resolver reads the other direction — "which roles does this user hold?" — and the
