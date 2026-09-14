@@ -607,7 +607,41 @@ class Role extends Model
         $model = Permissions::userModel();
 
         if ($model === null) {
+            /*
+             * ⚠️ NOTHING TO ASK, WHICH IS NOT THE SAME AS ASKING THE WRONG THING. With no resolvable user
+             * model there is no membership query to run and no authenticated person for the answer to be
+             * wrong about, so the assignment rows are the only evidence there is and they are used as-is.
+             * The limitation is that an assignment whose holder has left is counted; it is stated here
+             * rather than hidden, and the case below is the one that had to change.
+             */
             return $holders;
+        }
+
+        /*
+         * ⚠️ A MODEL THE ASSIGNMENTS ARE NOT ABOUT ANSWERS A DIFFERENT QUESTION, and review found this
+         * counting ITS rows as owners. `role_user.user_id` means whatever table it references; a host running
+         * two panels has two user models on two tables with two sequences, so both have a user 9 —
+         * `Permissions::roleIdsFor()` already refuses assignments resolved through the wrong one, and this
+         * count did not. The failure is the worst one this guard has: a departed holder's id matching an
+         * unrelated row made a phantom owner, the last REAL owner's removal passed the check, and an org
+         * that cannot administer itself has no recovery path (ADR-033).
+         *
+         * Refusing rather than falling back to the raw holders, because the fallback is what causes the
+         * lock-out: both answers are guesses, and only one of them is unrecoverable. In this configuration
+         * `Permissions` confers no role authority at all, so refusing to change owner authority is the same
+         * sentence said at the other end — and the configuration is fixable, which the lock-out is not.
+         */
+        if (! Permissions::assignmentsAreAbout($model)) {
+            throw new RuntimeException(sprintf(
+                'Refusing to change owner authority on role %s: assignments are rows in role_user, and the '
+                .'user model this installation resolves (%s) is not the one that column references — it is '
+                .'on another table or another connection. Who would still be able to administer this '
+                .'organisation cannot be determined from it, and guessing wrong locks the organisation out '
+                .'permanently (ADR-033). Point the panel or auth provider at the model role_user '
+                .'references.',
+                (string) $this->getKey(),
+                $model,
+            ));
         }
 
         return $model::query()

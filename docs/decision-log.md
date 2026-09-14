@@ -1731,6 +1731,14 @@ and the person is not, and only an id that is ALREADY assigned gets that treatme
 to add somebody the org cannot see. `FieldValueRenderer::relationLabels()` makes the same trade for the same
 reason — the second time this exact shape has appeared, which is what makes it a pattern rather than a bug.
 
+⚠️ **And "already assigned" was not narrow enough, which review found in the next round.** The fallback
+filtered `role_user` on the user id alone, so an id holding ANY role — another role, another org — earned a
+label; Filament accepts a labelled option and the form assigns every submitted id, so the exception that
+keeps a record saveable became a way to add somebody this org cannot see, and a way to ask whether an
+arbitrary id holds a role anywhere. It is scoped to the role being edited now: a labelled id is one that role
+already holds, and assigning it again is what `assignTo()` is already idempotent about. The pattern survives
+the correction and gains a second half — **name the id, withhold the person, and only for the row in hand.**
+
 ⚠️ **Issue #84 said the assignment screen would live in the skeleton, and this reverses it on evidence.** The argument was that `role_user` references a `users` table core did not create and must not own — which still holds: **core owns no user model.** What changed is that it does not need one. `Permissions::userModel()` asks the **panel's own auth provider**, which is the same lesson review taught about the membership check: the provider cannot be wrong about which model it loads, and `config('auth.providers.users.model')` was a guess that failed open.
 
 The alternative cost more than it bought. A resource in the skeleton needs a navigation entry; navigation is supplied explicitly by `KitsunePanel` (ADR-012); so letting a host add one means opening an extension point in core **before the extension API exists**, which is exactly what Standing Principle #1 keeps shut until v1.2.
@@ -1748,6 +1756,14 @@ What the suite measures is that the clause is emitted, that the check runs at a 
 ⚠️ **And the guards read the STORED owner flag, not the instance's.** Review found the stale-instance half of the same race: an ordinary role held in memory while another transaction promotes that row to the org's only owner keeps `getOriginal('is_owner')` false, so `refuseIfLastOwner()` returned immediately and the stale instance deleted the row that had just become the org's last administrator. `removeFrom()`'s guard had the same early return on `$this->is_owner`, after which the raw pivot delete runs with nothing behind it. Both read the stored flag under the same lock as the decision now — the rule the whole family of findings produced, applied to the one place where the TIMING rather than the caller was the forger.
 
 ⚠️ **The count excludes an ASSIGNMENT, not a person** — the other half of the same review round. A member holding two owner roles who gives one up is still an owner through the other, and excluding them from every owner role reported nobody left and refused a safe removal. Being told "this would lock you out" while demonstrably not is what teaches somebody to reach past the model.
+
+⚠️ **And the count itself asked the wrong model, which is the same finding one layer down.** Membership was
+tested through whatever user model the installation resolves — but `role_user.user_id` means whatever table
+it REFERENCES, and a host running two panels has two user models on two tables with two sequences. An id
+matching an unrelated row made a phantom owner out of a departed holder, and the last real owner's removal
+then passed a check that had already been fixed to require membership. `Permissions::roleIdsFor()` refuses
+assignments resolved through the wrong model; this count now refuses to answer at all, because the two guesses
+are not symmetric — a wrong "somebody is left" locks an org out permanently, and there is no recovery path.
 
 ### Consequence
 

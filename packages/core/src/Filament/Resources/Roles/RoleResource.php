@@ -175,7 +175,7 @@ class RoleResource extends Resource
                          * today and the same shape of cost at scale.
                          */
                         ->getSearchResultsUsing(self::searchHolders(...))
-                        ->getOptionLabelUsing(fn (mixed $value): ?string => self::holderLabel((int) $value))
+                        ->getOptionLabelUsing(fn (mixed $value, ?Model $record): ?string => self::holderLabel((int) $value, self::roleKey($record)))
                         /*
                          * ⚠️ THE PLURAL RESOLVER IS NOT OPTIONAL ON A `multiple()` SELECT, and leaving it out
                          * is a 500 rather than a missing label: *"Filament failed to validate the
@@ -188,7 +188,7 @@ class RoleResource extends Resource
                          * that docblock and hit it anyway, which is the argument for it being a docblock
                          * rather than a memory.
                          */
-                        ->getOptionLabelsUsing(fn (array $values): array => self::holderLabels($values))
+                        ->getOptionLabelsUsing(fn (array $values, ?Model $record): array => self::holderLabels($values, self::roleKey($record)))
                         ->dehydrated(false),
                 ]),
 
@@ -238,7 +238,7 @@ class RoleResource extends Resource
      * @param  list<mixed>  $ids
      * @return array<int, string>
      */
-    public static function holderLabels(array $ids): array
+    public static function holderLabels(array $ids, ?int $roleId): array
     {
         $model = Permissions::userModel();
 
@@ -254,7 +254,7 @@ class RoleResource extends Resource
             ->mapWithKeys(fn (Model $user): array => [(int) $user->getKey() => self::describe($user)])
             ->all();
 
-        return $labels + self::labelsForFormerMembers($wanted, array_keys($labels));
+        return $labels + self::labelsForFormerMembers($wanted, array_keys($labels), $roleId);
     }
 
     /**
@@ -272,22 +272,31 @@ class RoleResource extends Resource
      * in the form state by the time this runs. `FieldValueRenderer::relationLabels()` makes the same trade for
      * the same reason.
      *
-     * ⚠️ AND ONLY FOR AN ID THAT IS ALREADY ASSIGNED. A value nobody holds is still refused, so this cannot
-     * become a way to add somebody the org cannot see: the set comes from `role_user`, not from the request.
+     * ⚠️ AND ONLY FOR AN ID THIS ROLE ALREADY HOLDS. "Already assigned" was the first version of that
+     * sentence and review found the gap under it: the query filtered on `user_id` alone, so ANY id with a
+     * `role_user` row anywhere — another role, another org — got a label, Filament accepted the forged
+     * option, and `syncHolders()` called `assignTo()` for it. The exception meant to keep a form saveable
+     * became a way to add somebody this org cannot see, and a way to ask whether an arbitrary id holds a
+     * role somewhere. Scoped to the role being edited, a labelled id is one this role already holds, and
+     * assigning it again is what `assignTo()` is already idempotent about.
+     *
+     * ⚠️ NO ROLE MEANS NO FALLBACK, which is the create form: a role that does not exist yet holds nobody,
+     * so every id on it must resolve through the org-scoped query or not at all.
      *
      * @param  list<int>  $wanted
      * @param  list<int>  $resolved
      * @return array<int, string>
      */
-    private static function labelsForFormerMembers(array $wanted, array $resolved): array
+    private static function labelsForFormerMembers(array $wanted, array $resolved, ?int $roleId): array
     {
         $missing = array_values(array_diff($wanted, $resolved));
 
-        if ($missing === []) {
+        if ($missing === [] || $roleId === null) {
             return [];
         }
 
         $assigned = DB::table('role_user')
+            ->where('role_id', $roleId)
             ->whereIn('user_id', $missing)
             ->pluck('user_id')
             ->map(static fn (mixed $id): int => (int) $id)
@@ -302,7 +311,7 @@ class RoleResource extends Resource
         return $labels;
     }
 
-    private static function holderLabel(int $id): ?string
+    private static function holderLabel(int $id, ?int $roleId): ?string
     {
         $model = Permissions::userModel();
 
@@ -318,7 +327,18 @@ class RoleResource extends Resource
 
         // ⚠️ The singular resolver renders a saved value; it withholds the same name for the same reason —
         // see `labelsForFormerMembers()`.
-        return self::labelsForFormerMembers([$id], [])[$id] ?? null;
+        return self::labelsForFormerMembers([$id], [], $roleId)[$id] ?? null;
+    }
+
+    /**
+     * The role a form is editing, or null on the create form.
+     *
+     * ⚠️ ONLY A SAVED `Role`. Filament hands a resolver whatever the schema's record is, and a label
+     * fallback keyed on anything else would be scoped to a row that is not the one being edited.
+     */
+    private static function roleKey(?Model $record): ?int
+    {
+        return $record instanceof Role && $record->exists ? (int) $record->getKey() : null;
     }
 
     /** A person, as an administrator would recognise them. */

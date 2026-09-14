@@ -132,7 +132,7 @@ it('keeps a label for a holder who is no longer a member of the org', function (
     expect(TestUser::query()->whereKey($departed->getKey())->exists())->toBeFalse()
         ->and(DB::table('role_user')->where('user_id', $departed->getKey())->exists())->toBeTrue();
 
-    $labels = RoleResource::holderLabels([$departed->getKey()]);
+    $labels = RoleResource::holderLabels([$departed->getKey()], (int) $role->getKey());
 
     expect($labels)->toHaveKey($departed->getKey())
         ->and($labels[$departed->getKey()])->toContain('no longer a member')
@@ -145,5 +145,29 @@ it('keeps a label for a holder who is no longer a member of the org', function (
     /** @var TestUser $stranger */
     $stranger = TestUser::create(['email' => 'stranger@kitsune.test']);
 
-    expect(RoleResource::holderLabels([$stranger->getKey()]))->toBe([]);
+    expect(RoleResource::holderLabels([$stranger->getKey()], (int) $role->getKey()))->toBe([]);
+
+    /*
+     * ⚠️ AND ONLY FOR AN ID THIS ROLE HOLDS, which the first version of the fallback did not ask — review
+     * found it filtering on `user_id` alone. A `role_user` row ANYWHERE was enough for a label, Filament
+     * accepts a labelled option, and `syncHolders()` assigns every submitted id: the exception that keeps a
+     * form saveable would have become a way to add somebody this org cannot see.
+     */
+    $elsewhere = Org::create(['name' => 'Elsewhere', 'slug' => 'elsewhere-holders']);
+
+    /** @var TestUser $outsider */
+    $outsider = TestUser::create(['email' => 'outsider@kitsune.test']);
+    DB::table('org_user')->insert(['org_id' => $elsewhere->getKey(), 'user_id' => $outsider->getKey()]);
+
+    app(Context::class)->setOrg($elsewhere);
+    $theirRole = Role::create(['handle' => 'editor', 'name' => 'Their editor']);
+    $theirRole->assignTo($outsider->getKey());
+    app(Context::class)->setOrg($this->org);
+
+    // They hold a role — just not this one, and not in this org.
+    expect(DB::table('role_user')->where('user_id', $outsider->getKey())->exists())->toBeTrue()
+        ->and(RoleResource::holderLabels([$outsider->getKey()], (int) $role->getKey()))->toBe([]);
+
+    /* And the create form, which is editing no role at all, has no holder to make an exception for. */
+    expect(RoleResource::holderLabels([$departed->getKey()], null))->toBe([]);
 });

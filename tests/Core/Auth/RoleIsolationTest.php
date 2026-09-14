@@ -607,6 +607,59 @@ it('counts only holders who are members of the org as owners', function (): void
         ->toThrow(RuntimeException::class, 'only owner role');
 });
 
+it('refuses to count owners through a model the assignments are not about', function (): void {
+    /*
+     * ⚠️ A NUMERIC ID IS NOT AN IDENTITY, AND THE LOCK-OUT GUARD WAS TAKING IT FOR ONE — review found the
+     * count doing what `Permissions::roleIdsFor()` had already been fixed not to do. `role_user.user_id`
+     * means whatever table it references; a host running two panels has two user models on two tables with
+     * two sequences, so both have a user with this id. Filtering the holders through the WRONG one invents
+     * an owner out of an unrelated row — and the guard then permits the removal of the only real one.
+     *
+     * That failure has no recovery path: owner is the only role that may administer roles (ADR-033), so an
+     * org with no effective owner cannot get one back. Refusing is the other guess, and it is the reversible
+     * one — in this configuration `Permissions` confers no role authority at all, so there is nothing being
+     * withheld that would otherwise work.
+     */
+    app(Context::class)->setOrg($this->alpha);
+
+    $owner = Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true]);
+    $owner->assignTo($this->user->getKey());
+    joinOrg($this->alpha, $this->user);
+
+    /*
+     * A departed holder of the same role: the assignment survives, the membership does not, so they are not
+     * an effective owner — which is what makes the impostor with their id the phantom.
+     */
+    /** @var TestUser $departed */
+    $departed = TestUser::create(['email' => 'departed-owner@kitsune.test']);
+    $owner->assignTo($departed->getKey());
+
+    // The collision is constructed rather than hoped for; a Postgres sequence does not roll back.
+    $impostor = new TestImpostor(['name' => 'Not the holder']);
+    $impostor->id = $departed->getKey();
+    $impostor->save();
+
+    DB::table('pivot_scoped_thing_org')->insert([
+        'org_id' => $this->alpha->getKey(),
+        'pivot_scoped_thing_id' => $impostor->getKey(),
+    ]);
+
+    expect($impostor->getKey())->toBe($departed->getKey());
+
+    // The provider now names that model: on another table, with a row for the departed holder's id.
+    config(['auth.providers.users.model' => TestImpostor::class]);
+    Permissions::forget();
+
+    expect(fn () => $owner->removeFrom($this->user->getKey()))
+        ->toThrow(RuntimeException::class, 'is not the one that column references');
+
+    // And the real owner still holds the role, which is the consequence the guard exists for.
+    expect(DB::table('role_user')
+        ->where('role_id', $owner->getKey())
+        ->where('user_id', $this->user->getKey())
+        ->exists())->toBeTrue();
+});
+
 it('refuses to delete a role that belongs to another org', function (): void {
     /*
      * ⚠️ THE FIFTH AUTHORITY PATH, and it was not asking — review found it. Eloquent's instance delete writes
