@@ -14,6 +14,7 @@ use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use Kitsune\Core\Auth\GuardedOrgMembership;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Auth\RevokesRoleAssignments;
 use Kitsune\Core\Models\AuditLog;
@@ -840,6 +841,15 @@ it('ships that behaviour on the reference host\'s own user model', function (): 
         ->and((array) $observed[0]->newInstance()->classes)->toContain(RevokesRoleAssignments::class);
 });
 
+it('ships the guarded membership relation on the reference host too', function (): void {
+    /*
+     * ⚠️ THE FIXTURE MIRRORS THE SKELETON AND IS NOT IT. `TestUser::orgs()` is what the tests above drive;
+     * this asserts that the model a real installation copies returns the guarded relation as well, because a
+     * guard the reference host does not use is a guard nobody has.
+     */
+    expect((new User)->orgs())->toBeInstanceOf(GuardedOrgMembership::class);
+});
+
 it('refuses to delete the user holding the last owner role', function (): void {
     /*
      * ⚠️ AND THE GUARD IS ALLOWED TO REFUSE, which is the point of routing a deletion through `removeFrom()`
@@ -1052,6 +1062,65 @@ it('takes the org row before any role row, so two demotions queue rather than de
     // And the guards still did their job: the org keeps an owner role that somebody holds.
     expect(Role::query()->whereKey($second->getKey())->value('is_owner'))->toBeFalsy()
         ->and(DB::table('role_user')->where('role_id', $first->getKey())->count())->toBe(1);
+});
+
+it('refuses to remove the last owner\'s org membership', function (): void {
+    /*
+     * ⚠️ MEMBERSHIP IS THE OTHER HALF OF AUTHORITY, and every guard on this branch protected only one half.
+     * `Permissions` requires an assignment AND membership, so detaching `org_user` takes somebody's
+     * authority away exactly as removing their role does — and a `belongsToMany` detach fires no model
+     * event, consults no guard and writes no audit row. The surviving `role_user` row then resolves
+     * nothing: the lock-out ADR-033 exists to prevent, reached by removing a different row.
+     */
+    app(Context::class)->setOrg($this->alpha);
+    joinOrg($this->alpha, $this->user);
+
+    $owner = Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true]);
+    $owner->assignTo($this->user->getKey());
+
+    expect(fn () => $this->user->orgs()->detach($this->alpha->getKey()))
+        ->toThrow(RuntimeException::class, 'last member of it holding an owner role');
+
+    // Membership and the assignment both survive the refusal.
+    expect(DB::table('org_user')->where('user_id', $this->user->getKey())->count())->toBe(1)
+        ->and(Permissions::isOwner($this->user))->toBeTrue();
+});
+
+it('lets membership go once somebody else can administer the org', function (): void {
+    /*
+     * ⚠️ THE OTHER DIRECTION, or the guard would be a lock rather than a guarantee: it refuses the removal
+     * that leaves nobody, not every removal.
+     */
+    app(Context::class)->setOrg($this->alpha);
+    joinOrg($this->alpha, $this->user);
+
+    /** @var TestUser $second */
+    $second = TestUser::create(['email' => 'second-owner@kitsune.test']);
+    joinOrg($this->alpha, $second);
+
+    $owner = Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true]);
+    $owner->assignTo($this->user->getKey());
+    $owner->assignTo($second->getKey());
+
+    $this->user->orgs()->detach($this->alpha->getKey());
+
+    expect(DB::table('org_user')->where('user_id', $this->user->getKey())->count())->toBe(0);
+
+    // And somebody can still administer it, which is the invariant rather than the row count.
+    Permissions::forget();
+    expect(Permissions::isOwner($second))->toBeTrue();
+});
+
+it('leaves an ordinary member\'s departure alone', function (): void {
+    // Somebody who holds no owner role takes nothing with them.
+    app(Context::class)->setOrg($this->alpha);
+    joinOrg($this->alpha, $this->user);
+
+    assign($this->alphaRole, $this->user);
+
+    $this->user->orgs()->detach($this->alpha->getKey());
+
+    expect(DB::table('org_user')->where('user_id', $this->user->getKey())->count())->toBe(0);
 });
 
 it('refuses to delete a role that belongs to another org', function (): void {

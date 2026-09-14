@@ -96,7 +96,22 @@ class RevokesRoleAssignments
                  * roles in several organisations, and a revocation recorded under the wrong one is worse than
                  * no row at all — that is the same reasoning `Role::refuseIfNotCurrentOrg()` records.
                  */
-                foreach (Role::query()->withoutGlobalScopes()->whereIn('id', $roleIds)->get() as $role) {
+                /*
+                 * ⚠️ A DETERMINISTIC ORDER, BECAUSE EACH ITERATION TAKES AN ORG MUTEX. Review found the
+                 * cycle: two users holding roles in the same pair of organisations, swept concurrently,
+                 * can meet those orgs in opposite orders — and each outer transaction keeps the first org
+                 * lock while waiting for the other's. Unordered, the order comes from whatever plan the
+                 * database chose, which is not a guarantee at all. `(org_id, id)` is shared by every sweep,
+                 * so two of them queue instead of holding each other's rows.
+                 */
+                foreach (
+                    Role::query()
+                        ->withoutGlobalScopes()
+                        ->whereIn('id', $roleIds)
+                        ->orderBy('org_id')
+                        ->orderBy('id')
+                        ->get() as $role
+                ) {
                     /*
                      * ⚠️ `withTrashed()`, because an org can be soft-deleted and its roles' assignments
                      * cannot. Review found the gap the restrictive foreign key opened: skipping a trashed

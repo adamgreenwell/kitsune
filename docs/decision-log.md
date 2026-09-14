@@ -1878,6 +1878,22 @@ Filament's own opt-in for exactly that, and it is off by default.
   quietly losing an owner. ⚠️ Soft deletes are deliberately untouched: a trashed user cannot authenticate, so
   the assignment confers nothing, and revoking it would make a restore return somebody with no authority.
 
+- **And removing somebody's MEMBERSHIP is the same authority change, guarded the same way.** Review found
+  every guard on this branch protecting one half: `Permissions` requires an assignment AND membership of the
+  org, so `$user->orgs()->detach($orgId)` takes the last owner's authority away exactly as removing their
+  role would — while firing no model event, consulting no guard and writing no audit row. The surviving
+  `role_user` row then resolves nothing and the organisation cannot administer itself. `GuardedOrgMembership`
+  refuses that removal, and the host opts in the way it opts into the deletion observer, because core owns no
+  user model. ⚠️ A relation rather than an observer, because Laravel fires no events for `attach()` and
+  `detach()` — not even with a pivot model; `GuardedBelongsToMany` made the same move for entry relations for
+  the same reason. ⚠️ And it refuses only the removal that leaves nobody: an ordinary member's departure, and
+  a departure that leaves another effective owner, both go through.
+
+  ⚠️ **The cross-org sweep is ordered, too.** Each iteration of the deletion observer takes an org mutex
+  through `removeFrom()`, so two users holding roles in the same pair of organisations could be swept in
+  opposite orders and hold each other's rows. `(org_id, id)` is a shared order every sweep follows — the same
+  lock-ordering lesson as the owner sweep, one layer out.
+
   ⚠️ **And the sweep is one transaction, which review found it was not.** A user holding roles in two
   organisations could have the first revoked and audited and the second refused by the last-owner guard: the
   deletion failed and the person kept their account while permanently losing authority the refusal existed to

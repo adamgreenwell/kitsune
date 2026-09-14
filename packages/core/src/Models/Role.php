@@ -682,6 +682,66 @@ class Role extends Model
             return [];
         }
 
+        return self::membersAmong($holders, (int) $this->storedOrgId());
+    }
+
+    /**
+     * Would this organisation lose its last effective owner if this person stopped being a member?
+     *
+     * ⚠️ MEMBERSHIP IS THE OTHER HALF OF AUTHORITY, and review found the guard protecting only one of them.
+     * `Permissions` requires a role assignment AND membership of the org, so detaching `org_user` takes
+     * somebody's authority away exactly as removing their role does — and `$user->orgs()->detach($orgId)`
+     * fires no model event, runs no guard, and writes no audit row. The last-owner guarantee ADR-033 makes
+     * was defeasible by removing the wrong row.
+     *
+     * ⚠️ TRUE ONLY IF THEY ARE ONE NOW. Somebody who holds no owner role takes nothing with them, and an org
+     * whose owner roles nobody holds is not being locked out by anybody leaving — the same line
+     * `refuseIfLastOwner()` draws.
+     *
+     * The reads are locked and the caller is expected to hold the org row already, so the answer cannot move
+     * between the decision and the delete.
+     */
+    public static function orgWouldLoseItsLastOwner(int $orgId, int $userId): bool
+    {
+        $roles = static::query()
+            ->withoutGlobalScopes()
+            ->where('org_id', $orgId)
+            ->where('is_owner', true)
+            ->lockForUpdate()
+            ->pluck('id');
+
+        if ($roles->isEmpty()) {
+            return false;
+        }
+
+        $holders = DB::table('role_user')
+            ->whereIn('role_id', $roles)
+            ->lockForUpdate()
+            ->pluck('user_id')
+            ->map(static fn (mixed $id): int => (int) $id)
+            ->unique()
+            ->values()
+            ->all();
+
+        $effective = self::membersAmong($holders, $orgId);
+
+        return in_array($userId, $effective, true)
+            && array_values(array_diff($effective, [$userId])) === [];
+    }
+
+    /**
+     * Which of these holders can actually exercise authority in this org right now?
+     *
+     * ⚠️ EXTRACTED SO A SECOND CALLER CAN ASK THE SAME QUESTION, not for tidiness. Removing somebody's org
+     * MEMBERSHIP takes their authority away exactly as removing the role does — `Permissions` requires both
+     * — so the guard protecting the last owner has to be reachable from the membership side too, and two
+     * copies of "who really has authority here" is one copy that drifts.
+     *
+     * @param  list<int>  $holders
+     * @return list<int>
+     */
+    private static function membersAmong(array $holders, int $orgId): array
+    {
         $model = Permissions::userModel();
 
         if ($model === null) {
@@ -711,13 +771,13 @@ class Role extends Model
          */
         if (! Permissions::assignmentsAreAbout($model)) {
             throw new RuntimeException(sprintf(
-                'Refusing to change owner authority on role %s: assignments are rows in role_user, and the '
+                'Refusing to answer who can administer organisation %s: assignments are rows in role_user, and the '
                 .'user model this installation resolves (%s) is not the one that column references — it is '
                 .'on another table or another connection. Who would still be able to administer this '
                 .'organisation cannot be determined from it, and guessing wrong locks the organisation out '
                 .'permanently (ADR-033). Point the panel or auth provider at the model role_user '
                 .'references.',
-                (string) $this->getKey(),
+                (string) $orgId,
                 $model,
             ));
         }

@@ -20,6 +20,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Illuminate\Support\Collection;
+use Kitsune\Core\Auth\GuardedOrgMembership;
 use Kitsune\Core\Auth\RevokesRoleAssignments;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Role;
@@ -108,7 +109,22 @@ class User extends Authenticatable implements FilamentUser, HasLocalePreference,
     /** @return BelongsToMany<Org, $this> */
     public function orgs(): BelongsToMany
     {
-        return $this->belongsToMany(Org::class, 'org_user');
+        /*
+         * ⚠️ GUARDED, BECAUSE A DETACH IS AN AUTHORITY CHANGE. `Permissions` requires a role assignment AND
+         * membership, so removing the last owner's membership locks the organisation out exactly as removing
+         * their role would — and a plain `detach()` fires no event and consults no guard. See
+         * `GuardedOrgMembership`.
+         */
+        return new GuardedOrgMembership(
+            Org::query(),
+            $this,
+            'org_user',
+            'user_id',
+            'org_id',
+            $this->getKeyName(),
+            (new Org)->getKeyName(),
+            __FUNCTION__,
+        );
     }
 
     /**

@@ -11,8 +11,11 @@ declare(strict_types=1);
 namespace Kitsune\Core\Tests\Fixtures;
 
 use Illuminate\Database\Eloquent\Attributes\ObservedBy;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Foundation\Auth\User as Authenticatable;
+use Kitsune\Core\Auth\GuardedOrgMembership;
 use Kitsune\Core\Auth\RevokesRoleAssignments;
+use Kitsune\Core\Models\Org;
 use Kitsune\Core\Tenancy\Attributes\OrgScopedThroughPivot;
 use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
 
@@ -42,4 +45,25 @@ class TestUser extends Authenticatable
     protected $guarded = [];
 
     public $timestamps = false;
+
+    /**
+     * Membership, declared the way the skeleton declares it.
+     *
+     * ⚠️ GUARDED, AND THAT IS THE POINT OF HAVING IT HERE. Removing the last owner's membership locks an
+     * organisation out exactly as removing their role does, and a plain `detach()` fires no event — so a
+     * fixture with an unguarded relation would let the test assert about a model nothing ships.
+     */
+    public function orgs(): BelongsToMany
+    {
+        return new GuardedOrgMembership(
+            Org::query(),
+            $this,
+            'org_user',
+            'user_id',
+            'org_id',
+            $this->getKeyName(),
+            (new Org)->getKeyName(),
+            __FUNCTION__,
+        );
+    }
 }
