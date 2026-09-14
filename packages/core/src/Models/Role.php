@@ -75,6 +75,19 @@ class Role extends Model
     private bool $deletingItself = false;
 
     /**
+     * Whether the save that is finishing actually performed an UPDATE.
+     *
+     * ⚠️ `wasChanged()` OUTLIVES THE WRITE THAT SET IT, which review found and which a probe confirmed
+     * immediately: Eloquent refreshes `$changes` in `finishSave()` from what the update wrote, and a later
+     * `save()` with nothing dirty never calls `performUpdate()` at all — so `$changes` still describes the
+     * PREVIOUS write, `wasChanged('is_owner')` is still true, and the owner transition was audited again.
+     * Measured: one promotion, then three no-op saves, produced four `role.owner_assigned` rows per holder.
+     *
+     * An audit row is a statement that something happened. This is how the model knows something did.
+     */
+    private bool $updateWasPerformed = false;
+
+    /**
      * Whether a write to `role_permissions` is inside `grant()` or `revoke()`.
      *
      * ⚠️ THE OPENER IS NOT A METHOD, which is the whole point — review found the first version's window
@@ -126,7 +139,12 @@ class Role extends Model
         $this->writingThrough = $query;
 
         try {
-            return parent::performUpdate($query);
+            $updated = parent::performUpdate($query);
+
+            // Consumed by `auditOwnerTransition()` in `saved`, which fires after this returns.
+            $this->updateWasPerformed = (bool) $updated;
+
+            return $updated;
         } finally {
             /*
              * ⚠️ BOTH FACTS, HOWEVER THIS EXITS — review found the first version clearing only the identity,
@@ -359,7 +377,15 @@ class Role extends Model
      */
     private function auditOwnerTransition(): void
     {
-        if (! $this->wasChanged('is_owner')) {
+        /*
+         * ⚠️ CONSUMED FIRST, AND BEFORE THE `wasChanged()` TEST. A save that wrote nothing must not replay
+         * the previous write's transition, and it must not leave the flag standing for the save after it
+         * either — so this is a one-shot proof of "an update just ran", taken whether or not the flag moved.
+         */
+        $performed = $this->updateWasPerformed;
+        $this->updateWasPerformed = false;
+
+        if (! $performed || ! $this->wasChanged('is_owner')) {
             return;
         }
 
@@ -781,15 +807,6 @@ class Role extends Model
     {
         $this->refuseIfNotCurrentOrg('assignTo');
 
-        $existing = DB::table('role_user')
-            ->where('role_id', $this->getKey())
-            ->where('user_id', $userId)
-            ->exists();
-
-        if ($existing) {
-            return;
-        }
-
         DB::transaction(function () use ($userId): void {
             /*
              * ⚠️ THE ROLE IS LOCKED BEFORE THE PIVOT, and review found the interleaving that needs it: an
@@ -803,6 +820,24 @@ class Role extends Model
              * reads the holders under a lock for the same reason, from the other side.
              */
             $this->lockRow();
+
+            /*
+             * ⚠️ ASKED AFTER THE LOCK, AND IT USED TO BE ASKED BEFORE THE TRANSACTION — review found the
+             * collision. Two requests assigning the same person to the same role both passed an `exists()`
+             * check outside any lock; the first inserted and committed, and the second then inserted into the
+             * `(role_id, user_id)` primary key and died with a constraint violation — where the documented
+             * behaviour of this method is to be idempotent and silent.
+             *
+             * Inside the lock the second request sees the first's row and returns, which is what "already
+             * holds it" is supposed to mean.
+             */
+            if (DB::table('role_user')
+                ->where('role_id', $this->getKey())
+                ->where('user_id', $userId)
+                ->exists()
+            ) {
+                return;
+            }
 
             DB::table('role_user')->insert(['role_id' => $this->getKey(), 'user_id' => $userId]);
 

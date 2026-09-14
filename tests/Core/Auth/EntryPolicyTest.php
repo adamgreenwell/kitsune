@@ -503,3 +503,58 @@ it('resolves the permission from the stored type, not the attribute', function (
 
     expect($this->policy->update($this->user, $article))->toBeTrue();
 });
+
+it('does not answer a reloaded instance from the memo of an older type', function (): void {
+    /*
+     * ⚠️ THE MEMO OUTLIVED A RELOAD, which review found one round after the memo was added. Keyed on the row
+     * and the scope alone, a request that checked an entry while it was an article, saw it retyped, and then
+     * RELOADED the model got the memoised article handle back — and the fresh instance's originals match the
+     * retyped row, so `Entry::refuseIfTheRowMovedUnderneath()` has nothing to refuse at the write either. An
+     * article grant spent on a restricted type, with both guards satisfied.
+     *
+     * The loaded type is part of the key now, and used by the body: an instance whose loaded type no longer
+     * matches the stored row is stale, and a stale instance is refused.
+     */
+    $home = siteFor($this->org, 'home');
+    $entry = entryOn($home);
+
+    app(Context::class)->setSite($home);
+    $this->role->grant('entry.article.update');
+    Permissions::forget();
+
+    // The first check, while it really is an article: memoised.
+    expect($this->policy->update($this->user, $entry))->toBeTrue();
+
+    $product = EntryType::create([
+        'org_id' => $this->org->getKey(), 'handle' => 'product', 'name' => 'Product', 'plural_name' => 'Products',
+    ]);
+
+    DB::table('entries')->where('id', $entry->getKey())->update([
+        'entry_type_id' => $product->getKey(),
+        'type_handle' => 'product',
+    ]);
+
+    /*
+     * ⚠️ THE STALE INSTANCE STILL GETS ITS MEMOISED ANSWER, and that is the layering rather than a hole — a
+     * point this test asserted wrongly at first. The memo is keyed on what this instance was loaded with, so
+     * within one request it answers "as of when we asked"; what refuses the stale instance is the WRITE, where
+     * `Entry::refuseIfTheRowMovedUnderneath()` sees the row is no longer the one it was loaded from. Asserting
+     * the policy refused it would have been asserting a promise the design does not make, and the guarantee
+     * that matters — nothing lands — is asserted here instead.
+     */
+    expect(fn () => $entry->update(['title' => 'Edited from a stale instance']))
+        ->toThrow(RuntimeException::class, 'somebody else moved or retyped it while this instance was in hand');
+
+    // A freshly loaded one is the shape the memo used to answer wrongly, and it is refused by the policy.
+    /** @var Entry $reloaded */
+    $reloaded = Entry::query()->whereKey($entry->getKey())->firstOrFail();
+
+    expect($reloaded->type_handle)->toBe('product')
+        ->and($this->policy->update($this->user, $reloaded))->toBeFalse();
+
+    // The grant that matches what it has BECOME still works, or this would be a refusal of everything.
+    $this->role->grant('entry.product.update');
+    Permissions::forget();
+
+    expect($this->policy->update($this->user, $reloaded))->toBeTrue();
+});

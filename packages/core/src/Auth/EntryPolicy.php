@@ -222,6 +222,19 @@ class EntryPolicy
         $org = $context->orgId();
 
         /*
+         * ⚠️ THE TYPE THIS INSTANCE WAS LOADED WITH IS PART OF THE KEY, AND PART OF THE ANSWER — review found
+         * the memo outliving a reload. Keyed on the row and the scope alone, a request that checked an entry
+         * while it was an article, saw it retyped, and then RELOADED it got the memoised article handle back:
+         * the fresh instance's originals match the retyped row, so the write guard has nothing to refuse, and
+         * an article grant was spent on a restricted type.
+         *
+         * It is used by the body rather than merely mixed into the key — AGENTS.md invariant 13 — and what it
+         * is used FOR is the same question the write guard asks: an instance whose loaded type no longer
+         * matches the stored row is stale, and a stale instance is refused.
+         */
+        $loadedType = $entry->getRawOriginal('entry_type_id');
+
+        /*
          * ⚠️ MEMOISED PER ROW, BECAUSE THE FIRST VERSION COST +50 QUERIES A PAGE. Filament asks several
          * abilities of every row it renders, so an unconditional read was one query per CHECK. Measured with
          * `kitsune:benchmark-admin` at 100k entries, `entry list, page 1`:
@@ -239,7 +252,7 @@ class EntryPolicy
          * worker — must not be answered from another scope's memo, so both ids are captured AND used by the
          * body below rather than passed and ignored.
          */
-        return self::scopeAllows($stored, $site, $org);
+        return self::scopeAllows($stored, $site, $org, $loadedType);
     }
 
     /**
@@ -269,19 +282,29 @@ class EntryPolicy
      * A static frame has no object to key on, so the key is the call site plus the three arguments — which is
      * also what makes the scope part of it, per invariant 13.
      */
-    private static function scopeAllows(mixed $key, ?int $site, ?int $org): ?string
+    private static function scopeAllows(mixed $key, ?int $site, ?int $org, mixed $loadedType): ?string
     {
-        return once(static fn (): ?string => self::storedRowIsInScope($key, $site, $org));
+        return once(static fn (): ?string => self::storedRowIsInScope($key, $site, $org, $loadedType));
     }
 
-    private static function storedRowIsInScope(mixed $key, ?int $site, ?int $org): ?string
+    private static function storedRowIsInScope(mixed $key, ?int $site, ?int $org, mixed $loadedType): ?string
     {
         $row = Entry::withTrashed()
             ->withoutGlobalScopes()
             ->whereKey($key)
-            ->first(['site_id', 'org_id', 'type_handle']);
+            ->first(['site_id', 'org_id', 'type_handle', 'entry_type_id']);
 
         if ($row === null) {
+            return null;
+        }
+
+        /*
+         * ⚠️ AN INSTANCE WHOSE LOADED TYPE NO LONGER MATCHES THE ROW IS STALE, and the policy says no to a
+         * stale instance rather than answering about a row it is not holding. It is the same sentence
+         * `Entry::refuseIfTheRowMovedUnderneath()` enforces at the write, asked one layer earlier — and it is
+         * what makes the loaded type load-bearing in the memo key rather than decoration.
+         */
+        if ((string) $row->entry_type_id !== (string) $loadedType) {
             return null;
         }
 

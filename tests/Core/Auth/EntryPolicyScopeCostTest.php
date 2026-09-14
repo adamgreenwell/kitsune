@@ -69,13 +69,21 @@ it('reads the stored scope once per row, however many abilities are asked', func
         $sql = str_replace(['"', '`'], '', $q->sql);
 
         /*
-         * ⚠️ THE COLUMN LIST IS PART OF THE SHAPE, and it changed under this test once already: the scope read
-         * grew `type_handle` when review found the policy resolving the permission from the record's mutable
-         * attribute, and this filter stopped matching — reporting 0 reads, which is exactly the "the guard
-         * stopped asking the database" failure the assertion below watches for. It failed loudly rather than
-         * going quiet, which is the whole reason it names the shape instead of grepping for the table.
+         * ⚠️ MATCHED BY WHAT THE QUERY IS, NOT BY ITS EXACT COLUMN LIST — loosened after the list changed under
+         * this test TWICE, both times because review found the policy trusting one more attribute it should
+         * have read from the row: `type_handle` first, then `entry_type_id`. Each time the filter stopped
+         * matching and reported 0 reads, which is the "the guard stopped asking the database" failure the
+         * assertion below watches for — so it failed loudly rather than going quiet, twice, and twice cost an
+         * edit that taught nothing.
+         *
+         * The identity of this read is a SELECT against `entries` carrying both scope keys. A stray match
+         * would inflate the count and fail just as loudly, so the looser filter cannot hide a regression in
+         * the direction that matters.
          */
-        if (str_contains($sql, 'select site_id, org_id, type_handle from entries')) {
+        if (str_starts_with($sql, 'select')
+            && str_contains($sql, 'from entries')
+            && str_contains($sql, 'site_id')
+            && str_contains($sql, 'org_id')) {
             $seen++;
         }
     });
