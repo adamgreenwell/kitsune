@@ -1915,6 +1915,12 @@ show one name and the grant would land on whoever holds that id in the table `ro
 The control is disabled with the reason on it, and `syncHolders()` asks the same question again at the write,
 because a disabled control is a rendering decision and the raw form state is submitted by the browser.
 
+⚠️ **And the picker assumed a user schema core does not own**, which review found once the model was the right
+one. It searched and ordered on `name` and `email` whatever the table had, so a host whose users carry `username`
+met a database error instead of a list. It now asks the table: `name` and `email` where they exist, an exact id
+where neither does. People are labelled through Filament's `HasName` when the model implements it — the contract
+the panel already names the signed-in user by — so a host describes its users once, to Filament, not twice.
+
 ⚠️ **And disabling a control does not stop it NAMING people**, which is the same finding one layer in. The
 label resolver still went to that model, so a form nobody could change still stated that an unrelated person
 held real authority. The assignment is real and the identity is not available — two different statements — so

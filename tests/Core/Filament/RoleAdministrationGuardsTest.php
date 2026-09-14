@@ -166,6 +166,27 @@ it('names no holder through a model the pivot is not about', function (): void {
         ->and($labels[$holder->getKey()])->not->toContain('Somebody else entirely');
 });
 
+it('searches holders only through columns the user table has', function (): void {
+    /*
+     * ⚠️ CORE OWNS NO USER SCHEMA, and review found the holder search assuming one: `name` and `email`, on a valid
+     * user model whose table has neither, issued SQL against columns that do not exist, so the owner met a database
+     * error instead of a list of people. This suite's own `users` table has `email` and no `name`, so the search is
+     * exercised against exactly the shape that failed rather than reasoned about.
+     *
+     * ⚠️ POSTGRES AND MYSQL ARE THE ENGINES THAT CAN SEE IT. SQLite reads a double-quoted identifier it cannot
+     * resolve as a string literal, so with the columns hard-coded again `where "name" like …` is quietly false there
+     * and this passes; on Postgres the same probe fails with the missing-column error.
+     */
+    app(Context::class)->setOrg($this->org);
+
+    /** @var TestUser $holder */
+    $holder = TestUser::create(['email' => 'findable@kitsune.test']);
+    DB::table('org_user')->insert(['org_id' => $this->org->getKey(), 'user_id' => $holder->getKey()]);
+
+    // Found by the column the table has, and labelled without the one it does not.
+    expect(RoleResource::searchHolders('findable'))->toBe([$holder->getKey() => 'findable@kitsune.test']);
+});
+
 it('refuses to administer holders through a model the pivot is not about', function (): void {
     /*
      * ⚠️ THE SELECTOR WAS THE THIRD PLACE THIS CHECK BELONGED, and the one I missed twice: `roleIdsFor()`

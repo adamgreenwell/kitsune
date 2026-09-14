@@ -18,6 +18,7 @@ use Filament\Forms\Components\CheckboxList;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
 use Filament\Forms\Components\Toggle;
+use Filament\Models\Contracts\HasName;
 use Filament\Resources\Resource;
 use Filament\Schemas\Components\Section;
 use Filament\Schemas\Schema;
@@ -229,16 +230,24 @@ class RoleResource extends Resource
     }
 
     /**
-     * Members of the current org whose name or email matches.
+     * Members of the current org whose name or email matches — or whose id does, on a table with neither.
      *
      * ⚠️ THROUGH THE USER MODEL'S OWN SCOPED QUERY, so `#[OrgScopedThroughPivot]` decides who is visible —
      * this must never become a way to enumerate another customer's people. `OrgAwareUserProvider` documents
      * the same exposure from the other side: the carve-out that lets authentication find one user by
      * identifier is deliberately not a licence to LIST users.
      *
+     * ⚠️ AND ONLY THROUGH COLUMNS THE HOST'S TABLE HAS — review found the search issuing SQL against `name` and
+     * `email` on a valid user model whose table carries neither, so the owner met a database error instead of a
+     * list of people. Core owns no user schema (ADR-002), so the columns are asked of the table: `name` and
+     * `email` where they exist, and the key otherwise, which every table has. How a person is labelled is
+     * Filament's own contract — see `describe()`.
+     *
+     * ⚠️ PUBLIC SO A TEST CAN REACH IT, as `holderLabels()` is and for the same reason.
+     *
      * @return array<int, string>
      */
-    private static function searchHolders(string $search): array
+    public static function searchHolders(string $search): array
     {
         $model = Permissions::userModel();
 
@@ -246,11 +255,31 @@ class RoleResource extends Resource
             return [];
         }
 
-        return $model::query()
-            ->where(fn ($query) => $query
-                ->where('name', 'like', '%'.$search.'%')
-                ->orWhere('email', 'like', '%'.$search.'%'))
-            ->orderBy('name')
+        $user = new $model;
+        $columns = array_values(array_intersect(
+            ['name', 'email'],
+            DB::connection($user->getConnectionName())->getSchemaBuilder()->getColumnListing($user->getTable()),
+        ));
+
+        $query = $model::query();
+
+        if ($columns === []) {
+            if (! ctype_digit($search)) {
+                return [];
+            }
+
+            $query->whereKey((int) $search);
+        } else {
+            $query
+                ->where(function ($query) use ($columns, $search): void {
+                    foreach ($columns as $column) {
+                        $query->orWhere($column, 'like', '%'.$search.'%');
+                    }
+                })
+                ->orderBy($columns[0]);
+        }
+
+        return $query
             ->limit(25)
             ->get()
             ->mapWithKeys(fn (Model $user): array => [(int) $user->getKey() => self::describe($user)])
@@ -421,10 +450,15 @@ class RoleResource extends Resource
         return $record instanceof Role && $record->exists ? (int) $record->getKey() : null;
     }
 
-    /** A person, as an administrator would recognise them. */
+    /**
+     * A person, as an administrator would recognise them.
+     *
+     * By Filament's `HasName` when the model implements it — the contract the panel already uses to name the
+     * signed-in user — and otherwise by whichever of `name` and `email` the model has, falling back to its id.
+     */
     private static function describe(Model $user): string
     {
-        $name = $user->getAttribute('name');
+        $name = $user instanceof HasName ? $user->getFilamentName() : $user->getAttribute('name');
         $email = $user->getAttribute('email');
 
         return is_string($name) && $name !== ''
