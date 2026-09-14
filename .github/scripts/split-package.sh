@@ -17,8 +17,11 @@
 #
 # ⚠️ WHAT IT DOES, in the order it does it:
 #
-#   1. Refuses a tag that is not a version. Git accepts `;`, `$`, `|` and backticks in ref names, and a name
-#      is not a thing to run.
+#   1. Refuses a tag that is not a release name Composer resolves. Git accepts `;`, `$`, `|` and backticks in ref
+#      names, and a name is not a thing to run — but it also accepts `v1.0.0-01` and `v1.0.0-foo`, which Composer's
+#      version parser rejects, so a looser check would publish a release Packagist cannot install. The accepted
+#      forms are narrower than Composer's on purpose: `vX.Y.Z`, optionally `-alpha`, `-beta` or `-RC` with a number,
+#      and no leading zeros anywhere.
 #   2. Splits the package with `git subtree split`, so the mirror carries the package's real history — the
 #      same commits, authors and messages, which is what makes consecutive releases fast-forwards of each other.
 #   3. Pushes the tag. Tags are never forced: a release that already exists with different content is refused.
@@ -38,8 +41,11 @@ set -euo pipefail
 : "${MAIN_REF:?MAIN_REF is required}"
 RETRY_DELAY="${RETRY_DELAY:-5}"
 
-if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
-  echo "Refusing to publish [$TAG]: a release tag is vX.Y.Z, optionally with a -prerelease suffix." >&2
+number='(0|[1-9][0-9]*)'
+
+if [[ ! "$TAG" =~ ^v${number}\.${number}\.${number}(-(alpha|beta|RC)(\.?${number})?)?$ ]]; then
+  echo "Refusing to publish [$TAG]: a release tag is vX.Y.Z, optionally followed by -alpha, -beta or -RC and a" >&2
+  echo "number (v1.0.0-beta.2, v1.0.0-RC1), with no leading zeros — the forms Composer resolves." >&2
   exit 1
 fi
 

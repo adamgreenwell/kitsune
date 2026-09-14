@@ -8,6 +8,7 @@
 
 declare(strict_types=1);
 
+use Composer\Semver\VersionParser;
 use Illuminate\Support\Facades\File;
 use Symfony\Component\Process\Process;
 
@@ -180,6 +181,38 @@ it('refuses a tag name that is not a version, and runs nothing it contains', fun
         ->and(file_exists($marker))->toBeFalse()
         ->and(splitGit($this->mirror, 'for-each-ref'))->toBe('');
 });
+
+it('refuses a tag Composer could not resolve, or that is not a canonical release name', function (string $tag): void {
+    /*
+     * ⚠️ A NAME GIT ACCEPTS IS NOT A VERSION PACKAGIST CAN INSTALL — review found the first pattern accepting
+     * `v1.0.0-01` and `v1.0.0-.foo`, which Composer's `VersionParser::normalize()` rejects. Published, such a tag
+     * would reach the mirror and could move its main while no host could require the release.
+     *
+     * The rest are forms Composer tolerates and this refuses on purpose — a leading zero, a missing patch number,
+     * no `v`, a lowercase `rc` — so a release has one spelling.
+     */
+    $release = splitCommit($this->source, 'packages/core/a.php', '<?php // a', 'Add a');
+
+    $run = splitPublish($this->source, $this->mirror, $tag, $release);
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and($run->getErrorOutput())->toContain('Refusing to publish')
+        ->and(splitGit($this->mirror, 'for-each-ref'))->toBe('');
+})->with(['v1.0.0-01', 'v1.0.0-.foo', 'v1.0.0-foo', 'v01.0.0', 'v1.0', '1.0.0', 'v1.0.0-rc.1']);
+
+it('publishes a pre-release in a form Composer resolves', function (string $tag): void {
+    /*
+     * ⚠️ AND EVERYTHING IT ACCEPTS, COMPOSER ACCEPTS — asserted against Composer's own parser, not a second
+     * description of it. The allowed forms are narrower than Composer's; this is what keeps them a subset.
+     */
+    $release = splitCommit($this->source, 'packages/core/a.php', '<?php // a', 'Add a');
+
+    $run = splitPublish($this->source, $this->mirror, $tag, $release);
+
+    expect($run->isSuccessful())->toBeTrue($run->getErrorOutput())
+        ->and(mirrorRef($this->mirror, "refs/tags/{$tag}"))->not->toBeNull()
+        ->and((new VersionParser)->normalize($tag))->toBeString();
+})->with(['v1.0.0-alpha.1', 'v1.0.0-beta2', 'v1.0.0-RC.1']);
 
 it('refuses to overwrite a mirror whose main holds history of its own', function (): void {
     /*
