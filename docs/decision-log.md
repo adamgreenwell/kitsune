@@ -743,7 +743,7 @@ at a time.
 
 ## ADR-021 — Sites: a third structural level, and Filament's tenant is the Site
 
-**Status:** Decided · 2026-09-07
+**Status:** Decided · 2026-09-07 · **Amended 2026-09-09** — three times while public site resolution was built (issue #38); see the amendments below
 **Revises** ADR-009 (two scoping levels, not one) and ADR-017 (locale is derived from site, not stored on the entry).
 
 ### The gap this closes
@@ -1576,7 +1576,7 @@ Live defects remain **0**. The expressiveness cost is nine rows: three are porta
 
 ## ADR-032 — The mark reduces to a unit, not to a lesser fox, and it is adopted provisionally
 
-**Status:** Provisional · 2026-09-12 — adopted for use, not for registration · vector source landed and measured the same day, see the amendment below
+**Status:** Provisional · 2026-09-12 — adopted for use, not for registration · **Amended 2026-09-12** — the vector source landed and was measured the same day; see the amendments below
 
 Raised because a comp exists. It settles two things that were about to be settled by accident: what the mark system is, and whether having drawn one violates the roadmap's instruction not to spend on a logo before name clearance.
 
@@ -1666,7 +1666,7 @@ The raster exports were kept out of it and landed separately on `docs/brand-asse
 
 ## ADR-033 — Kitsune owns its RBAC, and a permission is a string a role holds
 
-**Status:** Decided · 2026-09-13
+**Status:** Decided · 2026-09-13 · **Amended 2026-09-13** — twice during the wiring: the owner bypass does not resolve in `Gate::before`, and the scope hatch does not suspend the authority guards; see the amendments below
 
 Issue #81. Phase 4's last unchecked line is `EntryPolicy`, blocked rather than deferred: a policy needs roles and permissions to resolve against. `architecture.md` §4 already fixes the naming — `entry.{type_handle}.{view|create|update|delete|publish}`, resolved against `type_handle`, seeded by blueprints — and settles nothing about where any of it lives.
 
