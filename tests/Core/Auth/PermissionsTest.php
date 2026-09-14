@@ -253,11 +253,11 @@ it('records the four operations that change authority, and nothing else', functi
      */
     $assignment = AuditLog::query()->where('action', 'role.assigned')->sole();
 
-    expect($assignment->target_id)->toBe($user->getKey())
+    expect($assignment->target_id)->toBe((string) $user->getKey())
         ->and($assignment->target_type)->toBe($user->getMorphClass());
 
     // A grant is about the role, and that is the right target for it.
-    expect(AuditLog::query()->where('action', 'role.granted')->value('target_id'))->toBe($role->getKey());
+    expect(AuditLog::query()->where('action', 'role.granted')->value('target_id'))->toBe((string) $role->getKey());
 });
 
 it('names an owner elevation in the action, because the target cannot hold it', function (): void {
@@ -278,7 +278,7 @@ it('names an owner elevation in the action, because the target cannot hold it', 
     expect(AuditLog::query()->orderBy('id')->pluck('action')->all())
         ->toBe(['role.owner_assigned', 'role.owner_unassigned'])
         ->and(AuditLog::query()->where('action', 'role.owner_assigned')->value('target_id'))
-        ->toBe($user->getKey());
+        ->toBe((string) $user->getKey());
 });
 
 it('records nothing for an operation that changed nothing', function (): void {

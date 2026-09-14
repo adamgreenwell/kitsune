@@ -46,13 +46,28 @@ return new class extends Migration
              * that answers "at whose hand".
              */
             $table->string('actor_type')->nullable();
-            $table->foreignId('actor_id')->nullable();
+            /*
+             * ⚠️ A STRING, BECAUSE AN IDENTIFIER IS THE HOST'S TO CHOOSE — review found this column assuming
+             * integers one round after it learned to record a model that need not be Eloquent at all. A host
+             * whose users carry UUIDs, or an LDAP or SSO identity with a string subject, made every audited
+             * write by that person fail its insert on PostgreSQL and strict MySQL — and because the audit row
+             * shares a transaction with the write it records, the content write rolled back with it. "Cannot
+             * record who" became "cannot write at all", which is the wrong failure for a log that exists to
+             * be trusted.
+             *
+             * There is deliberately no foreign key here (erasing a user must not destroy the trail), so the
+             * column's type was never carrying a constraint — only an assumption.
+             */
+            $table->string('actor_id')->nullable();
             $table->string('action');
             // Both nullable: plenty of auditable actions have no model behind
             // them — a settings change, a sign-in, an export. The signature
             // advertises an optional target and the column has to mean it.
             $table->string('target_type')->nullable();
-            $table->unsignedBigInteger('target_id')->nullable();
+            // ⚠️ And the target for the same reason: `role.assigned` names a HOST user, so a UUID-keyed
+            // installation hit this on the other half of the same row. Found by sweeping rather than by
+            // waiting for the round that would have reported it.
+            $table->string('target_id')->nullable();
             $table->timestamp('created_at');
 
             // ADR-021: composite indexes lead with the scope key.

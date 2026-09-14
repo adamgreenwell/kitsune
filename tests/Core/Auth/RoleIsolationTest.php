@@ -10,9 +10,12 @@ declare(strict_types=1);
 
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Database\QueryException;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Models\AuditLog;
+use Kitsune\Core\Models\Entry;
+use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Role;
 use Kitsune\Core\Models\RolePermission;
@@ -320,7 +323,14 @@ it('records an owner bypass gained by flipping the flag, not only by assignment'
 
     expect($elevations->pluck('action')->all())
         ->toBe(['role.owner_assigned', 'role.owner_assigned'])
-        ->and($elevations->pluck('target_id')->map(intval(...))->sort()->values()->all())
+        /*
+         * ⚠️ NOT `map(intval(...))`. `Collection::map` passes the KEY as the second argument and `intval`'s
+         * second parameter is the numeric BASE — so key 1 meant base 1, which is invalid, and that element
+         * came back 0. It was silent while these ids were integers, because `intval()` ignores the base for
+         * an int; the column became a string (a host's identifier is the host's to choose) and the same line
+         * started lying. A closure that takes one argument cannot have this happen to it.
+         */
+        ->and($elevations->pluck('target_id')->map(static fn (mixed $id): int => (int) $id)->sort()->values()->all())
         ->toBe(collect([$this->user->getKey(), $colleague->getKey()])->sort()->values()->all());
 
     $mark = (int) AuditLog::query()->max('id');
@@ -406,7 +416,7 @@ it('records the revocation when an owner role is deleted out from under its hold
     expect(AuditLog::query()->where('id', '>', $mark)->pluck('action')->all())
         ->toBe(['role.owner_unassigned'])
         ->and(AuditLog::query()->where('id', '>', $mark)->value('target_id'))
-        ->toBe($this->user->getKey());
+        ->toBe((string) $this->user->getKey());
 });
 
 it('leaves no authority change behind when its audit cannot be written', function (): void {
@@ -495,6 +505,76 @@ it('records one owner transition when two saves write the same flag', function (
         ->toBe(0, 'the row did not transition, so nothing should have been recorded');
 });
 
+it('does not leave a usable proof behind when a deletion is vetoed', function (): void {
+    /*
+     * ⚠️ A PROOF THAT OUTLIVES THE WRITE IT WAS EARNED FOR — the same family as every other finding here,
+     * reached through somebody ELSE'S veto rather than through a forged attribute. The `deleting` listener
+     * earns the proof and `performDeleteOnModel()` clears it in a `finally`; an application observer
+     * returning false means that method is never entered, so the proof survived on the instance and a later
+     * `saveQuietly()` supplied the other half. `authorityProven()` then accepted it, and the quiet save wrote
+     * `is_owner` with no org check, no per-holder audit and no cache invalidation.
+     */
+    app(Context::class)->setOrg($this->alpha);
+
+    $role = Role::create(['handle' => 'vetoed', 'name' => 'Vetoed']);
+
+    Role::deleting(static fn (): bool => false);
+
+    expect($role->delete())->toBeFalse('the observer was supposed to veto this');
+
+    // The proof is gone with the deletion, so a quiet write still has to earn its own.
+    app(Context::class)->setOrg($this->beta);
+
+    $role->is_owner = true;
+
+    /*
+     * ⚠️ THE PER-ROW REFUSAL, not the org one, and the difference is the point: with the stale proof
+     * accepted, `authorityProven()` short-circuits the whole block and NOTHING is refused. This message only
+     * exists on the path a quiet save takes when it has no proof of its own.
+     */
+    expect(fn () => $role->saveQuietly())
+        ->toThrow(RuntimeException::class, 'the owner flag is audited one row per HOLDER');
+
+    app(Context::class)->setOrg($this->alpha);
+
+    expect(Role::query()->whereKey($role->getKey())->value('is_owner'))->toBeFalsy();
+});
+
+it('refuses a publication smuggled through the arithmetic family', function (): void {
+    /*
+     * ⚠️ FOUR DOORS AGAIN, one round after the stale-row guard learned the same lesson. Laravel's `$extra`
+     * map is a set of ordinary assignments, so `increment('id', 0, ['status' => 'published'])` is a
+     * publication wearing another method's name — and the new transition guard was only on `update()`.
+     */
+    $site = Site::create(['org_id' => $this->alpha->getKey(), 'handle' => 'main', 'slug' => 'main', 'name' => 'Main']);
+    app(Context::class)->setSite($site);
+
+    $type = EntryType::create([
+        'org_id' => $this->alpha->getKey(), 'handle' => 'article',
+        'name' => 'Article', 'plural_name' => 'Articles',
+    ]);
+
+    $entry = Entry::create(['entry_type_id' => $type->getKey(), 'title' => 'Draft', 'status' => 'draft']);
+
+    assign($this->alphaRole, $this->user);
+    joinOrg($this->alpha, $this->user);
+    Auth::login($this->user);
+    Permissions::forget();
+
+    foreach ([
+        'increment' => fn () => $entry->increment('id', 0, ['status' => 'published']),
+        'decrement' => fn () => $entry->decrement('id', 0, ['status' => 'published']),
+        'incrementEach' => fn () => $entry->incrementEach(['id' => 0], ['status' => 'published']),
+        'decrementEach' => fn () => $entry->decrementEach(['id' => 0], ['status' => 'published']),
+    ] as $door => $attempt) {
+        expect($attempt)->toThrow(RuntimeException::class, 'entry.article.publish', "{$door} published without the permission");
+    }
+
+    expect(DB::table('entries')->where('id', $entry->getKey())->value('status'))->toBe('draft');
+
+    Auth::logout();
+});
+
 it('refuses to delete a role that belongs to another org', function (): void {
     /*
      * ⚠️ THE FIFTH AUTHORITY PATH, and it was not asking — review found it. Eloquent's instance delete writes
@@ -533,7 +613,7 @@ it('records what every holder lost when a role is deleted, owner or not', functi
     expect(AuditLog::query()->where('id', '>', $mark)->pluck('action')->all())
         ->toBe(['role.unassigned'])
         ->and(AuditLog::query()->where('id', '>', $mark)->value('target_id'))
-        ->toBe($this->user->getKey());
+        ->toBe((string) $this->user->getKey());
 });
 
 it('refuses the owner flag through the arithmetic family too', function (): void {
