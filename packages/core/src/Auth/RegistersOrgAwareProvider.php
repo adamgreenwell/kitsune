@@ -12,6 +12,7 @@ namespace Kitsune\Core\Auth;
 
 use Illuminate\Auth\AuthManager;
 use Illuminate\Contracts\Foundation\Application;
+use InvalidArgumentException;
 
 /**
  * Wires `OrgAwareUserProvider` in, whenever the auth manager happens to exist.
@@ -34,9 +35,32 @@ final class RegistersOrgAwareProvider
 {
     public const DRIVER = 'kitsune-eloquent';
 
-    public static function on(Application $app): void
+    /**
+     * Point the named user providers at the org-aware driver.
+     *
+     * ⚠️ NAME THE PROVIDER BEHIND THE PANEL'S AUTH GUARD, which is only `users` by convention. This rewrote
+     * `auth.providers.users` unconditionally, so a host whose panel authenticates through a provider with
+     * another name — which is the host's to choose, and which `Permissions::userModel()` was written to honour —
+     * kept Laravel's stock provider for that guard. The user model's membership scope then matches nobody before
+     * an org exists, and every sign-in failed exactly as a wrong password does. Found by installing the split
+     * into a host whose panel guard used a provider called `admins`.
+     *
+     * ⚠️ A NAME `config/auth.php` DOES NOT DEFINE IS REFUSED. Setting a driver there would create a provider with
+     * no model, which fails later and somewhere else; a misspelt name is better met here.
+     */
+    public static function on(Application $app, string ...$providers): void
     {
-        $app['config']->set('auth.providers.users.driver', self::DRIVER);
+        foreach ($providers === [] ? ['users'] : $providers as $provider) {
+            if (! is_array($app['config']->get("auth.providers.{$provider}"))) {
+                throw new InvalidArgumentException(sprintf(
+                    'There is no auth provider named [%s] to make org-aware. Name the provider the panel\'s auth '
+                    .'guard uses, as `config/auth.php` defines it under `providers`.',
+                    $provider,
+                ));
+            }
+
+            $app['config']->set("auth.providers.{$provider}.driver", self::DRIVER);
+        }
 
         $register = static fn (AuthManager $auth): AuthManager => $auth->provider(
             self::DRIVER,
