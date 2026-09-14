@@ -801,7 +801,14 @@ it('refuses to delete a holder whose model does not revoke', function (): void {
     $role = Role::create(['handle' => 'copy', 'name' => 'Copy editor']);
     $role->assignTo($stranger->getKey());
 
-    expect(fn () => $stranger->delete())->toThrow(QueryException::class);
+    /*
+     * ⚠️ INSIDE A NESTED TRANSACTION, BECAUSE POSTGRES POISONS THE OUTER ONE. A failed statement aborts the
+     * whole transaction there — `RefreshDatabase` has one open around every test — so the assertion below
+     * died with "current transaction is aborted" on pgsql while passing on SQLite. Laravel turns a nested
+     * `DB::transaction()` into a SAVEPOINT and rolls back to it, which keeps the surrounding test usable and
+     * makes the expectation mean the same thing on all four engines.
+     */
+    expect(fn () => DB::transaction(fn () => $stranger->delete()))->toThrow(QueryException::class);
 
     expect(DB::table('role_user')->where('user_id', $stranger->getKey())->exists())->toBeTrue();
 })->skip(
