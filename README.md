@@ -60,6 +60,64 @@ Not a plan. This is what CI runs on every pull request and every push to `main`:
 | Admin | Filament `^5.4` — Livewire + Alpine, server-rendered |
 | Database | PostgreSQL primary; MySQL 8.0+ / MariaDB 10.6+; SQLite for small single-site installs |
 
+## Running it locally
+
+Measured on a clean clone, not written from memory — four commands, under a minute on a warm cache:
+
+```bash
+composer install                       # the monorepo: core, the skeleton's dev tooling, the test suite
+composer skeleton:install              # the skeleton's own dependencies, .env, app key and SQLite file
+php skeleton/artisan migrate --seed    # schema and a small demo organisation
+php skeleton/artisan serve             # http://127.0.0.1:8000/admin
+```
+
+Sign in as `alpha@kitsune.test` with the password `password`. The seeded organisation is **Golfdom**, with a
+second organisation and a user of its own — `rival@kitsune.test` — because most of what is interesting about
+the scoping kernel is only visible when there are two orgs to keep apart.
+
+⚠️ **`composer install -d skeleton` on its own does not work, and the reason is temporary.** `kitsune/core`
+is not on Packagist yet ([#8](https://github.com/adamgreenwell/kitsune/issues/8)), so the skeleton resolves
+it through a path repository that `composer skeleton:install` writes and then reverts — which keeps the
+committed `skeleton/composer.json` honest about what a real installation will look like. Run the script, not
+the bare install, and the error you would otherwise get is *"kitsune/core could not be found in any
+version"*.
+
+### Running the tests
+
+```bash
+vendor/bin/pest                        # the whole suite, SQLite in memory, no services required
+vendor/bin/pint --test                 # formatting: the monorepo
+vendor/bin/pint --test skeleton --config skeleton/pint.json   # and the skeleton, which has its own config
+vendor/bin/phpstan analyse             # level 6, no baseline
+```
+
+⚠️ **Both Pint invocations, because the root config excludes `skeleton`.** The skeleton is an installable
+Laravel application with Laravel's own conventions, so it is formatted against its own config — and running
+only the first command passes locally while failing CI on any skeleton change.
+
+The browser suite needs Node and a browser binary, and it starts its own server:
+
+```bash
+npm ci
+npx playwright install chromium
+npx playwright test
+```
+
+The four-engine matrix CI runs is reproducible locally with the containers in `compose.yaml`:
+
+```bash
+docker compose up -d
+
+vendor/bin/pest                                                    # SQLite, the default — no container
+DB_CONNECTION=pgsql   DB_PORT=55432 DB_DATABASE=kitsune DB_USERNAME=kitsune DB_PASSWORD=kitsune vendor/bin/pest
+DB_CONNECTION=mysql   DB_PORT=53306 DB_DATABASE=kitsune DB_USERNAME=kitsune DB_PASSWORD=kitsune vendor/bin/pest
+DB_CONNECTION=mariadb DB_PORT=53307 DB_DATABASE=kitsune DB_USERNAME=kitsune DB_PASSWORD=kitsune vendor/bin/pest
+```
+
+⚠️ **`DB_PORT` is not optional and its absence looks like a code regression.** The containers publish on
+non-default ports; without it every test fails at setup with *"Connection refused"*, which reads as a broken
+suite rather than a missing variable.
+
 ## Licensing
 
 Kitsune core is licensed under the **[Mozilla Public License 2.0](LICENSE)**.
