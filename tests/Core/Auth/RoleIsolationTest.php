@@ -1103,3 +1103,188 @@ it('names no audit target when the panel\'s provider is not what assignments are
         ->and($row->target_type)->toBeNull()
         ->and($row->target_id)->toBeNull();
 });
+
+it('refuses a role whose primary key has been edited in memory', function (): void {
+    /*
+     * ⚠️ ELOQUENT WRITES BY THE ORIGINAL KEY AND THE GUARD READ THE CURRENT ONE — review found the gap.
+     * `Model::getKeyForSaveQuery()` returns `$this->original[$key] ?? $this->getKey()`, so an instance whose
+     * `id` attribute has been changed updates and deletes the row it was LOADED from, while every check that
+     * reads `getKey()` is looking somewhere else. Point the attribute at one of the current org's roles and
+     * the org check passed; `parent::delete()` then removed the role it came from.
+     *
+     * Worse, the two halves of one authority change could name different roles: the pivot writes in
+     * `assignTo()`/`removeFrom()` use the CURRENT key while an update or delete uses the original.
+     */
+    app(Context::class)->setOrg($this->alpha);
+
+    $decoy = Role::create(['handle' => 'decoy', 'name' => 'Decoy']);
+
+    // Both roles belong to alpha, so nothing here is about crossing an org boundary.
+    $this->alphaRole->id = $decoy->getKey();
+
+    foreach (['grant', 'assignTo', 'delete'] as $operation) {
+        $attempt = match ($operation) {
+            'grant' => fn () => $this->alphaRole->grant('entry.article.delete'),
+            'assignTo' => fn () => $this->alphaRole->assignTo($this->user->getKey()),
+            'delete' => fn () => $this->alphaRole->delete(),
+        };
+
+        expect($attempt)->toThrow(RuntimeException::class, 'its primary key has been changed in memory');
+    }
+
+    // Neither role moved, and neither gained or lost anything.
+    expect(Role::query()->count())->toBe(2)
+        ->and(RolePermission::query()->where('role_id', $decoy->getKey())->count())->toBe(0)
+        ->and(DB::table('role_user')->count())->toBe(0);
+});
+
+it('does not let withoutScopeBecause carry an authority change past the audit', function (): void {
+    /*
+     * ⚠️ THE ESCAPE HATCH WAS HONOURED HERE FOR ONE ROUND, AND THAT WAS A REGRESSION I INTRODUCED — review
+     * found it. `withoutScopeBecause()` suspends the SCOPE; it cannot suspend `Auditor`, which derives the
+     * audit row's org from the context. So a grant made under the hatch on another org's role committed the
+     * authority change and filed the audit under the wrong org — or under none at all, which is the
+     * unaudited authority change ADR-020 refuses outright.
+     *
+     * Nothing in the codebase called it, so nothing needed it. The way to act on another org's role is to
+     * establish that org's context, which is also what makes the audit true.
+     */
+    /*
+     * ⚠️ THE MARK IS TAKEN UNDER ALPHA, WHOSE ROWS IT WILL BE COMPARED AGAINST — the second time this file
+     * has been caught by it. `AuditLog` is `#[OrgScoped]`, so a high-water mark read from beta cannot see
+     * alpha's rows, comes back null, and then counts the fixture's own `role.granted` as new.
+     */
+    $mark = (int) AuditLog::query()->max('id');
+
+    app(Context::class)->setOrg($this->beta);
+
+    Role::withoutScopeBecause('a test standing in for cross-org tooling', function () {
+        $alphas = Role::withoutGlobalScopes()->where('org_id', $this->alpha->getKey())->get();
+
+        expect($alphas)->toHaveCount(1);
+
+        expect(fn () => $alphas->first()->grant('entry.article.delete'))
+            ->toThrow(RuntimeException::class, 'Refusing [grant]');
+    });
+
+    app(Context::class)->setOrg($this->alpha);
+
+    expect(RolePermission::query()->where('role_id', $this->alphaRole->getKey())->pluck('permission')->all())
+        ->toBe(['entry.article.update'])
+        ->and(AuditLog::query()->where('id', '>', $mark)->count())->toBe(0);
+});
+
+it('names an assignment audit from the stored owner flag, not a pending edit', function (): void {
+    /*
+     * ⚠️ AN UNSAVED `is_owner` MADE THE LOG DESCRIBE A GRANT THAT DOES NOT EXIST — review found it. Setting
+     * the attribute on a loaded ordinary role and calling `assignTo()` recorded `role.owner_assigned`, while
+     * the assignment conferred nothing but the role's persisted ordinary grants. The inverse understates the
+     * removal of a real owner role.
+     *
+     * An audit row is a statement about what happened, so it is named from what is stored.
+     */
+    app(Context::class)->setOrg($this->alpha);
+
+    $mark = (int) AuditLog::query()->max('id');
+
+    // The pending promotion: in memory only.
+    $this->alphaRole->is_owner = true;
+
+    expect($this->alphaRole->is_owner)->toBeTrue()
+        ->and((bool) Role::query()->whereKey($this->alphaRole->getKey())->value('is_owner'))->toBeFalse();
+
+    $this->alphaRole->assignTo($this->user->getKey());
+
+    expect(AuditLog::query()->where('id', '>', $mark)->pluck('action')->all())->toBe(['role.assigned']);
+
+    // And the real thing is still recorded as what it is.
+    $fresh = Role::query()->whereKey($this->alphaRole->getKey())->firstOrFail();
+    $fresh->update(['is_owner' => true]);
+    $mark = (int) AuditLog::query()->max('id');
+    $fresh->removeFrom($this->user->getKey());
+
+    expect(AuditLog::query()->where('id', '>', $mark)->pluck('action')->all())->toBe(['role.owner_unassigned']);
+});
+
+it('does not keep the lifecycle proof when a save aborts in its saved listener', function (): void {
+    /*
+     * ⚠️ MEASURED, AND THE FINDING WAS RIGHT WHERE I THOUGHT IT WAS NOT. `auditOwnerTransition()` runs in
+     * `saved`; when its insert fails — a context naming a site another request has deleted is enough, since
+     * `audit_log.site_id` is a foreign key — the transaction rolls back and the listener that clears
+     * `$guardsRan` is never reached. A `saveQuietly()` retry then supplied a fresh matching save identity
+     * beside the stale guards flag, and `is_owner` landed with no per-holder audit and no cache invalidation.
+     *
+     * Probed before the fix: "QUIET RETRY ACCEPTED — the proof survived", and the flag was true in the
+     * database. Both facts are cleared in `performUpdate()`'s `finally` now, so the proof's lifetime is the
+     * attempt rather than the listener.
+     */
+    app(Context::class)->setOrg($this->alpha);
+    assign($this->alphaRole, $this->user);
+
+    $site = Site::create([
+        'org_id' => $this->alpha->getKey(), 'handle' => 'doomed', 'slug' => 'doomed', 'name' => 'Doomed',
+        'locale' => 'en', 'url_strategy' => 'domain', 'base_url' => 'https://doomed.test',
+    ]);
+    app(Context::class)->setSite($site);
+    Site::query()->whereKey($site->getKey())->withoutGlobalScopes()->delete();
+
+    $this->alphaRole->is_owner = true;
+
+    expect(fn () => $this->alphaRole->save())->toThrow(QueryException::class);
+
+    app(Context::class)->setOrg($this->alpha);
+
+    $this->alphaRole->is_owner = true;
+
+    expect(fn () => $this->alphaRole->saveQuietly())
+        ->toThrow(RuntimeException::class, 'bulk write to `is_owner`')
+        ->and((bool) Role::query()->whereKey($this->alphaRole->getKey())->value('is_owner'))->toBeFalse();
+});
+
+it('counts only the stored org\'s owners as its safety net', function (): void {
+    /*
+     * ⚠️ FOUND BY SWEEPING THE FAMILY RATHER THAN BY THE NEXT REVIEW ROUND. Five findings had established
+     * that an in-memory attribute cannot decide an authority question; `effectiveOwners()` was still filtering
+     * on `$this->org_id`. `refuseIfNotCurrentOrg()` establishes that the stored ROW is in the current org — it
+     * says nothing about the attribute — so pointing `org_id` at another org made this count THEIR owners as
+     * this org's safety net, and the last held owner role here could be demoted because a different customer
+     * has one.
+     */
+    app(Context::class)->setOrg($this->alpha);
+
+    /*
+     * ⚠️ THE HOLDER HAS TO BE A MEMBER, or there is nothing to lose and the guard stands aside — the fixture's
+     * `beforeEach` does not join anybody to alpha. Without this line the test passed with the fix reverted,
+     * because `effectiveOwners()` was empty for a reason that had nothing to do with which org it asked about.
+     */
+    joinOrg($this->alpha, $this->user);
+
+    // Alpha has exactly one held owner role: taking it away is the lock-out the guard exists to refuse.
+    $owner = Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true]);
+    $owner->assignTo($this->user->getKey());
+
+    // Beta has one too, held by a member of beta — irrelevant to alpha, and the attribute now claims it.
+    app(Context::class)->setOrg($this->beta);
+    /** @var TestUser $betaUser */
+    $betaUser = TestUser::create(['email' => 'beta-owner@kitsune.test']);
+    joinOrg($this->beta, $betaUser);
+    $betaOwner = Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true]);
+    $betaOwner->assignTo($betaUser->getKey());
+
+    app(Context::class)->setOrg($this->alpha);
+
+    $owner->org_id = $this->beta->getKey();
+
+    /*
+     * ⚠️ THROUGH `removeFrom()`, BECAUSE A SAVE CANNOT REACH IT — worth recording, since the first version of
+     * this test tried `update(['is_owner' => false])` and was refused by `EnforcesScope` instead: a dirty
+     * scope key is caught by the `updating` guard, so the forged org never produces an outcome there.
+     * `removeFrom()` performs a raw pivot delete with no scope guard behind it, so it is the path where a
+     * wrong answer from `effectiveOwners()` actually locks an org out.
+     */
+    expect(fn () => $owner->removeFrom($this->user->getKey()))
+        ->toThrow(RuntimeException::class, 'last member of this organisation');
+
+    expect(DB::table('role_user')->where('role_id', $owner->getKey())->count())->toBe(1)
+        ->and((bool) Role::query()->whereKey($owner->getKey())->value('is_owner'))->toBeTrue();
+});

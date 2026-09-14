@@ -22,7 +22,6 @@ use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Tenancy\Attributes\OrgScoped;
 use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
 use Kitsune\Core\Tenancy\Context;
-use Kitsune\Core\Tenancy\ScopeWrites;
 use RuntimeException;
 
 /**
@@ -129,7 +128,20 @@ class Role extends Model
         try {
             return parent::performUpdate($query);
         } finally {
+            /*
+             * ⚠️ BOTH FACTS, HOWEVER THIS EXITS — review found the first version clearing only the identity,
+             * and measured the consequence: `auditOwnerTransition()` throwing in `saved` rolls the
+             * transaction back without reaching the listener that clears `$guardsRan`, so a `saveQuietly()`
+             * retry on the same instance supplied a fresh matching identity beside the stale guards flag and
+             * wrote `is_owner` with no per-holder audit and no cache invalidation. Measured before the fix:
+             * the quiet retry was accepted and the flag landed.
+             *
+             * Clearing both here makes the proof's lifetime local to the attempt, rather than spread across
+             * this method, a `saved` listener and `save()`'s own `finally` — three places that all had to
+             * agree.
+             */
             $this->writingThrough = null;
+            $this->guardsRan = false;
         }
     }
 
@@ -147,6 +159,7 @@ class Role extends Model
             parent::performDeleteOnModel();
         } finally {
             $this->deletingItself = false;
+            $this->guardsRan = false;
         }
     }
 
@@ -216,6 +229,11 @@ class Role extends Model
                     ->map(static fn (mixed $id): int => (int) $id)
                     ->all();
 
+                // ⚠️ The STORED flag, read while the row is still there — see `storedOwnerFlag()`. A pending
+                // edit to `is_owner` would otherwise name the revocation after a promotion that never
+                // happened.
+                $wasOwner = $this->storedOwnerFlag();
+
                 $deleted = parent::delete();
 
                 if ($deleted === false) {
@@ -228,7 +246,7 @@ class Role extends Model
                  * `role_user` for every role and a role carrying ordinary grants is authority too. ADR-033's
                  * guarantee is about authority, so the log has to be as well.
                  */
-                $this->recordOwnerChange($this->is_owner ? 'unassigned' : null, holders: $holders);
+                $this->recordOwnerChange($wasOwner ? 'unassigned' : null, holders: $holders);
 
                 return $deleted;
             });
@@ -415,6 +433,23 @@ class Role extends Model
         ));
     }
 
+    /**
+     * The org the row belongs to, as the database holds it.
+     *
+     * ⚠️ ONE READ, SHARED BY THE GUARDS THAT MUST NOT TRUST AN ATTRIBUTE. `storedOwnerFlag()` exists for the
+     * same reason on the same row; both are cheap because an authority change is rare, and both answer the
+     * question five review findings kept asking in different words — whose row is this, really.
+     */
+    private function storedOrgId(): ?int
+    {
+        $org = static::query()
+            ->withoutGlobalScopes()
+            ->whereKey($this->getKeyForSaveQuery())
+            ->value('org_id');
+
+        return $org === null ? null : (int) $org;
+    }
+
     /** Is this the only owner role in its org that anybody actually holds? */
     private function isOnlyHeldOwnerRole(): bool
     {
@@ -463,9 +498,17 @@ class Role extends Model
      */
     private function effectiveOwners(?int $exceptRole = null, ?int $exceptHolder = null): array
     {
+        /*
+         * ⚠️ THE ORG COMES FROM THE STORED ROW, NOT FROM THE ATTRIBUTE — found by sweeping the family review
+         * had already found five members of, rather than by waiting for it to find the sixth. `$this->org_id`
+         * is a pending edit until it is saved, and `refuseIfNotCurrentOrg()` only establishes that the stored
+         * ROW is in the current org: point the attribute at somebody else's org and this counted THEIR owners
+         * as this org's safety net, so the last held owner role here could be demoted because another
+         * customer has one.
+         */
         $roles = static::query()
             ->withoutGlobalScopes()
-            ->where('org_id', $this->org_id)
+            ->where('org_id', $this->storedOrgId())
             ->where('is_owner', true)
             ->when($exceptRole !== null, fn ($query) => $query->whereKeyNot($exceptRole))
             ->lockForUpdate()
@@ -521,16 +564,40 @@ class Role extends Model
     private function refuseIfNotCurrentOrg(string $operation): void
     {
         /*
-         * ⚠️ THE ESCAPE HATCH IS HONOURED HERE LIKE EVERYWHERE ELSE IN THE TENANCY LAYER. Provisioning and
-         * cross-org admin tooling are the legitimate cross-scope callers, and `withoutScopeBecause()` makes
-         * each one greppable and requires a written reason. A guard with no way through is a guard somebody
-         * eventually reaches past with raw SQL.
+         * ⚠️ THE ESCAPE HATCH WAS HONOURED HERE FOR ONE ROUND AND IS NOT ANY MORE, which review was right
+         * about. `withoutScopeBecause()` suspends the SCOPE; it cannot suspend `Auditor`, which derives the
+         * audit org from the context — so a grant made under the hatch on another org's role committed the
+         * authority change and filed the audit row under the wrong org, or under none at all, and ADR-020
+         * refuses an unaudited authority change outright.
+         *
+         * Nothing in the codebase called it, so nothing needed it: the way to act on another org's role is to
+         * establish that org's context, which is also what makes the audit true. An inconvenience beats a log
+         * that names the wrong customer.
          */
-        if (ScopeWrites::suspended()) {
-            return;
-        }
-
         $current = app(Context::class)->orgId();
+
+        /*
+         * ⚠️ THE KEY THE WRITE WILL USE IS NOT ALWAYS THE ONE IN THE ATTRIBUTE, which review found next.
+         * `Model::getKeyForSaveQuery()` returns the ORIGINAL key, so an instance whose `id` has been changed
+         * in memory deletes and updates its old row while every check here looked at the new one: point the
+         * attribute at one of the current org's roles and the guard passed, then `parent::delete()` removed
+         * the row it came from. The pivot writes in `assignTo()`/`removeFrom()` use the CURRENT key, so the
+         * two halves of an authority change could even name different roles.
+         *
+         * A role whose primary key has been edited is not something to reconcile — it is refused.
+         */
+        $stored = $this->getKeyForSaveQuery();
+
+        if ($this->exists && (string) $stored !== (string) $this->getKey()) {
+            throw new RuntimeException(sprintf(
+                'Refusing [%s] on role %s: its primary key has been changed in memory — the row it was '
+                .'loaded from is %s, and an instance update or delete writes to THAT one while everything '
+                .'else here would name this one. Load the role you mean (ADR-021, ADR-033).',
+                $operation,
+                (string) $this->getKey(),
+                (string) $stored,
+            ));
+        }
 
         /*
          * ⚠️ THE ROW IS ASKED, NOT THE ATTRIBUTE, which review found to be the difference between a guard and
@@ -543,15 +610,15 @@ class Role extends Model
          * row is one this context may see. It also covers a transfer in flight — the row the key names still
          * belongs to the org it came from — which is why `save()` asks the same question.
          */
-        if ($current !== null && $this->getKey() !== null && static::query()->whereKey($this->getKey())->exists()) {
+        if ($current !== null && $stored !== null && static::query()->whereKey($stored)->exists()) {
             return;
         }
 
         throw new RuntimeException(sprintf(
             'Refusing [%s] on role %s: the current context is %s and no role with that key belongs to it. A '
             .'role loaded under one org and used under another writes authority into the wrong customer, and '
-            .'records an audit row that names the wrong one (ADR-021, ADR-033). Use withoutScopeBecause() if '
-            .'this is deliberate.',
+            .'records an audit row that names the wrong one (ADR-021, ADR-033). Establish that org\'s '
+            .'context if the write is deliberate — the audit row is derived from it.',
             $operation,
             $this->getKey() === null ? 'none' : (string) $this->getKey(),
             $current === null ? 'none' : (string) $current,
@@ -755,7 +822,28 @@ class Role extends Model
      */
     private function assignmentAction(string $verb): string
     {
-        return $this->is_owner ? "role.owner_{$verb}" : "role.{$verb}";
+        return $this->storedOwnerFlag() ? "role.owner_{$verb}" : "role.{$verb}";
+    }
+
+    /**
+     * The owner flag as the DATABASE holds it, which is the only one an audit row may be named from.
+     *
+     * ⚠️ `$this->is_owner` IS A PENDING EDIT UNTIL IT IS SAVED, which review found this trusting: setting the
+     * attribute on a loaded ordinary role and calling `assignTo()` recorded `role.owner_assigned` while the
+     * assignment conferred nothing but the role's persisted ordinary grants — a log entry describing a grant
+     * that does not exist. The inverse understates the removal of a real owner role. An audit row is a
+     * statement about what happened, so it has to be named from what is there.
+     *
+     * ⚠️ AND `auditOwnerTransition()` DELIBERATELY DOES NOT USE THIS. It runs in `saved`, after the row has
+     * been written inside the transaction, so the attribute IS the persisted value there — and it is the only
+     * caller for which the pending edit is the subject rather than a lie.
+     */
+    private function storedOwnerFlag(): bool
+    {
+        return (bool) static::query()
+            ->withoutGlobalScopes()
+            ->whereKey($this->getKeyForSaveQuery())
+            ->value('is_owner');
     }
 
     /**

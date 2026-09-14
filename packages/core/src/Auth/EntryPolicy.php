@@ -178,11 +178,98 @@ class EntryPolicy
             return false;
         }
 
-        $site = $entry->site_id === null ? null : (int) $entry->site_id;
+        /*
+         * ⚠️ THE ATTRIBUTES WERE THE ORACLE AND THEY ARE A PENDING EDIT, which review found: set a loaded org
+         * A entry's `site_id` and `org_id` to the current ones and this comparison accepted them, so B's grant
+         * authorised the write — and `EnforcesScope` accepts a destination that matches the context too, so
+         * the transfer landed. The docblock above already said the scoped query was the oracle; it was
+         * describing an intention rather than the code.
+         *
+         * ⚠️ AND THE KEY THE WRITE USES IS THE ORIGINAL ONE, so a changed `id` attribute would have the check
+         * ask about one row and the update touch another — the same shape found on `Role`. A record whose key
+         * has been edited in memory is refused rather than reconciled.
+         *
+         * ⚠️ IT COSTS ONE INDEXED `EXISTS` PER AUTHORIZATION, WHICH WAS MEASURED RATHER THAN ASSUMED. The
+         * admin list asks this per row, so the cost is per page rather than per request; `kitsune:benchmark-admin`
+         * puts it inside the ADR-027 floor budget, and the numbers are in the PR discussion. Trading a
+         * measured fraction of a millisecond for a guard that cannot be talked out of its answer is the trade
+         * this project keeps making.
+         *
+         * ⚠️ `withTrashed()`, because `restore()` and `forceDelete()` are asked about rows the default scope
+         * hides — without it the policy would refuse exactly the two abilities that only ever concern a
+         * deleted row, which is the kind of fix that reads as correct and breaks the trash view.
+         */
+        $stored = $entry->getKeyForAuthorization();
 
-        return $site === null
-            ? (int) $entry->org_id === $context->orgId()
-            : $site === $context->siteId();
+        if ((string) $stored !== (string) $entry->getKey()) {
+            return false;
+        }
+
+        $site = $context->siteId();
+        $org = $context->orgId();
+
+        /*
+         * ⚠️ MEMOISED PER ROW, BECAUSE THE FIRST VERSION COST +50 QUERIES A PAGE. Filament asks several
+         * abilities of every row it renders, so an unconditional read was one query per CHECK. Measured with
+         * `kitsune:benchmark-admin` at 100k entries, `entry list, page 1`:
+         *
+         *   attributes only (forgeable)   17 queries   63.7 ms
+         *   stored row, unmemoised        67 queries   77.3 ms
+         *   stored row, memoised          17 queries   64.8 ms
+         *
+         * and measured on a real list request with the query shapes grouped, the memoised version makes ONE
+         * `select site_id, org_id from entries where id = ?` per distinct row rendered. `EntryPolicyScopeCostTest`
+         * pins that ratio: thirty checks across ten fresh policy instances on ten rows cost ten reads.
+         *
+         * ⚠️ THE KEY CARRIES THE SCOPE, NOT ONLY THE ROW — AGENTS.md invariant 13, which this project learned
+         * from a memo keyed on a `Site` object. A process that changes orgs — a console command, a queue
+         * worker — must not be answered from another scope's memo, so both ids are captured AND used by the
+         * body below rather than passed and ignored.
+         */
+        return self::scopeAllows($stored, $site, $org);
+    }
+
+    /**
+     * Is the row this key names inside that site and org, as the DATABASE holds it?
+     *
+     * ⚠️ THE STORED KEYS ARE READ AND COMPARED HERE, which is the difference from the version review found:
+     * the scope keys come from the row rather than from the object, so a pending edit to `site_id` or
+     * `org_id` — or a `syncOriginal()` that makes one look clean — changes nothing. `withoutGlobalScopes()`
+     * is what lets the comparison be explicit rather than implied by a `WHERE` this method cannot see, and
+     * `EntryPolicyTest` pins the result against `Entry::query()->whereKey(...)->exists()` shape by shape, so
+     * the copy cannot drift from the scope it stands in for.
+     */
+    /**
+     * ⚠️ THE MEMO HAS TO BE ENTERED FROM A STATIC FRAME, and this method exists for no other reason. Laravel's
+     * `once()` builds its key from the CALLING frame — including that frame's `$this` — and
+     * `Gate::resolvePolicy()` constructs a new policy for every single check, so memoising from the instance
+     * method keyed every call differently. Measured at the policy: five abilities on one entry cost 5 reads
+     * from five instances and 1 from one; on the admin list that was 50 reads a page rather than 10.
+     *
+     * A static frame has no object to key on, so the key is the call site plus the three arguments — which is
+     * also what makes the scope part of it, per invariant 13.
+     */
+    private static function scopeAllows(mixed $key, ?int $site, ?int $org): bool
+    {
+        return once(static fn (): bool => self::storedRowIsInScope($key, $site, $org));
+    }
+
+    private static function storedRowIsInScope(mixed $key, ?int $site, ?int $org): bool
+    {
+        $row = Entry::withTrashed()
+            ->withoutGlobalScopes()
+            ->whereKey($key)
+            ->first(['site_id', 'org_id']);
+
+        if ($row === null) {
+            return false;
+        }
+
+        $rowSite = $row->site_id === null ? null : (int) $row->site_id;
+
+        return $rowSite === null
+            ? (int) $row->org_id === $org
+            : $rowSite === $site;
     }
 
     private function allowsOnCurrentType(Authenticatable $user, string $action): bool

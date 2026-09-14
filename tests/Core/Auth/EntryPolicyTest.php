@@ -405,3 +405,59 @@ it('still answers about an unsaved entry, which names no row', function (): void
     expect($this->entry->exists)->toBeFalse()
         ->and($this->policy->update($this->user, $this->entry))->toBeTrue();
 });
+
+it('asks the stored row, not the attributes it was handed', function (): void {
+    /*
+     * ⚠️ THE ATTRIBUTES WERE THE ORACLE AND THEY ARE A PENDING EDIT — review found it. Code preparing a
+     * transfer sets a loaded org A entry's `site_id` and `org_id` to the current ones, and the comparison
+     * accepted them: B's grant then authorised the write, and `EnforcesScope` accepts a destination that
+     * matches the context too, so the transfer landed. The docblock already claimed the scoped query was the
+     * oracle, which made it a description of an intention.
+     *
+     * ⚠️ AND `syncOriginal()` IS PUBLIC, so reading `getOriginal()` instead would have been the same defect
+     * one method along. Only the database is out of the caller's reach.
+     */
+    $home = siteFor($this->org, 'home');
+    $sibling = siteFor($this->org, 'sib');
+
+    $theirs = entryOn($sibling);
+
+    app(Context::class)->setSite($home);
+    $this->role->grant('entry.article.update');
+    Permissions::forget();
+
+    // The forgery: the record now claims to live on the site we are working in.
+    $theirs->site_id = $home->getKey();
+    $theirs->org_id = $this->org->getKey();
+
+    expect((int) $theirs->site_id)->toBe($home->getKey())
+        ->and($this->policy->update($this->user, $theirs))->toBeFalse()
+        ->and($this->policy->view($this->user, $theirs))->toBeFalse()
+        ->and($this->policy->delete($this->user, $theirs))->toBeFalse();
+
+    // And a `syncOriginal()` that makes the edit look clean changes nothing either.
+    $theirs->syncOriginal();
+
+    expect($theirs->isDirty())->toBeFalse()
+        ->and($this->policy->update($this->user, $theirs))->toBeFalse();
+});
+
+it('refuses a record whose primary key has been edited', function (): void {
+    /*
+     * The same shape `Role` carries: an instance update or delete writes by the ORIGINAL key, so a changed
+     * `id` attribute would have the policy answer about one row while the write touches another.
+     */
+    $home = siteFor($this->org, 'home');
+    $mine = entryOn($home);
+    $other = entryOn($home);
+
+    app(Context::class)->setSite($home);
+    $this->role->grant('entry.article.delete');
+    Permissions::forget();
+
+    expect($this->policy->delete($this->user, $mine))->toBeTrue();
+
+    $mine->id = $other->getKey();
+
+    expect($this->policy->delete($this->user, $mine))->toBeFalse();
+});
