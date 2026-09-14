@@ -82,10 +82,18 @@ class GuardedRoleBuilder extends ScopedBuilder
              * Asked of the model only when it is an instance write that lost its proof — a genuine bulk
              * update reaches this builder with a prototype that does not exist, and the global scope is what
              * narrows that one to the current org.
+             *
+             * ⚠️ `exists` ALONE, BECAUSE `getKey()` IS THE ATTRIBUTE AND THE WRITE USES THE ORIGINAL — review
+             * found the gap that condition left. Nulling `id` in memory after an org switch made this false
+             * while `saveQuietly()` still updated the row the instance was loaded from, so a quiet `name` or
+             * `handle` change on org A's role went through under org B: the guard was skipped on exactly the
+             * instance that had been tampered with. `refuseIfNotCurrentOrg()` already refuses an edited or
+             * absent key by comparing `getKeyForSaveQuery()` with the attribute, so the condition's only job
+             * is to tell an instance write from a bulk one — which `exists` answers on its own.
              */
             $model = $this->getModel();
 
-            if ($model->exists && $model->getKey() !== null) {
+            if ($model->exists) {
                 $model->refuseIfNotCurrentOrg('a save with no lifecycle guards');
             }
         }

@@ -432,6 +432,31 @@ it('leaves no authority change behind when its audit cannot be written', functio
     && ! DB::connection()->getPdo()->query('PRAGMA foreign_keys')->fetchColumn(),
     'foreign keys are not enforced on this connection, so the audit insert cannot be made to fail');
 
+it('refuses a quiet save whose key attribute has been nulled', function (): void {
+    /*
+     * ⚠️ THE CONDITION IN FRONT OF THE GUARD WAS THE FORGEABLE PART, which review found after the guard
+     * itself had been fixed twice. `GuardedRoleBuilder` asked whether `getKey()` was non-null before asking
+     * the model anything — and Eloquent writes by `getKeyForSaveQuery()`, the ORIGINAL key. So nulling the
+     * attribute in memory after an org switch skipped the check entirely and `saveQuietly()` renamed
+     * another org's role by primary key: the one instance that had been tampered with was the one instance
+     * nothing asked about.
+     */
+    joinOrg($this->beta, $this->user);
+    app(Context::class)->setOrg($this->beta);
+
+    $key = $this->alphaRole->getKey();
+
+    $this->alphaRole->name = 'Renamed from another org';
+    $this->alphaRole->id = null;
+
+    expect(fn () => $this->alphaRole->saveQuietly())
+        ->toThrow(RuntimeException::class, 'primary key has been changed in memory');
+
+    app(Context::class)->setOrg($this->alpha);
+
+    expect(Role::query()->whereKey($key)->value('name'))->toBe('Editor');
+});
+
 it('refuses to delete a role that belongs to another org', function (): void {
     /*
      * ⚠️ THE FIFTH AUTHORITY PATH, and it was not asking — review found it. Eloquent's instance delete writes

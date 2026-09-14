@@ -612,6 +612,14 @@ A field that has not been classified does not save. Same discipline as the tenan
 **4. Audit logs record actor, action and target — never payloads.** *"User 47 updated entry 1203"* survives erasure. *"User 47 changed name from X to Y"* does not. An audit log that captures diffs is a compliance liability wearing a helpful hat, and it puts SOC 2 and GDPR in direct conflict for no gain.
 
 > ⚠️ **The actor is asked of the PANEL's guard, not of the application default** — review found `Auditor` using bare `auth()->id()`. Filament has `Panel::authGuard()` precisely so a host can authenticate its admin through a guard of its own, and with one configured this column recorded either NULL or whichever unrelated user happened to be signed in on the default guard at the same moment. "At whose hand" is a third of this primitive, so an actor resolved from somebody else's guard is the one kind of wrong it must not be. `Permissions::currentUser()` is the resolution, shared with the RBAC layer rather than copied, and it carries the binding check core's own test suite needs.
+>
+> ⚠️ **And an id is not an identity, which review found one round later.** `target_type` has been
+> polymorphic since this primitive was written, and `actor_id` was a bare number — so in a host
+> authenticating its panel through a provider backed by another user model, on another table with its own
+> sequence, the column that answers *at whose hand* named whichever row the reader assumed. `audit_log`
+> carries `actor_type` beside it now, written from `getMorphClass()` exactly as the target is, and the
+> `(org_id, actor_type, actor_id)` index mirrors the target's. An `Authenticatable` that is not an Eloquent
+> model records its class name instead: it still acted, and a class is a better answer than a number.
 
 **5. A replayable erasure log.** Backups cannot be rewritten. The workable answer is a documented retention window plus erasure re-applied on restore — which requires core to keep a record of what was erased, containing no erased content.
 
@@ -1718,6 +1726,30 @@ It hides relations that exist, and that cost is accepted rather than hidden: an 
 
 ⚠️ **Hiding one inside a FORM turned out to freeze the whole record, which review found.** A relation control is hydrated with every id the entry holds, and Filament validates a select's submitted options through the same label callbacks that were applying the grant — so a withheld label made the id an invalid option, and the editor could not save a title change on a field they were not touching. A permission narrowing one relation silently locked the record.
 
+⚠️ **`publish` is a permission about a TRANSITION, so it is decided from the stored row.** Somebody without it
+keeps the `published` option on an entry that is already published — otherwise a copy-editor cannot fix a typo
+without demoting the article — and the first version read that current value off the loaded instance. A form
+held open across somebody else's demotion therefore kept offering the option, and the rule kept accepting it.
+One keyed read makes the answer the row's rather than the request's. ⚠️ The consequence review described —
+the stale form putting the entry back — **did not reproduce**: Eloquent writes dirty attributes, and an
+instance loaded as published submitting published writes no status at all. That measurement is pinned in a
+test rather than recorded here alone, because it is a fact about the framework that nothing else would notice
+changing.
+
+⚠️ **And the form was not the only way into that state, which is the finding the question led to rather than
+the one that was asked.** `EntryRevision::SNAPSHOT_ATTRIBUTES` carries `status`, so restoring a version that
+was published publishes the entry — an editor holding only `entry.{type}.update` could undo somebody else's
+demotion by asking for last Tuesday, through a button with no rule behind it. `Entry::restoreRevision()` now
+refuses a restore that would move an entry into the published state without the permission, inside the
+transaction and under the lock it already takes. The rule is the same one the form draws — keeping a published
+state is not moving into it — enforced on the route a form rule cannot reach.
+
+⚠️ **A BULK publish is deliberately still allowed**, and that is not an oversight to be swept up with this.
+`Entry::query()->update(['status' => 'published'])` is a supported write that this project audits and
+versions on purpose (`AuditLogTest` and `recordBulkRevision()` both say so), and it carries no acting
+identity to check a permission against. Authorization belongs to the routes people use; the builder's job is
+that nothing happens untraced.
+
 So a link the record **already holds** keeps its value and loses its title: it renders as `Entry #12 — you may not view this entry type`, which discloses nothing the form did not already hand over, and the id stays in the selection so an unrelated edit saves. The exception is deliberately narrow — **this record, this field, and the field's own target types still apply** — because a forged id must still fail validation rather than reach `EntryRelation::guardTargetType()` as an exception after the entry has saved.
 
 ### Consequence
@@ -1731,6 +1763,13 @@ So a link the record **already holds** keeps its value and loses its title: it r
 - **Every guarantee about the owner flag is enforced at the BUILDER, not only in a lifecycle hook.** Review named the idiom: `Role::query()->update(['is_owner' => …])` dispatches no event, so holders gained the bypass with no audit rows and a memoised answer stayed stale. `GuardedRoleBuilder` refuses a bulk write touching `is_owner` or `org_id`, and refuses a bulk delete outright — deleting a role revokes it from every holder by cascade, and that audit is per holder too. This is the **third** time the project has learned that a guard belongs where the write is: `AuditedBuilder` for entries, `GuardedStorageBuilder` for field storage, this for roles.
 
   ⚠️ **And `update()` was one door of four, which is the same lesson arriving one API call along.** Review found three more: `increment()`, `decrement()` and their `…Each()` plurals carry an `$extra` map of ordinary assignments and forward straight to the query builder, so `increment('id', 0, ['is_owner' => true])` was a bulk promotion under another method's name; and Eloquent sends `forceDelete()` to the query builder rather than through `delete()`, so the roles and their cascading assignments went with no per-holder revocation audits and no cache invalidation. The arithmetic family is refused **without** consulting the instance-save flag, because no instance save writes through it — `performUpdate()` calls `update()` — so there is no legitimate path there to stand aside for.
+
+  ⚠️ **And the condition that decides whether to ask was itself forgeable.** It required `getKey()` to be
+  non-null while the write uses `getKeyForSaveQuery()`, so nulling the attribute in memory after an org
+  switch turned the guard off and left `saveQuietly()` updating the row the instance was loaded from. The
+  same defect, in the same shape, was found in `AuditedBuilder` in the same round: a guard is only as
+  reachable as the condition in front of it, and a condition reading a mutable attribute is one more
+  forgeable proof.
 
   The same hole existed generically: `ScopedBuilder`'s arithmetic overrides checked the scope keys and not `columnsRequiringModelSave()`, so `Site::query()->increment('id', 0, ['base_url' => …])` landed values that `update()` refused, leaving `canonical_host` describing the previous URL. Fixed there rather than copied per builder.
 

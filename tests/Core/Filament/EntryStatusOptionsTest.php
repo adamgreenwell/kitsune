@@ -8,12 +8,16 @@
 
 declare(strict_types=1);
 
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Filament\Resources\Entries\EntryResource;
+use Kitsune\Core\Models\Entry;
+use Kitsune\Core\Models\EntryRevision;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Role;
+use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tests\Fixtures\TestUser;
 
@@ -110,4 +114,111 @@ it('still offers published to somebody who may, whatever the entry is now', func
 
     expect(array_keys(EntryResource::statusOptions($this->user, 'draft')))
         ->toBe(['draft', 'published', 'archived']);
+});
+
+/** A real entry of a real type, which the options tests above do not need and these two do. */
+function publishedArticle(Org $org): Entry
+{
+    $site = Site::create(['org_id' => $org->getKey(), 'handle' => 's', 'slug' => 's', 'name' => 'S']);
+    app(Context::class)->setSite($site);
+
+    $type = EntryType::create([
+        'org_id' => $org->getKey(), 'handle' => 'article',
+        'name' => 'Article', 'plural_name' => 'Articles',
+    ]);
+
+    app()->instance(EntryType::class, $type);
+
+    return Entry::create([
+        'entry_type_id' => $type->getKey(),
+        'title' => 'Published piece',
+        'status' => 'published',
+    ]);
+}
+
+it('asks the database for the status, not the instance it was handed', function (): void {
+    /*
+     * ⚠️ THE CONCESSION IS ABOUT THE STORED ROW AND IT WAS READING A LOADED ATTRIBUTE — review found the gap
+     * between the sentence this file publishes and the value the resource passed. An editor without
+     * `publish` keeps the `published` option only because the entry IS published; with the form held open
+     * across somebody else's demotion, `$record->status` still said published, so the option stayed offered
+     * and the `in` rule kept accepting it.
+     */
+    $this->role->grant(Permissions::forEntryType('article', 'update'));
+
+    $entry = publishedArticle($this->org);
+
+    // Somebody who may publish demotes it while this instance is in hand.
+    DB::table('entries')->where('id', $entry->getKey())->update(['status' => 'draft']);
+
+    // The instance is stale, which is the whole shape of the defect.
+    expect($entry->status)->toBe('published')
+        ->and(array_keys(EntryResource::statusOptionsFor($this->user, $entry)))->toBe(['draft', 'archived']);
+});
+
+it('does not put a demoted entry back when a stale form saves', function (): void {
+    /*
+     * ⚠️ THE REPORTED CONSEQUENCE OF THAT WINDOW DID NOT REPRODUCE, AND SAYING SO IS THE POINT OF THIS TEST.
+     * The review that found the stale read described the stale form OVERWRITING the newer draft state. It
+     * does not: Eloquent writes dirty attributes, and an instance loaded as `published` submitting
+     * `published` puts no status in the update at all — the demotion survives and the edit lands.
+     *
+     * It is kept because the guard above is one read away from that being untrue, and because it is a fact
+     * about the framework rather than about Kitsune: nothing here would notice if it changed.
+     */
+    $entry = publishedArticle($this->org);
+
+    DB::table('entries')->where('id', $entry->getKey())->update(['status' => 'draft']);
+
+    // The form submits the value it rendered, alongside the edit somebody actually made.
+    $entry->status = 'published';
+    $entry->title = 'Retitled by the copy editor';
+    $entry->save();
+
+    $stored = DB::table('entries')->where('id', $entry->getKey())->first(['status', 'title']);
+
+    expect($stored->status)->toBe('draft')
+        ->and($stored->title)->toBe('Retitled by the copy editor');
+});
+
+it('refuses a restore that would publish, from somebody who may not', function (): void {
+    /*
+     * ⚠️ THE FORM IS NOT THE ONLY WAY INTO THE PUBLISHED STATE, which is where review's question about the
+     * stale read led rather than where it pointed. `EntryRevision::SNAPSHOT_ATTRIBUTES` carries `status`, so
+     * restoring a version that was published publishes the entry — through a button with no rule behind it,
+     * for an editor holding only `entry.article.update`. ADR-033 registers `publish` as the permission to
+     * move INTO that state; this is the other route into it.
+     */
+    $this->role->grant(Permissions::forEntryType('article', 'update'));
+
+    $entry = publishedArticle($this->org);
+
+    // Demoted the way somebody who may publish would demote it, which files the second version.
+    $entry->status = 'draft';
+    $entry->save();
+
+    $published = EntryRevision::query()
+        ->where('entry_id', $entry->getKey())
+        ->where('status', 'published')
+        ->firstOrFail();
+
+    Auth::login($this->user);
+    Permissions::forget();
+
+    expect(fn () => $entry->restoreRevision($published))
+        ->toThrow(RuntimeException::class, 'entry.article.publish');
+
+    expect(DB::table('entries')->where('id', $entry->getKey())->value('status'))->toBe('draft');
+
+    /*
+     * ⚠️ And it is a permission check rather than a lock on the operation: the same restore, by somebody who
+     * may publish, goes through. Without this half the test would pass against a guard that refused every
+     * restore.
+     */
+    $this->role->grant(Permissions::forEntryType('article', 'publish'));
+    Permissions::forget();
+
+    $entry->restoreRevision($published);
+
+    expect(DB::table('entries')->where('id', $entry->getKey())->value('status'))->toBe('published');
 });

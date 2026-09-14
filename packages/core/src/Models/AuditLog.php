@@ -32,6 +32,7 @@ use RuntimeException;
  * @property int $id
  * @property int $org_id
  * @property int|null $site_id
+ * @property string|null $actor_type
  * @property int|null $actor_id
  * @property string $action
  * @property string $target_type
