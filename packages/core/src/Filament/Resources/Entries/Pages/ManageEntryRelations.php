@@ -65,10 +65,29 @@ class ManageEntryRelations extends ManageRelatedRecords
                 $query, Permissions::currentUser(),
             ))
             ->headerActions([
-                AttachAction::make()->recordSelectOptionsQuery(
-                    fn (Builder $query): Builder => Permissions::constrainToViewable($query, Permissions::currentUser()),
-                ),
+                AttachAction::make()
+                    ->authorize(fn (): bool => $this->mayEditOwner())
+                    ->recordSelectOptionsQuery(
+                        fn (Builder $query): Builder => Permissions::constrainToViewable($query, Permissions::currentUser()),
+                    ),
             ])
-            ->recordActions([DetachAction::make()]);
+            ->recordActions([DetachAction::make()->authorize(fn (): bool => $this->mayEditOwner())]);
+    }
+
+    /**
+     * May the acting user change the entry whose relations these are?
+     *
+     * ⚠️ ATTACH AND DETACH ARE EDITS, AND THIS PAGE IS REACHABLE BY SOMEBODY WHO MAY ONLY VIEW. `canAccess()`
+     * asks `viewAny`, and Filament's default action authorization on this page covers create, edit, delete and
+     * view — not attach or detach — so both ran for anybody who could open it, and changed the entry's relations
+     * for a user refused every ordinary edit. Review found it, one page along from the History's restore.
+     *
+     * `EntryResource::canEdit()` is the question the edit page asks, the same answer the restore action uses —
+     * one rule, not a third copy. Filament treats an unauthorized action as hidden and refuses to mount or call
+     * a hidden one, so a hand-built Livewire request meets the same answer as the missing button.
+     */
+    private function mayEditOwner(): bool
+    {
+        return EntryResource::canEdit($this->getRecord());
     }
 }

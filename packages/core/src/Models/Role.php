@@ -209,11 +209,17 @@ class Role extends Model
          *
          * `DerivesGuardedColumns` records the same rule for the same reason, in a `finally` around
          * `performInsert()`/`performUpdate()`: a proof belongs to ONE attempt.
+         *
+         * ⚠️ AND A VETO IS THE SAME EXIT, which #83's review found separately. An application observer registered
+         * after this model's own, returning `false` from `saving`, makes Eloquent return before `performUpdate()`
+         * and before `saved` — so `$writingThrough` is dropped here too, rather than left for a quiet retry to
+         * present beside nothing.
          */
         try {
             return (bool) DB::transaction(fn (): bool => parent::save($options));
         } finally {
             $this->guardsRan = false;
+            $this->writingThrough = null;
         }
     }
 

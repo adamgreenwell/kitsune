@@ -1827,6 +1827,20 @@ was unbound, which in a real host it never is: with no panel, or none marked def
 catches `NoDefaultPanelSetException` now. What a host must supply is still written down only in the monorepo;
 shipping that with the split is #8's.
 
+⚠️ **And the History's restore was not the only edit a viewer could reach.** The related-entries page is
+authorized with `viewAny`, and Filament's default action authorization on it covers create, edit, delete and
+view — not attach or detach — so both ran for a user holding `view` alone. They ask `EntryResource::canEdit()`
+now, the answer the restore action already uses, and the browser suite asserts both halves as the same
+view-only user. Separately, a `Role` save vetoed by an application observer left the lifecycle proof armed —
+Eloquent returns before either place that disarms it — so a `saveQuietly()` on the same instance could move
+`is_owner` past the per-holder audit; `save()` now drops the proof on every exit.
+
+⚠️ **Integer user keys remain a requirement on this branch, and that is now a decision with an issue rather
+than an open question.** A non-numeric identifier resolves no grants and no owner bypass, which is the right
+floor and the wrong product: `role_user.user_id` lives in the host's migration, so the host already chooses
+its type, and core narrowing that choice in PHP contradicts the ADR-020 amendment's own "an identifier is the
+host's to choose". Supporting string keys is #91, sequenced after this branch and #86 merge.
+
 ⚠️ **A BULK publish is deliberately still allowed**, and that is not an oversight to be swept up with this.
 `Entry::query()->update(['status' => 'published'])` is a supported write that this project audits and
 versions on purpose (`AuditLogTest` and `recordBulkRevision()` both say so), and it carries no acting

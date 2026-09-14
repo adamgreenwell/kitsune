@@ -2047,6 +2047,30 @@ it('counts only the stored org\'s owners as its safety net', function (): void {
         ->and((bool) Role::query()->whereKey($owner->getKey())->value('is_owner'))->toBeTrue();
 });
 
+it('does not keep the lifecycle proof when an application observer vetoes the save', function (): void {
+    /*
+     * ⚠️ THE OTHER WAY OUT OF A SAVE THAT NEVER REACHES EITHER CLEAR — review found it beside the aborted `saved`
+     * listener tested earlier in this file. The
+     * `saving` listener arms `$guardsRan`; `performUpdate()`'s `finally` and the `saved` listener disarm it. A
+     * host observer registered after this model's own, returning `false` from `saving`, makes Eloquent return
+     * before both — and a `saveQuietly()` on the same instance then wrote `is_owner` past the builder's
+     * per-holder audit and org check.
+     */
+    app(Context::class)->setOrg($this->alpha);
+    assign($this->alphaRole, $this->user);
+
+    // Registered after the model has booted, which is where a host's observer sits.
+    Role::saving(static fn (): bool => false);
+
+    $this->alphaRole->is_owner = true;
+
+    expect($this->alphaRole->save())->toBeFalse();
+
+    expect(fn () => $this->alphaRole->saveQuietly())
+        ->toThrow(RuntimeException::class, 'bulk write to `is_owner`')
+        ->and((bool) Role::query()->whereKey($this->alphaRole->getKey())->value('is_owner'))->toBeFalse();
+});
+
 it('refuses a quiet save of another org\'s role, columns or not', function (): void {
     /*
      * ⚠️ ROUND 11's "EVERY SAVE OF AN EXISTING ROLE ASKS IT" WAS TRUE OF NOISY SAVES ONLY — review found the
