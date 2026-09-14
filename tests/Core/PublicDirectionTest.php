@@ -58,7 +58,7 @@ it('renders the skeleton page with a direction attribute', function (): void {
 
     $html = view('welcome', [
         'version' => Kitsune::version(),
-        'phase' => 'test',
+        'adminUrl' => '/admin',
         'direction' => Kitsune::textDirection(),
     ])->render();
 

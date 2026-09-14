@@ -8,20 +8,18 @@
 
 declare(strict_types=1);
 
+use App\Http\Controllers\WelcomeController;
 use Illuminate\Support\Facades\Route;
 use Kitsune\Core\Http\Middleware\ResolveSiteFromRequest;
 use Kitsune\Core\Http\Middleware\SetSiteLocale;
-use Kitsune\Core\Kitsune;
-use Kitsune\Core\Tenancy\Context;
 
 /*
- * Placeholder front end. Kitsune has no admin panel yet - that arrives with
- * the tenancy kernel in Phase 2 and the schema engine in Phase 4.
+ * The public placeholder. The admin is Kitsune's first release and lives under the panel's
+ * own path; a public site that renders entries is theming, which ADR-011 moved to v1.1.
+ * `WelcomeController` says so on the page, and links to the admin.
  *
- * Until then this route earns its place by being something a browser can
- * actually assert on, which is what unblocks the Playwright job (ADR-024).
- * It reports the two facts worth proving at this stage: the framework boots,
- * and kitsune/core is installed and resolvable.
+ * It also earns its place by being something a browser can actually assert on (ADR-024): it
+ * reports that the framework boots and that kitsune/core is installed and resolvable.
  */
 /*
  * ⚠️ `SetSiteLocale` RUNS HERE TOO, even though `/` addresses no site. Review found the gap:
@@ -34,17 +32,9 @@ use Kitsune\Core\Tenancy\Context;
  * comes first for the same reason it does below: it reports absence by leaving Context empty,
  * which is what `SetSiteLocale` then reads.
  */
-Route::middleware([ResolveSiteFromRequest::class, SetSiteLocale::class])->get('/', function () {
-    return response()->view('welcome', [
-        'version' => Kitsune::version(),
-        'phase' => 'Phase 0 — foundations',
-        // ⚠️ The page emitted `lang` and no `dir`, so an RTL locale served
-        // RTL text in a left-to-right document. Filament supplies this for
-        // the admin from its own translations; the public side has no panel
-        // and needs Kitsune's own answer (ADR-018).
-        'direction' => Kitsune::textDirection(),
-    ]);
-})->name('home');
+Route::middleware([ResolveSiteFromRequest::class, SetSiteLocale::class])
+    ->get('/', [WelcomeController::class, 'home'])
+    ->name('home');
 
 /*
  * A SITE-SCOPED public route, which is what `sites.locale` needed in order to mean
@@ -93,20 +83,6 @@ Route::middleware([ResolveSiteFromRequest::class, SetSiteLocale::class])->get('/
  */
 // ⚠️ `Route::fallback()` FIRST, then the middleware: `fallback` lives on the Router rather than on
 // `RouteRegistrar`, so `Route::middleware(...)->fallback(...)` is a BadMethodCallException at boot.
-Route::fallback(function () {
-    // ⚠️ 404 HERE rather than in the middleware. The middleware resolves identity and
-    // reports absence by leaving Context empty, because most public routes are not
-    // site-scoped and it must be attachable to them. A route that REQUIRES a site is
-    // the thing entitled to refuse.
-    abort_if(app(Context::class)->site() === null, 404);
-
-    return response()->view('welcome', [
-        'version' => Kitsune::version(),
-        'phase' => 'Phase 0 — foundations',
-        // Resolved from the SITE's locale by the middleware above, so two sites with
-        // different locales are served correctly from one process.
-        'direction' => Kitsune::textDirection(),
-    ]);
-})
+Route::fallback([WelcomeController::class, 'site'])
     ->middleware([ResolveSiteFromRequest::class, SetSiteLocale::class])
     ->name('site.home');

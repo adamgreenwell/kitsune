@@ -4,11 +4,11 @@ const { test, expect } = require('@playwright/test');
 /*
  * Smoke coverage for the installable skeleton.
  *
- * Thin on purpose: there is no admin panel yet. What this proves is that the
- * browser layer itself works end to end - Playwright boots the app, reaches
- * it over HTTP, and can assert on rendered output. When Phase 4 lands the
- * admin, the standing regression test CONTRIBUTING requires (a page loaded
- * from OUTSIDE /c/{type}) goes here.
+ * Thin on purpose: the public side is a placeholder until theming (ADR-011).
+ * What this proves is that the browser layer itself works end to end —
+ * Playwright boots the app, reaches it over HTTP, and can assert on rendered
+ * output. The admin's standing regression test CONTRIBUTING requires (a page
+ * loaded from OUTSIDE /c/{type}) lives in `admin.spec.js`.
  */
 
 test.describe('skeleton', () => {
@@ -39,6 +39,21 @@ test.describe('skeleton', () => {
         if (major === 8) {
             expect(minor).toBeGreaterThanOrEqual(4);
         }
+    });
+
+    test('points a visitor at the admin instead of saying there is none', async ({ page }) => {
+        await page.goto('/');
+
+        // ⚠️ The page said "There is no admin panel yet" for three phases after the admin shipped, while
+        // the README sent the same visitor to /admin. Asserted by following the link, not by reading it.
+        await expect(page.locator('body')).not.toContainText('no admin panel');
+
+        const link = page.getByTestId('admin-link');
+        await expect(link).toHaveAttribute('href', /\/admin$/);
+
+        await link.click();
+        await page.waitForURL(/\/admin\/login/);
+        await expect(page.locator('input[type="email"]')).toBeVisible();
     });
 
     test('exposes a health endpoint for the installer to poll', async ({ request }) => {
