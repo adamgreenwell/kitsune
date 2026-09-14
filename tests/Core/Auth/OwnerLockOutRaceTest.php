@@ -174,6 +174,22 @@ it('checks the owner set under a lock, inside the transaction that writes', func
             return;
         }
 
+        /*
+         * ⚠️ SCHEMA INTROSPECTION NAMES THE TABLE TOO, AND ON POSTGRES IT INLINES IT. `Permissions` asks
+         * `Schema::getForeignKeys('role_user')` to learn whose ids the assignments hold, and Postgres's
+         * version of that query carries `tc.relname = 'role_user'` as a LITERAL — so it matched this filter
+         * and was reported as an owner read that took no lock. It is not one, and it should not take a lock.
+         *
+         * MySQL and MariaDB bind the table name instead of inlining it, and SQLite parses its own DDL, so
+         * this failed on exactly one engine out of four: the driver-divergence class AGENTS.md invariant 5 is
+         * about, caught by the matrix rather than by reading.
+         */
+        foreach (['pg_constraint', 'information_schema', 'sqlite_master'] as $introspection) {
+            if (str_contains($query->sql, $introspection)) {
+                return;
+            }
+        }
+
         if (str_contains($query->sql, 'is_owner') || str_contains($query->sql, 'role_user')) {
             $ownerReads[] = ['sql' => $query->sql, 'depth' => DB::transactionLevel()];
         }
