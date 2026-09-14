@@ -1989,6 +1989,12 @@ So a link the record **already holds** keeps its value and loses its title: it r
   importer and a console command do not have, so the window is closed by refusing the write rather than by
   re-deciding the permission.
 
+  ⚠️ **And revision restore went around it, which review found.** `restoreRevision()` locks the row and calls
+  `refresh()` before its save, so an entry moved between the caller's authorization and that lock came back
+  carrying its new `site_id` — the originals the guard compares against were already the moved row's, and the
+  restore wrote content into a site nobody had authorised it for. It now refuses under the lock, before the
+  refresh, when the stored `org_id` or `site_id` differs from what the instance was loaded with.
+
 
   ⚠️ **And it went into two doors when there are six.** Review found the arithmetic family walking past it:
   Eloquent sends `$entry->increment()` to `setKeysForSaveQuery($this->newQueryWithoutScopes())->increment()`,
