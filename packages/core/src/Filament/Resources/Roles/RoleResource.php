@@ -274,8 +274,14 @@ class RoleResource extends Resource
     {
         $model = Permissions::userModel();
 
-        if ($model === null) {
-            return [];
+        /*
+         * ⚠️ AND NOT THROUGH A MODEL THE PIVOT IS NOT ABOUT, which review found still happening after the
+         * control was disabled. Disabling stops somebody CHANGING the holders; it does not stop this
+         * resolver naming them — and if that model's ids overlap, the form states that an unrelated person
+         * holds real authority. The ids are real, the names are not, so the ids are all that is shown.
+         */
+        if ($model === null || ! self::holdersAreAdministrable()) {
+            return self::assignmentLabels($ids, $roleId);
         }
 
         $wanted = array_values(array_unique(array_map(intval(...), array_filter($ids, is_numeric(...)))));
@@ -287,6 +293,43 @@ class RoleResource extends Resource
             ->all();
 
         return $labels + self::labelsForFormerMembers($wanted, array_keys($labels), $roleId);
+    }
+
+    /**
+     * Labels for ids this role holds, naming nobody.
+     *
+     * ⚠️ THE IDS ARE REAL AND THE NAMES ARE NOT AVAILABLE, which is a different statement from "no holders".
+     * When the panel authenticates against a model `role_user` does not reference, resolving a name through
+     * it would name whoever happens to hold that id in the wrong table — a false statement about a real
+     * person, in the screen that decides authority. The assignment is shown; the identity is withheld.
+     *
+     * @param  list<mixed>  $ids
+     * @return array<int, string>
+     */
+    private static function assignmentLabels(array $ids, ?int $roleId): array
+    {
+        if ($roleId === null) {
+            return [];
+        }
+
+        $wanted = array_values(array_unique(array_map(intval(...), array_filter($ids, is_numeric(...)))));
+
+        if ($wanted === []) {
+            return [];
+        }
+
+        $labels = [];
+
+        foreach (
+            DB::table('role_user')
+                ->where('role_id', $roleId)
+                ->whereIn('user_id', $wanted)
+                ->pluck('user_id') as $id
+        ) {
+            $labels[(int) $id] = sprintf('User #%d — this panel cannot identify holders', (int) $id);
+        }
+
+        return $labels;
     }
 
     /**
@@ -349,6 +392,11 @@ class RoleResource extends Resource
 
         if ($model === null) {
             return null;
+        }
+
+        // ⚠️ The singular resolver renders a saved value, and the same rule applies to it — see above.
+        if (! self::holdersAreAdministrable()) {
+            return self::assignmentLabels([$id], $roleId)[$id] ?? null;
         }
 
         $user = $model::query()->whereKey($id)->first();

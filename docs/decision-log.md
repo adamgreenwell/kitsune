@@ -1835,6 +1835,18 @@ show one name and the grant would land on whoever holds that id in the table `ro
 The control is disabled with the reason on it, and `syncHolders()` asks the same question again at the write,
 because a disabled control is a rendering decision and the raw form state is submitted by the browser.
 
+⚠️ **And disabling a control does not stop it NAMING people**, which is the same finding one layer in. The
+label resolver still went to that model, so a form nobody could change still stated that an unrelated person
+held real authority. The assignment is real and the identity is not available — two different statements — so
+the id is shown and the name is withheld.
+
+⚠️ **The role form is one transaction, which it was not.** Filament wraps `save()` and its `afterSave` hook
+already; the panel simply does not enable it. So an edit that changed grants and then tried to take the last
+owner away committed the role row and every grant, with their audit rows, before `syncHolders()` threw — a
+form reporting a failure that had already half happened, which is the same partial-authority-change shape the
+deletion observer produced a round earlier. Enabled on these pages rather than panel-wide: changing the
+failure semantics of every action in the admin at once is a decision with its own evidence to gather.
+
 ### Consequence
 
 - **Core's RBAC enforces nothing until the host application has run the skeleton's `role_user` migration.** Already true of org scoping, so it is a pattern rather than a new hole — but it is written down here rather than left in somebody's memory.

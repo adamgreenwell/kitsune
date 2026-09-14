@@ -11,6 +11,8 @@ declare(strict_types=1);
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Auth\Permissions;
+use Kitsune\Core\Filament\Resources\Roles\Pages\CreateRole;
+use Kitsune\Core\Filament\Resources\Roles\Pages\EditRole;
 use Kitsune\Core\Filament\Resources\Roles\RoleResource;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Role;
@@ -103,6 +105,65 @@ it('does not let an owner of another org administer this one\'s roles', function
 
     expect(RoleResource::canViewAny())->toBeFalse()
         ->and(RoleResource::canCreate())->toBeFalse();
+});
+
+it('saves the role, its grants and its holders in one transaction', function (): void {
+    /*
+     * ⚠️ FILAMENT ALREADY WRAPS THE SAVE AND ITS `afterSave` HOOK — IT IS JUST TURNED OFF by default, and
+     * this panel does not turn it on. Review found what that costs: an edit that changed grants and then
+     * tried to take the last owner away committed the role row and every grant, with their audit rows,
+     * before `syncHolders()` threw. The form reported a failure that had already half happened.
+     *
+     * ⚠️ ASSERTED THROUGH THE PAGE'S OWN CONTRACT rather than by driving the form, because building one
+     * needs a Livewire component the package suite cannot make (ADR-024 puts that layer in the browser).
+     * `hasDatabaseTransactions()` is what `EditRecord::save()` consults, so this is the question Filament
+     * asks, asked in the same words.
+     */
+    foreach ([EditRole::class, CreateRole::class] as $page) {
+        expect((new ReflectionClass($page))->newInstanceWithoutConstructor()->hasDatabaseTransactions())
+            ->toBeTrue("{$page} saves without a transaction");
+    }
+});
+
+it('names no holder through a model the pivot is not about', function (): void {
+    /*
+     * ⚠️ DISABLING THE CONTROL STOPS SOMEBODY CHANGING THE HOLDERS; IT DOES NOT STOP THE FORM NAMING THEM,
+     * which review found after the control was disabled. The label resolver still went to the panel's user
+     * model — so in an installation whose ids overlap, the role screen states that an unrelated person holds
+     * real authority. The assignment is real and the identity is not available, which are different
+     * statements: the id is shown and the name is withheld.
+     */
+    app(Context::class)->setOrg($this->org);
+
+    /** @var TestUser $holder */
+    $holder = TestUser::create(['email' => 'holder@kitsune.test']);
+    DB::table('org_user')->insert(['org_id' => $this->org->getKey(), 'user_id' => $holder->getKey()]);
+
+    $role = Role::create(['handle' => 'editor', 'name' => 'Editor']);
+    $role->assignTo($holder->getKey());
+
+    // With the ordinary provider the label names them, which is what makes the change below meaningful.
+    expect(RoleResource::holderLabels([$holder->getKey()], (int) $role->getKey())[$holder->getKey()] ?? '')
+        ->toContain('holder@kitsune.test');
+
+    // An impostor on another table, holding the same id.
+    $impostor = new TestImpostor(['name' => 'Somebody else entirely']);
+    $impostor->id = $holder->getKey();
+    $impostor->save();
+
+    DB::table('pivot_scoped_thing_org')->insert([
+        'org_id' => $this->org->getKey(),
+        'pivot_scoped_thing_id' => $impostor->getKey(),
+    ]);
+
+    config(['auth.providers.users.model' => TestImpostor::class]);
+    Permissions::forget();
+
+    $labels = RoleResource::holderLabels([$holder->getKey()], (int) $role->getKey());
+
+    expect($labels)->toHaveKey($holder->getKey())
+        ->and($labels[$holder->getKey()])->toContain('cannot identify holders')
+        ->and($labels[$holder->getKey()])->not->toContain('Somebody else entirely');
 });
 
 it('refuses to administer holders through a model the pivot is not about', function (): void {

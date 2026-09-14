@@ -31,6 +31,30 @@ use Kitsune\Core\Models\Role;
 trait SyncsRolePermissions
 {
     /**
+     * The record, its grants and its holders are one authority change.
+     *
+     * ⚠️ FILAMENT ALREADY WRAPS `save()` AND `afterSave()` — IT IS JUST TURNED OFF. `EditRecord::save()`
+     * calls `beginDatabaseTransaction()` around `handleRecordUpdate()` and the `afterSave` hook, and rolls
+     * back on a throwable; `hasDatabaseTransactions()` defaults to the panel's setting, and this panel does
+     * not enable it. So an edit that changed grants and then tried to take the last owner away committed the
+     * role row and every grant — with their audit rows — before `syncHolders()` threw, and the form reported
+     * a failure that had already half happened.
+     *
+     * ⚠️ THE METHOD RATHER THAN THE PROPERTY, because `CanUseDatabaseTransactions` declares
+     * `$hasDatabaseTransactions` on the page already and a trait redeclaring an inherited property is a
+     * compatibility question nobody should have to think about. A trait method takes precedence over an
+     * inherited one, which is exactly the override wanted here.
+     *
+     * ⚠️ AND ON THESE PAGES RATHER THAN THE WHOLE PANEL. Turning it on panel-wide would change the failure
+     * semantics of every action in the admin at once — a decision with its own evidence to gather. This is
+     * the screen that performs three writes which have to stand or fall together.
+     */
+    public function hasDatabaseTransactions(): bool
+    {
+        return true;
+    }
+
+    /**
      * Fill the checkboxes from what the role actually holds.
      *
      * @param  array<string, mixed>  $data
