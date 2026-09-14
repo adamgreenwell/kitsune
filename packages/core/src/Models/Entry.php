@@ -74,6 +74,22 @@ class Entry extends Model implements RequiresModelSave
      * back, which made the revision snapshot record NULL for a column the
      * database declares NOT NULL.
      */
+    /**
+     * Every value `status` may hold.
+     *
+     * ⚠️ A CLOSED SET, BECAUSE THE DATABASE'S IDEA OF EQUALITY IS NOT PHP'S — review found the second half of
+     * a finding I had only half fixed. MySQL's and MariaDB's default collations are accent-insensitive as
+     * well as case-insensitive, so `scopePublished()`'s `status = 'published'` matches a stored `publíshed`
+     * — and no comparison written in PHP can enumerate what a given server considers equal, because that
+     * depends on the column's collation. Replicating those rules is a losing game; constraining what can be
+     * stored is not.
+     *
+     * With the column holding only these three, "is this published" has one answer on every engine.
+     *
+     * @var list<string>
+     */
+    public const STATUSES = ['draft', 'published', 'archived'];
+
     protected $attributes = ['status' => 'draft'];
 
     /**

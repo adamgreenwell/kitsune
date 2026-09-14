@@ -362,6 +362,7 @@ class AuditedBuilder extends ScopedBuilder
          */
         return $this->auditing($this->actionFor($values), function () use ($values) {
             $this->refuseIfTheRowMoved('update');
+            $this->refuseNoncanonicalStatus($values);
             $this->refuseUnpermittedPublication($values);
 
             return parent::update($values);
@@ -382,6 +383,47 @@ class AuditedBuilder extends ScopedBuilder
 
             return parent::forceDelete();
         });
+    }
+
+    /**
+     * Refuse a `status` the vocabulary does not contain.
+     *
+     * ⚠️ THE DATABASE'S EQUALITY IS NOT PHP'S, and that is what makes this a guard rather than validation.
+     * MySQL and MariaDB compare case- AND accent-insensitively by default, so `scopePublished()` matches a
+     * stored `publíshed` while any comparison written here treats it as a different string — the publication
+     * guard stands aside and the row is public. No PHP predicate can enumerate what a given server considers
+     * equal, because it depends on the column's collation; a closed set of storable values removes the
+     * question instead of answering it.
+     *
+     * ⚠️ AT THE BUILDER, so it covers the bulk write this project supports and the quiet paths a listener
+     * would miss. `Entry::STATUSES` is the vocabulary, shared with the form's option list.
+     *
+     * @param  array<string, mixed>  $values
+     */
+    private function refuseNoncanonicalStatus(array $values): void
+    {
+        $table = $this->getModel()->getTable();
+
+        foreach (['status', $table.'.status'] as $column) {
+            if (! array_key_exists($column, $values)) {
+                continue;
+            }
+
+            $status = $values[$column];
+
+            if (is_string($status) && in_array($status, Entry::STATUSES, true)) {
+                continue;
+            }
+
+            throw new RuntimeException(sprintf(
+                'Refusing to write [%s] as an entry status: the column holds one of [%s] and nothing else. '
+                .'A value outside that set is not merely unknown — MySQL and MariaDB compare it '
+                .'case-insensitively and accent-insensitively, so the database can treat it as published '
+                .'while every guard here reads it as something different (ADR-033).',
+                is_string($status) ? $status : get_debug_type($status),
+                implode(', ', Entry::STATUSES),
+            ));
+        }
     }
 
     /**

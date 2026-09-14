@@ -286,15 +286,21 @@ it('leaves the supported bulk publish alone, which is the limitation stated in A
     expect(DB::table('entries')->where('id', $entry->getKey())->value('status'))->toBe('published');
 });
 
-it('refuses a publication spelled the way a case-insensitive collation reads it', function (): void {
+it('refuses a status the vocabulary does not contain', function (): void {
     /*
-     * ⚠️ ENGINE-SPECIFIC, IN THE DIRECTION THAT MATTERS. MySQL and MariaDB's default collations compare
-     * case-insensitively, so `scopePublished()`'s `status = 'published'` MATCHES a stored `PUBLISHED` — and
-     * a guard comparing `!== 'published'` strictly stood aside for exactly that spelling. The entry would be
-     * public, written by somebody who may not publish, through a guard whose whole job is to catch it.
+     * ⚠️ THE SECOND HALF OF THE COLLATION FINDING, AND THE HALF THAT CANNOT BE FIXED BY COMPARING BETTER.
+     * MySQL's and MariaDB's default collations are accent-insensitive as well as case-insensitive, so
+     * `scopePublished()`'s `status = 'published'` matches a stored `publíshed` — while `mb_strtolower()`
+     * leaves that a different string and the publication guard stands aside. No PHP predicate can enumerate
+     * what a given server considers equal, because it depends on the column's collation.
      *
-     * PostgreSQL and SQLite compare `=` case-sensitively, so there the row would simply never be published:
-     * a guard written and proven on SQLite could not see this, which is what the matrix is for.
+     * So the column holds a closed set and the question stops being askable. `archived` still works, which
+     * is what keeps this a vocabulary rather than a lock.
+     *
+     * ⚠️ THIS REPLACED A TEST THAT ASSERTED THE CASE-VARIANTS WERE REFUSED AS UNPERMITTED PUBLICATIONS. They
+     * are refused earlier now, for not being statuses at all, and one test asserting the stronger rule beats
+     * two asserting the same values through different guards. The canonical spelling's permission check is
+     * covered by `it refuses an instance write that publishes`.
      */
     $this->role->grant(Permissions::forEntryType('article', 'update'));
 
@@ -306,12 +312,18 @@ it('refuses a publication spelled the way a case-insensitive collation reads it'
     Auth::login($this->user);
     Permissions::forget();
 
-    foreach (['PUBLISHED', 'Published', 'pUbLiShEd'] as $spelling) {
+    foreach (['publíshed', 'PUBLISHED', 'pending', ''] as $spelling) {
         $entry->status = $spelling;
 
         expect(fn () => $entry->save())
-            ->toThrow(RuntimeException::class, 'entry.article.publish', "[{$spelling}] was not treated as publication");
+            ->toThrow(RuntimeException::class, 'entry status', "[{$spelling}] was stored");
     }
 
     expect(DB::table('entries')->where('id', $entry->getKey())->value('status'))->toBe('draft');
+
+    // And a value the vocabulary does contain still writes, by somebody who may not publish.
+    $entry->status = 'archived';
+    $entry->save();
+
+    expect(DB::table('entries')->where('id', $entry->getKey())->value('status'))->toBe('archived');
 });

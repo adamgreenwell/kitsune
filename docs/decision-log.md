@@ -1761,6 +1761,15 @@ MySQL's and MariaDB's default collations `scopePublished()`'s `status = 'publish
 PostgreSQL and SQLite compare case-sensitively, which is why a guard written and proven on SQLite could not
 see it — the matrix exists for findings shaped like this one.
 
+⚠️ **And that was still only half of it: the same collations are ACCENT-insensitive.** A stored `publíshed`
+matches `status = 'published'` in the database while `mb_strtolower()` leaves it a different string, so the
+guard stood aside again — and no predicate written in PHP can enumerate what a given server considers equal,
+because that depends on the column's collation. Comparing better is a losing game; constraining what can be
+stored is not. `Entry::STATUSES` is now a closed set of three, enforced at the builder so the bulk write and
+the quiet paths are covered, and "is this published" has one answer on every engine. The form's option list
+carries the LABELS and reads the same vocabulary, because two lists of what a status may be is one list that
+drifts.
+
 ⚠️ **And the form was not the only way into that state, which is the finding the question led to rather than
 the one that was asked.** `EntryRevision::SNAPSHOT_ATTRIBUTES` carries `status`, so restoring a version that
 was published publishes the entry — an editor holding only `entry.{type}.update` could undo somebody else's
