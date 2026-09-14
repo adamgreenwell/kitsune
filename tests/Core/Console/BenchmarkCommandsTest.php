@@ -8,8 +8,11 @@
 
 declare(strict_types=1);
 
+use Illuminate\Console\CacheCommandMutex;
+use Illuminate\Console\CommandMutex;
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Database\QueryException;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Kitsune\Core\Models\Org;
@@ -57,6 +60,12 @@ function benchmarkContext(): array
     return [app(Context::class)->orgId(), app(Context::class)->siteId()];
 }
 
+/** The lock a benchmark run holds — the command mutex `--isolated` uses, resolved the way `Command` resolves it. */
+function benchmarkMutex(): CommandMutex
+{
+    return app()->bound(CommandMutex::class) ? app(CommandMutex::class) : app(CacheCommandMutex::class);
+}
+
 /*
  * ⚠️ THE ENVIRONMENT GOES BACK BEFORE TEARDOWN, OR EVERY OTHER TEST FAILS IN THE FULL SUITE — and never alone.
  *
@@ -79,8 +88,10 @@ it('leaves the installation as it found it after the floor benchmark', function 
 
     $this->artisan('kitsune:benchmark-floor', ['--entries' => 25])->assertSuccessful();
 
+    // And the run lock goes with the run, or the next run of it is refused for an hour.
     expect(benchmarkFootprint())->toBe($before)
-        ->and(benchmarkContext())->toBe($context);
+        ->and(benchmarkContext())->toBe($context)
+        ->and(benchmarkMutex()->exists(Artisan::all()['kitsune:benchmark-floor']))->toBeFalse();
 });
 
 it('leaves the installation as it found it after the storage benchmark', function (): void {
@@ -232,6 +243,22 @@ it('keeps a fixture it created once another run has joined it', function (string
     'storage' => ['kitsune:benchmark-storage', ['--rows' => 5], 'benchmark'],
 ]);
 
+it('gives back an org-only context even when the benchmark chose a site of that org', function (): void {
+    /*
+     * ⚠️ `setOrg()` KEEPS A SITE OF THE ORG IT IS GIVEN, and review found the restore relying on it: a caller in the
+     * benchmark's own org with no site went on scoped to the benchmark's site. The fixture is kept from an earlier
+     * run, so this run finds it and selects a site of the org the caller is already in.
+     */
+    $this->artisan('kitsune:benchmark-floor', ['--entries' => 0, '--keep' => true])->assertSuccessful();
+
+    $org = Org::query()->where('slug', 'floor-benchmark')->firstOrFail();
+    app(Context::class)->forget()->setOrg($org);
+
+    $this->artisan('kitsune:benchmark-floor', ['--entries' => 0])->assertSuccessful();
+
+    expect(benchmarkContext())->toBe([$org->getKey(), null]);
+});
+
 it('drops only the generated columns its own run added, and keeps those an earlier run kept', function (): void {
     /*
      * ⚠️ REVIEW FOUND CLEANUP DROPPING EVERY `bench_idx_*` IT COUNTED, whether or not this run had added it, so a
@@ -292,6 +319,31 @@ it('creates its fixture whole or not at all', function (string $command, string 
     'floor' => ['kitsune:benchmark-floor', 'floor-benchmark'],
     'storage' => ['kitsune:benchmark-storage', 'benchmark'],
 ]);
+
+it('refuses a second run of a benchmark while one is in progress, and leaves that run its lock', function (string $command): void {
+    /*
+     * ⚠️ OVERLAPPING RUNS SHARE WHAT NO PER-RUN TOKEN DIVIDES — review found the storage benchmark's generated
+     * columns dropped under a longer run, and a fixture joined without inserting anything deleted under the run
+     * that joined it. So a benchmark takes the command mutex `--isolated` would take, unconditionally.
+     *
+     * The run in progress is stood in for by holding its lock, which is all a real one would hold. And the refused
+     * run must not release it: forgetting a lock it failed to get would let a third run in beside the first.
+     */
+    $running = Artisan::all()[$command];
+
+    expect(benchmarkMutex()->create($running))->toBeTrue();
+
+    $before = benchmarkFootprint();
+
+    try {
+        $this->artisan($command)->expectsOutputToContain('already in progress')->assertFailed();
+
+        expect(benchmarkFootprint())->toBe($before)
+            ->and(benchmarkMutex()->exists($running))->toBeTrue();
+    } finally {
+        benchmarkMutex()->forget($running);
+    }
+})->with(['kitsune:benchmark-floor', 'kitsune:benchmark-storage', 'kitsune:benchmark-admin']);
 
 it('asks before writing to a production installation', function (string $command): void {
     app()->detectEnvironment(static fn (): string => 'production');

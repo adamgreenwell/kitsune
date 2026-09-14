@@ -50,12 +50,30 @@ trait LeavesNothingBehind
      * next run, whose volume was already met, and that run removing the kept rows. A fresh token for every
      * invocation, and the context given back however the invocation ends, sit beside the state they protect —
      * so no command using this trait can leave either out.
+     *
+     * ⚠️ AND ONE RUN OF A BENCHMARK AT A TIME. Review found overlapping runs of one command sharing what no per-run
+     * token can divide: a fixture a second run joins without inserting anything, and the storage benchmark's
+     * generated columns on `entries`, which a shorter run dropped while a longer one still had a query to make
+     * against them. So each run takes Laravel's command mutex — the lock `--isolated` takes, made unconditional —
+     * and a second run is refused before it touches anything. The lock expires after Laravel's hour, so a run that
+     * outlives it can be overlapped again: the token and `removeCreatedOrgUnlessJoined()` still hold for rows and
+     * fixtures then, and the storage benchmark's schema is the part that does not.
      */
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
-        $context = app(Context::class);
+        $mutex = $this->commandIsolationMutex();
 
-        // The site too, because `setOrg()` clears a site that belongs to another org.
+        if (! $mutex->create($this)) {
+            $this->error(sprintf(
+                'Another [%s] run is already in progress on this installation. Runs of a benchmark share its fixture '
+                .'and, for the storage benchmark, generated columns on entries, so they run one at a time.',
+                $this->getName(),
+            ));
+
+            return self::FAILURE;
+        }
+
+        $context = app(Context::class);
         $restoreOrg = $context->org();
         $restoreSite = $context->site();
 
@@ -66,11 +84,21 @@ trait LeavesNothingBehind
         } finally {
             $this->runToken = null;
 
+            /*
+             * ⚠️ FORGOTTEN, THEN PUT BACK — review found an org-only context keeping the benchmark's site. `setOrg()`
+             * keeps a site belonging to the org it is given, so a caller in org X with no site, running a benchmark
+             * that selected a site of X, went on scoped to that site. Clearing both first makes the context exactly
+             * what it was, whichever org and site the benchmark chose.
+             */
+            $context->forget();
+
             if ($restoreSite !== null) {
                 $context->setSite($restoreSite);
-            } else {
+            } elseif ($restoreOrg !== null) {
                 $context->setOrg($restoreOrg);
             }
+
+            $mutex->forget($this);
         }
     }
 
@@ -104,7 +132,8 @@ trait LeavesNothingBehind
      * missing org rather than losing rows it already had.
      *
      * A fixture two overlapping runs shared therefore outlives both. That is residue, and it is the only
-     * alternative to deleting rows a running benchmark is still using.
+     * alternative to deleting rows a running benchmark is still using. Runs of one benchmark are serialized — see
+     * `execute()` — so two can overlap only once a run has outlived its lock; this is what still holds then.
      */
     private function removeCreatedOrgUnlessJoined(Org $org): void
     {
