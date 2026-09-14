@@ -372,3 +372,67 @@ it('sees a promotion another transaction committed before it deletes', function 
     fn (): bool => DB::connection()->getDriverName() === 'sqlite',
     'SQLite gives a second connection to :memory: a different, empty database, so there is no other transaction to have committed',
 );
+
+it('does not read an unrelated save as a demotion', function (): void {
+    /*
+     * ⚠️ THE REGRESSION THE STORED-FLAG FIX INTRODUCED, which review caught in the same round. Once the guard
+     * read the STORED value, an ordinary role in memory while another transaction promoted its row arrived
+     * with the stored flag true and `$this->is_owner` false — and a rename was then treated as a demotion and
+     * refused. Eloquent's update payload does not contain `is_owner` at all in that case: it preserves the
+     * owner rather than removing it, so there was nothing to refuse.
+     *
+     * A guard that refuses a safe operation teaches people to route around it, which is the failure mode the
+     * lock-out guard can least afford — it is the one somebody meets while trying to fix their own org.
+     */
+    $rival = rivalConnectionForOwners();
+
+    $orgId = $rival->table('orgs')->insertGetId([
+        'slug' => 'race-org-rename', 'name' => 'Race rename', 'created_at' => now(), 'updated_at' => now(),
+    ]);
+
+    $holder = $rival->table('users')->insertGetId(['email' => 'race-rename@kitsune.test']);
+    $rival->table('org_user')->insert(['org_id' => $orgId, 'user_id' => $holder]);
+
+    $role = $rival->table('roles')->insertGetId([
+        'org_id' => $orgId, 'handle' => 'ordinary', 'name' => 'Ordinary',
+        'is_owner' => false, 'created_at' => now(), 'updated_at' => now(),
+    ]);
+    $rival->table('role_user')->insert(['role_id' => $role, 'user_id' => $holder]);
+
+    $org = Org::query()->whereKey($orgId)->first();
+    app(Context::class)->setOrg($org);
+
+    /** @var Role $loaded */
+    $loaded = Role::query()->withoutGlobalScopes()->whereKey($role)->first();
+
+    // The other transaction promotes it to the org's only owner role, and commits.
+    $rival->table('roles')->where('id', $role)->update(['is_owner' => true]);
+
+    expect((bool) $loaded->is_owner)->toBeFalse();
+
+    // A rename touches nothing the guard protects, and must not be refused.
+    $loaded->name = 'Renamed while somebody else promoted it';
+    $loaded->save();
+
+    /*
+     * ⚠️ READ BACK ON THIS CONNECTION, NOT THE RIVAL'S — the rename lives in this test's own uncommitted
+     * transaction, so the other connection cannot see it and the first version of this assertion failed on a
+     * save that had worked perfectly. A locking read here sees both: this transaction's rename and the
+     * rival's committed promotion.
+     */
+    $row = Role::query()->withoutGlobalScopes()->whereKey($role)->lockForUpdate()->first(['name', 'is_owner']);
+
+    expect($row->name)->toBe('Renamed while somebody else promoted it')
+        ->and((bool) $row->is_owner)
+        ->toBeTrue('the rename must not have cleared the owner flag the other transaction set');
+
+    // And an actual demotion of that same last owner role is still refused.
+    /** @var Role $fresh */
+    $fresh = Role::query()->withoutGlobalScopes()->whereKey($role)->first();
+
+    expect(fn () => $fresh->update(['is_owner' => false]))
+        ->toThrow(RuntimeException::class, 'only owner role in this organisation');
+})->skip(
+    fn (): bool => DB::connection()->getDriverName() === 'sqlite',
+    'SQLite gives a second connection to :memory: a different, empty database, so there is no other transaction to have committed',
+);

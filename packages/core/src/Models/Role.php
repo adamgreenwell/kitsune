@@ -209,30 +209,41 @@ class Role extends Model
          */
         $this->refuseIfNotCurrentOrg('delete');
 
-        // ⚠️ And cleared however this ends — see `save()`. `deleted` is not reached when the revocation
-        // audit throws, and the instance would otherwise keep a proof it no longer earned.
+        // ⚠️ And the proof is cleared however this ends — see `save()` and `performUpdate()`. `deleted` is
+        // not reached when the revocation audit throws, and the instance would keep a proof it no longer
+        // earned.
         try {
             return DB::transaction(function (): ?bool {
                 /*
-                 * ⚠️ THE HOLDERS ARE READ BEFORE THE DELETE AND RECORDED AFTER IT, and doing both before was a
-                 * false record waiting to happen — review found it. An application observer returning `false`
-                 * from `deleting` aborts the delete, `parent::delete()` returns false, and this transaction
-                 * commits normally: the role and every assignment survive while the log says their authority was
-                 * revoked. Repeating the attempt would add another set of false rows.
+                 * ⚠️ THE ROLE FIRST, THEN ITS PIVOT ROWS — and the order was inverted here, which review
+                 * caught. Every other path takes the role's lock before touching `role_user` (`assignTo()`
+                 * records why), and this one read the holders first: two paths in opposite orders is a
+                 * deadlock waiting for load, and in between the two statements an assignment could commit,
+                 * so the cascade removed a different set of rows than the audit recorded. A holder assigned
+                 * in that window lost authority with no `role.unassigned`; one removed in it could be
+                 * audited twice.
                  *
-                 * They cannot be read afterwards either, because the database cascades `role_user` away with the
-                 * role — so the read has to come first and the write has to come second.
+                 * `storedOwnerFlag()` is a locked read of the role, so calling it first takes that lock and
+                 * costs no extra query — the flag was needed anyway.
+                 */
+                $wasOwner = $this->storedOwnerFlag();
+
+                /*
+                 * ⚠️ THE HOLDERS ARE READ BEFORE THE DELETE AND RECORDED AFTER IT, and doing both before was
+                 * a false record waiting to happen — review found it. An application observer returning
+                 * `false` from `deleting` aborts the delete, `parent::delete()` returns false, and this
+                 * transaction commits normally: the role and every assignment survive while the log says
+                 * their authority was revoked. Repeating the attempt would add another set of false rows.
+                 *
+                 * They cannot be read afterwards either, because the database cascades `role_user` away with
+                 * the role — so the read has to come first and the write has to come second.
                  */
                 $holders = DB::table('role_user')
                     ->where('role_id', $this->getKey())
+                    ->lockForUpdate()
                     ->pluck('user_id')
                     ->map(static fn (mixed $id): int => (int) $id)
                     ->all();
-
-                // ⚠️ The STORED flag, read while the row is still there — see `storedOwnerFlag()`. A pending
-                // edit to `is_owner` would otherwise name the revocation after a promotion that never
-                // happened.
-                $wasOwner = $this->storedOwnerFlag();
 
                 $deleted = parent::delete();
 
@@ -242,9 +253,9 @@ class Role extends Model
 
                 /*
                  * ⚠️ EVERY HOLDER LOSES AUTHORITY, NOT ONLY AN OWNER'S, which review found the first version
-                 * missing: the condition recorded revocations only for owner roles, while the database cascades
-                 * `role_user` for every role and a role carrying ordinary grants is authority too. ADR-033's
-                 * guarantee is about authority, so the log has to be as well.
+                 * missing: the condition recorded revocations only for owner roles, while the database
+                 * cascades `role_user` for every role and a role carrying ordinary grants is authority too.
+                 * ADR-033's guarantee is about authority, so the log has to be as well.
                  */
                 $this->recordOwnerChange($wasOwner ? 'unassigned' : null, holders: $holders);
 
@@ -376,8 +387,16 @@ class Role extends Model
          * succeeds — an observer can veto it (see `delete()`). Reading them here is right for the owner-flag
          * transition, where nothing has been removed.
          */
+        /*
+         * ⚠️ A LOCKING READ, which is the other half of the interleaving `assignTo()` describes. An owner
+         * transition that read the holders without a lock could not see a pivot row an assignment had
+         * inserted but not yet committed — so the promotion audited nobody while the assignment audited an
+         * ordinary `role.assigned`, and the person ended up an owner with no row saying so. Under a lock the
+         * transition waits for that assignment and then counts it.
+         */
         $holders ??= DB::table('role_user')
             ->where('role_id', $this->getKey())
+            ->lockForUpdate()
             ->pluck('user_id')
             ->map(static fn (mixed $id): int => (int) $id)
             ->all();
@@ -425,7 +444,18 @@ class Role extends Model
             return;
         }
 
-        if ($operation !== 'delete' && $this->is_owner) {
+        /*
+         * ⚠️ ONLY A WRITE OF THE FLAG ITSELF IS A DEMOTION, which review found this getting wrong the moment
+         * the guard started reading the STORED value. An ordinary role in memory while another transaction
+         * promotes its row arrives here with the stored flag true and `$this->is_owner` false — and an
+         * unrelated save, a rename, was then treated as a demotion and refused. Eloquent's update payload
+         * does not contain `is_owner` at all in that case: it would preserve the owner, not remove it.
+         *
+         * So a non-delete operation asks whether the flag is actually being WRITTEN, and only then whether it
+         * is being cleared. The delete path skips this, because deleting an owner role removes the flag
+         * whether or not anybody touched it.
+         */
+        if ($operation !== 'delete' && (! $this->isDirty('is_owner') || $this->is_owner)) {
             return;
         }
 
@@ -573,7 +603,15 @@ class Role extends Model
      * The scope cannot catch it: `grant()` reaches `role_permissions`, which is deliberately unscoped, and
      * `assignTo()` writes `role_user` with a raw id. So the check belongs where the authority changes.
      */
-    private function refuseIfNotCurrentOrg(string $operation): void
+    /**
+     * ⚠️ PUBLIC SO THE BUILDER CAN ASK IT, which review made necessary: `saveQuietly()` and `updateQuietly()`
+     * suppress the `saving` listener that calls this, and `GuardedRoleBuilder` was refusing only the per-row
+     * COLUMNS on that path — so a quiet `name` or `handle` change on another org's role went through by
+     * primary key, and round 11's "every save of an existing role asks it" was true of noisy saves only.
+     *
+     * Public is safe in the direction that matters: calling a guard can only refuse, never permit.
+     */
+    public function refuseIfNotCurrentOrg(string $operation): void
     {
         /*
          * ⚠️ THE ESCAPE HATCH WAS HONOURED HERE FOR ONE ROUND AND IS NOT ANY MORE, which review was right
@@ -753,6 +791,19 @@ class Role extends Model
         }
 
         DB::transaction(function () use ($userId): void {
+            /*
+             * ⚠️ THE ROLE IS LOCKED BEFORE THE PIVOT, and review found the interleaving that needs it: an
+             * assignment and a concurrent promotion were each locally transactional and together produced an
+             * incomplete trail. The assignment inserted the pivot and read the flag as false — `role.assigned`
+             * — while the promotion could not see the uncommitted pivot and so audited no holder. Both
+             * committed, and the person was an owner with nothing in the log saying so.
+             *
+             * Locking the role row first is what makes them one order: a promotion writes that row, so it
+             * takes the same lock, and whichever arrives second sees the other's work. `recordOwnerChange()`
+             * reads the holders under a lock for the same reason, from the other side.
+             */
+            $this->lockRow();
+
             DB::table('role_user')->insert(['role_id' => $this->getKey(), 'user_id' => $userId]);
 
             app(Auditor::class)->record($this->assignmentAction('assigned'), $this->assignee($userId));
@@ -767,6 +818,10 @@ class Role extends Model
         $this->refuseIfNotCurrentOrg('removeFrom');
 
         DB::transaction(function () use ($userId): void {
+            // ⚠️ Locked before the pivot, for the reason `assignTo()` records: a removal and a concurrent
+            // owner transition have to be one order, or the trail records one of them and not the other.
+            $this->lockRow();
+
             $this->refuseLosingTheLastOwner($userId);
 
             $removed = DB::table('role_user')
@@ -844,6 +899,26 @@ class Role extends Model
     }
 
     /**
+     * Take the role row's write lock, so an authority change and a concurrent one are ordered.
+     *
+     * ⚠️ THE ROLE ROW IS THE MUTEX FOR EVERYTHING THAT CHANGES ITS AUTHORITY, which is the shape review
+     * asked for: a promotion writes it, so it takes this lock on its own account, and an assignment or a
+     * removal takes it explicitly before touching `role_user`. One order, one lock, no interleaving that
+     * records half of what happened.
+     *
+     * SQLite compiles the clause away and serialises writers at the database level, which is the same
+     * guarantee by another route — `Site::lockHostClaim()` records the same pair of facts.
+     */
+    private function lockRow(): void
+    {
+        static::query()
+            ->withoutGlobalScopes()
+            ->whereKey($this->getKeyForSaveQuery())
+            ->lockForUpdate()
+            ->value('id');
+    }
+
+    /**
      * The owner flag as the DATABASE holds it, which is the only one an audit row may be named from.
      *
      * ⚠️ `$this->is_owner` IS A PENDING EDIT UNTIL IT IS SAVED, which review found this trusting: setting the
@@ -859,12 +934,12 @@ class Role extends Model
     private function storedOwnerFlag(): bool
     {
         /*
-         * ⚠️ UNDER THE SAME LOCK AS THE DECISION, which the lock test caught this read taking without. The
-         * flag names an AUDIT ACTION rather than deciding the invariant — but under MySQL's and MariaDB's
-         * REPEATABLE READ an ordinary read answers from the transaction's snapshot, so a demotion committed
-         * while this change queued would have the guard see the truth and the audit row name the old value.
-         * An audit that describes a different grant from the one that changed is the defect this whole method
-         * exists to prevent, so it reads currently too.
+         * ⚠️ A LOCKED READ, because it is the first lock every authority path takes and the order depends on
+         * it. `delete()` calls this before enumerating the holders precisely so the role's lock comes first —
+         * an unlocked read there left two paths taking their locks in opposite orders, and left the window
+         * where an assignment could commit between the flag read and the cascade. It also cannot answer from
+         * a snapshot: under REPEATABLE READ an ordinary read would name the audit action from a value a
+         * concurrent promotion had already replaced.
          */
         return (bool) static::query()
             ->withoutGlobalScopes()

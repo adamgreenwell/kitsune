@@ -71,6 +71,23 @@ class GuardedRoleBuilder extends ScopedBuilder
     {
         if (! $this->getModel()->authorityProven($this)) {
             $this->refusePerRowAuthority($values, 'a bulk write');
+
+            /*
+             * ⚠️ AND THE ROW QUESTION, WHICH ONLY THE COLUMNS WERE ASKING — review found the gap in the
+             * boundary the round before drew. `saveQuietly()` and `updateQuietly()` suppress the `saving`
+             * listener that asks whether this row belongs to the current org, and what is left here refused
+             * only `is_owner` and `org_id`: so a quiet `name` or `handle` change on ANOTHER org's role went
+             * through, written by primary key.
+             *
+             * Asked of the model only when it is an instance write that lost its proof — a genuine bulk
+             * update reaches this builder with a prototype that does not exist, and the global scope is what
+             * narrows that one to the current org.
+             */
+            $model = $this->getModel();
+
+            if ($model->exists && $model->getKey() !== null) {
+                $model->refuseIfNotCurrentOrg('a save with no lifecycle guards');
+            }
         }
 
         return parent::update($values);

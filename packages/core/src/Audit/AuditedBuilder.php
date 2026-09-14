@@ -345,7 +345,31 @@ class AuditedBuilder extends ScopedBuilder
 
         $this->guardScopeKeys($values);
 
-        return $this->auditing($this->actionFor($values), fn () => parent::update($values), $values);
+        /*
+         * ⚠️ AN INSTANCE MAY NOT WRITE OVER A ROW THAT MOVED UNDER IT — see
+         * `Entry::refuseIfTheRowMovedUnderneath()`. The authorization that permitted this write was decided
+         * before it began, in another transaction; a row retyped or moved into another site since then is not
+         * the row that was authorised. Asked inside `auditing()`'s transaction, so the locked read holds until
+         * the write commits.
+         *
+         * ⚠️ `exists` AND A KEY, NOT `isPerformingModelSave()`, and the difference is a soft delete. Eloquent's
+         * `runSoftDelete()` builds its own query and calls `update()` directly — it is not inside
+         * `performUpdate()` — so keying on the save identity skipped the one case that DESTROYS something.
+         * Measured: the soft delete went through while the update and the force-delete were refused.
+         *
+         * A genuine bulk update arrives with a prototype that does not exist, so it is excluded by `exists`
+         * and stays narrowed by the scope, which is what a bulk write has instead of a row to compare.
+         */
+        $model = $this->getModel();
+        $checkRow = $model->exists && $model->getKey() !== null;
+
+        return $this->auditing($this->actionFor($values), function () use ($values, $model, $checkRow) {
+            if ($checkRow) {
+                $model->refuseIfTheRowMovedUnderneath('update');
+            }
+
+            return parent::update($values);
+        }, $values);
     }
 
     // delete() is deliberately NOT overridden. Entry soft-deletes, so both
@@ -355,7 +379,18 @@ class AuditedBuilder extends ScopedBuilder
 
     public function forceDelete()
     {
-        return $this->auditing('force_deleted', fn () => parent::forceDelete());
+        $model = $this->getModel();
+        $checkRow = $model->exists && $model->getKey() !== null;
+
+        return $this->auditing('force_deleted', function () use ($model, $checkRow) {
+            // ⚠️ The destructive half, and the reason that guard exists at all: an update is a field somebody
+            // may not have been allowed to touch, and this is a row that is gone.
+            if ($checkRow) {
+                $model->refuseIfTheRowMovedUnderneath('force-delete');
+            }
+
+            return parent::forceDelete();
+        });
     }
 
     /**

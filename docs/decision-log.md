@@ -1831,6 +1831,44 @@ What the suite measures is that the clause is emitted, that the check runs at a 
   is narrower than "every guard gets a hatch" — **a hatch is only safe where the thing it suspends is the only
   thing the guard protects.**
 
+- **A policy answers before the write, and an instance may not write over a row that moved since.** Review
+  pointed out the window no policy can close by itself: `Gate` runs in one transaction and the write happens in
+  another, so a row retyped or moved into another site in between was authorised by the answer for what it used
+  to be. **The consequence was measured before the fix was chosen**, because it is narrower than it sounds — a
+  stale instance saving an unrelated field writes only that field (`update "entries" set "title" = ?,
+  "updated_at" = ? where "id" = ?`), so the denormalised `type_handle` keeps whatever the other transaction set
+  and nothing drifts. What is left is one edit, or one DELETION, by somebody authorised for that row a moment
+  earlier; the deletion is why this is a guard rather than a documented limitation.
+
+  `Entry::refuseIfTheRowMovedUnderneath()` reads the stored row under a lock inside the write's own transaction
+  and refuses when `site_id`, `org_id` or `entry_type_id` differ from what the instance loaded. It compares what
+  was LOADED rather than what is being written, so a legitimate retype still works — making the change yourself
+  makes the column dirty, and the comparison is against the database. **Authorization proper stays at the panel
+  boundary**: re-asking `Permissions` in the write path would need the acting identity, which a seeder, an
+  importer and a console command do not have, so the window is closed by refusing the write rather than by
+  re-deciding the permission.
+
+  ⚠️ The discriminator is `exists` and a key rather than `isPerformingModelSave()`, and a soft delete is why:
+  `runSoftDelete()` builds its own query and calls `update()` directly, outside `performUpdate()`, so the save
+  identity skipped the one case that destroys something. Measured — the soft delete went through while the
+  update and the force-delete were refused.
+
+- **The role row is the mutex for everything that changes its authority.** Each operation was locally
+  transactional and the PAIR still lost a row from the trail: an assignment inserted the pivot and read the
+  owner flag as false, recording `role.assigned`, while a concurrent promotion could not see the uncommitted
+  pivot and audited no holder at all. Both committed, and the person was an owner with nothing in the log
+  saying so — the per-person guarantee above, defeated by two individually correct operations. A promotion
+  writes the role row, so it takes that lock on its own account; `assignTo()` and `removeFrom()` take it
+  explicitly **before** touching `role_user`, and the holders read takes it from the other side so a
+  transition waits for an assignment in flight rather than counting past it.
+
+- **A quiet save is still asked which org's row it is touching.** "Every save of an existing role asks it" was
+  true of noisy saves only: `saveQuietly()` and `updateQuietly()` suppress the `saving` listener, and what was
+  left refused the per-row COLUMNS alone — so a quiet `name` or `handle` change on another org's role went
+  through, written by primary key. The builder asks the row question itself now, for an instance write that
+  has lost its proof; a genuine bulk update arrives with a prototype that does not exist and is narrowed by
+  the global scope, which is the distinction every guard on this model has had to make.
+
 - **A revocation is recorded only once the deletion has succeeded.** The rows went in first, which read as
   correct until an application observer returning `false` from `deleting` aborted the delete: the role and
   every assignment survived while the log said their authority was revoked, and a retry added another set of

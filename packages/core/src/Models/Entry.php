@@ -1846,6 +1846,75 @@ class Entry extends Model implements RequiresModelSave
     }
 
     /**
+     * Refuse an instance write over a row that has moved or been retyped since it was loaded.
+     *
+     * ⚠️ THE AUTHORIZATION READ AND THE WRITE ARE IN DIFFERENT TRANSACTIONS, which review pointed out and
+     * which no policy can fix by itself: `Gate` answers before the write begins, so a row retyped or moved in
+     * between is authorised by the answer for what it USED to be. `EntryPolicy` reads the stored row now, so
+     * it is right at the moment it is asked — and then the moment passes.
+     *
+     * ⚠️ MEASURED FIRST, because the consequence is narrower than it looks and the fix should match it. A
+     * stale instance saving an unrelated field writes ONLY that field:
+     *
+     *   update "entries" set "title" = ?, "updated_at" = ? where "id" = ?
+     *
+     * so `entry_type_id` and `type_handle` keep whatever the other transaction set — no drift between the
+     * denormalised handle and the type it points at, and no scope key written either. What is left is one
+     * edit, or one DELETION, by somebody who was authorised for that row a moment earlier.
+     *
+     * The deletion is why this exists rather than being written down as a limitation: an update is a field
+     * somebody may not have been allowed to touch, and a delete is a row that is gone. Both are refused when
+     * the stored row is no longer the row this instance was loaded from.
+     *
+     * ⚠️ IT COMPARES WHAT WAS LOADED, NOT WHAT IS BEING WRITTEN, which is what keeps a legitimate retype
+     * working: changing `entry_type_id` yourself makes it dirty, and this compares the ORIGINAL against the
+     * database. What it refuses is somebody else having changed it. `EnforcesScope` still guards the values a
+     * write assigns; this guards the row it lands on.
+     *
+     * ⚠️ AND AUTHORIZATION PROPER STAYS AT THE PANEL BOUNDARY. Re-asking `Permissions` here would need the
+     * acting identity in the write path, which ADR-033 deliberately keeps out of the model — a seeder, an
+     * importer and a console command have no user, and would be refused everything. So this closes the window
+     * by refusing the WRITE rather than by re-deciding the permission, which is the half the model layer owns.
+     */
+    public function refuseIfTheRowMovedUnderneath(string $operation): void
+    {
+        $stored = static::withTrashed()
+            ->withoutGlobalScopes()
+            ->whereKey($this->getKeyForSaveQuery())
+            ->lockForUpdate()
+            ->first(['site_id', 'org_id', 'entry_type_id']);
+
+        if ($stored === null) {
+            throw new RuntimeException(sprintf(
+                'Refusing to %s entry %s: the row it was loaded from is gone, so this write would either '
+                .'resurrect it or land on nothing (ADR-021).',
+                $operation,
+                (string) $this->getKey(),
+            ));
+        }
+
+        foreach (['site_id', 'org_id', 'entry_type_id'] as $column) {
+            $loaded = $this->getRawOriginal($column);
+
+            if ((string) $stored->{$column} === (string) $loaded) {
+                continue;
+            }
+
+            throw new RuntimeException(sprintf(
+                'Refusing to %s entry %s: it was loaded with [%s] = %s and the stored row now has %s, so '
+                .'somebody else moved or retyped it while this instance was in hand. Whatever authorised '
+                .'this write was decided about a row that no longer exists in that shape (ADR-021, ADR-033). '
+                .'Reload the entry.',
+                $operation,
+                (string) $this->getKey(),
+                $column,
+                $loaded === null ? 'null' : (string) $loaded,
+                $stored->{$column} === null ? 'null' : (string) $stored->{$column},
+            ));
+        }
+    }
+
+    /**
      * The key an instance write will target, which is the ORIGINAL one.
      *
      * ⚠️ EXPOSED FOR `EntryPolicy`, BECAUSE A POLICY MUST ASK ABOUT THE ROW THAT WILL CHANGE. Eloquent's
