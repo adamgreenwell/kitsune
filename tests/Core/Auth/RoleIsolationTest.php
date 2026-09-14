@@ -23,6 +23,7 @@ use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tests\Fixtures\TestImpostor;
 use Kitsune\Core\Tests\Fixtures\TestUser;
+use Kitsune\Core\Tests\Fixtures\UnobservedUser;
 
 /*
  * Cross-org isolation for the RBAC layer, written from the attacker's side — ADR-033, issue #81.
@@ -708,6 +709,106 @@ it('revokes a deleted user\'s assignments through the audited path', function ()
     expect(DB::table('role_user')->where('user_id', $this->user->getKey())->exists())->toBeFalse()
         ->and(AuditLog::query()->where('id', '>', $mark)->where('action', 'role.unassigned')->count())->toBe(1);
 });
+
+it('revokes every assignment or none of them', function (): void {
+    /*
+     * ⚠️ TWO INDIVIDUALLY CORRECT OPERATIONS, WRONG TOGETHER — the failure this branch keeps producing, found
+     * by review in the observer an hour after it landed. A user holding roles in two organisations had the
+     * first revoked and audited, and the second refused by the last-owner guard: the deletion failed and the
+     * person kept their account while permanently losing authority the refusal was supposed to protect.
+     */
+    app(Context::class)->setOrg($this->alpha);
+    joinOrg($this->alpha, $this->user);
+    joinOrg($this->beta, $this->user);
+
+    $ordinary = Role::create(['handle' => 'copy', 'name' => 'Copy editor']);
+    $ordinary->assignTo($this->user->getKey());
+
+    app(Context::class)->setOrg($this->beta);
+    $owner = Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true]);
+    $owner->assignTo($this->user->getKey());
+
+    app(Context::class)->setOrg($this->alpha);
+    $mark = (int) AuditLog::query()->max('id');
+
+    expect(fn () => $this->user->delete())
+        ->toThrow(RuntimeException::class, 'last member of this organisation');
+
+    // The refusal rolled the earlier revocation back: both assignments stand, and nothing was recorded.
+    expect(DB::table('role_user')->where('user_id', $this->user->getKey())->count())->toBe(2)
+        ->and(AuditLog::query()->where('id', '>', $mark)->where('action', 'role.unassigned')->count())->toBe(0);
+});
+
+it('revokes an assignment in an org that has been soft-deleted', function (): void {
+    /*
+     * ⚠️ A TRASHED ORG'S ASSIGNMENTS ARE STILL ROWS, which the restrictive foreign key turned from a
+     * curiosity into a failure: `Org::query()` excludes trashed orgs, so the sweep skipped that role, the
+     * pivot row survived, and the deletion died on a constraint error instead of being audited or refused.
+     */
+    app(Context::class)->setOrg($this->beta);
+    joinOrg($this->beta, $this->user);
+
+    $role = Role::create(['handle' => 'copy', 'name' => 'Copy editor']);
+    $role->assignTo($this->user->getKey());
+
+    $this->beta->delete();
+
+    app(Context::class)->setOrg($this->alpha);
+
+    expect(Org::query()->whereKey($this->beta->getKey())->exists())->toBeFalse('the org is trashed')
+        ->and(fn () => $this->user->delete())->not->toThrow(RuntimeException::class);
+
+    expect(DB::table('role_user')->where('user_id', $this->user->getKey())->exists())->toBeFalse();
+});
+
+it('leaves the request\'s site context where it found it', function (): void {
+    /*
+     * ⚠️ `setOrg()` CLEARS THE SITE when the site belongs to another org, so a sweep through somebody else's
+     * organisation left this request with no site at all — after which everything site-scoped fails closed
+     * and any audit row written later loses its attribution.
+     */
+    $site = Site::create(['org_id' => $this->alpha->getKey(), 'handle' => 'main', 'slug' => 'main', 'name' => 'Main']);
+
+    app(Context::class)->setSite($site);
+    joinOrg($this->alpha, $this->user);
+    joinOrg($this->beta, $this->user);
+
+    app(Context::class)->setOrg($this->beta);
+    $theirs = Role::create(['handle' => 'copy', 'name' => 'Copy editor']);
+    $theirs->assignTo($this->user->getKey());
+
+    app(Context::class)->setSite($site);
+
+    $this->user->delete();
+
+    expect(app(Context::class)->site()?->getKey())->toBe($site->getKey())
+        ->and(app(Context::class)->orgId())->toBe($this->alpha->getKey());
+});
+
+it('refuses to delete a holder whose model does not revoke', function (): void {
+    /*
+     * ⚠️ THE BACKSTOP, which is what the restrictive foreign key is for: a host that has not attached the
+     * observer must fail loudly rather than lose an assignment quietly. Without this the fixture schema and
+     * the shipped migration could drift apart and nothing would notice.
+     */
+    app(Context::class)->setOrg($this->alpha);
+
+    /** @var UnobservedUser $stranger */
+    $stranger = UnobservedUser::create(['email' => 'unobserved@kitsune.test']);
+
+    // ⚠️ No membership needed: this is about the constraint, and `assignTo()` takes a raw id by design.
+
+    $role = Role::create(['handle' => 'copy', 'name' => 'Copy editor']);
+    $role->assignTo($stranger->getKey());
+
+    expect(fn () => $stranger->delete())->toThrow(QueryException::class);
+
+    expect(DB::table('role_user')->where('user_id', $stranger->getKey())->exists())->toBeTrue();
+})->skip(
+    fn (): bool => DB::connection()->getDriverName() === 'sqlite'
+        && ! DB::connection()->getPdo()->query('PRAGMA foreign_keys')->fetchColumn(),
+    'SQLite without foreign key enforcement cannot refuse this',
+);
 
 it('ships that behaviour on the reference host\'s own user model', function (): void {
     /*

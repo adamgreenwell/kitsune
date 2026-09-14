@@ -1849,6 +1849,26 @@ because a disabled control is a rendering decision and the raw form state is sub
   is `restrictOnDelete()` beside it, so a host that has not attached the observer fails loudly instead of
   quietly losing an owner. ⚠️ Soft deletes are deliberately untouched: a trashed user cannot authenticate, so
   the assignment confers nothing, and revoking it would make a restore return somebody with no authority.
+
+  ⚠️ **And the sweep is one transaction, which review found it was not.** A user holding roles in two
+  organisations could have the first revoked and audited and the second refused by the last-owner guard: the
+  deletion failed and the person kept their account while permanently losing authority the refusal existed to
+  protect — two individually correct operations, wrong together, for the third time on this branch. What one
+  transaction still cannot cover is stated rather than implied: `Model::delete()` opens none of its own, so a
+  host that needs the revocation and the deletion to be atomic wraps the call.
+
+  ⚠️ **A trashed org's assignments are still rows.** `Org::query()` excludes soft-deleted orgs, so the sweep
+  skipped those roles, the pivot survived, and the restrictive key then refused the deletion with a database
+  error rather than an audited revocation or a stated refusal. Resolved `withTrashed()`.
+
+  ⚠️ **And `setOrg()` clears the site**, so a sweep through another organisation left the request with no site
+  at all — after which everything site-scoped fails closed and later audit rows lose their attribution. The
+  site is captured and restored with the org.
+
+  ⚠️ **The test schema mirrors the reference migration**, because it did not: the fixture cascaded while the
+  skeleton restricts, so the suite could never exercise the backstop and would have silently erased an
+  assignment the observer missed. A fixture more forgiving than the shipped schema tests a different
+  application.
 - **`role_permissions` is `#[Unscoped]`, and the reason is the one `EntryRelation` and `EntryRevision` give**: it is reached only through `Role`, which is `#[OrgScoped]` and enforces it. Its index leads with `role_id` rather than a scope key, which satisfies invariant 4 by the invariant's own argument — a role is globally unique and belongs to exactly one org, exactly as a site does.
 - **A `role_user` row pairing a user with a role in an org they do not belong to resolves nothing**, because resolution runs through the org-scoped `Role` query under the current org context *and* asks membership of the user model. Asserted from the attacker's side.
 

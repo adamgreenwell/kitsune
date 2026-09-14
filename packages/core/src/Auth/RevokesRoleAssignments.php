@@ -64,34 +64,68 @@ class RevokesRoleAssignments
         }
 
         $context = app(Context::class);
-        $restore = $context->org();
+
+        /*
+         * ⚠️ THE SITE TOO, because `setOrg()` CLEARS IT when the site belongs to another org — review found
+         * the request coming back from this sweep with no site at all. Everything site-scoped afterwards then
+         * fails closed, and any audit row written later loses its site attribution. Restoring the site is what
+         * restores the org as well (setting a site implies its org), so the org is only put back on its own
+         * when there was no site to begin with.
+         */
+        $restoreOrg = $context->org();
+        $restoreSite = $context->site();
 
         try {
             /*
-             * ⚠️ THE ROLE'S OWN ORG, ONE AT A TIME, because `removeFrom()` refuses a role that does not
-             * belong to the current context and derives its audit row from that context. A user may hold
-             * roles in several organisations, and a revocation recorded under the wrong one is worse than
-             * no row at all — that is the same reasoning `Role::refuseIfNotCurrentOrg()` records.
+             * ⚠️ ONE TRANSACTION FOR THE WHOLE SWEEP, which review found missing and which is this project's
+             * most familiar failure: two individually correct operations, wrong together. A user holding
+             * roles in several orgs could have the first revoked and audited and the second refused by the
+             * last-owner guard — leaving authority permanently removed from somebody the deletion then
+             * spared. All of it or none of it.
+             *
+             * ⚠️ WHAT THIS DOES NOT COVER IS STATED RATHER THAN IMPLIED: `Model::delete()` opens no
+             * transaction of its own, so if the DELETE itself fails after this commits, the revocations
+             * stand. A host that needs the pair atomic wraps the call — `DB::transaction(fn () =>
+             * $user->delete())` — and with the assignments gone, the restrictive foreign key that made this
+             * observer necessary is no longer a reason for that delete to fail.
              */
-            foreach (Role::query()->withoutGlobalScopes()->whereIn('id', $roleIds)->get() as $role) {
-                $org = Org::query()->whereKey($role->org_id)->first();
-
-                if (! $org instanceof Org) {
-                    continue;
-                }
-
-                $context->setOrg($org);
-
+            DB::transaction(function () use ($context, $roleIds, $id): void {
                 /*
-                 * ⚠️ AND THE LAST-OWNER GUARD IS ALLOWED TO REFUSE. Deleting a user who holds the only
-                 * effective owner role throws from here, so the deletion fails with a message naming the
-                 * organisation instead of succeeding and locking it out. That is the point of routing
-                 * through `removeFrom()` rather than letting the database do it.
+                 * ⚠️ THE ROLE'S OWN ORG, ONE AT A TIME, because `removeFrom()` refuses a role that does not
+                 * belong to the current context and derives its audit row from that context. A user may hold
+                 * roles in several organisations, and a revocation recorded under the wrong one is worse than
+                 * no row at all — that is the same reasoning `Role::refuseIfNotCurrentOrg()` records.
                  */
-                $role->removeFrom((int) $id);
-            }
+                foreach (Role::query()->withoutGlobalScopes()->whereIn('id', $roleIds)->get() as $role) {
+                    /*
+                     * ⚠️ `withTrashed()`, because an org can be soft-deleted and its roles' assignments
+                     * cannot. Review found the gap the restrictive foreign key opened: skipping a trashed
+                     * org's role left its pivot row in place, so the deletion died on a constraint error
+                     * instead of being either audited or refused.
+                     */
+                    $org = Org::query()->withTrashed()->whereKey($role->org_id)->first();
+
+                    if (! $org instanceof Org) {
+                        continue;
+                    }
+
+                    $context->setOrg($org);
+
+                    /*
+                     * ⚠️ AND THE LAST-OWNER GUARD IS ALLOWED TO REFUSE. Deleting a user who holds the only
+                     * effective owner role throws from here, so the deletion fails with a message naming the
+                     * organisation instead of succeeding and locking it out. That is the point of routing
+                     * through `removeFrom()` rather than letting the database do it.
+                     */
+                    $role->removeFrom((int) $id);
+                }
+            });
         } finally {
-            $context->setOrg($restore);
+            if ($restoreSite !== null) {
+                $context->setSite($restoreSite);
+            } else {
+                $context->setOrg($restoreOrg);
+            }
         }
     }
 }

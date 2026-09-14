@@ -84,7 +84,13 @@ return new class extends Migration
 
         Schema::create('role_user', function (Blueprint $table): void {
             $table->foreignId('role_id')->constrained()->cascadeOnDelete();
-            $table->foreignId('user_id')->constrained()->cascadeOnDelete();
+            /*
+             * ⚠️ RESTRICTIVE, LIKE THE SKELETON'S — review found this fixture cascading while the reference
+             * migration restricts, which meant the suite could never exercise the backstop and would silently
+             * erase any assignment the observer missed. A fixture schema that is more forgiving than the
+             * shipped one tests a different application.
+             */
+            $table->foreignId('user_id')->constrained()->restrictOnDelete();
             $table->primary(['role_id', 'user_id']);
             $table->index(['user_id', 'role_id']);
         });
