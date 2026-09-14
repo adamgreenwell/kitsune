@@ -3035,6 +3035,36 @@ class Entry extends Model implements RequiresModelSave
     }
 
     /**
+     * Refuse a CREATION that would bring an entry into existence already published, without the permission.
+     *
+     * ⚠️ THE TRANSITION HAS A FIRST STEP, and the guard above only stands at the second. `publish` is permission
+     * to move an entry into the published state, and nothing-to-published is that move as surely as
+     * draft-to-published — but `refuseUnpermittedPublication()` compares against a stored row, so a creation had
+     * nothing to compare and went past it. `Entry::create(['status' => 'published'])` by somebody holding only
+     * `create` landed, with the form's `in` rule the only thing in the way. Review found it beside the
+     * vocabulary gap on the same door.
+     *
+     * ⚠️ THE TYPE IS ASKED OF THE DATABASE BY `entry_type_id`, NOT READ FROM THE `type_handle` BEING WRITTEN. The
+     * handle is derived by a `saving` listener that a quiet creation suppresses, so on that path it is whatever
+     * the caller wrote — and naming a type the user may publish would be the whole bypass.
+     */
+    public function refuseUnpermittedCreationAsPublished(mixed $entryTypeId): void
+    {
+        $handle = (string) EntryType::query()->withoutGlobalScopes()->whereKey($entryTypeId)->value('handle');
+
+        if (! $this->publishingRefused('', $handle)) {
+            return;
+        }
+
+        throw new RuntimeException(sprintf(
+            'Refusing to create a published [%1$s] entry: bringing an entry into existence published is moving '
+            .'it into the published state, which is [entry.%1$s.publish], and the acting user does not hold it '
+            .'(ADR-033). Create it as a draft.',
+            $handle,
+        ));
+    }
+
+    /**
      * Would restoring this revision publish the entry on behalf of somebody who may not publish?
      *
      * ⚠️ PUBLIC AND SHARED WITH THE BUTTON, which review asked for and this project has learned twice over:

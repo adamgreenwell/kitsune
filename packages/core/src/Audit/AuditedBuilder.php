@@ -101,6 +101,8 @@ class AuditedBuilder extends ScopedBuilder
         $values = $model->convertFieldValuesForWrite($values);
 
         $this->guardScopeKeys($values);
+        $this->refuseNoncanonicalStatus($values);
+        $this->refuseUnpermittedCreationAsPublished($values);
 
         return DB::transaction(function () use ($values, $sequence, $model) {
             $id = parent::insertGetId($values, $sequence);
@@ -344,6 +346,7 @@ class AuditedBuilder extends ScopedBuilder
         $values = $this->getModel()->convertFieldValuesForWrite($values);
 
         $this->guardScopeKeys($values);
+        $this->refuseNoncanonicalStatus($values);
 
         /*
          * ⚠️ AN INSTANCE MAY NOT WRITE OVER A ROW THAT MOVED UNDER IT — see
@@ -362,7 +365,6 @@ class AuditedBuilder extends ScopedBuilder
          */
         return $this->auditing($this->actionFor($values), function () use ($values) {
             $this->refuseIfTheRowMoved('update');
-            $this->refuseNoncanonicalStatus($values);
             $this->refuseUnpermittedPublication($values);
 
             return parent::update($values);
@@ -397,6 +399,16 @@ class AuditedBuilder extends ScopedBuilder
      *
      * ⚠️ AT THE BUILDER, so it covers the bulk write this project supports and the quiet paths a listener
      * would miss. `Entry::STATUSES` is the vocabulary, shared with the form's option list.
+     *
+     * ⚠️ AND AT EVERY DOOR THAT WRITES A VALUE, which review found it was not: `update()` asked, while
+     * `insertGetId()` and the four arithmetic methods went straight past. `Entry::create(['status' =>
+     * 'publíshed'])` stored a value this guard exists to refuse, and so did `$entry->increment('id', 0,
+     * ['status' => 'publíshed'])` — `$extra` is a map of ordinary assignments. The arithmetic doors pass the
+     * incremented column too, so `increment('status')` is refused for storing a number that is not a status.
+     * The third guard in this file to reach one door first; see `refuseIfTheRowMoved()` for the other two.
+     *
+     * Asked before any transaction opens, beside `guardScopeKeys()`: it reads the values being written, not a
+     * row, so there is nothing for a lock to hold.
      *
      * @param  array<string, mixed>  $values
      */
@@ -480,6 +492,27 @@ class AuditedBuilder extends ScopedBuilder
     }
 
     /**
+     * Refuse a creation that would publish an entry without the permission — `Entry::refuseUnpermittedCreationAsPublished()`.
+     *
+     * ⚠️ A STRICT COMPARISON IS CORRECT HERE, where it was not in `refuseUnpermittedPublication()`, because
+     * `refuseNoncanonicalStatus()` runs first: by the time this reads the value, `published` is the only
+     * spelling of the published state that can still be on its way to the database.
+     *
+     * @param  array<string, mixed>  $values
+     */
+    private function refuseUnpermittedCreationAsPublished(array $values): void
+    {
+        $model = $this->getModel();
+        $status = $values['status'] ?? $values[$model->getTable().'.status'] ?? null;
+
+        if ($status !== 'published') {
+            return;
+        }
+
+        $model->refuseUnpermittedCreationAsPublished($values['entry_type_id'] ?? null);
+    }
+
+    /**
      * Refuse an INSTANCE write whose row has moved or been retyped since it was loaded.
      *
      * ⚠️ ONE METHOD BECAUSE IT WAS TWO AND SHOULD HAVE BEEN SIX. The check went into `update()` and
@@ -529,6 +562,7 @@ class AuditedBuilder extends ScopedBuilder
     {
         $this->refuseScopeArithmetic([(string) $column => $amount, ...$extra]);
         $this->refusePerRowExtras($extra);
+        $this->refuseNoncanonicalStatus([(string) $column => $amount, ...$extra]);
 
         return $this->auditing(
             'updated',
@@ -550,6 +584,7 @@ class AuditedBuilder extends ScopedBuilder
     {
         $this->refuseScopeArithmetic([(string) $column => $amount, ...$extra]);
         $this->refusePerRowExtras($extra);
+        $this->refuseNoncanonicalStatus([(string) $column => $amount, ...$extra]);
 
         return $this->auditing(
             'updated',
@@ -576,6 +611,7 @@ class AuditedBuilder extends ScopedBuilder
     {
         $this->refuseScopeArithmetic([...$columns, ...$extra]);
         $this->refusePerRowExtras($extra);
+        $this->refuseNoncanonicalStatus([...$columns, ...$extra]);
 
         return $this->auditing(
             'updated',
@@ -597,6 +633,7 @@ class AuditedBuilder extends ScopedBuilder
     {
         $this->refuseScopeArithmetic([...$columns, ...$extra]);
         $this->refusePerRowExtras($extra);
+        $this->refuseNoncanonicalStatus([...$columns, ...$extra]);
 
         return $this->auditing(
             'updated',

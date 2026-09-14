@@ -327,3 +327,80 @@ it('refuses a status the vocabulary does not contain', function (): void {
 
     expect(DB::table('entries')->where('id', $entry->getKey())->value('status'))->toBe('archived');
 });
+
+it('refuses a status the vocabulary does not contain at every door that writes one', function (): void {
+    /*
+     * ⚠️ THE GUARD ABOVE STOOD AT ONE DOOR, and review named the others. `update()` asked; `insertGetId()` —
+     * which every creation reaches, quiet or not — and the four arithmetic methods did not, so a create or an
+     * `$extra` assignment stored exactly the value the vocabulary exists to refuse. The incremented column is
+     * a written column too: `increment('status')` stores a number, which is not a status either.
+     *
+     * One closure per door, so a door that stops asking fails by name rather than hiding behind the others.
+     */
+    $entry = publishedArticle($this->org);
+
+    $entry->status = 'draft';
+    $entry->save();
+
+    $type = $entry->entry_type_id;
+
+    $doors = [
+        'create' => fn () => Entry::create(['entry_type_id' => $type, 'title' => 'Created', 'status' => 'publíshed']),
+        'quiet create' => fn () => Entry::createQuietly(['entry_type_id' => $type, 'title' => 'Created', 'status' => 'publíshed']),
+        'increment' => fn () => $entry->increment('id', 0, ['status' => 'publíshed']),
+        'decrement' => fn () => $entry->decrement('id', 0, ['status' => 'publíshed']),
+        // Through the builder, because an instance does the arithmetic in PHP first and fails on the string.
+        'increment the status itself' => fn () => Entry::query()->whereKey($entry->getKey())->increment('status'),
+        'incrementEach' => fn () => Entry::query()->whereKey($entry->getKey())->incrementEach(['id' => 0], ['status' => 'publíshed']),
+        'decrementEach' => fn () => Entry::query()->whereKey($entry->getKey())->decrementEach(['status' => 1]),
+    ];
+
+    foreach ($doors as $door => $write) {
+        expect($write)->toThrow(RuntimeException::class, 'entry status', "{$door} wrote a status outside the vocabulary");
+    }
+
+    expect(DB::table('entries')->where('id', $entry->getKey())->value('status'))->toBe('draft')
+        ->and(DB::table('entries')->where('title', 'Created')->exists())->toBeFalse();
+});
+
+it('refuses creating an entry already published, from somebody who may not publish', function (): void {
+    /*
+     * ⚠️ NOTHING-TO-PUBLISHED IS THE SAME TRANSITION AS DRAFT-TO-PUBLISHED, and only the second was guarded.
+     * The instance guard compares against a stored row, so a creation had nothing to compare and went past it:
+     * somebody holding `create` and not `publish` brought an article into existence already public.
+     */
+    $this->role->grant(Permissions::forEntryType('article', 'create'));
+
+    $type = publishedArticle($this->org)->entry_type_id;
+
+    Auth::login($this->user);
+    Permissions::forget();
+
+    expect(fn () => Entry::create(['entry_type_id' => $type, 'title' => 'Fresh', 'status' => 'published']))
+        ->toThrow(RuntimeException::class, 'entry.article.publish');
+
+    /*
+     * ⚠️ AND THE TYPE IS THE ONE THE ROW POINTS AT, NOT THE HANDLE THE CALLER WROTE. A quiet creation skips the
+     * listener that derives `type_handle`, so a guard reading the written handle would ask about `product` —
+     * which this user may publish — and let an article through.
+     */
+    $this->role->grant(Permissions::forEntryType('product', 'publish'));
+    Permissions::forget();
+
+    expect(fn () => Entry::createQuietly([
+        'entry_type_id' => $type, 'type_handle' => 'product', 'title' => 'Fresh', 'status' => 'published',
+    ]))->toThrow(RuntimeException::class, 'entry.article.publish');
+
+    expect(DB::table('entries')->where('title', 'Fresh')->exists())->toBeFalse();
+
+    // A permission rather than a lock: a draft creates, and so does a publication by somebody who may publish.
+    Entry::create(['entry_type_id' => $type, 'title' => 'Fresh draft', 'status' => 'draft']);
+
+    $this->role->grant(Permissions::forEntryType('article', 'publish'));
+    Permissions::forget();
+
+    Entry::create(['entry_type_id' => $type, 'title' => 'Fresh', 'status' => 'published']);
+
+    expect(DB::table('entries')->where('title', 'Fresh draft')->value('status'))->toBe('draft')
+        ->and(DB::table('entries')->where('title', 'Fresh')->value('status'))->toBe('published');
+});

@@ -1793,6 +1793,18 @@ permission, rather than hidden, because a row whose only action has silently van
 browser suite asserts both directions on a seeded article that was published and then pulled back, since no
 ordinary row has a published version in its history.
 
+⚠️ **And the vocabulary stood at one door of six, and the transition at one door of two.** Review found
+`insertGetId()` — which every creation reaches, quiet or not — and the four arithmetic methods writing a
+`status` that `update()` refused: a create or an `$extra` assignment stored `publíshed`, and
+`increment('status')` stored a number. The vocabulary is one method asked by all six now, before any
+transaction, because it reads the values being written rather than a row. It is the fourth guard this ADR
+records being added to `update()` and forgotten at the arithmetic family. The same finding named the other
+half: the publication guard compares against a stored row, so a creation had nothing to compare and brought an
+entry into existence published for somebody holding `create` alone. Nothing-to-published is the same
+transition as draft-to-published, and `Entry::refuseUnpermittedCreationAsPublished()` asks it at the creation
+door — reading the type from the row `entry_type_id` names, not from a `type_handle` that a quiet creation
+never re-derives.
+
 ⚠️ **A BULK publish is deliberately still allowed**, and that is not an oversight to be swept up with this.
 `Entry::query()->update(['status' => 'published'])` is a supported write that this project audits and
 versions on purpose (`AuditLogTest` and `recordBulkRevision()` both say so), and it carries no acting
