@@ -34,8 +34,25 @@ use Kitsune\Core\Tenancy\Context;
  */
 final class KitsunePanel
 {
+    /**
+     * The container key naming the panel Kitsune was applied to.
+     *
+     * ⚠️ IN THE CONTAINER RATHER THAN A STATIC, so it lives exactly as long as the application that configured the
+     * panel, and one test's application cannot inherit another's.
+     */
+    public const PANEL_BINDING = 'kitsune.panel';
+
     public static function apply(Panel $panel): Panel
     {
+        /*
+         * ⚠️ RECORDED, BECAUSE OUTSIDE A REQUEST NOTHING ELSE KNOWS WHICH PANEL THIS IS. A console command, a queued
+         * job and a seeder have no current panel, and `Permissions::userModel()` fell back to Filament's global
+         * default — on a host that runs a second panel marked default, that panel, whose provider may name another
+         * model. An audit row would then name an unrelated row with the same id. Found by the completeness check on
+         * #8's split install.
+         */
+        app()->instance(self::PANEL_BINDING, $panel->getId());
+
         return $panel
             // ADR-021: Filament's tenant IS the Site. Its automatic scope
             // therefore enforces site isolation and NOT org isolation, which

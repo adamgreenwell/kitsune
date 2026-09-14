@@ -1836,7 +1836,9 @@ check reads the registered scope rather than the attribute, because `#[OrgScoped
 `use EnforcesScope` applies nothing. Separately, `Permissions::userModel()` stood aside only when `filament`
 was unbound, which in a real host it never is: with no panel, or none marked default, it threw from
 `Role::assignTo()` before writing, so the configured fallback its caller takes on null was unreachable. It
-catches `NoDefaultPanelSetException` now. What a host must supply is still written down only in the monorepo;
+catches `NoDefaultPanelSetException` now. And outside a request it asks Kitsune's own panel before Filament's default — `KitsunePanel::apply()`
+records which panel that is — because a console command, a seeder or a queued job has no current panel, and the
+default may be a host's other panel, whose provider names another model. What a host must supply is still written down only in the monorepo;
 shipping that with the split is #8's.
 
 ⚠️ **And the History's restore was not the only edit a viewer could reach.** The related-entries page is
