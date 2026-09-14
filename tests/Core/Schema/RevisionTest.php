@@ -133,6 +133,33 @@ describe('restoring puts state back as a NEW version', function (): void {
         expect(fn () => $mine->restoreRevision($theirs->revisions()->first()))
             ->toThrow(RuntimeException::class, 'belongs to another entry');
     });
+
+    it('refuses to restore onto an entry that moved after it was loaded', function (string $move): void {
+        /*
+         * ⚠️ AUTHORIZED WHERE IT WAS, WRITTEN WHERE IT IS — review found the restore adopting a move. The row
+         * lock and `refresh()` both read without scopes, so an entry moved between the caller's load and the
+         * lock came back carrying its new site, and the restore wrote there under the old one's authority.
+         *
+         * The move is made beneath the model, which is how a concurrent request's committed move looks to an
+         * instance loaded before it.
+         */
+        $entry = anEntry();
+        $original = $entry->revisions()->first();
+        $entry->update(['title' => 'Changed']);
+
+        $elsewhere = $move === 'into another site'
+            ? Site::create(['org_id' => $this->org->id, 'handle' => 'second', 'slug' => 'rev-second', 'name' => 'Second'])->getKey()
+            : null;
+
+        DB::table('entries')->where('id', $entry->getKey())->update(['site_id' => $elsewhere]);
+
+        expect(fn () => $entry->restoreRevision($original))
+            ->toThrow(RuntimeException::class, 'Refusing to restore entry');
+
+        // Nothing was written: the title is the one from before, and no version was added.
+        expect(DB::table('entries')->where('id', $entry->getKey())->value('title'))->toBe('Changed')
+            ->and($entry->revisions()->count())->toBe(2);
+    })->with(['into another site', 'out to org-shared']);
 });
 
 it('keeps a bounded history, because full JSON snapshots are not free', function (): void {
