@@ -46,6 +46,25 @@ class RevisionsRelationManager extends RelationManager
         return $entry instanceof Entry && $entry->restoreWouldPublishWithoutPermission($revision);
     }
 
+    /**
+     * May the acting user change the entry this history belongs to?
+     *
+     * ⚠️ A RESTORE IS AN EDIT, AND THIS COMPONENT IS RENDERED WHERE NOBODY ASKED WHETHER THE USER MAY EDIT.
+     * `ViewRecord` renders a resource's relation managers, so somebody holding only `entry.{type}.view` opened
+     * the History on the view page and restored a version — `Entry::restoreRevision()` saves the way every
+     * model write does, without consulting a policy, and a custom `Action` in a relation manager gets no
+     * default authorization (Filament infers one only for its own named actions). Review found it.
+     *
+     * `EntryResource::canEdit()` is the question the edit page asks before it renders at all, so a user who
+     * may reach the form may restore and one who may not, may not — one rule, not a second copy of it.
+     */
+    private function mayEditOwner(): bool
+    {
+        $entry = $this->getOwnerRecord();
+
+        return $entry instanceof Entry && EntryResource::canEdit($entry);
+    }
+
     public function table(Table $table): Table
     {
         return $table
@@ -66,6 +85,14 @@ class RevisionsRelationManager extends RelationManager
                     ->icon('heroicon-o-arrow-uturn-left')
                     ->requiresConfirmation()
                     ->modalDescription('This adds a new version matching the one you picked. Nothing in the history is removed.')
+                    /*
+                     * ⚠️ HIDDEN, NOT DISABLED, which is the opposite of the choice below and for the opposite
+                     * reason: there, one version is restorable and another is not; here, nothing on any row is
+                     * the user's to do. And it is ENFORCED, not cosmetic — Filament treats an unauthorized action
+                     * as hidden and a hidden one as disabled, and refuses to mount or call a disabled action, so a
+                     * hand-built Livewire request reaches the same answer as the missing button.
+                     */
+                    ->authorize(fn (): bool => $this->mayEditOwner())
                     /*
                      * ⚠️ A MODEL GUARD THE PANEL STILL OFFERS IS A 500, which review said plainly. Restoring a
                      * version that was PUBLISHED publishes the entry, and `Entry::restoreRevision()` refuses

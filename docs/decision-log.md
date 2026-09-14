@@ -1793,6 +1793,40 @@ permission, rather than hidden, because a row whose only action has silently van
 browser suite asserts both directions on a seeded article that was published and then pulled back, since no
 ordinary row has a published version in its history.
 
+⚠️ **And the vocabulary stood at one door of six, and the transition at one door of two.** Review found
+`insertGetId()` — which every creation reaches, quiet or not — and the four arithmetic methods writing a
+`status` that `update()` refused: a create or an `$extra` assignment stored `publíshed`, and
+`increment('status')` stored a number. The vocabulary is one method asked by all six now, before any
+transaction, because it reads the values being written rather than a row. It is the fourth guard this ADR
+records being added to `update()` and forgotten at the arithmetic family. The same finding named the other
+half: the publication guard compares against a stored row, so a creation had nothing to compare and brought an
+entry into existence published for somebody holding `create` alone. Nothing-to-published is the same
+transition as draft-to-published, and `Entry::refuseUnpermittedCreationAsPublished()` asks it at the creation
+door — reading the type from the row `entry_type_id` names, not from a `type_handle` that a quiet creation
+never re-derives.
+
+⚠️ **And a restore is an edit, which the History never asked.** Filament's view page renders a resource's
+relation managers, and a custom action inside one carries no authorization unless it declares some — Filament
+infers one only for its own named actions — so somebody holding `entry.{type}.view` alone could put an old
+version back from a page that never asked whether they may edit. The Restore action now asks
+`EntryResource::canEdit()`, the question the edit page asks before it renders, and is hidden rather than
+disabled because nothing on any row is that user's to do. Filament refuses to mount a hidden action, so a
+hand-built Livewire request meets the same answer as the missing button. The browser suite asserts both as a
+seeded `viewer@kitsune.test` holding `view` alone, because the copy-editor's `update` is exactly what makes a
+restore allowed.
+
+⚠️ **And two answers assumed a host shaped like the skeleton, which installing the split into a bare Laravel
+host showed is not the only host.** Membership was asked through the user model's own scoped query, and a stock
+`User` has no scope: its query was `where id = ?`, every user was a member of every org, and a `role_user` row
+for somebody who never joined resolved an owner bypass. A model with no registered `OrgMembershipScope` now
+resolves nothing — the direction already taken for an `Authenticatable` that is not an Eloquent model — and the
+check reads the registered scope rather than the attribute, because `#[OrgScopedThroughPivot]` without
+`use EnforcesScope` applies nothing. Separately, `Permissions::userModel()` stood aside only when `filament`
+was unbound, which in a real host it never is: with no panel, or none marked default, it threw from
+`Role::assignTo()` before writing, so the configured fallback its caller takes on null was unreachable. It
+catches `NoDefaultPanelSetException` now. What a host must supply is still written down only in the monorepo;
+shipping that with the split is #8's.
+
 ⚠️ **A BULK publish is deliberately still allowed**, and that is not an oversight to be swept up with this.
 `Entry::query()->update(['status' => 'published'])` is a supported write that this project audits and
 versions on purpose (`AuditLogTest` and `recordBulkRevision()` both say so), and it carries no acting
