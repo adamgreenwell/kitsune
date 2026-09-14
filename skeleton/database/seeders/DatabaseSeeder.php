@@ -13,12 +13,14 @@ namespace Database\Seeders;
 use App\Models\User;
 use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\Hash;
+use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\EntryTypeAvailability;
 use Kitsune\Core\Models\Field;
 use Kitsune\Core\Models\FieldStorage;
 use Kitsune\Core\Models\Org;
+use Kitsune\Core\Models\Role;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Models\SiteGroup;
 use Kitsune\Core\Tenancy\Context;
@@ -156,6 +158,17 @@ class DatabaseSeeder extends Seeder
             // lives in `entry_relations` (ADR-015), so nothing about it can be tested
             // without a real field to drive the save lifecycle through.
             ['related_articles', 'relation', 'Related articles', -1],
+            /*
+             * ⚠️ A SECOND RELATION, POINTING AT A TYPE THE COPY-EDITOR MAY NOT VIEW, which is the fixture
+             * for a defect review found and nothing else here could reach: an owner links an article to a
+             * product, and the article's editor holds `entry.article.*` alone. Filament validates a
+             * select's options through the label callbacks, so a withheld label made the id an invalid
+             * option and the editor could not save a TITLE change on a field they were not editing.
+             *
+             * `related_articles` cannot demonstrate it, because the copy-editor may view articles — the
+             * whole point of this field is that its targets are outside their grants.
+             */
+            ['related_products', 'relation', 'Related products', -1],
         ];
 
         foreach ($articleFields as $index => [$handle, $type, $label, $cardinality]) {
@@ -177,6 +190,8 @@ class DatabaseSeeder extends Seeder
                     // Constrained to articles, so the picker offers what the validation
                     // rule would actually accept rather than a wider set.
                     'related_articles' => ['targetTypes' => ['article']],
+                    // Products, which the copy-editor holds nothing on — see the field list above.
+                    'related_products' => ['targetTypes' => ['product']],
                     default => null,
                 },
             ]);
@@ -204,6 +219,72 @@ class DatabaseSeeder extends Seeder
             'is_enabled' => false,
         ]);
 
+        /*
+         * Roles, and a user who deliberately has almost none — ADR-033.
+         *
+         * ⚠️ THE CONTEXT IS SET PER ORG BEFORE EACH ROLE, because `Role` is `#[OrgScoped]` and
+         * `EnforcesScope` refuses a write that names a scope key with no context established: "a scope key
+         * nobody vouched for is how a row ends up visible to another org". The seeder is exactly the kind of
+         * caller that rule exists for.
+         *
+         * ⚠️ AND THE TWO EXISTING ADMINS BECOME OWNERS, which is not laziness. Every browser spec signs in
+         * as one of them, so without a role they would all start failing the moment the policy is wired —
+         * and the honest fixture for "the person who set this installation up" is an owner. The interesting
+         * fixture is the one below them.
+         */
+        $context->setOrg($orgA);
+
+        $ownerA = Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true]);
+        $ownerA->assignTo($user->id);
+        $ownerA->assignTo($rtlUser->id);
+
+        /*
+         * ⚠️ A COPY-EDITOR, because a permission system with only owners in it is a permission system
+         * nothing tests. `entry.article.view` and `entry.article.update`, and deliberately nothing else:
+         * no `create`, no `delete`, no `publish`, and nothing at all on products.
+         *
+         * ⚠️ THE COMBINATION IS CHOSEN SO EACH REFUSAL IS SEPARATELY OBSERVABLE, which is why it includes
+         * `update` rather than being the minimal grant. Without `update` the edit form is unreachable, and
+         * the one thing that cannot then be measured is the status control — the enforcement point for
+         * `publish`. A fixture that cannot reach the page it is meant to measure is a fixture that proves
+         * the refusal before it.
+         */
+        $reader = Role::create(['handle' => 'copy-editor', 'name' => 'Copy editor']);
+        $reader->grant(Permissions::forEntryType('article', 'view'));
+        $reader->grant(Permissions::forEntryType('article', 'update'));
+
+        $readerUser = User::create([
+            'name' => 'Reader User',
+            'email' => 'reader@kitsune.test',
+            'password' => Hash::make('password'),
+        ]);
+        $readerUser->sites()->attach([$en->id, $fr->id, $ar->id]);
+        $readerUser->orgs()->attach($orgA->id);
+        $reader->assignTo($readerUser->id);
+
+        /*
+         * ⚠️ A VIEWER, and the copy-editor cannot stand in for one. Restoring a version is an EDIT, and the view
+         * page renders the same History as the edit page — so what a restore has to be refused for is the
+         * absence of `update`, which the copy-editor holds on purpose. `entry.article.view` and nothing else.
+         */
+        $viewer = Role::create(['handle' => 'viewer', 'name' => 'Viewer']);
+        $viewer->grant(Permissions::forEntryType('article', 'view'));
+
+        $viewerUser = User::create([
+            'name' => 'Viewer User',
+            'email' => 'viewer@kitsune.test',
+            'password' => Hash::make('password'),
+        ]);
+        $viewerUser->sites()->attach([$en->id]);
+        $viewerUser->orgs()->attach($orgA->id);
+        $viewer->assignTo($viewerUser->id);
+
+        // The rival org gets its own owner, so the cross-org specs measure a user who is fully
+        // authorised in their OWN org rather than one who is simply unauthorised everywhere.
+        $context->setOrg($orgB);
+        $ownerB = Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true]);
+        $ownerB->assignTo($rivalUser->id);
+
         $context->setSite($en);
         foreach (range(1, 6) as $i) {
             Entry::create([
@@ -215,6 +296,34 @@ class DatabaseSeeder extends Seeder
                 'published_at' => now()->subDays($i),
             ]);
         }
+
+        /*
+         * ⚠️ ONE ARTICLE THAT WAS PUBLISHED AND THEN DEMOTED, because a permission test needs a shape the
+         * ordinary rows do not have. Restoring a version that was published PUBLISHES the entry, so the
+         * copy-editor — who holds `update` and not `publish` — must be offered that restore as unavailable
+         * rather than as a server error (ADR-033). Every other seeded article's history contains only the
+         * status it was created with, so nothing here could have measured it.
+         */
+        $demoted = Entry::create([
+            'entry_type_id' => $article->id,
+            'title' => 'Bunker renovation, pulled back to draft',
+            'slug' => 'bunker-renovation-pulled-back',
+            'status' => 'published',
+            'values' => ['summary' => 'Published once, then pulled back for a rewrite.'],
+            'published_at' => now()->subDays(9),
+        ]);
+
+        $demoted->status = 'draft';
+        $demoted->save();
+
+        /*
+         * ⚠️ AND REWRITTEN ONCE AS A DRAFT, so its history holds a version that restoring would actually CHANGE
+         * without publishing anything. A restore onto identical state files nothing, so without this the only
+         * restorable draft was the current one — and a spec proving a restore is refused could not tell the
+         * refusal from a no-op.
+         */
+        $demoted->values = [...$demoted->values, 'summary' => 'Rewritten as a draft, and not yet republished.'];
+        $demoted->save();
 
         // ⚠️ An RTL title in an otherwise LTR org, because issue #39's failure only
         // appears with bidirectional content in ONE admin — which ADR-018 rule 2 says is
@@ -281,6 +390,26 @@ class DatabaseSeeder extends Seeder
             'course-maintenance-week-7',
         ])->pluck('id');
         $first?->related()->attach($others->all(), ['org_id' => $orgA->id]);
+
+        /*
+         * ⚠️ AND ONE RELATION THROUGH A FIELD, which is a different fixture from the attach above: that one
+         * carries no `field_storage_id`, so it feeds the relation MANAGER and no picker. This one is what a
+         * relation control is hydrated from — `relatedIdsForField()` — and it points at a product, which the
+         * copy-editor may not view. See `related_products` in the field list.
+         */
+        $productRelation = FieldStorage::where('org_id', $orgA->id)->where('handle', 'related_products')->first();
+        $mower = Entry::where('slug', 'fairway-mower')->first();
+
+        /*
+         * ⚠️ WEEK FIVE, WHICH NO OTHER SPEC NAMES, and that is the whole reason it is not week one. The
+         * browser test for this saves the entry, and an entry another spec asserts the title of is a fixture
+         * two tests share — the kind that fails for the wrong reason. Weeks 1 to 4 are spoken for.
+         */
+        $linked = Entry::where('slug', 'course-maintenance-week-5')->first();
+
+        if ($linked !== null && $productRelation !== null && $mower !== null) {
+            $linked->syncFieldRelations($productRelation, [$mower->id]);
+        }
 
         $context->setSite($rival);
         Entry::create([

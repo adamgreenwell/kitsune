@@ -22,6 +22,7 @@ use Kitsune\Core\Fields\StorageStrategy;
 use Kitsune\Core\Filament\Icons;
 use Kitsune\Core\Tenancy\Attributes\Unscoped;
 use Kitsune\Core\Tenancy\Concerns\DerivesGuardedColumns;
+use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tenancy\Contracts\RefusesCascadingDeletes;
 use Kitsune\Core\Tenancy\Contracts\RequiresModelSave;
@@ -43,6 +44,7 @@ use RuntimeException;
 class EntryType extends Model implements RefusesCascadingDeletes, RequiresModelSave
 {
     use DerivesGuardedColumns;
+    use EnforcesScope;
 
     /**
      * Handles that would collide with a route segment (ADR-012).

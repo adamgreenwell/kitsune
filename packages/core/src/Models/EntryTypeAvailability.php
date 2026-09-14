@@ -12,6 +12,7 @@ namespace Kitsune\Core\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Kitsune\Core\Tenancy\Attributes\Unscoped;
+use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
 
 /**
  * Per-site entry type availability, on the same sparse inheritance as
@@ -34,6 +35,8 @@ use Kitsune\Core\Tenancy\Attributes\Unscoped;
 #[Unscoped]
 class EntryTypeAvailability extends Model
 {
+    use EnforcesScope;
+
     public const TABLE = 'entry_type_availability';
 
     protected $table = self::TABLE;

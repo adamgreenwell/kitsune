@@ -101,6 +101,8 @@ class AuditedBuilder extends ScopedBuilder
         $values = $model->convertFieldValuesForWrite($values);
 
         $this->guardScopeKeys($values);
+        $this->refuseNoncanonicalStatus($values);
+        $this->refuseUnpermittedCreationAsPublished($values);
 
         return DB::transaction(function () use ($values, $sequence, $model) {
             $id = parent::insertGetId($values, $sequence);
@@ -344,8 +346,29 @@ class AuditedBuilder extends ScopedBuilder
         $values = $this->getModel()->convertFieldValuesForWrite($values);
 
         $this->guardScopeKeys($values);
+        $this->refuseNoncanonicalStatus($values);
 
-        return $this->auditing($this->actionFor($values), fn () => parent::update($values), $values);
+        /*
+         * ⚠️ AN INSTANCE MAY NOT WRITE OVER A ROW THAT MOVED UNDER IT — see
+         * `Entry::refuseIfTheRowMovedUnderneath()`. The authorization that permitted this write was decided
+         * before it began, in another transaction; a row retyped or moved into another site since then is not
+         * the row that was authorised. Asked inside `auditing()`'s transaction, so the locked read holds until
+         * the write commits.
+         *
+         * ⚠️ `exists` AND A KEY, NOT `isPerformingModelSave()`, and the difference is a soft delete. Eloquent's
+         * `runSoftDelete()` builds its own query and calls `update()` directly — it is not inside
+         * `performUpdate()` — so keying on the save identity skipped the one case that DESTROYS something.
+         * Measured: the soft delete went through while the update and the force-delete were refused.
+         *
+         * A genuine bulk update arrives with a prototype that does not exist, so it is excluded by `exists`
+         * and stays narrowed by the scope, which is what a bulk write has instead of a row to compare.
+         */
+        return $this->auditing($this->actionFor($values), function () use ($values) {
+            $this->refuseIfTheRowMoved('update');
+            $this->refuseUnpermittedPublication($values);
+
+            return parent::update($values);
+        }, $values);
     }
 
     // delete() is deliberately NOT overridden. Entry soft-deletes, so both
@@ -355,7 +378,167 @@ class AuditedBuilder extends ScopedBuilder
 
     public function forceDelete()
     {
-        return $this->auditing('force_deleted', fn () => parent::forceDelete());
+        return $this->auditing('force_deleted', function () {
+            // ⚠️ The destructive half, and the reason that guard exists at all: an update is a field somebody
+            // may not have been allowed to touch, and this is a row that is gone.
+            $this->refuseIfTheRowMoved('force-delete');
+
+            return parent::forceDelete();
+        });
+    }
+
+    /**
+     * Refuse a `status` the vocabulary does not contain.
+     *
+     * ⚠️ THE DATABASE'S EQUALITY IS NOT PHP'S, and that is what makes this a guard rather than validation.
+     * MySQL and MariaDB compare case- AND accent-insensitively by default, so `scopePublished()` matches a
+     * stored `publíshed` while any comparison written here treats it as a different string — the publication
+     * guard stands aside and the row is public. No PHP predicate can enumerate what a given server considers
+     * equal, because it depends on the column's collation; a closed set of storable values removes the
+     * question instead of answering it.
+     *
+     * ⚠️ AT THE BUILDER, so it covers the bulk write this project supports and the quiet paths a listener
+     * would miss. `Entry::STATUSES` is the vocabulary, shared with the form's option list.
+     *
+     * ⚠️ AND AT EVERY DOOR THAT WRITES A VALUE, which review found it was not: `update()` asked, while
+     * `insertGetId()` and the four arithmetic methods went straight past. `Entry::create(['status' =>
+     * 'publíshed'])` stored a value this guard exists to refuse, and so did `$entry->increment('id', 0,
+     * ['status' => 'publíshed'])` — `$extra` is a map of ordinary assignments. The arithmetic doors pass the
+     * incremented column too, so `increment('status')` is refused for storing a number that is not a status.
+     * The third guard in this file to reach one door first; see `refuseIfTheRowMoved()` for the other two.
+     *
+     * Asked before any transaction opens, beside `guardScopeKeys()`: it reads the values being written, not a
+     * row, so there is nothing for a lock to hold.
+     *
+     * @param  array<string, mixed>  $values
+     */
+    private function refuseNoncanonicalStatus(array $values): void
+    {
+        $table = $this->getModel()->getTable();
+
+        foreach (['status', $table.'.status'] as $column) {
+            if (! array_key_exists($column, $values)) {
+                continue;
+            }
+
+            $status = $values[$column];
+
+            if (is_string($status) && in_array($status, Entry::STATUSES, true)) {
+                continue;
+            }
+
+            /*
+             * ⚠️ A RAW EXPRESSION IS SQL, AND THIS GUARD READS VALUES. A joined update assigning `status`
+             * from the joined table — `DB::raw('CASE WHEN … END')` — is a supported write this suite asserts
+             * on MySQL, and there is nothing here to inspect: the value does not exist until the database
+             * evaluates it. Refusing every expression would break that capability to close a hole only a
+             * caller writing raw SQL can reach, which is the same trade `updateFrom()` documents from the
+             * other side.
+             *
+             * The limitation is stated rather than hidden: a raw expression may write any string the column
+             * accepts, and `scopePublished()` will read it the way the collation does.
+             */
+            if ($status instanceof Expression) {
+                continue;
+            }
+
+            throw new RuntimeException(sprintf(
+                'Refusing to write [%s] as an entry status: the column holds one of [%s] and nothing else. '
+                .'A value outside that set is not merely unknown — MySQL and MariaDB compare it '
+                .'case-insensitively and accent-insensitively, so the database can treat it as published '
+                .'while every guard here reads it as something different (ADR-033).',
+                is_string($status) ? $status : get_debug_type($status),
+                implode(', ', Entry::STATUSES),
+            ));
+        }
+    }
+
+    /**
+     * Refuse an INSTANCE write that would move an entry into the published state without the permission.
+     *
+     * ⚠️ INSTANCE WRITES ONLY, WHICH IS WHAT MAKES THIS COMPATIBLE WITH THE BULK PUBLISH THIS PROJECT
+     * SUPPORTS. `Entry::query()->update(['status' => 'published'])` is audited and versioned on purpose and
+     * carries no acting identity; it arrives on a prototype that does not exist, so the same `exists` and key
+     * test that scopes the stale-row guard keeps it out of this one. See
+     * `Entry::refuseUnpermittedPublication()` for the reversal this represents and why review was right.
+     *
+     * ⚠️ A BULK UPDATE THAT NAMES `status` QUALIFIED gets the same treatment as an unqualified one, because a
+     * joined update qualifies its columns — the same reason `actionFor()` checks both spellings.
+     *
+     * ⚠️ AND THE ARITHMETIC DOORS ASK IT TOO, which review found missing one round after the same omission
+     * was fixed for the stale-row guard. Laravel's `$extra` map is a set of ordinary assignments, so
+     * `$entry->increment('id', 0, ['status' => 'published'])` is a publication wearing another method's name.
+     * Four doors, one guard — again.
+     *
+     * @param  array<string, mixed>  $values
+     */
+    private function refuseUnpermittedPublication(array $values): void
+    {
+        $model = $this->getModel();
+        $table = $model->getTable();
+        $status = $values['status'] ?? $values[$table.'.status'] ?? null;
+
+        /*
+         * ⚠️ CASE-INSENSITIVELY — see `Entry::isPublished()`. MySQL and MariaDB's default collations match a
+         * stored `PUBLISHED` against `scopePublished()`'s `status = 'published'`, so a strict comparison here
+         * let that spelling through a guard whose whole job is to catch it.
+         */
+        if (! is_string($status) || mb_strtolower($status) !== 'published'
+            || ! $model->exists || $model->getKeyForAuthorization() === null) {
+            return;
+        }
+
+        $model->refuseUnpermittedPublication();
+    }
+
+    /**
+     * Refuse a creation that would publish an entry without the permission — `Entry::refuseUnpermittedCreationAsPublished()`.
+     *
+     * ⚠️ A STRICT COMPARISON IS CORRECT HERE, where it was not in `refuseUnpermittedPublication()`, because
+     * `refuseNoncanonicalStatus()` runs first: by the time this reads the value, `published` is the only
+     * spelling of the published state that can still be on its way to the database.
+     *
+     * @param  array<string, mixed>  $values
+     */
+    private function refuseUnpermittedCreationAsPublished(array $values): void
+    {
+        $model = $this->getModel();
+        $status = $values['status'] ?? $values[$model->getTable().'.status'] ?? null;
+
+        if ($status !== 'published') {
+            return;
+        }
+
+        $model->refuseUnpermittedCreationAsPublished($values['entry_type_id'] ?? null);
+    }
+
+    /**
+     * Refuse an INSTANCE write whose row has moved or been retyped since it was loaded.
+     *
+     * ⚠️ ONE METHOD BECAUSE IT WAS TWO AND SHOULD HAVE BEEN SIX. The check went into `update()` and
+     * `forceDelete()`, and review found the four arithmetic methods going straight past it: Eloquent sends
+     * `$entry->increment()` to `setKeysForSaveQuery($this->newQueryWithoutScopes())->increment()`, which is
+     * this builder without the scope and without that guard — an instance write by the original key, which is
+     * exactly what the guard exists for.
+     *
+     * ⚠️ AND IT ASKS FOR THE KEY THE WRITE WILL USE, not the attribute. Review found `getKey()` deciding
+     * whether to check: setting a loaded entry's `id` to null in memory made the condition false while
+     * Eloquent still wrote by `$this->original['id']`, so the guard was skipped on precisely the instance
+     * that had been tampered with. `getKeyForAuthorization()` is the original key — the same one
+     * `EntryPolicy` asks about, and the same lesson `Role` learned about an edited primary key.
+     *
+     * A genuine BULK write arrives on a prototype that does not exist, so it is excluded here and stays
+     * narrowed by the scope, which is what it has instead of a row to compare.
+     */
+    private function refuseIfTheRowMoved(string $operation): void
+    {
+        $model = $this->getModel();
+
+        if (! $model->exists || $model->getKeyForAuthorization() === null) {
+            return;
+        }
+
+        $model->refuseIfTheRowMovedUnderneath($operation);
     }
 
     /**
@@ -379,10 +562,16 @@ class AuditedBuilder extends ScopedBuilder
     {
         $this->refuseScopeArithmetic([(string) $column => $amount, ...$extra]);
         $this->refusePerRowExtras($extra);
+        $this->refuseNoncanonicalStatus([(string) $column => $amount, ...$extra]);
 
         return $this->auditing(
             'updated',
-            fn () => parent::increment($column, $amount, $extra),
+            function () use ($column, $amount, $extra) {
+                $this->refuseIfTheRowMoved('increment');
+                $this->refuseUnpermittedPublication($extra);
+
+                return parent::increment($column, $amount, $extra);
+            },
             [(string) $column => $amount, ...$extra],
         );
     }
@@ -395,10 +584,16 @@ class AuditedBuilder extends ScopedBuilder
     {
         $this->refuseScopeArithmetic([(string) $column => $amount, ...$extra]);
         $this->refusePerRowExtras($extra);
+        $this->refuseNoncanonicalStatus([(string) $column => $amount, ...$extra]);
 
         return $this->auditing(
             'updated',
-            fn () => parent::decrement($column, $amount, $extra),
+            function () use ($column, $amount, $extra) {
+                $this->refuseIfTheRowMoved('decrement');
+                $this->refuseUnpermittedPublication($extra);
+
+                return parent::decrement($column, $amount, $extra);
+            },
             [(string) $column => $amount, ...$extra],
         );
     }
@@ -416,10 +611,16 @@ class AuditedBuilder extends ScopedBuilder
     {
         $this->refuseScopeArithmetic([...$columns, ...$extra]);
         $this->refusePerRowExtras($extra);
+        $this->refuseNoncanonicalStatus([...$columns, ...$extra]);
 
         return $this->auditing(
             'updated',
-            fn () => parent::incrementEach($columns, $extra),
+            function () use ($columns, $extra) {
+                $this->refuseIfTheRowMoved('increment');
+                $this->refuseUnpermittedPublication([...$columns, ...$extra]);
+
+                return parent::incrementEach($columns, $extra);
+            },
             [...$columns, ...$extra],
         );
     }
@@ -432,10 +633,16 @@ class AuditedBuilder extends ScopedBuilder
     {
         $this->refuseScopeArithmetic([...$columns, ...$extra]);
         $this->refusePerRowExtras($extra);
+        $this->refuseNoncanonicalStatus([...$columns, ...$extra]);
 
         return $this->auditing(
             'updated',
-            fn () => parent::decrementEach($columns, $extra),
+            function () use ($columns, $extra) {
+                $this->refuseIfTheRowMoved('decrement');
+                $this->refuseUnpermittedPublication([...$columns, ...$extra]);
+
+                return parent::decrementEach($columns, $extra);
+            },
             [...$columns, ...$extra],
         );
     }

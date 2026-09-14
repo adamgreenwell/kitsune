@@ -9,14 +9,19 @@
 declare(strict_types=1);
 
 use Filament\Forms\Components\Select;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
+use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Filament\Schemas\FieldValueRenderer;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\FieldStorage;
 use Kitsune\Core\Models\Org;
+use Kitsune\Core\Models\Role;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
+use Kitsune\Core\Tests\Fixtures\TestUser;
 
 /**
  * What the relation picker offers, asked of the picker itself.
@@ -46,9 +51,34 @@ beforeEach(function (): void {
 
     Entry::create(['entry_type_id' => $this->article->id, 'title' => 'Course maintenance in week 3']);
     Entry::create(['entry_type_id' => $this->note->id, 'title' => 'Course notes, private']);
+
+    /*
+     * ⚠️ A PICKER IS USED BY SOMEBODY, and these tests had no user at all until the picker started applying
+     * the viewer's `view` grants (ADR-033, #81). That is not incidental setup: a policy governs a record
+     * somebody already holds and never the query that finds one, so this control is where the grant has to
+     * be applied — and with nobody signed in the honest answer is that nothing is viewable.
+     *
+     * The owner role keeps every assertion below about the TARGET-TYPE constraint, which is what this file
+     * is for. The permission constraint has its own test at the bottom.
+     */
+    config(['auth.providers.users.model' => TestUser::class]);
+
+    /** @var TestUser $user */
+    $user = TestUser::create(['email' => 'picker@kitsune.test']);
+    $this->user = $user;
+
+    DB::table('org_user')->insert(['org_id' => $this->org->getKey(), 'user_id' => $user->getKey()]);
+
+    $owner = Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true]);
+    $owner->assignTo($user->getKey());
+
+    Auth::guard('web')->setUser($user);
 });
 
-afterEach(fn () => app(Context::class)->forget());
+afterEach(function (): void {
+    Auth::guard('web')->logout();
+    app(Context::class)->forget();
+});
 
 /** The picker for a relation field, built the way the admin builds it. */
 function picker(Org $org, array $settings = [], int $cardinality = -1): Select
@@ -185,4 +215,167 @@ it('is not a multi-select at all when cardinality is 1', function (): void {
 
     expect($single->isMultiple())->toBeFalse()
         ->and($single->getMaxItems())->toBeNull();
+});
+
+it('offers no entry of a type the author may not view', function (): void {
+    /*
+     * ⚠️ A POLICY IS NOT A QUERY SCOPE, which is the whole of this finding. `EntryPolicy::view()` is asked
+     * about a record somebody already holds, and Eloquent never consults one while BUILDING a query — so a
+     * picker that queried `Entry` directly named the titles of a type the same user is refused at the URL.
+     * An article editor could enumerate note titles through the search box.
+     *
+     * The field targets nothing in particular here, which is the harder case: "any type" used to mean no
+     * constraint at all.
+     */
+    $editor = TestUser::create(['email' => 'editor@kitsune.test']);
+    DB::table('org_user')->insert(['org_id' => $this->org->getKey(), 'user_id' => $editor->getKey()]);
+
+    $role = Role::create(['handle' => 'article-only', 'name' => 'Article only']);
+    $role->grant('entry.article.view');
+    $role->assignTo($editor->getKey());
+
+    Auth::guard('web')->setUser($editor);
+
+    $options = array_values(picker($this->org)->getSearchResults('Course'));
+
+    expect($options)->toContain('Course maintenance in week 3')
+        ->and($options)->not->toContain('Course notes, private');
+});
+
+it('offers nothing at all to somebody who is not signed in', function (): void {
+    // Fail closed: the same answer `Permissions::allows()` gives with no user, rather than the convenient
+    // one. A picker rendered outside a panel is not a shape production produces, and it must not be the
+    // shape that discloses every title in the org.
+    Auth::guard('web')->logout();
+
+    expect(array_values(picker($this->org)->getSearchResults('Course')))->toBe([]);
+});
+
+/** One relation field's storage, kept so the relations and the labels can name the same one. */
+function relationStorage(Org $org, array $settings = []): FieldStorage
+{
+    return FieldStorage::create([
+        'org_id' => $org->id,
+        'handle' => 'linked_'.bin2hex(random_bytes(4)),
+        'type' => 'relation',
+        'pii_class' => 'none',
+        'cardinality' => -1,
+        'settings' => $settings,
+    ]);
+}
+
+it('keeps a relation the entry already holds, while withholding its title', function (): void {
+    /*
+     * ⚠️ A MISSING LABEL IS AN INVALID OPTION, AND THAT FROZE THE WHOLE RECORD — the defect review found.
+     * `SyncsFieldRelations::mutateFormDataBeforeFill()` hydrates every id the entry is related through,
+     * including one pointing at a type this editor may not view: an owner links an article to a note, and
+     * the article's editor holds `entry.article.*` alone. Filament validates a select's submitted options
+     * through these callbacks, so the withheld id failed the `in` rule — and the editor could not save a
+     * TITLE change, on a field they were not editing. A permission narrowing one relation silently froze
+     * the record.
+     *
+     * ⚠️ SO THE LABEL IS WITHHELD AND THE VALUE IS KEPT. The grant protects the TITLE — the enumeration
+     * channel — and the id is already in the form state by the time this runs.
+     */
+    $storage = relationStorage($this->org);
+
+    $source = Entry::create(['entry_type_id' => $this->article->id, 'title' => 'The source article']);
+    $visible = Entry::create(['entry_type_id' => $this->article->id, 'title' => 'A sibling article']);
+    $withheld = Entry::create(['entry_type_id' => $this->note->id, 'title' => 'Course notes, private']);
+
+    // Linked by somebody who may see both — an owner, which the fixture's user is.
+    $source->syncFieldRelations($storage, [$visible->getKey(), $withheld->getKey()]);
+
+    // Now the editor, who may view articles only.
+    $editor = TestUser::create(['email' => 'labels@kitsune.test']);
+    DB::table('org_user')->insert(['org_id' => $this->org->getKey(), 'user_id' => $editor->getKey()]);
+    $role = Role::create(['handle' => 'articles-only', 'name' => 'Articles only']);
+    $role->grant('entry.article.view');
+    $role->assignTo($editor->getKey());
+    Auth::guard('web')->setUser($editor);
+    Permissions::forget();
+
+    $labels = FieldValueRenderer::relationLabels(
+        [$visible->getKey(), $withheld->getKey()],
+        new FieldConfig($storage),
+        $source,
+    );
+
+    // Both ids are labelled, which is what lets the form save; only one of them is NAMED.
+    expect(array_keys($labels))->toBe([$visible->getKey(), $withheld->getKey()])
+        ->and($labels[$visible->getKey()])->toBe('A sibling article')
+        ->and($labels[$withheld->getKey()])->not->toContain('Course notes');
+
+    expect($labels[$withheld->getKey()])->toContain('you may not view');
+});
+
+it('does not label an id the entry is not related to', function (): void {
+    /*
+     * ⚠️ THE EXCEPTION IS FOR A LINK THE RECORD ALREADY HOLDS, THROUGH THIS FIELD, and that is what keeps
+     * the previous round's fix intact: a FORGED id still fails validation rather than passing it and being
+     * refused later by `EntryRelation::guardTargetType()` — an exception after the entry had saved.
+     */
+    $storage = relationStorage($this->org);
+
+    $source = Entry::create(['entry_type_id' => $this->article->id, 'title' => 'The source article']);
+    $unrelated = Entry::create(['entry_type_id' => $this->note->id, 'title' => 'Course notes, unrelated']);
+
+    $editor = TestUser::create(['email' => 'forged@kitsune.test']);
+    DB::table('org_user')->insert(['org_id' => $this->org->getKey(), 'user_id' => $editor->getKey()]);
+    $role = Role::create(['handle' => 'articles-only-2', 'name' => 'Articles only']);
+    $role->grant('entry.article.view');
+    $role->assignTo($editor->getKey());
+    Auth::guard('web')->setUser($editor);
+    Permissions::forget();
+
+    $labels = FieldValueRenderer::relationLabels(
+        [$unrelated->getKey()],
+        new FieldConfig($storage),
+        $source,
+    );
+
+    expect($labels)->toBe([]);
+
+    // And with NO record at all — a create form — there is nothing to preserve either.
+    expect(FieldValueRenderer::relationLabels([$unrelated->getKey()], new FieldConfig($storage), null))->toBe([]);
+});
+
+it('still refuses a held relation the FIELD no longer targets', function (): void {
+    /*
+     * ⚠️ ONLY THE PERMISSION IS RELAXED, NOT THE FIELD'S CONTRACT. A stored relation whose target type has
+     * since been removed from `targetTypes` would be refused by `EntryRelation::guardTargetType()` on the
+     * next write, so labelling it here would swap a validation message for an exception after the entry had
+     * saved — the exact trade an earlier round reversed.
+     */
+    $storage = relationStorage($this->org);
+
+    $source = Entry::create(['entry_type_id' => $this->article->id, 'title' => 'The source article']);
+    $note = Entry::create(['entry_type_id' => $this->note->id, 'title' => 'Course notes, once allowed']);
+
+    // Linked while the field accepted any type, then narrowed to articles only.
+    $source->syncFieldRelations($storage, [$note->getKey()]);
+    $storage->update(['settings' => ['targetTypes' => ['article']]]);
+
+    expect($source->relatedIdsForField($storage->fresh()))->toBe([$note->getKey()]);
+
+    $labels = FieldValueRenderer::relationLabels(
+        [$note->getKey()],
+        new FieldConfig($storage->fresh()),
+        $source,
+    );
+
+    expect($labels)->toBe([]);
+});
+
+it('names a relation an editor may view, without the record in hand', function (): void {
+    /*
+     * The ordinary case, kept so the exception above is not the only path exercised: a viewable target is
+     * labelled from its title whether or not the caller could say what the record already holds. This is
+     * also the create form's shape, where there is no record and nothing withheld.
+     */
+    $storage = relationStorage($this->org);
+    $visible = Entry::create(['entry_type_id' => $this->article->id, 'title' => 'A sibling article']);
+
+    expect(FieldValueRenderer::relationLabels([$visible->getKey()], new FieldConfig($storage), null))
+        ->toBe([$visible->getKey() => 'A sibling article']);
 });

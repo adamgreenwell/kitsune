@@ -243,7 +243,16 @@ test.describe('a relation field round-trips through entry_relations', () => {
          * not about. Recorded separately rather than swallowed.
          */
         await page.keyboard.press('Escape');
-        await expect(page.locator('[id^="fi-select-input-dropdown-"]')).toBeHidden();
+
+        /*
+         * ⚠️ COUNTED RATHER THAN ASSERTED HIDDEN, because the page-wide locator stopped resolving to one
+         * element. The article type has a SECOND relation field now — `related_products`, seeded so the
+         * permission specs can drive a target the copy-editor may not view — so `toBeHidden()` on every
+         * select dropdown was a strict-mode violation rather than a failed assertion. What this line means
+         * is "nothing is open", and counting the visible ones says exactly that however many selects the
+         * form grows. Same lesson as `removeSelections()` one docblock up, on the day it predicted.
+         */
+        await expect(page.locator('[id^="fi-select-input-dropdown-"]:visible')).toHaveCount(0);
 
         const results = await new AxeBuilder({ page })
             .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])

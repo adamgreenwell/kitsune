@@ -85,10 +85,21 @@ class FieldsRelationManager extends RelationManager
      *
      * Global schema (`org_id IS NULL`) is shared by every org, so no single
      * org may add fields to it.
+     *
+     * ⚠️ AND THE OWNER CHECK BELONGS HERE TOO, WHICH REVIEW FOUND MISSING ONE COMPONENT DEEP. Gating
+     * `EntryTypeResource` closed the edit page and left this: a non-owner correctly refused that page could
+     * still submit the relation manager's own Livewire component and create, edit or delete FIELDS —
+     * rewriting the schema through the back of the page they had just been refused. The docblock above
+     * already says why, in its own words: a relation manager is its own route, so gating the parent page is
+     * gating the parent page.
+     *
+     * `mayEditSchema()` is the same predicate the resource uses, not a second copy of it.
      */
     public static function canViewForRecord(Model $ownerRecord, string $pageClass): bool
     {
-        return $ownerRecord instanceof EntryType && EntryTypeResource::ownsRecord($ownerRecord);
+        return EntryTypeResource::mayEditSchema()
+            && $ownerRecord instanceof EntryType
+            && EntryTypeResource::ownsRecord($ownerRecord);
     }
 
     /**

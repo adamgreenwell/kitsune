@@ -611,6 +611,35 @@ A field that has not been classified does not save. Same discipline as the tenan
 
 **4. Audit logs record actor, action and target — never payloads.** *"User 47 updated entry 1203"* survives erasure. *"User 47 changed name from X to Y"* does not. An audit log that captures diffs is a compliance liability wearing a helpful hat, and it puts SOC 2 and GDPR in direct conflict for no gain.
 
+> ⚠️ **The actor is asked of the PANEL's guard, not of the application default** — review found `Auditor` using bare `auth()->id()`. Filament has `Panel::authGuard()` precisely so a host can authenticate its admin through a guard of its own, and with one configured this column recorded either NULL or whichever unrelated user happened to be signed in on the default guard at the same moment. "At whose hand" is a third of this primitive, so an actor resolved from somebody else's guard is the one kind of wrong it must not be. `Permissions::currentUser()` is the resolution, shared with the RBAC layer rather than copied, and it carries the binding check core's own test suite needs.
+>
+> ⚠️ **And an id is not an identity, which review found one round later.** `target_type` has been
+> polymorphic since this primitive was written, and `actor_id` was a bare number — so in a host
+> authenticating its panel through a provider backed by another user model, on another table with its own
+> sequence, the column that answers *at whose hand* named whichever row the reader assumed. `audit_log`
+> carries `actor_type` beside it now, written from `getMorphClass()` exactly as the target is, and the
+> `(org_id, actor_type, actor_id)` index mirrors the target's. An `Authenticatable` that is not an Eloquent
+> model records its class name instead: it still acted, and a class is a better answer than a number.
+>
+> ⚠️ **And the BINDING is not the request, which is the same column wrong a third way.** `app()->bound('filament')`
+> is true application-wide the moment the package is installed, so on a non-panel route with its own guard —
+> an API route, a custom web guard — the actor was resolved from the PANEL's guard, which has nobody, and a
+> real person's action was recorded unattributed. `Filament::getCurrentPanel()` is set by Filament's own
+> middleware, so it is non-null exactly when a panel is serving; outside one, Laravel's `auth()` names the
+> guard the `auth` middleware actually authenticated with. The knock-on is why this is a P1 rather than a
+> tidy-up: `Entry::refuseUnpermittedRepublication()` reads a null actor as "the system is acting" and stands
+> aside, so a wrong answer here opened a guard three files away.
+>
+> ⚠️ **And the column assumed an integer, which is the fourth thing wrong with the same row and the worst
+> failure of the four.** An identifier is the HOST's to choose: a UUID-keyed users table, or the LDAP and SSO
+> identities this primitive had just learned to name, produced a string — and `actor_id` was an
+> unsigned-bigint. On PostgreSQL and strict MySQL the audit INSERT then failed, and because the audit row
+> shares a transaction with the write it records, **the content write rolled back with it**. "Cannot record
+> who" became "cannot write at all" for every action by that person. Both identifier columns are strings now
+> — `target_id` too, swept rather than waited for, because `role.assigned` names a host user on the other
+> half of the same row. Neither column ever carried a foreign key (erasing a user must not destroy the
+> trail), so the type was holding an assumption rather than a constraint.
+
 **5. A replayable erasure log.** Backups cannot be rewritten. The workable answer is a documented retention window plus erasure re-applied on restore — which requires core to keep a record of what was erased, containing no erased content.
 
 **6. Encryption at rest for `sensitive`-classified fields**, and retention policies that attach to classified fields.
@@ -1632,6 +1661,445 @@ It was noticed, and **it was deliberately not rewritten.** Fixing it means force
 The raster exports were kept out of it and landed separately on `docs/brand-assets`, along with this paragraph.
 
 **The lesson is not "write better commit messages."** It is that a long session which touches one area while a branch is checked out for another will silently pool both into whatever commit comes next, and nothing in the tooling objects. The guard is to branch at the moment the subject changes, not at the moment the work is ready to commit.
+
+---
+
+## ADR-033 — Kitsune owns its RBAC, and a permission is a string a role holds
+
+**Status:** Decided · 2026-09-13
+
+Issue #81. Phase 4's last unchecked line is `EntryPolicy`, blocked rather than deferred: a policy needs roles and permissions to resolve against. `architecture.md` §4 already fixes the naming — `entry.{type_handle}.{view|create|update|delete|publish}`, resolved against `type_handle`, seeded by blueprints — and settles nothing about where any of it lives.
+
+### Decision
+
+**Kitsune authors its own RBAC.** Three tables: `roles` and `role_permissions` in core, `role_user` in the skeleton. A permission is a **string** a role holds, validated against a published registry at write time. Assignment is per-org.
+
+### Why not `spatie/laravel-permission`
+
+It is mature, audited, and adopting it would save real work — including a resolution cache this now owns and will have bugs in. Four reasons it does not fit, in descending order of how hard they are to work around:
+
+- **AGENTS.md invariant 2: every model declares its scope.** A vendor model cannot carry `#[OrgScoped]` and cannot `use EnforcesScope`. The package's `teams` feature models **one** scoping axis; Kitsune has two that scope data and one that does not (ADR-021). An authorization table with no declared scope is precisely the shape invariant 2 exists to refuse, and it would be the first one in the schema.
+- **Permissions here are derived from schema rather than enumerated by an operator.** Entry types are created at runtime through the admin, so the permission set changes when content modelling changes. A design whose mental model is a fixed list maintained in a seeder is fighting the flagship feature.
+- **Standing Principle #1.** The extension API is deliberately unstable until v1.2. Adopting a package puts its public API inside Kitsune's surface before Kitsune has one, and taking it back out later is the ecosystem break that principle exists to avoid.
+- **ADR-025** already sets the bar: a runtime dependency of core gets argued for rather than assumed.
+
+### Why a table rather than a JSON column on the role
+
+A JSON array of permission names on `roles` is one fewer table and cannot drift. It was rejected on **ADR-015's own argument, applied to a different subject**: relations are a real table "so reverse lookups and referential integrity work". Authorization asks the reverse question constantly — *who can publish articles?*, *what will break if this entry type is deleted?*, *which roles hold the grant this incident report is about?* — and a JSON blob answers none of those without decoding every row.
+
+### A permission is a string, and what that costs
+
+`role_permissions (role_id, permission)`, unique on the pair.
+
+A normalised `permissions` table with a foreign key was rejected because it makes deleting an entry type a **cascade decision about authorization**: rows would have to be created as types are created and destroyed as types are destroyed, so a content-modelling change becomes a security change, and the failure mode of getting that wrong is silent over-permission.
+
+**The cost is that a misspelled permission is silently never granted.** It fails closed, which is the right direction, and invisibly, which is not. Three mitigations, in the order they fire:
+
+1. **A published registry of actions, enforced at write time, fail-closed.** `Permissions::REGISTERED` names the actions; a grant whose shape or action is not on it is refused with the reason — the `pii_class` pattern from ADR-020, for the same reason: the answer is required *now* and getting it wrong is a security defect rather than a formatting one.
+2. **The registry validates SHAPE, not existence.** A grant may legitimately name a type that does not exist yet, because a blueprint seeds permissions alongside the type it creates and the two arrive in one operation. So `entry.product.view` is accepted on an installation with no `product` type.
+3. **A report of grants naming a type that no longer exists** — the same shape as `EntryType::withoutSubjectIdentifier()`, which lists the holes a subject-access request cannot see. A grant pointing at nothing is not dangerous; it is *confusing*, and the way to keep it from becoming a belief about what a role can do is to be able to list it.
+
+### No implicit wildcard, and an explicit one that is a decision
+
+**`entry.*.{action}` is a grant somebody writes, never one a role gets by default.** A wildcard applied silently means an entry type created next month grants access to data that did not exist when the role was written — a privacy failure mode, and this project's answer to those is to fail closed.
+
+It is resolved at **check** time rather than expanded at grant time, because expanding it would make it precisely *not* cover types added later, which is the only reason to write it.
+
+⚠️ **And resolving it at check time meant validating the string being asked about, which the first version did not** — review found it failing open. The match was built from any three segments ending in a registered action, so a holder of `entry.*.view` was granted `site.settings.view`: a **subject this vocabulary does not have**. Today `entry` is the only one, so the wrong answer is about a permission nobody asks for; the moment a module adds `media.image.view` in v1.2, every `entry.*` holder would have held it retroactively, by a wildcard written about entries.
+
+`Permissions::allows()` therefore refuses anything outside the published vocabulary before it resolves anything — **including for an owner**, because an owner told yes about `site.settings.view` is an owner whose caller now believes such a permission exists. What it does **not** check at that point is the type segment's SHAPE: that rule belongs to writing a grant (`validated()` refuses `entry.art*cle.view`), and the entry type table accepts a handle the admin form would not, so refusing one here would deny authority over data that exists.
+
+The alternative — no wildcard at all — was rejected on arithmetic: an org with 40 entry types and 6 roles maintains 240 grants by hand, and the predictable response to that is a script nobody reviews. An explicit, visible, single-row opt-in is better than a bypass invented in the field.
+
+### Assignment is per-org, and the site dimension is deferred rather than absent
+
+`architecture.md` says per-org, and this keeps it. A user who should edit on one site and only read on another is **not** served, and that is a real limitation rather than an oversight: `site_user` already decides which sites a user reaches, so what v1.0 offers is *which sites you can enter* × *what you may do in the org*.
+
+Recorded here because the alternative is somebody discovering it while configuring a customer.
+
+### An owner role, because the first user has to be able to act before any permission exists
+
+Bootstrap requires it: somebody must create the first entry type before a permission naming that type can exist. `roles.is_owner` is the flag; a handle named `owner` would make the bypass depend on a string an org can rename.
+
+⚠️ **Amended 2026-09-13, during the wiring: it does NOT resolve in `Gate::before`,** which is what this ADR said first. A before-hook applies to **every** ability in the application, including policies the host application wrote for its own models — so core would be deciding that an org owner may do anything in somebody else's code, which is not core's decision to make. The bypass lives inside `Permissions::allows()`, where its blast radius is the permissions Kitsune defines and nothing else.
+
+⚠️ **Issue #81 proposed auditing the bypass whenever it is what granted an action, and that is withdrawn on volume.** An authorization check runs per row: the entry list at 100k rows with the default page size fires ten `view` checks, a bulk delete fires one per record, and an owner browsing an admin would write audit rows faster than they write content. The log ADR-020 designed is for *actions*, and "somebody was permitted to look at a row" is not one.
+
+**What is audited is the assignment** — who was made an owner of which org, and when — which is rare, high-value, and the question an auditor actually asks. One row per assignment instead of thousands per page.
+
+⚠️ **And that sentence was a published claim with nothing enforcing it for one commit**, which AGENTS.md #14 forbids and which is worth recording rather than quietly fixing. `AuditedBuilder` is bound to `Entry` — deliberately, and its docblock says to generalise it when a second case turns up to check the design against — and `role_user` is a skeleton pivot with no core model in front of it at all, so there was no builder to audit at.
+
+**So the audit lives in the four methods that change authority:** `Role::grant()`, `revoke()`, `assignTo()` and `removeFrom()`.
+
+⚠️ **And the first version of those rows could not answer the question this ADR asks of them, which review found.** They recorded the ROLE as the target, so with two people holding one role the log said *somebody was assigned it* — and `audit_log` carries actor, action and target with deliberately no payload (ADR-020), so there was nowhere for the user to go. An assignment has **three** parties and the schema holds two.
+
+**The target is the USER**, because that is the irreplaceable half: a named role is there to be read while it exists, and the person whose authority changed is the question. **Owner-ness goes in the action** — `role.owner_assigned` and `role.owner_unassigned` beside `role.assigned` and `role.unassigned` — because it is the fact this ADR singles out, and an action is a vocabulary rather than a payload.
+
+**What the log therefore does NOT answer, stated rather than implied:** which *named* role a non-owner assignment was, and which *permission* a `role.granted` was. Both are the payload ADR-020 refuses, and both are recoverable from the role itself while it exists. What survives the row being deleted is the security-relevant shape: **who gained or lost authority in this org, when, at whose hand, and whether it was the owner bypass.** `$user->roles()->attach()` remains an unaudited back door, in exactly the sense ADR-020 already states about `toBase()`: the guarantee is about the path core provides, reaching past it is explicit and visible in review, and claiming more would be claiming a guarantee the Eloquent layer cannot give.
+
+**Creating a role is deliberately not audited, and that is a line rather than a gap.** The log records changes to **authority**, and a role holding no grants and held by nobody is not authority — it is a name. Authority changes on the first grant or the first assignment, and both of those are recorded.
+
+⚠️ **And flipping `is_owner` is a third way authority changes, which the first version missed.** Review found it: turning the flag on for a role that already has holders gives every one of them the bypass immediately, and their assignment rows were logged as `role.assigned` — so nothing in the log said they were owners now, and this ADR's own question was unanswerable again. `Role` records `role.owner_assigned` for each affected holder on the transition, and `role.owner_unassigned` on the way back. **One row per person**, because the question is about people: a single `role.updated` would record that something changed and leave the answer exactly where it was.
+
+### What the vocabulary does not cover, and what that costs
+
+`architecture.md` publishes five actions on **entries** and nothing else, so two things an org will want to delegate have no permission to ask for: **editing the schema** and **administering roles**. Both are owner-only in v1.0.
+
+⚠️ **That is a limitation rather than an omission, and it was found the hard way.** Review pointed out that after this ADR landed, the seeded copy-editor could still create, rewrite and delete entry types while being refused `/c/product` — a permission system governing the content and not the shape of the content governs the smaller half. Adding a subject (`schema.manage`, `role.manage`) widens the extension surface, and Standing Principle #1 keeps that shut until v1.2. So an org cannot delegate either without making somebody an owner, and that sentence belongs in the docs rather than in a support ticket.
+
+### A policy is not a query scope
+
+`EntryPolicy` answers about a record somebody already holds. Eloquent never consults a policy while **building** a query, so every place that LISTS entries has to apply the grant itself — review found three: the relation picker's search and label resolvers, the related-records table, and the attach dialog, each of which named titles of a type the same user is refused at the URL.
+
+`Permissions::constrainToViewable()` is that predicate, defined once and applied to all three. It returns **null for unrestricted** — an owner, or the explicit wildcard — and a **list** otherwise, because `whereIn` on an empty list matches nothing, which is the right answer for a user who may view nothing and exactly the wrong one for an owner who holds no grants at all.
+
+It hides relations that exist, and that cost is accepted rather than hidden: an editor may see fewer related entries than the entry has, because a title is the whole of what those views show.
+
+⚠️ **Hiding one inside a FORM turned out to freeze the whole record, which review found.** A relation control is hydrated with every id the entry holds, and Filament validates a select's submitted options through the same label callbacks that were applying the grant — so a withheld label made the id an invalid option, and the editor could not save a title change on a field they were not touching. A permission narrowing one relation silently locked the record.
+
+⚠️ **`publish` is a permission about a TRANSITION, so it is decided from the stored row.** Somebody without it
+keeps the `published` option on an entry that is already published — otherwise a copy-editor cannot fix a typo
+without demoting the article — and the first version read that current value off the loaded instance. A form
+held open across somebody else's demotion therefore kept offering the option, and the rule kept accepting it.
+One keyed read makes the answer the row's rather than the request's. ⚠️ And the type is the one the entry will be: a save that retypes a draft and publishes it in the same write asks the destination type's `publish`, which review found being asked of the source. ⚠️ The consequence review described —
+the stale form putting the entry back — **did not reproduce**: Eloquent writes dirty attributes, and an
+instance loaded as published submitting published writes no status at all. That measurement is pinned in a
+test rather than recorded here alone, because it is a fact about the framework that nothing else would notice
+changing.
+
+⚠️ **And what counts as `published` is asked case-insensitively, because two of the four engines are.** Under
+MySQL's and MariaDB's default collations `scopePublished()`'s `status = 'published'` matches a stored
+`PUBLISHED`, so a strict comparison in the guard stood aside for exactly the spelling that publishes the row.
+PostgreSQL and SQLite compare case-sensitively, which is why a guard written and proven on SQLite could not
+see it — the matrix exists for findings shaped like this one.
+
+⚠️ **And that was still only half of it: the same collations are ACCENT-insensitive.** A stored `publíshed`
+matches `status = 'published'` in the database while `mb_strtolower()` leaves it a different string, so the
+guard stood aside again — and no predicate written in PHP can enumerate what a given server considers equal,
+because that depends on the column's collation. Comparing better is a losing game; constraining what can be
+stored is not. `Entry::STATUSES` is now a closed set of three, enforced at the builder so the bulk write and
+the quiet paths are covered, and "is this published" has one answer on every engine. The form's option list
+carries the LABELS and reads the same vocabulary, because two lists of what a status may be is one list that
+drifts.
+
+⚠️ **What that guard cannot see is a raw expression, and the limit is stated rather than hidden.** A joined
+update assigning `status` from the joined table — the one shape MySQL allows and this suite asserts — hands
+the builder SQL rather than a value, and there is nothing to inspect until the database evaluates it.
+Refusing every expression would remove a supported capability to close a hole only a caller writing raw SQL
+can reach; the same trade `updateFrom()` documents from the other side. A raw expression may therefore write
+any string the column accepts, and `scopePublished()` will read it the way the collation does.
+
+⚠️ **And the form was not the only way into that state, which is the finding the question led to rather than
+the one that was asked.** `EntryRevision::SNAPSHOT_ATTRIBUTES` carries `status`, so restoring a version that
+was published publishes the entry — an editor holding only `entry.{type}.update` could undo somebody else's
+demotion by asking for last Tuesday, through a button with no rule behind it. `Entry::restoreRevision()` now
+refuses a restore that would move an entry into the published state without the permission, inside the
+transaction and under the lock it already takes. The rule is the same one the form draws — keeping a published
+state is not moving into it — enforced on the route a form rule cannot reach.
+
+⚠️ **And a model guard the panel still offers is a 500, not an answer.** Review made the point immediately
+after that fix landed: the history table rendered Restore unconditionally, so an editor without `publish`
+confirmed a modal and met a server error. The predicate lives on the model as one public method, asked by the
+guard that enforces it and by the action that offers it — disabled with a tooltip naming the missing
+permission, rather than hidden, because a row whose only action has silently vanished explains nothing. The
+browser suite asserts both directions on a seeded article that was published and then pulled back, since no
+ordinary row has a published version in its history.
+
+⚠️ **And the vocabulary stood at one door of six, and the transition at one door of two.** Review found
+`insertGetId()` — which every creation reaches, quiet or not — and the four arithmetic methods writing a
+`status` that `update()` refused: a create or an `$extra` assignment stored `publíshed`, and
+`increment('status')` stored a number. The vocabulary is one method asked by all six now, before any
+transaction, because it reads the values being written rather than a row. It is the fourth guard this ADR
+records being added to `update()` and forgotten at the arithmetic family. The same finding named the other
+half: the publication guard compares against a stored row, so a creation had nothing to compare and brought an
+entry into existence published for somebody holding `create` alone. Nothing-to-published is the same
+transition as draft-to-published, and `Entry::refuseUnpermittedCreationAsPublished()` asks it at the creation
+door — reading the type from the row `entry_type_id` names, not from a `type_handle` that a quiet creation
+never re-derives.
+
+⚠️ **And a restore is an edit, which the History never asked.** Filament's view page renders a resource's
+relation managers, and a custom action inside one carries no authorization unless it declares some — Filament
+infers one only for its own named actions — so somebody holding `entry.{type}.view` alone could put an old
+version back from a page that never asked whether they may edit. The Restore action now asks
+`EntryResource::canEdit()`, the question the edit page asks before it renders, and is hidden rather than
+disabled because nothing on any row is that user's to do. Filament refuses to mount a hidden action, so a
+hand-built Livewire request meets the same answer as the missing button. The browser suite asserts both as a
+seeded `viewer@kitsune.test` holding `view` alone, because the copy-editor's `update` is exactly what makes a
+restore allowed.
+
+⚠️ **And two answers assumed a host shaped like the skeleton, which installing the split into a bare Laravel
+host showed is not the only host.** Membership was asked through the user model's own scoped query, and a stock
+`User` has no scope: its query was `where id = ?`, every user was a member of every org, and a `role_user` row
+for somebody who never joined resolved an owner bypass. A model with no registered `OrgMembershipScope` now
+resolves nothing — the direction already taken for an `Authenticatable` that is not an Eloquent model — and the
+check reads the registered scope rather than the attribute, because `#[OrgScopedThroughPivot]` without
+`use EnforcesScope` applies nothing. Separately, `Permissions::userModel()` stood aside only when `filament`
+was unbound, which in a real host it never is: with no panel, or none marked default, it threw from
+`Role::assignTo()` before writing, so the configured fallback its caller takes on null was unreachable. It
+catches `NoDefaultPanelSetException` now. What a host must supply is still written down only in the monorepo;
+shipping that with the split is #8's.
+
+⚠️ **And the History's restore was not the only edit a viewer could reach.** The related-entries page is
+authorized with `viewAny`, and Filament's default action authorization on it covers create, edit, delete and
+view — not attach or detach — so both ran for a user holding `view` alone. They ask `EntryResource::canEdit()`
+now, the answer the restore action already uses, and the browser suite asserts both halves as the same
+view-only user. Separately, a `Role` save vetoed by an application observer left the lifecycle proof armed —
+Eloquent returns before either place that disarms it — so a `saveQuietly()` on the same instance could move
+`is_owner` past the per-holder audit; `save()` now drops the proof on every exit.
+
+⚠️ **Integer user keys remain a requirement on this branch, and that is now a decision with an issue rather
+than an open question.** A non-numeric identifier resolves no grants and no owner bypass, which is the right
+floor and the wrong product: `role_user.user_id` lives in the host's migration, so the host already chooses
+its type, and core narrowing that choice in PHP contradicts the ADR-020 amendment's own "an identifier is the
+host's to choose". Supporting string keys is #91, sequenced after this branch and #86 merge.
+
+⚠️ **A BULK publish is deliberately still allowed**, and that is not an oversight to be swept up with this.
+`Entry::query()->update(['status' => 'published'])` is a supported write that this project audits and
+versions on purpose (`AuditLogTest` and `recordBulkRevision()` both say so), and it carries no acting
+identity to check a permission against. Authorization belongs to the routes people use; the builder's job is
+that nothing happens untraced.
+
+⚠️ **And the INSTANCE write does ask, which reverses what the paragraph above concluded.** The sentence that
+lost is kept because it was published: I argued the form's stale-read window could not be exploited, since
+Eloquent writes dirty attributes and an instance loaded as `published` submitting `published` writes no
+status at all. Review's third framing of it steps around that entirely — an instance loaded as **draft**,
+with the stored row published while validation ran and demoted again before the save, submits a `published`
+that IS dirty, and the write lands. So the transition is decided inside the write now, from the locked row,
+and the form's `in` rule is the courtesy that returns a validation error rather than an exception.
+
+What survives from the reasoning that lost is the SCOPE, and it is what makes the two compatible: the guard
+asks only of an instance write — `exists` and a key, the same discriminator the stale-row guard uses — so the
+bulk write above arrives on a prototype and is untouched. A test asserts that it still works, beside the one
+asserting the instance write is refused, because a limitation nobody asserts is a limitation that quietly
+becomes a defect.
+
+So a link the record **already holds** keeps its value and loses its title: it renders as `Entry #12 — you may not view this entry type`, which discloses nothing the form did not already hand over, and the id stays in the selection so an unrelated edit saves. The exception is deliberately narrow — **this record, this field, and the field's own target types still apply** — because a forged id must still fail validation rather than reach `EntryRelation::guardTargetType()` as an exception after the entry has saved.
+
+### Consequence
+
+- **Core's RBAC enforces nothing until the host application has run the skeleton's `role_user` migration.** Already true of org scoping, so it is a pattern rather than a new hole — but it is written down here rather than left in somebody's memory.
+
+- **RBAC requires integer user keys, and that is a constraint on the HOST rather than a preference.**
+  `role_user.user_id` is a bigint foreign key to the host's `users` table, so an installation whose users
+  carry UUIDs or ULIDs cannot express an assignment at all. `Permissions` fails closed on it — a non-numeric
+  identifier resolves no grants and no owner bypass, rather than coercing to `0` and collecting whatever
+  that id holds — and a test pins that direction so the limitation cannot drift into a silent one.
+
+  ⚠️ **The audit columns are strings and this is not, which is deliberate.** `audit_log` records whoever
+  ACTED, through any guard and any model, and its insert shares a transaction with the write it records — so
+  an identifier it cannot hold costs the write, not just the attribution. An assignment is a row in a pivot
+  whose column type the host's schema fixes, and widening it is a change to the skeleton's migration, every
+  signature in the assignment path and the holder picker: a piece of work, not a patch, and one that belongs
+  to whoever decides whether UUID-keyed hosts are in scope before 1.0.
+- **`role_permissions` is `#[Unscoped]`, and the reason is the one `EntryRelation` and `EntryRevision` give**: it is reached only through `Role`, which is `#[OrgScoped]` and enforces it. Its index leads with `role_id` rather than a scope key, which satisfies invariant 4 by the invariant's own argument — a role is globally unique and belongs to exactly one org, exactly as a site does.
+- **A `role_user` row pairing a user with a role in an org they do not belong to resolves nothing**, because resolution runs through the org-scoped `Role` query under the current org context *and* asks membership of the user model. Asserted from the attacker's side.
+
+  ⚠️ **Membership is asked of the authenticated instance's own class, not of `config('auth.providers.users.model')`** — review found the config lookup failing open. A panel may authenticate through a provider that is not named `users`; the name is the host's to choose. Pointed elsewhere, the check read an unrelated model or found none and took a permissive fallback, and a `role_user` row then conferred grants on somebody who was not a member of the org at all. An `Authenticatable` that is not an Eloquent model now resolves **nothing**, because "cannot check" reading as "allowed" is the wrong direction for the one question with no framework safety net.
+
+- **Every guarantee about the owner flag is enforced at the BUILDER, not only in a lifecycle hook.** Review named the idiom: `Role::query()->update(['is_owner' => …])` dispatches no event, so holders gained the bypass with no audit rows and a memoised answer stayed stale. `GuardedRoleBuilder` refuses a bulk write touching `is_owner` or `org_id`, and refuses a bulk delete outright — deleting a role revokes it from every holder by cascade, and that audit is per holder too. This is the **third** time the project has learned that a guard belongs where the write is: `AuditedBuilder` for entries, `GuardedStorageBuilder` for field storage, this for roles.
+
+  ⚠️ **And `update()` was one door of four, which is the same lesson arriving one API call along.** Review found three more: `increment()`, `decrement()` and their `…Each()` plurals carry an `$extra` map of ordinary assignments and forward straight to the query builder, so `increment('id', 0, ['is_owner' => true])` was a bulk promotion under another method's name; and Eloquent sends `forceDelete()` to the query builder rather than through `delete()`, so the roles and their cascading assignments went with no per-holder revocation audits and no cache invalidation. The arithmetic family is refused **without** consulting the instance-save flag, because no instance save writes through it — `performUpdate()` calls `update()` — so there is no legitimate path there to stand aside for.
+
+  ⚠️ **And the condition that decides whether to ask was itself forgeable.** It required `getKey()` to be
+  non-null while the write uses `getKeyForSaveQuery()`, so nulling the attribute in memory after an org
+  switch turned the guard off and left `saveQuietly()` updating the row the instance was loaded from. The
+  same defect, in the same shape, was found in `AuditedBuilder` in the same round: a guard is only as
+  reachable as the condition in front of it, and a condition reading a mutable attribute is one more
+  forgeable proof.
+
+  The same hole existed generically: `ScopedBuilder`'s arithmetic overrides checked the scope keys and not `columnsRequiringModelSave()`, so `Site::query()->increment('id', 0, ['base_url' => …])` landed values that `update()` refused, leaving `canonical_host` describing the previous URL. Fixed there rather than copied per builder.
+
+- **A stale instance may not change the owner flag.** `EnforcesScope` revalidates a scope key only when it is *dirty*, so an org A role retained after a worker moved to org B could still be promoted — and the audit row was then written under B, or dropped silently with no context at all. The four authority helpers already refused that; the flag was the fifth way authority changes and was not asking.
+
+- **Deleting a role records the revocation before the cascade takes it** — for **every** holder, not only an owner's. The database cascades `role_user` for any role, and a role carrying ordinary grants is authority too, so `role.unassigned` is what its holders lost. The rows go in first and inside the same transaction, because afterwards there is no `role_user` left to read them from.
+
+- **Deletion is the fifth authority path and asks the same org question as the other four.** Eloquent's instance delete writes by primary key without reapplying the global scope, so a role that outlived a context switch could be deleted from another org — with its revocation audits attributed to that org.
+
+- **Each authority change and its audit row are one transaction** — including an ordinary `save()`, because the owner audit runs in `saved`, which is after the row commits. With several holders a failure there could leave a **partial** trail, which is worse than none because it reads as complete. Review found the write split in two: under autocommit the grant landed, and an audit insert failing after it — a context naming a site that was concurrently deleted is enough, since `audit_log.site_id` is a foreign key — left the caller with an exception and the authority change in place. `AuditedBuilder` puts an entry's insert and its audit row in one transaction for exactly this reason, and a write that is not an entry needs the same. An unaudited authority change is the thing ADR-020 refuses.
+- **A permission check is not a tenancy check, and `EntryPolicy` now makes both.** Review found it asking only about the record's `type_handle`: `SiteScope` constrains the query that LOADS an entry and says nothing about the object afterwards, and an instance update or delete writes by primary key without reapplying it. So in a worker or a multi-site command, a record loaded under site A survived a context switch and a user in site B holding the same `entry.{handle}.update` authorised the write — B's grant spent on A's row, with the audit attributed to B. **An owner was the worst case**, because `isOwner()` answers for the current org and would have said yes about anybody's row.
+
+  The policy therefore asks whether the current scope's own query would return the record — `site_id` matching, or `site_id IS NULL` inside the same org (ADR-021's org-shared case) — and a test pins its answer to the scope's for every shape, because a second encoding of a scope's clause that is allowed to drift is worse than none. It applies to a row that **exists**: an unsaved instance names nothing, and its scope keys are the insert's business, which `EnforcesScope` already guards.
+
+- **`role_permissions` has no public write surface, which `#[Unscoped]` alone did not give it.** The
+  declaration's justification is about READS — every read goes through the org-scoped `Role` — and review
+  found it covering writes by implication: nothing narrows a direct write either, and the table deliberately
+  carries no `org_id` for a clause to narrow. So `RolePermission::query()->delete()` revoked every org's
+  grants in one call and `RolePermission::create([...])` attached one to another org's role, with no
+  validation, no audit row and no memo flush. The model's own docblock said a reviewer should treat a bare
+  query as a defect, which is attention rather than enforcement. `GuardedGrantBuilder` refuses every write
+  that did not come through `Role::grant()` or `revoke()` — the paths that ask the org question — and the
+  discriminator is a narrow window rather than a per-instance flag, because `firstOrCreate()` builds its own
+  instance and a flag armed on the model in hand never reaches it.
+
+  ⚠️ **Twice more before it held.** The first version's window opener was a PUBLIC method on
+  `RolePermission`, so the capability stayed public — any caller could hold it open around a write of their
+  own. The flag is private static on `Role` now, armed inline by `grant()` and `revoke()` and exposed only as
+  a reader. And the builder's docblock claimed the insert-or-ignore family was "already refused by
+  `ScopedBuilder` for every model", which is false for this one: `refuseBulkCreate()` returns early for
+  anything that is not `RequiresModelSave`, and `guardEveryInsertedRow()` inspects scope keys, of which an
+  `#[Unscoped]` table has none. Four doors — `insertOrIgnore()`, `insertUsing()`, `insertOrIgnoreUsing()`,
+  `insertOrIgnoreReturning()` — measured open. A claim about somebody else's code is the kind that rots
+  quietly, so the write surface is now enumerated in a test that fails when Laravel grows a method it has not
+  been taught about.
+
+- **A numeric user id is not an identity.** The memo and the membership check both learned to carry the
+  authenticated model's class; the assignment lookup still matched on `user_id` alone. A host running two
+  panels through two providers has two user models on two tables with two independent sequences, so both have
+  a user 1 — and the second model's user 1 was handed the first's roles the moment they belonged to the
+  current org. What says whose ids `role_user` holds is the table its `user_id` **references**, read from the
+  schema rather than from a config key, because the skeleton's `constrained()` is what decides. **A host whose
+  `role_user` declares no foreign key gives nothing to compare, and that case is allowed rather than
+  refused** — breaking RBAC outright on a schema that is merely undocumented would be the worse failure, and
+  the narrower exposure is recorded here rather than implied.
+
+  ⚠️ **And the table name alone still conflated two databases**, which review found next: an identity
+  connection whose table is also called `users` matched, while `role_user` and the foreign key live on the
+  default one — so membership was checked in one database and assignments read from another. The connection is
+  part of the comparison now. **The audit target asks the same question**: `assignTo()` writes the
+  FK-referenced identity, so resolving the row from the panel's provider could name an unrelated person with
+  the same id. A null target beats a wrong name, and the row is still written.
+
+- **The proof that an instance's guards ran is not something a caller can present.** It was a public boolean,
+  and `Builder::getModel()` is public — so `$q = Role::query(); $q->getModel()->authorityGuarded = true;
+  $q->update(['is_owner' => true])` promoted every matching role with no per-holder audit and no cache
+  invalidation. `RequiresModelSave`'s docblock records the same attack on `exists` and `getIncrementing()`,
+  measured, twice; this is the third. The proof is now two private facts with no setters: the lifecycle
+  listeners record that this instance's guards ran, and `performUpdate()`/`performDeleteOnModel()` record the
+  write they ran for. A quiet save has the second and not the first; a hand-armed builder can have neither.
+
+- **Which org a role belongs to is asked of the stored ROW, not of the attribute.** `$role->org_id` is a
+  mutable property, so after retaining an org A role, code in org B could set it to B in memory and every
+  authority path passed — while the writes they perform go by primary key, so A's grants and assignments
+  changed and the audit row named B. `getOriginal()` is no better, because `syncOriginal()` is public too.
+  The guard asks `OrgScope`'s own query whether the row this key names is one the current context may see,
+  which also refuses a transfer in flight, and which every save of an existing role now asks as well. It
+  honours `withoutScopeBecause()`, like every other write guard in the tenancy layer.
+
+  ⚠️ **Amended: it does NOT honour it any more, and the sentence above is left standing because the reasoning
+  was published.** `withoutScopeBecause()` suspends the SCOPE and cannot suspend `Auditor`, which derives the
+  audit row's org from the context — so an authority change made under the hatch committed with a row naming
+  the wrong org, or with no row at all, which is the unaudited authority change ADR-020 refuses outright.
+  Nothing in the codebase called it, so nothing needed it: the way to act on another org's role is to
+  establish that org's context, which is also what makes the audit true. The rule the two attempts produced
+  is narrower than "every guard gets a hatch" — **a hatch is only safe where the thing it suspends is the only
+  thing the guard protects.**
+
+- **A policy answers before the write, and an instance may not write over a row that moved since.** Review
+  pointed out the window no policy can close by itself: `Gate` runs in one transaction and the write happens in
+  another, so a row retyped or moved into another site in between was authorised by the answer for what it used
+  to be. **The consequence was measured before the fix was chosen**, because it is narrower than it sounds — a
+  stale instance saving an unrelated field writes only that field (`update "entries" set "title" = ?,
+  "updated_at" = ? where "id" = ?`), so the denormalised `type_handle` keeps whatever the other transaction set
+  and nothing drifts. What is left is one edit, or one DELETION, by somebody authorised for that row a moment
+  earlier; the deletion is why this is a guard rather than a documented limitation.
+
+  `Entry::refuseIfTheRowMovedUnderneath()` reads the stored row under a lock inside the write's own transaction
+  and refuses when `site_id`, `org_id` or `entry_type_id` differ from what the instance loaded. It compares what
+  was LOADED rather than what is being written, so a legitimate retype still works — making the change yourself
+  makes the column dirty, and the comparison is against the database. **Authorization proper stays at the panel
+  boundary**: re-asking `Permissions` in the write path would need the acting identity, which a seeder, an
+  importer and a console command do not have, so the window is closed by refusing the write rather than by
+  re-deciding the permission.
+
+  ⚠️ **And revision restore went around it, which review found.** `restoreRevision()` locks the row and calls
+  `refresh()` before its save, so an entry moved between the caller's authorization and that lock came back
+  carrying its new `site_id` — the originals the guard compares against were already the moved row's, and the
+  restore wrote content into a site nobody had authorised it for. It now takes its lock through
+  `refuseIfTheRowMovedUnderneath()` itself — by the original key, comparing the type as well as the scope keys —
+  after a first fix that copied the guard and left the type out; and it refuses outright a restore through an
+  instance whose key has been edited, which had locked one row, checked another's revision and written a third.
+  The History button asks the stored row whether a restore would publish, not the instance, so the button and the
+  guard cannot disagree across somebody else's demotion.
+
+
+  ⚠️ **And it went into two doors when there are six.** Review found the arithmetic family walking past it:
+  Eloquent sends `$entry->increment()` to `setKeysForSaveQuery($this->newQueryWithoutScopes())->increment()`,
+  which is an instance write by the original key, with the scope removed, that never passes through
+  `update()`. The guard is one method called from all six now — the same shape as the `is_owner` arithmetic
+  finding one model over, which is twice this family has been found through the same door.
+
+  ⚠️ **And the publication guard repeated the mistake one round later.** The transition check went into
+  `update()` alone, so `increment('id', 0, ['status' => 'published'])` published without it — Laravel's
+  `$extra` map is a set of ordinary assignments, which is the same sentence this file already carried about
+  `is_owner`. Three guards have now been added to `update()` and forgotten at the arithmetic family; the
+  helper is called from all six doors for each of them.
+
+  ⚠️ **And the condition asked for the wrong key.** `getKey()` decided whether to check while the write uses
+  `getKeyForSaveQuery()`, so nulling the `id` attribute in memory turned the guard off and left the delete
+  pointing at the row it was loaded from — the tampered instance was the one instance that skipped the
+  check. The third time this project has met the original-key rule: `Role`'s edited primary key, the policy's
+  `getKeyForAuthorization()`, and now the builder's own condition.
+
+  ⚠️ The discriminator is `exists` and a key rather than `isPerformingModelSave()`, and a soft delete is why:
+  `runSoftDelete()` builds its own query and calls `update()` directly, outside `performUpdate()`, so the save
+  identity skipped the one case that destroys something. Measured — the soft delete went through while the
+  update and the force-delete were refused.
+
+- **An owner transition is audited once per UPDATE, not once per `save()`.** `wasChanged()` outlives the write that set it: Eloquent refreshes `$changes` in `finishSave()`, and a later `save()` with nothing dirty never calls `performUpdate()` — so `$changes` still described the previous write and the transition was recorded again. Measured: one promotion and three no-op saves produced four `role.owner_assigned` rows per holder. A trail that grows every time somebody calls `save()` reports authority changes that did not happen, to whoever is reading the log to find out what did. The model now carries a one-shot proof that an update actually ran, consumed by the `saved` listener whether or not the flag moved.
+
+  ⚠️ **And it is a fact about the ROW, not about the instance's originals** — the same guard, one concurrency
+  step further out. Two requests that both load a non-owner role and both set the flag serialise on the lock,
+  and the second one writes `true` over `true`: nothing transitions, but `wasChanged()` compares its own stale
+  original and says it did, so every holder got a second `role.owner_assigned`. The stored flag is captured
+  under the write's own lock now and compared with the value written. A log that reports two promotions where
+  one happened fails the same question as one that reports none.
+
+- **`assignTo()` asks whether the assignment already exists INSIDE the lock.** It asked before the transaction, so two requests assigning the same person to the same role both passed, the first inserted, and the second collided with the `(role_id, user_id)` primary key — where the documented behaviour is to be idempotent and silent. "Already holds it" has to be asked where the answer cannot change underneath.
+
+  ⚠️ **And a ROLLBACK undoes the grant without undoing the memo**, which review found one layer out from
+  that. `grant()` flushes when its own transaction commits — inside a caller's transaction that is a
+  savepoint release, and the outer transaction can still roll back. A check made in between memoises the
+  uncommitted grant, nothing flushes it again, and a caller that catches the rollback and carries on keeps
+  authorising against a grant that no longer exists. Laravel announces the rollback, so the memo is dropped
+  when it happens: cheaper than refusing to memoise inside a transaction, which would cost a read per check
+  on every write path for a window that only opens when somebody rolls back and then continues.
+
+  ⚠️ **Inside the lock is not the same as current**, which review found next. Under MySQL's default
+  REPEATABLE READ a plain `select` answers from the transaction's snapshot, and inside a caller-owned outer
+  transaction that snapshot predates this method — so the role lock makes the second request wait for the
+  first to commit, and its non-locking read still cannot see what committed. The check is `lockForUpdate()`
+  now, which reads the latest committed version. `insertOrIgnore()` would also be atomic and was rejected on
+  driver divergence: MySQL's `INSERT IGNORE` downgrades a foreign-key violation to a warning, so an id naming
+  nobody would be reported as "already holds it" while Postgres refused it.
+
+- **The policy's memo carries the type the instance was loaded with**, and the body uses it. Keyed on the row and the scope alone, a request that checked an entry as an article, saw it retyped, and then RELOADED the model got the memoised article handle — and the reloaded instance's originals match the retyped row, so the write guard had nothing to refuse either. An instance whose loaded type no longer matches the stored row is stale, and a stale instance is refused; within one request a stale instance keeps its memoised answer and the WRITE is what refuses it, which is the layering rather than a hole.
+
+  ⚠️ **The site and org too, sent the round after the type.** A row authorised in one site, MOVED to another
+  without being retyped and then reloaded produced the identical key, so the first site's handle came back
+  with no read — and the reloaded instance's originals match the new site, so the write guard had nothing to
+  refuse either. Fixing one column and not the other two was the mistake: the memo now carries every column
+  `refuseIfTheRowMovedUnderneath()` compares, because it is one rule and not three.
+
+- **The role row is the mutex for everything that changes its authority.** Each operation was locally
+  transactional and the PAIR still lost a row from the trail: an assignment inserted the pivot and read the
+  owner flag as false, recording `role.assigned`, while a concurrent promotion could not see the uncommitted
+  pivot and audited no holder at all. Both committed, and the person was an owner with nothing in the log
+  saying so — the per-person guarantee above, defeated by two individually correct operations. A promotion
+  writes the role row, so it takes that lock on its own account; `assignTo()` and `removeFrom()` take it
+  explicitly **before** touching `role_user`, and the holders read takes it from the other side so a
+  transition waits for an assignment in flight rather than counting past it.
+
+- **A vetoed deletion clears the proof it earned.** `performDeleteOnModel()` clears the guard proof in a
+  `finally`, and an application observer returning false means that method is never entered — so the proof
+  survived on the instance and a later `saveQuietly()` supplied the other half, after which a quiet write to
+  `is_owner` or `org_id` skipped the org check, the per-holder audit and the cache invalidation. The same
+  family as every other finding here — a proof outliving the write it was earned for — reached through
+  somebody else's veto rather than through a forged attribute.
+
+- **A quiet save is still asked which org's row it is touching.** "Every save of an existing role asks it" was
+  true of noisy saves only: `saveQuietly()` and `updateQuietly()` suppress the `saving` listener, and what was
+  left refused the per-row COLUMNS alone — so a quiet `name` or `handle` change on another org's role went
+  through, written by primary key. The builder asks the row question itself now, for an instance write that
+  has lost its proof; a genuine bulk update arrives with a prototype that does not exist and is narrowed by
+  the global scope, which is the distinction every guard on this model has had to make.
+
+- **A revocation is recorded only once the deletion has succeeded.** The rows went in first, which read as
+  correct until an application observer returning `false` from `deleting` aborted the delete: the role and
+  every assignment survived while the log said their authority was revoked, and a retry added another set of
+  false rows. The holders still have to be READ first, because the database cascades `role_user` away with the
+  role — so the read comes before and the write comes after, inside one transaction.
+
+- **We own the resolution cache, the wildcard semantics, and the bugs in both.**
 
 ---
 

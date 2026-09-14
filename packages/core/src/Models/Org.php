@@ -14,6 +14,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Kitsune\Core\Tenancy\Attributes\Unscoped;
+use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
 
 /**
  * The customer. Billing and user boundary.
@@ -31,6 +32,7 @@ use Kitsune\Core\Tenancy\Attributes\Unscoped;
 #[Unscoped]
 class Org extends Model
 {
+    use EnforcesScope;
     use SoftDeletes;
 
     protected $guarded = [];
@@ -47,5 +49,11 @@ class Org extends Model
     public function sites(): HasMany
     {
         return $this->hasMany(Site::class);
+    }
+
+    /** @return HasMany<Role, $this> */
+    public function roles(): HasMany
+    {
+        return $this->hasMany(Role::class);
     }
 }

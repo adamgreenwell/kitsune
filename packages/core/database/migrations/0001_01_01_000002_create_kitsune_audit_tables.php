@@ -38,19 +38,42 @@ return new class extends Migration
             // migration, a replayed erasure. An audit row with no actor is
             // more honest than one attributing it to whoever happened to be
             // logged in.
-            $table->foreignId('actor_id')->nullable();
+            /*
+             * ⚠️ THE ACTOR IS A (TYPE, ID) PAIR LIKE THE TARGET, which review found it was not. A host may
+             * authenticate its panel through a provider backed by another user model on another table, and
+             * two models have two sequences — so both have a user 1 and a bare id names neither. The target
+             * has been polymorphic since ADR-020 for exactly this reason; the actor was not, in the column
+             * that answers "at whose hand".
+             */
+            $table->string('actor_type')->nullable();
+            /*
+             * ⚠️ A STRING, BECAUSE AN IDENTIFIER IS THE HOST'S TO CHOOSE — review found this column assuming
+             * integers one round after it learned to record a model that need not be Eloquent at all. A host
+             * whose users carry UUIDs, or an LDAP or SSO identity with a string subject, made every audited
+             * write by that person fail its insert on PostgreSQL and strict MySQL — and because the audit row
+             * shares a transaction with the write it records, the content write rolled back with it. "Cannot
+             * record who" became "cannot write at all", which is the wrong failure for a log that exists to
+             * be trusted.
+             *
+             * There is deliberately no foreign key here (erasing a user must not destroy the trail), so the
+             * column's type was never carrying a constraint — only an assumption.
+             */
+            $table->string('actor_id')->nullable();
             $table->string('action');
             // Both nullable: plenty of auditable actions have no model behind
             // them — a settings change, a sign-in, an export. The signature
             // advertises an optional target and the column has to mean it.
             $table->string('target_type')->nullable();
-            $table->unsignedBigInteger('target_id')->nullable();
+            // ⚠️ And the target for the same reason: `role.assigned` names a HOST user, so a UUID-keyed
+            // installation hit this on the other half of the same row. Found by sweeping rather than by
+            // waiting for the round that would have reported it.
+            $table->string('target_id')->nullable();
             $table->timestamp('created_at');
 
             // ADR-021: composite indexes lead with the scope key.
             $table->index(['org_id', 'created_at']);
             $table->index(['org_id', 'target_type', 'target_id']);
-            $table->index(['org_id', 'actor_id']);
+            $table->index(['org_id', 'actor_type', 'actor_id']);
         });
 
         /*

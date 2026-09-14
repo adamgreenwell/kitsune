@@ -16,6 +16,7 @@ use Illuminate\Database\Query\Builder;
 use Kitsune\Core\Fields\StorageStrategy;
 use Kitsune\Core\Tenancy\Attributes\Unscoped;
 use Kitsune\Core\Tenancy\Concerns\DerivesGuardedColumns;
+use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
 use Kitsune\Core\Tenancy\Contracts\RefusesCascadingDeletes;
 use Kitsune\Core\Tenancy\Contracts\RequiresModelSave;
 use Kitsune\Core\Tenancy\ScopedBuilder;
@@ -40,6 +41,7 @@ use RuntimeException;
 class Field extends Model implements RefusesCascadingDeletes, RequiresModelSave
 {
     use DerivesGuardedColumns;
+    use EnforcesScope;
 
     protected $guarded = [];
 

@@ -49,6 +49,8 @@ module.exports = defineConfig({
         { name: 'setup', testMatch: /auth\.setup\.js/ },
         // The Arabic-preferring editor, whose session is what makes the admin RTL.
         { name: 'setup-rtl', testMatch: /auth-rtl\.setup\.js/ },
+        // The user with one grant, whose session is what makes the permission specs mean anything.
+        { name: 'setup-reader', testMatch: /auth-reader\.setup\.js/ },
         {
             name: 'skeleton',
             testMatch: /(skeleton|public-site-locale)\.spec\.js/,
@@ -78,6 +80,22 @@ module.exports = defineConfig({
         // So the fixture had to change with it. Proving RTL through an environment
         // variable would now be proving something Kitsune no longer does — and worse, it
         // would keep passing if the per-request resolution broke.
+        /*
+         * Same admin, same server, a user holding ONE grant — ADR-033.
+         *
+         * ⚠️ A PROJECT OF ITS OWN RATHER THAN A SIGN-IN INSIDE THE SPEC, for the reason `auth.setup.js`
+         * records: signing in per test against one dev server and one SQLite file was intermittently timing
+         * out, and it read as a broken selector rather than as contention.
+         */
+        {
+            name: 'admin-reader',
+            testMatch: /permissions\.spec\.js/,
+            dependencies: ['setup-reader'],
+            use: {
+                ...devices['Desktop Chrome'],
+                storageState: '.playwright/admin-reader-auth.json',
+            },
+        },
         {
             name: 'admin-rtl',
             testMatch: /rtl\.spec\.js/,

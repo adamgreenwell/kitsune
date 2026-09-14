@@ -8,6 +8,7 @@
 
 declare(strict_types=1);
 
+use Illuminate\Contracts\Auth\StatefulGuard;
 use Illuminate\Database\Query\Builder;
 use Illuminate\Foundation\Auth\User as AuthUser;
 use Illuminate\Support\Facades\Auth;
@@ -22,6 +23,7 @@ use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
+use Kitsune\Core\Tests\Fixtures\TestUser;
 
 /*
  * ADR-020 primitive 4. What is ABSENT from this table is the design.
@@ -55,7 +57,8 @@ it('records actor, action and target — AND NOTHING ELSE', function (): void {
     sort($columns);
 
     expect($columns)->toBe([
-        'action', 'actor_id', 'created_at', 'id', 'org_id', 'site_id', 'target_id', 'target_type',
+        'action', 'actor_id', 'actor_type', 'created_at', 'id', 'org_id', 'site_id', 'target_id',
+        'target_type',
     ]);
 });
 
@@ -76,7 +79,7 @@ describe('what gets recorded', function (): void {
 
         expect($row->action)->toBe('entry.created')
             ->and($row->target_type)->toBe($entry->getMorphClass())
-            ->and($row->target_id)->toBe($entry->getKey())
+            ->and($row->target_id)->toBe((string) $entry->getKey())
             ->and($row->org_id)->toBe($this->org->id)
             ->and($row->site_id)->toBe($this->site->id);
     });
@@ -119,7 +122,39 @@ describe('what gets recorded', function (): void {
 
         $entry = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Attributed']);
 
-        expect(AuditLog::for($entry)->where('action', 'entry.created')->value('actor_id'))->toBe(47);
+        expect(AuditLog::for($entry)->where('action', 'entry.created')->value('actor_id'))->toBe('47');
+    });
+
+    it('names the actor\'s MODEL as well as its id', function (): void {
+        /*
+         * ⚠️ An id is not an identity, which review found after the guard had already learned to ask the
+         * panel's provider. Two providers mean two user models on two tables with two sequences, so both
+         * have a user 7 — and `target_type` has been polymorphic since ADR-020 for exactly that reason
+         * while `actor_id` was a bare number in the column that answers "at whose hand".
+         *
+         * The two rows below differ ONLY in the actor's class, which is what makes this a test of the
+         * discriminator rather than of the id.
+         */
+        $first = new AuthUser;
+        $first->forceFill(['id' => 7]);
+        Auth::login($first);
+
+        $entry = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Acted on twice']);
+
+        $second = new TestUser;
+        $second->forceFill(['id' => 7]);
+        Auth::login($second);
+
+        $entry->update(['title' => 'Edited by the other user 7']);
+
+        $created = AuditLog::for($entry)->where('action', 'entry.created')->firstOrFail();
+        $updated = AuditLog::for($entry)->where('action', 'entry.updated')->firstOrFail();
+
+        expect($created->actor_id)->toBe('7')
+            ->and($updated->actor_id)->toBe('7')
+            ->and($created->actor_type)->toBe(AuthUser::class)
+            ->and($updated->actor_type)->toBe(TestUser::class)
+            ->and($created->actor_type)->not->toBe($updated->actor_type);
     });
 
     it('records the actor on a BULK write too', function (): void {
@@ -133,7 +168,120 @@ describe('what gets recorded', function (): void {
 
         Entry::query()->whereKey($entry->getKey())->update(['status' => 'published']);
 
-        expect(AuditLog::for($entry)->where('action', 'entry.updated')->value('actor_id'))->toBe(91);
+        expect(AuditLog::for($entry)->where('action', 'entry.updated')->value('actor_id'))->toBe('91');
+    });
+
+    it('asks the PANEL\'s guard for the actor, not the application default', function (): void {
+        /*
+         * ⚠️ `auth()->id()` ASKS THE DEFAULT GUARD, AND A PANEL NEED NOT USE IT — review found it. Filament
+         * has `Panel::authGuard()` precisely so a host can authenticate its admin through a guard of its
+         * own, and with one configured this column recorded either NULL or whichever unrelated user happened
+         * to be signed in on the default guard at the same moment. ADR-020's log claims to answer "at whose
+         * hand", so an actor resolved from somebody else's guard is the one kind of wrong it must not be.
+         *
+         * ⚠️ THE PANEL IS A STAND-IN, AND IT HAS TO BE. Core's test suite never registers the `filament`
+         * binding — ADR-024 puts the panel layer in the browser — so the only way to ask this question in PHP
+         * is to bind the one method the resolution calls. `Permissions::currentUser()` is that resolution,
+         * shared with the RBAC layer rather than copied here, and the binding check it carries is what keeps
+         * this file from needing Filament at all.
+         *
+         * Two users, two guards, at the same time: the one on the panel's guard is the one who acted.
+         */
+        config(['auth.guards.panel' => ['driver' => 'session', 'provider' => 'users']]);
+
+        $default = new AuthUser;
+        $default->forceFill(['id' => 5]);
+        Auth::login($default);
+
+        $onThePanel = new AuthUser;
+        $onThePanel->forceFill(['id' => 12]);
+        Auth::guard('panel')->setUser($onThePanel);
+
+        app()->instance('filament', new class
+        {
+            public function auth(): StatefulGuard
+            {
+                return Auth::guard('panel');
+            }
+
+            /*
+             * ⚠️ A PANEL IS SERVING THIS REQUEST, and saying so is now part of the stand-in — review found
+             * that the BINDING is not the request. Filament's `SetUpPanel` middleware sets the current panel,
+             * so a non-null answer here is what "a panel is handling this" means; the test below is the same
+             * binding with nobody serving.
+             */
+            public function getCurrentPanel(): ?object
+            {
+                return $this;
+            }
+        });
+
+        $entry = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Attributed to the panel']);
+
+        expect(AuditLog::for($entry)->where('action', 'entry.created')->value('actor_id'))->toBe('12');
+
+        // ⚠️ Not vacuous: both users are authenticated, so an actor of 5 is the defect and 12 is the fix.
+        expect(auth()->id())->toBe(5);
+    });
+
+    it('asks the application guard when no panel is serving the request', function (): void {
+        /*
+         * ⚠️ THE `filament` BINDING IS APPLICATION-WIDE AND THE REQUEST IS NOT, which review found after the
+         * panel fix above. Installing the package binds `filament` for every route — so on an API or custom-guard
+         * route this asked the PANEL's guard, which has nobody signed in, and recorded an unattributed row for
+         * an action a real person took. Worse, `Entry::refuseUnpermittedRepublication()` reads a null actor as
+         * "the system is acting" and stands aside, so the wrong answer here opens a guard elsewhere.
+         *
+         * The binding is present and no panel is current, which is exactly a non-panel route.
+         */
+        config(['auth.guards.panel' => ['driver' => 'session', 'provider' => 'users']]);
+
+        $onTheApiRoute = new AuthUser;
+        $onTheApiRoute->forceFill(['id' => 31]);
+        Auth::login($onTheApiRoute);
+
+        app()->instance('filament', new class
+        {
+            public function auth(): StatefulGuard
+            {
+                return Auth::guard('panel');
+            }
+
+            public function getCurrentPanel(): ?object
+            {
+                return null;
+            }
+        });
+
+        $entry = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Made outside a panel']);
+
+        // ⚠️ Not vacuous: the panel's guard has nobody, so a null actor is the defect and 31 is the fix.
+        expect(Auth::guard('panel')->user())->toBeNull()
+            ->and(AuditLog::for($entry)->where('action', 'entry.created')->value('actor_id'))->toBe('31');
+    });
+
+    it('records an actor whose identifier is not an integer', function (): void {
+        /*
+         * ⚠️ AN IDENTIFIER IS THE HOST'S TO CHOOSE, and this column assumed integers one round after it
+         * learned to record a model that need not be Eloquent at all. A UUID-keyed users table, or an LDAP
+         * subject, made every audited write by that person fail its INSERT on PostgreSQL and strict MySQL —
+         * and since the audit row shares a transaction with the write it records, the content write rolled
+         * back with it. "Cannot record who" became "cannot write at all".
+         */
+        $actor = new class extends AuthUser
+        {
+            public function getAuthIdentifier(): string
+            {
+                return '018f2b7c-1d6a-7e3f-9a0b-5c8d4e2f1a33';
+            }
+        };
+
+        Auth::login($actor);
+
+        $entry = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Written by a UUID']);
+
+        expect(AuditLog::for($entry)->where('action', 'entry.created')->value('actor_id'))
+            ->toBe('018f2b7c-1d6a-7e3f-9a0b-5c8d4e2f1a33');
     });
 
     it('leaves the actor NULL when the system acts on its own', function (): void {

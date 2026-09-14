@@ -21,6 +21,7 @@ use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Audit\AuditedBuilder;
+use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Fields\FieldType;
 use Kitsune\Core\Fields\FieldTypeRegistry;
@@ -73,6 +74,22 @@ class Entry extends Model implements RequiresModelSave
      * back, which made the revision snapshot record NULL for a column the
      * database declares NOT NULL.
      */
+    /**
+     * Every value `status` may hold.
+     *
+     * ⚠️ A CLOSED SET, BECAUSE THE DATABASE'S IDEA OF EQUALITY IS NOT PHP'S — review found the second half of
+     * a finding I had only half fixed. MySQL's and MariaDB's default collations are accent-insensitive as
+     * well as case-insensitive, so `scopePublished()`'s `status = 'published'` matches a stored `publíshed`
+     * — and no comparison written in PHP can enumerate what a given server considers equal, because that
+     * depends on the column's collation. Replicating those rules is a losing game; constraining what can be
+     * stored is not.
+     *
+     * With the column holding only these three, "is this published" has one answer on every engine.
+     *
+     * @var list<string>
+     */
+    public const STATUSES = ['draft', 'published', 'archived'];
+
     protected $attributes = ['status' => 'draft'];
 
     /**
@@ -1845,6 +1862,89 @@ class Entry extends Model implements RequiresModelSave
         return $this->site_id === null;
     }
 
+    /**
+     * Refuse an instance write over a row that has moved or been retyped since it was loaded.
+     *
+     * ⚠️ THE AUTHORIZATION READ AND THE WRITE ARE IN DIFFERENT TRANSACTIONS, which review pointed out and
+     * which no policy can fix by itself: `Gate` answers before the write begins, so a row retyped or moved in
+     * between is authorised by the answer for what it USED to be. `EntryPolicy` reads the stored row now, so
+     * it is right at the moment it is asked — and then the moment passes.
+     *
+     * ⚠️ MEASURED FIRST, because the consequence is narrower than it looks and the fix should match it. A
+     * stale instance saving an unrelated field writes ONLY that field:
+     *
+     *   update "entries" set "title" = ?, "updated_at" = ? where "id" = ?
+     *
+     * so `entry_type_id` and `type_handle` keep whatever the other transaction set — no drift between the
+     * denormalised handle and the type it points at, and no scope key written either. What is left is one
+     * edit, or one DELETION, by somebody who was authorised for that row a moment earlier.
+     *
+     * The deletion is why this exists rather than being written down as a limitation: an update is a field
+     * somebody may not have been allowed to touch, and a delete is a row that is gone. Both are refused when
+     * the stored row is no longer the row this instance was loaded from.
+     *
+     * ⚠️ IT COMPARES WHAT WAS LOADED, NOT WHAT IS BEING WRITTEN, which is what keeps a legitimate retype
+     * working: changing `entry_type_id` yourself makes it dirty, and this compares the ORIGINAL against the
+     * database. What it refuses is somebody else having changed it. `EnforcesScope` still guards the values a
+     * write assigns; this guards the row it lands on.
+     *
+     * ⚠️ AND AUTHORIZATION PROPER STAYS AT THE PANEL BOUNDARY. Re-asking `Permissions` here would need the
+     * acting identity in the write path, which ADR-033 deliberately keeps out of the model — a seeder, an
+     * importer and a console command have no user, and would be refused everything. So this closes the window
+     * by refusing the WRITE rather than by re-deciding the permission, which is the half the model layer owns.
+     */
+    public function refuseIfTheRowMovedUnderneath(string $operation): void
+    {
+        $stored = static::withTrashed()
+            ->withoutGlobalScopes()
+            ->whereKey($this->getKeyForSaveQuery())
+            ->lockForUpdate()
+            ->first(['site_id', 'org_id', 'entry_type_id']);
+
+        if ($stored === null) {
+            throw new RuntimeException(sprintf(
+                'Refusing to %s entry %s: the row it was loaded from is gone, so this write would either '
+                .'resurrect it or land on nothing (ADR-021).',
+                $operation,
+                (string) $this->getKey(),
+            ));
+        }
+
+        foreach (['site_id', 'org_id', 'entry_type_id'] as $column) {
+            $loaded = $this->getRawOriginal($column);
+
+            if ((string) $stored->{$column} === (string) $loaded) {
+                continue;
+            }
+
+            throw new RuntimeException(sprintf(
+                'Refusing to %s entry %s: it was loaded with [%s] = %s and the stored row now has %s, so '
+                .'somebody else moved or retyped it while this instance was in hand. Whatever authorised '
+                .'this write was decided about a row that no longer exists in that shape (ADR-021, ADR-033). '
+                .'Reload the entry.',
+                $operation,
+                (string) $this->getKey(),
+                $column,
+                $loaded === null ? 'null' : (string) $loaded,
+                $stored->{$column} === null ? 'null' : (string) $stored->{$column},
+            ));
+        }
+    }
+
+    /**
+     * The key an instance write will target, which is the ORIGINAL one.
+     *
+     * ⚠️ EXPOSED FOR `EntryPolicy`, BECAUSE A POLICY MUST ASK ABOUT THE ROW THAT WILL CHANGE. Eloquent's
+     * `getKeyForSaveQuery()` is protected and returns `$this->original[$key] ?? $this->getKey()`, so an
+     * instance whose `id` attribute has been edited updates and deletes the row it was loaded from while
+     * every check that reads `getKey()` looks at somewhere else. Review found that gap on `Role` first; the
+     * policy has the same one, and a reader cannot be handed the private half of the answer.
+     */
+    public function getKeyForAuthorization(): mixed
+    {
+        return $this->getKeyForSaveQuery();
+    }
+
     /** @return BelongsTo<EntryType, $this> */
     public function entryType(): BelongsTo
     {
@@ -2836,6 +2936,198 @@ class Entry extends Model implements RequiresModelSave
      * — once on the caller's instance and once on the locked row — and two copies
      * of the same rule are how the pre-lock and post-lock answers drift apart.
      */
+    /**
+     * Refuse a restore that would move this entry into the published state on somebody's behalf.
+     *
+     * The comparison is the STORED status against the snapshot's: restoring a published version onto an entry
+     * that is already published changes nothing about publication, and allowing that is what lets an editor
+     * restore an older title on a live article. It is the same distinction `EntryResource` draws between
+     * keeping the published state and moving into it, enforced on the other route into it.
+     */
+    /**
+     * Is moving this entry from `$storedStatus` into the published state something the acting user may not do?
+     *
+     * ⚠️ ONE PREDICATE FOR TWO ROUTES, because the rule is one rule: `publish` is permission to move INTO the
+     * published state, so a row that is already published is not being published again. The restore guard and
+     * the write guard both ask it, and the panel's Restore button asks it through the restore one.
+     *
+     * ⚠️ AND A NULL ACTOR IS THE SYSTEM. A seeder, a console command, a queued job and a replayed erasure have
+     * no permission to consult — `Auditor` treats a null actor the same way, and `Permissions::currentUser()`
+     * only answers about a request a guard is actually serving.
+     */
+    /**
+     * Is this value the published state, as the DATABASE will read it?
+     *
+     * ⚠️ CASE-INSENSITIVELY, BECAUSE THE DEFAULT MySQL AND MariaDB COLLATIONS ARE — review found the gap and
+     * it is engine-specific in the direction that matters. `scopePublished()` asks `status = 'published'`,
+     * which under `utf8mb4_unicode_ci` matches a stored `PUBLISHED` — so a write of that spelling was public
+     * while a strict `!== 'published'` comparison in the guard stood aside. The form's `in` rule refuses it,
+     * and the form is not the boundary.
+     *
+     * PostgreSQL and SQLite compare `=` case-sensitively, so there the row would simply never be published —
+     * which is exactly why a guard written and proven on SQLite could not see this.
+     */
+    private static function isPublished(?string $status): bool
+    {
+        return $status !== null && mb_strtolower($status) === 'published';
+    }
+
+    private function publishingRefused(string $storedStatus, string $handle): bool
+    {
+        if (self::isPublished($storedStatus) || $handle === '') {
+            return false;
+        }
+
+        $user = Permissions::currentUser();
+
+        if ($user === null) {
+            return false;
+        }
+
+        return ! Permissions::allows($user, Permissions::forEntryType($handle, 'publish'));
+    }
+
+    /**
+     * Refuse an instance write that would publish this entry without the permission to publish.
+     *
+     * ⚠️ THIS REVERSES A POSITION I ARGUED ON THE REVIEW, and the argument it reverses is worth keeping: I
+     * said the form's stale-read window could not be used because Eloquent writes only dirty attributes, so
+     * an instance loaded as published submitting published writes no status at all. True — and review's third
+     * framing steps around it. An instance loaded as DRAFT, with the stored row published at validation time
+     * and demoted again before the write, submits `published` that IS dirty, and the write lands.
+     *
+     * ⚠️ AND THE OBJECTION THAT KEPT IT OUT OF HERE IS ANSWERED BY SCOPE. `Entry::query()->update(['status'
+     * => 'published'])` is a supported, audited, versioned write with no acting identity to check; it arrives
+     * on a prototype that does not exist, so `exists` and a key keep it out of this guard entirely. What is
+     * left is an instance write, which always comes from somebody.
+     *
+     * The read is locked and inside the write's own transaction, so unlike the form's rule the answer cannot
+     * move between the decision and the update.
+     */
+    public function refuseUnpermittedPublication(): void
+    {
+        $stored = static::withTrashed()
+            ->withoutGlobalScopes()
+            ->whereKey($this->getKeyForSaveQuery())
+            ->lockForUpdate()
+            ->first(['status', 'type_handle']);
+
+        if ($stored === null) {
+            // The row is gone; `refuseIfTheRowMovedUnderneath()` is the guard that speaks to that.
+            return;
+        }
+
+        /*
+         * ⚠️ THE TYPE THE ENTRY WILL BE, NOT THE ONE IT WAS — review found a retype and a publication in one save
+         * authorised by the source type. `publish` is per type: somebody who may publish articles moved a draft
+         * into the product type and published it in the same write, and this read the stored `article` handle
+         * while the write re-stamped `product`. The destination is the instance's `entry_type_id` — pending when
+         * this write retypes, the loaded value otherwise, which the moved-row guard compares with the stored row —
+         * and its handle is asked of the database by id, as the creation guard asks it.
+         */
+        $handle = (string) EntryType::query()->withoutGlobalScopes()->whereKey($this->entry_type_id)->value('handle');
+
+        if (! $this->publishingRefused((string) $stored->status, $handle)) {
+            return;
+        }
+
+        throw new RuntimeException(sprintf(
+            'Refusing to publish entry %s: the stored row is [%s] and this write would make it published — '
+            .'which is [entry.%s.publish], and the acting user does not hold it (ADR-033). The permission is '
+            .'about the TRANSITION, so it is decided from the row inside the write rather than from the form '
+            .'that was rendered.',
+            (string) $this->getKey(),
+            (string) $stored->status,
+            $handle,
+        ));
+    }
+
+    /**
+     * Refuse a CREATION that would bring an entry into existence already published, without the permission.
+     *
+     * ⚠️ THE TRANSITION HAS A FIRST STEP, and the guard above only stands at the second. `publish` is permission
+     * to move an entry into the published state, and nothing-to-published is that move as surely as
+     * draft-to-published — but `refuseUnpermittedPublication()` compares against a stored row, so a creation had
+     * nothing to compare and went past it. `Entry::create(['status' => 'published'])` by somebody holding only
+     * `create` landed, with the form's `in` rule the only thing in the way. Review found it beside the
+     * vocabulary gap on the same door.
+     *
+     * ⚠️ THE TYPE IS ASKED OF THE DATABASE BY `entry_type_id`, NOT READ FROM THE `type_handle` BEING WRITTEN. The
+     * handle is derived by a `saving` listener that a quiet creation suppresses, so on that path it is whatever
+     * the caller wrote — and naming a type the user may publish would be the whole bypass.
+     */
+    public function refuseUnpermittedCreationAsPublished(mixed $entryTypeId): void
+    {
+        $handle = (string) EntryType::query()->withoutGlobalScopes()->whereKey($entryTypeId)->value('handle');
+
+        if (! $this->publishingRefused('', $handle)) {
+            return;
+        }
+
+        throw new RuntimeException(sprintf(
+            'Refusing to create a published [%1$s] entry: bringing an entry into existence published is moving '
+            .'it into the published state, which is [entry.%1$s.publish], and the acting user does not hold it '
+            .'(ADR-033). Create it as a draft.',
+            $handle,
+        ));
+    }
+
+    /**
+     * Would restoring this revision publish the entry on behalf of somebody who may not publish?
+     *
+     * ⚠️ PUBLIC AND SHARED WITH THE BUTTON, which review asked for and this project has learned twice over:
+     * the model refusing what the panel still offers is a 500 rather than an answer. The relation manager
+     * disables the action with this same predicate, so the guard below is the backstop and not the message —
+     * and there is ONE copy of the rule, because a constraint written twice is one place for it to drift.
+     */
+    public function restoreWouldPublishWithoutPermission(EntryRevision $revision): bool
+    {
+        if (! self::isPublished($revision->status)) {
+            return false;
+        }
+
+        /*
+         * ⚠️ AND IT ASKS THE STORED ROW, NOT THE INSTANCE — review found the button and the guard disagreeing
+         * again, by a different road. An owner instance that still said `published` after another request had
+         * demoted the entry answered "keeping published is not moving into it", so the action stayed enabled;
+         * the restore then refreshed, asked the same question about `draft`, and refused — the server error
+         * this predicate exists to prevent. Both callers now read the same thing: the row by its original key,
+         * and its type by `entry_type_id` rather than a denormalised handle an instance can carry stale.
+         */
+        $stored = static::withTrashed()
+            ->withoutGlobalScopes()
+            ->whereKey($this->getKeyForAuthorization())
+            ->first(['status', 'entry_type_id']);
+
+        if ($stored === null) {
+            return false;
+        }
+
+        $handle = (string) EntryType::query()->withoutGlobalScopes()->whereKey($stored->entry_type_id)->value('handle');
+
+        return $this->publishingRefused((string) $stored->status, $handle);
+    }
+
+    private function refuseUnpermittedRepublication(EntryRevision $revision): void
+    {
+        if (! $this->restoreWouldPublishWithoutPermission($revision)) {
+            return;
+        }
+
+        $handle = (string) $this->type_handle;
+
+        throw new RuntimeException(sprintf(
+            'Refusing to restore revision %s onto entry %s: that version was published and this entry is '
+            .'[%s], so the restore would publish it — and moving an entry into the published state is '
+            .'[entry.%s.publish], which the acting user does not hold (ADR-033). Restore a version that was '
+            .'not published, or ask somebody who may publish.',
+            (string) $revision->getKey(),
+            (string) $this->getKey(),
+            (string) $this->status,
+            $handle,
+        ));
+    }
+
     private function refuseForeignRevision(EntryRevision $revision): void
     {
         if ($revision->entry_id !== $this->getKey()) {
@@ -2855,6 +3147,24 @@ class Entry extends Model implements RequiresModelSave
      */
     public function restoreRevision(EntryRevision $revision): self
     {
+        /*
+         * ⚠️ THE ROW THIS INSTANCE WAS LOADED FROM, OR NOTHING — review found every step below following the
+         * mutable key. `id` is an attribute, so an instance authorised for one entry and re-keyed to another
+         * locked the other row and passed the ownership check with the other entry's revision, while `refresh()`
+         * and the save still went by the ORIGINAL key: another entry's content written over the one that was
+         * authorised, or the reverse. Every other instance write goes by `getKeyForAuthorization()`; a restore
+         * through an edited key is refused outright, because there is no reading of it that is not a mistake.
+         */
+        if ((string) $this->getKey() !== (string) $this->getKeyForAuthorization()) {
+            throw new RuntimeException(sprintf(
+                'Refusing to restore a revision through entry %s: this instance was loaded as entry %s and its key '
+                .'has been changed since, so the row it would lock, the row it would check and the row it would '
+                .'write are not the same row (ADR-033). Load the entry you mean to restore.',
+                (string) $this->getKey(),
+                (string) $this->getKeyForAuthorization(),
+            ));
+        }
+
         // ⚠️ A courtesy check, and NOT the one that decides. It reads the caller's
         // instance before any lock exists, so it can only report what was true
         // when that instance was loaded. The authoritative check is the identical
@@ -2877,7 +3187,13 @@ class Entry extends Model implements RequiresModelSave
         // guard; it is a hint.
         DB::transaction(function () use ($revision): void {
             // The lock first, so nothing below can be answered from stale state.
-            self::query()->withoutGlobalScopes()->whereKey($this->getKey())->lockForUpdate()->get();
+            //
+            // ⚠️ TAKEN BY THE GUARD EVERY OTHER INSTANCE WRITE USES, which locks the row by its ORIGINAL key
+            // and refuses one that was moved or retyped since this instance was loaded — `refresh()` below would
+            // otherwise adopt wherever the row had gone, and write there under authority decided about where it
+            // was. Review found this path locking the mutable key and then comparing only the scope keys, in a
+            // copy of that guard that left the type out; the copy is gone.
+            $this->refuseIfTheRowMovedUnderneath('restore');
 
             // ⚠️ And the REVISION is re-read under the same lock, because the
             // caller's instance can be stale in the one way that matters.
@@ -2943,6 +3259,24 @@ class Entry extends Model implements RequiresModelSave
                     (string) $this->entry_type_id,
                 ));
             }
+
+            /*
+             * ⚠️ A RESTORE MOVES `status`, SO IT CAN PUBLISH, AND NOTHING ASKED. Found by following review's
+             * question about the form's `in` rule into the routes a form rule cannot reach:
+             * `EntryRevision::SNAPSHOT_ATTRIBUTES` carries `status`, so restoring a version that was published
+             * publishes the entry. An editor holding only `entry.{type}.update` could undo somebody else's
+             * demotion by asking for last Tuesday, and ADR-033 registers `publish` as the permission to move
+             * INTO that state — enforced, until now, only by the status control on the form.
+             *
+             * ⚠️ HERE RATHER THAN IN THE RELATION MANAGER'S BUTTON, which is this project's standing lesson:
+             * the button is not the boundary. And under the lock this transaction already holds, so the stored
+             * status the decision rests on cannot move between the decision and the write.
+             *
+             * ⚠️ AND SKIPPED WITH NOBODY SIGNED IN, the same rule `Auditor` follows for the actor: a console
+             * restore, a seeder and a replayed erasure act as the system and have no permission to consult.
+             * This asks about a person's authority; it is not a lock on the operation.
+             */
+            $this->refuseUnpermittedRepublication($revision);
 
             $state = $revision->relation_state;
 
