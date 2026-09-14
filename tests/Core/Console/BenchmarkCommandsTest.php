@@ -10,8 +10,10 @@ declare(strict_types=1);
 
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
+use Kitsune\Core\Schema\DriverFactory;
 use Kitsune\Core\Tenancy\Context;
 
 /*
@@ -102,6 +104,45 @@ it('removes only the rows its own run inserted, and keeps a corpus an earlier ru
     $this->artisan('kitsune:benchmark-storage', ['--rows' => 5])->assertSuccessful();
 
     expect(benchmarkFootprint())->toBe($kept);
+});
+
+it('drops only the generated columns its own run added, and keeps those an earlier run kept', function (): void {
+    /*
+     * ⚠️ REVIEW FOUND CLEANUP DROPPING EVERY `bench_idx_*` IT COUNTED, whether or not this run had added it, so a
+     * run without `--keep` removed the column and index an earlier run had kept. Two locale counts let the second
+     * run finish, as above.
+     *
+     * DDL implicitly commits on MySQL, so RefreshDatabase's rollback cannot be trusted to undo either run. The test
+     * removes the column, its index and the benchmark org itself, as SchemaSyncCommandTest does.
+     */
+    $driver = DriverFactory::for(DB::connection());
+    $indexes = static fn (): array => array_map(
+        static fn (array $index): string => strtolower((string) $index['name']),
+        Schema::getIndexes('entries'),
+    );
+
+    try {
+        $this->artisan('kitsune:benchmark-storage', ['--rows' => 5, '--locales' => 2, '--indexed' => 1, '--keep' => true])->assertSuccessful();
+
+        $kept = benchmarkFootprint();
+
+        $this->artisan('kitsune:benchmark-storage', ['--rows' => 5, '--indexed' => 1])->assertSuccessful();
+
+        expect(Schema::getColumnListing('entries'))->toContain('bench_idx_0')
+            ->and($indexes())->toContain('entries_bench_0')
+            ->and(benchmarkFootprint())->toBe($kept);
+    } finally {
+        // Index first: MySQL's DROP INDEX has no IF EXISTS, and a column an index references cannot be dropped.
+        if (in_array('entries_bench_0', $indexes(), true)) {
+            DB::statement($driver->dropIndexSql('entries', 'entries_bench_0'));
+        }
+
+        if (in_array('bench_idx_0', Schema::getColumnListing('entries'), true)) {
+            DB::statement($driver->dropGeneratedColumnSql('entries', 'bench_idx_0'));
+        }
+
+        DB::table('orgs')->where('slug', 'benchmark')->delete();
+    }
 });
 
 it('creates its fixture whole or not at all', function (string $command, string $slug): void {

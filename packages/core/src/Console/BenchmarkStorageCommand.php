@@ -72,6 +72,10 @@ final class BenchmarkStorageCommand extends Command
 
         [$org, $site, $type] = $this->fixture();
 
+        // What this run adds to the schema, recorded as each statement succeeds — the only schema cleanup removes.
+        $addedColumns = [];
+        $addedIndexes = [];
+
         try {
 
             for ($i = 0; $i < $indexed; $i++) {
@@ -84,7 +88,10 @@ final class BenchmarkStorageCommand extends Command
                     DB::statement($driver->addGeneratedColumnSql(
                         'entries', $column, 'values', "f{$i}", new Projection(LogicalType::Decimal),
                     ));
+                    $addedColumns[] = $column;
+
                     DB::statement($driver->createIndexSql('entries', "entries_bench_{$i}", 'site_id', $column));
+                    $addedIndexes[] = "entries_bench_{$i}";
                 }
             }
 
@@ -123,7 +130,7 @@ final class BenchmarkStorageCommand extends Command
             return self::SUCCESS;
         } finally {
             if (! $this->option('keep')) {
-                $this->cleanUp($org, $site, $type, $indexed, $driver);
+                $this->cleanUp($org, $site, $type, $addedIndexes, $addedColumns, $driver);
             }
         }
     }
@@ -140,26 +147,33 @@ final class BenchmarkStorageCommand extends Command
      * means a later --indexed=0 run still computes and maintains them, so
      * results depend on the order the benchmarks were run in.
      *
+     * ⚠️ BUT ONLY THE ONES THIS RUN ADDED. Review found every `bench_idx_*` it
+     * counted dropped whether or not it had created it, so a run without
+     * --keep removed the columns and indexes an earlier run had kept. A kept
+     * run's schema is that run's, as its rows are.
+     *
      * ⚠️ AND THE FIXTURE, which it used to leave: every run removed its entries
      * and left a `benchmark` org, site and entry type in the host's database.
      * An org this run created is force-deleted — `Org` soft-deletes, and a
      * trashed org is still residue — and the database removes what hangs off
      * it. An org that was already there keeps everything this run did not add,
      * its audit log included — see RemovesOnlyWhatItInserted.
+     *
+     * @param  list<string>  $addedIndexes
+     * @param  list<string>  $addedColumns
      */
-    private function cleanUp(Org $org, Site $site, EntryType $type, int $indexed, SchemaDriver $driver): void
+    private function cleanUp(Org $org, Site $site, EntryType $type, array $addedIndexes, array $addedColumns, SchemaDriver $driver): void
     {
         $this->removeInserted($site, self::SLUG_PREFIX);
 
-        for ($i = 0; $i < $indexed; $i++) {
-            $column = "bench_idx_{$i}";
+        // Indexes first: a generated column cannot be dropped while an
+        // index references it, and SQLite refuses outright.
+        foreach ($addedIndexes as $index) {
+            DB::statement($driver->dropIndexSql('entries', $index));
+        }
 
-            if (in_array($column, DB::getSchemaBuilder()->getColumnListing('entries'), true)) {
-                // Index first: a generated column cannot be dropped while an
-                // index references it, and SQLite refuses outright.
-                DB::statement($driver->dropIndexSql('entries', "entries_bench_{$i}"));
-                DB::statement($driver->dropGeneratedColumnSql('entries', $column));
-            }
+        foreach ($addedColumns as $column) {
+            DB::statement($driver->dropGeneratedColumnSql('entries', $column));
         }
 
         if ($org->wasRecentlyCreated) {
