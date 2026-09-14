@@ -1845,6 +1845,20 @@ class Entry extends Model implements RequiresModelSave
         return $this->site_id === null;
     }
 
+    /**
+     * The key an instance write will target, which is the ORIGINAL one.
+     *
+     * ⚠️ EXPOSED FOR `EntryPolicy`, BECAUSE A POLICY MUST ASK ABOUT THE ROW THAT WILL CHANGE. Eloquent's
+     * `getKeyForSaveQuery()` is protected and returns `$this->original[$key] ?? $this->getKey()`, so an
+     * instance whose `id` attribute has been edited updates and deletes the row it was loaded from while
+     * every check that reads `getKey()` looks at somewhere else. Review found that gap on `Role` first; the
+     * policy has the same one, and a reader cannot be handed the private half of the answer.
+     */
+    public function getKeyForAuthorization(): mixed
+    {
+        return $this->getKeyForSaveQuery();
+    }
+
     /** @return BelongsTo<EntryType, $this> */
     public function entryType(): BelongsTo
     {
