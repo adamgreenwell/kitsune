@@ -281,6 +281,53 @@ test.describe('the history of an entry somebody may only view', () => {
     });
 });
 
+test.describe('the related entries of an entry somebody may only view', () => {
+    /*
+     * ⚠️ ATTACH AND DETACH ARE EDITS, AND THIS PAGE IS REACHABLE BY A VIEWER. `ManageRelatedRecords` authorizes
+     * the page with `viewAny`, and Filament's default authorization there covers create, edit, delete and view —
+     * not attach or detach — so both ran for anybody who could open it. Review found it, one page along from the
+     * History's restore; the same two halves are asserted for the same reason.
+     */
+    test.use({ storageState: '.playwright/admin-viewer-auth.json' });
+
+    // The seeded first article is related to the others, and the viewer may view articles.
+    const RELATED = `/admin/${SITE}/c/article/1/related`;
+
+    test('lists the related entries and offers no way to change them', async ({ page }) => {
+        await page.goto(RELATED);
+
+        await expect(page.locator('.fi-ta-row').first()).toBeVisible();
+        await expect(page.getByRole('button', { name: 'Attach' })).toHaveCount(0);
+        await expect(page.getByRole('button', { name: 'Detach' })).toHaveCount(0);
+    });
+
+    test('refuses a detach requested by hand', async ({ page }) => {
+        await page.goto(RELATED);
+
+        const rows = page.locator('.fi-ta-row');
+        await expect(rows.first()).toBeVisible();
+        const before = await rows.count();
+
+        const key = await rows.first().getAttribute('wire:key');
+        expect(key).toContain('.table.records.');
+
+        const [component, record] = String(key).split('.table.records.');
+
+        await page.evaluate(async ({ component, record }) => {
+            const wire = /** @type {any} */ (window).Livewire.find(component);
+
+            await wire.mountAction('detach', {}, { table: true, recordKey: record });
+            await wire.callMountedAction();
+        }, { component, record });
+
+        await page.goto(RELATED);
+        await expect(rows.first()).toBeVisible();
+
+        // A detach that went through would leave one row fewer.
+        await expect(rows).toHaveCount(before);
+    });
+});
+
 test.describe('a relation pointing at something the editor may not view', () => {
     /*
      * ⚠️ THE PAGE COULD NOT BE SAVED AT ALL, which is the defect review found and the reason this is a

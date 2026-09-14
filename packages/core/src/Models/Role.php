@@ -199,7 +199,23 @@ class Role extends Model
      */
     public function save(array $options = []): bool
     {
-        return (bool) DB::transaction(fn (): bool => parent::save($options));
+        try {
+            return (bool) DB::transaction(fn (): bool => parent::save($options));
+        } finally {
+            /*
+             * ⚠️ A VETO LEAVES THROUGH THE FRONT DOOR, which neither clear could see — review found it. The
+             * `saving` listener arms `$guardsRan`; `performUpdate()`'s `finally` and the `saved` listener disarm
+             * it. An application observer registered after this model's own, returning `false` from `saving`,
+             * makes Eloquent return before either — so the proof stayed armed, and a `saveQuietly()` on the
+             * same instance then supplied a matching `$writingThrough` beside it and wrote `is_owner` or
+             * `org_id` with no per-holder audit and no org check.
+             *
+             * `save()` is the one boundary every exit passes, the veto included, so the proof is dropped here as
+             * well. The inner clears stay: each is where its own path ends.
+             */
+            $this->guardsRan = false;
+            $this->writingThrough = null;
+        }
     }
 
     /**
