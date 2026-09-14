@@ -1978,6 +1978,14 @@ Filament's own opt-in for exactly that, and it is off by default.
   `$user->orgs()->detach()` asked the guard about the wrong organisation and removed the last owner's
   membership with every other.
 
+  ⚠️ **And the guard asked about membership in the wrong place twice more, which review found.** It read
+  holders through the user model's membership scope, which constrains to whatever org the *context* names — so
+  a detach made from another org, or from a console sweep with no org at all, counted nobody as a member of the
+  org being left and let its last owner go. It now asks under that org and gives the caller's context back. And
+  a detach of every membership deleted every row the user held by the time of the delete, not the ones it had
+  read and checked, so a membership another transaction attached in between went with no lock, no check and no
+  audit row. The delete names what was read.
+
   ⚠️ **And the sweep is one transaction, which review found it was not.** A user holding roles in two
   organisations could have the first revoked and audited and the second refused by the last-owner guard: the
   deletion failed and the person kept their account while permanently losing authority the refusal existed to
