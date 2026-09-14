@@ -12,9 +12,12 @@ namespace Kitsune\Core;
 
 use Filament\Support\Assets\Js;
 use Filament\Support\Facades\FilamentAsset;
+use Illuminate\Database\Events\TransactionRolledBack;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\ServiceProvider;
 use Kitsune\Core\Auth\EntryPolicy;
+use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Console\AuditPatternsCommand;
 use Kitsune\Core\Console\BenchmarkAdminCommand;
 use Kitsune\Core\Console\BenchmarkFloorCommand;
@@ -78,6 +81,21 @@ final class KitsuneServiceProvider extends ServiceProvider
     public function boot(): void
     {
         $this->loadMigrationsFrom(__DIR__.'/../database/migrations');
+
+        /*
+         * ⚠️ A ROLLBACK UNDOES THE GRANT AND NOT THE MEMO, which review found. `Role::grant()` flushes the
+         * permission memo when its own transaction commits — but inside a CALLER's transaction that commit
+         * is a savepoint release, and the outer transaction can still roll back. A check made in between
+         * memoises the uncommitted grant, nothing flushes it again, and code that catches the rollback and
+         * carries on in the same request keeps authorising against a grant that no longer exists.
+         *
+         * Laravel announces the rollback, so the memo is dropped when it happens. This is cheaper than
+         * refusing to memoise inside a transaction — that would cost a read per check on every write path,
+         * for a window that only opens when somebody rolls back and then continues.
+         */
+        Event::listen(TransactionRolledBack::class, static function (): void {
+            Permissions::forget();
+        });
 
         if ($this->app->runningInConsole()) {
             $this->commands([

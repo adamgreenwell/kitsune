@@ -362,6 +362,7 @@ class AuditedBuilder extends ScopedBuilder
          */
         return $this->auditing($this->actionFor($values), function () use ($values) {
             $this->refuseIfTheRowMoved('update');
+            $this->refuseNoncanonicalStatus($values);
             $this->refuseUnpermittedPublication($values);
 
             return parent::update($values);
@@ -382,6 +383,62 @@ class AuditedBuilder extends ScopedBuilder
 
             return parent::forceDelete();
         });
+    }
+
+    /**
+     * Refuse a `status` the vocabulary does not contain.
+     *
+     * ⚠️ THE DATABASE'S EQUALITY IS NOT PHP'S, and that is what makes this a guard rather than validation.
+     * MySQL and MariaDB compare case- AND accent-insensitively by default, so `scopePublished()` matches a
+     * stored `publíshed` while any comparison written here treats it as a different string — the publication
+     * guard stands aside and the row is public. No PHP predicate can enumerate what a given server considers
+     * equal, because it depends on the column's collation; a closed set of storable values removes the
+     * question instead of answering it.
+     *
+     * ⚠️ AT THE BUILDER, so it covers the bulk write this project supports and the quiet paths a listener
+     * would miss. `Entry::STATUSES` is the vocabulary, shared with the form's option list.
+     *
+     * @param  array<string, mixed>  $values
+     */
+    private function refuseNoncanonicalStatus(array $values): void
+    {
+        $table = $this->getModel()->getTable();
+
+        foreach (['status', $table.'.status'] as $column) {
+            if (! array_key_exists($column, $values)) {
+                continue;
+            }
+
+            $status = $values[$column];
+
+            if (is_string($status) && in_array($status, Entry::STATUSES, true)) {
+                continue;
+            }
+
+            /*
+             * ⚠️ A RAW EXPRESSION IS SQL, AND THIS GUARD READS VALUES. A joined update assigning `status`
+             * from the joined table — `DB::raw('CASE WHEN … END')` — is a supported write this suite asserts
+             * on MySQL, and there is nothing here to inspect: the value does not exist until the database
+             * evaluates it. Refusing every expression would break that capability to close a hole only a
+             * caller writing raw SQL can reach, which is the same trade `updateFrom()` documents from the
+             * other side.
+             *
+             * The limitation is stated rather than hidden: a raw expression may write any string the column
+             * accepts, and `scopePublished()` will read it the way the collation does.
+             */
+            if ($status instanceof Expression) {
+                continue;
+            }
+
+            throw new RuntimeException(sprintf(
+                'Refusing to write [%s] as an entry status: the column holds one of [%s] and nothing else. '
+                .'A value outside that set is not merely unknown — MySQL and MariaDB compare it '
+                .'case-insensitively and accent-insensitively, so the database can treat it as published '
+                .'while every guard here reads it as something different (ADR-033).',
+                is_string($status) ? $status : get_debug_type($status),
+                implode(', ', Entry::STATUSES),
+            ));
+        }
     }
 
     /**
@@ -409,7 +466,13 @@ class AuditedBuilder extends ScopedBuilder
         $table = $model->getTable();
         $status = $values['status'] ?? $values[$table.'.status'] ?? null;
 
-        if ($status !== 'published' || ! $model->exists || $model->getKeyForAuthorization() === null) {
+        /*
+         * ⚠️ CASE-INSENSITIVELY — see `Entry::isPublished()`. MySQL and MariaDB's default collations match a
+         * stored `PUBLISHED` against `scopePublished()`'s `status = 'published'`, so a strict comparison here
+         * let that spelling through a guard whose whole job is to catch it.
+         */
+        if (! is_string($status) || mb_strtolower($status) !== 'published'
+            || ! $model->exists || $model->getKeyForAuthorization() === null) {
             return;
         }
 

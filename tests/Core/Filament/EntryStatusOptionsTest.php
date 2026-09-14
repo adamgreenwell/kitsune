@@ -285,3 +285,45 @@ it('leaves the supported bulk publish alone, which is the limitation stated in A
 
     expect(DB::table('entries')->where('id', $entry->getKey())->value('status'))->toBe('published');
 });
+
+it('refuses a status the vocabulary does not contain', function (): void {
+    /*
+     * ⚠️ THE SECOND HALF OF THE COLLATION FINDING, AND THE HALF THAT CANNOT BE FIXED BY COMPARING BETTER.
+     * MySQL's and MariaDB's default collations are accent-insensitive as well as case-insensitive, so
+     * `scopePublished()`'s `status = 'published'` matches a stored `publíshed` — while `mb_strtolower()`
+     * leaves that a different string and the publication guard stands aside. No PHP predicate can enumerate
+     * what a given server considers equal, because it depends on the column's collation.
+     *
+     * So the column holds a closed set and the question stops being askable. `archived` still works, which
+     * is what keeps this a vocabulary rather than a lock.
+     *
+     * ⚠️ THIS REPLACED A TEST THAT ASSERTED THE CASE-VARIANTS WERE REFUSED AS UNPERMITTED PUBLICATIONS. They
+     * are refused earlier now, for not being statuses at all, and one test asserting the stronger rule beats
+     * two asserting the same values through different guards. The canonical spelling's permission check is
+     * covered by `it refuses an instance write that publishes`.
+     */
+    $this->role->grant(Permissions::forEntryType('article', 'update'));
+
+    $entry = publishedArticle($this->org);
+
+    $entry->status = 'draft';
+    $entry->save();
+
+    Auth::login($this->user);
+    Permissions::forget();
+
+    foreach (['publíshed', 'PUBLISHED', 'pending', ''] as $spelling) {
+        $entry->status = $spelling;
+
+        expect(fn () => $entry->save())
+            ->toThrow(RuntimeException::class, 'entry status', "[{$spelling}] was stored");
+    }
+
+    expect(DB::table('entries')->where('id', $entry->getKey())->value('status'))->toBe('draft');
+
+    // And a value the vocabulary does contain still writes, by somebody who may not publish.
+    $entry->status = 'archived';
+    $entry->save();
+
+    expect(DB::table('entries')->where('id', $entry->getKey())->value('status'))->toBe('archived');
+});

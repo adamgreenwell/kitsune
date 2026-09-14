@@ -233,6 +233,11 @@ class EntryResource extends Resource
      */
     public static function statusOptions(?Authenticatable $user, ?string $current = null): array
     {
+        /*
+         * ⚠️ THE LABELS ARE HERE AND THE VOCABULARY IS `Entry::STATUSES`, which the write boundary enforces.
+         * Two lists of what a status may be is one list that drifts — and the drift would be silent, because
+         * a value this control never offers is refused at the write rather than rendered wrongly.
+         */
         $options = ['draft' => 'Draft', 'archived' => 'Archived'];
 
         $mayPublish = $user !== null && app()->bound(EntryType::class) && Permissions::allows(
