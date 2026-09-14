@@ -285,3 +285,33 @@ it('leaves the supported bulk publish alone, which is the limitation stated in A
 
     expect(DB::table('entries')->where('id', $entry->getKey())->value('status'))->toBe('published');
 });
+
+it('refuses a publication spelled the way a case-insensitive collation reads it', function (): void {
+    /*
+     * ⚠️ ENGINE-SPECIFIC, IN THE DIRECTION THAT MATTERS. MySQL and MariaDB's default collations compare
+     * case-insensitively, so `scopePublished()`'s `status = 'published'` MATCHES a stored `PUBLISHED` — and
+     * a guard comparing `!== 'published'` strictly stood aside for exactly that spelling. The entry would be
+     * public, written by somebody who may not publish, through a guard whose whole job is to catch it.
+     *
+     * PostgreSQL and SQLite compare `=` case-sensitively, so there the row would simply never be published:
+     * a guard written and proven on SQLite could not see this, which is what the matrix is for.
+     */
+    $this->role->grant(Permissions::forEntryType('article', 'update'));
+
+    $entry = publishedArticle($this->org);
+
+    $entry->status = 'draft';
+    $entry->save();
+
+    Auth::login($this->user);
+    Permissions::forget();
+
+    foreach (['PUBLISHED', 'Published', 'pUbLiShEd'] as $spelling) {
+        $entry->status = $spelling;
+
+        expect(fn () => $entry->save())
+            ->toThrow(RuntimeException::class, 'entry.article.publish', "[{$spelling}] was not treated as publication");
+    }
+
+    expect(DB::table('entries')->where('id', $entry->getKey())->value('status'))->toBe('draft');
+});

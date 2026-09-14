@@ -1755,6 +1755,12 @@ instance loaded as published submitting published writes no status at all. That 
 test rather than recorded here alone, because it is a fact about the framework that nothing else would notice
 changing.
 
+⚠️ **And what counts as `published` is asked case-insensitively, because two of the four engines are.** Under
+MySQL's and MariaDB's default collations `scopePublished()`'s `status = 'published'` matches a stored
+`PUBLISHED`, so a strict comparison in the guard stood aside for exactly the spelling that publishes the row.
+PostgreSQL and SQLite compare case-sensitively, which is why a guard written and proven on SQLite could not
+see it — the matrix exists for findings shaped like this one.
+
 ⚠️ **And the form was not the only way into that state, which is the finding the question led to rather than
 the one that was asked.** `EntryRevision::SNAPSHOT_ATTRIBUTES` carries `status`, so restoring a version that
 was published publishes the entry — an editor holding only `entry.{type}.update` could undo somebody else's
@@ -1796,6 +1802,19 @@ So a link the record **already holds** keeps its value and loses its title: it r
 ### Consequence
 
 - **Core's RBAC enforces nothing until the host application has run the skeleton's `role_user` migration.** Already true of org scoping, so it is a pattern rather than a new hole — but it is written down here rather than left in somebody's memory.
+
+- **RBAC requires integer user keys, and that is a constraint on the HOST rather than a preference.**
+  `role_user.user_id` is a bigint foreign key to the host's `users` table, so an installation whose users
+  carry UUIDs or ULIDs cannot express an assignment at all. `Permissions` fails closed on it — a non-numeric
+  identifier resolves no grants and no owner bypass, rather than coercing to `0` and collecting whatever
+  that id holds — and a test pins that direction so the limitation cannot drift into a silent one.
+
+  ⚠️ **The audit columns are strings and this is not, which is deliberate.** `audit_log` records whoever
+  ACTED, through any guard and any model, and its insert shares a transaction with the write it records — so
+  an identifier it cannot hold costs the write, not just the attribution. An assignment is a row in a pivot
+  whose column type the host's schema fixes, and widening it is a change to the skeleton's migration, every
+  signature in the assignment path and the holder picker: a piece of work, not a patch, and one that belongs
+  to whoever decides whether UUID-keyed hosts are in scope before 1.0.
 - **`role_permissions` is `#[Unscoped]`, and the reason is the one `EntryRelation` and `EntryRevision` give**: it is reached only through `Role`, which is `#[OrgScoped]` and enforces it. Its index leads with `role_id` rather than a scope key, which satisfies invariant 4 by the invariant's own argument — a role is globally unique and belongs to exactly one org, exactly as a site does.
 - **A `role_user` row pairing a user with a role in an org they do not belong to resolves nothing**, because resolution runs through the org-scoped `Role` query under the current org context *and* asks membership of the user model. Asserted from the attacker's side.
 
@@ -1941,6 +1960,14 @@ So a link the record **already holds** keeps its value and loses its title: it r
 
 - **`assignTo()` asks whether the assignment already exists INSIDE the lock.** It asked before the transaction, so two requests assigning the same person to the same role both passed, the first inserted, and the second collided with the `(role_id, user_id)` primary key — where the documented behaviour is to be idempotent and silent. "Already holds it" has to be asked where the answer cannot change underneath.
 
+  ⚠️ **And a ROLLBACK undoes the grant without undoing the memo**, which review found one layer out from
+  that. `grant()` flushes when its own transaction commits — inside a caller's transaction that is a
+  savepoint release, and the outer transaction can still roll back. A check made in between memoises the
+  uncommitted grant, nothing flushes it again, and a caller that catches the rollback and carries on keeps
+  authorising against a grant that no longer exists. Laravel announces the rollback, so the memo is dropped
+  when it happens: cheaper than refusing to memoise inside a transaction, which would cost a read per check
+  on every write path for a window that only opens when somebody rolls back and then continues.
+
   ⚠️ **Inside the lock is not the same as current**, which review found next. Under MySQL's default
   REPEATABLE READ a plain `select` answers from the transaction's snapshot, and inside a caller-owned outer
   transaction that snapshot predates this method — so the role lock makes the second request wait for the
@@ -1958,13 +1985,6 @@ So a link the record **already holds** keeps its value and loses its title: it r
   `refuseIfTheRowMovedUnderneath()` compares, because it is one rule and not three.
 
 - **The role row is the mutex for everything that changes its authority.** Each operation was locally
-
-- **A vetoed deletion clears the proof it earned.** `performDeleteOnModel()` clears the guard proof in a
-  `finally`, and an application observer returning false means that method is never entered — so the proof
-  survived on the instance and a later `saveQuietly()` supplied the other half, after which a quiet write to
-  `is_owner` or `org_id` skipped the org check, the per-holder audit and the cache invalidation. The same
-  family as every other finding here — a proof outliving the write it was earned for — reached through
-  somebody else's veto rather than through a forged attribute.
   transactional and the PAIR still lost a row from the trail: an assignment inserted the pivot and read the
   owner flag as false, recording `role.assigned`, while a concurrent promotion could not see the uncommitted
   pivot and audited no holder at all. Both committed, and the person was an owner with nothing in the log
@@ -1972,6 +1992,13 @@ So a link the record **already holds** keeps its value and loses its title: it r
   writes the role row, so it takes that lock on its own account; `assignTo()` and `removeFrom()` take it
   explicitly **before** touching `role_user`, and the holders read takes it from the other side so a
   transition waits for an assignment in flight rather than counting past it.
+
+- **A vetoed deletion clears the proof it earned.** `performDeleteOnModel()` clears the guard proof in a
+  `finally`, and an application observer returning false means that method is never entered — so the proof
+  survived on the instance and a later `saveQuietly()` supplied the other half, after which a quiet write to
+  `is_owner` or `org_id` skipped the org check, the per-holder audit and the cache invalidation. The same
+  family as every other finding here — a proof outliving the write it was earned for — reached through
+  somebody else's veto rather than through a forged attribute.
 
 - **A quiet save is still asked which org's row it is touching.** "Every save of an existing role asks it" was
   true of noisy saves only: `saveQuietly()` and `updateQuietly()` suppress the `saving` listener, and what was

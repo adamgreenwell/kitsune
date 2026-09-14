@@ -2939,9 +2939,26 @@ class Entry extends Model implements RequiresModelSave
      * no permission to consult — `Auditor` treats a null actor the same way, and `Permissions::currentUser()`
      * only answers about a request a guard is actually serving.
      */
+    /**
+     * Is this value the published state, as the DATABASE will read it?
+     *
+     * ⚠️ CASE-INSENSITIVELY, BECAUSE THE DEFAULT MySQL AND MariaDB COLLATIONS ARE — review found the gap and
+     * it is engine-specific in the direction that matters. `scopePublished()` asks `status = 'published'`,
+     * which under `utf8mb4_unicode_ci` matches a stored `PUBLISHED` — so a write of that spelling was public
+     * while a strict `!== 'published'` comparison in the guard stood aside. The form's `in` rule refuses it,
+     * and the form is not the boundary.
+     *
+     * PostgreSQL and SQLite compare `=` case-sensitively, so there the row would simply never be published —
+     * which is exactly why a guard written and proven on SQLite could not see this.
+     */
+    private static function isPublished(?string $status): bool
+    {
+        return $status !== null && mb_strtolower($status) === 'published';
+    }
+
     private function publishingRefused(string $storedStatus, string $handle): bool
     {
-        if ($storedStatus === 'published' || $handle === '') {
+        if (self::isPublished($storedStatus) || $handle === '') {
             return false;
         }
 
@@ -3011,7 +3028,7 @@ class Entry extends Model implements RequiresModelSave
      */
     public function restoreWouldPublishWithoutPermission(EntryRevision $revision): bool
     {
-        if ($revision->status !== 'published') {
+        if (! self::isPublished($revision->status)) {
             return false;
         }
 

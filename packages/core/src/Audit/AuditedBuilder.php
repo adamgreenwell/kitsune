@@ -409,7 +409,13 @@ class AuditedBuilder extends ScopedBuilder
         $table = $model->getTable();
         $status = $values['status'] ?? $values[$table.'.status'] ?? null;
 
-        if ($status !== 'published' || ! $model->exists || $model->getKeyForAuthorization() === null) {
+        /*
+         * ⚠️ CASE-INSENSITIVELY — see `Entry::isPublished()`. MySQL and MariaDB's default collations match a
+         * stored `PUBLISHED` against `scopePublished()`'s `status = 'published'`, so a strict comparison here
+         * let that spelling through a guard whose whole job is to catch it.
+         */
+        if (! is_string($status) || mb_strtolower($status) !== 'published'
+            || ! $model->exists || $model->getKeyForAuthorization() === null) {
             return;
         }
 

@@ -8,11 +8,13 @@
 
 declare(strict_types=1);
 
+use Illuminate\Foundation\Auth\User as AuthUser;
 use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Models\AuditLog;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Role;
+use Kitsune\Core\Models\RolePermission;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tests\Fixtures\ElsewhereUser;
 use Kitsune\Core\Tests\Fixtures\TestUser;
@@ -279,6 +281,69 @@ it('names an owner elevation in the action, because the target cannot hold it', 
         ->toBe(['role.owner_assigned', 'role.owner_unassigned'])
         ->and(AuditLog::query()->where('action', 'role.owner_assigned')->value('target_id'))
         ->toBe((string) $user->getKey());
+});
+
+it('resolves nothing for a user whose identifier is not an integer', function (): void {
+    /*
+     * ⚠️ A STATED LIMITATION, PINNED SO IT CANNOT DRIFT INTO A SILENT ONE. `role_user.user_id` is a bigint
+     * foreign key to the host's `users` table (the skeleton's migration), so an installation whose users
+     * carry UUIDs cannot express an assignment at all — the constraint is in the schema, not in these casts.
+     *
+     * What this asserts is the DIRECTION of the failure: such a user resolves nothing rather than resolving
+     * somebody else's grants. `Permissions::key()` returns null for a non-numeric identifier, so `held()` is
+     * empty and `isOwner()` is false — and the alternative, coercing `'018f…'` to `0`, would hand them the
+     * grants of whatever row happens to have id 0 or collide with another user entirely.
+     *
+     * ⚠️ The audit columns are strings and this is not, which is deliberate rather than inconsistent: the
+     * log records whoever ACTED, through any guard, and an audit insert that fails takes the write it was
+     * recording with it. Assignment is a row in a pivot whose column type the host's schema fixes.
+     */
+    $uuid = new class extends AuthUser
+    {
+        public function getAuthIdentifier(): string
+        {
+            return '018f2b7c-1d6a-7e3f-9a0b-5c8d4e2f1a33';
+        }
+    };
+
+    expect(Permissions::held($uuid))->toBe([])
+        ->and(Permissions::isOwner($uuid))->toBeFalse()
+        ->and(Permissions::allows($uuid, 'entry.article.update'))->toBeFalse();
+});
+
+it('does not answer from a memo of a grant that was rolled back', function (): void {
+    /*
+     * ⚠️ A ROLLBACK UNDOES THE GRANT AND NOT THE MEMO, which review found. `grant()` flushes when ITS
+     * transaction commits — and inside a caller's transaction that is a savepoint release, so the outer
+     * transaction can still roll back. A check made in between memoises the uncommitted grant, nothing
+     * flushes it again, and code that catches the rollback and carries on in the same request keeps
+     * authorising against a grant that no longer exists.
+     */
+    /** @var TestUser $user */
+    $user = TestUser::create(['email' => 'rollback@kitsune.test']);
+    DB::table('org_user')->insert(['org_id' => $this->org->getKey(), 'user_id' => $user->getKey()]);
+
+    $role = Role::create(['handle' => 'editor', 'name' => 'Editor']);
+    DB::table('role_user')->insert(['role_id' => $role->getKey(), 'user_id' => $user->getKey()]);
+
+    expect(Permissions::allows($user, 'entry.article.update'))->toBeFalse();
+
+    try {
+        DB::transaction(function () use ($role, $user): void {
+            $role->grant('entry.article.update');
+
+            // The check that memoises the uncommitted grant, inside the transaction that will be undone.
+            expect(Permissions::allows($user, 'entry.article.update'))->toBeTrue();
+
+            throw new RuntimeException('the caller changes its mind');
+        });
+    } catch (RuntimeException) {
+        // The caller catches its own failure and carries on, which is the shape that matters.
+    }
+
+    expect(RolePermission::query()->where('role_id', $role->getKey())->count())->toBe(0)
+        ->and(Permissions::allows($user, 'entry.article.update'))
+        ->toBeFalse('a grant that was rolled back is still being answered from the memo');
 });
 
 it('records nothing for an operation that changed nothing', function (): void {
