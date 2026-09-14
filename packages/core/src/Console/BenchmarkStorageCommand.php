@@ -156,8 +156,9 @@ final class BenchmarkStorageCommand extends Command
      * and left a `benchmark` org, site and entry type in the host's database.
      * An org this run created is force-deleted — `Org` soft-deletes, and a
      * trashed org is still residue — and the database removes what hangs off
-     * it. An org that was already there keeps everything this run did not add,
-     * its audit log included — see LeavesNothingBehind.
+     * it, unless another run has joined it. An org that was already there
+     * keeps everything this run did not add, its audit log included — see
+     * LeavesNothingBehind.
      *
      * @param  list<string>  $addedIndexes
      * @param  list<string>  $addedColumns
@@ -177,7 +178,8 @@ final class BenchmarkStorageCommand extends Command
         }
 
         if ($org->wasRecentlyCreated) {
-            $org->forceDelete();
+            // Its site and type go with it — or, if another run has joined it, all three stay for that run.
+            $this->removeCreatedOrgUnlessJoined($org);
 
             return;
         }

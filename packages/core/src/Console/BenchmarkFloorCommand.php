@@ -226,20 +226,22 @@ final class BenchmarkFloorCommand extends Command
      *
      * ⚠️ AN ORG THIS RUN CREATED GOES WHOLE, and the database takes everything hung off it with it — the site,
      * the entry type, the inserted entries and the audit rows the fixture wrote. `forceDelete()`, because `Org`
-     * soft-deletes and a trashed org is precisely the residue this exists to stop leaving.
+     * soft-deletes and a trashed org is precisely the residue this exists to stop leaving — unless another run
+     * has joined it, which `removeCreatedOrgUnlessJoined()` decides under a lock.
      *
      * ⚠️ AN ORG THAT WAS ALREADY THERE KEEPS EVERYTHING THIS RUN DID NOT ADD. Only rows carrying this run's token, a
      * site or a type this run created, are removed — the org may be somebody's, or a previous run's with `--keep`.
      */
     private function cleanUp(Org $org, Site $site, EntryType $type): void
     {
+        $this->removeInserted($site, self::SLUG_PREFIX);
+
         if ($org->wasRecentlyCreated) {
-            $org->forceDelete();
+            // Its site and type go with it — or, if another run has joined it, all three stay for that run.
+            $this->removeCreatedOrgUnlessJoined($org);
 
             return;
         }
-
-        $this->removeInserted($site, self::SLUG_PREFIX);
 
         if ($type->wasRecentlyCreated) {
             $type->delete();

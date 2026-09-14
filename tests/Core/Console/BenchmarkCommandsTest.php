@@ -188,6 +188,50 @@ it('removes none of the rows another run inserts while it is running', function 
         ->and(DB::table('entries')->where('slug', 'like', 'floor-%')->count())->toBe(3);
 });
 
+it('keeps a fixture it created once another run has joined it', function (string $command, array $options, string $org): void {
+    /*
+     * ⚠️ CREATING THE ORG DID NOT MAKE IT THIS RUN'S ALONE — review found the whole-org delete going around the
+     * per-run tokens. A second run finds the org through `firstOrCreate()` and inserts under it, and force-deleting
+     * the org cascades through that run's rows. Unlike the test above nothing is kept beforehand, so this run
+     * creates the fixture itself; the other run's rows are written inside it, as its first chunk lands.
+     */
+    $written = false;
+
+    DB::listen(function (QueryExecuted $query) use (&$written): void {
+        if ($written || ! str_starts_with(str_replace(['"', '`'], '', $query->sql), 'insert into entries')) {
+            return;
+        }
+
+        $written = true;
+        $ours = DB::table('entries')->orderByDesc('id')->first();
+
+        DB::table('entries')->insert(array_map(static fn (int $i): array => [
+            'site_id' => $ours->site_id,
+            'org_id' => $ours->org_id,
+            'entry_type_id' => $ours->entry_type_id,
+            'type_handle' => 'article',
+            'status' => 'published',
+            'slug' => "another-run-{$i}",
+            'title' => "Another run's entry {$i}",
+            'values' => json_encode([]),
+            'published_at' => now(),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ], [1, 2, 3]));
+    });
+
+    $this->artisan($command, $options)->assertSuccessful();
+
+    // The other run's rows, and the fixture they hang off, survive; this run's own rows are gone.
+    expect($written)->toBeTrue()
+        ->and(DB::table('entries')->count())->toBe(3)
+        ->and(DB::table('entries')->where('slug', 'like', 'another-run-%')->count())->toBe(3)
+        ->and(DB::table('orgs')->where('slug', $org)->exists())->toBeTrue();
+})->with([
+    'floor' => ['kitsune:benchmark-floor', ['--entries' => 5], 'floor-benchmark'],
+    'storage' => ['kitsune:benchmark-storage', ['--rows' => 5], 'benchmark'],
+]);
+
 it('drops only the generated columns its own run added, and keeps those an earlier run kept', function (): void {
     /*
      * ⚠️ REVIEW FOUND CLEANUP DROPPING EVERY `bench_idx_*` IT COUNTED, whether or not this run had added it, so a

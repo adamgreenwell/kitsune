@@ -11,6 +11,7 @@ declare(strict_types=1);
 namespace Kitsune\Core\Console\Concerns;
 
 use Illuminate\Support\Facades\DB;
+use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
 use LogicException;
@@ -90,5 +91,31 @@ trait LeavesNothingBehind
             ->where('site_id', $site->getKey())
             ->where('slug', 'like', $this->runPrefix($prefix).'%')
             ->delete();
+    }
+
+    /**
+     * Force-delete an org this run created — unless another run has joined it, in which case it stays.
+     *
+     * ⚠️ CREATING THE ORG DID NOT MAKE IT THIS RUN'S ALONE — review found the whole-org delete going around the
+     * per-run tokens. A second run started while this one was going finds the org through `firstOrCreate()` and
+     * inserts its own rows under it, and a force-delete cascades through every one of them. So the org goes only
+     * once this run's own rows are gone and nothing else is left in it, decided under a lock on the org row: a run
+     * that joins after the decision blocks on that lock for its first insert's foreign key, and then fails on the
+     * missing org rather than losing rows it already had.
+     *
+     * A fixture two overlapping runs shared therefore outlives both. That is residue, and it is the only
+     * alternative to deleting rows a running benchmark is still using.
+     */
+    private function removeCreatedOrgUnlessJoined(Org $org): void
+    {
+        DB::transaction(static function () use ($org): void {
+            Org::query()->withoutGlobalScopes()->whereKey($org->getKey())->lockForUpdate()->value('id');
+
+            if (DB::table('entries')->where('org_id', $org->getKey())->exists()) {
+                return;
+            }
+
+            $org->forceDelete();
+        });
     }
 }
