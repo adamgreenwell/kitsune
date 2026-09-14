@@ -8,7 +8,11 @@
 
 declare(strict_types=1);
 
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
+use Kitsune\Core\Models\Org;
+use Kitsune\Core\Models\Site;
+use Kitsune\Core\Tenancy\Context;
 
 /*
  * The benchmarks run on an operator's installation — ADR-027's floor is a claim a host can check on its own
@@ -84,6 +88,41 @@ it('keeps what it made when asked to', function (): void {
         ->and($after['entries'])->toBe($before['entries'] + 25)
         ->and(DB::table('orgs')->where('slug', 'floor-benchmark')->exists())->toBeTrue();
 });
+
+it('removes only the rows its own run inserted, and keeps a corpus an earlier run kept', function (): void {
+    /*
+     * ⚠️ REVIEW FOUND THE STORAGE BENCHMARK'S CLEANUP MATCHING `bench-%` ACROSS THE SITE, so a run without
+     * `--keep` deleted the corpus an earlier run had kept. Two locale counts give the runs different slugs, so
+     * the second run succeeds and its cleanup is the only thing under test.
+     */
+    $this->artisan('kitsune:benchmark-storage', ['--rows' => 5, '--locales' => 2, '--keep' => true])->assertSuccessful();
+
+    $kept = benchmarkFootprint();
+
+    $this->artisan('kitsune:benchmark-storage', ['--rows' => 5])->assertSuccessful();
+
+    expect(benchmarkFootprint())->toBe($kept);
+});
+
+it('creates its fixture whole or not at all', function (string $command, string $slug): void {
+    /*
+     * ⚠️ A SITE SLUG IS UNIQUE ACROSS THE INSTALLATION, and cleanup cannot begin until the fixture exists.
+     * Review found another org already owning the benchmark's slug failing the site insert after the org was
+     * created, which left that org behind.
+     */
+    $someone = Org::create(['name' => 'Someone', 'slug' => 'someone']);
+    app(Context::class)->setOrg($someone);
+    Site::create(['org_id' => $someone->id, 'handle' => $slug, 'slug' => $slug, 'name' => 'Theirs', 'locale' => 'en']);
+
+    $before = benchmarkFootprint();
+
+    expect(fn () => $this->artisan($command)->run())->toThrow(QueryException::class);
+
+    expect(benchmarkFootprint())->toBe($before);
+})->with([
+    'floor' => ['kitsune:benchmark-floor', 'floor-benchmark'],
+    'storage' => ['kitsune:benchmark-storage', 'benchmark'],
+]);
 
 it('asks before writing to a production installation', function (string $command): void {
     app()->detectEnvironment(static fn (): string => 'production');

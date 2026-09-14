@@ -13,6 +13,7 @@ namespace Kitsune\Core\Console;
 use Illuminate\Console\Command;
 use Illuminate\Console\ConfirmableTrait;
 use Illuminate\Support\Facades\DB;
+use Kitsune\Core\Console\Concerns\RemovesOnlyWhatItInserted;
 use Kitsune\Core\Kitsune;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
@@ -42,17 +43,10 @@ use Kitsune\Core\Tenancy\Context;
 final class BenchmarkFloorCommand extends Command
 {
     use ConfirmableTrait;
+    use RemovesOnlyWhatItInserted;
 
-    /** Rows this command inserts, and — with the id mark below — the only rows it removes. */
+    /** Rows this command inserts, and — above the mark it takes — the only rows it removes. */
     private const SLUG_PREFIX = 'floor-';
-
-    /**
-     * The highest entry id before this run inserted anything, or null if it inserted nothing.
-     *
-     * ⚠️ IDENTITY RATHER THAN PATTERN, as the admin benchmark learned: a slug prefix is a guess about somebody
-     * else's data, and a run that inserted nothing must delete nothing.
-     */
-    private ?int $inserted = null;
 
     protected $signature = 'kitsune:benchmark-floor
         {--entries=1000 : Content volume to measure against}
@@ -155,24 +149,34 @@ final class BenchmarkFloorCommand extends Command
         }
     }
 
-    /** @return array{0: Org, 1: Site, 2: EntryType} */
+    /**
+     * The org, site and entry type to measure in, found or created.
+     *
+     * ⚠️ IN ONE TRANSACTION, because cleanup cannot begin until this returns. A site slug is unique across the
+     * installation, so another org already owning `floor-benchmark` failed the site insert after the org was
+     * created — and the org stayed.
+     *
+     * @return array{0: Org, 1: Site, 2: EntryType}
+     */
     private function fixture(): array
     {
-        $org = Org::firstOrCreate(['slug' => 'floor-benchmark'], ['name' => 'Floor benchmark']);
-        app(Context::class)->setOrg($org);
+        return DB::transaction(static function (): array {
+            $org = Org::firstOrCreate(['slug' => 'floor-benchmark'], ['name' => 'Floor benchmark']);
+            app(Context::class)->setOrg($org);
 
-        $site = Site::firstOrCreate(
-            ['slug' => 'floor-benchmark'],
-            ['org_id' => $org->id, 'handle' => 'floor-benchmark', 'name' => 'Floor benchmark'],
-        );
-        app(Context::class)->setSite($site);
+            $site = Site::firstOrCreate(
+                ['slug' => 'floor-benchmark'],
+                ['org_id' => $org->id, 'handle' => 'floor-benchmark', 'name' => 'Floor benchmark'],
+            );
+            app(Context::class)->setSite($site);
 
-        $type = EntryType::firstOrCreate(
-            ['org_id' => $org->id, 'handle' => 'article'],
-            ['name' => 'Article', 'plural_name' => 'Articles'],
-        );
+            $type = EntryType::firstOrCreate(
+                ['org_id' => $org->id, 'handle' => 'article'],
+                ['name' => 'Article', 'plural_name' => 'Articles'],
+            );
 
-        return [$org, $site, $type];
+            return [$org, $site, $type];
+        });
     }
 
     /** Top the benchmark site up to the requested volume. Returns the total in scope. */
@@ -184,8 +188,7 @@ final class BenchmarkFloorCommand extends Command
             return $existing;
         }
 
-        // Taken before the first insert, so cleanup can remove this run's rows by id rather than by slug.
-        $this->inserted = (int) DB::table('entries')->max('id');
+        $this->markBeforeInserting();
 
         $now = now();
         $rows = [];
@@ -236,13 +239,7 @@ final class BenchmarkFloorCommand extends Command
             return;
         }
 
-        if ($this->inserted !== null) {
-            DB::table('entries')
-                ->where('site_id', $site->getKey())
-                ->where('id', '>', $this->inserted)
-                ->where('slug', 'like', self::SLUG_PREFIX.'%')
-                ->delete();
-        }
+        $this->removeInserted($site, self::SLUG_PREFIX);
 
         if ($type->wasRecentlyCreated) {
             $type->delete();

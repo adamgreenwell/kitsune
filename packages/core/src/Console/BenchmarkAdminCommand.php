@@ -21,6 +21,7 @@ use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use Kitsune\Core\Console\Concerns\RemovesOnlyWhatItInserted;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Site;
@@ -51,6 +52,7 @@ use Kitsune\Core\Tenancy\Context;
 final class BenchmarkAdminCommand extends Command
 {
     use ConfirmableTrait;
+    use RemovesOnlyWhatItInserted;
 
     /**
      * The Phase 4 bar.
@@ -61,17 +63,8 @@ final class BenchmarkAdminCommand extends Command
      */
     private const BUDGET_MS = 200.0;
 
-    /** Rows this command created, and the only rows it will remove. */
+    /** Rows this command inserts, and — above the mark it takes — the only rows it removes. */
     private const SLUG_PREFIX = 'bench-admin-';
-
-    /**
-     * The highest entry id that existed before this run inserted anything, or null if it inserted nothing.
-     *
-     * ⚠️ IDENTITY RATHER THAN PATTERN, because a pattern is a guess about somebody else's data. Review found
-     * that cleanup matching `bench-admin-%` would force-delete a customer's own entry if they happened to
-     * name one that way — on a run that created nothing.
-     */
-    private ?int $inserted = null;
 
     protected $signature = 'kitsune:benchmark-admin
         {--rows=100000 : Entries to have in scope for the measured site}
@@ -461,14 +454,7 @@ final class BenchmarkAdminCommand extends Command
             return $existing;
         }
 
-        /*
-         * ⚠️ THE HIGH-WATER MARK IS TAKEN BEFORE THE FIRST INSERT, so cleanup can delete by identity rather
-         * than by pattern. Review found the alternative: a legitimate entry whose slug happens to start with
-         * this prefix would have been force-deleted by a run that inserted nothing at all. Slugs do not
-         * reserve a namespace, so the prefix is a hint and the id range is the proof — and `$this->inserted`
-         * staying null is what makes a no-op run delete nothing.
-         */
-        $this->inserted = (int) Entry::withoutGlobalScopes()->max('id');
+        $this->markBeforeInserting();
 
         $this->line('  seeding <info>'.($rows - $existing).'</info> entries…');
 
@@ -527,18 +513,11 @@ final class BenchmarkAdminCommand extends Command
      * ⚠️ SCOPED TO THE SITE AND TO THIS COMMAND'S OWN PREFIX, and that is not defensive style. The storage
      * benchmark's first version force-deleted every row whose slug matched a pattern across every customer
      * on the installation — on a box with real content that is data loss rather than cleanup. This one
-     * borrows a real site, so the same mistake here would delete a customer's content.
+     * borrows a real site, so the same mistake here would delete a customer's content — and removing
+     * through `Entry` left that customer's audit log a row per benchmark entry. See RemovesOnlyWhatItInserted.
      */
     private function cleanUp(Site $site): void
     {
-        if ($this->inserted === null) {
-            return;
-        }
-
-        Entry::withoutGlobalScopes()
-            ->where('site_id', $site->getKey())
-            ->where('id', '>', $this->inserted)
-            ->where('slug', 'like', self::SLUG_PREFIX.'%')
-            ->forceDelete();
+        $this->removeInserted($site, self::SLUG_PREFIX);
     }
 }

@@ -13,6 +13,7 @@ namespace Kitsune\Core\Console;
 use Illuminate\Console\Command;
 use Illuminate\Console\ConfirmableTrait;
 use Illuminate\Support\Facades\DB;
+use Kitsune\Core\Console\Concerns\RemovesOnlyWhatItInserted;
 use Kitsune\Core\Fields\LogicalType;
 use Kitsune\Core\Fields\Projection;
 use Kitsune\Core\Models\Entry;
@@ -40,6 +41,10 @@ use Kitsune\Core\Tenancy\Context;
 final class BenchmarkStorageCommand extends Command
 {
     use ConfirmableTrait;
+    use RemovesOnlyWhatItInserted;
+
+    /** Rows this command inserts, and — above the mark it takes — the only rows it removes. */
+    private const SLUG_PREFIX = 'bench-';
 
     protected $signature = 'kitsune:benchmark-storage
         {--rows=10000 : How many entries to generate}
@@ -93,7 +98,7 @@ final class BenchmarkStorageCommand extends Command
                 // the slugs carry a locale suffix, so the old probe looked for a
                 // row that never existed and timed an index MISS.
                 ['slug lookup (unique index)', $this->measure(fn () => Entry::where('entry_type_id', $type->getKey())
-                    ->where('slug', $locales === 1 ? 'bench-'.intdiv($rows, 2) : 'bench-'.intdiv($rows, 2).'-0')
+                    ->where('slug', $locales === 1 ? self::SLUG_PREFIX.intdiv($rows, 2) : self::SLUG_PREFIX.intdiv($rows, 2).'-0')
                     ->first())],
                 ['title LIKE (no index)', $this->measure(fn () => Entry::where('title', 'like', '%500%')->limit(25)->get())],
             ];
@@ -139,15 +144,12 @@ final class BenchmarkStorageCommand extends Command
      * and left a `benchmark` org, site and entry type in the host's database.
      * An org this run created is force-deleted — `Org` soft-deletes, and a
      * trashed org is still residue — and the database removes what hangs off
-     * it. An org that was already there keeps everything this run did not add.
+     * it. An org that was already there keeps everything this run did not add,
+     * its audit log included — see RemovesOnlyWhatItInserted.
      */
     private function cleanUp(Org $org, Site $site, EntryType $type, int $indexed, SchemaDriver $driver): void
     {
-        Entry::query()
-            ->where('org_id', $org->getKey())
-            ->where('site_id', $site->getKey())
-            ->where('slug', 'like', 'bench-%')
-            ->forceDelete();
+        $this->removeInserted($site, self::SLUG_PREFIX);
 
         for ($i = 0; $i < $indexed; $i++) {
             $column = "bench_idx_{$i}";
@@ -175,25 +177,37 @@ final class BenchmarkStorageCommand extends Command
         }
     }
 
-    /** @return array{0: Org, 1: Site, 2: EntryType} */
+    /**
+     * The org, site and entry type to measure in, found or created.
+     *
+     * ⚠️ IN ONE TRANSACTION, because cleanup cannot begin until this returns. A site slug is unique across the
+     * installation, so another org already owning `benchmark` failed the site insert after the org was created
+     * — and the org stayed.
+     *
+     * @return array{0: Org, 1: Site, 2: EntryType}
+     */
     private function fixture(): array
     {
-        $org = Org::firstOrCreate(['slug' => 'benchmark'], ['name' => 'Benchmark']);
-        app(Context::class)->setOrg($org);
+        return DB::transaction(static function (): array {
+            $org = Org::firstOrCreate(['slug' => 'benchmark'], ['name' => 'Benchmark']);
+            app(Context::class)->setOrg($org);
 
-        $site = Site::firstOrCreate(['slug' => 'benchmark'], ['org_id' => $org->id, 'handle' => 'benchmark', 'name' => 'Benchmark']);
-        app(Context::class)->setSite($site);
+            $site = Site::firstOrCreate(['slug' => 'benchmark'], ['org_id' => $org->id, 'handle' => 'benchmark', 'name' => 'Benchmark']);
+            app(Context::class)->setSite($site);
 
-        $type = EntryType::firstOrCreate(
-            ['org_id' => $org->id, 'handle' => 'article'],
-            ['name' => 'Article', 'plural_name' => 'Articles'],
-        );
+            $type = EntryType::firstOrCreate(
+                ['org_id' => $org->id, 'handle' => 'article'],
+                ['name' => 'Article', 'plural_name' => 'Articles'],
+            );
 
-        return [$org, $site, $type];
+            return [$org, $site, $type];
+        });
     }
 
     private function seed(Org $org, Site $site, EntryType $type, int $rows, int $locales): void
     {
+        $this->markBeforeInserting();
+
         $now = now();
         $chunk = [];
 
@@ -208,7 +222,7 @@ final class BenchmarkStorageCommand extends Command
                     'entry_type_id' => $type->id,
                     'type_handle' => 'article',
                     'status' => $i % 3 === 0 ? 'draft' : 'published',
-                    'slug' => $locales === 1 ? "bench-{$i}" : "bench-{$i}-{$l}",
+                    'slug' => $locales === 1 ? self::SLUG_PREFIX.$i : self::SLUG_PREFIX."{$i}-{$l}",
                     'title' => "Benchmark entry {$i}",
                     'values' => json_encode(['f0' => $i % 500, 'summary' => str_repeat('x', 120)]),
                     'published_at' => $now,
