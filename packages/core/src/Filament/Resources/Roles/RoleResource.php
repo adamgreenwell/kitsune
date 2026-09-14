@@ -189,11 +189,43 @@ class RoleResource extends Resource
                          * rather than a memory.
                          */
                         ->getOptionLabelsUsing(fn (array $values, ?Model $record): array => self::holderLabels($values, self::roleKey($record)))
+                        /*
+                         * ⚠️ DISABLED WHEN THE IDS WOULD MEAN NOTHING — see `holdersAreAdministrable()`. An
+                         * installation whose panel authenticates against a model `role_user` does not
+                         * reference can still show this control, and every id it offers would name a different
+                         * person in the table the pivot points at. Disabled with the reason on it rather than
+                         * silently empty, because "nobody matched" is a lie about the installation.
+                         */
+                        ->disabled(fn (): bool => ! self::holdersAreAdministrable())
+                        ->helperText(fn (): ?string => self::holdersAreAdministrable()
+                            ? null
+                            : 'Assignment is unavailable: this panel authenticates against a model that '
+                              .'role_user does not reference, so the ids here would name different people.')
                         ->dehydrated(false),
                 ]),
 
             ...self::perTypeSections(),
         ]);
+    }
+
+    /**
+     * Can the ids this panel produces mean anything to `role_user`?
+     *
+     * ⚠️ THE SELECTOR WAS THE THIRD PLACE THIS CHECK BELONGED AND THE ONE I MISSED. `Permissions::roleIdsFor()`
+     * refuses assignments resolved through a model the pivot does not reference, and `Role::effectiveOwners()`
+     * refuses to count owners through one — but the holder picker went on listing that model's users, and
+     * `syncHolders()` passes whatever ids come back to `assignTo()`. `role_user.user_id` means a row in the
+     * table it REFERENCES, so if a matching id exists there, saving the form hands authority to a different
+     * person entirely: the panel shows one name and the grant lands on another.
+     *
+     * Asked in one method rather than three, and the control is disabled rather than merely emptied — an empty
+     * search reads as "nobody matched", which is a lie about the installation.
+     */
+    public static function holdersAreAdministrable(): bool
+    {
+        $model = Permissions::userModel();
+
+        return $model !== null && Permissions::assignmentsAreAbout($model);
     }
 
     /**
@@ -210,7 +242,7 @@ class RoleResource extends Resource
     {
         $model = Permissions::userModel();
 
-        if ($model === null) {
+        if ($model === null || ! self::holdersAreAdministrable()) {
             return [];
         }
 

@@ -1797,9 +1797,27 @@ then passed a check that had already been fixed to require membership. `Permissi
 assignments resolved through the wrong model; this count now refuses to answer at all, because the two guesses
 are not symmetric — a wrong "somebody is left" locks an org out permanently, and there is no recovery path.
 
+⚠️ **And the SELECTOR was the third place that check belonged.** `roleIdsFor()` refuses assignments resolved
+through a model the pivot does not reference and the owner count refuses to answer through one — while the
+holder picker went on listing that model's users, and the form assigns whatever ids come back. The panel would
+show one name and the grant would land on whoever holds that id in the table `role_user` actually references.
+The control is disabled with the reason on it, and `syncHolders()` asks the same question again at the write,
+because a disabled control is a rendering decision and the raw form state is submitted by the browser.
+
 ### Consequence
 
 - **Core's RBAC enforces nothing until the host application has run the skeleton's `role_user` migration.** Already true of org scoping, so it is a pattern rather than a new hole — but it is written down here rather than left in somebody's memory.
+
+- **Deleting a user revokes their assignments through the audited path, or it does not happen.** Review found
+  the cascade: `role_user.user_id` references the host's users table, so deleting a user removed every
+  assignment they held with no `role.unassigned` row and without consulting the last-owner guard — one
+  deletion could leave an organisation unable to administer roles or edit its schema, permanently, with
+  nothing in the log. `RevokesRoleAssignments` is an observer the host attaches (`#[ObservedBy]`, the same
+  declarative shape as the scope attributes, because core owns no user model); it revokes through
+  `Role::removeFrom()` and lets the last-owner guard refuse the deletion outright. The migration's foreign key
+  is `restrictOnDelete()` beside it, so a host that has not attached the observer fails loudly instead of
+  quietly losing an owner. ⚠️ Soft deletes are deliberately untouched: a trashed user cannot authenticate, so
+  the assignment confers nothing, and revoking it would make a restore return somebody with no authority.
 - **`role_permissions` is `#[Unscoped]`, and the reason is the one `EntryRelation` and `EntryRevision` give**: it is reached only through `Role`, which is `#[OrgScoped]` and enforces it. Its index leads with `role_id` rather than a scope key, which satisfies invariant 4 by the invariant's own argument — a role is globally unique and belongs to exactly one org, exactly as a site does.
 - **A `role_user` row pairing a user with a role in an org they do not belong to resolves nothing**, because resolution runs through the org-scoped `Role` query under the current org context *and* asks membership of the user model. Asserted from the attacker's side.
 

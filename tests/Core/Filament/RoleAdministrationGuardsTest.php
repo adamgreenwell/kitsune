@@ -15,6 +15,7 @@ use Kitsune\Core\Filament\Resources\Roles\RoleResource;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Role;
 use Kitsune\Core\Tenancy\Context;
+use Kitsune\Core\Tests\Fixtures\TestImpostor;
 use Kitsune\Core\Tests\Fixtures\TestUser;
 
 /*
@@ -102,6 +103,26 @@ it('does not let an owner of another org administer this one\'s roles', function
 
     expect(RoleResource::canViewAny())->toBeFalse()
         ->and(RoleResource::canCreate())->toBeFalse();
+});
+
+it('refuses to administer holders through a model the pivot is not about', function (): void {
+    /*
+     * ⚠️ THE SELECTOR WAS THE THIRD PLACE THIS CHECK BELONGED, and the one I missed twice: `roleIdsFor()`
+     * refuses assignments resolved through the wrong model and `effectiveOwners()` refuses to count owners
+     * through one, while the picker went on listing that model's users. `role_user.user_id` means a row in the
+     * table it REFERENCES, so an id from somewhere else names a different person — the panel shows one name and
+     * the grant lands on another.
+     */
+    app(Context::class)->setOrg($this->org);
+
+    // ⚠️ Not vacuous: the fixture's provider IS the model the pivot references, so this starts true.
+    expect(RoleResource::holdersAreAdministrable())->toBeTrue();
+
+    // The provider now names a model on another table — `TestImpostor` lives on `pivot_scoped_things`.
+    config(['auth.providers.users.model' => TestImpostor::class]);
+    Permissions::forget();
+
+    expect(RoleResource::holdersAreAdministrable())->toBeFalse();
 });
 
 it('keeps a label for a holder who is no longer a member of the org', function (): void {

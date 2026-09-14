@@ -147,6 +147,17 @@ trait SyncsRolePermissions
             return;
         }
 
+        /*
+         * ⚠️ AND NOT AT ALL WHEN THE IDS COULD NOT MEAN ANYTHING. `RoleResource` disables the control in that
+         * installation, but a disabled control is a rendering decision and this is a write: the raw form state
+         * is submitted by the browser, so the write has to ask the same question rather than trust that the
+         * page was drawn correctly. `role_user.user_id` means a row in the table it references, and assigning
+         * an id resolved through some other model hands authority to a different person (ADR-033).
+         */
+        if (! RoleResource::holdersAreAdministrable()) {
+            return;
+        }
+
         $desired = array_map(
             intval(...),
             array_filter((array) ($this->form->getRawState()[RoleResource::HOLDER_STATE] ?? []), is_numeric(...)),

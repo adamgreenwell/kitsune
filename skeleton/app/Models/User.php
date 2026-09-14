@@ -14,11 +14,13 @@ use Filament\Models\Contracts\FilamentUser;
 use Filament\Models\Contracts\HasTenants;
 use Filament\Panel;
 use Illuminate\Contracts\Translation\HasLocalePreference;
+use Illuminate\Database\Eloquent\Attributes\ObservedBy;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Illuminate\Support\Collection;
+use Kitsune\Core\Auth\RevokesRoleAssignments;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Role;
 use Kitsune\Core\Models\Site;
@@ -51,6 +53,14 @@ use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
  * Nothing listed users yet, which is why it was a gap rather than an
  * incident (issue #21).
  */
+/*
+ * ⚠️ THE OBSERVER IS WHAT KEEPS A DELETION FROM LOSING AUTHORITY SILENTLY. `role_user` is a pivot on this
+ * table, and review found that deleting a user removed every assignment they held with no audit row and
+ * without consulting the last-owner guard — so deleting one person could lock an organisation out of role and
+ * schema administration for good (ADR-033). `RevokesRoleAssignments` revokes through `Role::removeFrom()`
+ * first; the migration's `restrictOnDelete()` is what happens to a host that has not attached it.
+ */
+#[ObservedBy(RevokesRoleAssignments::class)]
 #[OrgScopedThroughPivot(table: 'org_user', foreignKey: 'user_id')]
 class User extends Authenticatable implements FilamentUser, HasLocalePreference, HasTenants
 {

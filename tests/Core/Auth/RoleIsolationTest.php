@@ -8,10 +8,13 @@
 
 declare(strict_types=1);
 
+use App\Models\User;
+use Illuminate\Database\Eloquent\Attributes\ObservedBy;
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Auth\Permissions;
+use Kitsune\Core\Auth\RevokesRoleAssignments;
 use Kitsune\Core\Models\AuditLog;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Role;
@@ -683,6 +686,61 @@ it('refuses a quiet save whose key attribute has been nulled', function (): void
     app(Context::class)->setOrg($this->alpha);
 
     expect(Role::query()->whereKey($key)->value('name'))->toBe('Editor');
+});
+
+it('revokes a deleted user\'s assignments through the audited path', function (): void {
+    /*
+     * ⚠️ THE CASCADE IS A LOCK-OUT WAITING TO HAPPEN, which review found in the skeleton's own migration.
+     * `role_user.user_id` references the host's users table, so deleting a user removed every assignment they
+     * held with no `role.unassigned` row and without consulting the guard that refuses taking the last owner
+     * away. ADR-033 promises both; a foreign key knows neither.
+     */
+    app(Context::class)->setOrg($this->alpha);
+    joinOrg($this->alpha, $this->user);
+
+    $editor = Role::create(['handle' => 'copy', 'name' => 'Copy editor']);
+    $editor->assignTo($this->user->getKey());
+
+    $mark = (int) AuditLog::query()->max('id');
+
+    $this->user->delete();
+
+    expect(DB::table('role_user')->where('user_id', $this->user->getKey())->exists())->toBeFalse()
+        ->and(AuditLog::query()->where('id', '>', $mark)->where('action', 'role.unassigned')->count())->toBe(1);
+});
+
+it('ships that behaviour on the reference host\'s own user model', function (): void {
+    /*
+     * ⚠️ THE FIXTURE PROVING THE BEHAVIOUR IS NOT THE MODEL ANYBODY RUNS, and a trait nothing applies is
+     * documentation. The skeleton is the reference host — its `User` is what a real installation copies — so
+     * the wiring is asserted here rather than left to a reader of the migration. `ScopeDeclarationTest` makes
+     * the same argument for the scope attribute, and review caught that sweep missing the skeleton once.
+     */
+    $observed = (new ReflectionClass(User::class))->getAttributes(ObservedBy::class);
+
+    expect($observed)->not->toBeEmpty('the skeleton\'s User declares no observer at all')
+        ->and((array) $observed[0]->newInstance()->classes)->toContain(RevokesRoleAssignments::class);
+});
+
+it('refuses to delete the user holding the last owner role', function (): void {
+    /*
+     * ⚠️ AND THE GUARD IS ALLOWED TO REFUSE, which is the point of routing a deletion through `removeFrom()`
+     * rather than letting the database do it: deleting this person would leave the org with nobody who can
+     * administer roles or edit the schema, and there is no way back (ADR-033). A loud failure naming the
+     * organisation beats a successful delete and a support ticket with no support behind it.
+     */
+    app(Context::class)->setOrg($this->alpha);
+    joinOrg($this->alpha, $this->user);
+
+    $owner = Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true]);
+    $owner->assignTo($this->user->getKey());
+
+    expect(fn () => $this->user->delete())
+        ->toThrow(RuntimeException::class, 'last member of this organisation');
+
+    // Both the person and their authority survive the refusal.
+    expect(TestUser::query()->whereKey($this->user->getKey())->exists())->toBeTrue()
+        ->and(DB::table('role_user')->where('role_id', $owner->getKey())->count())->toBe(1);
 });
 
 it('refuses to delete a role that belongs to another org', function (): void {
