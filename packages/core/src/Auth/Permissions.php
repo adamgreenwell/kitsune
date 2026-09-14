@@ -10,7 +10,10 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Auth;
 
+use Filament\Exceptions\NoDefaultPanelSetException;
 use Filament\Facades\Filament;
+use Filament\Panel;
+use Filament\PanelRegistry;
 use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
@@ -21,6 +24,7 @@ use InvalidArgumentException;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\Role;
 use Kitsune\Core\Tenancy\Context;
+use Kitsune\Core\Tenancy\Scopes\OrgMembershipScope;
 
 /**
  * The permission vocabulary, and the only place a permission is resolved — ADR-033.
@@ -373,7 +377,11 @@ final class Permissions
          * through another provider entirely; asking the default then names a model from somebody else's
          * panel, so an audit row records an unrelated row with the same id.
          */
-        $panel = Filament::getCurrentPanel() ?? Filament::getDefaultPanel();
+        $panel = Filament::getCurrentPanel() ?? self::defaultPanel();
+
+        if ($panel === null) {
+            return null;
+        }
 
         $provider = $panel->auth()->getProvider();
 
@@ -384,6 +392,27 @@ final class Permissions
         $model = $provider->getModel();
 
         return is_string($model) && is_subclass_of($model, Model::class) ? $model : null;
+    }
+
+    /**
+     * The panel marked default, or null when there is none to ask.
+     *
+     * ⚠️ `app()->bound('filament')` IS TRUE IN EVERY HOST THAT INSTALLS CORE, because core requires Filament and
+     * a real host auto-discovers its provider — so the guard above never stood aside outside this package's own
+     * suite, where Testbench discovers nothing. A host with no panel, or with panels none of which is marked
+     * `default()`, then met `NoDefaultPanelSetException` from `Role::assignTo()` before it wrote anything: the
+     * fallback its callers take on null was unreachable. Found by installing the split into a bare Laravel host.
+     *
+     * Caught rather than pre-checked with `getPanels() !== []`, because that misses the second case. Asked of the
+     * registry, which is what the facade forwards to, because `getDefault()` is where the exception is declared.
+     */
+    private static function defaultPanel(): ?Panel
+    {
+        try {
+            return app(PanelRegistry::class)->getDefault();
+        } catch (NoDefaultPanelSetException) {
+            return null;
+        }
     }
 
     /**
@@ -484,7 +513,24 @@ final class Permissions
             return false;
         }
 
-        return $class::query()->whereKey($userId)->exists();
+        /*
+         * ⚠️ A MODEL WITH NO MEMBERSHIP SCOPE CANNOT ASK EITHER, and it answered yes. A stock Laravel `User`
+         * declares nothing, so its query was `select … where id = ?` — every existing user counted as a member
+         * of whatever org the context named, and a `role_user` row for somebody outside it resolved an owner
+         * bypass. Found by installing the split into a bare host, where nothing but a docblock says the
+         * attribute is required.
+         *
+         * ⚠️ THE REGISTERED SCOPE, NOT THE ATTRIBUTE. `#[OrgScopedThroughPivot]` without `use EnforcesScope`
+         * registers nothing, so checking for the attribute would pass open on exactly the half-configured model.
+         * Read from an instance, because constructing one is what boots the model and registers its scopes.
+         */
+        $model = new $class;
+
+        if (! array_key_exists(OrgMembershipScope::class, $model->getGlobalScopes())) {
+            return false;
+        }
+
+        return $model->newQuery()->whereKey($userId)->exists();
     }
 
     /**

@@ -1815,6 +1815,18 @@ hand-built Livewire request meets the same answer as the missing button. The bro
 seeded `viewer@kitsune.test` holding `view` alone, because the copy-editor's `update` is exactly what makes a
 restore allowed.
 
+⚠️ **And two answers assumed a host shaped like the skeleton, which installing the split into a bare Laravel
+host showed is not the only host.** Membership was asked through the user model's own scoped query, and a stock
+`User` has no scope: its query was `where id = ?`, every user was a member of every org, and a `role_user` row
+for somebody who never joined resolved an owner bypass. A model with no registered `OrgMembershipScope` now
+resolves nothing — the direction already taken for an `Authenticatable` that is not an Eloquent model — and the
+check reads the registered scope rather than the attribute, because `#[OrgScopedThroughPivot]` without
+`use EnforcesScope` applies nothing. Separately, `Permissions::userModel()` stood aside only when `filament`
+was unbound, which in a real host it never is: with no panel, or none marked default, it threw from
+`Role::assignTo()` before writing, so the configured fallback its caller takes on null was unreachable. It
+catches `NoDefaultPanelSetException` now. What a host must supply is still written down only in the monorepo;
+shipping that with the split is #8's.
+
 ⚠️ **A BULK publish is deliberately still allowed**, and that is not an oversight to be swept up with this.
 `Entry::query()->update(['status' => 'published'])` is a supported write that this project audits and
 versions on purpose (`AuditLogTest` and `recordBulkRevision()` both say so), and it carries no acting

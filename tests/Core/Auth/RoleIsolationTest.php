@@ -21,8 +21,10 @@ use Kitsune\Core\Models\Role;
 use Kitsune\Core\Models\RolePermission;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
+use Kitsune\Core\Tests\Fixtures\AttributeOnlyUser;
 use Kitsune\Core\Tests\Fixtures\TestImpostor;
 use Kitsune\Core\Tests\Fixtures\TestUser;
+use Kitsune\Core\Tests\Fixtures\UnscopedUser;
 
 /*
  * Cross-org isolation for the RBAC layer, written from the attacker's side — ADR-033, issue #81.
@@ -129,6 +131,44 @@ it('does not treat a role assignment as membership', function (): void {
 
     expect(Permissions::allows($this->user, 'entry.article.update'))->toBeFalse()
         ->and(Permissions::held($this->user))->toBe([]);
+});
+
+it('takes a user model that cannot ask about membership to be a member of nothing', function (): void {
+    /*
+     * ⚠️ THE CHECK ABOVE ASKS THE USER MODEL'S OWN SCOPED QUERY, AND A STOCK MODEL HAS NO SCOPE. Laravel's
+     * `User` declares nothing, so its query was `where id = ?` and every user was a member of every org: a
+     * `role_user` row for somebody who never joined resolved an owner bypass. Found by installing the split
+     * into a bare host, where only a docblock says the attribute is required.
+     *
+     * Two fixtures, because the attribute alone registers no scope — a guard that looked for the attribute
+     * would pass the second one open.
+     */
+    $owner = Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true]);
+    assign($owner, $this->user);
+    assign($this->alphaRole, $this->user);
+
+    // A member of beta only, so every alpha assignment is an assignment without membership.
+    joinOrg($this->beta, $this->user);
+    app(Context::class)->setOrg($this->alpha);
+
+    foreach ([UnscopedUser::class, AttributeOnlyUser::class] as $class) {
+        $user = $class::query()->findOrFail($this->user->getKey());
+
+        expect(Permissions::isOwner($user))->toBeFalse("{$class} resolved an owner bypass for a non-member")
+            ->and(Permissions::allows($user, 'entry.article.update'))->toBeFalse()
+            ->and(Permissions::held($user))->toBe([]);
+    }
+
+    /*
+     * ⚠️ FAILS CLOSED, NOT "CHECKS ANOTHER WAY". Joining alpha does not turn the unscoped model's answer into
+     * yes — it cannot ask — while the model that declares and applies the scope, reading the same row, is an
+     * owner the moment it joins. Without this half the test would pass against a guard refusing everybody.
+     */
+    joinOrg($this->alpha, $this->user);
+    Permissions::forget();
+
+    expect(Permissions::isOwner(UnscopedUser::query()->findOrFail($this->user->getKey())))->toBeFalse()
+        ->and(Permissions::isOwner($this->user))->toBeTrue();
 });
 
 it('does not let an owner role in one org bypass checks in another', function (): void {
