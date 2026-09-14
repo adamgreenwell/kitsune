@@ -415,6 +415,21 @@ class AuditedBuilder extends ScopedBuilder
                 continue;
             }
 
+            /*
+             * ⚠️ A RAW EXPRESSION IS SQL, AND THIS GUARD READS VALUES. A joined update assigning `status`
+             * from the joined table — `DB::raw('CASE WHEN … END')` — is a supported write this suite asserts
+             * on MySQL, and there is nothing here to inspect: the value does not exist until the database
+             * evaluates it. Refusing every expression would break that capability to close a hole only a
+             * caller writing raw SQL can reach, which is the same trade `updateFrom()` documents from the
+             * other side.
+             *
+             * The limitation is stated rather than hidden: a raw expression may write any string the column
+             * accepts, and `scopePublished()` will read it the way the collation does.
+             */
+            if ($status instanceof Expression) {
+                continue;
+            }
+
             throw new RuntimeException(sprintf(
                 'Refusing to write [%s] as an entry status: the column holds one of [%s] and nothing else. '
                 .'A value outside that set is not merely unknown — MySQL and MariaDB compare it '

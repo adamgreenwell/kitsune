@@ -1770,6 +1770,13 @@ the quiet paths are covered, and "is this published" has one answer on every eng
 carries the LABELS and reads the same vocabulary, because two lists of what a status may be is one list that
 drifts.
 
+⚠️ **What that guard cannot see is a raw expression, and the limit is stated rather than hidden.** A joined
+update assigning `status` from the joined table — the one shape MySQL allows and this suite asserts — hands
+the builder SQL rather than a value, and there is nothing to inspect until the database evaluates it.
+Refusing every expression would remove a supported capability to close a hole only a caller writing raw SQL
+can reach; the same trade `updateFrom()` documents from the other side. A raw expression may therefore write
+any string the column accepts, and `scopePublished()` will read it the way the collation does.
+
 ⚠️ **And the form was not the only way into that state, which is the finding the question led to rather than
 the one that was asked.** `EntryRevision::SNAPSHOT_ATTRIBUTES` carries `status`, so restoring a version that
 was published publishes the entry — an editor holding only `entry.{type}.update` could undo somebody else's
