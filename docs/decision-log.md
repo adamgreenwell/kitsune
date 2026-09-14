@@ -1734,6 +1734,8 @@ The owner reads are now **locking reads inside the write's own transaction**. Bo
 
 What the suite measures is that the clause is emitted, that the check runs at a transaction depth inside the write, and that the re-read sees another connection's committed demotion. That `FOR UPDATE` makes the second transaction wait is the engine's guarantee, and re-testing it here would be asserting InnoDB.
 
+⚠️ **And the guards read the STORED owner flag, not the instance's.** Review found the stale-instance half of the same race: an ordinary role held in memory while another transaction promotes that row to the org's only owner keeps `getOriginal('is_owner')` false, so `refuseIfLastOwner()` returned immediately and the stale instance deleted the row that had just become the org's last administrator. `removeFrom()`'s guard had the same early return on `$this->is_owner`, after which the raw pivot delete runs with nothing behind it. Both read the stored flag under the same lock as the decision now — the rule the whole family of findings produced, applied to the one place where the TIMING rather than the caller was the forger.
+
 ⚠️ **The count excludes an ASSIGNMENT, not a person** — the other half of the same review round. A member holding two owner roles who gives one up is still an owner through the other, and excluding them from every owner role reported nobody left and refused a safe removal. Being told "this would lock you out" while demonstrably not is what teaches somebody to reach past the model.
 
 ### Consequence
