@@ -2928,23 +2928,36 @@ class Entry extends Model implements RequiresModelSave
      * restore an older title on a live article. It is the same distinction `EntryResource` draws between
      * keeping the published state and moving into it, enforced on the other route into it.
      */
-    private function refuseUnpermittedRepublication(EntryRevision $revision): void
+    /**
+     * Would restoring this revision publish the entry on behalf of somebody who may not publish?
+     *
+     * ⚠️ PUBLIC AND SHARED WITH THE BUTTON, which review asked for and this project has learned twice over:
+     * the model refusing what the panel still offers is a 500 rather than an answer. The relation manager
+     * disables the action with this same predicate, so the guard below is the backstop and not the message —
+     * and there is ONE copy of the rule, because a constraint written twice is one place for it to drift.
+     */
+    public function restoreWouldPublishWithoutPermission(EntryRevision $revision): bool
     {
         if ($revision->status !== 'published' || $this->status === 'published') {
-            return;
+            return false;
         }
 
         $user = Permissions::currentUser();
 
         if ($user === null) {
+            return false;
+        }
+
+        return ! Permissions::allows($user, Permissions::forEntryType((string) $this->type_handle, 'publish'));
+    }
+
+    private function refuseUnpermittedRepublication(EntryRevision $revision): void
+    {
+        if (! $this->restoreWouldPublishWithoutPermission($revision)) {
             return;
         }
 
         $handle = (string) $this->type_handle;
-
-        if (Permissions::allows($user, Permissions::forEntryType($handle, 'publish'))) {
-            return;
-        }
 
         throw new RuntimeException(sprintf(
             'Refusing to restore revision %s onto entry %s: that version was published and this entry is '

@@ -157,6 +157,65 @@ test.describe('a user holds only what was granted', () => {
     });
 });
 
+test.describe('restoring a version that was published', () => {
+    /*
+     * ⚠️ A MODEL GUARD THE PANEL STILL OFFERS IS A 500, which review said in as many words. Restoring a
+     * revision that was published PUBLISHES the entry — `EntryRevision::SNAPSHOT_ATTRIBUTES` carries
+     * `status` — so `Entry::restoreRevision()` refuses it without `entry.article.publish`. Without the
+     * button asking the same question, this copy-editor confirms a modal and gets a server error.
+     *
+     * ⚠️ THE FIXTURE IS SEEDED, because no ordinary row has this shape: every other article's history holds
+     * only the status it was created with. `Bunker renovation` was published and then pulled back, so its
+     * history contains a published version and its current status is draft.
+     */
+    test('is offered the restore as unavailable rather than as an error', async ({ page }) => {
+        await page.goto(`/admin/${SITE}/c/article`);
+
+        const row = page.locator('.fi-ta-row').filter({ hasText: 'Bunker renovation' }).first();
+        await expect(row).toBeVisible();
+
+        await row.locator('a[href*="/c/article/"]').first().click();
+        await page.waitForURL(/\/c\/article\/\d+/);
+        await page.getByRole('link', { name: /^edit$/i }).first().click();
+        await page.waitForURL(/\/edit$/);
+
+        // The relation manager is a lazy Livewire component below the fold — see `revisions.spec.js`.
+        await page.getByRole('button', { name: 'Save changes' }).scrollIntoViewIfNeeded();
+        await page.mouse.wheel(0, 1200);
+        await expect(page.getByText('History')).toBeVisible();
+
+        /*
+         * The published version's row. Two versions exist: the one it was created with (published) and the
+         * demotion (draft), so the badge is what tells them apart.
+         */
+        const published = page.locator('.fi-ta-row').filter({ hasText: 'Published' }).first();
+        await expect(published).toBeVisible();
+
+        const restore = published.getByRole('button', { name: 'Restore' });
+
+        await expect(restore).toBeVisible();
+        await expect(restore).toBeDisabled();
+    });
+
+    test('leaves the draft version restorable, so this is a permission and not a lock', async ({ page }) => {
+        await page.goto(`/admin/${SITE}/c/article`);
+
+        const row = page.locator('.fi-ta-row').filter({ hasText: 'Bunker renovation' }).first();
+        await row.locator('a[href*="/c/article/"]').first().click();
+        await page.waitForURL(/\/c\/article\/\d+/);
+        await page.getByRole('link', { name: /^edit$/i }).first().click();
+        await page.waitForURL(/\/edit$/);
+
+        await page.getByRole('button', { name: 'Save changes' }).scrollIntoViewIfNeeded();
+        await page.mouse.wheel(0, 1200);
+        await expect(page.getByText('History')).toBeVisible();
+
+        const draft = page.locator('.fi-ta-row').filter({ hasText: 'Draft' }).first();
+        await expect(draft).toBeVisible();
+        await expect(draft.getByRole('button', { name: 'Restore' })).toBeEnabled();
+    });
+});
+
 test.describe('a relation pointing at something the editor may not view', () => {
     /*
      * ⚠️ THE PAGE COULD NOT BE SAVED AT ALL, which is the defect review found and the reason this is a

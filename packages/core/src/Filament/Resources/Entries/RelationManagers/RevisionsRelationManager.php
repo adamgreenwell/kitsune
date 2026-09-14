@@ -33,6 +33,19 @@ class RevisionsRelationManager extends RelationManager
 
     protected static ?string $title = 'History';
 
+    /**
+     * Would restoring this version publish the entry on behalf of somebody who may not publish?
+     *
+     * Asks the model, so the button and the guard cannot disagree — see
+     * `Entry::restoreWouldPublishWithoutPermission()`.
+     */
+    private function wouldNeedPublishPermission(EntryRevision $revision): bool
+    {
+        $entry = $this->getOwnerRecord();
+
+        return $entry instanceof Entry && $entry->restoreWouldPublishWithoutPermission($revision);
+    }
+
     public function table(Table $table): Table
     {
         return $table
@@ -53,6 +66,22 @@ class RevisionsRelationManager extends RelationManager
                     ->icon('heroicon-o-arrow-uturn-left')
                     ->requiresConfirmation()
                     ->modalDescription('This adds a new version matching the one you picked. Nothing in the history is removed.')
+                    /*
+                     * ⚠️ A MODEL GUARD THE PANEL STILL OFFERS IS A 500, which review said plainly. Restoring a
+                     * version that was PUBLISHED publishes the entry, and `Entry::restoreRevision()` refuses
+                     * that without `entry.{type}.publish` — so without this the editor confirms a modal and
+                     * gets a server error instead of an answer.
+                     *
+                     * ⚠️ DISABLED RATHER THAN HIDDEN, and the same predicate as the guard. Hiding the row's
+                     * only action would leave somebody comparing two versions and finding one of them
+                     * inexplicably inert; the tooltip says which permission is missing. The predicate lives on
+                     * the model — one copy, asked here and enforced there.
+                     */
+                    ->disabled(fn (EntryRevision $record): bool => $this->wouldNeedPublishPermission($record))
+                    ->tooltip(fn (EntryRevision $record): ?string => $this->wouldNeedPublishPermission($record)
+                        ? 'This version was published, so restoring it would publish the entry — which needs '
+                          .'the publish permission for this type.'
+                        : null)
                     ->action(function (EntryRevision $record) {
                         /** @var Entry $entry */
                         $entry = $this->getOwnerRecord();
