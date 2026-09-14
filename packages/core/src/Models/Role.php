@@ -252,6 +252,10 @@ class Role extends Model
                  * `storedOwnerFlag()` is a locked read of the role, so calling it first takes that lock and
                  * costs no extra query — the flag was needed anyway.
                  */
+                // ⚠️ And the shared org row before that read, which is itself a role lock — the `deleting`
+                // listener takes the same one, and taking it twice in a transaction costs nothing.
+                $this->lockSharedOrgRow();
+
                 $wasOwner = $this->storedOwnerFlag();
 
                 /*
@@ -336,6 +340,20 @@ class Role extends Model
              * silently when there was no context at all. The four authority helpers already refuse this;
              * the flag is the fifth way authority changes and was not asking.
              */
+            /*
+             * ⚠️ THE SHARED ORG ROW FIRST, BEFORE ANY GUARD READS A ROLE ROW — see `lockSharedOrgRow()`.
+             * `refuseIfNotCurrentOrg()` and `storedOwnerFlag()` are both locking reads of THIS role, so
+             * putting the mutex inside the last-owner guard was too late: the first role lock had already
+             * been taken and the cycle was already possible. Measured on PostgreSQL, where the test reads
+             * the lock order rather than trusting it.
+             *
+             * The condition needs no read: a save reaches the owner sweep only when the flag is being
+             * written, and a delete always does.
+             */
+            if ($role->exists && $role->isDirty('is_owner')) {
+                $role->lockSharedOrgRow();
+            }
+
             if ($role->exists && $role->isDirty('is_owner')) {
                 $role->refuseIfNotCurrentOrg('change the owner flag on');
 
@@ -378,6 +396,11 @@ class Role extends Model
         });
 
         static::deleting(static function (self $role): void {
+            // ⚠️ The same mutex, for the same reason: a delete always reaches the owner sweep.
+            if ($role->exists) {
+                $role->lockSharedOrgRow();
+            }
+
             $role->refuseIfLastOwner('delete');
 
             $role->guardsRan = true;
@@ -517,7 +540,11 @@ class Role extends Model
          * The read is locked, so it also cannot answer from a snapshot taken before that promotion committed.
          * Turning the flag ON, or any other edit to a role that is not an owner, still cannot remove an owner.
          */
-        if (! $this->exists || ! $this->storedOwnerFlag()) {
+        if (! $this->exists) {
+            return;
+        }
+
+        if (! $this->storedOwnerFlag()) {
             return;
         }
 
@@ -950,6 +977,13 @@ class Role extends Model
         $this->refuseIfNotCurrentOrg('removeFrom');
 
         DB::transaction(function () use ($userId): void {
+            /*
+             * ⚠️ THE SHARED ORG ROW BEFORE THIS ROLE'S — see `lockSharedOrgRow()`. This path reaches the
+             * owner sweep through `refuseLosingTheLastOwner()`, which locks every owner role in the org, so
+             * it has to join the same queue as a demotion or the two can hold each other's rows.
+             */
+            $this->lockSharedOrgRow();
+
             // ⚠️ Locked before the pivot, for the reason `assignTo()` records: a removal and a concurrent
             // owner transition have to be one order, or the trail records one of them and not the other.
             $this->lockRow();
@@ -1041,6 +1075,40 @@ class Role extends Model
      * SQLite compiles the clause away and serialises writers at the database level, which is the same
      * guarantee by another route — `Site::lockHostClaim()` records the same pair of facts.
      */
+    /**
+     * Take the ORG's row before any role row, so concurrent authority changes serialise instead of deadlock.
+     *
+     * ⚠️ THE OWNER SWEEP LOCKS A SET, AND EVERY CALLER ALREADY HOLDS ONE OF ITS MEMBERS — review found the
+     * cycle that makes. A demotion of role A locks A (`storedOwnerFlag()`) and then asks `effectiveOwners()`,
+     * which locks every owner role in the org including B; a concurrent demotion of B holds B and wants A.
+     * Each waits for a row the other holds, and the database resolves it as a deadlock rather than as one
+     * success and one last-owner refusal — the serialisation these guards were written for, defeated by the
+     * ORDER they acquire locks in.
+     *
+     * One row that every such operation takes FIRST turns a cycle into a queue. The org is the natural one:
+     * the invariant being protected is "this organisation still has somebody who can administer it", so the
+     * mutex is the organisation.
+     *
+     * ⚠️ FROM THE CONTEXT RATHER THAN THE ROW, deliberately. Reading the role's stored org first would be
+     * another role lock before this one, which is the problem. Every path here has already established that
+     * the role belongs to the current org — `refuseIfNotCurrentOrg()` runs first and refuses otherwise — so
+     * the context names the same organisation, and with no context the operation is refused anyway.
+     *
+     * ⚠️ AND NOT IN `assignTo()`, which locks its own role and sweeps nothing: it can never be the second
+     * half of a cycle, and taking the org lock there would serialise every assignment in an organisation for
+     * no invariant. A lock taken for tidiness is contention without a reason.
+     */
+    private function lockSharedOrgRow(): void
+    {
+        $orgId = app(Context::class)->orgId();
+
+        if ($orgId === null) {
+            return;
+        }
+
+        Org::query()->withoutGlobalScopes()->whereKey($orgId)->lockForUpdate()->value('id');
+    }
+
     private function lockRow(): void
     {
         static::query()

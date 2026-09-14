@@ -497,7 +497,16 @@ class RoleResource extends Resource
                         ->where('role_id', $record->getKey())->count()),
             ])
             ->recordActions([EditAction::make()])
-            ->toolbarActions([BulkActionGroup::make([DeleteBulkAction::make()])])
+            /*
+             * ⚠️ ONE TRANSACTION FOR THE WHOLE SELECTION, which review found missing after the same fix
+             * landed on the form. Filament deletes bulk records one at a time, and `Role::delete()` opens a
+             * transaction of its own — so a selection holding a deletable role and then the org's last held
+             * owner role deleted the first, its assignments and its grants, and THEN threw. The operator is
+             * told the bulk delete failed while part of it is permanently gone.
+             *
+             * `databaseTransaction()` is Filament's own opt-in for exactly this, and it is off by default.
+             */
+            ->toolbarActions([BulkActionGroup::make([DeleteBulkAction::make()->databaseTransaction()])])
             ->defaultSort('name');
     }
 

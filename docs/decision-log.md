@@ -1857,6 +1857,12 @@ form reporting a failure that had already half happened, which is the same parti
 deletion observer produced a round earlier. Enabled on these pages rather than panel-wide: changing the
 failure semantics of every action in the admin at once is a decision with its own evidence to gather.
 
+⚠️ **And the bulk delete was the same thing on the list page.** Filament deletes selected records one at a
+time and `Role::delete()` opens a transaction of its own, so a selection holding a deletable role and then
+the org's last held owner role deleted the first — its assignments and its grants with it — and then threw.
+The operator is told the operation failed while part of it is permanently gone. `databaseTransaction()` is
+Filament's own opt-in for exactly that, and it is off by default.
+
 ### Consequence
 
 - **Core's RBAC enforces nothing until the host application has run the skeleton's `role_user` migration.** Already true of org scoping, so it is a pattern rather than a new hole — but it is written down here rather than left in somebody's memory.
@@ -2071,6 +2077,24 @@ failure semantics of every action in the admin at once is a decision with its ow
   writes the role row, so it takes that lock on its own account; `assignTo()` and `removeFrom()` take it
   explicitly **before** touching `role_user`, and the holders read takes it from the other side so a
   transition waits for an assignment in flight rather than counting past it.
+
+  ⚠️ **And the ORG row is the mutex above it, because the owner sweep locks a SET.** Review found the cycle:
+  a demotion locks its own role and then `effectiveOwners()` locks every owner role in the org, so two
+  demotions of different roles each hold a row the other wants — the database resolves that as a deadlock
+  rather than as one success and one last-owner refusal, which is the serialisation these guards were
+  written for, defeated by the ORDER they acquire locks in. One row every such operation takes FIRST turns a
+  cycle into a queue, and the org is the natural one: the invariant is "this organisation still has somebody
+  who can administer it". ⚠️ Taken from the CONTEXT rather than the role's stored row, because reading that
+  would be another role lock before this one — every path has already established the role belongs to the
+  current org. ⚠️ And not in `assignTo()`, which locks its own role and sweeps nothing: it cannot be half of
+  a cycle, and a lock taken for tidiness is contention with no invariant behind it.
+
+  ⚠️ **The first version of that fix was in the wrong place and the first version of its test could not tell.**
+  The mutex went inside the last-owner guard — after `refuseIfNotCurrentOrg()` and `storedOwnerFlag()`, both
+  locking reads of the role — so the first role lock was already taken. And the test compared the first org
+  lock with the first role lock across the WHOLE test, so a removal's mutex satisfied the assertion on a
+  demotion's behalf: reverting the demotion's mutex left it green. Each operation is measured in its own
+  window now.
 
 - **A quiet save is still asked which org's row it is touching.** "Every save of an existing role asks it" was
   true of noisy saves only: `saveQuietly()` and `updateQuietly()` suppress the `saving` listener, and what was

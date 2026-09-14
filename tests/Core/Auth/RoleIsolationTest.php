@@ -969,6 +969,91 @@ it('refuses a publication smuggled through the arithmetic family', function (): 
     Auth::logout();
 });
 
+it('takes the org row before any role row, so two demotions queue rather than deadlock', function (): void {
+    /*
+     * ⚠️ THE OWNER SWEEP LOCKS A SET AND EVERY CALLER ALREADY HOLDS ONE OF ITS MEMBERS — review found the
+     * cycle that makes. Demoting role A locks A and then asks `effectiveOwners()`, which locks every owner
+     * role in the org including B; a concurrent demotion of B holds B and wants A. Each waits for a row the
+     * other holds, and the database calls that a deadlock instead of giving one success and one last-owner
+     * refusal — the serialisation these guards exist for, defeated by the ORDER locks are taken in.
+     *
+     * ⚠️ ASSERTED PER OPERATION, and the first version of this test was not. It captured every locking read
+     * of the whole test and compared the FIRST org lock with the FIRST role lock — so the removal's mutex
+     * satisfied the assertion on the demotion's behalf, and removing the demotion's mutex left it green.
+     * Measured: the revert passed. Each operation now gets its own window, because what has to be true is
+     * true of each one separately.
+     */
+    app(Context::class)->setOrg($this->alpha);
+    joinOrg($this->alpha, $this->user);
+
+    $first = Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true]);
+    $first->assignTo($this->user->getKey());
+
+    $second = Role::create(['handle' => 'owner-2', 'name' => 'Owner 2', 'is_owner' => true]);
+    $second->assignTo($this->user->getKey());
+
+    $seen = [];
+
+    DB::listen(function (QueryExecuted $query) use (&$seen): void {
+        if ($query->connectionName !== DB::getDefaultConnection()) {
+            return;
+        }
+
+        $sql = str_replace(['"', '`'], '', $query->sql);
+
+        foreach (['pg_constraint', 'information_schema', 'sqlite_master'] as $introspection) {
+            if (str_contains($sql, $introspection)) {
+                return;
+            }
+        }
+
+        if (str_contains($sql, 'for update')) {
+            $seen[] = $sql;
+        }
+    });
+
+    $orgFirst = function (array $window, string $operation): void {
+        if (DB::connection()->getDriverName() === 'sqlite') {
+            return;
+        }
+
+        $org = null;
+        $role = null;
+
+        foreach ($window as $position => $sql) {
+            if ($org === null && str_contains($sql, 'from orgs')) {
+                $org = $position;
+            }
+
+            if ($role === null && str_contains($sql, 'from roles')) {
+                $role = $position;
+            }
+        }
+
+        expect($org)->not->toBeNull("{$operation} never locked the org row")
+            ->and($role)->not->toBeNull("{$operation} never locked a role row")
+            ->and($org)->toBeLessThan($role, "{$operation} locked a role row before the shared org row");
+    };
+
+    /*
+     * ⚠️ THE REMOVAL FIRST, AND THE ORDER IS THE FIXTURE BEING HONEST. Demoting `$second` leaves `$first` as
+     * the org's only owner role, after which taking its holder away is what the last-owner guard refuses —
+     * the guard doing its job, not a test in its way.
+     */
+    $seen = [];
+    $second->removeFrom($this->user->getKey());
+    $orgFirst($seen, 'removeFrom()');
+
+    $seen = [];
+    $second->is_owner = false;
+    $second->save();
+    $orgFirst($seen, 'a demotion');
+
+    // And the guards still did their job: the org keeps an owner role that somebody holds.
+    expect(Role::query()->whereKey($second->getKey())->value('is_owner'))->toBeFalsy()
+        ->and(DB::table('role_user')->where('role_id', $first->getKey())->count())->toBe(1);
+});
+
 it('refuses to delete a role that belongs to another org', function (): void {
     /*
      * ⚠️ THE FIFTH AUTHORITY PATH, and it was not asking — review found it. Eloquent's instance delete writes
