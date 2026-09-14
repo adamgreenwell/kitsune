@@ -75,6 +75,11 @@ Sign in as `alpha@kitsune.test` with the password `password`. The seeded organis
 second organisation and a user of its own — `rival@kitsune.test` — because most of what is interesting about
 the scoping kernel is only visible when there are two orgs to keep apart.
 
+⚠️ **The public side is a placeholder, and that is the plan rather than a gap.** `http://127.0.0.1:8000/` and a
+site's own path, such as `/golfdom`, render one page that says so and links to the admin — nothing public renders
+an entry yet. Kitsune's first release is the admin; a public site that renders entries is theming, which ADR-011
+in the [decision log](docs/decision-log.md) moved to v1.1.
+
 ⚠️ **`composer install -d skeleton` on its own does not work, and the reason is temporary.** `kitsune/core`
 is not on Packagist yet ([#8](https://github.com/adamgreenwell/kitsune/issues/8)), so the skeleton resolves
 it through a path repository that `composer skeleton:install` writes and then reverts — which keeps the
