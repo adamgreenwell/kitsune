@@ -1805,6 +1805,16 @@ transition as draft-to-published, and `Entry::refuseUnpermittedCreationAsPublish
 door — reading the type from the row `entry_type_id` names, not from a `type_handle` that a quiet creation
 never re-derives.
 
+⚠️ **And a restore is an edit, which the History never asked.** Filament's view page renders a resource's
+relation managers, and a custom action inside one carries no authorization unless it declares some — Filament
+infers one only for its own named actions — so somebody holding `entry.{type}.view` alone could put an old
+version back from a page that never asked whether they may edit. The Restore action now asks
+`EntryResource::canEdit()`, the question the edit page asks before it renders, and is hidden rather than
+disabled because nothing on any row is that user's to do. Filament refuses to mount a hidden action, so a
+hand-built Livewire request meets the same answer as the missing button. The browser suite asserts both as a
+seeded `viewer@kitsune.test` holding `view` alone, because the copy-editor's `update` is exactly what makes a
+restore allowed.
+
 ⚠️ **A BULK publish is deliberately still allowed**, and that is not an oversight to be swept up with this.
 `Entry::query()->update(['status' => 'published'])` is a supported write that this project audits and
 versions on purpose (`AuditLogTest` and `recordBulkRevision()` both say so), and it carries no acting

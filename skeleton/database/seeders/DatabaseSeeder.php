@@ -262,6 +262,23 @@ class DatabaseSeeder extends Seeder
         $readerUser->orgs()->attach($orgA->id);
         $reader->assignTo($readerUser->id);
 
+        /*
+         * ⚠️ A VIEWER, and the copy-editor cannot stand in for one. Restoring a version is an EDIT, and the view
+         * page renders the same History as the edit page — so what a restore has to be refused for is the
+         * absence of `update`, which the copy-editor holds on purpose. `entry.article.view` and nothing else.
+         */
+        $viewer = Role::create(['handle' => 'viewer', 'name' => 'Viewer']);
+        $viewer->grant(Permissions::forEntryType('article', 'view'));
+
+        $viewerUser = User::create([
+            'name' => 'Viewer User',
+            'email' => 'viewer@kitsune.test',
+            'password' => Hash::make('password'),
+        ]);
+        $viewerUser->sites()->attach([$en->id]);
+        $viewerUser->orgs()->attach($orgA->id);
+        $viewer->assignTo($viewerUser->id);
+
         // The rival org gets its own owner, so the cross-org specs measure a user who is fully
         // authorised in their OWN org rather than one who is simply unauthorised everywhere.
         $context->setOrg($orgB);
@@ -297,6 +314,15 @@ class DatabaseSeeder extends Seeder
         ]);
 
         $demoted->status = 'draft';
+        $demoted->save();
+
+        /*
+         * ⚠️ AND REWRITTEN ONCE AS A DRAFT, so its history holds a version that restoring would actually CHANGE
+         * without publishing anything. A restore onto identical state files nothing, so without this the only
+         * restorable draft was the current one — and a spec proving a restore is refused could not tell the
+         * refusal from a no-op.
+         */
+        $demoted->values = [...$demoted->values, 'summary' => 'Rewritten as a draft, and not yet republished.'];
         $demoted->save();
 
         // ⚠️ An RTL title in an otherwise LTR org, because issue #39's failure only

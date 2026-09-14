@@ -13,6 +13,8 @@ const { test, expect } = require('@playwright/test');
  * The session here belongs to `reader@kitsune.test`, a copy-editor: `entry.article.view` and
  * `entry.article.update`, and deliberately nothing else. An owner cannot measure a permission system, and a
  * user with only `view` cannot reach the form on which `publish` is enforced.
+ *
+ * One block signs in as `viewer@kitsune.test` instead, who holds `view` alone — the user a restore must refuse.
  */
 
 const SITE = 'golfdom';
@@ -213,6 +215,69 @@ test.describe('restoring a version that was published', () => {
         const draft = page.locator('.fi-ta-row').filter({ hasText: 'Draft' }).first();
         await expect(draft).toBeVisible();
         await expect(draft.getByRole('button', { name: 'Restore' })).toBeEnabled();
+    });
+});
+
+test.describe('the history of an entry somebody may only view', () => {
+    /*
+     * ⚠️ A RESTORE IS AN EDIT, AND THE VIEW PAGE RENDERS THE HISTORY TOO. Filament's `ViewRecord` shows a
+     * resource's relation managers, and the Restore action carried no authorization of its own — so a user
+     * holding `entry.article.view` alone could put an old version back from a page that never asked whether
+     * they may edit. Review found it.
+     *
+     * ⚠️ BOTH HALVES, and the second is the boundary. A missing button is what a browser is shown; a hand-built
+     * Livewire call is what somebody sends instead, and it has to meet the same answer — the reasoning this
+     * file already applies to the status control's options and its validation rule.
+     */
+    test.use({ storageState: '.playwright/admin-viewer-auth.json' });
+
+    async function openHistory(page) {
+        await page.goto(`/admin/${SITE}/c/article`);
+
+        const row = page.locator('.fi-ta-row').filter({ hasText: 'Bunker renovation' }).first();
+        await expect(row).toBeVisible();
+
+        await row.locator('a[href*="/c/article/"]').first().click();
+        await page.waitForURL(/\/c\/article\/\d+/);
+
+        // The relation manager is a lazy Livewire component below the fold — see `revisions.spec.js`.
+        await page.mouse.wheel(0, 1200);
+        await expect(page.getByText('History')).toBeVisible();
+    }
+
+    test('shows the history and offers no restore', async ({ page }) => {
+        await openHistory(page);
+
+        await expect(page.locator('.fi-ta-row').first()).toBeVisible();
+        await expect(page.getByRole('button', { name: 'Restore' })).toHaveCount(0);
+    });
+
+    test('refuses the restore when it is requested by hand', async ({ page }) => {
+        await openHistory(page);
+
+        const rows = page.locator('.fi-ta-row');
+        const before = await rows.count();
+
+        /*
+         * The version before the seeded rewrite, and rows are newest first. It is a DRAFT, so no publish
+         * permission is involved, and it differs from the entry as it stands, so a restore that went through
+         * would file a version rather than nothing — which is what makes an unchanged count a refusal.
+         */
+        const key = await rows.nth(1).getAttribute('wire:key');
+        expect(key).toContain('.table.records.');
+
+        const [component, record] = String(key).split('.table.records.');
+
+        await page.evaluate(async ({ component, record }) => {
+            const wire = /** @type {any} */ (window).Livewire.find(component);
+
+            await wire.mountAction('restore', {}, { table: true, recordKey: record });
+            await wire.callMountedAction();
+        }, { component, record });
+
+        await openHistory(page);
+
+        await expect(rows).toHaveCount(before);
     });
 });
 
