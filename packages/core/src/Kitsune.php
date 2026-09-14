@@ -10,6 +10,8 @@ declare(strict_types=1);
 
 namespace Kitsune\Core;
 
+use Composer\InstalledVersions;
+
 final class Kitsune
 {
     /**
@@ -63,9 +65,24 @@ final class Kitsune
      */
     public const RTL_SCRIPTS = ['Arab', 'Aran', 'Hebr'];
 
+    /**
+     * The version of kitsune/core that Composer installed.
+     *
+     * ⚠️ ASKED OF COMPOSER, NOT WRITTEN HERE. This returned the literal `0.0.1-dev`, and nothing in the split or
+     * the release process rewrites a file when a tag is pushed — so every tagged install would have reported a
+     * version it is not, on the skeleton's own front page among other places. Composer records what it
+     * installed: the tag for a release, a `dev-` branch name for a path or branch install.
+     *
+     * `dev` only when core's classes are loaded without Composer having installed the package, where there is no
+     * truer answer to give.
+     */
     public static function version(): string
     {
-        return '0.0.1-dev';
+        if (! InstalledVersions::isInstalled('kitsune/core')) {
+            return 'dev';
+        }
+
+        return InstalledVersions::getPrettyVersion('kitsune/core') ?? 'dev';
     }
 
     /**

@@ -2663,16 +2663,20 @@
         },
         {
             "name": "kitsune/core",
-            "version": "dev-phase-2/admin-panel",
+            "version": "dev-fix/core-split-readiness",
             "dist": {
                 "type": "path",
                 "url": "packages/core",
-                "reference": "0330c4ccf1fca940ce785f559a968faa4f633340"
+                "reference": "f0e79f184bc1d5d38e382a951eb7720cfcbcb933"
             },
             "require": {
-                "filament/filament": "^5.4",
-                "illuminate/support": "^13.0",
-                "php": "^8.4"
+                "blade-ui-kit/blade-icons": "^1.6",
+                "composer-runtime-api": "^2.0",
+                "filament/filament": "^5.6",
+                "laravel/framework": "^13.0",
+                "livewire/livewire": "^4.1",
+                "php": "^8.4",
+                "ueberdosis/tiptap-php": "^2.0"
             },
             "require-dev": {
                 "orchestra/testbench": "^11.2",
@@ -2695,6 +2699,12 @@
                 "MPL-2.0"
             ],
             "description": "Kitsune core: the module kernel, tenancy primitives and runtime schema engine.",
+            "homepage": "https://kitsunecms.org",
+            "support": {
+                "issues": "https://github.com/adamgreenwell/kitsune/issues",
+                "source": "https://github.com/adamgreenwell/kitsune",
+                "security": "https://github.com/adamgreenwell/kitsune/security/advisories/new"
+            },
             "transport-options": {
                 "symlink": true,
                 "relative": true
