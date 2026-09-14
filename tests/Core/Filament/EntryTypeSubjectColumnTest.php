@@ -14,6 +14,7 @@ use Kitsune\Core\Models\Field;
 use Kitsune\Core\Models\FieldStorage;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Tenancy\Context;
+use Kitsune\Core\Tenancy\ScopeWrites;
 
 /*
  * The entry type list's Subject column — ADR-020's compliance surface, where an operator actually looks.
@@ -101,4 +102,25 @@ it('calls missing exactly the types the compliance report lists', function (): v
 
     expect($missing)->toBe(['patient', 'referral'])
         ->and(EntryType::withoutSubjectIdentifier()->pluck('handle')->sort()->values()->all())->toBe($missing);
+});
+
+it('lets no other org\'s types or storage decide this org\'s subject states', function (): void {
+    /*
+     * ⚠️ `EntryType` AND `FieldStorage` ARE BOTH UNSCOPED, so the list's projection has to be scoped by query — and review
+     * found it tested only from the current org. A rival's own type holding personal data must not appear, and a field
+     * of this org's backed by the rival's personal storage must not make this org's type a hole on the rival's
+     * classification. The `Field` guard refuses that attachment now, so it is written past both guards, as a row
+     * that predates them — the opt-out `SubjectIdentifierTest` uses for the same fixture.
+     */
+    $rival = Org::create(['name' => 'Rival', 'slug' => 'rival-subjects']);
+    app(Context::class)->setOrg($rival);
+    [, $theirField] = subjectColumnType($rival, 'lead', 'personal');
+
+    app(Context::class)->setOrg($this->org);
+    $page = EntryType::create(['org_id' => $this->org->id, 'handle' => 'page', 'name' => 'Page', 'plural_name' => 'Pages']);
+    ScopeWrites::suspend(static fn (): Field => Field::withoutEvents(static fn (): Field => Field::create([
+        'entry_type_id' => $page->id, 'field_storage_id' => $theirField->field_storage_id, 'label' => 'Borrowed',
+    ])));
+
+    expect(subjectColumnStates())->toBe(['page' => 'not-needed']);
 });
