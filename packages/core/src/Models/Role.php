@@ -205,15 +205,25 @@ class Role extends Model
              * They cannot be read afterwards either, because the database cascades `role_user` away with the
              * role — so the read has to come first and the write has to come second.
              */
+            /*
+             * ⚠️ THE ROLE FIRST, THEN ITS PIVOT ROWS — and the order was inverted here, which review caught.
+             * Every other path takes the role's lock before touching `role_user` (`assignTo()` records why),
+             * and this one read the holders first: two paths in opposite orders is a deadlock waiting for
+             * load, and in between the two statements an assignment could commit, so the cascade removed a
+             * different set of rows than the audit recorded. A holder assigned in that window lost authority
+             * with no `role.unassigned`; one removed in it could be audited twice.
+             *
+             * `storedOwnerFlag()` is a locked read of the role, so calling it first takes that lock and costs
+             * no extra query — the flag was needed anyway.
+             */
+            $wasOwner = $this->storedOwnerFlag();
+
             $holders = DB::table('role_user')
                 ->where('role_id', $this->getKey())
+                ->lockForUpdate()
                 ->pluck('user_id')
                 ->map(static fn (mixed $id): int => (int) $id)
                 ->all();
-
-            // ⚠️ The STORED flag, read while the row is still there — see `storedOwnerFlag()`. A pending
-            // edit to `is_owner` would otherwise name the revocation after a promotion that never happened.
-            $wasOwner = $this->storedOwnerFlag();
 
             $deleted = parent::delete();
 
@@ -657,9 +667,18 @@ class Role extends Model
      */
     private function storedOwnerFlag(): bool
     {
+        /*
+         * ⚠️ A LOCKED READ, because it is the first lock every authority path takes and the order depends on
+         * it. `delete()` calls this before enumerating the holders precisely so the role's lock comes first —
+         * an unlocked read there left two paths taking their locks in opposite orders, and left the window
+         * where an assignment could commit between the flag read and the cascade. It also cannot answer from
+         * a snapshot: under REPEATABLE READ an ordinary read would name the audit action from a value a
+         * concurrent promotion had already replaced.
+         */
         return (bool) static::query()
             ->withoutGlobalScopes()
             ->whereKey($this->getKeyForSaveQuery())
+            ->lockForUpdate()
             ->value('is_owner');
     }
 

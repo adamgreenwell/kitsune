@@ -1809,6 +1809,28 @@ So a link the record **already holds** keeps its value and loses its title: it r
   is narrower than "every guard gets a hatch" — **a hatch is only safe where the thing it suspends is the only
   thing the guard protects.**
 
+- **A policy answers before the write, and an instance may not write over a row that moved since.** Review
+  pointed out the window no policy can close by itself: `Gate` runs in one transaction and the write happens in
+  another, so a row retyped or moved into another site in between was authorised by the answer for what it used
+  to be. **The consequence was measured before the fix was chosen**, because it is narrower than it sounds — a
+  stale instance saving an unrelated field writes only that field (`update "entries" set "title" = ?,
+  "updated_at" = ? where "id" = ?`), so the denormalised `type_handle` keeps whatever the other transaction set
+  and nothing drifts. What is left is one edit, or one DELETION, by somebody authorised for that row a moment
+  earlier; the deletion is why this is a guard rather than a documented limitation.
+
+  `Entry::refuseIfTheRowMovedUnderneath()` reads the stored row under a lock inside the write's own transaction
+  and refuses when `site_id`, `org_id` or `entry_type_id` differ from what the instance loaded. It compares what
+  was LOADED rather than what is being written, so a legitimate retype still works — making the change yourself
+  makes the column dirty, and the comparison is against the database. **Authorization proper stays at the panel
+  boundary**: re-asking `Permissions` in the write path would need the acting identity, which a seeder, an
+  importer and a console command do not have, so the window is closed by refusing the write rather than by
+  re-deciding the permission.
+
+  ⚠️ The discriminator is `exists` and a key rather than `isPerformingModelSave()`, and a soft delete is why:
+  `runSoftDelete()` builds its own query and calls `update()` directly, outside `performUpdate()`, so the save
+  identity skipped the one case that destroys something. Measured — the soft delete went through while the
+  update and the force-delete were refused.
+
 - **The role row is the mutex for everything that changes its authority.** Each operation was locally
   transactional and the PAIR still lost a row from the trail: an assignment inserted the pivot and read the
   owner flag as false, recording `role.assigned`, while a concurrent promotion could not see the uncommitted

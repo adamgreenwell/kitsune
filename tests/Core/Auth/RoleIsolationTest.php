@@ -1070,6 +1070,41 @@ it('locks the role before it touches the pivot, and reads holders under that loc
      * asserting about SQL the operation does not emit — it failed on an empty list while the guard worked.
      * The read happens on an owner TRANSITION and on deletion, so it is measured where it lives.
      */
+    /*
+     * ⚠️ AND DELETION TAKES THE SAME TWO LOCKS IN THE SAME ORDER, which review found inverted: it read the
+     * holders first and locked the role afterwards, so two paths ran in opposite orders — a deadlock waiting
+     * for load — and in the window between them an assignment could commit, leaving the cascade to remove a
+     * different set of rows than the audit recorded.
+     */
+    $seen = [];
+
+    $doomed = Role::create(['handle' => 'doomed', 'name' => 'Doomed']);
+    $doomed->assignTo($this->user->getKey());
+    $seen = [];
+    $doomed->delete();
+
+    if (DB::connection()->getDriverName() !== 'sqlite') {
+        $lockedRoleOnDelete = null;
+        $pivotReadOnDelete = null;
+
+        foreach ($seen as $position => $sql) {
+            if ($lockedRoleOnDelete === null && str_contains($sql, 'from roles') && str_contains($sql, 'for update')) {
+                $lockedRoleOnDelete = $position;
+            }
+
+            if ($pivotReadOnDelete === null && str_starts_with($sql, 'select user_id from role_user')) {
+                $pivotReadOnDelete = $position;
+            }
+        }
+
+        expect($lockedRoleOnDelete)->not->toBeNull('the deletion never locked the role')
+            ->and($pivotReadOnDelete)->not->toBeNull('the deletion never enumerated the holders')
+            ->and($lockedRoleOnDelete)->toBeLessThan(
+                $pivotReadOnDelete,
+                'the deletion locked the role AFTER reading its holders, which is the opposite order to assignTo()',
+            );
+    }
+
     $seen = [];
 
     $this->alphaRole->update(['is_owner' => true]);
