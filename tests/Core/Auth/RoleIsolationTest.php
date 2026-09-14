@@ -1364,6 +1364,64 @@ it('refuses a detach of every membership that would take the last owner with it'
     expect(DB::table('org_user')->where('user_id', $leaver->getKey())->count())->toBe(1);
 });
 
+it('asks who can still administer an org under that org, whatever context the caller is in', function (string $caller): void {
+    /*
+     * ⚠️ THE MEMBERSHIP SCOPE READS THE CONTEXT, and review found the last-owner guard reading membership through
+     * the caller's. A detach made from another org, or from a console sweep with no org at all, found no members
+     * of the org being left: its only owner looked like nobody, and the guard let the org lose them.
+     *
+     * The user is a member of beta only, so alpha's context cannot see them for a reason that is the defect.
+     */
+    app(Context::class)->setOrg($this->beta);
+    joinOrg($this->beta, $this->user);
+
+    $owner = Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true]);
+    $owner->assignTo($this->user->getKey());
+
+    $caller === 'another org'
+        ? app(Context::class)->setOrg($this->alpha)
+        : app(Context::class)->forget();
+
+    expect(fn () => $this->user->orgs()->detach($this->beta->getKey()))
+        ->toThrow(RuntimeException::class, 'last member of it holding an owner role');
+
+    // The membership survives the refusal, and the caller's context comes back as it was.
+    expect(DB::table('org_user')->where('user_id', $this->user->getKey())->count())->toBe(1)
+        ->and(app(Context::class)->orgId())->toBe($caller === 'another org' ? $this->alpha->getKey() : null);
+})->with(['another org', 'no org']);
+
+it('removes only the memberships it checked when told to remove them all', function (): void {
+    /*
+     * ⚠️ A DETACH OF EVERY MEMBERSHIP READ THE LIST, THEN DELETED EVERY ROW — review found the gap between. A
+     * membership another transaction attached after the read was never locked, checked or audited, and the
+     * delete took it anyway: authority removed with no `org.member_removed` row and no last-owner check.
+     *
+     * The concurrent attach is placed exactly in that gap — as the org lock for what was read is taken, which is
+     * after the read and before the delete — rather than hoped for from a second connection.
+     */
+    joinOrg($this->alpha, $this->user);
+
+    $attached = false;
+
+    DB::listen(function (QueryExecuted $query) use (&$attached): void {
+        if ($attached || $query->connectionName !== DB::getDefaultConnection()) {
+            return;
+        }
+
+        if (str_starts_with(str_replace(['"', '`'], '', $query->sql), 'select id from orgs where orgs.id = ?')) {
+            $attached = true;
+            joinOrg($this->beta, $this->user);
+        }
+    });
+
+    $this->user->orgs()->detach();
+
+    expect($attached)->toBeTrue()
+        ->and(DB::table('org_user')->where('user_id', $this->user->getKey())->pluck('org_id')->map(
+            static fn (mixed $id): int => (int) $id,
+        )->all())->toBe([$this->beta->getKey()]);
+});
+
 it('refuses to delete a role that belongs to another org', function (): void {
     /*
      * ⚠️ THE FIFTH AUTHORITY PATH, and it was not asking — review found it. Eloquent's instance delete writes

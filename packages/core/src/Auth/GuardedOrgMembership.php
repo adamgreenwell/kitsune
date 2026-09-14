@@ -85,7 +85,8 @@ class GuardedOrgMembership extends BelongsToMany
          * copies of one rule.
          */
         $removed = DB::transaction(function () use ($ids, $touch): int {
-            $pairs = $this->pairsFor($this->detachedIds($ids));
+            $others = $this->detachedIds($ids);
+            $pairs = $this->pairsFor($others);
 
             $this->lockOrgRows($pairs);
 
@@ -106,7 +107,14 @@ class GuardedOrgMembership extends BelongsToMany
 
             $leaving = array_values(array_filter($pairs, fn (array $pair): bool => $this->isMember(...$pair)));
 
-            $removed = (int) parent::detach($ids, $touch);
+            /*
+             * ⚠️ THE MEMBERSHIPS JUST CHECKED, NOT WHATEVER EXISTS BY THE TIME OF THE DELETE — review found the
+             * gap. A detach of every membership read the list, locked and checked those orgs, then deleted every
+             * row the user had: a membership another transaction attached after the read was never locked,
+             * checked or audited, and went anyway. Naming the ids that were read makes the delete the set the
+             * guard saw; an attach that lands after the read survives, and is detached by whoever asks next.
+             */
+            $removed = (int) parent::detach($ids ?? $others, $touch);
 
             $this->recordAuthorityChange($leaving, 'removed');
 

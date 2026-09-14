@@ -788,11 +788,41 @@ class Role extends Model
             ));
         }
 
-        return $model::query()
-            ->whereIn('id', $holders)
-            ->pluck('id')
-            ->map(static fn (mixed $id): int => (int) $id)
-            ->all();
+        /*
+         * ⚠️ UNDER THE ORG BEING ASKED ABOUT, NOT THE CALLER'S — review found the membership scope reading the
+         * context. `OrgMembershipScope` constrains to whatever org the context names, so a detach made from
+         * another org's context, or from a console sweep with none, found no members of the org being left at
+         * all: its only owner looked like nobody, and the guard let the org lose them. Switched for the read and
+         * restored after, as the membership audit rows are — so "member" means exactly what `Permissions` asks
+         * under that org, rather than a second description of it.
+         */
+        $org = Org::query()->withTrashed()->whereKey($orgId)->first();
+
+        if (! $org instanceof Org) {
+            return [];
+        }
+
+        $context = app(Context::class);
+
+        // The site too, because `setOrg()` clears a site that belongs to another org.
+        $restoreOrg = $context->org();
+        $restoreSite = $context->site();
+
+        try {
+            $context->setOrg($org);
+
+            return $model::query()
+                ->whereIn('id', $holders)
+                ->pluck('id')
+                ->map(static fn (mixed $id): int => (int) $id)
+                ->all();
+        } finally {
+            if ($restoreSite !== null) {
+                $context->setSite($restoreSite);
+            } else {
+                $context->setOrg($restoreOrg);
+            }
+        }
     }
 
     /**
