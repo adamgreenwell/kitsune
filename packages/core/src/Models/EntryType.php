@@ -290,23 +290,41 @@ class EntryType extends Model implements RefusesCascadingDeletes, RequiresModelS
         return static::query()
             ->availableToCurrentOrg()
             ->whereNull('subject_field_id')
-            ->whereHas('fields.fieldStorage', function (Builder $query): void {
+            ->whereHas('fields.fieldStorage', static function (Builder $query): void {
                 // ⚠️ The nested query is scoped too. Scoping only the outer
                 // EntryType left FieldStorage — which is #[Unscoped] — free
                 // to match another org's row, so a rival's classification
                 // could decide whether this org's type counted as a hole.
                 // Field now refuses that attachment on save; this keeps the
                 // report right for any row that predates the guard.
-                $orgId = app(Context::class)->orgId();
+                self::constrainToPersonalData($query);
+            });
+    }
 
-                $query->whereIn('pii_class', ['personal', 'sensitive'])
-                    ->where(function (Builder $storage) use ($orgId): void {
-                        $storage->whereNull('org_id');
+    /**
+     * Narrow a `field_storage` query to rows holding personal data that this org can see.
+     *
+     * ⚠️ ONE PREDICATE FOR TWO ANSWERS: the compliance report above, and the entry type list's Subject column. The
+     * column used to flag every type with no subject nominated, including types holding no personal data at all, so a
+     * fresh install showed a warning on every type — false alarms beside the one hole ADR-020 means. Written twice,
+     * "holds personal data" would drift between the two; asked here, it means one thing.
+     *
+     * Typed on `Model` because both callers hand it the query Laravel passes a `whereHas()` closure, which carries
+     * no narrower model type; the builder's generic is invariant, so the narrower annotation refused both of them.
+     *
+     * @param  Builder<Model>  $query
+     */
+    public static function constrainToPersonalData(Builder $query): void
+    {
+        $orgId = app(Context::class)->orgId();
 
-                        if ($orgId !== null) {
-                            $storage->orWhere('org_id', $orgId);
-                        }
-                    });
+        $query->whereIn('pii_class', ['personal', 'sensitive'])
+            ->where(function (Builder $storage) use ($orgId): void {
+                $storage->whereNull('org_id');
+
+                if ($orgId !== null) {
+                    $storage->orWhere('org_id', $orgId);
+                }
             });
     }
 
