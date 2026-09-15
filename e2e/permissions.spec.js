@@ -91,6 +91,26 @@ test.describe('a user holds only what was granted', () => {
         await expect(sidebar.getByRole('link', { name: 'Products' })).toHaveCount(0);
     });
 
+    test('is shown dashboard counts and recent entries only for a type they may view', async ({ page }) => {
+        /*
+         * ⚠️ THE DASHBOARD IS A THIRD PLACE A TYPE'S CONTENT APPEARS, after the list and the sidebar. A product
+         * count or a product row would tell this copy-editor about what the URL above refuses them, so both
+         * widgets take their types from the sidebar's own list.
+         *
+         * ⚠️ THE ROW HALF BITES ONLY WHILE A PRODUCT IS AMONG THE SITE'S TEN NEWEST ENTRIES, as it is on a fresh
+         * seed. `DashboardWidgetsTest` pins the filter itself; this pins that the page renders through it.
+         */
+        await page.goto(`/admin/${SITE}`);
+
+        const stats = page.locator('a.fi-wi-stats-overview-stat');
+        await expect(stats.filter({ hasText: 'Articles' })).toHaveCount(1);
+        await expect(stats.filter({ hasText: 'Products' })).toHaveCount(0);
+
+        const recent = page.locator('.fi-wi-table');
+        await expect(recent.locator('.fi-ta-row').first()).toBeVisible();
+        await expect(recent.locator('a[href*="/c/product/"]')).toHaveCount(0);
+    });
+
     test('is refused the schema builder, at the URL and in the sidebar', async ({ page }) => {
         /*
          * ⚠️ RBAC EXISTING MADE THIS A HOLE RATHER THAN A DEFAULT — review found it. Before permissions,

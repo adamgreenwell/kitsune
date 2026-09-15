@@ -159,7 +159,12 @@ test.describe('isolation, from the attacker side', () => {
     test('does not offer a disabled type in navigation', async ({ page }) => {
         await page.goto(`/admin/${SITE}`);
 
-        await expect(page.getByRole('link', { name: 'Podcasts' })).toHaveCount(0);
+        /*
+         * ⚠️ IN THE SIDEBAR, because the dashboard links each type too. Asked of the whole page, this would also
+         * pass with the sidebar offering Podcasts while the dashboard left it out. `dashboard.spec.js` asks the
+         * stats.
+         */
+        await expect(page.locator('.fi-sidebar').getByRole('link', { name: 'Podcasts' })).toHaveCount(0);
     });
 
     test('does not show another org\'s content in any list', async ({ page }) => {
@@ -171,7 +176,9 @@ test.describe('isolation, from the attacker side', () => {
     test('does not offer another org\'s type in navigation', async ({ page }) => {
         await page.goto(`/admin/${SITE}`);
 
-        await expect(page.getByRole('link', { name: 'Articles' })).toBeVisible();
+        // In the sidebar, which is what navigation means: the dashboard's Articles stat links there too.
+        await expect(page.locator('.fi-sidebar').getByRole('link', { name: 'Articles' })).toBeVisible();
+        // The whole page, on purpose: another org's type must not reach the dashboard's widgets either.
         await expect(page.getByText('Confidential')).toHaveCount(0);
     });
 });

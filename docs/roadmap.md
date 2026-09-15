@@ -261,7 +261,7 @@ They are *enforced* — [ADR-033](decision-log.md) and `EntryPolicy` landed with
 
 | page | page ms | queries | slowest query |
 |---|---|---|---|
-| dashboard | 18.8 | 11 | 0.07 |
+| dashboard | 74.4 | 13 | 38.59 |
 | entry list, page 1 | 59.9 | 17 | 18.89 |
 | entry list, last page (offset 99,990) | 91.7 | 17 | 24.49 |
 | entry create | 30.3 | 15 | 0.69 |
@@ -282,6 +282,12 @@ Through real requests the last page went from **214.6 ms to 91.7 ms**, and the s
 The index is three columns rather than four: covering the `id` tiebreak as well was measured and made no difference outside noise, and a fourth column on the hottest table in the schema costs write throughput for nothing. ⚠️ The first corpus hid that, because it stamped every row with the same `now()` — so `updated_at` discriminated nothing, the ordering fell entirely to `id`, and the four-column index looked necessary. The benchmark spreads the corpus over time now.
 
 `EntryListSortIsIndexedTest` keeps it true: it reads `EntryResource::DEFAULT_SORT` rather than naming a column, so changing the sort fails the build until an index covers the new one.
+
+⚠️ **The dashboard row was re-measured when the dashboard got something to say, 2026-09-14.** It had no widgets, which is why it was the cheapest page in the table. It now counts each entry type the reader is offered and lists the ten most recently updated entries: 13 queries rather than 11, and 74.4 ms rather than 18.8. Measured back to back on one corpus, the widgets alone take it from 20.4 ms to 74.4 ms.
+
+Its slowest statement is the per-type count, 38.6 ms. `count(*)` grouped by type and status reads every entry on the site, because neither `deleted_at` nor the site scope's shared-entry branch is in an index, so it grows with the site and is the first thing on this page to revisit beyond 100k entries.
+
+The recent entries were the other half. They cross types, so `(site_id, entry_type_id, updated_at)` could not deliver them in order and every dashboard load sorted every entry on the site: 23.92 ms. With `(site_id, updated_at)` it is 0.18 ms. That index was weighed against the write cost the paragraph above turns a fourth column down for, and measured rather than assumed: +4.0% on a 20k-row bulk insert and +1.0% on an `Entry::create()` save. `RecentEntriesSortIsIndexedTest` holds it to `RecentEntriesWidget::SORT`.
 
 **What the command does not measure, said plainly:** sorting and searching from the table's own controls, which Livewire drives over POST rather than through a URL, and browser render time. It measures server cost for every page shape a GET reaches.
 
