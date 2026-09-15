@@ -18,6 +18,7 @@ use Filament\Tables\Table;
 use Kitsune\Core\Filament\Resources\Entries\EntryResource;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryRevision;
+use Livewire\Attributes\On;
 
 /**
  * Version history, with a restore.
@@ -32,6 +33,18 @@ class RevisionsRelationManager extends RelationManager
     protected static string $relationship = 'revisionHistory';
 
     protected static ?string $title = 'History';
+
+    /** Dispatched by `EditEntry` once a save has written the entry and reconciled its version. */
+    public const ENTRY_SAVED = 'kitsune-entry-saved';
+
+    /**
+     * Redraws the table when the form above it saves — see `EditEntry::afterSave()`.
+     */
+    #[On(self::ENTRY_SAVED)]
+    public function refreshAfterSave(): void
+    {
+        $this->flushCachedTableRecords();
+    }
 
     /**
      * Would restoring this version publish the entry on behalf of somebody who may not publish?

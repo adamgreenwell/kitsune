@@ -61,6 +61,27 @@ test.describe('revisions', () => {
         await expect(page.getByText('Edited in a browser').first()).toBeVisible();
     });
 
+    test('shows the new version under the form without a reload', async ({ page }) => {
+        /*
+         * ⚠️ THE TEST ABOVE RELOADS BEFORE IT COUNTS, AND THAT IS WHAT HID THIS. The History is its own
+         * Livewire component, so a save recorded its version and the table under the form went on listing
+         * the old ones until the page was reloaded. Found by the alpha's local smoke test.
+         *
+         * By row rather than by count: the table shows ten versions a page, so once an entry has ten the
+         * count stops moving whether or not the table redrew.
+         *
+         * ⚠️ A TITLE NO EARLIER ATTEMPT WROTE. With a fixed title, a retry opened the History already holding
+         * the first attempt's row and passed with the fix reverted — CI retries, so that is a green run.
+         */
+        const title = `Seen without a reload ${Date.now()}`;
+        await openHistory(page);
+
+        await page.getByLabel('Title').fill(title);
+        await save(page);
+
+        await expect(page.getByRole('row', { name: title })).toBeVisible();
+    });
+
     test('restoring puts the value back IN THE FORM, not only in the database', async ({ page }) => {
         await page.goto(EDIT);
         await page.getByLabel('Title').fill('Before restore');
