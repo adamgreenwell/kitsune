@@ -640,10 +640,17 @@ final class Permissions
     }
 
     /**
-     * The table `role_user.user_id` points at, read from the schema once.
+     * The table `role_user.user_id` points at, read from the schema once, and named the way a model names it.
      *
      * Memoised through `once()` like the rest of this class: it is a fact about the installation rather than
      * about a request, and `forget()` flushing it costs one introspection after a role write.
+     *
+     * ⚠️ WITHOUT THE CONNECTION'S TABLE PREFIX, which every prefixed host was missing. `getForeignKeys()` reports
+     * the referenced table as the database holds it — `app_users` on a connection prefixed `app_` — while
+     * `Model::getTable()` names it without the prefix. `assignmentsAreAbout()` therefore answered no for the right
+     * model on all four engines, and RBAC resolved no role, offered no holder and refused every owner change. The
+     * query builder adds the prefix on the way in; this takes it off on the way out, so both names are in the same
+     * terms. Found designing #91's fixture, by asking the engines rather than the documentation.
      */
     private static function assignmentTable(): ?string
     {
@@ -655,7 +662,13 @@ final class Permissions
 
                 $table = $key['foreign_table'] ?? null;
 
-                return is_string($table) ? $table : null;
+                if (! is_string($table)) {
+                    return null;
+                }
+
+                $prefix = DB::connection()->getTablePrefix();
+
+                return $prefix !== '' && str_starts_with($table, $prefix) ? substr($table, strlen($prefix)) : $table;
             }
 
             return null;
