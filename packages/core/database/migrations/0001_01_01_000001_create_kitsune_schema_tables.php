@@ -155,6 +155,21 @@ return new class extends Migration
              * corpus over time, because a measurement on degenerate data is a measurement of the data.
              */
             $table->index(['site_id', 'entry_type_id', 'updated_at']);
+
+            /*
+             * ⚠️ THE DASHBOARD'S RECENT ENTRIES CROSS TYPES, so the index above cannot serve them.
+             * `RecentEntriesWidget` constrains `site_id` and a LIST of types, and an engine reaching
+             * `updated_at` through `(site_id, entry_type_id, updated_at)` gets each type's entries in order
+             * and still has to sort them together — every entry on the site, on every dashboard load. On
+             * SQLite at 100k entries, median of five requests: 23.92 ms without this index, 0.18 ms with it,
+             * and the dashboard page 96.7 ms against 73.8 ms.
+             *
+             * ⚠️ WHAT IT COSTS WRITES, MEASURED RATHER THAN ASSUMED, because the comment above turns down a
+             * fourth column on exactly that ground. On the same 100k-row site, alternating without and with
+             * over two passes: +4.0% on a 20k-row bulk insert and +1.0% on an `Entry::create()` save.
+             * `RecentEntriesSortIsIndexedTest` holds it to `RecentEntriesWidget::SORT`.
+             */
+            $table->index(['site_id', 'updated_at']);
             $table->unique(['site_id', 'entry_type_id', 'slug']);
             $table->unique(['translation_group', 'site_id']);
         });
