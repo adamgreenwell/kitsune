@@ -77,6 +77,19 @@ it('keeps the letters of a script that has no case', function (): void {
     expect(drawnAvatarSvg(avatarRecordNamed('غولفدوم العربية')))->toContain('>غا</text>');
 });
 
+it('keeps a non-Latin initial whatever the host\'s internal encoding', function (): void {
+    // ⚠️ `mb_*` read their input in `mb_internal_encoding()` unless told. Under ISO-8859-1 the Arabic initial was the
+    // byte `d8`, which `htmlspecialchars(..., 'UTF-8')` then dropped — measured before the fix, found in review.
+    $previous = mb_internal_encoding();
+    mb_internal_encoding('ISO-8859-1');
+
+    try {
+        expect(drawnAvatarSvg(avatarRecordNamed('غولفدوم العربية')))->toContain('>غا</text>');
+    } finally {
+        mb_internal_encoding($previous);
+    }
+});
+
 it('reads the name a HasName model gives Filament', function (): void {
     $site = new class extends Model implements HasName
     {

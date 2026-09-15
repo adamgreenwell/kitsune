@@ -60,8 +60,10 @@ final class InitialsAvatarProvider implements AvatarProvider
         foreach (preg_split('/\s+/u', trim($name), -1, PREG_SPLIT_NO_EMPTY) ?: [] as $word) {
             $word = (string) preg_replace('/^[^\p{L}\p{N}]+/u', '', $word);
 
+            // ⚠️ 'UTF-8' NAMED, not left to `mb_internal_encoding()`. A host set to ISO-8859-1 cut an Arabic initial
+            // to its first byte, which the escaping below then dropped: a blank avatar. Found in review.
             if ($word !== '') {
-                $letters[] = mb_strtoupper(mb_substr($word, 0, 1));
+                $letters[] = mb_strtoupper(mb_substr($word, 0, 1, 'UTF-8'), 'UTF-8');
             }
 
             if (count($letters) === 2) {
