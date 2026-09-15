@@ -125,6 +125,8 @@ Three of these are not optional. Skip any one and it breaks.
 
 7. Use `route:cache`. **Skip `filament:cache-components`** — it caches nothing useful here.
 
+   **⚠️ A bare `php artisan optimize` does not skip it.** Filament registers `filament:optimize` as an optimize task under the key `filament`, and that command runs `filament:cache-components`. `optimize` also exits 0 when one of its tasks fails, and `filament:optimize` always reports success. So `deploy/release.sh` runs `config:cache`, `event:cache`, `route:cache`, `view:cache` and `icons:cache` one at a time, and refuses to release when a provider registers an optimize task it does not know.
+
 ### Rejected along the way
 
 **Nested / parent resources** won't work. `ParentResourceRegistration` hard-requires a real parent Eloquent model and relationship, and Filament disables global search under nested resources entirely.
