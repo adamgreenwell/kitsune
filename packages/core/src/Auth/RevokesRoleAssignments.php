@@ -48,14 +48,19 @@ class RevokesRoleAssignments
             return;
         }
 
-        $id = $user->getKey();
+        /*
+         * ⚠️ IN THE KEY TYPE THIS MODEL HAS, NOT CAST — #91. The sweep read the assignments by the real key and then
+         * revoked through `removeFrom((int) $id)`, and `(int) '01J…'` is `1`: on a ULID-keyed host it would have tried to
+         * take roles away from whoever user 1 is.
+         */
+        $key = Permissions::userKey($user->getKey(), $user::class);
 
-        if ($id === null) {
+        if ($key === null) {
             return;
         }
 
         $roleIds = DB::table('role_user')
-            ->where('user_id', $id)
+            ->where('user_id', $key)
             ->pluck('role_id')
             ->all();
 
@@ -89,7 +94,7 @@ class RevokesRoleAssignments
              * $user->delete())` — and with the assignments gone, the restrictive foreign key that made this
              * observer necessary is no longer a reason for that delete to fail.
              */
-            DB::transaction(function () use ($context, $roleIds, $id): void {
+            DB::transaction(function () use ($context, $roleIds, $key): void {
                 /*
                  * ⚠️ THE ROLE'S OWN ORG, ONE AT A TIME, because `removeFrom()` refuses a role that does not
                  * belong to the current context and derives its audit row from that context. A user may hold
@@ -132,7 +137,7 @@ class RevokesRoleAssignments
                      * organisation instead of succeeding and locking it out. That is the point of routing
                      * through `removeFrom()` rather than letting the database do it.
                      */
-                    $role->removeFrom((int) $id);
+                    $role->removeFrom($key);
                 }
             });
         } finally {

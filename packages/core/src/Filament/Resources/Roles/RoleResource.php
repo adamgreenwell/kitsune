@@ -176,7 +176,9 @@ class RoleResource extends Resource
                          * today and the same shape of cost at scale.
                          */
                         ->getSearchResultsUsing(self::searchHolders(...))
-                        ->getOptionLabelUsing(fn (mixed $value, ?Model $record): ?string => self::holderLabel((int) $value, self::roleKey($record)))
+                        ->getOptionLabelUsing(fn (mixed $value, ?Model $record): ?string => ($key = Permissions::userKey($value)) === null
+                            ? null
+                            : self::holderLabel($key, self::roleKey($record)))
                         /*
                          * ⚠️ THE PLURAL RESOLVER IS NOT OPTIONAL ON A `multiple()` SELECT, and leaving it out
                          * is a 500 rather than a missing label: *"Filament failed to validate the
@@ -245,7 +247,7 @@ class RoleResource extends Resource
      *
      * ⚠️ PUBLIC SO A TEST CAN REACH IT, as `holderLabels()` is and for the same reason.
      *
-     * @return array<int, string>
+     * @return array<int|string, string>
      */
     public static function searchHolders(string $search): array
     {
@@ -264,11 +266,14 @@ class RoleResource extends Resource
         $query = $model::query();
 
         if ($columns === []) {
-            if (! ctype_digit($search)) {
+            // The key in the model's own type, so a ULID-keyed host searches by ULID (#91).
+            $key = Permissions::userKey(trim($search), $model);
+
+            if ($key === null) {
                 return [];
             }
 
-            $query->whereKey((int) $search);
+            $query->whereKey($key);
         } else {
             $query
                 ->where(function ($query) use ($columns, $search): void {
@@ -282,7 +287,7 @@ class RoleResource extends Resource
         return $query
             ->limit(25)
             ->get()
-            ->mapWithKeys(fn (Model $user): array => [(int) $user->getKey() => self::describe($user)])
+            ->mapWithKeys(fn (Model $user): array => [self::optionKey($user) => self::describe($user)])
             ->all();
     }
 
@@ -297,7 +302,7 @@ class RoleResource extends Resource
      * puts that layer in the browser). The wiring — that the select actually uses this — is asserted there.
      *
      * @param  list<mixed>  $ids
-     * @return array<int, string>
+     * @return array<int|string, string>
      */
     public static function holderLabels(array $ids, ?int $roleId): array
     {
@@ -313,15 +318,15 @@ class RoleResource extends Resource
             return self::assignmentLabels($ids, $roleId);
         }
 
-        $wanted = array_values(array_unique(array_map(intval(...), array_filter($ids, is_numeric(...)))));
+        $wanted = Permissions::userKeys($ids, $model);
 
         $labels = $model::query()
             ->whereKey($wanted)
             ->get()
-            ->mapWithKeys(fn (Model $user): array => [(int) $user->getKey() => self::describe($user)])
+            ->mapWithKeys(fn (Model $user): array => [self::optionKey($user) => self::describe($user)])
             ->all();
 
-        return $labels + self::labelsForFormerMembers($wanted, array_keys($labels), $roleId);
+        return $labels + self::labelsForFormerMembers($wanted, Permissions::userKeys(array_keys($labels), $model), $roleId);
     }
 
     /**
@@ -333,7 +338,7 @@ class RoleResource extends Resource
      * person, in the screen that decides authority. The assignment is shown; the identity is withheld.
      *
      * @param  list<mixed>  $ids
-     * @return array<int, string>
+     * @return array<int|string, string>
      */
     private static function assignmentLabels(array $ids, ?int $roleId): array
     {
@@ -341,7 +346,14 @@ class RoleResource extends Resource
             return [];
         }
 
-        $wanted = array_values(array_unique(array_map(intval(...), array_filter($ids, is_numeric(...)))));
+        /*
+         * ⚠️ AS THE PIVOT HOLDS THEM, NOT THROUGH A MODEL'S KEY TYPE. This runs precisely when the panel's model is
+         * not the one `role_user` references, so that model's key type is no evidence about these ids (#91).
+         */
+        $wanted = array_values(array_unique(array_filter(
+            $ids,
+            static fn (mixed $id): bool => is_int($id) || (is_string($id) && $id !== ''),
+        )));
 
         if ($wanted === []) {
             return [];
@@ -355,7 +367,8 @@ class RoleResource extends Resource
                 ->whereIn('user_id', $wanted)
                 ->pluck('user_id') as $id
         ) {
-            $labels[(int) $id] = sprintf('User #%d — this panel cannot identify holders', (int) $id);
+            $key = is_int($id) ? $id : (string) $id;
+            $labels[$key] = sprintf('User #%s — this panel cannot identify holders', $key);
         }
 
         return $labels;
@@ -387,9 +400,9 @@ class RoleResource extends Resource
      * ⚠️ NO ROLE MEANS NO FALLBACK, which is the create form: a role that does not exist yet holds nobody,
      * so every id on it must resolve through the org-scoped query or not at all.
      *
-     * @param  list<int>  $wanted
-     * @param  list<int>  $resolved
-     * @return array<int, string>
+     * @param  list<int|string>  $wanted
+     * @param  list<int|string>  $resolved
+     * @return array<int|string, string>
      */
     private static function labelsForFormerMembers(array $wanted, array $resolved, ?int $roleId): array
     {
@@ -399,23 +412,27 @@ class RoleResource extends Resource
             return [];
         }
 
-        $assigned = DB::table('role_user')
+        $assigned = Permissions::userKeys(DB::table('role_user')
             ->where('role_id', $roleId)
             ->whereIn('user_id', $missing)
-            ->pluck('user_id')
-            ->map(static fn (mixed $id): int => (int) $id)
-            ->unique();
+            ->pluck('user_id'));
 
         $labels = [];
 
         foreach ($assigned as $id) {
-            $labels[$id] = sprintf('User #%d — no longer a member of this organisation', $id);
+            $labels[$id] = sprintf('User #%s — no longer a member of this organisation', $id);
         }
 
         return $labels;
     }
 
-    private static function holderLabel(int $id, ?int $roleId): ?string
+    /** A holder's key as an option value, in the type the user model's key has (#91). */
+    private static function optionKey(Model $user): int|string
+    {
+        return Permissions::userKey($user->getKey(), $user::class) ?? (string) $user->getKey();
+    }
+
+    private static function holderLabel(int|string $id, ?int $roleId): ?string
     {
         $model = Permissions::userModel();
 

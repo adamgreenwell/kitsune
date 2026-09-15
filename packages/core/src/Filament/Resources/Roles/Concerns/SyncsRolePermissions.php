@@ -70,11 +70,9 @@ trait SyncsRolePermissions
 
         $data[RoleResource::PERMISSION_STATE] = [];
         $data[RoleResource::ANY_TYPE_STATE] = [];
-        $data[RoleResource::HOLDER_STATE] = DB::table('role_user')
+        $data[RoleResource::HOLDER_STATE] = Permissions::userKeys(DB::table('role_user')
             ->where('role_id', $record->getKey())
-            ->pluck('user_id')
-            ->map(static fn (mixed $id): int => (int) $id)
-            ->all();
+            ->pluck('user_id'));
 
         foreach ($record->permissions()->pluck('permission') as $permission) {
             $parts = explode('.', (string) $permission);
@@ -182,16 +180,16 @@ trait SyncsRolePermissions
             return;
         }
 
-        $desired = array_map(
-            intval(...),
-            array_filter((array) ($this->form->getRawState()[RoleResource::HOLDER_STATE] ?? []), is_numeric(...)),
-        );
+        /*
+         * ⚠️ BOTH SIDES IN THE USER MODEL'S KEY TYPE — #91. The form submits strings and the pivot returns whatever the
+         * driver returns, so both were cast to `int` to be comparable, and that cast is what made a ULID holder
+         * impossible to assign. `userKeys()` gives the two lists one type, so the diff compares like with like.
+         */
+        $desired = Permissions::userKeys((array) ($this->form->getRawState()[RoleResource::HOLDER_STATE] ?? []));
 
-        $held = DB::table('role_user')
+        $held = Permissions::userKeys(DB::table('role_user')
             ->where('role_id', $record->getKey())
-            ->pluck('user_id')
-            ->map(static fn (mixed $id): int => (int) $id)
-            ->all();
+            ->pluck('user_id'));
 
         foreach (array_diff($desired, $held) as $userId) {
             $record->assignTo($userId);
