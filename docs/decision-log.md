@@ -1175,7 +1175,7 @@ Re-running the installer must upgrade rather than clobber, and must detect an ex
 
 ## ADR-027 — The resource floor is a designed constraint, with a number
 
-**Status:** Decided · 2026-09-07
+**Status:** Decided · 2026-09-07 · **Amended 2026-09-15** — the admin fetched avatars from a third party; see the note under *What it forbids*
 **Amends** ADR-026 — the recommended self-host default flips from Docker to the native path.
 
 **Kitsune must run well on hardware people already have.** The infrastructure bar is a product decision, not an emergent property of whatever the code ends up needing, and it is set deliberately:
@@ -1199,6 +1199,8 @@ Requirements creep the way the third pillar erodes: by a thousand small choices 
 Core may not require, for a default single-site install: a container runtime, a separate database server, Redis or Memcached, Elasticsearch or any search daemon, Node at runtime, or a always-on worker process. Anything in that list may be **supported and recommended at scale** — none of it may be **required to get to the onboarding screen or to run a small site**.
 
 Full-text search must therefore work on native Postgres/MySQL/SQLite facilities at the floor. Background work must degrade to synchronous or cron-driven execution when no worker is running.
+
+> **Amended 2026-09-15: the admin broke "no external services" on every page, and no test could see it.** Filament's default avatar provider builds each avatar as a `ui-avatars.com` URL from the signed-in user's and the site's initials. Every page view therefore sent personal data from the install to a third party (ADR-020), and a host with no outbound network showed two broken images. The alpha's local smoke test found it in the network log; nothing on screen looked wrong. `KitsunePanel` now draws the initials locally as an inline SVG, and `e2e/admin.spec.js` fails if an admin page requests anything from another host.
 
 ### What it costs, stated honestly
 

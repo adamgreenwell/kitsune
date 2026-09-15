@@ -24,6 +24,32 @@ test.describe('admin', () => {
         await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible();
     });
 
+    test('requests nothing from another host', async ({ page }) => {
+        /*
+         * ⚠️ ADR-027'S FLOOR SAYS NO EXTERNAL SERVICES, AND EVERY ADMIN PAGE BROKE IT. Filament's default
+         * avatar provider built each avatar as a ui-avatars.com URL from the signed-in user's and the site's
+         * initials. So every page view sent both to a third party, and a host with no outbound network
+         * showed two broken images. The alpha's local smoke test found it in the network log; nothing on
+         * screen looked wrong.
+         */
+        const requested = [];
+        page.on('request', (request) => requested.push(request.url()));
+
+        for (const path of [`/admin/${SITE}`, `/admin/${SITE}/c/article`, `/admin/${SITE}/c/article/1/edit`]) {
+            await page.goto(path);
+            await page.waitForLoadState('networkidle');
+        }
+
+        const own = new URL(page.url()).host;
+        const foreign = requested
+            .map((url) => new URL(url))
+            // A data: URI never leaves the page, which is how the avatars are drawn now.
+            .filter((url) => ['http:', 'https:'].includes(url.protocol) && url.host !== own)
+            .map((url) => url.href);
+
+        expect(foreign).toEqual([]);
+    });
+
     test('lists entries of a type', async ({ page }) => {
         await page.goto(`/admin/${SITE}/c/article`);
 

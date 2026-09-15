@@ -18,6 +18,7 @@ use Filament\Panel;
 use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Support\Collection;
 use Kitsune\Core\Auth\Permissions;
+use Kitsune\Core\Filament\Avatars\InitialsAvatarProvider;
 use Kitsune\Core\Filament\Icons;
 use Kitsune\Core\Filament\Resources\Entries\EntryResource;
 use Kitsune\Core\Filament\Resources\EntryTypes\EntryTypeResource;
@@ -86,7 +87,10 @@ final class KitsunePanel
             ->resources([EntryResource::class, EntryTypeResource::class, RoleResource::class])
             ->pages([Dashboard::class])
             ->widgets([EntryCountsWidget::class, RecentEntriesWidget::class])
-            ->navigation(self::navigation(...));
+            ->navigation(self::navigation(...))
+            // Drawn here rather than fetched. Filament's default sends every signed-in user's initials and the site's
+            // to ui-avatars.com on each page, and breaks on a host with no outbound network (ADR-020, ADR-027).
+            ->defaultAvatarProvider(InitialsAvatarProvider::class);
     }
 
     /**
