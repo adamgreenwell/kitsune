@@ -2508,6 +2508,103 @@ configuration text kept passing hosts that still broke an item.
 
 ---
 
+## ADR-035 — A release is built by one script both servers run, pinned to the commit stage rehearsed
+
+**Status:** Decided · 2026-09-15
+
+Stage rehearses alpha (#111). Stage is an Ubuntu VM with a zero-downtime layout built by hand; alpha is a Laravel Forge
+site with zero-downtime deployments. If the two servers built a release differently, a green stage deploy would say
+little about alpha, so the build is one committed file.
+
+### Decision
+
+`deploy/release.sh` builds one release in place, from the root of a fresh checkout, before it is activated. Stage runs
+it from `deploy/stage-deploy.sh`, and alpha from the Forge deploy script quoted in its header. Activation is not its
+job.
+
+- **The release is pinned.** `DEPLOY_SHA` is a required input, and the checkout must be exactly that commit with no
+  tracked file changed. Stage checks out the sha it deploys. Forge's `$CREATE_RELEASE()` clones the branch tip
+  (inferred: its docs do not say which commit it checks out), and the deployment hook's `sha` parameter, which Forge
+  passes as `FORGE_VAR_SHA` (documented), names the commit stage rehearsed. Forge's "Deploy Now" and push to deploy
+  carry no sha, so they deploy nothing.
+- **Nothing a public deploy must not do.** No `--seed` or `db:seed`: the skeleton's `DatabaseSeeder` creates accounts
+  whose password is `password`, and ADR-026 forbids a default administrator. No `migrate:fresh`, which drops every
+  table. No `key:generate`: a new key invalidates every session and everything encrypted with the old one. The operator
+  writes the shared `.env`, and the script never creates one.
+- **The environment is judged by what Laravel loads,** not by the text of `.env`: `APP_ENV=production`, debug off, an
+  https `APP_URL`, secure session cookies, `pgsql`, a working `APP_KEY`, and no `LARAVEL_CLOUD` in any form, because
+  nothing on these servers has a reason to set it. On `1` Laravel runs its Cloud bootstrappers and changes how scheduled
+  commands handle output (read), and ADR-034's explicit proxy list already replaces the proxy trust it would switch on.
+  A variable in the deploy environment wins over `.env`, so it is judged too.
+- **Composer installs with `--no-scripts`,** and the script runs `package:discover` itself once the `.env` has parsed.
+  phpdotenv's message for a malformed line quotes the value, and Composer's scripts would boot Laravel into the
+  deployment log before anything proved the file parses (measured). A parse failure reports the line, never the message.
+- **The first boot is the environment check,** which names a boot exception's class and where it was thrown, and
+  withholds its message, because a provider's can quote configuration. Artisan prints that message, so nothing runs
+  artisan before this check, `package:discover` included. The boot builds the missing package manifest itself (read), so
+  package providers boot under the same redaction.
+- **kitsune/core is a copy of this checkout's `packages/core`,** installed through a path repository with symlinks off,
+  because it is not on Packagist yet (#8).
+- **Caches are built one command at a time:** `config:cache`, `event:cache`, `route:cache`, `view:cache` and
+  `icons:cache`. Never `optimize` or `filament:optimize`, which exit 0 when one of their tasks fails (read). A
+  provider-registered optimize task the script does not know is refused.
+- **Compiled views stay in the release.** `view:cache` runs `view:clear` first (read), which in the shared storage would
+  delete the live release's compiled views while it serves them. `VIEW_COMPILED_PATH` points this release's cached
+  config at its own `skeleton/bootstrap/cache/views`, which goes when the release is pruned.
+- **The release proves it serves before the schema changes:** the config, route and event caches exist, the environment
+  holds against the cached config, and `GET /up` through the HTTP kernel answers 200. Only then does it migrate. The two
+  steps that need the new schema come after: `kitsune:audit-patterns --strict` and `kitsune:schema-sync`, the latter as
+  a report.
+- **Stage activates as Forge documents:** a link to the new release, the newest four releases kept, and no PHP-FPM
+  reload, which Forge documents as unnecessary for zero-downtime deployments. The rest is stage's own choice: one
+  `rename(2)` of a new link over `current`, a lock against overlapping deploys, and never pruning the active release.
+  A failed or interrupted run removes its release only when `current` does not name it. Bash runs a trap only after
+  the interrupted command returns (read), so a flag set after the rename could still say "not activated" once the
+  rename had happened. That Forge's own activation behaves the same is inferred until the first alpha deploy.
+
+### Rejected
+
+| Rejected | Why it lost |
+|---|---|
+| A build written separately for each server | A green stage deploy would not describe alpha's. |
+| `php artisan optimize` | It exits 0 when a task fails, and it runs `filament:optimize`, which docs/architecture.md skips. |
+| Composer's scripts during install | They boot Laravel before the `.env` is proven to parse, and the parser's message can print a secret. |
+| A composer.lock saved on each server | Each server would freeze at its first resolve, and stage and alpha would drift apart unseen. Both logs print the PHP and Composer versions instead. |
+| Compiled views in the shared storage | `view:cache` empties that directory while the live release serves from it. |
+| Refusing to deploy while the site is in maintenance mode | The marker is shared, so the new release activates down anyway, and fixing forward is why one deploys then. |
+| Reloading PHP-FPM on stage by default | Forge documents a reload as unnecessary for zero-downtime deployments, and a reload would hide a stale-path problem alpha would show. |
+
+### Cost, stated
+
+- ⚠️ **Alpha deploys a rehearsed commit only while it is still the tip of its branch.** Promote to alpha before anything
+  else merges, or re-stage the new tip.
+- ⚠️ **Migrations run before activation, and a rollback does not revert them.** A gate that fails after migrate leaves
+  the new schema under the old release, so Kitsune's migrations have to stay compatible with the release before them.
+- ⚠️ **An `.env` edit changes nothing until a redeploy,** because each release serves the config it cached. On alpha, a
+  redeploy of the live commit works only while that commit is still the branch tip, so rotating a secret after `main`
+  has moved deploys new code.
+- **These scripts check none of ADR-034's host conditions.** They stay unenforced, and #111 still tracks the runbook
+  that checks them.
+- **Each release resolves dependencies fresh,** so stage and alpha can resolve differently when a release lands between
+  their deploys.
+- **Unverified until the first alpha deploy:** which commit `$CREATE_RELEASE()` checks out; that Forge's release is
+  under `$FORGE_SITE_ROOT/releases/`, keeps `.git`, and belongs, with the site root and `.env`, to the deploying user;
+  and that Forge's activation matches stage's.
+- **shellcheck does not run** on either script yet.
+
+### Enforced by
+
+`tests/Core/Release/ReleaseScriptTest.php` and `tests/Core/Release/StageDeployScriptTest.php` run the real scripts
+against throwaway checkouts and site roots. They assert the exact step order; the refusals of a bad commit, checkout,
+input, ownership or environment; the compiled-view path, and that a new release neither writes nor deletes a view in the
+shared storage; that a boot failure's message never reaches the log; atomic activation, and that a TERM arriving during
+the rename leaves the release `current` names; the lock; and retention. PHP is stubbed for every step except the three
+application checks, `package:discover` and the four framework caches, which run on real PHP against a minimal fixture
+app that boots neither Filament nor Kitsune, so migrate and Kitsune's gates never run for real. No test provokes a failed link, an unreadable `.env`
+behind the shell's own check, the internal check-mode guard, a PHP really missing an extension, or stage's check that
+the clone checked out `DEPLOY_SHA`.
+---
+
 ## Open questions
 
 - Storage benchmark at 10k / 100k / 1M entries

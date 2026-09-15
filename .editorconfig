@@ -17,6 +17,9 @@ indent_size = 2
 [*.{js,ts,vue,css,scss}]
 indent_size = 2
 
+[*.sh]
+indent_size = 2
+
 [docker-compose.yml]
 indent_size = 2
 
