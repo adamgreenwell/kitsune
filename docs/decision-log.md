@@ -1029,7 +1029,7 @@ Directus's community objection to its relicensing was not the terms but that the
 
 ## ADR-024 — Testing: Pest, a Docker engine matrix, and browser tests that open a real browser
 
-**Status:** Decided · 2026-09-07
+**Status:** Decided · 2026-09-07 · **Amended 2026-09-14** — MariaDB joined the engine matrix; see the note after the consequence
 
 Test-driven development is the working discipline, and the test suite is treated as a deliverable rather than as evidence that a deliverable works. Three layers, each earning its place:
 
