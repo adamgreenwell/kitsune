@@ -84,6 +84,24 @@ function dashboardEntry(EntryType $type, string $status, string $title): Entry
     ]);
 }
 
+/**
+ * An entry planted through the query builder, beneath the model's guards, so the fixture states the row exactly: which
+ * org, which site or none, and which type — including a rival org's row naming this org's type, which is the row the
+ * dashboard must never read.
+ *
+ * @param  array<string, mixed>  $attributes
+ */
+function dashboardPlant(array $attributes): void
+{
+    DB::table('entries')->insert([
+        'type_handle' => 'article',
+        'status' => 'draft',
+        'created_at' => now(),
+        'updated_at' => now(),
+        ...$attributes,
+    ]);
+}
+
 it('offers the types the site enables and the user may view', function (): void {
     $owner = dashboardUser($this->org, owner: true);
     $editor = dashboardUser($this->org, grants: [Permissions::forEntryType('article', 'view')]);
@@ -97,7 +115,7 @@ it('offers the types the site enables and the user may view', function (): void 
         ->and($offered(null))->toBe([]);
 });
 
-it('counts entries per type and status on this site alone, in one query', function (): void {
+it('counts entries per type and status on this site and org alone, in one query', function (): void {
     dashboardEntry($this->article, 'published', 'First');
     dashboardEntry($this->article, 'published', 'Second');
     dashboardEntry($this->article, 'draft', 'Third');
@@ -116,6 +134,15 @@ it('counts entries per type and status on this site alone, in one query', functi
     $shadowed = EntryType::create(['org_id' => null, 'handle' => 'article', 'name' => 'Article', 'plural_name' => 'Articles']);
     dashboardEntry($shadowed, 'published', 'Shadowed');
 
+    /*
+     * ⚠️ ACROSS ORGS, FROM THE ATTACKER'S SIDE — AGENTS.md invariant 9, and review found it missing. The site scope admits
+     * an org-shared entry (no site) by its org alone, so that predicate is all that stands between this dashboard and
+     * another customer's content. This org's shared entry counts; a rival org's, naming this org's type, does not.
+     */
+    $rival = Org::create(['slug' => 'dash-rival', 'name' => 'Rival']);
+    dashboardPlant(['org_id' => $this->org->id, 'site_id' => null, 'entry_type_id' => $this->article->id, 'title' => 'Shared here']);
+    dashboardPlant(['org_id' => $rival->id, 'site_id' => null, 'entry_type_id' => $this->article->id, 'status' => 'published', 'title' => 'Rival shared']);
+
     $queries = 0;
     DB::listen(function () use (&$queries): void {
         $queries++;
@@ -125,7 +152,7 @@ it('counts entries per type and status on this site alone, in one query', functi
 
     expect($queries)->toBe(1)
         ->and($counts)->toEqual([
-            $this->article->id => ['published' => 2, 'draft' => 1],
+            $this->article->id => ['published' => 2, 'draft' => 2],
             $this->product->id => ['archived' => 1],
         ]);
 });
@@ -156,7 +183,15 @@ it('lists the newest entries of the offered types on this site, ten at most', fu
     dashboardEntry($this->article, 'draft', 'Newest elsewhere');
     app(Context::class)->setSite($this->site);
 
+    // Across orgs too (invariant 9): a rival org's shared entry naming this org's type is newer still, and must not be
+    // listed; this org's own shared entry is the newest of all, and must be.
+    $rival = Org::create(['slug' => 'dash-rival-recent', 'name' => 'Rival']);
+    $this->travelTo(now()->addMinute());
+    dashboardPlant(['org_id' => $rival->id, 'site_id' => null, 'entry_type_id' => $this->article->id, 'title' => 'Newest rival shared']);
+    $this->travelTo(now()->addMinute());
+    dashboardPlant(['org_id' => $this->org->id, 'site_id' => null, 'entry_type_id' => $this->article->id, 'title' => 'Newest shared here']);
+
     $titles = RecentEntriesWidget::recentQuery(collect([$this->article]))->pluck('title')->all();
 
-    expect($titles)->toBe(['Article 1', ...array_map(fn (int $i): string => "Article {$i}", range(12, 4))]);
+    expect($titles)->toBe(['Newest shared here', 'Article 1', ...array_map(fn (int $i): string => "Article {$i}", range(12, 5))]);
 });
