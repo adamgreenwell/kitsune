@@ -33,8 +33,9 @@
 #      phpdotenv's message for a malformed line to stderr. That message quotes the value: a password, into the log.
 #   8. Audits the installed runtime packages for security advisories.
 #   9. Parses the shared .env with phpdotenv's own parser, and on failure reports only the line, never the message.
-#  10. Runs package:discover itself, which is what Composer's scripts would have done.
-#  11. Boots the app and refuses an unsafe environment, by what Laravel loads rather than by the text of .env.
+#  10. Boots the app and refuses an unsafe environment, by what Laravel loads rather than by the text of .env. ⚠️ This is
+#      the first boot, and the only one that withholds an exception's message: a provider's can quote configuration.
+#  11. Runs package:discover itself, which is what Composer's scripts would have done.
 #  12. Publishes Filament's assets into this release's public/.
 #  13. Links public/storage, and proves the link resolves: storage:link exits 0 when it did nothing.
 #  14. Builds config, event, route, view and icon caches, one command at a time, so each failure stops the release.
@@ -378,11 +379,15 @@ ln -s "$site_root/storage" skeleton/storage
 # 9. The .env parses, before anything boots Laravel.
 check_the_app syntax
 
-# 10. The package manifest, which Composer's post-autoload-dump would have built.
-"$PHP_BIN" skeleton/artisan package:discover --no-interaction
-
-# 11. The environment, as the booted app loads it, before config:cache bakes it in.
+# 10. The environment, as the booted app loads it, before config:cache bakes it in.
+#
+# ⚠️ NOTHING BOOTS LARAVEL BEFORE THIS. Artisan prints an uncaught exception's message, and a provider that throws while
+# booting can quote configuration in it, so an artisan command here would put that message into the deployment log. The
+# boot builds the missing package manifest itself, so package providers boot here too, under the same redaction.
 check_the_app environment
+
+# 11. The package manifest, which Composer's post-autoload-dump would have built.
+"$PHP_BIN" skeleton/artisan package:discover --no-interaction
 
 # 12. The committed Filament assets can lag the freshly resolved Filament.
 "$PHP_BIN" skeleton/artisan filament:assets --no-interaction

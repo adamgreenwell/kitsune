@@ -2539,6 +2539,10 @@ job.
 - **Composer installs with `--no-scripts`,** and the script runs `package:discover` itself once the `.env` has parsed.
   phpdotenv's message for a malformed line quotes the value, and Composer's scripts would boot Laravel into the
   deployment log before anything proved the file parses (measured). A parse failure reports the line, never the message.
+- **The first boot is the environment check,** which names a boot exception's class and where it was thrown, and
+  withholds its message, because a provider's can quote configuration. Artisan prints that message, so nothing runs
+  artisan before this check, `package:discover` included. The boot builds the missing package manifest itself (read), so
+  package providers boot under the same redaction.
 - **kitsune/core is a copy of this checkout's `packages/core`,** installed through a path repository with symlinks off,
   because it is not on Packagist yet (#8).
 - **Caches are built one command at a time:** `config:cache`, `event:cache`, `route:cache`, `view:cache` and
@@ -2554,7 +2558,9 @@ job.
 - **Stage activates as Forge documents:** a link to the new release, the newest four releases kept, and no PHP-FPM
   reload, which Forge documents as unnecessary for zero-downtime deployments. The rest is stage's own choice: one
   `rename(2)` of a new link over `current`, a lock against overlapping deploys, and never pruning the active release.
-  That Forge's own activation behaves the same is inferred until the first alpha deploy.
+  A failed or interrupted run removes its release only when `current` does not name it. Bash runs a trap only after
+  the interrupted command returns (read), so a flag set after the rename could still say "not activated" once the
+  rename had happened. That Forge's own activation behaves the same is inferred until the first alpha deploy.
 
 ### Rejected
 
@@ -2591,9 +2597,10 @@ job.
 `tests/Core/Release/ReleaseScriptTest.php` and `tests/Core/Release/StageDeployScriptTest.php` run the real scripts
 against throwaway checkouts and site roots. They assert the exact step order; the refusals of a bad commit, checkout,
 input, ownership or environment; the compiled-view path, and that a new release neither writes nor deletes a view in the
-shared storage; atomic activation; the lock; and retention. PHP is stubbed for every step except the three application
-checks and the four framework caches, which run on real PHP against a minimal fixture app that boots neither Filament
-nor Kitsune, so migrate and Kitsune's gates never run for real. No test provokes a failed link, an unreadable `.env`
+shared storage; that a boot failure's message never reaches the log; atomic activation, and that a TERM arriving during
+the rename leaves the release `current` names; the lock; and retention. PHP is stubbed for every step except the three
+application checks, `package:discover` and the four framework caches, which run on real PHP against a minimal fixture
+app that boots neither Filament nor Kitsune, so migrate and Kitsune's gates never run for real. No test provokes a failed link, an unreadable `.env`
 behind the shell's own check, the internal check-mode guard, a PHP really missing an extension, or stage's check that
 the clone checked out `DEPLOY_SHA`.
 ---

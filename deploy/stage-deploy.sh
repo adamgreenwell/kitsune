@@ -95,7 +95,6 @@ stamp_re='^[0-9]{14}$'
 
 locked=0
 created=0
-activated=0
 
 # 1. Refuse before anything is written.
 [[ $DEPLOY_SHA =~ $sha_re ]] || refuse "DEPLOY_SHA must be a full 40-character lowercase commit hash"
@@ -110,16 +109,22 @@ activated=0
 [[ ! -e "$SITE_ROOT/current" || -L "$SITE_ROOT/current" ]] || refuse "$SITE_ROOT/current exists and is not a symlink"
 
 # Removes what a failed run created, and only that, then keeps the exit status the run ended with.
+#
+# ⚠️ WHETHER THE RELEASE IS LIVE IS READ FROM current, NEVER FROM A FLAG. Bash runs a trap only after the command it
+# interrupted returns, so a TERM that arrives while perl renames runs this before any line after the rename: a flag set
+# there would still say "not activated", and the release current already names would be removed.
 cleanup() {
   local status=$?
 
-  if (( created == 1 && activated == 0 )); then
+  if (( created == 1 )) && [[ "$(readlink "$SITE_ROOT/current" 2>/dev/null || true)" != "${release:-}" ]]; then
     if [[ "${release:-}" == "$SITE_ROOT/releases/"?* ]]; then
       rm -rf "$release"
     fi
 
     rm -f "$SITE_ROOT/current.tmp"
     echo "The deploy of $DEPLOY_SHA did not activate. Its release was removed, and current is unchanged." >&2
+  elif (( created == 1 && (status == 130 || status == 143) )); then
+    echo "The deploy of $DEPLOY_SHA was interrupted after activating: releases/${release##*/} IS ACTIVE." >&2
   fi
 
   if (( locked == 1 )); then
@@ -160,11 +165,10 @@ git -C "$release" checkout --quiet --detach "$DEPLOY_SHA"
 )
 
 # 5. $ACTIVATE_RELEASE(). A stale current.tmp goes first, because `ln -s` onto a link to a directory would put the new
-# link inside it. activated is set only after the rename, so the cleanup never removes the live release.
+# link inside it. From the rename on, current names this release, and that is what keeps the cleanup away from it.
 rm -f "$SITE_ROOT/current.tmp"
 ln -s "$release" "$SITE_ROOT/current.tmp"
 perl -e 'rename($ARGV[0], $ARGV[1]) or die "rename: $!\n"' "$SITE_ROOT/current.tmp" "$SITE_ROOT/current"
-activated=1
 echo "releases/$name is active."
 
 # 6. Spelled exactly as the sudoers rule is; -n fails at once instead of waiting for a password.

@@ -21,7 +21,7 @@ use Symfony\Component\Process\Process;
  * deploy/release.sh itself is ReleaseScriptTest's.
  *
  * sudo, perl and id are stubs on PATH. perl logs and then runs the real perl, so the swap the tests see is the
- * rename(2) stage runs.
+ * rename(2) stage runs, and it can signal the deploy while it is still the running command.
  *
  * Needs only bash, git and perl, so it holds invariant 11: no services, no network, no Docker.
  */
@@ -240,12 +240,22 @@ function stageSudoStub(): string
     BASH;
 }
 
-/** A stand-in for perl that logs the rename it was asked for, then runs the real perl. */
+/**
+ * A stand-in for perl that logs the rename it was asked for, then runs the real perl. With STAGE_TERM_AFTER_RENAME it
+ * sends the deploy a TERM once the rename has succeeded, while perl is still the command the deploy is waiting on.
+ */
 function stagePerlStub(): string
 {
     return <<<'BASH'
     #!/usr/bin/env bash
     printf 'perl rename %s %s\n' "$3" "$4" >> "$STAGE_LOG"
+
+    if [[ "${STAGE_TERM_AFTER_RENAME:-}" == 1 ]]; then
+      "$STAGE_REAL_PERL" "$@" || exit
+      kill -TERM "$PPID"
+      exit 0
+    fi
+
     exec "$STAGE_REAL_PERL" "$@"
 
     BASH;
@@ -428,6 +438,24 @@ it('activates with one rename of a new link over current', function (): void {
         ->and(readlink($this->site.'/current'))->toBe("{$this->site}/releases/{$name}")
         ->and(file_exists($this->site.'/current.tmp') || is_link($this->site.'/current.tmp'))->toBeFalse()
         ->and(array_search($rename, $log, true))->toBeGreaterThan(array_search(stageCalls($this->dir, 'release ')[0], $log, true));
+});
+
+it('keeps a release a signal interrupted after the rename, because current already names it', function (): void {
+    /*
+     * ⚠️ BASH RUNS A TRAP ONLY AFTER THE COMMAND IT INTERRUPTED RETURNS. A TERM that arrived while perl renamed ran the
+     * cleanup before the line after the rename, so a flag set on that line still said "not activated", and the cleanup
+     * removed the release current had just been pointed at: the site was left on a dangling link.
+     */
+    $run = stageDeploy($this->dir, $this->sha, ['STAGE_TERM_AFTER_RENAME' => '1']);
+    $name = stageCurrent($this->dir);
+
+    expect($run->getExitCode())->toBe(143)
+        ->and($name)->not->toBeNull()
+        ->and(is_file($this->site.'/releases/'.$name.'/commit.txt'))->toBeTrue('the release current names was removed')
+        ->and(stageReleases($this->dir))->toBe([$name])
+        ->and($run->getErrorOutput())->not->toContain('did not activate')
+        ->and($run->getErrorOutput())->toContain("releases/{$name} IS ACTIVE")
+        ->and(is_dir($this->site.'/.deploy-lock'))->toBeFalse();
 });
 
 it('does not reload PHP-FPM by default, which Forge documents as unnecessary', function (): void {

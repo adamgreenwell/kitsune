@@ -19,8 +19,8 @@ use Symfony\Component\Process\Process;
  * written as `'Composer\'s'` is not even valid bash.
  *
  * PHP and Composer are stubs that log every call, so the order of the steps is asserted exactly. The checks the script
- * runs through the application, and the config, event, route and view caches, run on real PHP, against a minimal
- * fixture app that uses this repository's vendor. That proves the check mechanisms and the step order on a minimal
+ * runs through the application, package:discover, and the config, event, route and view caches, run on real PHP,
+ * against a minimal fixture app that uses this repository's vendor. That proves the check mechanisms and the step order on a minimal
  * app. It does not boot Filament or Kitsune: the real provider set is guarded at deploy time, by the serving check.
  *
  * Needs only bash, git and PHP, so it holds invariant 11: no services, no network, no Docker.
@@ -264,7 +264,10 @@ function releaseFixtureProvider(): string
     PHP;
 }
 
-/** A stand-in for PHP: it logs every call, and runs the real PHP only for the application checks and four caches. */
+/**
+ * A stand-in for PHP: it logs every call, and runs the real PHP only for the application checks, package:discover and
+ * four caches. package:discover is real because it boots the app, so a boot that failed there would really print.
+ */
 function releasePhpStub(): string
 {
     return <<<'BASH'
@@ -312,6 +315,9 @@ function releasePhpStub(): string
         [[ "${STUB_FAIL:-}" != "$2" ]] || exit 1
 
         case "$2" in
+          package:discover)
+            exec "$STUB_REAL_PHP" "$@"
+            ;;
           storage:link)
             [[ "${STUB_NO_LINK:-}" == 1 ]] || ln -s "$PWD/skeleton/storage/app/public" skeleton/public/storage
             ;;
@@ -372,8 +378,8 @@ it('runs every step in order, and nothing else', function (): void {
             'composer install -d skeleton --no-dev --no-interaction --prefer-dist --optimize-autoloader --no-scripts',
             'composer audit -d skeleton --no-dev --abandoned=report',
             'php check syntax',
-            'artisan package:discover --no-interaction',
             'php check environment',
+            'artisan package:discover --no-interaction',
             'artisan filament:assets --no-interaction',
             'artisan storage:link --no-interaction',
             'artisan config:cache --no-interaction',
@@ -770,7 +776,8 @@ it('refuses an install that left no autoloader, before anything boots', function
 it('refuses an app that does not boot, and withholds the exception message', function (): void {
     /*
      * ⚠️ A BOOT EXCEPTION'S MESSAGE CAN QUOTE CONFIGURATION, so the refusal names the exception's class and where it
-     * was thrown, and never its message.
+     * was thrown, and never its message. And the guarded boot must be the FIRST: package:discover boots the app too,
+     * and ran before it, where Artisan printed the message. It runs on real PHP here, so an earlier boot would print.
      */
     $run = releaseRun($this->dir, ['FIXTURE_BOOT_FAILS' => '1']);
     $everything = $run->getOutput().$run->getErrorOutput();
@@ -779,5 +786,5 @@ it('refuses an app that does not boot, and withholds the exception message', fun
         ->and($run->getErrorOutput())->toContain('the application did not boot: RuntimeException')
         ->and($everything)->not->toContain('SECRET-BOOT-MESSAGE')
         ->and(array_slice(releaseLog($this->dir), -1))->toBe(['php check environment'])
-        ->and(releaseCalls($this->dir, 'artisan migrate'))->toBe([]);
+        ->and(releaseCalls($this->dir, 'artisan'))->toBe([]);
 });
