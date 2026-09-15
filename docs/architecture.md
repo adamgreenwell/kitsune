@@ -10,7 +10,7 @@
 
 | | | |
 |---|---|---|
-| **PHP** | **`^8.4`** minimum; develop and CI-primary on **8.5** | 8.4 security-supported to **Dec 2028**; 8.5 to **Dec 2029**. 8.3 is *already* security-only (active support ended Dec 2025), so it's a poor floor for a greenfield project. Revisit the floor at v1.0 |
+| **PHP** | **`^8.4`** minimum; CI tests **8.4 and 8.5**; the alpha targets **8.5** on Ubuntu 26.04 | 8.4 security-supported to **Dec 2028**; 8.5 to **Dec 2029**. 8.3 is *already* security-only (active support ended Dec 2025), so it's a poor floor for a greenfield project. Revisit the floor at v1.0 |
 | **Laravel** | 13.x | Bugfixes to Q3 2027, security to 2028-03-17 |
 | **Filament** | **`^5.4`** | v5.4.0 is the first release supporting Laravel 13 |
 | **Database** | PostgreSQL primary; MySQL 8.0+ / MariaDB 10.6+; **SQLite for small single-site installs** | Postgres/MySQL use STORED generated columns. **SQLite cannot `ALTER TABLE ADD COLUMN` a STORED generated column, but can add a VIRTUAL one, and VIRTUAL columns can be indexed** (as expression indexes) — so index-on-demand works there too, via the driver abstraction. Serves pillar three: no database server required |
