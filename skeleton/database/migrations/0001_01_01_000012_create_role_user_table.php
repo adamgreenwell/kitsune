@@ -38,10 +38,15 @@ return new class extends Migration
              * the guard that refuses taking the last owner away, so deleting one person could lock an
              * organisation out of role and schema administration permanently (ADR-033).
              *
-             * `RevokesRoleAssignmentsOnDeletion` is the path that makes an ordinary deletion work: it
-             * revokes through `Role::removeFrom()` first, so by the time the user row goes there is nothing
-             * here to restrict. This constraint is what happens to a host that has not applied it — a loud
-             * failure instead of a quiet loss of authority.
+             * `RevokesRoleAssignments` is the path that makes an ordinary deletion work: it revokes through
+             * `Role::removeFrom()` first, so by the time the user row goes there is nothing here to restrict.
+             * This constraint is what happens to a host that has not applied it — a loud failure instead of a
+             * quiet loss of authority.
+             *
+             * ⚠️ THE KEY TYPE IS THE HOST'S, AND `foreignId` IS ONLY THIS HOST'S CHOICE — #91. A host whose users
+             * carry ULIDs or UUIDs declares `foreignUlid('user_id')` or `foreignUuid('user_id')` here, with the
+             * same constraint, and does the same in `org_user` and `site_user`. Core reads a user identifier as
+             * the user model's own key type, so nothing in core changes with it.
              */
             $table->foreignId('user_id')->constrained()->restrictOnDelete();
             $table->primary(['role_id', 'user_id']);
