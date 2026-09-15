@@ -32,6 +32,15 @@ final class RecentEntriesWidget extends TableWidget
     /** A glance, not a second entry list: the full list is one click away from every row's type. */
     public const ROWS = 10;
 
+    /**
+     * The column the rows are ordered by, newest first.
+     *
+     * ⚠️ A CONSTANT SO AN INDEX CAN BE HELD TO IT. `RecentEntriesSortIsIndexedTest` reads this, so changing the
+     * order fails the build until an index covers the new one — the rows cross types, and without that index
+     * every dashboard load sorts every entry on the site.
+     */
+    public const SORT = 'updated_at';
+
     protected static ?int $sort = 2;
 
     /*
@@ -79,7 +88,7 @@ final class RecentEntriesWidget extends TableWidget
         return Entry::query()
             ->whereIn('entry_type_id', $types->map(fn (EntryType $type): int => (int) $type->getKey())->all())
             // The id breaks ties, so two entries saved in the same second keep one order between requests.
-            ->orderByDesc('updated_at')
+            ->orderByDesc(self::SORT)
             ->orderByDesc('id')
             ->limit(self::ROWS);
     }
