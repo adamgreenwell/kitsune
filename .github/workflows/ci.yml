@@ -85,9 +85,14 @@ jobs:
         # that is never exercised is a claim, not a feature.
         engine: [sqlite, pgsql, mysql, mariadb]
 
+    # ⚠️ ONLY THE LANE'S OWN DATABASE STARTS. Every engine job used to start all three
+    # service containers, so the sqlite lane booted PostgreSQL, MySQL and MariaDB and
+    # connected to none of them. An empty image is GitHub's documented way to leave a
+    # service unstarted: "If jobs.<job_id>.services.<service_id>.image is assigned an
+    # empty string, the service will not start."
     services:
       postgres:
-        image: postgres:17-alpine
+        image: ${{ matrix.engine == 'pgsql' && 'postgres:17-alpine' || '' }}
         env:
           POSTGRES_DB: kitsune
           POSTGRES_USER: kitsune
@@ -98,7 +103,7 @@ jobs:
           --health-interval 3s --health-timeout 3s --health-retries 20
 
       mysql:
-        image: mysql:8.4
+        image: ${{ matrix.engine == 'mysql' && 'mysql:8.4' || '' }}
         env:
           MYSQL_DATABASE: kitsune
           MYSQL_USER: kitsune
@@ -110,7 +115,7 @@ jobs:
           --health-interval 3s --health-timeout 3s --health-retries 20
 
       mariadb:
-        image: mariadb:10.6
+        image: ${{ matrix.engine == 'mariadb' && 'mariadb:10.6' || '' }}
         env:
           MARIADB_DATABASE: kitsune
           MARIADB_USER: kitsune
