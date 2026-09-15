@@ -34,11 +34,11 @@ class RevisionsRelationManager extends RelationManager
 
     protected static ?string $title = 'History';
 
-    /** Dispatched by `EditEntry` once a save has written the entry and reconciled its version. */
+    /** Dispatched by `SyncsFieldRelations::afterSave()` once an edit has saved the entry and reconciled its version. */
     public const ENTRY_SAVED = 'kitsune-entry-saved';
 
     /**
-     * Redraws the table when the form above it saves — see `EditEntry::afterSave()`.
+     * Redraws the table when the form above it saves — see `SyncsFieldRelations::afterSave()`.
      */
     #[On(self::ENTRY_SAVED)]
     public function refreshAfterSave(): void
