@@ -1855,6 +1855,15 @@ floor and the wrong product: `role_user.user_id` lives in the host's migration, 
 its type, and core narrowing that choice in PHP contradicts the ADR-020 amendment's own "an identifier is the
 host's to choose". Supporting string keys is #91, sequenced after this branch and #86 merge.
 
+⚠️ **Superseded by #91: the key type is the host's.** Core reads a user identifier as the user model's own key
+type, through `Permissions::userKey()`, instead of casting it to `int`. An integer-keyed model still refuses
+`'5abc'` and a ULID, so the floor above holds where it was written for; a model keyed by ULID or UUID keeps its key
+a string through `Role`, `Permissions`, `GuardedOrgMembership`, `RevokesRoleAssignments` and the Roles resource.
+The cast was not a harmless narrowing: PHP reads a string's leading digits, so `(int) '01J…'` is `1`, and wherever
+it ran it named somebody else. The skeleton keeps `foreignId` on `role_user`, `org_user` and `site_user` and names
+`foreignUlid`/`foreignUuid` as the host's alternative. `tests/UlidHost` runs RBAC against that schema in the same
+process as the rest of the suite, and the base test case rebuilds the database when the host changes.
+
 ⚠️ **A BULK publish is deliberately still allowed**, and that is not an oversight to be swept up with this.
 `Entry::query()->update(['status' => 'published'])` is a supported write that this project audits and
 versions on purpose (`AuditLogTest` and `recordBulkRevision()` both say so), and it carries no acting
@@ -2044,6 +2053,13 @@ Filament's own opt-in for exactly that, and it is off by default.
   whose column type the host's schema fixes, and widening it is a change to the skeleton's migration, every
   signature in the assignment path and the holder picker: a piece of work, not a patch, and one that belongs
   to whoever decides whether UUID-keyed hosts are in scope before 1.0.
+
+  ⚠️ **Superseded by #91, and corrected.** Integer keys are no longer required: an identifier is read as the user
+  model's own key type, and both the pivot and the audit columns now hold whatever the host's key is. The
+  integer-host floor this bullet pinned survives — a non-numeric identifier still resolves nothing there — but the
+  reason given for it was wrong. A cast would not have coerced `'018f…'` to `0`; PHP reads leading digits, so it is
+  `18`, and the test that pinned the floor now makes user 18 a real member and owner and refuses the impostor. The
+  earlier test had no membership scope, so it resolved nothing whatever the key did.
 - **`role_permissions` is `#[Unscoped]`, and the reason is the one `EntryRelation` and `EntryRevision` give**: it is reached only through `Role`, which is `#[OrgScoped]` and enforces it. Its index leads with `role_id` rather than a scope key, which satisfies invariant 4 by the invariant's own argument — a role is globally unique and belongs to exactly one org, exactly as a site does.
 - **A `role_user` row pairing a user with a role in an org they do not belong to resolves nothing**, because resolution runs through the org-scoped `Role` query under the current org context *and* asks membership of the user model. Asserted from the attacker's side.
 
