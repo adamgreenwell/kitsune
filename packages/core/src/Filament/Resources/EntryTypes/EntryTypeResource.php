@@ -181,6 +181,8 @@ class EntryTypeResource extends Resource
     public static function table(Table $table): Table
     {
         return $table
+            // One `exists` subquery for the Subject column's state, rather than a query per row.
+            ->modifyQueryUsing(fn (Builder $query): Builder => self::withPersonalDataFlag($query))
             ->columns([
                 TextColumn::make('name')->searchable()->sortable(),
                 TextColumn::make('handle')->badge()->searchable(),
@@ -192,17 +194,30 @@ class EntryTypeResource extends Resource
                 // The compliance surface, in the list rather than buried:
                 // a type holding personal data with no subject nominated is a
                 // hole a subject-access request cannot see (ADR-020).
+                //
+                // ⚠️ THREE STATES, NOT TWO. A fresh install showed the warning on
+                // every type, because the column flagged any type with no subject
+                // nominated whether or not it held personal data. A type holding
+                // none needs no subject, and warning about it teaches people to
+                // ignore the warning that matters. See `subjectState()`.
                 IconColumn::make('subject_field_id')
                     ->label('Subject')
-                    // getStateUsing, because boolean() on a NULL renders
-                    // nothing at all — and "nothing" is exactly the state
-                    // this column exists to make visible.
-                    ->getStateUsing(fn (EntryType $record): bool => $record->subject_field_id !== null)
-                    ->boolean()
-                    ->trueIcon(Heroicon::OutlinedCheckCircle)
-                    ->falseIcon(Heroicon::OutlinedExclamationTriangle)
-                    ->falseColor('warning')
-                    ->tooltip('Whether a data subject identifier is nominated.'),
+                    ->getStateUsing(fn (EntryType $record): string => self::subjectState($record))
+                    ->icon(fn (string $state): Heroicon => match ($state) {
+                        'nominated' => Heroicon::OutlinedCheckCircle,
+                        'missing' => Heroicon::OutlinedExclamationTriangle,
+                        default => Heroicon::OutlinedMinus,
+                    })
+                    ->color(fn (string $state): string => match ($state) {
+                        'nominated' => 'success',
+                        'missing' => 'warning',
+                        default => 'gray',
+                    })
+                    ->tooltip(fn (EntryType $record): string => match (self::subjectState($record)) {
+                        'nominated' => 'A data subject identifier is nominated.',
+                        'missing' => 'Holds personal data with no subject identifier nominated, so a subject-access request cannot find what it holds (ADR-020).',
+                        default => 'Holds no personal data, so it needs no subject identifier.',
+                    }),
             ])
             // ⚠️ Global types are VISIBLE and not writable.
             //
@@ -414,6 +429,41 @@ class EntryTypeResource extends Resource
     public static function getEloquentQuery(): Builder
     {
         return EntryType::constrainToCurrentOrg(parent::getEloquentQuery());
+    }
+
+    /**
+     * Add whether each type holds personal data, as one `exists` subquery on the list rather than a query per row.
+     *
+     * @param  Builder<EntryType>  $query
+     * @return Builder<EntryType>
+     */
+    public static function withPersonalDataFlag(Builder $query): Builder
+    {
+        return $query->withExists([
+            'fields as holds_personal_data' => static function (Builder $fields): void {
+                $fields->whereHas('fieldStorage', static function (Builder $storage): void {
+                    EntryType::constrainToPersonalData($storage);
+                });
+            },
+        ]);
+    }
+
+    /**
+     * The Subject column's state: `nominated`; `missing`, meaning personal data with no subject to answer a request
+     * about; or `not-needed`, meaning the type holds no personal data.
+     *
+     * ⚠️ `missing` IS ASKED WITH THE COMPLIANCE REPORT'S OWN PREDICATE — `EntryType::constrainToPersonalData()`,
+     * through `withPersonalDataFlag()` — so the list and `EntryType::withoutSubjectIdentifier()` cannot disagree
+     * about which types are holes. Public so a test can reach it, as the resource's other decisions are: rendering
+     * the table needs a Livewire component this suite cannot make (ADR-024).
+     */
+    public static function subjectState(EntryType $record): string
+    {
+        return match (true) {
+            $record->subject_field_id !== null => 'nominated',
+            (bool) $record->getAttribute('holds_personal_data') => 'missing',
+            default => 'not-needed',
+        };
     }
 
     public static function getRelations(): array
