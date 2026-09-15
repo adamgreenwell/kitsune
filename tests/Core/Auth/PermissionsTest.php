@@ -343,11 +343,17 @@ it('resolves nothing, on a host with integer keys, for an identifier its key can
         ->and(Permissions::held($impostor))->toBe([])
         ->and(Permissions::allows($impostor, 'entry.article.update'))->toBeFalse();
 
-    // The rule itself, on the integer model: digits are a key, anything else is not.
+    // The rule itself, on the integer model: a decimal that round-trips is a key, anything else is not.
     expect(Permissions::userKey('5', TestUser::class))->toBe(5)
         ->and(Permissions::userKey(5, TestUser::class))->toBe(5)
+        ->and(Permissions::userKey((string) PHP_INT_MAX, TestUser::class))->toBe(PHP_INT_MAX)
         ->and(Permissions::userKey('5abc', TestUser::class))->toBeNull()
-        ->and(Permissions::userKey('018f2b7c-1d6a-7e3f-9a0b-5c8d4e2f1a33', TestUser::class))->toBeNull();
+        ->and(Permissions::userKey('018f2b7c-1d6a-7e3f-9a0b-5c8d4e2f1a33', TestUser::class))->toBeNull()
+        // ⚠️ Review found these: PHP saturates an overflowing decimal to `PHP_INT_MAX` rather than refusing it, so any
+        // longer digit string named the largest real key; and `'007'` is not how any key is written.
+        ->and(Permissions::userKey('9223372036854775808', TestUser::class))->toBeNull()
+        ->and(Permissions::userKey('99999999999999999999', TestUser::class))->toBeNull()
+        ->and(Permissions::userKey('007', TestUser::class))->toBeNull();
 });
 
 it('does not answer from a memo of a grant that was rolled back', function (): void {

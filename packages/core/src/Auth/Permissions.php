@@ -747,7 +747,20 @@ final class Permissions
                 return $id;
             }
 
-            return is_string($id) && ctype_digit($id) ? (int) $id : null;
+            /*
+             * ⚠️ A DECIMAL THAT ROUND-TRIPS, NOT MERELY ONE MADE OF DIGITS — review found the gap. PHP saturates an
+             * overflowing cast instead of refusing it: `(int) '99999999999999999999'` is `PHP_INT_MAX`, so any digit
+             * string past the range named whoever holds the largest key. Comparing the cast back to the input refuses
+             * that, and a non-canonical `'007'` with it, which is not how a key read from the database or offered by
+             * the holder form is ever written.
+             */
+            if (! is_string($id) || ! ctype_digit($id)) {
+                return null;
+            }
+
+            $key = (int) $id;
+
+            return (string) $key === $id ? $key : null;
         }
 
         if (is_int($id)) {
