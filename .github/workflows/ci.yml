@@ -12,10 +12,17 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# ⚠️ EVERY JOB HAS A CEILING, SET ABOVE ITS SLOW TAIL RATHER THAN ITS MEDIAN.
+# Without one, a job that has truly stopped runs to GitHub's six-hour default
+# and holds up every PR behind it. With one near the median, green runs fail:
+# across 25 successful runs the MySQL lanes took a median of 14-16 minutes and
+# as long as 58.7. Slowest successful run per job, in minutes: lint 0.7, bare
+# clone 1.4, sqlite 2.1, pgsql 9.8, mariadb 27.0, mysql 58.7, Playwright 3.2.
 jobs:
   lint:
     name: Pint + PHPStan
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
 
@@ -42,6 +49,7 @@ jobs:
   bare-clone:
     name: Bare clone (PHP ${{ matrix.php }}, no services)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
@@ -63,6 +71,8 @@ jobs:
   engines:
     name: PHP ${{ matrix.php }} / ${{ matrix.engine }}
     runs-on: ubuntu-latest
+    # The widest ceiling, for the slowest lane: a green MySQL run has taken 58.7 minutes.
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -142,6 +152,7 @@ jobs:
   browser:
     name: Playwright (skeleton smoke)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
 
