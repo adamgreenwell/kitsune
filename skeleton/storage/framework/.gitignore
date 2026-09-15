@@ -1,0 +1,12 @@
+compiled.php
+config.php
+down
+events.scanned.php
+lsp-*.php
+maintenance.php
+routes.php
+routes.scanned.php
+schedule-*
+services.json
+# A kitsune:benchmark-* run lock, whose file outlives the run on purpose; see LeavesNothingBehind::runLockPath().
+kitsune-*.lock
