@@ -42,38 +42,20 @@ beforeEach(function (): void {
      * snapshot too late and the test would pass with the fix reverted.
      */
     config(['auth.providers.users.model' => TestUser::class]);
-});
 
-afterEach(function (): void {
-    app(Context::class)->forget();
-
-    if (array_key_exists('rival', config('database.connections') ?? [])) {
-        try {
-            DB::connection('rival')->rollBack();
-        } catch (Throwable) {
-            // Nothing open, which is the ordinary case.
-        }
-
-        DB::purge('rival');
-    }
-});
-
-afterAll(function (): void {
     /*
-     * ⚠️ COMMITTED ROWS FROM ANOTHER CONNECTION OUTLIVE `RefreshDatabase`, so the test that needs them has
-     * to sweep them — and it cannot do so itself while it still holds locks on them. `HostClaimSerializationTest`
-     * records the same shape, including why resolving the connection belongs inside the `try`: on SQLite a
-     * second connection to `:memory:` is a different, empty database.
+     * ⚠️ COMMITTED ROWS FROM ANOTHER CONNECTION OUTLIVE `RefreshDatabase`, so the test that made them removes them,
+     * and only once its transaction has rolled back, because until then this connection holds locks on those rows.
+     * This used to be an `afterAll`, which runs after Testbench has flushed the container: its first `DB::connection()`
+     * threw, the `catch (Throwable)` around it hid that, and it never deleted a row. Registering the sweep reads
+     * nothing, so the snapshot above is untouched.
      */
-    try {
-        if (DB::connection()->getDriverName() === 'sqlite') {
+    $this->afterRollback(function (): void {
+        if (! array_key_exists('rival', config('database.connections') ?? [])) {
             return;
         }
 
-        $default = (string) config('database.default');
-        config(['database.connections.sweep' => config("database.connections.{$default}")]);
-
-        $sweep = DB::connection('sweep');
+        $sweep = DB::connection('rival');
 
         // Every org these tests commit, by prefix — one per test, so the unique slug index cannot collide.
         foreach ($sweep->table('orgs')->where('slug', 'like', 'race-org%')->pluck('id') as $org) {
@@ -87,9 +69,21 @@ afterAll(function (): void {
 
         $sweep->table('users')->where('email', 'like', 'race-%@kitsune.test')->delete();
 
-        DB::purge('sweep');
-    } catch (Throwable) {
-        // The engine may have rolled the whole schema away already, which is equally clean.
+        DB::purge('rival');
+    });
+});
+
+afterEach(function (): void {
+    app(Context::class)->forget();
+
+    if (array_key_exists('rival', config('database.connections') ?? [])) {
+        try {
+            DB::connection('rival')->rollBack();
+        } catch (Throwable) {
+            // Nothing open, which is the ordinary case.
+        }
+
+        DB::purge('rival');
     }
 });
 
@@ -327,9 +321,10 @@ it('sees a promotion another transaction committed before it deletes', function 
     $rival = rivalConnectionForOwners();
 
     /*
-     * ⚠️ ITS OWN SLUG, because these rows are COMMITTED by another connection and only swept in `afterAll` —
-     * so a second test reusing `race-org` collides on the unique index and fails for a reason that has
-     * nothing to do with the race. Passed alone, failed in the file, on all three locking engines.
+     * ⚠️ ITS OWN SLUG, because these rows are COMMITTED by another connection. When they outlived the test that
+     * made them, a second test reusing `race-org` collided on the unique index and failed for a reason that had
+     * nothing to do with the race: passed alone, failed in the file, on all three locking engines. The sweep in
+     * `beforeEach` now removes them after every test, and a slug of its own keeps a failed sweep from posing as a race.
      */
     $orgId = $rival->table('orgs')->insertGetId([
         'slug' => 'race-org-promoted', 'name' => 'Race promoted', 'created_at' => now(), 'updated_at' => now(),

@@ -79,13 +79,13 @@ function benchmarkLockIsFree(string $command): bool
 }
 
 /*
- * ⚠️ THE ENVIRONMENT GOES BACK BEFORE TEARDOWN, OR EVERY OTHER TEST FAILS IN THE FULL SUITE — and never alone.
+ * ⚠️ THE ENVIRONMENT GOES BACK BEFORE TEARDOWN. Tests below leave the application in production, where a confirmable
+ * command asks a question no expectation has been set for.
  *
- * With an in-memory database Testbench alternates. One test migrates by path and caches nothing; the next migrates
- * through a `MigrateProcessor`, and `tearDownInteractsWithMigrations()` runs its `migrate:rollback` — which also
- * resets the refresh state, so the pattern repeats. `migrate:rollback` confirms in production. A test below that
- * left the application in production therefore failed at teardown, on alternate tests only, with a question no
- * expectation had been set for, while the command it appeared to be about had finished cleanly.
+ * That has happened. `TestCase` once migrated through Testbench's `MigrateProcessor` on alternate tests, and that
+ * processor's `migrate:rollback` at teardown confirms in production: those tests failed at teardown, never alone, while
+ * the command they appeared to be about had finished cleanly. `TestCase` now only registers migration paths, so
+ * nothing rolls back at teardown today; this keeps production from reaching whatever runs there next.
  *
  * Found the slow way: a trace wrapped around the command came back empty, which is what said the question was
  * asked after it.

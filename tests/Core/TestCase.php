@@ -12,9 +12,16 @@ namespace Kitsune\Core\Tests;
 
 use BladeUI\Heroicons\BladeHeroiconsServiceProvider;
 use BladeUI\Icons\BladeIconsServiceProvider;
+use Closure;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Foundation\Testing\RefreshDatabaseState;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Kitsune\Core\KitsuneServiceProvider;
+
+use function Orchestra\Testbench\laravel_or_fail;
+use function Orchestra\Testbench\load_migration_paths;
+
 use Orchestra\Testbench\TestCase as Orchestra;
 
 abstract class TestCase extends Orchestra
@@ -22,16 +29,119 @@ abstract class TestCase extends Orchestra
     /**
      * Every test starts from an empty database.
      *
-     * The schema is migrated once per process and each test runs inside a transaction that is rolled back —
-     * on in-memory SQLite too, where the database is one cached connection restored between tests rather than
-     * a new database each time. On PostgreSQL and MySQL the data would otherwise persist, and the suite was
-     * passing only because nothing had polluted those databases first. A single benchmark run against them was
-     * enough to turn 52 passes into 42 failures on unique-constraint violations.
+     * The schema is migrated once per process, and again when the host fixtures change, and each test runs inside a
+     * transaction that is rolled back. In-memory SQLite is the exception: Testbench resets its state after every test,
+     * so each test migrates a new, empty database. On PostgreSQL, MySQL and MariaDB the data would otherwise persist,
+     * and the suite was passing only because nothing had polluted those databases first. A single benchmark run
+     * against them was enough to turn 52 passes into 42 failures on unique-constraint violations.
      */
     use RefreshDatabase;
 
     /** The fixture migrations the database was last built with in this process. */
     private static ?string $migratedFixtures = null;
+
+    /** @var array<string, list<string>> The tables each fixture set builds, listed once per process. */
+    private static array $tablesByFixtures = [];
+
+    /** The last test that began on an empty database, so rows found later name the test that left them. */
+    private static ?string $lastCleanStart = null;
+
+    /** @var list<Closure(): void> */
+    private array $afterRollbackCallbacks = [];
+
+    /**
+     * ⚠️ ROWS THAT OUTLIVE A TEST FAIL THE NEXT TEST THAT WOULD SEE THEM, AND NAME THE TEST THEY CAME FROM.
+     *
+     * `RefreshDatabase` rolls back the default connection only. A write through a second connection survives that
+     * rollback, and with the schema migrated once per process nothing removes it before the next test. Two files did
+     * exactly this: their `afterAll` sweeps ran after Testbench had flushed the container, threw, and swallowed the
+     * error. Only the old rebuild after every other test hid it, and without that rebuild the rows failed assertions
+     * three files later.
+     *
+     * So every test that starts on a database that should be empty checks it. The check runs before `RefreshDatabase`
+     * opens its transaction, so it pins no snapshot: under REPEATABLE READ a read inside the transaction would take one
+     * before a test's rival connection commits, and the tests built on that ordering would stop measuring anything.
+     */
+    protected function beforeRefreshingDatabase(): void
+    {
+        $this->refuseRowsLeftBehind();
+
+        /*
+         * ⚠️ REGISTERED HERE BECAUSE TEARDOWN RUNS BACKWARDS. `beforeApplicationDestroyed()` prepends, so the callback
+         * registered last runs first. `RefreshDatabase` registers its rollback after this hook returns, so this runs
+         * once the rollback has released the test's locks, and before the application is flushed. Registered in a test
+         * or in `afterEach`, it would run while those locks are still held. In `afterAll` there is no application.
+         */
+        $this->beforeApplicationDestroyed(function (): void {
+            foreach ($this->afterRollbackCallbacks as $callback) {
+                $callback();
+            }
+        });
+    }
+
+    /**
+     * Run a callback once this test's transaction has been rolled back.
+     *
+     * For a test that has to commit through another connection: it removes what it committed here, with its locks
+     * released and the application still alive. A callback that throws fails a test that would otherwise pass. After
+     * a test has already failed, PHPUnit discards that error, and the rows the callback left fail the next test that
+     * starts on a migrated database.
+     *
+     * @param  Closure(): void  $callback
+     */
+    protected function afterRollback(Closure $callback): void
+    {
+        $this->afterRollbackCallbacks[] = $callback;
+    }
+
+    private function refuseRowsLeftBehind(): void
+    {
+        // Every test is a Pest test (tests/Pest.php), and Pest's Testable trait supplies both halves of its name.
+        $test = static::getPrintableTestCaseName().' > '.$this->getPrintableTestCaseMethodName();
+
+        // A rebuild is about to empty the database anyway, and in-memory SQLite is a new database for every test.
+        if (! RefreshDatabaseState::$migrated || $this->usingInMemoryDatabases()) {
+            self::$lastCleanStart = $test;
+
+            return;
+        }
+
+        $connection = DB::connection();
+        $grammar = $connection->getQueryGrammar();
+
+        $tables = self::$tablesByFixtures[static::fixtureMigrations()] ??= array_values(array_diff(
+            Schema::getTableListing(Schema::getCurrentSchemaListing(), false),
+            ['migrations'],
+        ));
+
+        // One round trip, and `exists` reads at most one row of each table.
+        $found = (array) $connection->selectOne('select '.implode(', ', array_map(
+            static fn (string $table): string => 'exists (select 1 from '.$grammar->wrapTable($table).') as '
+                .$grammar->wrap($table),
+            $tables,
+        )));
+
+        $dirty = array_keys(array_filter($found));
+
+        if ($dirty === []) {
+            self::$lastCleanStart = $test;
+
+            return;
+        }
+
+        // Rebuild before the next test, so one leak is one failure rather than every test after it.
+        RefreshDatabaseState::$migrated = false;
+
+        self::fail(sprintf(
+            'Rows committed outside RefreshDatabase\'s transaction survived into this test: %s. The database was empty '
+            .'when [%s] began, so that test, or an afterAll hook in its file, left them.',
+            implode(', ', array_map(
+                static fn (string $table): string => $table.' ('.$connection->table($table)->count().')',
+                $dirty,
+            )),
+            self::$lastCleanStart ?? 'no earlier test',
+        ));
+    }
 
     /**
      * Testbench gives the package a Laravel application without vendoring one.
@@ -67,10 +177,8 @@ abstract class TestCase extends Orchestra
         /*
          * ⚠️ THE DATABASE IS REBUILT WHEN THE HOST CHANGES — #91 — and this is the only place that can decide it.
          * `RefreshDatabase` migrates once per process, so whichever host's tests ran second would run against the
-         * first host's tables. And `loadMigrationsFrom()` reads `RefreshDatabaseState::$migrated` when it is called:
-         * false, it registers the paths for `RefreshDatabase`'s `migrate:fresh`; true, it runs `migrate` on them
-         * there and then. The first version cleared the flag later, in `refreshTestDatabase()`, and the second host's
-         * fixture migration ran straight onto the first host's tables — `relation "users" already exists`.
+         * first host's tables. Clearing `$migrated` here, before `RefreshDatabase` runs, is what makes it rebuild with
+         * the new host's fixture paths registered.
          *
          * A second connection with a table prefix was tried before this and cannot work on MySQL or MariaDB: Laravel
          * names foreign keys without the prefix, those engines keep constraint names unique per database, and every
@@ -81,10 +189,21 @@ abstract class TestCase extends Orchestra
             self::$migratedFixtures = static::fixtureMigrations();
         }
 
-        $this->loadMigrationsFrom(__DIR__.'/../../packages/core/database/migrations');
-        // Fixture tables live here rather than in beforeEach(), because DDL
-        // implicitly commits on MySQL and breaks RefreshDatabase's rollback.
-        $this->loadMigrationsFrom(static::fixtureMigrations());
+        /*
+         * ⚠️ THE PATHS ARE REGISTERED, NEVER RUN, so `RefreshDatabase` is the only thing that migrates. This called
+         * `loadMigrationsFrom()`, which registers paths only while `$migrated` is false; once it was true, it ran
+         * `migrate` itself and Testbench rolled that back at teardown and reset the flag. So on PostgreSQL, MySQL and
+         * MariaDB every other test rebuilt the whole schema with `migrate:fresh` — about 1,000 rebuilds a run, at least
+         * 58% of a normal MySQL lane, and the multiplier behind the MySQL lane cancelled at its 90-minute ceiling on a
+         * slow runner. In-memory SQLite is unaffected: Testbench resets its state per test either way.
+         *
+         * Fixture tables live here rather than in beforeEach(), because DDL implicitly commits on MySQL and breaks
+         * RefreshDatabase's rollback.
+         */
+        load_migration_paths(laravel_or_fail($this->app), [
+            __DIR__.'/../../packages/core/database/migrations',
+            static::fixtureMigrations(),
+        ]);
     }
 
     /**
