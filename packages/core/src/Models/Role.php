@@ -16,6 +16,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Query\Builder;
 use Illuminate\Support\Facades\DB;
+use InvalidArgumentException;
 use Kitsune\Core\Audit\Auditor;
 use Kitsune\Core\Auth\GuardedRoleBuilder;
 use Kitsune\Core\Auth\Permissions;
@@ -274,12 +275,10 @@ class Role extends Model
                  * They cannot be read afterwards either, because the database cascades `role_user` away with
                  * the role — so the read has to come first and the write has to come second.
                  */
-                $holders = DB::table('role_user')
+                $holders = Permissions::userKeys(DB::table('role_user')
                     ->where('role_id', $this->getKey())
                     ->lockForUpdate()
-                    ->pluck('user_id')
-                    ->map(static fn (mixed $id): int => (int) $id)
-                    ->all();
+                    ->pluck('user_id'));
 
                 $deleted = parent::delete();
 
@@ -481,7 +480,7 @@ class Role extends Model
      * what an ordinary role's holders lost. Recording only the owner case left a grant-bearing role
      * disappearing from everybody with nothing in the log, which is the same gap one level down.
      *
-     * @param  list<int>|null  $holders
+     * @param  list<int|string>|null  $holders
      */
     private function recordOwnerChange(?string $ownerVerb, string $plain = 'unassigned', ?array $holders = null): void
     {
@@ -500,15 +499,13 @@ class Role extends Model
          * ordinary `role.assigned`, and the person ended up an owner with no row saying so. Under a lock the
          * transition waits for that assignment and then counts it.
          */
-        $holders ??= DB::table('role_user')
+        $holders ??= Permissions::userKeys(DB::table('role_user')
             ->where('role_id', $this->getKey())
             ->lockForUpdate()
-            ->pluck('user_id')
-            ->map(static fn (mixed $id): int => (int) $id)
-            ->all();
+            ->pluck('user_id'));
 
         foreach ($holders as $userId) {
-            app(Auditor::class)->record($action, $this->assignee((int) $userId));
+            app(Auditor::class)->record($action, $this->assignee($userId));
         }
     }
 
@@ -646,9 +643,9 @@ class Role extends Model
      * them from every owner role reported nobody left and refused a safe removal. The pair is what is being
      * removed, so the pair is what the count has to leave out.
      *
-     * @return list<int>
+     * @return list<int|string>
      */
-    private function effectiveOwners(?int $exceptRole = null, ?int $exceptHolder = null): array
+    private function effectiveOwners(?int $exceptRole = null, int|string|null $exceptHolder = null): array
     {
         /*
          * ⚠️ THE ORG COMES FROM THE STORED ROW, NOT FROM THE ATTRIBUTE — found by sweeping the family review
@@ -666,7 +663,7 @@ class Role extends Model
             ->lockForUpdate()
             ->pluck('id');
 
-        $holders = DB::table('role_user')
+        $holders = Permissions::userKeys(DB::table('role_user')
             ->whereIn('role_id', $roles)
             /*
              * ⚠️ Written as `role_id <> this OR user_id <> them` rather than as a negated pair, because
@@ -678,11 +675,7 @@ class Role extends Model
                     ->orWhere('user_id', '!=', $exceptHolder),
             ))
             ->lockForUpdate()
-            ->pluck('user_id')
-            ->map(static fn (mixed $id): int => (int) $id)
-            ->unique()
-            ->values()
-            ->all();
+            ->pluck('user_id'));
 
         if ($holders === []) {
             return [];
@@ -707,7 +700,7 @@ class Role extends Model
      * The reads are locked and the caller is expected to hold the org row already, so the answer cannot move
      * between the decision and the delete.
      */
-    public static function orgWouldLoseItsLastOwner(int $orgId, int $userId): bool
+    public static function orgWouldLoseItsLastOwner(int $orgId, int|string $userId): bool
     {
         $roles = static::query()
             ->withoutGlobalScopes()
@@ -720,19 +713,19 @@ class Role extends Model
             return false;
         }
 
-        $holders = DB::table('role_user')
+        $holders = Permissions::userKeys(DB::table('role_user')
             ->whereIn('role_id', $roles)
             ->lockForUpdate()
-            ->pluck('user_id')
-            ->map(static fn (mixed $id): int => (int) $id)
-            ->unique()
-            ->values()
-            ->all();
+            ->pluck('user_id'));
 
         $effective = self::membersAmong($holders, $orgId);
 
-        return in_array($userId, $effective, true)
-            && array_values(array_diff($effective, [$userId])) === [];
+        // Compared in the key type the holders were read in, so `5` and `'5'` cannot be two people (#91).
+        $userId = Permissions::userKey($userId);
+
+        return $userId !== null
+            && in_array($userId, $effective, true)
+            && array_values(array_filter($effective, static fn (int|string $holder): bool => $holder !== $userId)) === [];
     }
 
     /**
@@ -743,8 +736,8 @@ class Role extends Model
      * — so the guard protecting the last owner has to be reachable from the membership side too, and two
      * copies of "who really has authority here" is one copy that drifts.
      *
-     * @param  list<int>  $holders
-     * @return list<int>
+     * @param  list<int|string>  $holders
+     * @return list<int|string>
      */
     private static function membersAmong(array $holders, int $orgId): array
     {
@@ -811,11 +804,10 @@ class Role extends Model
         try {
             $context->setOrg($org);
 
-            return $model::query()
-                ->whereIn('id', $holders)
-                ->pluck('id')
-                ->map(static fn (mixed $id): int => (int) $id)
-                ->all();
+            // By the model's own key name and in its own key type, rather than an `id` cast to `int` (#91).
+            $keyName = (new $model)->getKeyName();
+
+            return Permissions::userKeys($model::query()->whereIn($keyName, $holders)->pluck($keyName), $model);
         } finally {
             if ($restoreSite !== null) {
                 $context->setSite($restoreSite);
@@ -1011,9 +1003,28 @@ class Role extends Model
      * the owner BYPASS on volume — a check runs per row — and this is the other end of that decision: rare,
      * high-value, and the question an auditor actually asks.
      */
-    public function assignTo(int $userId): void
+    public function assignTo(int|string $userId): void
     {
         $this->refuseIfNotCurrentOrg('assignTo');
+
+        /*
+         * ⚠️ READ AS THE USER MODEL'S OWN KEY TYPE, NOT CAST — #91. This signature was `int`, so a host whose users
+         * carry ULIDs met a `TypeError` here and could assign nobody. An identifier that cannot be the model's key is
+         * refused by name rather than coerced: `(int) '01J…'` is `1`, which would assign the role to somebody else.
+         */
+        $key = Permissions::userKey($userId);
+
+        if ($key === null) {
+            throw new InvalidArgumentException(sprintf(
+                'Refusing to assign role %s to [%s]: that is not a key the user model (%s) can have, so it names '
+                .'nobody. The key type is the host\'s to choose, and an identifier is read as that type.',
+                (string) $this->getKey(),
+                (string) $userId,
+                Permissions::userModel() ?? 'none resolvable',
+            ));
+        }
+
+        $userId = $key;
 
         DB::transaction(function () use ($userId): void {
             /*
@@ -1068,9 +1079,18 @@ class Role extends Model
     }
 
     /** Take it away again. Silent when the user did not hold it, because the end state is what was asked. */
-    public function removeFrom(int $userId): void
+    public function removeFrom(int|string $userId): void
     {
         $this->refuseIfNotCurrentOrg('removeFrom');
+
+        // An identifier that cannot be a key of the user model holds nothing, so there is nothing to take (#91).
+        $key = Permissions::userKey($userId);
+
+        if ($key === null) {
+            return;
+        }
+
+        $userId = $key;
 
         DB::transaction(function () use ($userId): void {
             /*
@@ -1116,7 +1136,7 @@ class Role extends Model
      * ⚠️ AND THE EXCLUSION IS THE ASSIGNMENT RATHER THAN THE PERSON — see `effectiveOwners()`. A member
      * holding two owner roles who gives up one keeps the other, and the earlier version refused that.
      */
-    private function refuseLosingTheLastOwner(int $userId): void
+    private function refuseLosingTheLastOwner(int|string $userId): void
     {
         /*
          * ⚠️ THE STORED FLAG AGAIN, for the reason `refuseIfLastOwner()` records: an ordinary role in memory
@@ -1253,7 +1273,7 @@ class Role extends Model
      * with no target rather than not written at all, because a change of authority that went unrecorded is
      * worse than one recorded thinly.
      */
-    private function assignee(int $userId): ?Model
+    private function assignee(int|string $userId): ?Model
     {
         /*
          * ⚠️ THE PANEL'S PROVIDER NAMES THE MODEL, and this hard-coded `users` until review found it — the
