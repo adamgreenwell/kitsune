@@ -13,6 +13,7 @@ namespace Kitsune\Core\Filament\Concerns;
 use Kitsune\Core\Fields\Control;
 use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Fields\FieldTypeRegistry;
+use Kitsune\Core\Filament\Resources\Entries\RelationManagers\RevisionsRelationManager;
 use Kitsune\Core\Filament\Schemas\FieldValueRenderer;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
@@ -169,6 +170,17 @@ trait SyncsFieldRelations
     protected function afterSave(): void
     {
         $this->syncRelationsFromForm();
+
+        /*
+         * ⚠️ AND THEN THE HISTORY UNDER THE FORM IS TOLD. It is its own Livewire component, so a save recorded its
+         * version while the table went on listing the versions from before it until the page was reloaded — an editor
+         * checking that their save was kept saw no sign of it. Found by the alpha's local smoke test.
+         *
+         * HERE, after the sync, because that is where a form save's one revision is reconciled (#59). And here rather
+         * than in an `afterSave()` on the edit page, which would take over the hook this trait owns
+         * (`RelationHookOwnershipTest`). Create has no History to redraw: it redirects to the edit page.
+         */
+        $this->dispatch(RevisionsRelationManager::ENTRY_SAVED);
     }
 
     protected function afterCreate(): void

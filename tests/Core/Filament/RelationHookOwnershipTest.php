@@ -9,6 +9,8 @@
 declare(strict_types=1);
 
 use Kitsune\Core\Filament\Concerns\SyncsFieldRelations;
+use Kitsune\Core\Filament\Resources\Entries\Pages\CreateEntry;
+use Kitsune\Core\Filament\Resources\Entries\Pages\EditEntry;
 
 /*
  * No page may quietly take over a hook `SyncsFieldRelations` owns.
@@ -28,7 +30,7 @@ use Kitsune\Core\Filament\Concerns\SyncsFieldRelations;
  * page is added without — which is the same failure mode one level up.
  */
 
-/** Every class under packages/core/src that composes the trait. */
+/** Every class under packages/core/src that composes the trait, however its `use` is written. */
 function pagesComposingRelationSync(): array
 {
     $root = dirname(__DIR__, 3).'/packages/core/src';
@@ -43,18 +45,19 @@ function pagesComposingRelationSync(): array
 
         $source = (string) file_get_contents($file->getPathname());
 
-        // The trait's own file composes nothing.
-        if (! str_contains($source, 'use SyncsFieldRelations;')) {
-            continue;
-        }
-
         if (! preg_match('/^namespace\s+([^;]+);/m', $source, $ns)) {
             continue;
         }
 
         $class = $ns[1].'\\'.$file->getBasename('.php');
 
-        if (class_exists($class)) {
+        /*
+         * ⚠️ ASKED OF THE CLASS, NOT READ FROM ITS SOURCE. Discovery matched the exact text `use SyncsFieldRelations;`,
+         * so a page composing the trait any other way — `use SyncsFieldRelations { afterSave as … }` to take a hook
+         * over, a comma list, a qualified name — dropped out of the guard it most needed. Found in review of #109,
+         * which did exactly that. The trait's own file declares no class, so `class_exists()` passes it by.
+         */
+        if (class_exists($class) && in_array(SyncsFieldRelations::class, class_uses_recursive($class), true)) {
             $found[] = $class;
         }
     }
@@ -65,7 +68,11 @@ function pagesComposingRelationSync(): array
 it('finds the pages that compose the relation-sync trait', function (): void {
     // The guard below is vacuous if discovery returns nothing, which is exactly how a
     // reflection test passes while checking no code at all.
-    expect(pagesComposingRelationSync())->not->toBeEmpty();
+    //
+    // ⚠️ AND HALF-VACUOUS IF IT FINDS ONE PAGE OF TWO: "not empty" stayed true while the edit page had fallen out of
+    // discovery (#109). These two are a floor, not the list — a new page is still found without being named here.
+    expect(pagesComposingRelationSync())->toContain(CreateEntry::class);
+    expect(pagesComposingRelationSync())->toContain(EditEntry::class);
 });
 
 it('lets no page override a hook the trait owns', function (): void {
