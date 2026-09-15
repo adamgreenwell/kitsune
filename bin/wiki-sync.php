@@ -57,13 +57,24 @@ foreach ($m as $adr) {
     $anchor = mb_strtolower("{$adr[1]} — {$adr[3]}", 'UTF-8');
     $anchor = (string) preg_replace('/[^\p{L}\p{N} _-]+/u', '', $anchor);
     $anchor = str_replace(' ', '-', $anchor);
+    // ⚠️ THE LOG HAS THREE STATES AND THIS COLUMN HAD TWO, so a PROVISIONAL decision was published
+    // to the wiki as `decided`. ADR-032 adopts the mark "for use, not for registration" while name
+    // clearance is still open (issue #1, labelled blocks-spend), and the index — the one page a
+    // reader meets before opening the log at all — said the question was settled.
+    $provisional = str_starts_with($status, 'Provisional');
+
     $rows[] = sprintf(
         '| [%s](%s/blob/main/docs/decision-log.md#%s) | %s | %s |',
         $adr[1],
         $repo,
         trim((string) $anchor, '-'),
         str_replace('|', '\|', $adr[3]),
-        $revised ? '⚠️ amended' : 'decided',
+        match (true) {
+            $provisional && $revised => 'provisional · ⚠️ amended',
+            $provisional => 'provisional',
+            $revised => '⚠️ amended',
+            default => 'decided',
+        },
     );
 }
 
