@@ -1175,7 +1175,7 @@ Re-running the installer must upgrade rather than clobber, and must detect an ex
 
 ## ADR-027 — The resource floor is a designed constraint, with a number
 
-**Status:** Decided · 2026-09-07
+**Status:** Decided · 2026-09-07 · **Amended 2026-09-15** — the admin fetched avatars from a third party; see the note under *What it forbids*
 **Amends** ADR-026 — the recommended self-host default flips from Docker to the native path.
 
 **Kitsune must run well on hardware people already have.** The infrastructure bar is a product decision, not an emergent property of whatever the code ends up needing, and it is set deliberately:
