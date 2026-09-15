@@ -64,3 +64,20 @@ it('renders the skeleton page with a direction attribute', function (): void {
 
     expect($html)->toContain('dir="rtl"')->toContain('lang="ar"');
 });
+
+it('declares the placeholder copy as English on a right-to-left site', function (): void {
+    // ⚠️ THE DOCUMENT AND THE WORDS DISAGREE, and only the document said so. The site is Arabic
+    // and the copy is Kitsune's own English (#106), so without its own `lang` and `dir` the text
+    // inherited `rtl` — full stops at the start of each sentence — and an Arabic voice.
+    app()->setLocale('ar');
+
+    View::prependLocation(dirname(__DIR__, 2).'/skeleton/resources/views');
+
+    $html = view('welcome', [
+        'version' => Kitsune::version(),
+        'adminUrl' => '/admin',
+        'direction' => Kitsune::textDirection(),
+    ])->render();
+
+    expect($html)->toContain('<html lang="ar" dir="rtl">')->toContain('<main lang="en" dir="ltr">');
+});
