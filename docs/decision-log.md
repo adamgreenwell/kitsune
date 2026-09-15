@@ -2310,6 +2310,204 @@ Filament's own opt-in for exactly that, and it is off by default.
 
 ---
 
+## ADR-034 — The skeleton trusts a proxy on its own host, for the client address only
+
+**Status:** Decided · 2026-09-15
+
+Raised while designing stage (an Ubuntu VM behind a Cloudflare Tunnel managed from the dashboard) and alpha (a new
+Laravel Forge server at `alpha.kitsunecms.org`). Three request values decide behaviour that matters, and nothing in the
+repository configured how any of them is derived:
+
+- Kitsune picks the public Site from `Request::getHost()` (ADR-021, `ResolveSiteFromRequest::resolve()`).
+- Filament keys its admin login throttle on `request()->ip()`, and counts every attempt, successful ones included.
+- Every absolute URL the admin emits — Filament and Livewire assets, the post-login redirect — follows `isSecure()`.
+
+Laravel's `TrustProxies` runs on every request. With no list it trusts nobody, with three exceptions: it trusts
+**every** address when the request's Host ends in `.on-forge.com` or `.on-vapor.com`, or when `LARAVEL_CLOUD=1`.
+Measured against the skeleton's own bootstrap, that produced three failures:
+
+- **Behind cloudflared on the same host, every visitor was `127.0.0.1`.** One login throttle bucket for the whole
+  internet: any five sign-in attempts within 60 seconds lock the owner out until that window ends, and five a minute
+  keep them out.
+- **On a Forge server, the vanity hostname every site receives let any client choose its own `ip()`** through
+  `X-Forwarded-For`, and rewrite the scheme and prefix of generated URLs (`http://alpha-x.on-forge.com/evil`).
+- **The obvious fix is worse.** `trustProxies(at: loopback)` with Laravel's default header set trusts
+  `X-Forwarded-Host`, `-Port` and `-Prefix`; a request for `stage-he.kitsunecms.org` resolved as
+  `stage-fr.kitsunecms.org`. A forwarded header chose the Site.
+
+### Decision
+
+`skeleton/bootstrap/app.php` calls `trustProxies(at: ['127.0.0.1', '::1'], headers: Request::HEADER_X_FORWARDED_FOR)`.
+
+- **The list is a constant, not configuration.** A same-host proxy connects from loopback. A server with nothing in
+  front of PHP sees a loopback peer only when a process on that host connects to it, and that process is trusted (see
+  *Cost, stated*).
+- **Only the client address is taken from a forwarding header.** The scheme comes from the web server: on both
+  supported hostnames TLS terminates in nginx — `stage*.kitsunecms.org` behind a tunnel that dials
+  `https://127.0.0.1:443`, and `alpha.kitsunecms.org` directly, DNS-only — so PHP already sees `HTTPS=on`. Host, port
+  and prefix are never taken from a forwarding header either, from any peer: neither `X-Forwarded-Host`, `-Port` and
+  `-Prefix` nor RFC 7239 `Forwarded`. A Cloudflare Tunnel in front of Kitsune must not set `httpHostHeader`, which
+  rewrites `Host`.
+- **A proxy on any other address** — a load balancer, a container network — must connect from addresses only the
+  operator controls, append the connecting address to `X-Forwarded-For` or overwrite it, reach the web server over TLS,
+  and have its address resolved there before PHP. For nginx: `set_real_ip_from <that proxy's addresses>`,
+  `real_ip_header X-Forwarded-For`, `real_ip_recursive off`. PHP then sees the visitor as `REMOTE_ADDR`. A proxy that
+  passes a client's value through lets the client choose it, loopback included, and so `ip()` (realip's step inferred
+  from nginx's documentation; `ip()` measured against this bootstrap with that result as `REMOTE_ADDR`). The realip
+  module fixes only the address: a proxy that talks plain HTTP to the web server leaves `HTTPS` unset, so every URL is
+  `http://`, and that setup is unsupported.
+- **Cloudflare's proxy is not such a proxy.** Every Cloudflare account connects from the same ranges, and a Worker on
+  any zone, or a Snippet on a paid one, can set the forwarded address of a request to that zone's origin (inferred from
+  Cloudflare's documentation, not measured). realip over those ranges would let another account choose `ip()` wherever
+  its request reaches the site: through a web server that answers names it does not serve, or when that account is on
+  Enterprise, whose Origin Rules can override `Host` (documented). So `set_real_ip_from` never lists Cloudflare's
+  ranges, and a hostname in the operator's own zones that Cloudflare proxies reaches Kitsune through a tunnel on the
+  same host, as stage does.
+- **The `on-forge.com` name Forge gives every site must not reach Kitsune through Cloudflare.** Cloudflare's edge
+  proxies it to the server: measured, it resolves to Cloudflare addresses, answers with `server: cloudflare`, and
+  presents one shared `*.on-forge.com` certificate. Laravel's automatic trust used to trust every peer there, so the
+  leftmost, client-written `X-Forwarded-For` entry became `ip()` and a forwarded scheme was believed. Under this ADR
+  that name would see a Cloudflare edge address as `ip()` (inferred, not measured at the origin), and its scheme depends
+  on an edge-to-origin hop Kitsune does not control. It is in Forge's zone, not the operator's, so no tunnel can front
+  it (inferred: a tunnel's public hostname has to be in a zone on the tunnel owner's account). Forge's changelog says
+  the domain "can be disabled" but not what disabling changes, so the requirement is that a request for the name through
+  public DNS, which reaches Cloudflare's edge, does not reach the site. A request sent straight to the server with that
+  `Host` never passes through Cloudflare and is trusted for nothing: `ip()` is its own address (measured against this
+  bootstrap).
+
+### Why not configuration
+
+⚠️ **`env()` cannot supply it on a web request.** There the `withMiddleware` closure runs when the HTTP kernel is
+resolved, before that kernel's bootstrappers load `.env`: measured, `env()` was null there with a `.env` present and no
+config cache, so `trustProxies(at: env(...))` silently trusts nothing and leaves the vanity-host trust-all on. A feature
+test boots the console kernel first, which loads `.env`, so a test of that call would pass while production trusts
+nothing.
+
+**`config('trustedproxy.proxies')` could, and is not worth it.** It needs the `config/` directory the skeleton
+deliberately does not have, it cannot narrow the header mask, and no target environment varies the value.
+
+**nginx realip alone was rejected** as the fix for stage. It leaves the `.on-forge.com` trust-all on every Forge
+install, and it leaves the default header mask one `trustProxies()` edit away from choosing the Site.
+
+### Why `X-Forwarded-For`, and nothing else
+
+- For a request its edge proxies directly, Cloudflare **appends** the connecting address to `X-Forwarded-For`
+  (documented). cloudflared adds nothing and forwards what it receives (read in cloudflared's source), so a same-zone
+  Worker or Snippet subrequest can set that value.
+- Symfony drops trusted addresses anywhere in the chain and returns the rightmost untrusted one. A client-written
+  left-hand entry — `6.6.6.6`, or a forged `127.0.0.1` — is never the answer.
+- **`X-Forwarded-Proto` is not needed, and trusting it would cost something.** Neither target relies on it, and a
+  trusted forwarded scheme lets any process that reaches PHP over loopback choose `isSecure()` and the scheme of the
+  URLs its request generates: measured, a forged `X-Forwarded-Proto: http` from loopback made an `HTTPS=on` request
+  insecure. cloudflared dialing the web server over plain HTTP is therefore unsupported, and fails visibly, with
+  `http://` URLs, rather than silently trusting a forwarded scheme.
+- No combined preset fits: `HEADER_X_FORWARDED_AWS_ELB` also trusts Proto and Port, and `HEADER_X_FORWARDED_TRAEFIK`
+  trusts Host, Proto, Port and Prefix.
+
+| Rejected | Why it lost |
+|---|---|
+| `trustProxies(at: loopback)` with the default header set | `X-Forwarded-Host` chose the Site; `-Port` and `-Prefix` rewrote every URL. Measured. |
+| `trustProxies(at: loopback)` for `X-Forwarded-For` and `-Proto` | No target needs the forwarded scheme, and any loopback process could choose `isSecure()`. Measured. |
+| `trustProxies(at: '*')` | Trusts every address, so the leftmost, client-written `X-Forwarded-For` entry became `ip()` even through the tunnel; with the default mask the client also chose the scheme and the host, and so the Site. Measured. |
+| `trustProxies(at: env(...))` | Null when a web request resolves the kernel, and a test loads `.env` first, so no test would catch it. Trusts nothing and keeps the trust-all. |
+| A `config/trustedproxy.php` | Reintroduces `config/`, cannot narrow the headers, for a value nothing varies. |
+| nginx realip with no application change | Leaves the Forge vanity-host hole and the default mask in place. |
+| A `kitsune.trusted_proxies` setting in core | A core provider boots after the skeleton's `withMiddleware` closure, so its default would silently override an installation's own line — for a value no target environment varies. |
+| nginx realip over Cloudflare's ranges | Every Cloudflare account connects from them, so another account's Worker could choose the address wherever its request reaches the site (see *Decision*); with `real_ip_recursive on`, nginx also walks left into client-written entries when the appended address is itself a Cloudflare address. Both inferred. |
+
+### Cost, stated
+
+- ⚠️ **An install on Laravel Cloud loses Laravel's automatic trust.** Cloud does not document whether its proxy reaches
+  PHP with `HTTPS` set or keeps the client's `X-Forwarded-For`, so the effect there — possibly `http://` URLs, or one
+  shared address for every visitor — is inferred, not measured, and such an install reviews this line. The skeleton
+  targets self-hosting (ADR-026); the trade is deliberate.
+- ⚠️ **Every process on the host that can reach PHP over loopback is trusted for `X-Forwarded-For`.** A local client — a
+  health check, a script, `curl http://127.0.0.1` — sets `ip()` by sending the header, which gives it nothing it could
+  not already do. That trust must not reach anyone who cannot already run a process on the host. Symfony takes the
+  rightmost `X-Forwarded-For` entry that is not a trusted address, so on every request a relay on the host forwards on
+  another client's behalf, that entry has to be the client's address, written by whatever accepted the client's
+  connection. A relay that passes the client's header through breaks that, and so does a loopback hop anywhere before
+  the entry is written: a TCP relay in front of an appending HTTP proxy leaves the client's own entry as `ip()`, and an
+  overwriting proxy behind cloudflared makes every visitor `127.0.0.1` again (measured end to end against this bootstrap
+  through a local TCP relay and HTTP proxy, with PHP's built-in server in place of nginx and a cloudflared-shaped header
+  in place of cloudflared). On the host, Kitsune therefore supports two shapes: cloudflared dialing the web server
+  directly, where that entry is the one Cloudflare's edge appended, and no relay at all. A proxy on another address is
+  the realip case in *Decision*. Anything else that relays other clients' connections to the web server from the host is
+  unsupported, SSH port forwarding included. A login restricted by `ForceCommand`, a `command=` key or a certificate's
+  `force-command` still forwards a client's header to loopback (measured locally with OpenSSH 10.3p1; `ChrootDirectory`
+  inferred), and OpenSSH has more such paths than any list keeps up with. So the supported hosts refuse SSH forwarding
+  for every login with `DisableForwarding yes`. It refused the forward for a shell login, for a `force-command`
+  certificate, under a `Match` block setting `AllowTcpForwarding yes`, and when it was set only in an `Include`d file; a
+  `Match` block setting `DisableForwarding no` undoes it (all measured locally with OpenSSH 10.3p1). An operator who
+  wants SSH port forwarding on a host reviews this line. Before this ADR, a loopback peer's `X-Forwarded-For` was
+  honoured only on a vanity host or under `LARAVEL_CLOUD=1`, and then from every peer.
+- ⚠️ **A proxy on another address still needs the web server's help.** Without nginx realip, visitors arriving through
+  the same proxy address share a login-throttle bucket; unless the proxy reaches the web server over TLS, every URL is
+  `http://`. Cloudflare's proxy must not have its address resolved, because every account shares its ranges, so a
+  hostname it proxied without a tunnel would share buckets by edge address (inferred). That is why the operator's own
+  proxied hostnames use a tunnel, and why the `on-forge.com` name, which no tunnel can front (inferred; see
+  *Decision*), must not reach Kitsune through Cloudflare.
+- **An IPv4-mapped loopback peer (`::ffff:127.0.0.1`) is not loopback.** A web server in front must not listen on a
+  dual-stack socket (`ipv6only=off`), or the shared bucket silently returns.
+- **An installation owns its `bootstrap/app.php` after `create-project`.** One with a different topology changes
+  this line there.
+
+### Enforced by
+
+`tests/Core/Http/SkeletonProxyTrustTest.php` drives the real `skeleton/bootstrap/app.php` in a child process and
+asserts:
+
+- behind a loopback proxy, `ip()` is the address the proxy appended;
+- the scheme follows the web server's `HTTPS` and ignores `X-Forwarded-Proto`, even from loopback;
+- host and root ignore `X-Forwarded-Host`, `-Port`, `-Prefix` and RFC 7239 `Forwarded` from the trusted peer;
+- no other peer is trusted, on a `.on-forge.com` host included;
+- `LARAVEL_CLOUD=1` does not re-enable trust-everything.
+
+Every case but the scheme case fails against the bootstrap before this ADR. The scheme case fails against a mask that
+adds `X-Forwarded-Proto`, and the host-and-root case also fails against Laravel's default mask and against a mask that
+adds `Forwarded`.
+
+**Not enforced by anything yet, because they are properties of a host and not of Kitsune.** The suite cannot check
+them and no committed deploy script or runbook does either;
+[#111](https://github.com/adamgreenwell/kitsune/issues/111) tracks committing one that does. Each item states what must
+hold. The runbook is to test each against the running services wherever it can, because checks written against
+configuration text kept passing hosts that still broke an item.
+
+- the web server passes its `$remote_addr`, `HTTPS` and the one `X-Forwarded-For` it received to PHP. A client's
+  `X_Forwarded_For` header reaches PHP as a second `HTTP_X_FORWARDED_FOR` under `underscores_in_headers on` or
+  `ignore_invalid_headers off` (read in nginx's source), and PHP-FPM keeps the later of the two (measured). A
+  `fastcgi_param HTTP_X_FORWARDED_FOR` instead replaces the header nginx received, so PHP sees only the param's value,
+  or no `X-Forwarded-For` at all when the param is literally empty or an `if_not_empty` value turns out empty (read in
+  nginx's source);
+- every cloudflared process on the host runs this one tunnel, dials the web server itself at `https://127.0.0.1:443`,
+  and never sets `httpHostHeader`;
+- the tunnel routes its hostnames to that service only, with no bastion, `tcp://` or socks-proxy service and no
+  private-network route that can reach the host's loopback, and no Worker in the account is bound to the tunnel, through
+  a Workers VPC Service or a VPC Network (documented; Workers VPC is in beta);
+- no Worker or Snippet on the zone, on any route or path, fetches the origin with an `X-Forwarded-For` value it copied
+  from the client or chose itself, or without the entry Cloudflare's edge appends (a Worker sees no `X-Forwarded-For`
+  on the request it receives, documented);
+- on every tunnel hostname, the request Filament's login throttle reads `ip()` on, the Livewire update POST the login
+  form submits (read in the vendored sources), reaches the web server with the requester's address, as Cloudflare saw
+  it, as the last `X-Forwarded-For` entry (for an IPv6 visitor, a pseudo-IPv4 address if Pseudo IPv4 overwrites
+  headers, documented);
+- a proxy on any other address in front of the web server connects from addresses only the operator controls, appends
+  the connecting address to `X-Forwarded-For` or overwrites it, reaches the web server over TLS, and is resolved with
+  nginx realip: `set_real_ip_from` lists only that proxy's addresses, `real_ip_header` is `X-Forwarded-For`, and
+  `real_ip_recursive` is off. The address realip resolves is never `127.0.0.1` or `::1`, so nothing on that proxy's host
+  relays other clients to the proxy over loopback, SSH port forwarding included. A host with no such proxy has no
+  `set_real_ip_from`;
+- every hostname in the operator's own zones that Cloudflare proxies to this host is a tunnel route, and
+  `set_real_ip_from` never lists Cloudflare's ranges;
+- a request for a Forge site's `on-forge.com` name through public DNS does not reach Kitsune;
+- nginx never listens with `ipv6only=off`;
+- nothing on the host but that tunnel's connector relays other clients' connections to the web server, directly or
+  through another relay;
+- sshd, as it is running, refuses port forwarding for every login on every address and port it listens on, sessions
+  opened before its last reload included; the supported hosts set `DisableForwarding yes`.
+
+---
+
 ## Open questions
 
 - Storage benchmark at 10k / 100k / 1M entries
