@@ -53,8 +53,8 @@ final class KitsunePanel
          *
          * ⚠️ THE PANEL ITSELF, NOT ITS ID — review found the id read too early. A host may call
          * `KitsunePanel::apply($panel)->id('admin')`, and reading `getId()` before `id()` is an uninitialised
-         * property that aborts the panel's registration; an id changed after `apply()` would also leave a stale one
-         * recorded. This is the same object Filament registers, and by the time anything asks, it is configured.
+         * property that aborts the panel's registration. This is the same object Filament registers, and by the time
+         * anything asks, it is configured.
          */
         app()->instance(self::PANEL_BINDING, $panel);
 
