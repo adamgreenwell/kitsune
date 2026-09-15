@@ -1029,7 +1029,7 @@ Directus's community objection to its relicensing was not the terms but that the
 
 ## ADR-024 — Testing: Pest, a Docker engine matrix, and browser tests that open a real browser
 
-**Status:** Decided · 2026-09-07
+**Status:** Decided · 2026-09-07 · **Amended 2026-09-14** — MariaDB joined the engine matrix; see the note after the consequence
 
 Test-driven development is the working discipline, and the test suite is treated as a deliverable rather than as evidence that a deliverable works. Three layers, each earning its place:
 
@@ -1074,6 +1074,14 @@ These correspond one-to-one with the invariants in `CONTRIBUTING.md`:
 **Cost to pillar three, stated.** A contributor now needs Docker to run the *full* matrix, and Node to run the browser layer. That is a real barrier to the weekend contributor Standing Principle #6 exists to protect. **Mitigation is binding: the Pest layer must run green on a bare `git clone` with SQLite and no Docker, no Node, and no services.** The matrix and the browser layer are CI's job. If running the basic suite ever requires Docker, this ADR has been violated.
 
 **Consequence.** CI runs a matrix of PHP 8.4/8.5 × Postgres/MySQL/SQLite, plus one browser job. That is slower and more expensive than a single job, and it is the price of the storage design.
+
+⚠️ **MariaDB joined the matrix after this was written, for the reason the matrix exists.** README, `architecture.md`
+and the roadmap all documented MariaDB 10.6+ as supported, and `DriverFactory` routes it to `MySqlDriver` — but
+nothing ran against it, so two MySQL-only constructs had shipped: the `->>` operator, which MariaDB does not have, and
+`CAST(… AS JSON)`, which it rejects. CI now runs PHP 8.4/8.5 × SQLite, PostgreSQL, MySQL and MariaDB — eight engine
+jobs, beside lint, two bare-clone jobs and the browser job. "Three engines" elsewhere in this log counts SQL
+dialects, and stays true: MariaDB is the MySQL dialect through the same driver, with a job of its own because
+documented support that is never exercised is a claim, not a feature.
 
 ---
 

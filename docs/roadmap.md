@@ -26,7 +26,7 @@
 | Frontend (admin) | Livewire + Alpine | Via Filament |
 | Database | PostgreSQL primary, MySQL 8.0+ / MariaDB 10.6+, **SQLite** for small installs | SQLite needs VIRTUAL generated columns rather than STORED — it cannot add STORED via ALTER TABLE. Driver abstraction handles it |
 | Testing | **Pest**, plus **Playwright** for a narrow browser layer | Three layers per ADR-024. The Pest layer must stay runnable on a bare clone with SQLite — no Docker, no Node |
-| Local + CI environments | **Docker** | Backs the three-engine matrix, and the same image backs the self-host installer (ADR-026) |
+| Local + CI environments | **Docker** | Backs the four-engine matrix — SQLite, PostgreSQL, MySQL and MariaDB — and the same image backs the self-host installer (ADR-026) |
 | Static analysis | PHPStan / Larastan, level 6+ from day one | Property hooks make this actually work |
 | License | plain MPL-2.0 — **never** Exhibit B | |
 
@@ -67,7 +67,7 @@ Those consumed 5,000–15,000 hours. 12–18 months part-time is ~1,200. **So: c
 - [x] Repo: monorepo with `packages/core`. Layout follows `laravel/framework` — tests at the root, because Pest resolves its test directory from the project root with no configuration hook
 - [x] Installable app skeleton — `skeleton/`, published as `kitsune/kitsune`. SQLite by default, no Node, no Vite, no `config/` directory (Laravel's defaults plus `.env` suffice). Verified booting and rendering ([#6](https://github.com/adamgreenwell/kitsune/issues/6))
 - [ ] Split-publish `kitsune/core` to Packagist ([#8](https://github.com/adamgreenwell/kitsune/issues/8))
-- [x] CI: Pint, PHPStan level 6, and Pest across PHP 8.4/8.5 × Postgres/MySQL/SQLite. **All nine jobs green 2026-09-07.** The engine matrix is not decorative — `TestCase` selects its connection from the environment and `EngineMatrixTest` round-trips against whichever driver is configured
+- [x] CI: Pint, PHPStan level 6, and Pest across PHP 8.4/8.5 × SQLite/PostgreSQL/MySQL/MariaDB. **All nine jobs green 2026-09-07**, before MariaDB joined the matrix (ADR-024's amendment says why); twelve jobs today, each with a timeout above its slowest green run. The engine matrix is not decorative — `TestCase` selects its connection from the environment and `EngineMatrixTest` round-trips against whichever driver is configured
 - [x] Playwright browser job — 4 smoke tests against the skeleton, one browser, Node confined to that job ([#7](https://github.com/adamgreenwell/kitsune/issues/7)). When Phase 4 lands the admin, CONTRIBUTING's standing regression test (a page loaded from *outside* `/c/{type}`) goes here
 - [x] ⚠️ **Bare-clone guard** — a CI job declaring no service containers at all, running the default suite on PHP 8.4 and 8.5. **Passed on first run**, so ADR-024's pillar-three mitigation is verified rather than promised. If it ever goes red the fix is never to add services to it, but to fix the test that reached for one
 - [x] `laravel/boost` as a **dev** dependency. Never a runtime dependency of `kitsune/core` (ADR-025)
