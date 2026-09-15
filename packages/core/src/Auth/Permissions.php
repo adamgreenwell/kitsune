@@ -21,6 +21,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Once;
 use InvalidArgumentException;
+use Kitsune\Core\Filament\Panels\KitsunePanel;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\Role;
 use Kitsune\Core\Tenancy\Context;
@@ -378,7 +379,11 @@ final class Permissions
          * through another provider entirely; asking the default then names a model from somebody else's
          * panel, so an audit row records an unrelated row with the same id.
          */
-        if (app()->bound('filament') && ($panel = Filament::getCurrentPanel() ?? self::defaultPanel()) !== null) {
+        /*
+         * ⚠️ AND OUTSIDE A REQUEST, KITSUNE'S OWN PANEL BEFORE FILAMENT'S DEFAULT. A console command has no current
+         * panel, and the default may be a host's other panel; `KitsunePanel::apply()` records which panel is ours.
+         */
+        if (app()->bound('filament') && ($panel = Filament::getCurrentPanel() ?? self::kitsunePanel() ?? self::defaultPanel()) !== null) {
             $provider = $panel->auth()->getProvider();
 
             if (method_exists($provider, 'getModel')) {
@@ -403,6 +408,20 @@ final class Permissions
         return is_string($configured) && class_exists($configured) && is_subclass_of($configured, Model::class)
             ? $configured
             : null;
+    }
+
+    /**
+     * The panel `KitsunePanel::apply()` configured, or null when this application configured none.
+     */
+    private static function kitsunePanel(): ?Panel
+    {
+        if (! app()->bound(KitsunePanel::PANEL_BINDING)) {
+            return null;
+        }
+
+        $panel = app(KitsunePanel::PANEL_BINDING);
+
+        return $panel instanceof Panel ? $panel : null;
     }
 
     /**

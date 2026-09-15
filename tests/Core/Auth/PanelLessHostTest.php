@@ -14,9 +14,11 @@ use Filament\Panel;
 use Filament\PanelRegistry;
 use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Auth\Permissions;
+use Kitsune\Core\Filament\Panels\KitsunePanel;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Role;
 use Kitsune\Core\Tenancy\Context;
+use Kitsune\Core\Tests\Fixtures\ElsewhereUser;
 use Kitsune\Core\Tests\Fixtures\TestUser;
 
 /*
@@ -60,6 +62,33 @@ it('names the configured model when panels exist and none of them is the default
     app(PanelRegistry::class)->panels['side'] = Panel::make()->id('side');
 
     expect(Filament::getPanels())->toHaveCount(1)
+        ->and(Permissions::userModel())->toBe(TestUser::class);
+});
+
+it('names the model of Kitsune\'s own panel outside a request, not the host\'s default panel\'s', function (): void {
+    /*
+     * ⚠️ A CONSOLE COMMAND HAS NO CURRENT PANEL, and `userModel()` took Filament's global default — on a host that runs a
+     * second panel marked default, that panel's provider, which names another model. An audit row written by a
+     * seeder or a queued job would then name an unrelated row with the same id. Kitsune's panel is recorded when it is
+     * configured, and asked before the default.
+     */
+    config([
+        'auth.guards.host' => ['driver' => 'session', 'provider' => 'host_users'],
+        'auth.providers.host_users' => ['driver' => 'eloquent', 'model' => ElsewhereUser::class],
+    ]);
+
+    app(PanelRegistry::class)->panels['host'] = Panel::make()->id('host')->default()->authGuard('host');
+
+    /*
+     * ⚠️ `apply()` BEFORE `id()`, the order review found breaking registration: the first version read the panel's id
+     * inside `apply()`, and on a panel not yet given one that is an uninitialised property.
+     */
+    $kitsune = KitsunePanel::apply(Panel::make())->id('admin')->authGuard('web');
+    app(PanelRegistry::class)->panels['admin'] = $kitsune;
+
+    // The host's panel is the default, and nothing is handling a request.
+    expect(Filament::getDefaultPanel()->getId())->toBe('host')
+        ->and(Filament::getCurrentPanel())->toBeNull()
         ->and(Permissions::userModel())->toBe(TestUser::class);
 });
 
