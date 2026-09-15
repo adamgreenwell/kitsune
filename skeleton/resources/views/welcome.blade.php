@@ -40,7 +40,15 @@
     </style>
 </head>
 <body>
-    <main>
+    {{--
+        ⚠️ THE COPY IS ENGLISH, WHATEVER THE SITE'S LOCALE. `<html>` carries the site's language
+        and direction, so an Arabic site laid these English sentences out right to left — every
+        full stop moved to the start of its line — and told a screen reader to read them in
+        Arabic. `lang` and `dir` here describe the words actually on the page. Found by the
+        alpha's local smoke test. Kitsune's own strings are not translatable yet (#106); when
+        they are, these follow the locale the copy resolved in instead of staying English.
+    --}}
+    <main lang="en" dir="ltr">
         <h1>Kitsune</h1>
         <p class="sub">The admin is ready. This public page is a placeholder.</p>
 

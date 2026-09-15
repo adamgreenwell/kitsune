@@ -39,6 +39,16 @@ test.describe('a public request is served in its site\'s locale', () => {
         expect(doc.computed).toBe('rtl');
     });
 
+    test('the placeholder\'s English copy stays left-to-right on an RTL site', async ({ page }) => {
+        await page.goto('/golfdom-ar');
+
+        // ⚠️ COMPUTED, for the same reason as above. The copy is Kitsune's own English (#106);
+        // inheriting the document's `rtl` moved each full stop to the start of its sentence.
+        const main = page.locator('main');
+        await expect(main).toHaveAttribute('lang', 'en');
+        expect(await main.evaluate((el) => getComputedStyle(el).direction)).toBe('ltr');
+    });
+
     test('an LTR site is served LTR from the same server', async ({ page }) => {
         await page.goto('/golfdom');
 

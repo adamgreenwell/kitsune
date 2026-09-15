@@ -117,6 +117,8 @@ Logical inset properties, so the browser does the mirroring. Consistent with the
 **G1 — Kitsune's own output had no direction. FIXED in this spike.**
 `skeleton/resources/views/welcome.blade.php` emitted `lang` from the app locale and no `dir` at all, so an Arabic locale served Arabic text in a left-to-right document. Filament supplies `dir` for the admin from its own translations; the public side has no panel and must not depend on one (ADR-002 keeps core headless-capable), so nothing was going to supply it. `Kitsune::textDirection()` now does.
 
+> **Follow-up, 2026-09-15:** the document's direction was right, but the words were not in the document's language. The page's copy is Kitsune's own English, which is not translatable yet (#106), so on an Arabic site it inherited `rtl`: each full stop moved to the start of its sentence, and `lang="ar"` told a screen reader to read English in an Arabic voice. The alpha's local smoke test found it. `<main>` now declares `lang="en" dir="ltr"` for the copy. `PublicDirectionTest` checks the markup, and `public-site-locale.spec.js` checks the direction the browser computes.
+
 **G2 — `sites.locale` exists and is applied by nothing. ✅ Resolved.**
 ```bash
 grep -rn "setLocale" packages/core/src skeleton/app    # no matches, when this was written
