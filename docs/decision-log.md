@@ -1200,6 +1200,8 @@ Core may not require, for a default single-site install: a container runtime, a 
 
 Full-text search must therefore work on native Postgres/MySQL/SQLite facilities at the floor. Background work must degrade to synchronous or cron-driven execution when no worker is running.
 
+> **Amended 2026-09-15: the admin broke "no external services" on every page, and no test could see it.** Filament's default avatar provider builds each avatar as a `ui-avatars.com` URL from the signed-in user's and the site's initials. Every page view therefore sent personal data from the install to a third party (ADR-020), and a host with no outbound network showed two broken images. The alpha's local smoke test found it in the network log; nothing on screen looked wrong. `KitsunePanel` now draws the initials locally as an inline SVG, and `e2e/admin.spec.js` fails if an admin page requests anything from another host.
+
 ### What it costs, stated honestly
 
 This is not free, and pretending otherwise would make it a slogan:
