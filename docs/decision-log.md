@@ -1075,6 +1075,14 @@ These correspond one-to-one with the invariants in `CONTRIBUTING.md`:
 
 **Consequence.** CI runs a matrix of PHP 8.4/8.5 × Postgres/MySQL/SQLite, plus one browser job. That is slower and more expensive than a single job, and it is the price of the storage design.
 
+⚠️ **MariaDB joined the matrix after this was written, for the reason the matrix exists.** README, `architecture.md`
+and the roadmap all documented MariaDB 10.6+ as supported, and `DriverFactory` routes it to `MySqlDriver` — but
+nothing ran against it, so two MySQL-only constructs had shipped: the `->>` operator, which MariaDB does not have, and
+`CAST(… AS JSON)`, which it rejects. CI now runs PHP 8.4/8.5 × SQLite, PostgreSQL, MySQL and MariaDB — eight engine
+jobs, beside lint, two bare-clone jobs and the browser job. "Three engines" elsewhere in this log counts SQL
+dialects, and stays true: MariaDB is the MySQL dialect through the same driver, with a job of its own because
+documented support that is never exercised is a claim, not a feature.
+
 ---
 
 ## ADR-025 — Laravel Boost: a development dependency, and Kitsune ships guidelines rather than the runtime
