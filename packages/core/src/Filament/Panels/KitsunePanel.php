@@ -15,11 +15,15 @@ use Filament\Navigation\NavigationBuilder;
 use Filament\Navigation\NavigationItem;
 use Filament\Pages\Dashboard;
 use Filament\Panel;
+use Illuminate\Contracts\Auth\Authenticatable;
+use Illuminate\Support\Collection;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Filament\Icons;
 use Kitsune\Core\Filament\Resources\Entries\EntryResource;
 use Kitsune\Core\Filament\Resources\EntryTypes\EntryTypeResource;
 use Kitsune\Core\Filament\Resources\Roles\RoleResource;
+use Kitsune\Core\Filament\Widgets\EntryCountsWidget;
+use Kitsune\Core\Filament\Widgets\RecentEntriesWidget;
 use Kitsune\Core\Http\Middleware\IdentifyEntryType;
 use Kitsune\Core\Http\Middleware\SetKitsuneContext;
 use Kitsune\Core\Http\Middleware\SetUiLocale;
@@ -59,7 +63,62 @@ final class KitsunePanel
             ], isPersistent: true)
             ->resources([EntryResource::class, EntryTypeResource::class, RoleResource::class])
             ->pages([Dashboard::class])
+            ->widgets([EntryCountsWidget::class, RecentEntriesWidget::class])
             ->navigation(self::navigation(...));
+    }
+
+    /**
+     * The entry types this admin offers the signed-in user on the current site.
+     *
+     * The sidebar's list and the dashboard's, resolved from the request; `viewableTypes()` holds the rule.
+     *
+     * @return Collection<int, EntryType>
+     */
+    public static function viewableTypesHere(): Collection
+    {
+        $site = Filament::getTenant();
+        $site = $site instanceof Site ? $site : null;
+
+        return self::viewableTypes(
+            $site,
+            $site !== null ? $site->org_id : app(Context::class)->orgId(),
+            Permissions::currentUser(),
+        );
+    }
+
+    /**
+     * The entry types a user is offered on a site: those the site enables, filtered by the `view` permission.
+     *
+     * ⚠️ FILTERED BY THE `view` PERMISSION, and it has to happen HERE rather than in `EntryPolicy`.
+     * Navigation is supplied explicitly, so Filament never asks a resource whether each item should
+     * appear — and `EntryResource` is ONE resource for every type, so a single `viewAny` could not
+     * answer per item anyway. Without this a user sees a sidebar full of links that 403 when clicked.
+     *
+     * ⚠️ THE LINK IS NOT THE GUARANTEE. Hiding an item an authenticated user could still reach by
+     * typing the URL is the classic version of this bug, and ADR-024 says the PHP suite structurally
+     * cannot see it — so `e2e/permissions.spec.js` asserts the refusal at the URL as well as the
+     * absent link.
+     *
+     * ⚠️ ONE LIST FOR THE SIDEBAR AND THE DASHBOARD. A dashboard counting a type the sidebar hides would say how
+     * much content sits behind a URL that refuses the reader, and two copies of this filter are two places for
+     * one to fall behind the other.
+     *
+     * ⚠️ THE SCOPE AND THE USER ARE ARGUMENTS so the PHP suite can ask this directly: resolving them from the
+     * request needs Filament's tenant, which core's tests never bind (ADR-024).
+     *
+     * @return Collection<int, EntryType>
+     */
+    public static function viewableTypes(?Site $site, ?int $orgId, ?Authenticatable $user): Collection
+    {
+        if ($user === null) {
+            return collect();
+        }
+
+        return EntryType::visibleFor($site, $orgId)
+            ->filter(fn (EntryType $type): bool => Permissions::allows(
+                $user, Permissions::forEntryType($type->handle, 'view'),
+            ))
+            ->values();
     }
 
     /**
@@ -72,26 +131,7 @@ final class KitsunePanel
      */
     private static function navigation(NavigationBuilder $builder): NavigationBuilder
     {
-        $site = Filament::getTenant();
-        $orgId = $site instanceof Site ? $site->org_id : app(Context::class)->orgId();
-
-        /*
-         * ⚠️ FILTERED BY THE `view` PERMISSION, and it has to happen HERE rather than in `EntryPolicy`.
-         * Navigation is supplied explicitly, so Filament never asks a resource whether each item should
-         * appear — and `EntryResource` is ONE resource for every type, so a single `viewAny` could not
-         * answer per item anyway. Without this a user sees a sidebar full of links that 403 when clicked.
-         *
-         * ⚠️ THE LINK IS NOT THE GUARANTEE. Hiding an item an authenticated user could still reach by
-         * typing the URL is the classic version of this bug, and ADR-024 says the PHP suite structurally
-         * cannot see it — so `e2e/permissions.spec.js` asserts the refusal at the URL as well as the
-         * absent link.
-         */
-        $user = Permissions::currentUser();
-
-        $types = EntryType::visibleFor($site instanceof Site ? $site : null, $orgId)
-            ->filter(fn (EntryType $type): bool => $user !== null && Permissions::allows(
-                $user, Permissions::forEntryType($type->handle, 'view'),
-            ));
+        $types = self::viewableTypesHere();
 
         return $builder->items([
             NavigationItem::make('Dashboard')
