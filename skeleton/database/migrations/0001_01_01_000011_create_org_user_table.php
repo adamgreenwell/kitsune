@@ -29,6 +29,8 @@ return new class extends Migration
     {
         Schema::create('org_user', function (Blueprint $table): void {
             $table->foreignId('org_id')->constrained()->cascadeOnDelete();
+            // The key type is the host's (#91): a host whose users carry ULIDs or UUIDs declares
+            // `foreignUlid('user_id')` or `foreignUuid('user_id')` here, as in `role_user`.
             $table->foreignId('user_id')->constrained()->cascadeOnDelete();
             $table->primary(['org_id', 'user_id']);
 

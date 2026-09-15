@@ -13,6 +13,7 @@ namespace Kitsune\Core\Tests;
 use BladeUI\Heroicons\BladeHeroiconsServiceProvider;
 use BladeUI\Icons\BladeIconsServiceProvider;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Foundation\Testing\RefreshDatabaseState;
 use Kitsune\Core\KitsuneServiceProvider;
 use Orchestra\Testbench\TestCase as Orchestra;
 
@@ -21,14 +22,16 @@ abstract class TestCase extends Orchestra
     /**
      * Every test starts from an empty database.
      *
-     * On SQLite each test already gets a fresh in-memory database, so this
-     * changes nothing there — which is exactly why its absence went unnoticed.
-     * On PostgreSQL and MySQL the data persists, and the suite was passing
-     * only because nothing had polluted those databases first. A single
-     * benchmark run against them was enough to turn 52 passes into 42
-     * failures on unique-constraint violations.
+     * The schema is migrated once per process and each test runs inside a transaction that is rolled back —
+     * on in-memory SQLite too, where the database is one cached connection restored between tests rather than
+     * a new database each time. On PostgreSQL and MySQL the data would otherwise persist, and the suite was
+     * passing only because nothing had polluted those databases first. A single benchmark run against them was
+     * enough to turn 52 passes into 42 failures on unique-constraint violations.
      */
     use RefreshDatabase;
+
+    /** The fixture migrations the database was last built with in this process. */
+    private static ?string $migratedFixtures = null;
 
     /**
      * Testbench gives the package a Laravel application without vendoring one.
@@ -61,10 +64,39 @@ abstract class TestCase extends Orchestra
      */
     protected function defineDatabaseMigrations(): void
     {
+        /*
+         * ⚠️ THE DATABASE IS REBUILT WHEN THE HOST CHANGES — #91 — and this is the only place that can decide it.
+         * `RefreshDatabase` migrates once per process, so whichever host's tests ran second would run against the
+         * first host's tables. And `loadMigrationsFrom()` reads `RefreshDatabaseState::$migrated` when it is called:
+         * false, it registers the paths for `RefreshDatabase`'s `migrate:fresh`; true, it runs `migrate` on them
+         * there and then. The first version cleared the flag later, in `refreshTestDatabase()`, and the second host's
+         * fixture migration ran straight onto the first host's tables — `relation "users" already exists`.
+         *
+         * A second connection with a table prefix was tried before this and cannot work on MySQL or MariaDB: Laravel
+         * names foreign keys without the prefix, those engines keep constraint names unique per database, and every
+         * core foreign key collided with the other host's (SQLSTATE 1826).
+         */
+        if (self::$migratedFixtures !== static::fixtureMigrations()) {
+            RefreshDatabaseState::$migrated = false;
+            self::$migratedFixtures = static::fixtureMigrations();
+        }
+
         $this->loadMigrationsFrom(__DIR__.'/../../packages/core/database/migrations');
         // Fixture tables live here rather than in beforeEach(), because DDL
         // implicitly commits on MySQL and breaks RefreshDatabase's rollback.
-        $this->loadMigrationsFrom(__DIR__.'/migrations');
+        $this->loadMigrationsFrom(static::fixtureMigrations());
+    }
+
+    /**
+     * The host-side tables this test case runs against, on top of core's own.
+     *
+     * ⚠️ A METHOD, SO A SECOND HOST CAN BE A SECOND SET — #91. Core owns no user model, so the shape of `users`,
+     * `org_user` and `role_user` is the host's, and the key type is part of that shape. This is the reference host,
+     * with integer keys; `UlidHostTestCase` is a host whose users carry ULIDs.
+     */
+    protected static function fixtureMigrations(): string
+    {
+        return __DIR__.'/migrations';
     }
 
     /**

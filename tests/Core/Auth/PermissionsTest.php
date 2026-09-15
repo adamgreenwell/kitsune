@@ -8,13 +8,13 @@
 
 declare(strict_types=1);
 
-use Illuminate\Foundation\Auth\User as AuthUser;
 use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Models\AuditLog;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Role;
 use Kitsune\Core\Models\RolePermission;
+use Kitsune\Core\Tenancy\Attributes\OrgScopedThroughPivot;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tests\Fixtures\ElsewhereUser;
 use Kitsune\Core\Tests\Fixtures\TestUser;
@@ -308,22 +308,26 @@ it('names an owner elevation in the action, because the target cannot hold it', 
         ->toBe((string) $user->getKey());
 });
 
-it('resolves nothing for a user whose identifier is not an integer', function (): void {
+it('resolves nothing, on a host with integer keys, for an identifier its key cannot be', function (): void {
     /*
-     * ⚠️ A STATED LIMITATION, PINNED SO IT CANNOT DRIFT INTO A SILENT ONE. `role_user.user_id` is a bigint
-     * foreign key to the host's `users` table (the skeleton's migration), so an installation whose users
-     * carry UUIDs cannot express an assignment at all — the constraint is in the schema, not in these casts.
+     * ⚠️ THE FLOOR THIS PINNED STILL HOLDS FOR THE HOSTS IT WAS WRITTEN FOR. It was "resolves nothing for a user whose
+     * identifier is not an integer", with RBAC declared integer-only. #91 made the key type the host's to choose, so a
+     * ULID-keyed host now resolves its own users — see `StringUserKeysTest`. What must not move is the direction of
+     * the failure on an INTEGER host: an identifier its key cannot be resolves nothing, rather than being coerced.
      *
-     * What this asserts is the DIRECTION of the failure: such a user resolves nothing rather than resolving
-     * somebody else's grants. `Permissions::key()` returns null for a non-numeric identifier, so `held()` is
-     * empty and `isOwner()` is false — and the alternative, coercing `'018f…'` to `0`, would hand them the
-     * grants of whatever row happens to have id 0 or collide with another user entirely.
-     *
-     * ⚠️ The audit columns are strings and this is not, which is deliberate rather than inconsistent: the
-     * log records whoever ACTED, through any guard, and an audit insert that fails takes the write it was
-     * recording with it. Assignment is a row in a pivot whose column type the host's schema fixes.
+     * ⚠️ AND COERCION NAMES SOMEBODY, which the first version of this test got wrong. It said `'018f…'` would become
+     * `0`; PHP reads a string's leading digits, so it becomes `18`. The fixture makes user 18 a real member and owner,
+     * so a cast anywhere on the resolution path would hand the impostor that owner's bypass and fail this test. The
+     * earlier fixture had no membership scope, so it resolved nothing whatever the key did.
      */
-    $uuid = new class extends AuthUser
+    /** @var TestUser $owner */
+    $owner = TestUser::create(['id' => 18, 'email' => 'eighteen@kitsune.test']);
+    DB::table('org_user')->insert(['org_id' => $this->org->getKey(), 'user_id' => $owner->getKey()]);
+    Role::create(['handle' => 'owner', 'name' => 'Owner', 'is_owner' => true])->assignTo($owner->getKey());
+
+    // ⚠️ The scope declared again, because a PHP attribute is not inherited: without it `EnforcesScope` refuses the
+    // subclass outright, and the test would pass on that refusal rather than on the key.
+    $impostor = new #[OrgScopedThroughPivot(table: 'org_user', foreignKey: 'user_id')] class extends TestUser
     {
         public function getAuthIdentifier(): string
         {
@@ -331,9 +335,25 @@ it('resolves nothing for a user whose identifier is not an integer', function ()
         }
     };
 
-    expect(Permissions::held($uuid))->toBe([])
-        ->and(Permissions::isOwner($uuid))->toBeFalse()
-        ->and(Permissions::allows($uuid, 'entry.article.update'))->toBeFalse();
+    // ⚠️ Not vacuous: the impostor's leading digits ARE user 18, who is a member and an owner in this org.
+    expect((int) $impostor->getAuthIdentifier())->toBe($owner->getKey())
+        ->and(Permissions::isOwner($owner))->toBeTrue();
+
+    expect(Permissions::isOwner($impostor))->toBeFalse()
+        ->and(Permissions::held($impostor))->toBe([])
+        ->and(Permissions::allows($impostor, 'entry.article.update'))->toBeFalse();
+
+    // The rule itself, on the integer model: a decimal that round-trips is a key, anything else is not.
+    expect(Permissions::userKey('5', TestUser::class))->toBe(5)
+        ->and(Permissions::userKey(5, TestUser::class))->toBe(5)
+        ->and(Permissions::userKey((string) PHP_INT_MAX, TestUser::class))->toBe(PHP_INT_MAX)
+        ->and(Permissions::userKey('5abc', TestUser::class))->toBeNull()
+        ->and(Permissions::userKey('018f2b7c-1d6a-7e3f-9a0b-5c8d4e2f1a33', TestUser::class))->toBeNull()
+        // ⚠️ Review found these: PHP saturates an overflowing decimal to `PHP_INT_MAX` rather than refusing it, so any
+        // longer digit string named the largest real key; and `'007'` is not how any key is written.
+        ->and(Permissions::userKey('9223372036854775808', TestUser::class))->toBeNull()
+        ->and(Permissions::userKey('99999999999999999999', TestUser::class))->toBeNull()
+        ->and(Permissions::userKey('007', TestUser::class))->toBeNull();
 });
 
 it('does not answer from a memo of a grant that was rolled back', function (): void {

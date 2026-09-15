@@ -249,7 +249,7 @@ final class Permissions
     /**
      * @return list<string>
      */
-    private static function resolveHeld(int $userId, int $orgId, string $class): array
+    private static function resolveHeld(int|string $userId, int $orgId, string $class): array
     {
         if (! self::isMemberOfCurrentOrg($userId, $class)) {
             return [];
@@ -499,7 +499,7 @@ final class Permissions
         return once(fn (): bool => self::resolveIsOwner($userId, $orgId, $class));
     }
 
-    private static function resolveIsOwner(int $userId, int $orgId, string $class): bool
+    private static function resolveIsOwner(int|string $userId, int $orgId, string $class): bool
     {
         if (! self::isMemberOfCurrentOrg($userId, $class)) {
             return false;
@@ -538,7 +538,7 @@ final class Permissions
      *
      * @param  class-string  $class
      */
-    private static function isMemberOfCurrentOrg(int $userId, string $class): bool
+    private static function isMemberOfCurrentOrg(int|string $userId, string $class): bool
     {
         if (! is_subclass_of($class, Model::class)) {
             return false;
@@ -587,7 +587,7 @@ final class Permissions
      * @param  class-string  $class
      * @return list<int>
      */
-    private static function roleIdsFor(int $userId, string $class): array
+    private static function roleIdsFor(int|string $userId, string $class): array
     {
         if (! self::assignmentsAreAbout($class)) {
             return [];
@@ -676,16 +676,114 @@ final class Permissions
     }
 
     /**
+     * A user identifier in the type the user model's key actually has, or null when it cannot be one — #91.
+     *
+     * ⚠️ THE HOST CHOOSES THE KEY TYPE, AND THIS LAYER USED TO CHOOSE FOR IT. Every assignment path cast to `int`, so
+     * a host whose users carry ULIDs or UUIDs could not express an assignment at all. `(int) '01J…'` is `1`, because
+     * PHP reads a string's leading digits, so a cast names somebody else rather than nobody; and a cast on the way to a
+     * `varchar` column is a type error on PostgreSQL rather than a mismatch. `role_user.user_id`
+     * lives in the host's migration, so its type is already the host's decision — the ADR-020 amendment's "an
+     * identifier is the host's to choose". This reads the decision from the model rather than overruling it.
+     *
+     * ⚠️ AN INTEGER MODEL STILL REFUSES WHAT IS NOT AN INTEGER. `'5abc'` is not user 5 and `'01J…'` is nobody, so the
+     * fail-closed floor ADR-033 pinned survives on the hosts it was written for.
+     *
+     * ⚠️ AND ONE TYPE PER HOST, so a key read back from the database and the same key submitted by a form cannot sit
+     * in one list as `5` and `'5'` and defeat a strict comparison.
+     *
+     * With no resolvable model there is no key type to read, so the caller's own type is kept: an `int` stays an
+     * `int` and a non-empty string stays a string. Every caller that has a model passes it.
+     *
+     * @param  class-string|null  $class  the user model, when the caller knows it; `userModel()` otherwise
+     */
+    public static function userKey(mixed $id, ?string $class = null): int|string|null
+    {
+        return self::normaliseUserKey($id, self::userKeyIsInteger($id, $class ?? self::userModel()));
+    }
+
+    /**
+     * Several user identifiers, normalised by `userKey()` once for the whole list, with the refused ones and the
+     * repeats left out.
+     *
+     * @param  iterable<mixed>  $ids
+     * @param  class-string|null  $class
+     * @return list<int|string>
+     */
+    public static function userKeys(iterable $ids, ?string $class = null): array
+    {
+        $class ??= self::userModel();
+        $keys = [];
+
+        foreach ($ids as $id) {
+            $key = self::normaliseUserKey($id, self::userKeyIsInteger($id, $class));
+
+            if ($key !== null && ! in_array($key, $keys, true)) {
+                $keys[] = $key;
+            }
+        }
+
+        return $keys;
+    }
+
+    /**
+     * Is this model's key an integer? Asked of an instance, because `HasUlids` and `HasUuids` set the key type in
+     * an initializer that only constructing the model runs.
+     *
+     * @param  class-string|null  $class
+     */
+    private static function userKeyIsInteger(mixed $id, ?string $class): bool
+    {
+        if ($class === null || ! is_subclass_of($class, Model::class)) {
+            return is_int($id);
+        }
+
+        return in_array((new $class)->getKeyType(), ['int', 'integer'], true);
+    }
+
+    private static function normaliseUserKey(mixed $id, bool $integer): int|string|null
+    {
+        if ($integer) {
+            if (is_int($id)) {
+                return $id;
+            }
+
+            /*
+             * ⚠️ A DECIMAL THAT ROUND-TRIPS, NOT MERELY ONE MADE OF DIGITS — review found the gap. PHP saturates an
+             * overflowing cast instead of refusing it: `(int) '99999999999999999999'` is `PHP_INT_MAX`, so any digit
+             * string past the range named whoever holds the largest key. Comparing the cast back to the input refuses
+             * that, and a non-canonical `'007'` with it, which is not how a key read from the database or offered by
+             * the holder form is ever written.
+             */
+            if (! is_string($id) || ! ctype_digit($id)) {
+                return null;
+            }
+
+            $key = (int) $id;
+
+            return (string) $key === $id ? $key : null;
+        }
+
+        if (is_int($id)) {
+            return (string) $id;
+        }
+
+        return is_string($id) && $id !== '' ? $id : null;
+    }
+
+    /**
      * The two scalars every memo here is keyed on.
      *
-     * @return array{0: ?int, 1: ?int}
+     * ⚠️ THE AUTHENTICATED INSTANCE'S OWN KEY TYPE, for the reason `isMemberOfCurrentOrg()` asks its own class: the
+     * panel's provider and the signed-in model are the same thing in a correct installation, and when they are not,
+     * the instance cannot be wrong about itself. An `Authenticatable` that is not an Eloquent model resolves nothing,
+     * which is what membership already answered for it.
+     *
+     * @return array{0: int|string|null, 1: ?int}
      */
     private static function key(Authenticatable $user): array
     {
-        $userId = $user->getAuthIdentifier();
-
         return [
-            is_numeric($userId) ? (int) $userId : null,
+            $user instanceof Model ? self::userKey($user->getAuthIdentifier(), $user::class) : null,
             app(Context::class)->orgId(),
         ];
     }

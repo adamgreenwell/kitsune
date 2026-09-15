@@ -198,17 +198,17 @@ class GuardedOrgMembership extends BelongsToMany
      * takes the key when the value is an array, so this does too — casting the value would have named org 1.
      *
      * @param  mixed  $ids
-     * @return list<int>
+     * @return list<int|string>
      */
     private function attachedIds($ids): array
     {
         $others = [];
 
         foreach ($this->parseIds($ids) as $key => $value) {
-            $others[] = (int) (is_array($value) ? $key : $value);
+            $others[] = is_array($value) ? $key : $value;
         }
 
-        return $others;
+        return $this->otherEnds($others);
     }
 
     /**
@@ -219,12 +219,12 @@ class GuardedOrgMembership extends BelongsToMany
      * nothing was going to remove.
      *
      * @param  mixed  $ids
-     * @return list<int>
+     * @return list<int|string>
      */
     private function detachedIds($ids): array
     {
         if ($ids !== null) {
-            return array_map(static fn (mixed $id): int => (int) $id, array_values($this->parseIds($ids)));
+            return $this->otherEnds(array_values($this->parseIds($ids)));
         }
 
         /*
@@ -234,11 +234,27 @@ class GuardedOrgMembership extends BelongsToMany
          * asked the last-owner guard about "organisation <user id>" while removing every real membership,
          * the last owner's included. Found while ordering the locks.
          */
-        return $this->newPivotQuery()
-            ->pluck($this->relatedPivotKey)
-            ->map(static fn (mixed $id): int => (int) $id)
-            ->values()
-            ->all();
+        return $this->otherEnds($this->newPivotQuery()->pluck($this->relatedPivotKey)->all());
+    }
+
+    /**
+     * The other end of each membership, in the type that end's key has.
+     *
+     * ⚠️ AN ORG ID IS CORE'S AND A USER KEY IS THE HOST'S — #91. Both ends were cast to `int`, which is right for
+     * `Org` and wrong for a host whose users carry ULIDs: `(int) '01J…'` is `1`, so `$org->members()->detach('01J…')`
+     * checked, locked and audited the membership of whoever user 1 is. Which end is the other one is settled by the
+     * parent's class, as `pairsFor()` settles it.
+     *
+     * @param  array<mixed>  $ids
+     * @return list<int|string>
+     */
+    private function otherEnds(array $ids): array
+    {
+        if ($this->parent instanceof Org) {
+            return Permissions::userKeys($ids, $this->related::class);
+        }
+
+        return array_values(array_map(static fn (mixed $id): int => (int) $id, $ids));
     }
 
     /**
@@ -253,18 +269,25 @@ class GuardedOrgMembership extends BelongsToMany
      * waiting for the other's; input order is the caller's, and a detach-all's is whatever plan the database
      * chose. `(org, user)` is one order for every write through this relation.
      *
-     * @param  list<int>  $others
-     * @return list<array{0: int, 1: int}>
+     * @param  list<int|string>  $others
+     * @return list<array{0: int, 1: int|string}>
      */
     private function pairsFor(array $others): array
     {
-        $parentKey = (int) $this->parent->getKey();
-        $fromOrg = $this->parent instanceof Org;
+        $unique = array_values(array_unique($others));
 
-        $pairs = array_map(
-            static fn (int $other): array => $fromOrg ? [$parentKey, $other] : [$other, $parentKey],
-            array_values(array_unique($others)),
-        );
+        if ($this->parent instanceof Org) {
+            $orgId = (int) $this->parent->getKey();
+            $pairs = array_map(static fn (int|string $user): array => [$orgId, $user], $unique);
+        } else {
+            $userKey = Permissions::userKey($this->parent->getKey(), $this->parent::class);
+
+            if ($userKey === null) {
+                return [];
+            }
+
+            $pairs = array_map(static fn (int|string $org): array => [(int) $org, $userKey], $unique);
+        }
 
         usort($pairs, static fn (array $a, array $b): int => $a <=> $b);
 
@@ -277,7 +300,7 @@ class GuardedOrgMembership extends BelongsToMany
      * ⚠️ See `Role::lockSharedOrgRow()`. Without it the last-owner read joins the cycle it was written to avoid,
      * and the audit below could name an owner flag a concurrent demotion was changing.
      *
-     * @param  list<array{0: int, 1: int}>  $pairs
+     * @param  list<array{0: int, 1: int|string}>  $pairs
      */
     private function lockOrgRows(array $pairs): void
     {
@@ -286,7 +309,7 @@ class GuardedOrgMembership extends BelongsToMany
         }
     }
 
-    private function isMember(int $orgId, int $userId): bool
+    private function isMember(int $orgId, int|string $userId): bool
     {
         [$orgColumn, $userColumn] = $this->parent instanceof Org
             ? [$this->foreignPivotKey, $this->relatedPivotKey]
@@ -310,7 +333,7 @@ class GuardedOrgMembership extends BelongsToMany
      * ⚠️ OWNER-NESS IN THE ACTION, as ADR-033 puts it for assignments: `org.owner_removed` beside
      * `org.member_removed`, because whether the bypass went with them is the fact the log exists to answer.
      *
-     * @param  list<array{0: int, 1: int}>  $pairs
+     * @param  list<array{0: int, 1: int|string}>  $pairs
      */
     private function recordAuthorityChange(array $pairs, string $verb): void
     {
@@ -362,7 +385,7 @@ class GuardedOrgMembership extends BelongsToMany
      * and `Permissions` resolves none of them for this model. Reading them here would audit an authority change
      * that did not happen, about a person it did not happen to.
      */
-    private function holdsOwnerRole(int $orgId, int $userId): ?bool
+    private function holdsOwnerRole(int $orgId, int|string $userId): ?bool
     {
         $userClass = $this->parent instanceof Org ? $this->related::class : $this->parent::class;
 
@@ -390,7 +413,7 @@ class GuardedOrgMembership extends BelongsToMany
     }
 
     /** The user a membership is about, as a model, so the audit row can name them. */
-    private function userModel(int $userId): ?Model
+    private function userModel(int|string $userId): ?Model
     {
         if (! $this->parent instanceof Org) {
             return $this->parent;
