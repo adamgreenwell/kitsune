@@ -348,9 +348,11 @@ One correction worth keeping, because it is the failure mode this log exists to 
 
 ## ADR-013 — PHP 8.4 minimum, 8.5 as CI primary
 
-**Status:** Decided · 2026-09-07
+**Status:** Decided · 2026-09-07 · **Amended 2026-09-15** — CI was never primary on 8.5; see the note after the decision
 
 **Decision:** `"php": "^8.4"`. Develop and run CI primarily on 8.5, with 8.4 in the matrix. Revisit the floor at v1.0.
+
+> **Amended 2026-09-15: CI was never primary on 8.5, and it had never started the application on 8.5 at all.** The PHP suites ran on 8.4 and 8.5, but through Testbench. The lint job and the Playwright job — the only job that boots the skeleton, the Filament panel and Livewire — were pinned to 8.4. The browser job now runs on both versions. **The "primarily on 8.5" clause is withdrawn**, for development and CI alike: the test jobs run on 8.4 and 8.5 as equals, lint runs at the floor, and the floor is unchanged. Separately, the alpha targets **8.5**. Ubuntu 26.04 LTS ships PHP 8.5 and no 8.4, so 8.4 there would have to come from a third-party repository — the Launchpad PPA `ppa:ondrej/php` has no 26.04 suite, and packages.sury.org does (ADR-026 amendment). The alpha's stage server runs 8.5 from Ubuntu's own archive instead, and its Forge server is planned on the same release.
 
 **Why not 8.3** (the Laravel 13 floor): PHP 8.3's **active support ended 2025-12-31** — it is already security-only. A poor floor for a greenfield project that ships in 2028.
 
@@ -1029,7 +1031,7 @@ Directus's community objection to its relicensing was not the terms but that the
 
 ## ADR-024 — Testing: Pest, a Docker engine matrix, and browser tests that open a real browser
 
-**Status:** Decided · 2026-09-07 · **Amended 2026-09-14** — MariaDB joined the engine matrix; see the note after the consequence
+**Status:** Decided · 2026-09-07 · **Amended 2026-09-14** — MariaDB joined the engine matrix; see the note after the consequence · **Amended 2026-09-15** — the browser job runs on both PHP versions; see the note after the MariaDB amendment
 
 Test-driven development is the working discipline, and the test suite is treated as a deliverable rather than as evidence that a deliverable works. Three layers, each earning its place:
 
@@ -1083,6 +1085,8 @@ jobs, beside lint, two bare-clone jobs and the browser job. "Three engines" else
 dialects, and stays true: MariaDB is the MySQL dialect through the same driver, with a job of its own because
 documented support that is never exercised is a claim, not a feature.
 
+> **Amended 2026-09-15:** the browser job now runs on PHP 8.4 and 8.5, because it is the only job that boots the skeleton (ADR-013 amendment) — two browser jobs, and thirteen jobs in all.
+
 ---
 
 ## ADR-025 — Laravel Boost: a development dependency, and Kitsune ships guidelines rather than the runtime
@@ -1128,7 +1132,7 @@ Shipping a `kitsune/plugin-guidelines` package in Boost's format means an AI-ass
 
 ## ADR-026 — Self-hosting: one command, no database server, no phone-home
 
-**Status:** Decided · 2026-09-07 · ⚠️ **Amended by ADR-027** — the recommended default flips from Docker to the native path. Both remain supported; the original reasoning below is left as written
+**Status:** Decided · 2026-09-07 · ⚠️ **Amended by ADR-027** — the recommended default flips from Docker to the native path. Both remain supported; the original reasoning below is left as written · **Amended 2026-09-15** — the Launchpad PPA it named has no Ubuntu 26.04 suite; see the note under *Two supported paths*
 
 A person with a fresh Ubuntu LTS box must be able to paste **one command** and arrive at the onboarding screen. No database server to provision, no credentials to invent, no PHP version to negotiate.
 
@@ -1143,6 +1147,8 @@ ADR-013 pins `^8.4`. **Ubuntu 24.04 LTS — in support until 2029 — ships PHP 
 - **Native path — the recommended default** *(revised by ADR-027; this ADR originally recommended Docker)*. PHP-FPM and SQLite at the resource floor, with the `ondrej/php` PPA supplying the `^8.4` requirement. Leanest possible first contact
 - **Docker path — fully supported, equal in quality.** Reproducible, immune to the distro's PHP version, and it reuses the image already built for ADR-024's CI matrix. Recommended for scale, for reproducibility, or for anyone who prefers a container to a PPA
 Supporting only one of the two costs a real constituency, so both ship.
+
+> **Amended 2026-09-15: the native path named a PPA that does not cover the current LTS.** The Launchpad PPA `ppa:ondrej/php` has no suite for Ubuntu 26.04 LTS — its `dists/resolute/Release` returns 404 — and describes itself as being merged into its maintainer's apt repository, [packages.sury.org/php](https://packages.sury.org/php/), which it names as the canonical source for 26.04. That repository publishes both 24.04 and 26.04 with PHP 8.4 and 8.5. 26.04 needs no third-party source at all: its own archive ships PHP 8.5, which satisfies `^8.4`, while 24.04 ships 8.3. The native path therefore uses the distribution's own PHP wherever it meets the floor, and packages.sury.org only where it does not. Found while provisioning the alpha's stage server, which runs PHP 8.5 from Ubuntu's archive.
 
 ### Security posture, decided deliberately rather than by default
 

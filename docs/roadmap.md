@@ -20,7 +20,7 @@
 
 | Component | Choice | Note |
 |---|---|---|
-| PHP | **`^8.4`**, CI primary on **8.5** | 8.3 is already security-only. Property hooks matter for the `Entry` model — see ADR-013 |
+| PHP | **`^8.4`**, tested on **8.4 and 8.5**; the alpha targets **8.5** | 8.3 is already security-only. Property hooks matter for the `Entry` model — see ADR-013 |
 | Laravel | 13.x | Security to 2028-03-17 |
 | Admin | **`filament/filament:^5.4`** | First release supporting Laravel 13 |
 | Frontend (admin) | Livewire + Alpine | Via Filament |
@@ -67,7 +67,7 @@ Those consumed 5,000–15,000 hours. 12–18 months part-time is ~1,200. **So: c
 - [x] Repo: monorepo with `packages/core`. Layout follows `laravel/framework` — tests at the root, because Pest resolves its test directory from the project root with no configuration hook
 - [x] Installable app skeleton — `skeleton/`, published as `kitsune/kitsune`. SQLite by default, no Node, no Vite, no `config/` directory (Laravel's defaults plus `.env` suffice). Verified booting and rendering ([#6](https://github.com/adamgreenwell/kitsune/issues/6))
 - [ ] Split-publish `kitsune/core` to Packagist ([#8](https://github.com/adamgreenwell/kitsune/issues/8))
-- [x] CI: Pint, PHPStan level 6, and Pest across PHP 8.4/8.5 × SQLite/PostgreSQL/MySQL/MariaDB. **All nine jobs green 2026-09-07**, before MariaDB joined the matrix (ADR-024's amendment says why); twelve jobs today, each with a timeout above its slowest green run. The engine matrix is not decorative — `TestCase` selects its connection from the environment and `EngineMatrixTest` round-trips against whichever driver is configured
+- [x] CI: Pint, PHPStan level 6, and Pest across PHP 8.4/8.5 × SQLite/PostgreSQL/MySQL/MariaDB. **All nine jobs green 2026-09-07**, before MariaDB joined the matrix (ADR-024's amendment says why); thirteen jobs today, each with a timeout above its slowest green run. The engine matrix is not decorative — `TestCase` selects its connection from the environment and `EngineMatrixTest` round-trips against whichever driver is configured
 - [x] Playwright browser job — 4 smoke tests against the skeleton, one browser, Node confined to that job ([#7](https://github.com/adamgreenwell/kitsune/issues/7)). When Phase 4 lands the admin, CONTRIBUTING's standing regression test (a page loaded from *outside* `/c/{type}`) goes here
 - [x] ⚠️ **Bare-clone guard** — a CI job declaring no service containers at all, running the default suite on PHP 8.4 and 8.5. **Passed on first run**, so ADR-024's pillar-three mitigation is verified rather than promised. If it ever goes red the fix is never to add services to it, but to fix the test that reached for one
 - [x] `laravel/boost` as a **dev** dependency. Never a runtime dependency of `kitsune/core` (ADR-025)
@@ -315,8 +315,8 @@ Drupal spent ~a decade proving a runtime schema engine *without* opinionated sta
 - [ ] Semantic versioning commitment and published upgrade policy
 - [ ] Staffed security disclosure process
 - [ ] **One-command self-host installer** (ADR-026) — paste one command on a fresh Ubuntu LTS box, end at the onboarding screen:
-  - [ ] **Native path** (recommended default, ADR-027) — PHP-FPM + SQLite at the resource floor, `ondrej/php` PPA supplying `^8.4`
-  - [ ] **Docker path**, fully supported and equal in quality, reusing the Phase 0 CI image — for scale, reproducibility, or anyone preferring a container to a PPA
+  - [ ] **Native path** (recommended default, ADR-027) — PHP-FPM + SQLite at the resource floor, with the distribution's own PHP where it meets `^8.4` (26.04 ships 8.5) and packages.sury.org where it does not (ADR-026 amendment)
+  - [ ] **Docker path**, fully supported and equal in quality, reusing the Phase 0 CI image — for scale, reproducibility, or anyone preferring a container to a system PHP
   - [ ] Defaults to **SQLite** — no database server, user, password or tuning
   - [ ] Versioned + **checksum-pinned** over HTTPS, signed releases, never served from a redirect
   - [ ] Docs lead with **download-inspect-run**; the `curl | bash` one-liner is offered alongside, not instead
