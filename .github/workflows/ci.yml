@@ -16,8 +16,10 @@ concurrency:
 # Without one, a job that has truly stopped runs to GitHub's six-hour default
 # and holds up every PR behind it. With one near the median, green runs fail:
 # across 25 successful runs the MySQL lanes took a median of 14-16 minutes and
-# as long as 58.7. Slowest successful run per job, in minutes: lint 0.7, bare
-# clone 1.4, sqlite 2.1, pgsql 9.8, mariadb 27.0, mysql 58.7, Playwright 3.2.
+# as long as 58.7, and a later one took 73.9 (run 34913818861). Slowest
+# successful run per job, in minutes: lint 0.7, bare clone 1.4, sqlite 2.1,
+# pgsql 9.8, mariadb 27.0, mysql 73.9, Playwright 3.2. Every figure predates
+# migrating the test schema once per process; re-measure before lowering one.
 jobs:
   lint:
     name: Pint + PHPStan
@@ -71,7 +73,8 @@ jobs:
   engines:
     name: PHP ${{ matrix.php }} / ${{ matrix.engine }}
     runs-on: ubuntu-latest
-    # The widest ceiling, for the slowest lane: a green MySQL run has taken 58.7 minutes.
+    # The widest ceiling, for the slowest lane (see the top of this file). Some runner VMs slow MySQL 3-8x, and one
+    # run was cancelled here while still passing tests. Raising this hides that; see "Describe the runner".
     timeout-minutes: 90
     strategy:
       fail-fast: false
@@ -128,6 +131,15 @@ jobs:
 
     steps:
       - uses: actions/checkout@v5
+
+      # Names the VM class and its synced-write speed, so a slow lane can be told apart from a slow change.
+      - name: Describe the runner
+        run: |
+          grep -m1 'model name' /proc/cpuinfo
+          echo "cpus: $(nproc)"
+          for flag in avx512f rtm; do grep -qw "$flag" /proc/cpuinfo && echo "$flag: yes" || echo "$flag: no"; done
+          dd if=/dev/zero of="$RUNNER_TEMP/dsync-probe" bs=4k count=1000 oflag=dsync 2>&1 | tail -1
+          rm -f "$RUNNER_TEMP/dsync-probe"
 
       - uses: shivammathur/setup-php@v2
         with:

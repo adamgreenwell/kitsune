@@ -34,46 +34,30 @@ use Kitsune\Core\Tenancy\Scopes\OrgScope;
 beforeEach(function (): void {
     $this->org = Org::create(['name' => 'Claimant', 'slug' => 'claimant']);
     app(Context::class)->setOrg($this->org);
-});
 
-afterAll(function (): void {
     /*
-     * ⚠️ COMMITTED ROWS FROM ANOTHER CONNECTION OUTLIVE `RefreshDatabase`, so the one test that needs
-     * them has to sweep them — and it cannot do so itself, because it holds locks on them until its
-     * transaction closes. This runs after the file's last test, which is the first safe moment.
-     */
-    /*
-     * ⚠️ EVERYTHING INSIDE THE `try`, INCLUDING RESOLVING THE CONNECTION, and leaving it outside made
-     * the whole file exit 2 — an ERROR rather than a failure — behind a green summary. On SQLite a
-     * second connection to `:memory:` is a different, empty database, so resolving it and asking for
-     * a table that does not exist throws from `afterAll`, which is outside any test.
+     * ⚠️ COMMITTED ROWS FROM ANOTHER CONNECTION OUTLIVE `RefreshDatabase`, so the test that made them
+     * removes them, and only once its transaction has rolled back, because until then it holds locks on
+     * them. This used to be an `afterAll`, which runs after Testbench has flushed the container: its first
+     * `DB::connection()` threw on every engine, the `catch (Throwable)` around it hid that, and it never
+     * deleted a row.
      *
-     * ⚠️ AND ONLY WHERE THE TEST THAT NEEDS IT RAN. The committing test skips on SQLite, so there is
-     * nothing to sweep there and no reason to open a connection at all.
+     * ⚠️ BY ORG, NOT BY HOST. `stalequiet` is committed with no host, so matching `canonical_host` never
+     * found it. The rival commits no claim rows: it writes those only inside transactions it rolls back.
      */
-    try {
-        if (DB::connection()->getDriverName() === 'sqlite') {
+    $this->afterRollback(function (): void {
+        if (! array_key_exists('rival', config('database.connections') ?? [])) {
             return;
         }
 
-        $default = (string) config('database.default');
-        config(['database.connections.sweep' => config("database.connections.{$default}")]);
+        $sweep = DB::connection('rival');
+        $orgs = $sweep->table('orgs')->whereIn('slug', ['rival-org', 'stale-rival'])->pluck('id');
 
-        $sweep = DB::connection('sweep');
+        $sweep->table('sites')->whereIn('org_id', $orgs)->delete();
+        $sweep->table('orgs')->whereIn('id', $orgs)->delete();
 
-        $sweep->table('sites')->where('canonical_host', 'snapshot.test')->delete();
-        $sweep->table('site_host_claims')->where('canonical_host', 'snapshot.test')->delete();
-        $sweep->table('orgs')->where('slug', 'rival-org')->delete();
-
-        // The staleness tests commit their own rows for the same reason, on their own hosts.
-        $sweep->table('sites')->where('canonical_host', 'like', 'stale-%')->delete();
-        $sweep->table('site_host_claims')->where('canonical_host', 'like', 'stale-%')->delete();
-        $sweep->table('orgs')->where('slug', 'stale-rival')->delete();
-
-        DB::purge('sweep');
-    } catch (Throwable) {
-        // The engine may have rolled the whole schema away already, which is equally clean.
-    }
+        DB::purge('rival');
+    });
 });
 
 afterEach(function (): void {
@@ -389,8 +373,8 @@ it('sees a rival committed while this save waited, not an older snapshot', funct
      * this connection now holds `lockForUpdate()` on them inside a transaction that is still open, so
      * a delete from the rival waits for a lock this test is holding and times out.
      *
-     * `afterAll` runs once the file's transactions are closed, which is the first moment the rows can
-     * be removed. Nothing between here and there uses `snapshot.test`.
+     * The sweep registered in `beforeEach` runs once `RefreshDatabase` has rolled this transaction
+     * back, which is the first moment the rows can be removed.
      */
 })->skip(fn (): bool => ! lockingEngine(), 'SQLite has one writer, so there is no second snapshot to be stale');
 
@@ -496,12 +480,25 @@ it('locks one host when a save does not move', function (): void {
 });
 
 /**
+ * The org the rival connection commits its sites under, inserted by each test that needs it.
+ *
+ * ⚠️ INSERTED, NEVER REUSED. The sweep registered in `beforeEach` removes it after every test, so an
+ * org already here is one a sweep missed, and the unique slug refuses it rather than building on it.
+ */
+function staleRivalOrg(Connection $rival): int
+{
+    return (int) $rival->table('orgs')->insertGetId([
+        'name' => 'Stale Rival', 'slug' => 'stale-rival', 'created_at' => now(), 'updated_at' => now(),
+    ]);
+}
+
+/**
  * A committed site on a committed org, so another connection can move it under this one.
  *
  * ⚠️ COMMITTED, BY THE RIVAL CONNECTION, or there is nothing cross-connection to test. A row this
  * connection creates lives in `RefreshDatabase`'s open transaction, and the rival's UPDATE would
  * match zero rows — which is how the first version of these tests passed for no reason. The rows
- * outlive the rollback and are removed by the file's `afterAll`.
+ * outlive the rollback and are removed by the sweep registered in `beforeEach`.
  *
  * @return array{0: int, 1: Site}
  */
@@ -509,10 +506,7 @@ function committedSiteAt(string $host, string $handle): array
 {
     $rival = rivalConnection();
 
-    $orgId = (int) ($rival->table('orgs')->where('slug', 'stale-rival')->value('id')
-        ?? $rival->table('orgs')->insertGetId([
-            'name' => 'Stale Rival', 'slug' => 'stale-rival', 'created_at' => now(), 'updated_at' => now(),
-        ]));
+    $orgId = staleRivalOrg($rival);
 
     $siteId = (int) $rival->table('sites')->insertGetId([
         'org_id' => $orgId, 'handle' => $handle, 'slug' => $handle, 'name' => $handle,
@@ -605,10 +599,7 @@ it('refuses a stale save on a site that was loaded with no host', function (): v
      */
     $rival = rivalConnection();
 
-    $orgId = (int) ($rival->table('orgs')->where('slug', 'stale-rival')->value('id')
-        ?? $rival->table('orgs')->insertGetId([
-            'name' => 'Stale Rival', 'slug' => 'stale-rival', 'created_at' => now(), 'updated_at' => now(),
-        ]));
+    $orgId = staleRivalOrg($rival);
 
     // An admin-only site: no public URL, so no host and no prefix.
     $siteId = (int) $rival->table('sites')->insertGetId([
@@ -643,10 +634,7 @@ it('allows a save on a site whose row genuinely has no host', function (): void 
      */
     $rival = rivalConnection();
 
-    $orgId = (int) ($rival->table('orgs')->where('slug', 'stale-rival')->value('id')
-        ?? $rival->table('orgs')->insertGetId([
-            'name' => 'Stale Rival', 'slug' => 'stale-rival', 'created_at' => now(), 'updated_at' => now(),
-        ]));
+    $orgId = staleRivalOrg($rival);
 
     $siteId = (int) $rival->table('sites')->insertGetId([
         'org_id' => $orgId, 'handle' => 'stalequiet', 'slug' => 'stalequiet', 'name' => 'Stale Quiet',
@@ -895,7 +883,8 @@ it('refuses a save inside a REPEATABLE READ transaction, and only that transacti
             $connection->table('site_host_claims')->where('canonical_host', 'like', 'iso-%')->delete();
             $connection->table('orgs')->where('slug', 'isolation-org')->delete();
         } catch (Throwable) {
-            // The schema may already be gone, which is equally clean.
+            // Best-effort: a row this misses is refused by the next test that starts on a migrated database
+            // (`TestCase::refuseRowsLeftBehind()`), or dropped by the rebuild that runs instead.
         }
 
         DB::purge($name);
