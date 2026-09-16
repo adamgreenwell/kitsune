@@ -170,25 +170,138 @@ function runbookPromised(string $family, string $topology): array
 }
 
 /**
- * The families the runbook ships, found by the scripts that declare them. A host script opens one with
- * `family <name> <id…>`, and common.sh refuses a verdict for any id outside that list; an outside script
- * names itself with `const FAMILY`. Instruments — common.sh, probe-log.sh — declare neither.
+ * The host scripts that are not families: common.sh travels ahead of every family, and probe-log.sh is the
+ * instrument tunnel-log.php drives. Every other host script, and every outside script, is a family.
+ *
+ * @return list<string>
+ */
+function runbookInstruments(): array
+{
+    return ['host/common.sh', 'host/probe-log.sh'];
+}
+
+/**
+ * Every family declaration a runbook script makes, as [name, sorted checks]. A host script declares with
+ * `family <name> <id…>`, which common.sh's verdict() enforces; an outside script with `const FAMILY` and
+ * `const CHECKS`, which its own verdict() enforces.
+ *
+ * ⚠️ READ AS IT CAN BE WRITTEN, AND LOUD WHEN IT CANNOT BE READ. This used to match a declaration only at column
+ * 0, so a host family calling `family` inside `main()`, or an outside family declaring class constants, was not
+ * found at all: unlisted, never dispatched, and every tree check still passed — the drift those checks exist to
+ * catch. A host call is found however it is indented, with a trailing comment or a continued line. An outside
+ * constant is read from PHP's own tokens, in a class or not, typed or not. A declaration that is not plain
+ * words or quoted plain strings throws rather than being skipped.
+ *
+ * @return list<array{0: string, 1: list<string>}>
+ */
+function runbookDeclarations(string $script, string $shown): array
+{
+    $plain = static function (array $words, string $as) use ($shown): array {
+        foreach ($words as $word) {
+            if (preg_match('/^[A-Za-z0-9][A-Za-z0-9._-]*$/', $word) !== 1) {
+                throw new RuntimeException("{$shown} declares {$as} as [".implode(' ', $words).'], which cannot be read as plain words');
+            }
+        }
+
+        return $words;
+    };
+
+    if (str_ends_with($script, '.sh')) {
+        preg_match_all('/^[ \t]*family[ \t]+(.*)$/m', str_replace("\\\n", ' ', File::get($script)), $calls);
+        $declarations = [];
+
+        foreach ($calls[1] as $call) {
+            $words = $plain(preg_split('/[ \t]+/', trim((string) preg_replace('/(^|[ \t])#.*$/', '', $call)), -1, PREG_SPLIT_NO_EMPTY) ?: [], 'its family');
+            $checks = array_slice($words, 1);
+            sort($checks);
+            $declarations[] = [$words[0] ?? '', $checks];
+        }
+
+        return $declarations;
+    }
+
+    $tokens = array_values(array_filter(PhpToken::tokenize(File::get($script)), static fn (PhpToken $token): bool => ! $token->isIgnorable()));
+    $constants = ['FAMILY' => [], 'CHECKS' => []];
+
+    foreach ($tokens as $at => $token) {
+        if (! $token->is(T_CONST)) {
+            continue;
+        }
+
+        // `const [type] NAME = value;` — the name is the last word before `=`, and the value runs to the `;`.
+        for ($next = $at + 1, $name = ''; isset($tokens[$next]) && ! in_array($tokens[$next]->text, ['=', ';'], true); $next++) {
+            $name = $tokens[$next]->text;
+        }
+
+        if (! array_key_exists($name, $constants) || ($tokens[$next]->text ?? '') !== '=') {
+            continue;
+        }
+
+        $value = [];
+
+        for ($next++; isset($tokens[$next]) && $tokens[$next]->text !== ';'; $next++) {
+            $value[] = $tokens[$next];
+        }
+
+        $strings = array_values(array_filter($value, static fn (PhpToken $token): bool => $token->is(T_CONSTANT_ENCAPSED_STRING)));
+        $shape = implode('', array_map(static fn (PhpToken $token): string => $token->is(T_CONSTANT_ENCAPSED_STRING) ? 's' : $token->text, $value));
+
+        if ($name === 'FAMILY' ? $shape !== 's' : preg_match('/^\[(s(,s)*,?)?\]$/', $shape) !== 1) {
+            throw new RuntimeException("{$shown} declares {$name} as [".implode('', array_map(static fn (PhpToken $token): string => $token->text, $value)).'], which cannot be read as quoted plain words');
+        }
+
+        $constants[$name][] = $plain(array_map(static fn (PhpToken $token): string => substr($token->text, 1, -1), $strings), $name);
+    }
+
+    if ($constants['FAMILY'] === [] && $constants['CHECKS'] === []) {
+        return [];
+    }
+
+    if (count($constants['FAMILY']) !== 1 || count($constants['CHECKS']) !== 1) {
+        throw new RuntimeException("{$shown} declares FAMILY ".count($constants['FAMILY']).' times and CHECKS '.count($constants['CHECKS']).' times, where a family declares each once');
+    }
+
+    $checks = $constants['CHECKS'][0];
+    sort($checks);
+
+    return [[$constants['FAMILY'][0][0], $checks]];
+}
+
+/**
+ * The families a runbook tree ships — the committed one unless told otherwise — found by the scripts that declare
+ * them. Every script but an instrument must declare exactly one family, and an instrument none: a script this
+ * cannot read is an error here, never a family quietly left out.
  *
  * @return array<string, list<string>> each family's name, and every script that declares it
  */
-function runbookShippedFamilies(): array
+function runbookShippedFamilies(?string $root = null): array
 {
-    $root = dirname(__DIR__, 3).'/deploy/runbook';
+    $root ??= dirname(__DIR__, 3).'/deploy/runbook';
     $families = [];
 
-    foreach ([['host/*.sh', '/^family (\S+)/m'], ['outside/*.php', "/^const FAMILY = '([^']+)';/m"]] as [$pattern, $declaration]) {
-        foreach (glob($root.'/'.$pattern) ?: [] as $script) {
-            preg_match_all($declaration, File::get($script), $matches);
-
-            foreach ($matches[1] as $name) {
-                $families[$name][] = $script;
-            }
+    foreach (runbookInstruments() as $instrument) {
+        if (! is_file($root.'/'.$instrument)) {
+            throw new RuntimeException("{$instrument} is listed as an instrument and does not exist");
         }
+    }
+
+    foreach ([...glob($root.'/host/*.sh') ?: [], ...glob($root.'/outside/*.php') ?: []] as $script) {
+        $shown = substr($script, strlen($root) + 1);
+        $declarations = runbookDeclarations($script, $shown);
+
+        if (in_array($shown, runbookInstruments(), true)) {
+            if ($declarations !== []) {
+                throw new RuntimeException("{$shown} is an instrument, and declares a family");
+            }
+
+            continue;
+        }
+
+        if (count($declarations) !== 1) {
+            throw new RuntimeException("{$shown} declares ".count($declarations).' families, and every script that is not an instrument is dispatched as exactly one (instruments are listed in runbookInstruments())');
+        }
+
+        $families[$declarations[0][0]][] = $script;
     }
 
     ksort($families);
@@ -197,28 +310,20 @@ function runbookShippedFamilies(): array
 }
 
 /**
- * The checks a family script declares, sorted: a host script's `family <name> <id…>` line, or an outside
- * script's `const CHECKS = [...]`. Each is enforced by that family's own verdict(), so the declaration is
- * exactly what the family can report.
+ * The checks a family script declares, sorted, read by the same parser that found the family. Each is enforced
+ * by that family's own verdict(), so the declaration is exactly what the family can report.
  *
  * @return list<string>
  */
 function runbookDeclaredChecks(string $script): array
 {
-    $source = File::get($script);
+    $declarations = runbookDeclarations($script, basename($script));
 
-    if (str_ends_with($script, '.sh')) {
-        preg_match('/^family \S+((?: +\S+)*) *$/m', $source, $declaration);
-        $checks = preg_split('/ +/', trim($declaration[1] ?? ''), -1, PREG_SPLIT_NO_EMPTY) ?: [];
-    } else {
-        preg_match('/^const CHECKS = \[([^\]]*)\];/m', $source, $declaration);
-        preg_match_all("/'([^']+)'/", $declaration[1] ?? '', $quoted);
-        $checks = $quoted[1];
+    if (count($declarations) !== 1) {
+        throw new RuntimeException(basename($script).' declares '.count($declarations).' families');
     }
 
-    sort($checks);
-
-    return $checks;
+    return $declarations[0][1];
 }
 
 it('is valid bash', function (): void {
@@ -1019,3 +1124,60 @@ it('runs each outside family without its instruments and sees it void every chec
         ->and($judged)->not->toBe([])
         ->and(is_file($this->dir.'/network'))->toBeFalse();
 });
+
+/**
+ * A runbook tree holding the real instruments and the given scripts, for the discovery helpers to read.
+ *
+ * @param  array<string, string>  $scripts  path under the tree => source
+ */
+function runbookTree(string $dir, array $scripts): string
+{
+    $root = $dir.'/tree';
+    $repo = dirname(__DIR__, 3).'/deploy/runbook';
+
+    foreach (runbookInstruments() as $instrument) {
+        File::ensureDirectoryExists(dirname($root.'/'.$instrument));
+        File::copy($repo.'/'.$instrument, $root.'/'.$instrument);
+    }
+
+    foreach ($scripts as $path => $source) {
+        File::ensureDirectoryExists(dirname($root.'/'.$path));
+        File::put($root.'/'.$path, $source);
+    }
+
+    return $root;
+}
+
+it('finds a family however its declaration is written', function (): void {
+    /*
+     * ⚠️ THE TWO FAMILIES NOT YET LANDED, WRITTEN IN STYLES NONE OF THE THREE LANDED ONES USE. Discovery matched only
+     * a declaration at column 0, so a host family calling `family` inside `main()` and an outside family declaring
+     * class constants were both invisible: with no manifest rows for either, every tree check passed, and a run
+     * never dispatched them. The real instruments sit beside them, and must read as declaring nothing.
+     */
+    $root = runbookTree($this->dir, [
+        'host/sshd.sh' => "main() {\n  family sshd SSH-2 \\\n    SSH-1  # forwarding, then the sweep\n  verdict SSH-1 PASS ok\n}\n\nmain \"\$@\"\n",
+        'outside/throttle.php' => "<?php\n\nfinal class Throttle\n{\n    public const string FAMILY = 'throttle';\n\n    final public const array CHECKS = [\n        'THR-1',\n        \"THR-2\",\n    ];\n}\n",
+    ]);
+
+    $families = runbookShippedFamilies($root);
+
+    expect(array_keys($families))->toBe(['sshd', 'throttle'])
+        ->and(runbookDeclaredChecks($families['sshd'][0]))->toBe(['SSH-1', 'SSH-2'])
+        ->and(runbookDeclaredChecks($families['throttle'][0]))->toBe(['THR-1', 'THR-2']);
+});
+
+it('fails loudly on a script whose family it cannot read, rather than leaving the family out', function (string $path, string $source, string $message): void {
+    // Every script but an instrument is a family, so one whose declaration cannot be read is an error, not an absence.
+    $root = runbookTree($this->dir, [$path => $source]);
+
+    expect(fn () => runbookShippedFamilies($root))->toThrow(RuntimeException::class, $message);
+})->with([
+    'a host script that declares nothing' => ['host/sweep.sh', "verdict SSH-9 PASS ok\n", 'host/sweep.sh declares 0 families'],
+    'a host script that declares twice' => ['host/sshd.sh', "family sshd SSH-1\nfamily sshd SSH-2\n", 'host/sshd.sh declares 2 families'],
+    'a host family named by a variable' => ['host/sshd.sh', "family \"\$name\" SSH-1\n", 'host/sshd.sh declares its family as ["$name" SSH-1], which cannot be read as plain words'],
+    'an outside script that declares nothing' => ['outside/throttle.php', "<?php\n\ndefine('FAMILY', 'throttle');\n", 'outside/throttle.php declares 0 families'],
+    'checks built from another constant' => ['outside/throttle.php', "<?php\n\nconst FAMILY = 'throttle';\nconst CHECKS = [PREFIX.'-1'];\n", "outside/throttle.php declares CHECKS as [[PREFIX.'-1']], which cannot be read as quoted plain words"],
+    'a family with no checks declared' => ['outside/throttle.php', "<?php\n\nconst FAMILY = 'throttle';\n", 'outside/throttle.php declares FAMILY 1 times and CHECKS 0 times'],
+    'an instrument that declares a family' => ['host/probe-log.sh', "family probe PRB-1\n", 'host/probe-log.sh is an instrument, and declares a family'],
+]);

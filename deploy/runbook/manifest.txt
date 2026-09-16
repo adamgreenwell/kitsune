@@ -12,7 +12,8 @@
 # listed and every family listed ships, no check belongs to two families, and each family's declared
 # checks — a host script's `family` line, an outside script's `const CHECKS`, each refused by that
 # family's own verdict() when anything else is printed — are exactly the rows here, under every topology
-# it runs on.
+# it runs on. Every host script but common.sh and probe-log.sh, and every outside script, must declare
+# exactly one family in a form the test can read, so a family cannot ship without the test seeing it.
 #
 # Format: <topology> <family> <check-id>, where topology is `tunnel` (stage: cloudflared in front of
 # nginx) or `dns-only` (alpha: Forge, no tunnel). Blank lines and # comments are ignored. run.sh refuses a
