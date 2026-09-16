@@ -25,8 +25,10 @@ Two rules make silence fail with everything else:
 - **`manifest.txt` is a promise.** It lists the check ids that must produce a verdict, per topology.
   An id with no verdict is VOID. It is committed and read as an input, never generated from a run.
 - **Every family ends with a sentinel** carrying its own verdict count, printed from an EXIT trap.
-  The host scripts are piped over ssh, so a dropped connection truncates a family mid-stream; a
-  missing or short sentinel voids that whole family.
+  The host scripts are piped over ssh, so a dropped connection truncates a family mid-stream. A
+  sentinel that is missing, printed twice, malformed or short voids that whole family, and so does
+  one that names a check twice or reports a check the manifest does not promise. A check given two
+  verdicts is VOID, never the last of them.
 
 ## Running it
 
@@ -49,10 +51,10 @@ deploy/runbook/run.sh --host forge@stage.example --expect tunnel --token-file ~/
 |---|---|
 | `run.sh` | The orchestrator: dispatch, the completeness gate, the exit code. Runs on the operator's machine. |
 | `manifest.txt` | The promised check ids, per topology. |
-| `host/common.sh` | Verdicts, records, the sentinel, and the guards every host check needs. Sourced, never run. |
+| `host/common.sh` | Verdicts, records, the sentinel, and the guards every host check needs. Sent ahead of each host family in the same stream, never run on its own. |
 | `host/*.sh` | One file per family that must run **on** the server, as root, piped over ssh. |
-| `outside/*.py` | The checks that must reach the server from somewhere else, over the real network. |
-| `cloudflare/inventory.py` | What only the Cloudflare account can show: routes, Workers, transforms. |
+| `host/probe-log.sh` | Not a family: the instrument `outside/tunnel-log.php` drives to see what nginx received. The one part of the runbook that changes a live server, and it undoes itself. |
+| `outside/*.php` | One file per family that must reach the server from somewhere else, over the real network. Runs on the operator's machine. |
 
 Tests live in `tests/Core/Release/Runbook*Test.php` and run the real scripts against fixtures, in the
 style of `ReleaseScriptTest`: a deploy script is prose until something executes it.

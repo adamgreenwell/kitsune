@@ -39,8 +39,9 @@
 #   - Never a shell redirect under sudo (`sudo cmd < /proc/…`): the redirect is opened by the
 #     calling user, before sudo runs, and fails as that user.
 
-# The family this script speaks for, and the ids it promises to emit. run.sh holds the same list in
-# manifest.txt; RunbookManifestTest asserts the two agree in both directions.
+# The family this script speaks for, and the ids it promises to emit. manifest.txt holds the same list:
+# RunbookManifestTest asserts this declaration and the committed manifest agree, and run.sh voids a
+# family whose sentinel reports a check the manifest does not promise it.
 KITSUNE_FAMILY=""
 KITSUNE_EXPECTED=""
 KITSUNE_EMITTED=""

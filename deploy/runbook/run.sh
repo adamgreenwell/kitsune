@@ -157,32 +157,111 @@ for family in "${families[@]:-}"; do
   fi
 done
 
-# 3. The verdicts that arrived, and the sentinels that close each family.
+# 3. The verdicts that arrived, judged against the sentinel that closes each family and against the
+# promise.
+#
+# ⚠️ A STREAM CAN MISLEAD IN MORE WAYS THAN BY STOPPING EARLY, and each of them voids the family. Its
+# sentinel may be missing, printed twice, malformed, or name one check twice; its count may disagree
+# with the verdict lines that arrived; it may report checks the manifest does not promise. A short count
+# used to print a warning and change nothing, so a stream cut after its first verdicts still passed
+# those verdicts — and a family that printed one check twice, and listed it twice in its sentinel, made
+# the count add up.
+#
+# ⚠️ AND ONE CHECK, ONE VERDICT. This used to take the last verdict line for an id, so a family that
+# printed FAIL and then PASS for the same check reported PASS. Two verdicts mean the family does not know
+# which one it measured, so neither stands — and the reason names both, so the FAIL is not lost.
+#
+# ⚠️ AND A VERDICT COUNTS ONLY FOR THE FAMILY THAT GAVE IT. Verdict lines do not name their family, so
+# without this a check one family never ran was satisfied by another family's line for the same id.
 fails=0
 voids=0
 passes=0
+number='^(0|[1-9][0-9]*)$'
 
 for entry in "${expected[@]}"; do
   family=${entry%% *}
   id=${entry#* }
 
-  line=$(grep -E "^VERDICT $id (PASS|FAIL|VOID) " "$stream" | tail -1 || true)
-  sentinel=$(grep -E "^SENTINEL $family " "$stream" | tail -1 || true)
+  promised=""
+  for other in "${expected[@]}"; do
+    if [[ "${other%% *}" == "$family" ]]; then
+      promised="$promised ${other#* }"
+    fi
+  done
 
-  if [[ -z "$sentinel" ]]; then
-    echo "VOID  $id ($family) — the family produced no sentinel, so its stream was truncated or it never ran"
+  closes=$(grep -cE "^SENTINEL $family " "$stream" || true)
+  listed=""
+  distrust=""
+
+  if (( closes == 0 )); then
+    distrust="the family produced no sentinel, so its stream was truncated or it never ran"
+  elif (( closes > 1 )); then
+    distrust="the family closed its stream $closes times, so which part of it belongs to this run cannot be told"
+  else
+    sentinel=$(grep -E "^SENTINEL $family " "$stream")
+    read -r _ _ counted listed <<<"$sentinel"
+    counted=${counted:-}
+    listed=${listed:-}
+    named=$(( $(wc -w <<<"$listed") ))
+    repeated=$(awk '{ for (i = 1; i <= NF; i++) if (seen[$i]++ == 1) printf "%s ", $i }' <<<"$listed")
+    arrived=0
+
+    if (( named > 0 )); then
+      arrived=$(grep -cE "^VERDICT ($(awk '{ $1 = $1; gsub(/ /, "|"); print }' <<<"$listed")) (PASS|FAIL|VOID) " "$stream" || true)
+    fi
+
+    unpromised=""
+    for reported in $listed; do
+      case " $promised " in
+        *" $reported "*) ;;
+        *) unpromised="$unpromised $reported" ;;
+      esac
+    done
+
+    if [[ ! "$counted" =~ $number ]] || (( counted != named )); then
+      distrust="the family's sentinel is malformed: it counts [$counted] and names $named checks"
+    elif [[ -n "$repeated" ]]; then
+      distrust="the family reported ${repeated% } more than once, so which verdict stands cannot be told"
+    elif (( arrived != counted )); then
+      distrust="the family's sentinel counted $counted verdicts and $arrived arrived, so its stream was cut or doubled"
+    elif [[ -n "$unpromised" ]]; then
+      distrust="the family reports checks the manifest does not promise for a $expect host (${unpromised# }), so what it measured is not what was promised"
+    fi
+  fi
+
+  if [[ -n "$distrust" ]]; then
+    echo "VOID  $id ($family) — $distrust"
     voids=$((voids + 1))
     continue
   fi
 
-  if [[ -z "$line" ]]; then
+  lines=$(grep -E "^VERDICT $id (PASS|FAIL|VOID) " "$stream" || true)
+  given=$(grep -cE "^VERDICT $id (PASS|FAIL|VOID) " "$stream" || true)
+
+  if (( given == 0 )); then
     echo "VOID  $id ($family) — promised by the manifest, and no verdict arrived"
     voids=$((voids + 1))
     continue
   fi
 
-  outcome=$(awk '{print $3}' <<<"$line")
-  reason=${line#VERDICT "$id" "$outcome" }
+  if (( given > 1 )); then
+    outcomes=$(awk '{ printf "%s%s", sep, $3; sep = ", " }' <<<"$lines")
+    echo "VOID  $id ($family) — the check was given $given verdicts ($outcomes), so none of them can stand"
+    voids=$((voids + 1))
+    continue
+  fi
+
+  case " $listed " in
+    *" $id "*) ;;
+    *)
+      echo "VOID  $id ($family) — a verdict arrived that this family's sentinel does not name, so another family gave it"
+      voids=$((voids + 1))
+      continue
+      ;;
+  esac
+
+  outcome=$(awk '{print $3}' <<<"$lines")
+  reason=${lines#VERDICT "$id" "$outcome" }
 
   case "$outcome" in
     PASS) passes=$((passes + 1)); echo "PASS  $id — $reason" ;;
@@ -190,14 +269,6 @@ for entry in "${expected[@]}"; do
     VOID) voids=$((voids + 1)); echo "VOID  $id — $reason" ;;
   esac
 done
-
-# A sentinel that promises more ids than arrived means the stream was cut after the family had
-# already emitted some of them.
-while read -r _ family count ids; do
-  [[ -n "${family:-}" ]] || continue
-  arrived=$(grep -cE "^VERDICT ($(tr ' ' '|' <<<"$ids")) " "$stream" || true)
-  (( arrived == count )) || echo "⚠️ $family: its sentinel counted $count verdicts and $arrived arrived."
-done < <(grep -E '^SENTINEL ' "$stream" || true)
 
 echo
 echo "$passes passed, $fails failed, $voids could not be measured."

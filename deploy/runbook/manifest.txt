@@ -6,8 +6,11 @@
 # and a VOID exits non-zero exactly as a FAIL does.
 #
 # It is committed, and it is an INPUT to run.sh — never generated from a run's own output, which
-# would make the promise whatever happened to be kept. RunbookManifestTest asserts that the ids the
-# scripts can emit and the ids listed here are the same set, in both directions.
+# would make the promise whatever happened to be kept. It is held to the families twice. On every run,
+# run.sh voids a family whose sentinel reports a check this file does not promise it. And
+# RunbookManifestTest reads this file: every family the runbook ships is listed and every family listed
+# ships, and each family's checks — a host script's `family` line, an outside script's own sentinel —
+# are exactly the rows here, under every topology it runs on.
 #
 # Format: <topology> <family> <check-id>, where topology is `tunnel` (stage: cloudflared in front of
 # nginx) or `dns-only` (alpha: Forge, no tunnel). Blank lines and # comments are ignored.
