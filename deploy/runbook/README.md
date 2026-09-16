@@ -20,17 +20,22 @@ measured must never read as a host that is correct. Every check is written so th
 mode is VOID rather than a quiet PASS — the design's long review found that checks fail by passing
 vacuously far more often than by missing a condition outright.
 
-Two rules make silence fail with everything else:
+Three rules make silence fail with everything else:
 
 - **`manifest.txt` is a promise.** It lists the check ids that must produce a verdict, per topology.
   An id with no verdict is VOID. It is committed and read as an input, never generated from a run.
-- **Every family ends with a sentinel** carrying its own verdict count, printed from an EXIT trap.
-  The host scripts are piped over ssh, so a dropped connection truncates a family mid-stream. Each
-  family is judged on its own stream. A sentinel that is missing, printed twice, malformed or short
-  voids that whole family, and so does one that names a check twice or reports a check the manifest
-  does not promise, or a verdict the sentinel does not name. A check given two verdicts is VOID, never
-  the last of them, and a voided check still shows every verdict its family gave it. A run that does
-  not pass keeps each family's raw output and says where.
+- **Every family that does not refuse ends with a sentinel** carrying its own verdict count, printed
+  from an EXIT trap. The host scripts are piped over ssh, so a dropped connection truncates a family
+  mid-stream. Each family is judged on its own stream. A sentinel that is missing, printed twice,
+  malformed or short voids that whole family, and so does one that names a check twice or reports a
+  check the manifest does not promise, or a verdict the sentinel does not name. A check given two
+  verdicts is VOID, never the last of them, and a voided check still shows every verdict its family
+  gave it. A run that does not pass keeps each family's raw output and says where.
+- **A refusal is written into the stream.** A family that refuses — a precondition it cannot meet, or
+  a verdict its own guard rejects — prints `REFUSED <family> <reason>` and withholds its sentinel, and
+  either one voids the whole family with the reason shown. A refusal exits 1, as a FAIL does, so the
+  exit status cannot say it, and a refused verdict is never printed, so without this a refusal after
+  every promised verdict left a stream that added up.
 
 ## Running it
 

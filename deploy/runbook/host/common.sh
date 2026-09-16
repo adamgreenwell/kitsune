@@ -17,14 +17,16 @@
 #
 #   VERDICT <check-id> PASS|FAIL|VOID <reason>
 #   RECORD  <check-id> <fact>                      (never a verdict: evidence for the report)
-#   SENTINEL <family> <count> <id> [<id> ...]      (the last line, always)
+#   REFUSED <family> <reason>                      (the family refused to go on; no sentinel follows)
+#   SENTINEL <family> <count> <id> [<id> ...]      (the last line of a family that did not refuse)
 #
 # ⚠️ THE SENTINEL IS WHAT MAKES SILENCE FAIL. The scripts are piped into `sudo bash -s` over ssh, so
 # a dropped connection, a killed process or an abort truncates the stream mid-family. Without a
 # terminator, run.sh cannot tell "this family said nothing because every check passed" from "this
 # family died before it spoke", and the second one would exit 0. So every family ends with a
 # sentinel carrying its own id count, printed from an EXIT trap so it survives an abort, and run.sh
-# treats a missing or short sentinel as VOID for the whole family.
+# treats a missing or short sentinel as VOID for the whole family. A family that refused is the one
+# exception, and `refuse` says why.
 #
 # ⚠️ AND `set -e` PULLS THE OTHER WAY. A measurement that exits non-zero is ordinary here — it is
 # what VOID exists for — but errexit would end the script at that line. Every measurement therefore
@@ -45,11 +47,27 @@
 KITSUNE_FAMILY=""
 KITSUNE_EXPECTED=""
 KITSUNE_EMITTED=""
+KITSUNE_REFUSED=""
 
-# Refuse before measuring anything, the way deploy/release.sh does: a refusal is the operator's
-# problem to fix, not a verdict about the host.
+# Refuse, the way deploy/release.sh does. A refusal is not a verdict about the host: it is a condition
+# the operator has to fix, or a guard below catching this runbook's own bug.
+#
+# ⚠️ A REFUSAL IS WRITTEN INTO THE VERDICT STREAM, AND THE SENTINEL IS WITHHELD AFTER IT. The exit status
+# cannot carry it: a family that measured a FAIL exits 1 too, and over ssh 255 is also ssh's own failure.
+# stderr is not judged at all. So when `verdict X-1 FAIL` followed X-1's PASS, the refusal reached only
+# stderr, and the EXIT trap closed the stream with a sentinel naming the verdicts already accepted: the
+# refused FAIL was simply absent, the count added up, and run.sh passed the run and deleted its streams.
+# Now the stream says `REFUSED`, which voids the whole family, and is never closed, so even a gate that
+# ignored that line would void it as a stream with no sentinel. An instrument opens no family and has no
+# verdict stream, so it refuses on stderr alone.
 refuse() {
   echo "Refusing to check: $*" >&2
+
+  if [[ -n "$KITSUNE_FAMILY" ]]; then
+    KITSUNE_REFUSED=1
+    printf 'REFUSED %s %s\n' "$KITSUNE_FAMILY" "$(kitsune_one_line "$*")"
+  fi
+
   exit 1
 }
 
@@ -76,7 +94,7 @@ cleanup_at_exit() {
 }
 
 # The last line of the family, printed even when the script aborts, so run.sh can tell a truncated
-# stream from a quiet one.
+# stream from a quiet one — and never after a refusal (see refuse).
 kitsune_sentinel() {
   local status=$?
   local count=0 id path
@@ -91,7 +109,9 @@ kitsune_sentinel() {
 
   # The accumulator grows by prepending a space, which is an implementation detail no parser should
   # have to know: the sentinel prints the ids with exactly one space between them.
-  printf 'SENTINEL %s %d %s\n' "$KITSUNE_FAMILY" "$count" "${KITSUNE_EMITTED# }"
+  if [[ -z "$KITSUNE_REFUSED" ]]; then
+    printf 'SENTINEL %s %d %s\n' "$KITSUNE_FAMILY" "$count" "${KITSUNE_EMITTED# }"
+  fi
 
   exit "$status"
 }

@@ -246,6 +246,31 @@ function tunnelLogRun(string $dir, string $family, string $expect = 'tunnel', ar
     return $process;
 }
 
+/**
+ * Run the family the way an operator does: through the real run.sh, against a fixture runbook whose
+ * outside/tunnel-log.php is the given source and whose manifest promises what the committed one does.
+ * TMPDIR is the fixture's own, so a kept streams directory is found, and removed, with the test.
+ */
+function tunnelLogGate(string $dir, string $source): Process
+{
+    File::copy(dirname(__DIR__, 3).'/deploy/runbook/run.sh', $dir.'/runbook/run.sh');
+    File::put($dir.'/runbook/manifest.txt', "tunnel tunnel-log TUN-1\ntunnel tunnel-log TUN-2\n");
+    File::ensureDirectoryExists($dir.'/runbook/outside');
+    File::put($dir.'/runbook/outside/tunnel-log.php', $source);
+    File::ensureDirectoryExists($dir.'/tmp');
+
+    $process = new Process(
+        ['bash', $dir.'/runbook/run.sh', '--host', 'forge@fixture', '--expect', 'tunnel'],
+        $dir,
+        ['HOME' => (string) getenv('HOME'), 'TMPDIR' => $dir.'/tmp', 'PATH' => $dir.'/bin:'.getenv('PATH')],
+    );
+
+    $process->setTimeout(60);
+    $process->run();
+
+    return $process;
+}
+
 /** The verdict line for one check id. */
 function tunnelLogVerdict(Process $run, string $id): string
 {
@@ -477,7 +502,8 @@ it('refuses a verdict for a check it does not declare, and still removes the pro
      * ⚠️ WHY verdict() THROWS RATHER THAN EXITS. This refusal fires inside the measuring path, after the
      * probe log is installed; an exit would skip the `finally` that removes it and leave the server changed
      * until the dead-man timer fired. The mutant reports its TUN-1 result under an id it never declared: the
-     * refusal reaches stderr, TUN-2 still reports the probe removed, and the undeclared id is never printed.
+     * refusal reaches stderr and the stream, TUN-2 still reports the probe removed, the undeclared id is never
+     * printed as a verdict, and the stream is not closed.
      */
     $source = File::get($this->family);
     $mutation = "verdict('TUN-1', 'PASS', 'every one of '";
@@ -492,9 +518,10 @@ it('refuses a verdict for a check it does not declare, and still removes the pro
 
     expect($run->isSuccessful())->toBeFalse()
         ->and($run->getErrorOutput())->toContain('verdict TUN-9: this family did not declare that id')
+        ->and($run->getOutput())->toContain("REFUSED tunnel-log verdict TUN-9: this family did not declare that id\n")
         ->and(tunnelLogVerdict($run, 'TUN-2'))->toContain('PASS STATE stop removed')
-        ->and($run->getOutput())->toContain('SENTINEL tunnel-log 1 TUN-2')
-        ->and($run->getOutput())->not->toContain('TUN-9');
+        ->and($run->getOutput())->not->toContain('VERDICT TUN-9')
+        ->and($run->getOutput())->not->toContain('SENTINEL');
 });
 
 it('refuses a second verdict for one check', function (): void {
@@ -512,6 +539,44 @@ it('refuses a second verdict for one check', function (): void {
 
     expect($run->isSuccessful())->toBeFalse()
         ->and($run->getErrorOutput())->toContain('verdict TUN-1: emitted twice')
+        ->and($run->getOutput())->toContain("REFUSED tunnel-log verdict TUN-1: emitted twice\n")
         ->and(substr_count($run->getOutput(), 'VERDICT TUN-1 '))->toBe(1)
         ->and($run->getOutput())->not->toContain('SENTINEL');
 });
+
+it('voids the whole family through run.sh when it refuses a verdict after every promised one, and still removes the probe', function (string $refused, string $reason): void {
+    /*
+     * ⚠️ THE REFUSAL USED TO VANISH, AND THE RUN PASSED. verdict() throws inside `try`, and `finally` printed
+     * TUN-2 and a sentinel built from the verdicts it had accepted — so the stream added up without the refused
+     * one. run.sh printed "Every promised check passed.", exited 0 and deleted the streams, with the refusal
+     * only on stderr. Both mutants add their verdict at the end of `try`, after TUN-1's: a second hostname's
+     * FAIL reported as TUN-1 again, and a new check written without declaring it.
+     */
+    $source = File::get($this->family);
+    $mutation = "the last forwarded entry as the edge saw it', \$verdicts);\n    }\n";
+
+    expect(substr_count($source, $mutation))->toBe(1);
+
+    $run = tunnelLogGate($this->dir, str_replace($mutation, "{$mutation}\n    {$refused}\n", $source));
+    $kept = glob($this->dir.'/tmp/kitsune-runbook.*') ?: [];
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and($run->getOutput())->toContain("VOID  TUN-1 (tunnel-log) — the family refused to check ({$reason})")
+        ->and($run->getOutput())->toContain("VOID  TUN-2 (tunnel-log) — the family refused to check ({$reason})")
+        // The probe was still removed: TUN-2's own verdict, reported from `finally`, is shown with the VOID.
+        ->and($run->getOutput())->toContain('for this check it reported PASS: STATE stop removed')
+        ->and($run->getOutput())->not->toContain('Every promised check passed.')
+        ->and($kept)->toHaveCount(1)
+        ->and($run->getErrorOutput())->toContain("The families' own output is kept in {$kept[0]}")
+        ->and(File::get($kept[0].'/tunnel-log.out'))->toContain("REFUSED tunnel-log {$reason}\n")
+        ->and(File::get($kept[0].'/tunnel-log.out'))->not->toContain('SENTINEL');
+})->with([
+    'a second verdict for TUN-1' => [
+        "verdict('TUN-1', 'FAIL', 'other.kitsune.test: it arrived for host [stage.kitsune.test]', \$verdicts);",
+        'verdict TUN-1: emitted twice',
+    ],
+    'a check it never declared' => [
+        "verdict('TUN-3', 'FAIL', 'a new check that found a problem', \$verdicts);",
+        'verdict TUN-3: this family did not declare that id',
+    ],
+]);

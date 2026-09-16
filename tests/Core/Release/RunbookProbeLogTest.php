@@ -450,8 +450,10 @@ it('refuses to finish while its dead-man timer could still reload nginx', functi
 it('refuses an action it does not have', function (): void {
     $run = probeRun($this->dir, $this->common, $this->instrument, ['restart', $this->nonce]);
 
+    // An instrument opens no family, so it has no verdict stream to write its refusal into: stderr alone.
     expect($run->isSuccessful())->toBeFalse()
-        ->and($run->getErrorOutput())->toContain('it must be start, collect or stop');
+        ->and($run->getErrorOutput())->toContain('it must be start, collect or stop')
+        ->and($run->getOutput())->not->toContain('REFUSED');
 });
 
 it('refuses to run unprivileged, because it would change a server it cannot read', function (): void {

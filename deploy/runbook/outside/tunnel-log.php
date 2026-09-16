@@ -62,20 +62,35 @@ function oneLine(string $text): string
  */
 function verdict(string $id, string $outcome, string $reason, array &$verdicts): void
 {
-    // ⚠️ THE GUARDS common.sh's verdict() APPLIES, AND A THROW RATHER THAN AN EXIT. An undeclared id or a
-    // second verdict for one check is this runbook's bug, and printing it would let the gate judge a
-    // check nobody promised or pick between two. It throws so the `finally` that removes the probe log
-    // still runs: an exit here would leave the server changed until the dead-man timer fired.
+    // ⚠️ THE GUARDS common.sh's verdict() APPLIES. An undeclared id or a second verdict for one check is
+    // this runbook's bug, and printing it would let the gate judge a check nobody promised or pick between
+    // two.
     if (! in_array($id, CHECKS, true)) {
-        throw new LogicException("Refusing to check: verdict {$id}: this family did not declare that id");
+        refuse("verdict {$id}: this family did not declare that id");
     }
 
     if (in_array($id, array_column($verdicts, 0), true)) {
-        throw new LogicException("Refusing to check: verdict {$id}: emitted twice");
+        refuse("verdict {$id}: emitted twice");
     }
 
     echo 'VERDICT '.$id.' '.$outcome.' '.oneLine($reason)."\n";
     $verdicts[] = [$id, $outcome];
+}
+
+/**
+ * ⚠️ A REFUSAL IS WRITTEN INTO THE VERDICT STREAM, AND IT THROWS RATHER THAN EXITS. It throws so the
+ * `finally` that removes the probe log still runs: an exit would leave the server changed until the
+ * dead-man timer fired. But that `finally` used to close the stream too, with a sentinel naming the
+ * verdicts already accepted, so a refused verdict after TUN-1's was simply absent: the count added up,
+ * and run.sh passed the run and deleted its streams, with the refusal only on stderr, which it does not
+ * judge. The exit status could not have said it either — a FAIL exits 1 too. So the stream says
+ * `REFUSED`, which voids the whole family, and the main path withholds the sentinel after one.
+ */
+function refuse(string $reason): never
+{
+    echo 'REFUSED '.FAMILY.' '.oneLine($reason)."\n";
+
+    throw new LogicException('Refusing to check: '.$reason);
 }
 
 function record(string $id, string $fact): void
@@ -477,6 +492,7 @@ mkdir($work, 0700, true);
 
 $fails = [];
 $voids = [];
+$refusal = null;
 
 try {
     [$sites, $unreadable] = hostnames($host);
@@ -501,6 +517,9 @@ try {
         verdict('TUN-1', 'PASS', 'every one of '.implode(', ', $sites).' arrived from 127.0.0.1 with TLS terminated here, '
             .'answered by PHP, and the last forwarded entry as the edge saw it', $verdicts);
     }
+} catch (LogicException $refused) {
+    // Held, not lost: the probe is still removed and TUN-2 still reported, and then it is thrown again.
+    $refusal = $refused;
 } finally {
     foreach (glob($work.'/*') ?: [] as $file) {
         unlink($file);
@@ -518,7 +537,15 @@ try {
         verdict('TUN-2', 'PASS', $out, $verdicts);
     }
 
-    sentinel($verdicts);
+    // ⚠️ NO SENTINEL AFTER A REFUSAL (see refuse()). A refusal here, in TUN-2's own verdict, never reaches
+    // this line; one from `try` is held above, and would otherwise be closed over as if it had not happened.
+    if ($refusal === null) {
+        sentinel($verdicts);
+    }
+}
+
+if ($refusal !== null) {
+    throw $refusal;
 }
 
 $passed = array_filter($verdicts, static fn (array $verdict): bool => $verdict[1] === 'PASS');

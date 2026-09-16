@@ -418,6 +418,56 @@ it('refuses a verdict for an id the family never declared', function (): void {
         ->and($run->getOutput())->toContain('VOID  S-1');
 });
 
+it('voids a family that refused a verdict after every promised one, where the run used to pass', function (): void {
+    /*
+     * ⚠️ EXIT 0, AND THE EVIDENCE DELETED. X-1's second verdict — a FAIL — is refused, and the EXIT trap used to
+     * close the stream with a sentinel naming the two verdicts common.sh had accepted. The count added up, every
+     * promised check had a PASS, and the refusal existed only on stderr, which run.sh echoes and does not judge:
+     * the run printed "Every promised check passed." and removed the streams. A refusal exits 1, as a FAIL does,
+     * so the stream has to say it.
+     */
+    runbookManifest($this->runbook, "tunnel twice X-1\ntunnel twice X-2\n");
+    runbookFamily($this->runbook, 'twice', <<<'BASH'
+    family twice X-1 X-2
+    verdict X-1 PASS "no relay dials the web server"
+    verdict X-2 PASS "holds"
+    verdict X-1 FAIL "a second look found a relay"
+    BASH);
+
+    $run = runbookRun($this->dir);
+    $kept = glob($this->dir.'/tmp/kitsune-runbook.*') ?: [];
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and($run->getOutput())->toContain('VOID  X-1 (twice) — the family refused to check (verdict X-1: emitted twice)')
+        ->and($run->getOutput())->toContain('for this check it reported PASS: no relay dials the web server')
+        ->and($run->getOutput())->toContain('VOID  X-2 (twice) — the family refused to check (verdict X-1: emitted twice)')
+        ->and($run->getOutput())->not->toContain('Every promised check passed.')
+        ->and($kept)->toHaveCount(1)
+        ->and($run->getErrorOutput())->toContain("The families' own output is kept in {$kept[0]}")
+        ->and(File::get($kept[0].'/twice.out'))->toContain("REFUSED twice verdict X-1: emitted twice\n")
+        ->and(File::get($kept[0].'/twice.out'))->not->toContain('SENTINEL');
+});
+
+it('voids a family whose stream carries a refusal, even when it closes as if nothing were refused', function (): void {
+    /*
+     * The gate's half of the rule, on its own. A family that prints its refusal and then closes anyway — a PHP
+     * family whose `finally` does not know, or a refusal from a subshell whose parent carries on to its EXIT
+     * trap — leaves a sentinel that adds up. The refusal line voids it regardless.
+     */
+    runbookManifest($this->runbook, "tunnel closes R-1\n");
+    runbookFamily($this->runbook, 'closes', <<<'BASH'
+    printf 'VERDICT R-1 PASS holds\n'
+    printf 'REFUSED closes verdict R-2: this family did not declare that id\n'
+    printf 'SENTINEL closes 1 R-1\n'
+    BASH);
+
+    $run = runbookRun($this->dir);
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and($run->getOutput())->toContain('VOID  R-1 (closes) — the family refused to check (verdict R-2: this family did not declare that id)')
+        ->and($run->getOutput())->not->toContain('PASS  R-1');
+});
+
 it('voids a check given two verdicts, naming both, rather than letting the last one stand', function (): void {
     /*
      * ⚠️ THE LAST LINE USED TO WIN. The gate took the final verdict line for an id, so a family that

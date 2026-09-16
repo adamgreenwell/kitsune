@@ -28,6 +28,10 @@
 # sentinel, which carries its own id count and is printed from an EXIT trap. A missing or short
 # sentinel voids the whole family, and an id in the manifest with no verdict is VOID by itself.
 #
+# ⚠️ AND A REFUSAL IS READ FROM THE STREAM, NEVER FROM AN EXIT STATUS. A family that refuses exits 1, as
+# one that measured a FAIL does, and over ssh 255 is also ssh's own failure. So a refusing family writes
+# `REFUSED <family> <reason>` into its stream and withholds its sentinel, and either one voids it here.
+#
 # ⚠️ `sudo -n`, NOT `sudo`. The script arrives on the remote shell's stdin. A sudo that decided to
 # prompt would read the password from that stdin — that is, it would eat the first line of the check
 # and then fail — so the runbook requires passwordless sudo for this user and says so when it is
@@ -204,6 +208,8 @@ done
 # 3. Each family's own stream, judged against its own sentinel and against the promise.
 #
 # ⚠️ A STREAM CAN MISLEAD IN MORE WAYS THAN BY STOPPING EARLY, and each of them voids the whole family:
+#   - it refused. A refused verdict is never printed, so a refusal after every promised verdict used to leave
+#     a stream that added up — and when a family closed over its refusal, the run passed;
 #   - its sentinel is missing, printed twice, closes another family, or is malformed;
 #   - its sentinel names a check twice, as a PHP family's does for a check it printed twice;
 #   - it printed a verdict its sentinel does not name, from a subshell or a pipeline its own tally
@@ -246,10 +252,14 @@ for entry in "${expected[@]}"; do
   done
 
   closes=$(grep -acE '^SENTINEL ' "$out" || true)
+  # Every reason the family refused for, after its name, as "<reason>; <reason>".
+  refusals=$({ grep -aE '^REFUSED ' "$out" || true; } | sed -E 's/^REFUSED [^ ]* ?//' | awk '{ printf "%s%s", sep, $0; sep = "; " }')
   listed=""
   distrust=""
 
-  if (( closes == 0 )); then
+  if [[ -n "$refusals" ]]; then
+    distrust="the family refused to check ($refusals), and what a family refuses is invisible to its count, so none of its verdicts stand"
+  elif (( closes == 0 )); then
     distrust="the family produced no sentinel, so its stream was truncated or it never ran"
   elif (( closes > 1 )); then
     distrust="the family closed its stream $closes times, so which part of it belongs to this run cannot be told"
