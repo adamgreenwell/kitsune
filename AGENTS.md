@@ -166,6 +166,6 @@ Standing Principle #9, and it has cost real time when ignored:
 | `skeleton/` | the installable app, published as `kitsune/kitsune` |
 | `e2e/` | Playwright specs |
 | `docs/` | source of truth for every decision |
-| `deploy/` | how a release is built (`release.sh`, run by stage and by Forge) and stage's stand-in for Forge's zero-downtime macros (`stage-deploy.sh`) |
+| `deploy/` | how a release is built (`release.sh`, run by stage and by Forge), stage's stand-in for Forge's zero-downtime macros (`stage-deploy.sh`), and `runbook/`, which checks the host conditions ADR-034 relies on and no test can see |
 
 Run the full gate before committing: `composer ci`, then `vendor/bin/pint --test skeleton --config skeleton/pint.json`.
