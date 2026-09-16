@@ -134,9 +134,15 @@ it('refuses a family it promises but does not have', function (): void {
 
     $run = runbookRun($this->dir);
 
+    /*
+     * ⚠️ BOTH PATHS ARE NAMED, because there are two kinds of family and the refusal has to say which
+     * one it looked for: host/<family>.sh runs on the server over ssh, and outside/<family>.php runs
+     * on the operator's machine and reaches the server the way a visitor does.
+     */
     expect($run->isSuccessful())->toBeFalse()
         ->and($run->getErrorOutput())->toContain('the manifest promises the family [absent]')
-        ->and($run->getErrorOutput())->toContain('absent.sh does not exist');
+        ->and($run->getErrorOutput())->toContain('host/absent.sh')
+        ->and($run->getErrorOutput())->toContain('outside/absent.php');
 });
 
 it('passes only when every promised check reports PASS', function (): void {

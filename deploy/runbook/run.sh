@@ -118,22 +118,42 @@ trap 'rm -f "$stream"' EXIT
 
 for family in "${families[@]:-}"; do
   [[ -n "$family" ]] || continue
-  script="$here/host/$family.sh"
+
+  on_host="$here/host/$family.sh"
+  from_outside="$here/outside/$family.php"
 
   # A promised family with no script is this runbook's bug, not the host's. Say so, rather than
   # letting the completeness gate report the host as unmeasurable.
-  [[ -f "$script" ]] || refuse "the manifest promises the family [$family], and $script does not exist"
-  [[ -f "$common" ]] || refuse "$common is missing, and every family needs it"
+  if [[ -f "$on_host" ]]; then
+    kind=host
+  elif [[ -f "$from_outside" ]]; then
+    kind=outside
+  else
+    refuse "the manifest promises the family [$family], and neither $on_host nor $from_outside exists"
+  fi
 
-  echo "--- $family"
+  echo "--- $family ($kind)"
 
-  # ⚠️ common.sh IS CONCATENATED, NOT SOURCED. The family arrives on the remote shell's stdin, so it
-  # has no path of its own to source a sibling from: `$0` is `bash`, and nothing was copied to the
-  # host. Sending the two files as one stream is also what keeps the promise that nothing writable by
-  # the site's user ever runs under sudo — the bytes come from the operator's checkout.
-  if ! cat "$common" "$script" | ssh -o BatchMode=yes -o ClearAllForwardings=yes "$host" \
-    sudo -n bash -s -- "$expect" >> "$stream" 2>"$stream.err"; then
-    echo "  the family did not finish: $(tr '\n' ' ' < "$stream.err" | cut -c1-200)" >&2
+  if [[ "$kind" == host ]]; then
+    [[ -f "$common" ]] || refuse "$common is missing, and every family that runs on the host needs it"
+
+    # ⚠️ common.sh IS CONCATENATED, NOT SOURCED. The family arrives on the remote shell's stdin, so it
+    # has no path of its own to source a sibling from: `$0` is `bash`, and nothing was copied to the
+    # host. Sending the two files as one stream is also what keeps the promise that nothing writable by
+    # the site's user ever runs under sudo — the bytes come from the operator's checkout.
+    if ! cat "$common" "$on_host" | ssh -o BatchMode=yes -o ClearAllForwardings=yes "$host" \
+      sudo -n bash -s -- "$expect" >> "$stream" 2>"$stream.err"; then
+      echo "  the family did not finish: $(tr '\n' ' ' < "$stream.err" | cut -c1-200)" >&2
+    fi
+  else
+    # ⚠️ AN OUTSIDE FAMILY RUNS HERE, NOT THERE, AND THAT IS THE POINT. What ADR-034 turns on is what
+    # arrives at the server from the network a visitor uses: a request made on the host would traverse
+    # neither the edge nor the tunnel, and would prove nothing about either. These families reach the
+    # server the way a visitor does, and drive anything they need on the host over their own ssh.
+    if ! php "$from_outside" --host "$host" --expect "$expect" \
+      ${token_file:+--token-file "$token_file"} >> "$stream" 2>"$stream.err"; then
+      echo "  the family did not finish: $(tr '\n' ' ' < "$stream.err" | cut -c1-200)" >&2
+    fi
   fi
 done
 

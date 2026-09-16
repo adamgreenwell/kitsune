@@ -16,5 +16,10 @@ parameters:
     # Revisit if a Pest-aware PHPStan extension covers expectation chaining.
     paths:
         - packages/core/src
+        # The runbook's outside checks (issue #111). They are shipped code in the sense that matters
+        # here: they run against a live server and decide whether it holds ADR-034's conditions, so a
+        # null reaching a comparison is the difference between a verdict and a wrong verdict. They are
+        # written in PHP rather than in a third language precisely so that this analyses them.
+        - deploy/runbook/outside
 
     tmpDir: build/phpstan
