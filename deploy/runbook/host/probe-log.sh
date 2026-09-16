@@ -193,7 +193,20 @@ CONF
     port=$(grep -oE '"remote_port":"[0-9]+"' <<<"$lines" | head -1 | cut -d'"' -f4 || true)
 
     if [[ -n "$port" ]]; then
-      owner=$(timeout 5 ss -Htnpe state established 2>/dev/null | grep ":$port " | head -1 || true)
+      # ⚠️ THE CLIENT ROW, NOT THE SERVER'S. A loopback connection appears twice in `ss`, once from each
+      # end, and both rows carry both ports. Unfiltered, `grep ":$port "` matched whichever came first —
+      # always the `127.0.0.1:443 127.0.0.1:<port>` row, owned by nginx, which can never be a connector.
+      # Measured on stage (2026-09-16): TUN-1 failed naming nginx as the owner while RLY-1 passed on the
+      # same host in the same run, because relays.sh asks for `dport = :443` and this did not.
+      #
+      # `dport = :443` keeps only rows whose REMOTE end is the web server — the dialer's own row — and
+      # the local port must be the one nginx recorded for this request, so the socket is tied to THIS
+      # request rather than to whatever else holds that port number.
+      # ⚠️ `-H` LEAVES NO STATE COLUMN. Measured on stage: a row is `0  0  <local>  <peer>  users:(…)`,
+      # ten fields, the queues first — so an expression anchored on a leading state field matches
+      # nothing, emits `PROBE-OWNER … none`, and turns a FAIL into a VOID that reads like a fix.
+      owner=$(timeout 5 ss -Htnpe state established '( dport = :443 )' 2>/dev/null \
+        | grep -E "^ *[0-9]+ +[0-9]+ +(127\.0\.0\.1|\[::1\]):$port +" | head -1 || true)
       printf 'PROBE-OWNER %s %s\n' "$id" "${owner:-none}"
     fi
 
