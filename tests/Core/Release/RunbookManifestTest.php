@@ -447,6 +447,45 @@ it('refuses a manifest row carrying a fourth field', function (): void {
         ->and($run->getOutput())->not->toContain('PASS  G-1');
 });
 
+it('refuses a manifest row whose topology no run selects, rather than dropping its family', function (): void {
+    /*
+     * ⚠️ A TYPO THAT PASSED THE RUN. `--expect` selects rows by their topology, so `dns_only dropped D-1` was
+     * promised to a topology no run can name: a dns-only run never dispatched `dropped`, never saw its FAIL, and
+     * passed on `good` alone.
+     */
+    runbookManifest($this->runbook, "dns-only good G-1\ndns_only dropped D-1\n");
+    runbookFamily($this->runbook, 'good', "family good G-1\nverdict G-1 PASS holds\n");
+    runbookFamily($this->runbook, 'dropped', "family dropped D-1\nverdict D-1 FAIL \"a relay dials the web server\"\n");
+
+    $run = runbookRun($this->dir, [], 'dns-only');
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and($run->getErrorOutput())->toContain('the manifest row [dns_only dropped D-1] names the topology [dns_only], which is neither tunnel nor dns-only')
+        ->and($run->getOutput())->not->toContain('PASS  G-1');
+});
+
+it('refuses a family name that is not one plain path segment', function (string $family, string $script): void {
+    /*
+     * run.sh finds a family as host/<family>.sh or outside/<family>.php and keeps its output as <family>.out
+     * under the streams directory. `sub/fa` reached a script in a subdirectory and then stopped run.sh under
+     * `set -e`, with no summary, writing into a directory that did not exist; `../fa` reached a script outside
+     * host/, passed, and left its output in TMPDIR, outside the streams directory.
+     */
+    runbookManifest($this->runbook, "tunnel {$family} A-1\n");
+    File::ensureDirectoryExists(dirname($this->runbook.'/host/'.$script));
+    File::put($this->runbook.'/host/'.$script, "family {$family} A-1\nverdict A-1 PASS ok\n");
+
+    $run = runbookRun($this->dir);
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and($run->getErrorOutput())->toContain("the manifest row [tunnel {$family} A-1] names the family [{$family}], which is not one plain path segment")
+        ->and($run->getOutput())->not->toContain('PASS  A-1')
+        ->and(glob($this->dir.'/tmp/*') ?: [])->toBe([]);
+})->with([
+    'in a subdirectory' => ['sub/fa', 'sub/fa.sh'],
+    'outside host/' => ['../fa', '../fa.sh'],
+]);
+
 it('refuses a verdict for an id the family never declared', function (): void {
     /*
      * common.sh's own guard: a check id that is not in the family's declared list cannot be emitted,
@@ -824,7 +863,9 @@ it('promises exactly the families the runbook ships, and no other', function ():
     $rows = runbookCommittedRows();
 
     foreach ($rows as $row) {
-        expect($row)->toHaveCount(3, 'manifest row ['.implode(' ', $row).']');
+        // run.sh refuses any other topology; this catches the typo before a run does.
+        expect($row)->toHaveCount(3, 'manifest row ['.implode(' ', $row).']')
+            ->and($row[0])->toBeIn(['tunnel', 'dns-only'], 'manifest row ['.implode(' ', $row).']');
     }
 
     $promised = array_values(array_unique(array_map(static fn (array $row): string => $row[1], $rows)));

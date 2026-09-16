@@ -15,7 +15,9 @@
 # it runs on.
 #
 # Format: <topology> <family> <check-id>, where topology is `tunnel` (stage: cloudflared in front of
-# nginx) or `dns-only` (alpha: Forge, no tunnel). Blank lines and # comments are ignored.
+# nginx) or `dns-only` (alpha: Forge, no tunnel). Blank lines and # comments are ignored. run.sh refuses a
+# row with any other topology, which no run would select, and a family name that is not one plain path
+# segment, since it names the family's script and its output file.
 #
 # ⚠️ FAMILIES APPEAR HERE ONLY WHEN THEY LAND. The runbook is being written family by family, each
 # proven on stage before the next (deploy/runbook/README.md). A family listed before its script

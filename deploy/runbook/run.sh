@@ -88,6 +88,8 @@ families=()
 expected=()
 # Every check id seen so far, as " <id>=<family> ", across both topologies.
 owners=" "
+# A family name that is one path segment: see the refusal below.
+plain='^[[:alnum:]][[:alnum:]._-]*$'
 # ⚠️ A FOURTH FIELD IS A TYPO, NOT A LONGER ID. `read` folds every extra word into the last variable,
 # so a row like `tunnel good G-1 GOOD` would promise the id "G-1 GOOD" — which no verdict can ever
 # match, so the run would report VOID and blame the host for a mistake in this file. (Measured: that
@@ -96,6 +98,19 @@ while read -r topology family id extra; do
   [[ -z "${topology:-}" || "$topology" == \#* ]] && continue
   [[ -n "${family:-}" && -n "${id:-}" ]] || refuse "malformed manifest row: $topology ${family:-} ${id:-}"
   [[ -z "${extra:-}" ]] || refuse "manifest row has more than three fields, so the id would be unmatchable: $topology $family $id $extra"
+
+  # ⚠️ A TOPOLOGY NO RUN SELECTS DROPS ITS FAMILY FROM EVERY RUN. --expect picks rows by their topology, so a
+  # row for `dns_only` promised its check to no run at all: a dns-only run never dispatched that family, never
+  # saw its FAIL, and passed on the others.
+  [[ "$topology" == tunnel || "$topology" == dns-only ]] \
+    || refuse "the manifest row [$topology $family $id] names the topology [$topology], which is neither tunnel nor dns-only, so no run would ever promise it"
+
+  # ⚠️ A FAMILY NAME IS ONE PATH SEGMENT. It becomes host/<family>.sh, outside/<family>.php and <family>.out in
+  # the streams directory. `sub/fa` ran a script from a subdirectory and then stopped this script under
+  # `set -e`, before any summary, writing into a directory that did not exist; `../fa` ran a script from
+  # outside host/, passed, and left its output outside the streams directory.
+  [[ "$family" =~ $plain ]] \
+    || refuse "the manifest row [$topology $family $id] names the family [$family], which is not one plain path segment: run.sh finds a family as host/<family>.sh or outside/<family>.php and keeps its output as <family>.out"
 
   # ⚠️ ONE CHECK, ONE FAMILY. A verdict line names its check and not its family, so a check promised to
   # two families — a new family copied from an old one, keeping one of its ids — could not say whose
