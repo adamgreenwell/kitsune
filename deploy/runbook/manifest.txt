@@ -47,7 +47,7 @@ dns-only relays RLY-2
 dns-only relays RLY-3
 dns-only relays RLY-4
 dns-only relays RLY-5
-# --- the tunnel hostnames (outside/tunnel_log.py, driving host/probe-log.sh) ---
+# --- the tunnel hostnames (outside/tunnel-log.php, driving host/probe-log.sh) ---
 # ⚠️ TWO IDS, NOT ONE PER HOSTNAME. This file is static and committed, and a server's hostnames are a
 # property of that server, so a per-hostname id could never be promised in advance. TUN-1 covers the
 # requests across every hostname the server serves — one failing hostname fails it, and each one's
@@ -58,6 +58,6 @@ dns-only relays RLY-5
 # family that died.
 tunnel   tunnel-log TUN-1
 tunnel   tunnel-log TUN-2
-# --- the throttle at PHP (outside/throttle.py) --- not landed yet
+# --- the throttle at PHP (outside/throttle.php) --- not landed yet
 # --- sshd (host/sshd.sh, host/sshd-sweep.sh) --- not landed yet
-# --- Cloudflare account and zones (cloudflare/inventory.py) --- not landed yet, needs the token
+# --- Cloudflare account and zones (outside/cloudflare.php) --- not landed yet, needs the token
