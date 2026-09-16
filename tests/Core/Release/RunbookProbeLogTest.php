@@ -115,9 +115,52 @@ function probeStubs(): array
         #!/usr/bin/env bash
         cat "$(dirname "$(dirname "$0")")/workers"
         BASH,
+        // ⚠️ BOTH ENDS, AND THE FILTER IS OBEYED. A loopback connection appears twice in `ss`, once from
+        // each end, and both rows carry both ports — so an instrument that does not say which end it
+        // wants gets whichever sorts first. Until this stub existed `ss` was not stubbed at all: the real
+        // binary ran, found nothing on a developer's machine, and `PROBE-OWNER <id> none` satisfied the
+        // only assertion there was. The shape is the live one (stage, 2026-09-16): ten fields, no state
+        // column under `-H`, the queues first.
+        'ss' => <<<'BASH'
+        #!/usr/bin/env bash
+        d=$(dirname "$(dirname "$0")")
+        args="$*"
+
+        client_owner='users:(("cloudflared",pid=1470,fd=10))'
+        [[ -e "$d/owner-not-connector" ]] && client_owner='users:(("sshd",pid=99,fd=11))'
+
+        client="0      0      127.0.0.1:35572 127.0.0.1:443 ${client_owner} timer:(keepalive,29sec,0) ino:2605943 sk:5017 cgroup:/system.slice/cloudflared.service <->"
+        server='0      0      127.0.0.1:443 127.0.0.1:35572 users:(("nginx",pid=4242,fd=11)) uid:33 ino:2611423 sk:e cgroup:/system.slice/nginx.service <->'
+
+        [[ -e "$d/no-socket" ]] && exit 0
+
+        case "$args" in
+          *"dport = :443"*)
+            # A second connection from the same source port to another loopback address: legal on Linux
+            # when the destination differs, and listed FIRST, which is the order a port-only match takes.
+            [[ -e "$d/same-sport-decoy" ]] \
+              && echo '0      0      127.0.0.1:35572 127.0.0.2:443 users:(("stranger",pid=777,fd=3)) ino:1 sk:1 <->'
+            echo "$client"
+            ;;
+          *"sport = :443"*) echo "$server" ;;
+          *)                echo "$server"; echo "$client" ;;
+        esac
+        BASH,
         'id' => <<<'BASH'
         #!/usr/bin/env bash
         if [[ "${1:-}" == -u ]]; then echo "${STUB_UID:-0}"; else exec /usr/bin/id "$@"; fi
+        BASH,
+        // ⚠️ macOS HAS NO `timeout`, AND ITS ABSENCE IS SILENT. Every measurement in the host scripts is
+        // wrapped in one — `timeout 5 ss`, `timeout 8 curl` — so on a developer's machine each call died
+        // with "command not found", the `|| true` guard swallowed it, and the substitution came back
+        // empty: `PROBE-OWNER <id> none`, which the only assertion there was (that the line exists) was
+        // happy with. That is why `ss` went unstubbed for the life of this file and why the wrong-end
+        // defect reached stage. This drops the duration and runs the command, so the real path is
+        // exercised here; on Linux, where `timeout` exists, nothing about the instrument changes.
+        'timeout' => <<<'BASH'
+        #!/usr/bin/env bash
+        shift
+        exec "$@"
         BASH,
     ];
 }
@@ -272,6 +315,64 @@ it('prints the line for one request, and who owned its socket', function (): voi
         ->and($run->getOutput())->toContain('PROBE '.$this->nonce.'-1 {"pid":"4242"')
         ->and($run->getOutput())->toContain('PROBE-OWNER '.$this->nonce.'-1')
         ->and($run->getOutput())->toContain('written by worker 4242');
+});
+
+it('reports the dialer that owned the socket, not the web server that accepted it', function (): void {
+    /*
+     * ⚠️ THE ROW IT PICKED WAS THE WRONG END. A loopback connection appears twice in `ss`, once from
+     * each end, and both rows carry both ports; unfiltered, the instrument matched `:$port ` and took
+     * whichever came first — the `127.0.0.1:443 127.0.0.1:<port>` row, owned by nginx, which can never
+     * be a connector. On stage (2026-09-16) TUN-1 therefore FAILED naming nginx as the owner, while
+     * RLY-1 passed on the same host in the same run, because relays.sh asks for `dport = :443`.
+     *
+     * Asserting only that a PROBE-OWNER line exists cannot see this — and could not see an absent
+     * measurement either, since `none` contains the prefix too. Until this test the `ss` the instrument
+     * ran was the real one, which finds nothing on a developer's machine.
+     */
+    probeRun($this->dir, $this->common, $this->instrument, ['start', $this->nonce]);
+    probeSeedLine($this->dir, $this->nonce, $this->nonce.'-1');
+
+    $run = probeRun($this->dir, $this->common, $this->instrument, ['collect', $this->nonce, $this->nonce.'-1']);
+
+    $owner = '';
+
+    foreach (explode("\n", $run->getOutput()) as $line) {
+        if (str_starts_with($line, 'PROBE-OWNER '.$this->nonce.'-1 ')) {
+            $owner = $line;
+        }
+    }
+
+    expect($owner)->toContain('cloudflared')
+        ->and($owner)->not->toContain('nginx')
+        ->and($owner)->not->toContain('none');
+});
+
+it('ties the owner to the whole connection, not to a port another socket can share', function (): void {
+    /*
+     * ⚠️ A SOURCE PORT IS NOT A CONNECTION. Linux lets one local address and port hold a second
+     * established connection when the destination differs, so a loopback socket to 127.0.0.2:443 can
+     * share the port nginx recorded for this request. Matched on that port alone, `head -1` took the
+     * first row and named its owner (review on #118). The stub lists the stranger's row first — the
+     * order that would have fooled it — so only a match on the whole tuple can pass.
+     */
+    touch($this->dir.'/same-sport-decoy');
+
+    probeRun($this->dir, $this->common, $this->instrument, ['start', $this->nonce]);
+    probeSeedLine($this->dir, $this->nonce, $this->nonce.'-1');
+
+    $run = probeRun($this->dir, $this->common, $this->instrument, ['collect', $this->nonce, $this->nonce.'-1']);
+
+    $owner = '';
+
+    foreach (explode("\n", $run->getOutput()) as $line) {
+        if (str_starts_with($line, 'PROBE-OWNER '.$this->nonce.'-1 ')) {
+            $owner = $line;
+        }
+    }
+
+    expect($owner)->toContain('127.0.0.1:35572 127.0.0.1:443')
+        ->and($owner)->toContain('cloudflared')
+        ->and($owner)->not->toContain('stranger');
 });
 
 it('refuses a line written by a worker the reload did not create', function (): void {

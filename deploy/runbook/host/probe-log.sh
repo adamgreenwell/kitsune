@@ -193,7 +193,29 @@ CONF
     port=$(grep -oE '"remote_port":"[0-9]+"' <<<"$lines" | head -1 | cut -d'"' -f4 || true)
 
     if [[ -n "$port" ]]; then
-      owner=$(timeout 5 ss -Htnpe state established 2>/dev/null | grep ":$port " | head -1 || true)
+      # ⚠️ THE CLIENT ROW, NOT THE SERVER'S. A loopback connection appears twice in `ss`, once from each
+      # end, and both rows carry both ports. Unfiltered, `grep ":$port "` matched whichever came first —
+      # always the `127.0.0.1:443 127.0.0.1:<port>` row, owned by nginx, which can never be a connector.
+      # Measured on stage (2026-09-16): TUN-1 failed naming nginx as the owner while RLY-1 passed on the
+      # same host in the same run, because relays.sh asks for `dport = :443` and this did not.
+      #
+      # `dport = :443` keeps only rows whose REMOTE end is the web server — the dialer's own row. The
+      # row must then carry the WHOLE connection: local `127.0.0.1:<port>`, the port nginx recorded for
+      # this request, and peer `127.0.0.1:443`, where the connector is configured to dial.
+      #
+      # ⚠️ A SOURCE PORT IS NOT A CONNECTION (review on #118). Linux lets one local address and port hold
+      # a second established connection when the destination differs, so a socket to 127.0.0.2:443 can
+      # share the port nginx recorded. Matched on the local port alone, `head -1` took whichever row came
+      # first and could name that socket's owner for this request. A 4-tuple is one socket, so this
+      # names exactly one row or none. `[::1]` is not accepted: the host already fails unless nginx saw
+      # exactly 127.0.0.1, and the connector's service is configured for that address.
+      #
+      # ⚠️ `-H` LEAVES NO STATE COLUMN. Measured on stage: a row is `0  0  <local>  <peer>  users:(…)`,
+      # ten fields, the queues first — so the local address is field 3 and the peer field 4, compared
+      # whole. A pattern anchored on a leading state field matched nothing, emitted `PROBE-OWNER … none`,
+      # and turned a FAIL into a VOID that read like a fix.
+      owner=$(timeout 5 ss -Htnpe state established '( dport = :443 )' 2>/dev/null \
+        | awk -v src="127.0.0.1:$port" '$3 == src && $4 == "127.0.0.1:443"' | head -1 || true)
       printf 'PROBE-OWNER %s %s\n' "$id" "${owner:-none}"
     fi
 
