@@ -135,7 +135,13 @@ function probeStubs(): array
         [[ -e "$d/no-socket" ]] && exit 0
 
         case "$args" in
-          *"dport = :443"*) echo "$client" ;;
+          *"dport = :443"*)
+            # A second connection from the same source port to another loopback address: legal on Linux
+            # when the destination differs, and listed FIRST, which is the order a port-only match takes.
+            [[ -e "$d/same-sport-decoy" ]] \
+              && echo '0      0      127.0.0.1:35572 127.0.0.2:443 users:(("stranger",pid=777,fd=3)) ino:1 sk:1 <->'
+            echo "$client"
+            ;;
           *"sport = :443"*) echo "$server" ;;
           *)                echo "$server"; echo "$client" ;;
         esac
@@ -339,6 +345,34 @@ it('reports the dialer that owned the socket, not the web server that accepted i
     expect($owner)->toContain('cloudflared')
         ->and($owner)->not->toContain('nginx')
         ->and($owner)->not->toContain('none');
+});
+
+it('ties the owner to the whole connection, not to a port another socket can share', function (): void {
+    /*
+     * ⚠️ A SOURCE PORT IS NOT A CONNECTION. Linux lets one local address and port hold a second
+     * established connection when the destination differs, so a loopback socket to 127.0.0.2:443 can
+     * share the port nginx recorded for this request. Matched on that port alone, `head -1` took the
+     * first row and named its owner (review on #118). The stub lists the stranger's row first — the
+     * order that would have fooled it — so only a match on the whole tuple can pass.
+     */
+    touch($this->dir.'/same-sport-decoy');
+
+    probeRun($this->dir, $this->common, $this->instrument, ['start', $this->nonce]);
+    probeSeedLine($this->dir, $this->nonce, $this->nonce.'-1');
+
+    $run = probeRun($this->dir, $this->common, $this->instrument, ['collect', $this->nonce, $this->nonce.'-1']);
+
+    $owner = '';
+
+    foreach (explode("\n", $run->getOutput()) as $line) {
+        if (str_starts_with($line, 'PROBE-OWNER '.$this->nonce.'-1 ')) {
+            $owner = $line;
+        }
+    }
+
+    expect($owner)->toContain('127.0.0.1:35572 127.0.0.1:443')
+        ->and($owner)->toContain('cloudflared')
+        ->and($owner)->not->toContain('stranger');
 });
 
 it('refuses a line written by a worker the reload did not create', function (): void {
