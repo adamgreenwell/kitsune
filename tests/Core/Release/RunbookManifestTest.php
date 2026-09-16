@@ -366,6 +366,9 @@ it('voids a whole family whose sentinel counts more verdicts than arrived', func
      * ⚠️ THIS USED TO PASS C-1. The discrepancy printed a warning and changed nothing, so the verdict that
      * did arrive stood and only the missing one voided. The family is judged as one stream now — and what
      * did arrive is still shown, so the measurement is not lost with the verdict.
+     *
+     * The reason names the check with no line. With exactly one sentinel the transport is not the cause —
+     * a cut stream loses its sentinel, and a doubled one has two — so it says what can be.
      */
     runbookManifest($this->runbook, "tunnel claims C-1\ntunnel claims C-2\n");
     runbookFamily($this->runbook, 'claims', <<<'BASH'
@@ -374,11 +377,55 @@ it('voids a whole family whose sentinel counts more verdicts than arrived', func
     BASH);
 
     $run = runbookRun($this->dir);
+    $reason = 'the family printed 1 verdicts and its sentinel counts 2: no verdict line arrived for C-2, which its sentinel counts, so its tally counted what its stream never received — the family was killed between counting a verdict and printing it, printed a verdict somewhere else, or its sentinel was written by hand';
 
     expect($run->isSuccessful())->toBeFalse()
-        ->and($run->getOutput())->toContain('VOID  C-1 (claims) — the family printed 1 verdicts and its sentinel counts 2, so its stream was cut or doubled; for this check it reported PASS: only one of the two arrived')
-        ->and($run->getOutput())->toContain('VOID  C-2 (claims) — the family printed 1 verdicts and its sentinel counts 2, so its stream was cut or doubled')
+        ->and($run->getOutput())->toContain("VOID  C-1 (claims) — {$reason}; for this check it reported PASS: only one of the two arrived")
+        ->and($run->getOutput())->toContain("VOID  C-2 (claims) — {$reason}\n")
+        ->and($run->getOutput())->not->toContain('cut or doubled')
         ->and($run->getOutput())->not->toContain('PASS  C-1');
+});
+
+it('names a verdict its tally never saw when the family also gave that check one it did', function (): void {
+    /*
+     * ⚠️ THE TEXTBOOK SHAPE OF THE SUBSHELL BUG. A flag set inside `cmd | while read` is lost with the subshell,
+     * so the fallback runs too: L-2 gets its FAIL from the loop, which common.sh's tally never saw, and a PASS
+     * from the main shell, which it did. The sentinel names L-2 once, so the reason for an unnamed verdict
+     * cannot fire, and the count used to blame the transport — "its stream was cut or doubled" — for a stream
+     * that has exactly one sentinel and was neither.
+     */
+    runbookManifest($this->runbook, "tunnel loop L-1\ntunnel loop L-2\n");
+    runbookFamily($this->runbook, 'loop', <<<'BASH'
+    family loop L-1 L-2
+    verdict L-1 PASS "counted"
+    strangers=0
+    printf 'pid 4711 socat\n' | while read -r line; do verdict L-2 FAIL "a relay dials the web server: $line"; strangers=1; done
+    if (( strangers == 0 )); then verdict L-2 PASS "no relay dials the web server"; fi
+    BASH);
+
+    $run = runbookRun($this->dir);
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and($run->getOutput())->toContain('VOID  L-2 (loop) — the family printed 3 verdicts and its sentinel counts 2: it printed more verdicts than its own tally counted for L-2, so a verdict came from a subshell, a pipeline, a by-value closure or a line printed by hand, which that tally never sees; for this check it reported FAIL: a relay dials the web server: pid 4711 socat | PASS: no relay dials the web server')
+        ->and($run->getOutput())->toContain('VOID  L-1 (loop) — the family printed 3 verdicts and its sentinel counts 2: it printed more verdicts than its own tally counted for L-2,')
+        ->and($run->getOutput())->not->toContain('cut or doubled')
+        ->and($run->getOutput())->not->toContain('PASS  L-1');
+});
+
+it('names the checks printed too often and those never printed, when one count hides both', function (): void {
+    // One check doubled and two missing: the count is short by one, and saying only that would hide the double.
+    runbookManifest($this->runbook, "tunnel both B-1\ntunnel both B-2\ntunnel both B-3\n");
+    runbookFamily($this->runbook, 'both', <<<'BASH'
+    printf 'VERDICT B-1 FAIL from a subshell\n'
+    printf 'VERDICT B-1 PASS from the main shell\n'
+    printf 'SENTINEL both 3 B-1 B-2 B-3\n'
+    BASH);
+
+    $run = runbookRun($this->dir);
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and($run->getOutput())->toContain('VOID  B-2 (both) — the family printed 2 verdicts and its sentinel counts 3: it printed more verdicts than its own tally counted for B-1, so a verdict came from a subshell, a pipeline, a by-value closure or a line printed by hand, which that tally never sees; and no verdict line arrived for B-2 B-3, which its sentinel counts, so its tally counted what its stream never received')
+        ->and($run->getOutput())->not->toContain('PASS  B-1');
 });
 
 it('refuses a manifest row carrying a fourth field', function (): void {

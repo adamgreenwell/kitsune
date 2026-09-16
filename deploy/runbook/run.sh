@@ -215,8 +215,14 @@ done
 #   - it printed a verdict its sentinel does not name, from a subshell or a pipeline its own tally
 #     never saw;
 #   - its sentinel reports checks the manifest does not promise this family;
-#   - it printed a different number of verdicts than its sentinel counts: the stream was cut or doubled.
+#   - it printed a different number of verdicts than its sentinel counts.
 # A short count used to print a warning and change nothing, and a check listed twice made the count add up.
+#
+# ⚠️ A COUNT THAT DISAGREES WITH ONE SENTINEL IS NOT THE TRANSPORT'S DOING. A cut stream loses its sentinel and
+# a doubled one has two, so by the count branch neither is possible, and blaming "a stream cut or doubled"
+# sent the operator to the network for a bug in the family. The reason names the checks instead: one printed
+# more often than the tally counted it came from outside that tally, and one counted with no line never
+# reached the stream.
 #
 # ⚠️ AND ONE CHECK, ONE VERDICT. The gate used to take the last verdict line for a check, so FAIL then PASS
 # read as PASS. Two verdicts mean the family does not know which it measured, so neither stands.
@@ -271,9 +277,11 @@ for entry in "${expected[@]}"; do
     named=$(( $(wc -w <<<"$listed") ))
     repeated=$(awk '{ for (i = 1; i <= NF; i++) if (seen[$i]++ == 1) printf "%s ", $i }' <<<"$listed")
     printed=$(grep -ac '^VERDICT ' "$out" || true)
+    # The check id of every verdict line, once per line.
+    printed_ids=$({ grep -a '^VERDICT ' "$out" || true; } | awk '{ print $2 }')
 
     unnamed=""
-    for printed_id in $({ grep -a '^VERDICT ' "$out" || true; } | awk '{ print $2 }' | sort -u); do
+    for printed_id in $(sort -u <<<"$printed_ids"); do
       case " $listed " in
         *" $printed_id "*) ;;
         *) unnamed="$unnamed; $printed_id $(reported "$printed_id" "$out")" ;;
@@ -299,7 +307,23 @@ for entry in "${expected[@]}"; do
     elif [[ -n "$unpromised" ]]; then
       distrust="the family reports checks the manifest does not promise for a $expect host (${unpromised#; }), so what it measured is not what was promised"
     elif (( printed != counted )); then
-      distrust="the family printed $printed verdicts and its sentinel counts $counted, so its stream was cut or doubled"
+      twice=$(sort <<<"$printed_ids" | uniq -d | tr '\n' ' ')
+      silent=""
+      for named_id in $listed; do
+        grep -qxF -- "$named_id" <<<"$printed_ids" || silent="$silent $named_id"
+      done
+
+      distrust="the family printed $printed verdicts and its sentinel counts $counted:"
+      and=""
+
+      if [[ -n "$twice" ]]; then
+        distrust="$distrust it printed more verdicts than its own tally counted for ${twice% }, so a verdict came from a subshell, a pipeline, a by-value closure or a line printed by hand, which that tally never sees"
+        and="; and"
+      fi
+
+      if [[ -n "$silent" ]]; then
+        distrust="$distrust$and no verdict line arrived for ${silent# }, which its sentinel counts, so its tally counted what its stream never received — the family was killed between counting a verdict and printing it, printed a verdict somewhere else, or its sentinel was written by hand"
+      fi
     fi
   fi
 
