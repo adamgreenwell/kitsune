@@ -38,6 +38,13 @@ declare(strict_types=1);
 
 const FAMILY = 'tunnel-log';
 
+/**
+ * Every check this family can report, and nothing else — the outside counterpart of a host family's
+ * `family` line. verdict() refuses any other id, and RunbookManifestTest holds this list to the rows
+ * manifest.txt promises the family.
+ */
+const CHECKS = ['TUN-1', 'TUN-2'];
+
 /** RFC 5737 documentation space: a valid address Symfony keeps, and not routable. */
 const SENTINEL_XFF = '192.0.2.77';
 
@@ -55,6 +62,18 @@ function oneLine(string $text): string
  */
 function verdict(string $id, string $outcome, string $reason, array &$verdicts): void
 {
+    // ⚠️ THE GUARDS common.sh's verdict() APPLIES, AND A THROW RATHER THAN AN EXIT. An undeclared id or a
+    // second verdict for one check is this runbook's bug, and printing it would let the gate judge a
+    // check nobody promised or pick between two. It throws so the `finally` that removes the probe log
+    // still runs: an exit here would leave the server changed until the dead-man timer fired.
+    if (! in_array($id, CHECKS, true)) {
+        throw new LogicException("Refusing to check: verdict {$id}: this family did not declare that id");
+    }
+
+    if (in_array($id, array_column($verdicts, 0), true)) {
+        throw new LogicException("Refusing to check: verdict {$id}: emitted twice");
+    }
+
     echo 'VERDICT '.$id.' '.$outcome.' '.oneLine($reason)."\n";
     $verdicts[] = [$id, $outcome];
 }
@@ -401,6 +420,9 @@ function checkHostname(string $host, string $hostname, string $nonce, int $index
 }
 
 // --- the run ---------------------------------------------------------------------------------------
+
+// stdout is the verdict stream run.sh judges; an uncaught refusal belongs with the other complaints.
+ini_set('display_errors', 'stderr');
 
 // ⚠️ ONE COLON, NOT TWO, EVEN FOR AN OPTIONAL OPTION. A double colon means the VALUE is optional, and
 // getopt then accepts only `--runbook=value`: given `--runbook /path` it returns false, and this fell

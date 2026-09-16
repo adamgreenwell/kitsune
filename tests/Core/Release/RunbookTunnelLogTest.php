@@ -471,3 +471,47 @@ it('refuses without the instrument it drives, and looks for it where it was told
         ->and(tunnelLogVerdict($run, 'TUN-2'))->toContain('nothing was installed')
         ->and($run->getOutput())->not->toContain('PROBE ');
 });
+
+it('refuses a verdict for a check it does not declare, and still removes the probe log', function (): void {
+    /*
+     * ⚠️ WHY verdict() THROWS RATHER THAN EXITS. This refusal fires inside the measuring path, after the
+     * probe log is installed; an exit would skip the `finally` that removes it and leave the server changed
+     * until the dead-man timer fired. The mutant reports its TUN-1 result under an id it never declared: the
+     * refusal reaches stderr, TUN-2 still reports the probe removed, and the undeclared id is never printed.
+     */
+    $source = File::get($this->family);
+    $mutation = "verdict('TUN-1', 'PASS', 'every one of '";
+
+    // The mutation must land exactly once, or this says nothing about the guard.
+    expect(substr_count($source, $mutation))->toBe(1);
+
+    $mutant = $this->dir.'/tunnel-log-undeclared.php';
+    File::put($mutant, str_replace($mutation, "verdict('TUN-9', 'PASS', 'every one of '", $source));
+
+    $run = tunnelLogRun($this->dir, $mutant);
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and($run->getErrorOutput())->toContain('verdict TUN-9: this family did not declare that id')
+        ->and(tunnelLogVerdict($run, 'TUN-2'))->toContain('PASS STATE stop removed')
+        ->and($run->getOutput())->toContain('SENTINEL tunnel-log 1 TUN-2')
+        ->and($run->getOutput())->not->toContain('TUN-9');
+});
+
+it('refuses a second verdict for one check', function (): void {
+    // A check reported twice leaves the gate unable to tell which verdict stands. Mutated on the dns-only
+    // path, which voids TUN-1 and then TUN-2: the second becomes TUN-1 again.
+    $source = File::get($this->family);
+    $mutation = "verdict('TUN-2', 'VOID', 'no probe was installed on a host this family does not check'";
+
+    expect(substr_count($source, $mutation))->toBe(1);
+
+    $mutant = $this->dir.'/tunnel-log-twice.php';
+    File::put($mutant, str_replace($mutation, "verdict('TUN-1', 'VOID', 'no probe was installed on a host this family does not check'", $source));
+
+    $run = tunnelLogRun($this->dir, $mutant, 'dns-only');
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and($run->getErrorOutput())->toContain('verdict TUN-1: emitted twice')
+        ->and(substr_count($run->getOutput(), 'VERDICT TUN-1 '))->toBe(1)
+        ->and($run->getOutput())->not->toContain('SENTINEL');
+});

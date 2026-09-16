@@ -7,10 +7,12 @@
 #
 # It is committed, and it is an INPUT to run.sh — never generated from a run's own output, which
 # would make the promise whatever happened to be kept. It is held to the families twice. On every run,
-# run.sh voids a family whose sentinel reports a check this file does not promise it. And
-# RunbookManifestTest reads this file: every family the runbook ships is listed and every family listed
-# ships, and each family's checks — a host script's `family` line, an outside script's own sentinel —
-# are exactly the rows here, under every topology it runs on.
+# run.sh refuses a check promised to two families, and voids a family whose own stream reports a check
+# this file does not promise it. And RunbookManifestTest reads this file: every family the runbook ships is
+# listed and every family listed ships, no check belongs to two families, and each family's declared
+# checks — a host script's `family` line, an outside script's `const CHECKS`, each refused by that
+# family's own verdict() when anything else is printed — are exactly the rows here, under every topology
+# it runs on.
 #
 # Format: <topology> <family> <check-id>, where topology is `tunnel` (stage: cloudflared in front of
 # nginx) or `dns-only` (alpha: Forge, no tunnel). Blank lines and # comments are ignored.

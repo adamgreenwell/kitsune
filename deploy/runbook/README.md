@@ -25,10 +25,12 @@ Two rules make silence fail with everything else:
 - **`manifest.txt` is a promise.** It lists the check ids that must produce a verdict, per topology.
   An id with no verdict is VOID. It is committed and read as an input, never generated from a run.
 - **Every family ends with a sentinel** carrying its own verdict count, printed from an EXIT trap.
-  The host scripts are piped over ssh, so a dropped connection truncates a family mid-stream. A
-  sentinel that is missing, printed twice, malformed or short voids that whole family, and so does
-  one that names a check twice or reports a check the manifest does not promise. A check given two
-  verdicts is VOID, never the last of them.
+  The host scripts are piped over ssh, so a dropped connection truncates a family mid-stream. Each
+  family is judged on its own stream. A sentinel that is missing, printed twice, malformed or short
+  voids that whole family, and so does one that names a check twice or reports a check the manifest
+  does not promise, or a verdict the sentinel does not name. A check given two verdicts is VOID, never
+  the last of them, and a voided check still shows every verdict its family gave it. A run that does
+  not pass keeps each family's raw output and says where.
 
 ## Running it
 

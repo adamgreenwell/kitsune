@@ -35,6 +35,8 @@ beforeEach(function (): void {
 
     File::makeDirectory($this->runbook.'/host', 0755, true);
     File::makeDirectory($this->dir.'/bin');
+    // run.sh keeps a failed run's streams under TMPDIR, so point it here and the evidence goes with the test.
+    File::makeDirectory($this->dir.'/tmp');
 
     // The real files, unchanged: the gate that ships is the gate under test.
     File::copy($repo.'/deploy/runbook/run.sh', $this->runbook.'/run.sh');
@@ -94,7 +96,7 @@ function runbookRun(string $dir, array $env = [], string $expect = 'tunnel'): Pr
         $dir,
         array_replace([
             'HOME' => (string) getenv('HOME'),
-            'TMPDIR' => sys_get_temp_dir(),
+            'TMPDIR' => $dir.'/tmp',
             'PATH' => $dir.'/bin:'.getenv('PATH'),
         ], $env),
     );
@@ -194,6 +196,31 @@ function runbookShippedFamilies(): array
     return $families;
 }
 
+/**
+ * The checks a family script declares, sorted: a host script's `family <name> <id…>` line, or an outside
+ * script's `const CHECKS = [...]`. Each is enforced by that family's own verdict(), so the declaration is
+ * exactly what the family can report.
+ *
+ * @return list<string>
+ */
+function runbookDeclaredChecks(string $script): array
+{
+    $source = File::get($script);
+
+    if (str_ends_with($script, '.sh')) {
+        preg_match('/^family \S+((?: +\S+)*) *$/m', $source, $declaration);
+        $checks = preg_split('/ +/', trim($declaration[1] ?? ''), -1, PREG_SPLIT_NO_EMPTY) ?: [];
+    } else {
+        preg_match('/^const CHECKS = \[([^\]]*)\];/m', $source, $declaration);
+        preg_match_all("/'([^']+)'/", $declaration[1] ?? '', $quoted);
+        $checks = $quoted[1];
+    }
+
+    sort($checks);
+
+    return $checks;
+}
+
 it('is valid bash', function (): void {
     foreach (['deploy/runbook/run.sh', 'deploy/runbook/host/common.sh'] as $script) {
         $check = new Process(['bash', '-n', dirname(__DIR__, 3).'/'.$script]);
@@ -248,7 +275,9 @@ it('passes only when every promised check reports PASS', function (): void {
         ->and($run->getOutput())->toContain('PASS  G-1')
         ->and($run->getOutput())->toContain('PASS  G-2')
         ->and($run->getOutput())->toContain('2 passed, 0 failed, 0 could not be measured')
-        ->and($run->getOutput())->toContain('Every promised check passed.');
+        ->and($run->getOutput())->toContain('Every promised check passed.')
+        ->and($run->getErrorOutput())->not->toContain('kept in')
+        ->and(glob($this->dir.'/tmp/*') ?: [])->toBe([]);
 });
 
 it('fails the run on a FAIL, and says the host was not shown to hold the conditions', function (): void {
@@ -265,6 +294,13 @@ it('fails the run on a FAIL, and says the host was not shown to hold the conditi
         ->and($run->getOutput())->toContain('FAIL  M-2 — another process holds a loopback socket to 443')
         ->and($run->getOutput())->toContain('1 passed, 1 failed, 0 could not be measured')
         ->and($run->getErrorOutput())->toContain('has NOT been shown to hold');
+
+    // ⚠️ A FAILED RUN KEEPS ITS EVIDENCE: each family's own output, in the directory the operator is told.
+    $kept = glob($this->dir.'/tmp/kitsune-runbook.*') ?: [];
+
+    expect($kept)->toHaveCount(1)
+        ->and($run->getErrorOutput())->toContain("The families' own output is kept in {$kept[0]}")
+        ->and(File::get($kept[0].'/mixed.out'))->toContain('VERDICT M-2 FAIL another process holds a loopback socket to 443');
 });
 
 it('voids a promised check that never reports, and exits non-zero for it', function (): void {
@@ -328,7 +364,8 @@ it('voids a whole family whose sentinel counts more verdicts than arrived', func
      * claim more than it delivered, and then nothing it did deliver is known to be the whole story.
      *
      * ⚠️ THIS USED TO PASS C-1. The discrepancy printed a warning and changed nothing, so the verdict that
-     * did arrive stood and only the missing one voided. The family is judged as one stream now.
+     * did arrive stood and only the missing one voided. The family is judged as one stream now — and what
+     * did arrive is still shown, so the measurement is not lost with the verdict.
      */
     runbookManifest($this->runbook, "tunnel claims C-1\ntunnel claims C-2\n");
     runbookFamily($this->runbook, 'claims', <<<'BASH'
@@ -339,8 +376,8 @@ it('voids a whole family whose sentinel counts more verdicts than arrived', func
     $run = runbookRun($this->dir);
 
     expect($run->isSuccessful())->toBeFalse()
-        ->and($run->getOutput())->toContain("VOID  C-1 (claims) — the family's sentinel counted 2 verdicts and 1 arrived")
-        ->and($run->getOutput())->toContain("VOID  C-2 (claims) — the family's sentinel counted 2 verdicts and 1 arrived")
+        ->and($run->getOutput())->toContain('VOID  C-1 (claims) — the family printed 1 verdicts and its sentinel counts 2, so its stream was cut or doubled; for this check it reported PASS: only one of the two arrived')
+        ->and($run->getOutput())->toContain('VOID  C-2 (claims) — the family printed 1 verdicts and its sentinel counts 2, so its stream was cut or doubled')
         ->and($run->getOutput())->not->toContain('PASS  C-1');
 });
 
@@ -398,7 +435,7 @@ it('voids a check given two verdicts, naming both, rather than letting the last 
     $run = runbookRun($this->dir);
 
     expect($run->isSuccessful())->toBeFalse()
-        ->and($run->getOutput())->toContain('VOID  M-1 (masks) — the check was given 2 verdicts (FAIL, PASS)')
+        ->and($run->getOutput())->toContain('VOID  M-1 (masks) — the check was given 2 verdicts, so none of them can stand: FAIL: a relay other than the connector dials the web server | PASS: the only loopback client is the connector')
         ->and($run->getOutput())->not->toContain('PASS  M-1');
 });
 
@@ -419,6 +456,7 @@ it('voids a family that lists one check twice in its sentinel, which the count c
 
     expect($run->isSuccessful())->toBeFalse()
         ->and($run->getOutput())->toContain('VOID  R-1 (repeats) — the family reported R-1 more than once')
+        ->and($run->getOutput())->toContain('for this check it reported FAIL: the forged header reached PHP | PASS: a second pass over the same check')
         ->and($run->getOutput())->not->toContain('PASS  R-1');
 });
 
@@ -464,16 +502,17 @@ it('voids a family that reports a check the manifest does not promise', function
     $run = runbookRun($this->dir);
 
     expect($run->isSuccessful())->toBeFalse()
-        ->and($run->getOutput())->toContain('VOID  X-1 (grown) — the family reports checks the manifest does not promise for a tunnel host (X-2)')
+        ->and($run->getOutput())->toContain('VOID  X-1 (grown) — the family reports checks the manifest does not promise for a tunnel host (X-2 FAIL: a check nobody promised, and it fails)')
         ->and($run->getOutput())->not->toContain('PASS  X-1');
 });
 
 it('counts a verdict only for the family that gave it', function (): void {
     /*
-     * ⚠️ VERDICT LINES DO NOT NAME THEIR FAMILY. Family `a` prints a verdict for B-1, which the manifest
-     * gives to family `b`, and `b` never checks it. The gate used to find a B-1 line in the stream and pass
-     * it, so a check nobody responsible ran counted as held. `a` is voided for reporting a check it was
-     * not promised, and B-1 for having no verdict from its own family.
+     * ⚠️ VERDICT LINES DO NOT NAME THEIR FAMILY, SO EACH FAMILY IS JUDGED ON ITS OWN STREAM. Family `a`
+     * prints a verdict for B-1, which the manifest gives to family `b`, and `b` never checks it. The gate
+     * used to find a B-1 line in the one shared stream and pass it, so a check nobody responsible ran counted
+     * as held. In `b`'s own stream there is no B-1 at all; `a` is voided for reporting a check it was not
+     * promised, and what it said about B-1 is shown.
      */
     runbookManifest($this->runbook, "tunnel a A-1\ntunnel b B-1\n");
     runbookFamily($this->runbook, 'a', <<<'BASH'
@@ -488,9 +527,133 @@ it('counts a verdict only for the family that gave it', function (): void {
     $run = runbookRun($this->dir);
 
     expect($run->isSuccessful())->toBeFalse()
-        ->and($run->getOutput())->toContain("VOID  B-1 (b) — a verdict arrived that this family's sentinel does not name")
+        ->and($run->getOutput())->toContain('VOID  B-1 (b) — promised by the manifest, and no verdict arrived')
+        ->and($run->getOutput())->toContain('VOID  A-1 (a) — the family reports checks the manifest does not promise for a tunnel host (B-1 PASS: a check that belongs to another family)')
         ->and($run->getOutput())->not->toContain('PASS  B-1')
         ->and($run->getOutput())->not->toContain('PASS  A-1');
+});
+
+it('voids a family that printed a verdict its sentinel does not name, where the run used to pass', function (): void {
+    /*
+     * ⚠️ EXIT 0 WITH A FAIL IN THE STREAM. The family's own tally never heard of T-2 — a PHP verdict called
+     * through a by-value closure, or a hand-written line — so its sentinel names only T-1, and the manifest
+     * promises only T-1. The count looked only at the ids the sentinel names, found one verdict for one, and
+     * passed the run with T-2's FAIL printed and never judged. It did so before this change and after the
+     * first version of it.
+     */
+    runbookManifest($this->runbook, "tunnel lone T-1\n");
+    runbookFamily($this->runbook, 'lone', <<<'BASH'
+    family lone T-1
+    verdict T-1 PASS "login is limited"
+    printf 'VERDICT T-2 FAIL the API is not throttled at all\n'
+    BASH);
+
+    $run = runbookRun($this->dir);
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and($run->getOutput())->toContain('VOID  T-1 (lone) — the family printed verdicts its sentinel does not name (T-2 FAIL: the API is not throttled at all)')
+        ->and($run->getOutput())->not->toContain('PASS  T-1');
+});
+
+it('traces a verdict printed from a pipeline to the family that printed it, and keeps its FAIL', function (): void {
+    /*
+     * The realistic way a host family prints a verdict its sentinel cannot count: `cmd | while read …; do
+     * verdict …; done` runs the loop in a subshell, where common.sh's tally is a copy that is thrown away.
+     * The shared stream blamed "another family" for T-2 and dropped its FAIL; the family's own stream says
+     * where the verdict came from and what it said.
+     */
+    runbookManifest($this->runbook, "tunnel tally T-1\ntunnel tally T-2\n");
+    runbookFamily($this->runbook, 'tally', <<<'BASH'
+    family tally T-1 T-2
+    verdict T-1 PASS "counted"
+    printf 'x\n' | while read -r _; do verdict T-2 FAIL "printed from a pipeline"; done
+    BASH);
+
+    $run = runbookRun($this->dir);
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and($run->getOutput())->toContain('VOID  T-2 (tally) — the family printed verdicts its sentinel does not name (T-2 FAIL: printed from a pipeline), so they came from a subshell or pipeline its own tally never saw')
+        ->and($run->getOutput())->not->toContain('another family')
+        ->and($run->getOutput())->not->toContain('PASS  T-1');
+});
+
+it('refuses a manifest that promises one check to two families', function (string $rows): void {
+    /*
+     * ⚠️ A VERDICT LINE NAMES ITS CHECK, NOT ITS FAMILY, so one check promised to two families cannot say
+     * whose verdict is whose — the shape a new family copied from an old one takes when it keeps one of its
+     * ids. Across topologies it used to exit 0; within one, the stricter count blamed the transport.
+     */
+    runbookManifest($this->runbook, $rows);
+    runbookFamily($this->runbook, 'a', "family a X-1\nverdict X-1 PASS ok\n");
+    runbookFamily($this->runbook, 'b', "family b X-1\nverdict X-1 PASS ok\n");
+
+    $run = runbookRun($this->dir);
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and($run->getErrorOutput())->toContain('the check X-1 is promised to both [a] and [b]')
+        ->and($run->getOutput())->not->toContain('PASS  X-1');
+})->with([
+    'in one topology' => ["tunnel a X-1\ntunnel b X-1\n"],
+    'across topologies' => ["tunnel a X-1\ndns-only b X-1\n"],
+]);
+
+it('keeps a FAIL whole when the family before it ended its output without a newline', function (): void {
+    /*
+     * One shared stream glued `b`'s first verdict onto `a`'s unterminated last line, so `a`'s sentinel read
+     * as malformed and `b`'s FAIL disappeared into it: both families VOID, and the FAIL never shown.
+     */
+    runbookManifest($this->runbook, "tunnel a A-1\ntunnel b B-1\n");
+    runbookFamily($this->runbook, 'a', <<<'BASH'
+    printf 'VERDICT A-1 PASS holds\nSENTINEL a 1 A-1'
+    BASH);
+    runbookFamily($this->runbook, 'b', <<<'BASH'
+    printf 'VERDICT B-1 FAIL a relay dials the web server\nSENTINEL b 1 B-1\n'
+    BASH);
+
+    $run = runbookRun($this->dir);
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and($run->getOutput())->toContain('PASS  A-1 — holds')
+        ->and($run->getOutput())->toContain('FAIL  B-1 — a relay dials the web server');
+});
+
+it('reads a stream carrying a stray NUL byte as text, rather than as nothing', function (): void {
+    /*
+     * ⚠️ macOS grep calls a file with a NUL in it binary and matches no line of it. On the shared stream,
+     * one family's stray byte blanked every family: the gate before this read "Binary file … matches" as a
+     * verdict of no known outcome, counted nothing, and exited 0; the first stricter version voided them
+     * all with a temporary file's path as the count.
+     */
+    runbookManifest($this->runbook, "tunnel a A-1\ntunnel b B-1\n");
+    runbookFamily($this->runbook, 'a', <<<'BASH'
+    family a A-1
+    printf 'RECORD A-1 a stray \000 byte\n'
+    verdict A-1 FAIL "measured"
+    BASH);
+    runbookFamily($this->runbook, 'b', <<<'BASH'
+    family b B-1
+    verdict B-1 PASS "holds"
+    BASH);
+
+    $run = runbookRun($this->dir);
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and($run->getOutput())->toContain('FAIL  A-1 — measured')
+        ->and($run->getOutput())->toContain('PASS  B-1 — holds');
+});
+
+it('voids a family whose stream closes as a different family', function (): void {
+    // A script copied from another family and never renamed prints that family's sentinel: whatever it
+    // reported, it is not the family the manifest promised.
+    runbookManifest($this->runbook, "tunnel a A-1\n");
+    runbookFamily($this->runbook, 'a', <<<'BASH'
+    printf 'VERDICT A-1 PASS holds\nSENTINEL relays 1 A-1\n'
+    BASH);
+
+    $run = runbookRun($this->dir);
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and($run->getOutput())->toContain('VOID  A-1 (a) — the family closed its stream as [relays], so the script that ran is not the family promised; for this check it reported PASS: holds');
 });
 
 it('promises exactly the families the runbook ships, and no other', function (): void {
@@ -519,34 +682,40 @@ it('promises exactly the families the runbook ships, and no other', function ():
         expect($scripts)->toHaveCount(1, "[{$family}] is declared by ".implode(', ', $scripts))
             ->and(pathinfo($scripts[0], PATHINFO_FILENAME))->toBe($family);
     }
+
+    // ⚠️ ONE CHECK, ONE FAMILY. A verdict line names its check and not its family; run.sh refuses a manifest
+    // that gives one check to two families, and this catches it before any run does.
+    $owners = [];
+
+    foreach ($rows as $row) {
+        $owners[$row[2]][$row[1]] = true;
+    }
+
+    foreach ($owners as $id => $claimants) {
+        expect(array_keys($claimants))->toHaveCount(1, "[{$id}] is promised to ".implode(' and ', array_keys($claimants)));
+    }
 });
 
-it('promises every check a host family declares, under every topology it runs on', function (): void {
+it('promises every check each family declares, under every topology it runs on', function (): void {
     /*
-     * A host family's checks are its `family` line: common.sh refuses a verdict for any other id, so the
-     * declaration is exactly what the family can report. It must equal the committed rows under every
-     * topology that promises the family — a partial promise leaves a check that runs and counts for nothing.
+     * A family's checks are its declaration — a host script's `family` line, an outside script's `const
+     * CHECKS` — and its own verdict() refuses any other id, so the declaration is exactly what it can report.
+     * It must equal the committed rows under every topology that promises the family: a partial promise leaves
+     * a check that runs and counts for nothing.
      */
-    $shipped = runbookShippedFamilies();
     $judged = [];
     $pairs = [];
 
     foreach (runbookCommittedRows() as $row) {
-        if (str_contains($shipped[$row[1]][0] ?? '', '/host/')) {
+        if (count($row) === 3) {
             $pairs["{$row[0]} {$row[1]}"] = true;
         }
     }
 
-    foreach ($shipped as $family => $scripts) {
-        if (! str_contains($scripts[0], '/host/')) {
-            continue;
-        }
+    foreach (runbookShippedFamilies() as $family => $scripts) {
+        $declared = runbookDeclaredChecks($scripts[0]);
 
-        preg_match('/^family '.preg_quote($family, '/').'((?: +\S+)*) *$/m', File::get($scripts[0]), $declaration);
-        $declared = preg_split('/ +/', trim($declaration[1] ?? ''), -1, PREG_SPLIT_NO_EMPTY) ?: [];
-        sort($declared);
-
-        expect($declared)->not->toBe([], "[{$family}] declares no checks");
+        expect($declared)->not->toBe([], "[{$family}] declares no checks in {$scripts[0]}");
 
         foreach (runbookTopologiesFor($family) as $topology) {
             expect(runbookPromised($family, $topology))->toBe($declared, "[{$family}] on a {$topology} host");
@@ -558,17 +727,18 @@ it('promises every check a host family declares, under every topology it runs on
     sort($expected);
     sort($judged);
 
+    // Every family the manifest promises was judged on every topology it is promised for, so an empty loop
+    // cannot pass.
     expect($judged)->toBe($expected)
         ->and($judged)->not->toBe([]);
 });
 
-it('promises every check an outside family reports, under every topology it runs on', function (): void {
+it('runs each outside family without its instruments and sees it void every check it declares', function (): void {
     /*
-     * ⚠️ RUN, NOT READ. An outside family has no declaration to read: its checks are the ones it reports.
-     * So each one runs the way run.sh runs it, pointed at a runbook with no instruments, where it must void
-     * every check it can report and close its stream — and the ids in that sentinel must be exactly the
-     * committed rows for that family and topology. ssh and curl are stubbed to refuse and record, so
-     * nothing reaches the network.
+     * ⚠️ RUN, NOT ONLY READ. `const CHECKS` is read above; here each outside family runs the way run.sh runs
+     * it, pointed at a runbook with no instruments, where it must void every check it declares and close its
+     * stream. The checks a measuring run reports are held by the family's own verdict(), which refuses any id
+     * outside CHECKS. ssh and curl are stubbed to refuse and record, so nothing reaches the network.
      */
     foreach (['ssh', 'curl'] as $command) {
         File::put($this->dir.'/bin/'.$command, "#!/usr/bin/env bash\necho {$command} >> ".escapeshellarg($this->dir.'/network')."\nexit 97\n");
@@ -612,7 +782,8 @@ it('promises every check an outside family reports, under every topology it runs
             $reported = preg_split('/ +/', trim((string) preg_replace('/^SENTINEL \S+ \d+/', '', $sentinels[0])), -1, PREG_SPLIT_NO_EMPTY) ?: [];
             sort($reported);
 
-            expect($reported)->toBe(runbookPromised($family, $topology), $context)
+            expect($reported)->toBe(runbookDeclaredChecks($scripts[0]), $context)
+                ->and($reported)->toBe(runbookPromised($family, $topology), $context)
                 ->and($verdicts)->toHaveCount(count($reported), $context);
 
             foreach ($verdicts as $verdict) {
