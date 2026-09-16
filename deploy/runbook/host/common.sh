@@ -182,6 +182,46 @@ measure_into() {
   return "$status"
 }
 
+# ⚠️ EVERY MEASUREMENT GETS A CLOCK, BECAUSE A CHECK THAT HANGS IS A CHECK NOBODY RUNS. Twice on
+# stage a family passed a five-minute ceiling without emitting a verdict, and both times the cause was
+# a command that was slower than anyone expected rather than a host that was wrong. So a measurement
+# that outlives its budget is VOID — "could not be measured in N seconds" — which is a verdict the
+# operator can act on, unlike a session that never returns.
+#
+#   if ! measure_in 10 ss -Htnpe; then verdict RLY-4 VOID "$MEASURED"; fi
+#
+# `timeout` exits 124 when it fires, and MEASURED then says so in the words the verdict will carry.
+measure_in() {
+  local budget=$1
+  shift
+  local status
+
+  measure timeout "$budget" "$@"
+  status=$?
+
+  if (( status == 124 )); then
+    MEASURED="[$*] did not finish within ${budget}s"
+  fi
+
+  return "$status"
+}
+
+# The same, for a command whose stdout is data (see measure_into).
+measure_into_in() {
+  local budget=$1 file=$2
+  shift 2
+  local status
+
+  measure_into "$file" timeout "$budget" "$@"
+  status=$?
+
+  if (( status == 124 )); then
+    MEASURED="[$*] did not finish within ${budget}s"
+  fi
+
+  return "$status"
+}
+
 # Root, or this family measures a fraction of the host and calls it clean: /proc/<pid>/exe is
 # unreadable for other users' processes, ss prints no owner for them, and journalctl shows only this
 # user's entries. Every one of those reads as "nothing found".

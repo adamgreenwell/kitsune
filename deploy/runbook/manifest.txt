@@ -33,7 +33,20 @@ dns-only nginx NGX-2
 dns-only nginx NGX-3
 dns-only nginx NGX-4
 dns-only nginx NGX-5
-# --- relays (host/relays.sh) --- not landed yet
+# --- relays (host/relays.sh) ---
+# ADR-034's central condition. The same ids on both topologies, and the expectation differs: on a
+# tunnel host exactly one process may dial the web server over loopback, and on a DNS-only host none
+# may. RLY-1 drives its own traffic, because an idle connector holds no connection to find.
+tunnel   relays RLY-1
+tunnel   relays RLY-2
+tunnel   relays RLY-3
+tunnel   relays RLY-4
+tunnel   relays RLY-5
+dns-only relays RLY-1
+dns-only relays RLY-2
+dns-only relays RLY-3
+dns-only relays RLY-4
+dns-only relays RLY-5
 # --- probe log and tunnel hostnames (host/probe-log.sh, outside/tunnel_log.py) --- not landed yet
 # --- the throttle at PHP (outside/throttle.py) --- not landed yet
 # --- sshd (host/sshd.sh, host/sshd-sweep.sh) --- not landed yet
