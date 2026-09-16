@@ -42,12 +42,16 @@ beforeEach(function (): void {
     File::put($this->dir.'/runbook/host/common.sh', "# common.sh\n");
     File::put($this->dir.'/runbook/host/probe-log.sh', "# probe-log.sh\n");
 
-    tunnelLogFixture($this->dir, 'hostnames', "stage.kitsune.test\n");
+    tunnelLogFixture($this->dir, 'hostnames', tunnelLogDump());
     tunnelLogFixture($this->dir, 'trace-before', "fl=1\nip=203.0.113.50\nts=1\n");
     tunnelLogFixture($this->dir, 'trace-after', "fl=1\nip=203.0.113.50\nts=2\n");
     tunnelLogFixture($this->dir, 'stats', "200 1 192.168.1.5 51000 104.18.0.1\n200 0 192.168.1.5 51000 104.18.0.1\n200 0 192.168.1.5 51000 104.18.0.1\n");
     tunnelLogFixture($this->dir, 'probe', json_encode(tunnelLogLine()) ?: '{}');
-    tunnelLogFixture($this->dir, 'owner', 'ESTAB 0 0 127.0.0.1:443 127.0.0.1:35572 users:(("cloudflared",pid=26476,fd=10))');
+    // ⚠️ THE DIALER'S ROW, AS THE HOST WRITES IT. This fixture used to read `127.0.0.1:443
+    // 127.0.0.1:35572 … cloudflared` — the web server's end of the connection, attributed to the
+    // connector. No host emits that: on the `:443` side the owner is nginx. The fiction is what let
+    // probe-log.sh pick the wrong end and still pass every test, until stage failed TUN-1 naming nginx.
+    tunnelLogFixture($this->dir, 'owner', '0      0      127.0.0.1:35572 127.0.0.1:443 users:(("cloudflared",pid=26476,fd=10))');
 
     foreach (tunnelLogStubs() as $name => $body) {
         File::put($this->dir.'/bin/'.$name, $body);
@@ -98,6 +102,43 @@ function tunnelLogFixture(string $dir, string $name, string $contents): void
 }
 
 /**
+ * A configuration dump as `nginx -T` writes one: file banners, the catch-all, and the site on both
+ * ports. The names repeat across the two blocks because they do on a real host, which is what makes
+ * collapsing them part of the measurement rather than an accident of the fixture.
+ */
+function tunnelLogDump(string $siteNames = 'stage.kitsune.test'): string
+{
+    $site = $siteNames === '' ? '' : <<<CONF
+        # configuration file /etc/nginx/sites-enabled/stage.kitsune.test:
+        server {
+            listen 80;
+            server_name {$siteNames};
+        }
+        server {
+            listen 443 ssl;
+            server_name {$siteNames};
+        }
+
+        CONF;
+
+    return <<<CONF
+        # configuration file /etc/nginx/nginx.conf:
+        http {
+            include /etc/nginx/mime.types;
+        }
+
+        # configuration file /etc/nginx/sites-enabled/000-catch-all:
+        server {
+            listen 80 default_server;
+            listen 443 ssl default_server;
+            server_name _;
+        }
+
+        {$site}
+        CONF;
+}
+
+/**
  * The stubs. They answer from fixture files, so a case rewrites a fixture rather than a stub.
  *
  * @return array<string, string>
@@ -105,8 +146,14 @@ function tunnelLogFixture(string $dir, string $name, string $contents): void
 function tunnelLogStubs(): array
 {
     return [
-        // ssh carries three shapes: the hostname query (bash -c), and the instrument's start, collect
-        // and stop (bash -s -- <action> <nonce> [id]). Marker files make any of them fail.
+        // ssh carries three shapes: the configuration dump (nginx -T), and the instrument's start,
+        // collect and stop (bash -s -- <action> <nonce> [id]). Marker files make any of them fail.
+        //
+        // ⚠️ THE DUMP IS A DUMP, not a list of hostnames. It used to answer the remote `awk … | sort -u`
+        // with names already extracted, which put the one step that can silently return nothing beyond
+        // any test's reach: on stage the real command produced no stdout at all and twenty bind
+        // complaints on stderr, and the family reported that as a host serving no site. A stub tidier
+        // than the tool cannot see the defect, so this one answers as nginx does.
         'ssh' => <<<'BASH'
         #!/usr/bin/env bash
         d=$(dirname "$(dirname "$0")")
@@ -114,8 +161,13 @@ function tunnelLogStubs(): array
         cat > /dev/null
 
         case "$args" in
-          *"bash -c"*)
-            [[ -e "$d/hostnames-fail" ]] && exit 1
+          *"nginx -T"*)
+            if [[ -e "$d/hostnames-fail" ]]; then
+              # How it fails on a live host: nothing on stdout, the reason on stderr.
+              echo "nginx: [emerg] bind() to 0.0.0.0:443 failed (98: Address already in use)" >&2
+              echo "nginx: [emerg] still could not bind()" >&2
+              exit 1
+            fi
             cat "$d/hostnames"
             ;;
           *" start "*)
@@ -142,6 +194,18 @@ function tunnelLogStubs(): array
         #!/usr/bin/env bash
         d=$(dirname "$(dirname "$0")")
         [[ -e "$d/curl-fail" ]] && exit 7
+
+        # Record the hostname of the PROBE request only — the two /cdn-cgi/trace transfers go to the
+        # same host, so logging every URL would count each hostname three times and say nothing about
+        # how many distinct names the family extracted.
+        for arg in "$@"; do
+          case "$arg" in
+            https://*/kitsune-runbook-*)
+              rest=${arg#https://}
+              echo "${rest%%/*}" >> "$d/requested"
+              ;;
+          esac
+        done
 
         outs=()
         prev=""
@@ -337,13 +401,56 @@ it('voids a line it could not tie to any socket', function (): void {
 });
 
 it('voids a host that named no site, and still removes the probe', function (): void {
-    tunnelLogFixture($this->dir, 'hostnames', "\n");
+    // A dump that read perfectly well and named only the catch-all: the host serves no site.
+    tunnelLogFixture($this->dir, 'hostnames', tunnelLogDump(''));
 
     $run = tunnelLogRun($this->dir, $this->family);
 
     expect(tunnelLogVerdict($run, 'TUN-1'))->toContain('VOID')
         ->and(tunnelLogVerdict($run, 'TUN-1'))->toContain('no site hostname')
         ->and(tunnelLogVerdict($run, 'TUN-2'))->toContain('PASS');
+});
+
+it('voids a dump it could not read, and says what nginx said, rather than blaming the host', function (): void {
+    /*
+     * ⚠️ THIS IS THE ONE THAT SHIPPED. `hostnames()` ran `sudo -n bash -c 'nginx -T 2>/dev/null | awk …'`,
+     * and wrapped in a shell the dump never arrives: nginx writes nothing to stdout and complains that it
+     * cannot bind, because the running server holds those listeners. Measured on stage (2026-09-16): the
+     * wrapped form 0 stdout lines and 21 on stderr, the direct form 280 and exit 0, same host, same minute.
+     * `2>/dev/null` threw away the explanation and the status came from `sort`, so a total failure arrived
+     * as a successful empty answer and TUN-1 voided saying the host named no site — a true verdict with a
+     * false reason, against a host serving three hostnames correctly.
+     *
+     * Asserting only VOID would pass on the defect, because the defect voided too. The assertion is that
+     * nginx's own complaint reaches the operator.
+     */
+    tunnelLogFixture($this->dir, 'hostnames-fail', '');
+
+    $run = tunnelLogRun($this->dir, $this->family);
+
+    expect(tunnelLogVerdict($run, 'TUN-1'))->toContain('VOID')
+        ->and(tunnelLogVerdict($run, 'TUN-1'))->toContain('could not be read')
+        ->and(tunnelLogVerdict($run, 'TUN-1'))->toContain('still could not bind')
+        ->and(tunnelLogVerdict($run, 'TUN-1'))->not->toContain('no site hostname')
+        ->and(tunnelLogVerdict($run, 'TUN-2'))->toContain('PASS');
+});
+
+it('reads every name a directive carries, strips the semicolon, and collapses the ports', function (): void {
+    /*
+     * Two names on one directive, repeated across the :80 and :443 blocks exactly as a real host
+     * repeats them. The assertion is the REQUEST LOG, not the verdict text: the curl stub records
+     * every hostname it was asked for, so this fails if a name is dropped (parsing), if `;` survives
+     * (a request to `alias.kitsune.test;`), if `_` is taken for a site, or if the two port blocks
+     * produce the same name twice. A verdict-substring assertion could not tell those apart.
+     */
+    tunnelLogFixture($this->dir, 'hostnames', tunnelLogDump('stage.kitsune.test alias.kitsune.test'));
+
+    tunnelLogRun($this->dir, $this->family);
+
+    $asked = array_values(array_filter(explode("\n", trim((string) @file_get_contents($this->dir.'/requested')))));
+    sort($asked);
+
+    expect($asked)->toBe(['alias.kitsune.test', 'stage.kitsune.test']);
 });
 
 it('refuses without the instrument it drives, and looks for it where it was told to', function (): void {

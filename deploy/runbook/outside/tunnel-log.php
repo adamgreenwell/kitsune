@@ -157,21 +157,58 @@ function instrument(string $host, array $argv, array $files): array
 /**
  * The site hostnames, read from the running configuration rather than supplied to it.
  *
- * @return list<string>
+ * ⚠️ `sudo -n nginx -T`, NOT `sudo -n bash -c 'nginx -T | …'`. Wrapped in a shell the dump never
+ * arrives: nginx writes nothing to stdout and complains twenty times that it cannot bind, because the
+ * running server already holds those listeners. Measured on stage (2026-09-16): the wrapped form gave
+ * 0 stdout lines and 21 stderr lines, the direct form 280 lines and exit 0, on the same host in the
+ * same minute. The family read the empty stream as "this host serves no site", and voided TUN-1 while
+ * naming the host as the reason — a correct verdict with a false explanation.
+ *
+ * ⚠️ AND THE FILTERING HAPPENS HERE, NOT THERE. A remote `awk … | sort -u` puts the one part that can
+ * silently return nothing beyond the reach of any test: the stub answered with an already-clean list,
+ * so no case could have seen a parsing defect. Parsed in PHP it is ordinary code with ordinary tests.
+ *
+ * ⚠️ AND STDERR IS THE EVIDENCE. `2>/dev/null` discarded nginx's only account of itself, and the
+ * status came from `sort` at the tail of a pipeline rather than from nginx, so a total failure
+ * arrived as a successful empty answer. Both are returned now, and an empty dump is VOID with the
+ * complaint quoted — never "the host named no site".
+ *
+ * @return array{0: list<string>, 1: string} the hostnames, and why there are none when there are none
  */
 function hostnames(string $host): array
 {
-    $awk = 'nginx -T 2>/dev/null | awk \'$1 == "server_name" { for (i = 2; i <= NF; i++) '
-        .'{ gsub(/;/, "", $i); if ($i != "_" && $i != "") print $i } }\' | sort -u';
+    [$status, $out, $err] = run(['ssh', '-n', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10',
+        $host, 'sudo', '-n', 'nginx', '-T'], '', 60);
 
-    [$status, $out] = run(['ssh', '-n', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10',
-        $host, 'sudo', '-n', 'bash', '-c', $awk], '', 60);
+    if ($status !== 0 || trim($out) === '') {
+        $said = oneLine($err !== '' ? $err : $out);
 
-    if ($status !== 0) {
-        return [];
+        return [[], $said === ''
+            ? "nginx -T exited {$status} and said nothing, so the configuration could not be read"
+            : "nginx -T exited {$status} and said: ".substr($said, 0, 200)];
     }
 
-    return array_values(array_filter(preg_split('/\s+/', trim($out)) ?: []));
+    $found = [];
+
+    foreach (preg_split('/\R/', $out) ?: [] as $line) {
+        $fields = preg_split('/\s+/', trim($line)) ?: [];
+
+        if (($fields[0] ?? '') !== 'server_name') {
+            continue;
+        }
+
+        foreach (array_slice($fields, 1) as $name) {
+            $name = rtrim($name, ';');
+
+            // `_` is the catch-all's own name, not a site's, and a request to it proves nothing about
+            // the site — judge() fails a line the catch-all answered for exactly that reason.
+            if ($name !== '' && $name !== '_') {
+                $found[$name] = true;
+            }
+        }
+    }
+
+    return [array_keys($found), ''];
 }
 
 /**
@@ -420,9 +457,11 @@ $fails = [];
 $voids = [];
 
 try {
-    $sites = hostnames($host);
+    [$sites, $unreadable] = hostnames($host);
 
-    if ($sites === []) {
+    if ($unreadable !== '') {
+        $voids[] = 'the running configuration could not be read, so there was nothing to request: '.$unreadable;
+    } elseif ($sites === []) {
         $voids[] = 'no site hostname was found in the running configuration, so there was nothing to request';
     }
 
