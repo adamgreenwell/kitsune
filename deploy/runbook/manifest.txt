@@ -1,0 +1,28 @@
+# The checks every run must produce a verdict for, per topology — issue #111, ADR-034.
+#
+# ⚠️ THIS FILE IS WHY SILENCE CANNOT PASS. run.sh sums verdicts, and a family that dies before it
+# speaks, or is never wired in, emits none: without a promise to compare against, "no FAIL" reads as
+# success. Every line here is a promise that a verdict will arrive; an id with no verdict is VOID,
+# and a VOID exits non-zero exactly as a FAIL does.
+#
+# It is committed, and it is an INPUT to run.sh — never generated from a run's own output, which
+# would make the promise whatever happened to be kept. RunbookManifestTest asserts that the ids the
+# scripts can emit and the ids listed here are the same set, in both directions.
+#
+# Format: <topology> <family> <check-id>, where topology is `tunnel` (stage: cloudflared in front of
+# nginx) or `dns-only` (alpha: Forge, no tunnel). Blank lines and # comments are ignored.
+#
+# ⚠️ FAMILIES APPEAR HERE ONLY WHEN THEY LAND. The runbook is being written family by family, each
+# proven on stage before the next (deploy/runbook/README.md). A family listed before its script
+# exists would make every run VOID, which is correct but useless; a family that lands without being
+# listed here would make every run vacuously green, which is the failure this file exists to stop.
+# The test enforces the second direction, so the only way to land a family is to list it.
+
+# --- plumbing (common.sh, run.sh): no checks of its own; proven by RunbookManifestTest ---
+
+# --- nginx (host/nginx.sh) --- not landed yet
+# --- relays (host/relays.sh) --- not landed yet
+# --- probe log and tunnel hostnames (host/probe-log.sh, outside/tunnel_log.py) --- not landed yet
+# --- the throttle at PHP (outside/throttle.py) --- not landed yet
+# --- sshd (host/sshd.sh, host/sshd-sweep.sh) --- not landed yet
+# --- Cloudflare account and zones (cloudflare/inventory.py) --- not landed yet, needs the token
