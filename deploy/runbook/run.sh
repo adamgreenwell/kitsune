@@ -175,7 +175,12 @@ trap finish EXIT
 # ⚠️ A TEMPLATE, BECAUSE macOS mktemp IGNORES TMPDIR WITHOUT ONE. `mktemp -d` alone creates under the
 # per-user system directory there, so kept evidence landed where neither the operator nor a test that
 # set TMPDIR would look. Measured: 22 directories of fixture output collected there in one session.
-streams=$(mktemp -d "${TMPDIR:-/tmp}/kitsune-runbook.XXXXXX") || refuse "could not make a temporary directory"
+#
+# ⚠️ AND A TMPDIR THAT CANNOT BE USED IS REFUSED, NEVER WORKED AROUND. Falling back to /tmp would keep a failed
+# run's evidence somewhere other than where the operator is told to look. The refusal used to say only "could
+# not make a temporary directory"; it now names the directory, and TMPDIR whenever TMPDIR is what chose it.
+streams=$(mktemp -d "${TMPDIR:-/tmp}/kitsune-runbook.XXXXXX") \
+  || refuse "a directory for the families' output could not be made in ${TMPDIR:-/tmp}${TMPDIR:+, which TMPDIR names}, and a failed run keeps its evidence there. Create that directory or make it writable${TMPDIR:+, or unset TMPDIR to use /tmp}."
 
 for family in "${families[@]:-}"; do
   [[ -n "$family" ]] || continue

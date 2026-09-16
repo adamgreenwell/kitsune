@@ -486,6 +486,24 @@ it('refuses a family name that is not one plain path segment', function (string 
     'outside host/' => ['../fa', '../fa.sh'],
 ]);
 
+it('refuses to run when TMPDIR names a directory it cannot use, and says to fix TMPDIR', function (): void {
+    /*
+     * ⚠️ REFUSED, NOT WORKED AROUND. A failed run keeps its streams under TMPDIR, where the README tells the
+     * operator to look, so falling back to /tmp would keep them somewhere else. The refusal used to say only
+     * "could not make a temporary directory", which did not say that TMPDIR was the thing to fix.
+     */
+    runbookManifest($this->runbook, "tunnel good G-1\n");
+    runbookFamily($this->runbook, 'good', "family good G-1\nverdict G-1 PASS holds\n");
+
+    $missing = $this->dir.'/tmp/not-created';
+    $run = runbookRun($this->dir, ['TMPDIR' => $missing]);
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and($run->getErrorOutput())->toContain("Refusing to run: a directory for the families' output could not be made in {$missing}, which TMPDIR names, and a failed run keeps its evidence there.")
+        ->and($run->getErrorOutput())->toContain('Create that directory or make it writable, or unset TMPDIR to use /tmp.')
+        ->and($run->getOutput())->not->toContain('--- good');
+});
+
 it('refuses a verdict for an id the family never declared', function (): void {
     /*
      * common.sh's own guard: a check id that is not in the family's declared list cannot be emitted,
