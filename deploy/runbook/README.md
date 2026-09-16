@@ -28,9 +28,10 @@ Three rules make silence fail with everything else:
   from an EXIT trap. The host scripts are piped over ssh, so a dropped connection truncates a family
   mid-stream. Each family is judged on its own stream. A sentinel that is missing, printed twice,
   malformed or short voids that whole family, and so does one that names a check twice or reports a
-  check the manifest does not promise, or a verdict the sentinel does not name. A check given two
-  verdicts is VOID, never the last of them, and a voided check still shows every verdict its family
-  gave it. A run that does not pass keeps each family's raw output and says where.
+  check the manifest does not promise, or a verdict the sentinel does not name, or a verdict, sentinel
+  or refusal glued onto output that did not end its line. A check given two verdicts is VOID, never
+  the last of them, and a voided check still shows every verdict its family gave it. A run that does
+  not pass keeps each family's raw output and says where.
 - **A refusal is written into the stream.** A family that refuses — a precondition it cannot meet, or
   a verdict its own guard rejects — prints `REFUSED <family> <reason>` and withholds its sentinel, and
   either one voids the whole family with the reason shown. A refusal exits 1, as a FAIL does, so the

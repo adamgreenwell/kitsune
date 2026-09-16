@@ -210,6 +210,9 @@ done
 # ⚠️ A STREAM CAN MISLEAD IN MORE WAYS THAN BY STOPPING EARLY, and each of them voids the whole family:
 #   - it refused. A refused verdict is never printed, so a refusal after every promised verdict used to leave
 #     a stream that added up — and when a family closed over its refusal, the run passed;
+#   - a verdict, sentinel or refusal starts partway through a line, glued onto output that did not end its
+#     own. The gate accepts one only at the start of a line, because a reason may quote one, so a glued FAIL
+#     counted for nothing and was reported nowhere, and a glued sentinel read as a family that never ran;
 #   - its sentinel is missing, printed twice, closes another family, or is malformed;
 #   - its sentinel names a check twice, as a PHP family's does for a check it printed twice;
 #   - it printed a verdict its sentinel does not name, from a subshell or a pipeline its own tally
@@ -228,19 +231,33 @@ done
 # read as PASS. Two verdicts mean the family does not know which it measured, so neither stands.
 #
 # ⚠️ AND NOTHING MEASURED IS DROPPED. A check voided for its stream's sake still shows every verdict its
-# family gave it, so a FAIL that arrived is never reported only as "could not be measured".
+# family gave it, so a FAIL that arrived is never reported only as "could not be measured" — one that does
+# not start its line included, marked as such, though it never counts.
+#
+# ⚠️ IN THE C LOCALE, BECAUSE A STREAM IS BYTES. macOS grep in a UTF-8 locale skips some lines holding a byte
+# that is not UTF-8: `VERDICT I-1 FAIL \377…` matched nothing for its own check, so a FAIL whose reason began
+# with a command's raw output read as "no verdict arrived". `.` matches no such byte either, so a verdict
+# glued after one would go unseen, and `cut` exits 1 on one with "Illegal byte sequence", which under
+# `set -e` ends this script before its summary. Set here, after every family has run, so the operator's
+# locale still reaches ssh and the families.
+export LC_ALL=C
+
 fails=0
 voids=0
 passes=0
 number='^(0|[1-9][0-9]*)$'
 
-# Every verdict a family's stream gave one check, as "FAIL: <reason> | PASS: <reason>". `-a` throughout:
-# a stray NUL anywhere in a stream makes grep call the file binary and match nothing line by line.
+# Every verdict a family's stream gave one check, as "FAIL: <reason> | PASS: <reason>", wherever on its line it
+# starts. `-a` throughout: a stray NUL anywhere in a stream makes grep call the file binary and match nothing
+# line by line.
 reported() {
   local id=$1 file=$2
 
-  { grep -aE "^VERDICT $id (PASS|FAIL|VOID) " "$file" || true; } |
-    awk -v prefix="VERDICT $id " '{ outcome = $3; printf "%s%s: %s", sep, outcome, substr($0, length(prefix) + length(outcome) + 2); sep = " | " }'
+  { grep -aE "VERDICT $id (PASS|FAIL|VOID) " "$file" || true; } |
+    awk -v verdict="VERDICT $id (PASS|FAIL|VOID) " 'match($0, verdict) {
+      printf "%s%s%s: %s", sep, substr($0, RSTART + RLENGTH - 5, 4), (RSTART > 1 ? ", after other output on its line" : ""), substr($0, RSTART + RLENGTH)
+      sep = " | "
+    }'
 }
 
 for entry in "${expected[@]}"; do
@@ -260,11 +277,15 @@ for entry in "${expected[@]}"; do
   closes=$(grep -acE '^SENTINEL ' "$out" || true)
   # Every reason the family refused for, after its name, as "<reason>; <reason>".
   refusals=$({ grep -aE '^REFUSED ' "$out" || true; } | sed -E 's/^REFUSED [^ ]* ?//' | awk '{ printf "%s%s", sep, $0; sep = "; " }')
+  # The first line with a verdict, sentinel or refusal after other output.
+  glued=$({ grep -anE '.(VERDICT [^ ]+ (PASS|FAIL|VOID) |SENTINEL [^ ]+ |REFUSED [^ ]+ )' "$out" || true; } | head -1 | cut -d: -f1)
   listed=""
   distrust=""
 
   if [[ -n "$refusals" ]]; then
     distrust="the family refused to check ($refusals), and what a family refuses is invisible to its count, so none of its verdicts stand"
+  elif [[ -n "$glued" ]]; then
+    distrust="the family's stream has a verdict, sentinel or refusal partway through line $glued, after output that did not end its line, and one that does not start its line cannot be told from text quoting one"
   elif (( closes == 0 )); then
     distrust="the family produced no sentinel, so its stream was truncated or it never ran"
   elif (( closes > 1 )); then

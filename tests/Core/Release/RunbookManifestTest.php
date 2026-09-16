@@ -714,6 +714,67 @@ it('keeps a FAIL whole when the family before it ended its output without a newl
         ->and($run->getOutput())->toContain('FAIL  B-1 — a relay dials the web server');
 });
 
+it('shows a verdict glued onto the family\'s own unterminated output, and says it was glued', function (string $stream, string $line, string $shown): void {
+    /*
+     * ⚠️ A FAIL THAT REACHED THE STREAM WAS REPORTED NOWHERE. A command whose output does not end its line — `curl
+     * -w '%{http_code}'` printing `403`, left uncaptured — glues the next verdict onto it. The gate accepts a
+     * verdict only at the start of a line, because a reason may quote one, so `403VERDICT G-1 FAIL …` counted
+     * for nothing: the family was blamed on its transport, and G-1's FAIL appeared in no line of the report.
+     * Glued onto the sentinel instead, the stream was said to have no sentinel, as if it had never run.
+     */
+    runbookManifest($this->runbook, "tunnel glue G-1\ntunnel glue G-2\n");
+    runbookFamily($this->runbook, 'glue', $stream);
+
+    $run = runbookRun($this->dir);
+    $reason = "the family's stream has a verdict, sentinel or refusal partway through {$line}, after output that did not end its line, and one that does not start its line cannot be told from text quoting one";
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and($run->getOutput())->toContain("VOID  G-1 (glue) — {$reason}; for this check it reported {$shown}")
+        ->and($run->getOutput())->toContain("VOID  G-2 (glue) — {$reason}; for this check it reported PASS: login is limited")
+        ->and($run->getOutput())->not->toContain('no sentinel')
+        ->and($run->getOutput())->not->toContain('FAIL  G-1');
+})->with([
+    'glued onto a verdict' => [<<<'BASH'
+        family glue G-1 G-2
+        printf '403'
+        verdict G-1 FAIL "the API answered 403 to a forged header"
+        verdict G-2 PASS "login is limited"
+        BASH, 'line 1', 'FAIL, after other output on its line: the API answered 403 to a forged header'],
+    'glued onto the sentinel' => [<<<'BASH'
+        family glue G-1 G-2
+        verdict G-1 FAIL "the API answered 403 to a forged header"
+        verdict G-2 PASS "login is limited"
+        printf '200'
+        BASH, 'line 3', 'FAIL: the API answered 403 to a forged header'],
+]);
+
+it('reads a stream byte by byte, whatever the operator\'s locale', function (string $body, string $shown): void {
+    /*
+     * ⚠️ macOS grep IN A UTF-8 LOCALE SKIPS SOME LINES HOLDING A BYTE THAT IS NOT UTF-8. Measured: `VERDICT I-1
+     * FAIL \377…` matched nothing for `^VERDICT I-1 (PASS|FAIL|VOID) `, so a FAIL whose reason began with a
+     * measured command's raw bytes was reported as "no verdict arrived". The same byte before a glued verdict
+     * is not a character `.` can match, and `cut` exits 1 on it with "Illegal byte sequence", ending run.sh
+     * before its summary. The operator's shell is where this runs, and a UTF-8 locale is its default.
+     */
+    runbookManifest($this->runbook, "tunnel bytes I-1\n");
+    runbookFamily($this->runbook, 'bytes', $body);
+
+    $run = runbookRun($this->dir, ['LC_ALL' => 'en_US.UTF-8']);
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and($run->getOutput())->toContain($shown)
+        ->and($run->getOutput())->toContain('could not be measured.');
+})->with([
+    'a reason that begins with one' => [
+        "family bytes I-1\nverdict I-1 FAIL \"\$(printf '\\377')raw output\"\n",
+        "FAIL  I-1 — \xFFraw output",
+    ],
+    'a verdict glued after one' => [
+        "family bytes I-1\nprintf '\\033]0;forge@stage\\007\\377'\nverdict I-1 FAIL \"measured\"\n",
+        "VOID  I-1 (bytes) — the family's stream has a verdict, sentinel or refusal partway through line 1",
+    ],
+]);
+
 it('reads a stream carrying a stray NUL byte as text, rather than as nothing', function (): void {
     /*
      * ⚠️ macOS grep calls a file with a NUL in it binary and matches no line of it. On the shared stream,
