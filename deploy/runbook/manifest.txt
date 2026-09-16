@@ -20,7 +20,19 @@
 
 # --- plumbing (common.sh, run.sh): no checks of its own; proven by RunbookManifestTest ---
 
-# --- nginx (host/nginx.sh) --- not landed yet
+# --- nginx (host/nginx.sh) ---
+# The same rules on both topologies: what nginx hands PHP does not depend on what is in front of it,
+# and the differences between stage and alpha are read from the dump rather than assumed.
+tunnel   nginx NGX-1
+tunnel   nginx NGX-2
+tunnel   nginx NGX-3
+tunnel   nginx NGX-4
+tunnel   nginx NGX-5
+dns-only nginx NGX-1
+dns-only nginx NGX-2
+dns-only nginx NGX-3
+dns-only nginx NGX-4
+dns-only nginx NGX-5
 # --- relays (host/relays.sh) --- not landed yet
 # --- probe log and tunnel hostnames (host/probe-log.sh, outside/tunnel_log.py) --- not landed yet
 # --- the throttle at PHP (outside/throttle.py) --- not landed yet

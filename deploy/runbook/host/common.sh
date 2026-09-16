@@ -62,14 +62,30 @@ family() {
   trap kitsune_sentinel EXIT
 }
 
+# Paths the family wants removed when it ends.
+#
+# ⚠️ A FAMILY MUST NOT SET ITS OWN `trap … EXIT`. There is one EXIT trap per shell, and a second one
+# replaces the first: a family that trapped EXIT to remove its temporary directory would finish
+# successfully and print no sentinel, and run.sh would read that as a stream cut mid-family. Register
+# the path here instead, and the sentinel's own trap removes it. (Measured: nginx.sh did exactly this
+# and emitted no sentinel at all.)
+KITSUNE_CLEANUP=""
+cleanup_at_exit() {
+  KITSUNE_CLEANUP="$KITSUNE_CLEANUP $1"
+}
+
 # The last line of the family, printed even when the script aborts, so run.sh can tell a truncated
 # stream from a quiet one.
 kitsune_sentinel() {
   local status=$?
-  local count=0 id
+  local count=0 id path
 
   for id in $KITSUNE_EMITTED; do
     count=$((count + 1))
+  done
+
+  for path in $KITSUNE_CLEANUP; do
+    [[ -n "$path" && "$path" != / ]] && rm -rf "$path"
   done
 
   # The accumulator grows by prepending a space, which is an implementation detail no parser should
@@ -141,6 +157,27 @@ measure() {
   output=$("$@" 2>&1)
   status=$?
   MEASURED=$output
+
+  return "$status"
+}
+
+# ⚠️ WHEN THE OUTPUT IS DATA, STDERR MUST NOT BE MIXED INTO IT. `measure` merges the two on purpose,
+# because a VOID reason needs whatever the command complained about. But a command whose stdout is
+# the thing being parsed must not have its stderr folded in: `nginx -T` writes "nginx: the
+# configuration file … syntax is ok" to stderr, and merging it made the configuration tokenizer read
+# `nginx:` as a directive — which then swallowed the first real directive of the file. Stubs printed
+# only the configuration, so no fixture could show it; the live server did, on the first run.
+#
+#   if ! measure_into "$work/dump" nginx -T; then verdict NGX-1 VOID "nginx -T failed: $MEASURED"; fi
+#
+# Stdout goes to the file; MEASURED holds stderr, which is what the refusal or VOID reason needs.
+measure_into() {
+  local file=$1
+  shift
+  local status
+
+  MEASURED=$("$@" 2>&1 >"$file")
+  status=$?
 
   return "$status"
 }
