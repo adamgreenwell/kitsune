@@ -75,10 +75,11 @@ tunnel   tunnel-log TUN-2
 # share one bucket per address, and one failing hostname fails it — THR-2 covers what that bucket is keyed
 # on, and THR-3 covers the probe log being removed afterwards.
 #
-# ⚠️ A RUN LOCKS SIGN-IN OUT, DELIBERATELY. It signs in wrongly eight times from the operator's address and
-# leaves Filament's login throttle tripped for that address, on every hostname at once, for up to 60
-# seconds. That is the measurement, not a side effect: run it against stage or a not-yet-live alpha, in a
-# maintenance window.
+# ⚠️ A RUN LOCKS SIGN-IN OUT, DELIBERATELY. It signs in wrongly
+# seven times plus once more for every hostname the server serves — ten against a host serving three —
+# from the operator's address, and leaves Filament's login throttle tripped for that address, on every
+# hostname at once, for up to 60 seconds. That is the measurement, not a side effect: run it against stage
+# or a not-yet-live alpha, in a maintenance window.
 #
 # There are no dns-only rows yet. The family declares `tunnel` alone, and the dns-only rows land with the
 # alpha bring-up, when a real dns-only host has produced them — a family is promised for a topology only

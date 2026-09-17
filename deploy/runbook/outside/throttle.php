@@ -36,11 +36,13 @@ require_once __DIR__.'/lib.php';
  * "the body mentions data.email" is true of a throttled answer too. A family that matched on text would
  * report five rejections and a rejection, and call a throttle a failure to throttle.
  *
- * ⚠️ WHAT A RUN DOES TO THE SERVER. It signs in wrongly eight times and then leaves the login throttle
- * tripped for the operator's egress address for up to 60 seconds. The key carries no hostname, so that
- * lockout covers EVERY hostname the app serves at once, for anyone sharing that egress. Run it against
- * stage or a not-yet-live alpha, in a maintenance window. It installs the probe log, which undoes itself,
- * and writes nothing else.
+ * ⚠️ WHAT A RUN DOES TO THE SERVER. It signs in wrongly
+ * seven times plus once more for every hostname the server serves — ten against a host serving three:
+ * LIMIT+1 attempts on the first hostname, one already-throttled probe on each of the others, and two more
+ * for THR-2 — and then leaves the login throttle tripped for the operator's egress address for up to 60
+ * seconds. The key carries no hostname, so that lockout covers EVERY hostname the app serves at once, for
+ * anyone sharing that egress. Run it against stage or a not-yet-live alpha, in a maintenance window. It
+ * installs the probe log, which undoes itself, and writes nothing else.
  *
  * ⚠️ THREE CHECK IDS, NOT ONE PER HOSTNAME. manifest.txt is static and committed, and a server's
  * hostnames are its own property, so a per-hostname id could never be promised in advance. THR-1 covers

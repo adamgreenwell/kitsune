@@ -844,6 +844,35 @@ it('passes a host where the throttle counts by the requester and nothing else', 
     expect(glob($this->dir.'/tmp/kitsune-throttle-*') ?: [])->toBe([]);
 });
 
+it('states the same sign-in count in all three places it tells the operator, and sends exactly that many', function (): void {
+    /*
+     * ⚠️ THE ONE NUMBER THAT SIZES THE MAINTENANCE WINDOW. A run sends LIMIT+1 attempts on the first
+     * hostname, one already-throttled probe on each of the others, and two more for THR-2: seven plus one
+     * per served hostname. All three places that tell an operator what a run costs a live server said
+     * "eight times", which is only true of a host serving one — and this fixture's own host serves three.
+     *
+     * ⚠️ AND THE PROSE IS HELD TO THE MEASUREMENT, NOT JUST TO ITSELF. Three copies of one sentence are
+     * exactly the drift CLAUDE.md warns about, so they are held to each other AND to what the family
+     * actually sends: a count that changed in the code and not in the docs fails here.
+     */
+    $repo = dirname(__DIR__, 3);
+    $stated = 'seven times plus once more for every hostname the server serves';
+
+    // ⚠️ str_contains RATHER THAN toContain, BECAUSE toContain IS VARIADIC: a second argument meant as a
+    // failure message becomes a second needle, and the assertion then demands its own message be in the
+    // file. toBeTrue and toBeFalse take the message the way this needs.
+    foreach (['deploy/runbook/README.md', 'deploy/runbook/manifest.txt', 'deploy/runbook/outside/throttle.php'] as $file) {
+        $source = File::get($repo.'/'.$file);
+
+        expect(str_contains($source, $stated))->toBeTrue($file.' does not state the sign-in count the other two do')
+            ->and(str_contains($source, 'eight times'))->toBeFalse($file.' still states the old count');
+    }
+
+    throttleRun($this->dir, $this->family);
+
+    expect(throttleAnswers($this->state))->toHaveCount(7 + count(throttleSites()));
+});
+
 it('reads the throttle out of the snapshot, where the body text says the opposite', function (): void {
     /*
      * ⚠️ THE TRAP THE #111 DRAFT WALKED INTO. Every 200 re-renders the login form, and the form contains
