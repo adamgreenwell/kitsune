@@ -30,10 +30,11 @@
 set -euo pipefail
 
 family relays RLY-1 RLY-2 RLY-3 RLY-4 RLY-5
+# The expectation differs by topology, so this family runs on both, and common.sh refuses any other.
+topologies tunnel dns-only
 require_root
 
-topology=${1:-}
-[[ "$topology" == tunnel || "$topology" == dns-only ]] || refuse "the topology must be tunnel or dns-only, not [${topology}]"
+topology=$1
 
 work=$(mktemp -d) || refuse "could not make a working directory"
 cleanup_at_exit "$work"

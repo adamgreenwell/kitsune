@@ -41,13 +41,18 @@
 #   - Never a shell redirect under sudo (`sudo cmd < /proc/…`): the redirect is opened by the
 #     calling user, before sudo runs, and fails as that user.
 
-# The family this script speaks for, and the ids it promises to emit. manifest.txt holds the same list:
-# RunbookManifestTest asserts this declaration and the committed manifest agree, and run.sh voids a
-# family whose sentinel reports a check the manifest does not promise it.
+# The family this script speaks for, the ids it promises to emit, and the topologies it runs on. manifest.txt
+# holds the same lists: RunbookManifestTest asserts this declaration and the committed manifest agree, on both,
+# and run.sh voids a family whose sentinel reports a check the manifest does not promise it.
 KITSUNE_FAMILY=""
 KITSUNE_EXPECTED=""
 KITSUNE_EMITTED=""
 KITSUNE_REFUSED=""
+
+# What run.sh sent this script as its first argument: for a family, the topology the operator declared, which
+# `topologies` below holds it to. An instrument is driven by a family rather than dispatched, and is sent its
+# action here; it declares no topologies and never reads this.
+KITSUNE_SENT=${1:-}
 
 # Refuse, the way deploy/release.sh does. A refusal is not a verdict about the host: it is a condition
 # the operator has to fix, or a guard below catching this runbook's own bug.
@@ -95,6 +100,20 @@ family() {
   shift
   KITSUNE_EXPECTED="$*"
   trap kitsune_sentinel EXIT
+}
+
+# The topologies this family runs on, and the check that it was sent to one of them.
+#
+# ⚠️ WHERE A FAMILY RUNS IS THE FAMILY'S OWN DECLARATION, NOT THE MANIFEST'S. The tests used to take the topologies a
+# family runs on from manifest.txt itself, so deleting relays' five dns-only rows made relays tunnel-only as far as
+# every tree test could see: a dns-only run then promised 5 checks, dispatched nginx alone, and exited 0 over relays'
+# FAIL of ADR-034's central condition. manifest.txt is now held to this line, and a family sent to a topology it was
+# never written for refuses rather than reporting on a host it does not understand.
+topologies() {
+  case " $* " in
+    *" $KITSUNE_SENT "*) ;;
+    *) refuse "this family runs on [$*], and it was sent to check a [$KITSUNE_SENT] host" ;;
+  esac
 }
 
 # Paths the family wants removed when it ends.

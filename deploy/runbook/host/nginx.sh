@@ -28,6 +28,7 @@
 set -euo pipefail
 
 family nginx NGX-1 NGX-2 NGX-3 NGX-4 NGX-5
+topologies tunnel dns-only
 require_root
 
 work=$(mktemp -d) || refuse "could not make a working directory"

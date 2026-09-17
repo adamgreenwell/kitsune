@@ -72,8 +72,9 @@ style of `ReleaseScriptTest`: a deploy script is prose until something executes 
 Family by family, each proven on the stage server before the next begins, because the design's own
 history is that these checks stay wrong while they are prose. `manifest.txt` lists a family only when
 its script exists, and the tests assert that the ids the scripts can emit and the ids the manifest
-promises are the same set — so a family cannot land without being promised, and cannot be promised
-without landing.
+promises are the same set, under exactly the topologies each family declares it runs on — so a family
+cannot land without being promised, cannot be promised without landing, and cannot quietly lose the rows
+for one topology.
 
 The order, and why: the plumbing and the completeness gate first, since nothing else is trustworthy
 until an unrun family fails; then nginx, relays, the probe log and tunnel hostnames, the PHP-level

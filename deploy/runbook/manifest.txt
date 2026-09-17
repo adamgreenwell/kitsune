@@ -11,9 +11,12 @@
 # this file does not promise it. And RunbookManifestTest reads this file: every family the runbook ships is
 # listed and every family listed ships, no check belongs to two families, and each family's declared
 # checks — a host script's `family` line, an outside script's `const CHECKS`, each refused by that
-# family's own verdict() when anything else is printed — are exactly the rows here, under every topology
-# it runs on. Every host script but common.sh and probe-log.sh, and every outside script, must declare
-# exactly one family in a form the test can read, so a family cannot ship without the test seeing it.
+# family's own verdict() when anything else is printed — are exactly the rows here, under exactly the
+# topologies the family declares — a host script's `topologies` line, an outside script's `const
+# TOPOLOGIES`, each refused by the family itself when it is sent to any other host. Every host script but
+# common.sh and probe-log.sh, and every outside script, must declare exactly one family, its checks and its
+# topologies in a form the test can read, so a family cannot ship without the test seeing it, and a whole
+# block of its rows cannot go missing without the test saying so.
 #
 # Format: <topology> <family> <check-id>, where topology is `tunnel` (stage: cloudflared in front of
 # nginx) or `dns-only` (alpha: Forge, no tunnel). Blank lines and # comments are ignored. run.sh refuses a
@@ -61,9 +64,9 @@ dns-only relays RLY-5
 # requests across every hostname the server serves — one failing hostname fails it, and each one's
 # detail is recorded — and TUN-2 covers the probe log being removed afterwards.
 #
-# There are no dns-only rows: alpha has no tunnel, and its own family judges what a request without one
-# must look like. The family says so as a VOID rather than skipping, so the gate cannot read it as a
-# family that died.
+# There are no dns-only rows because the family declares `tunnel` alone: alpha has no tunnel, and its own
+# family judges what a request without one must look like. Run on any other topology, this family says so as
+# a VOID rather than skipping, so the gate cannot read it as a family that died.
 tunnel   tunnel-log TUN-1
 tunnel   tunnel-log TUN-2
 # --- the throttle at PHP (outside/throttle.php) --- not landed yet

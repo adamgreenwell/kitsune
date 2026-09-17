@@ -135,7 +135,8 @@ function runbookCommittedRows(?string $manifest = null): array
 }
 
 /**
- * The topologies the committed manifest promises a family for, sorted.
+ * The topologies the committed manifest promises a family for, sorted — which the family's own declaration decides,
+ * and this is held to.
  *
  * @return list<string>
  */
@@ -187,9 +188,10 @@ function runbookInstruments(): array
 }
 
 /**
- * Every family declaration a runbook script makes, as [name, sorted checks]. A host script declares with
- * `family <name> <id…>`, which common.sh's verdict() enforces; an outside script with `const FAMILY` and
- * `const CHECKS`, which its own verdict() enforces.
+ * Every family declaration a runbook script makes, as [name, sorted checks, sorted topologies]. A host script
+ * declares with `family <name> <id…>` and `topologies <topology…>`, which common.sh's verdict() and topologies()
+ * enforce; an outside script with `const FAMILY`, `const CHECKS` and `const TOPOLOGIES`, which its own verdict()
+ * and its topology branch enforce.
  *
  * ⚠️ READ AS IT CAN BE WRITTEN, AND LOUD WHEN IT CANNOT BE READ. This used to match a declaration only at column
  * 0, so a host family calling `family` inside `main()`, or an outside family declaring class constants, was not
@@ -198,7 +200,7 @@ function runbookInstruments(): array
  * constant is read from PHP's own tokens, in a class or not, typed or not. A declaration that is not plain
  * words or quoted plain strings throws rather than being skipped.
  *
- * @return list<array{0: string, 1: list<string>}>
+ * @return list<array{0: string, 1: list<string>, 2: list<string>}>
  */
 function runbookDeclarations(string $script, string $shown): array
 {
@@ -212,22 +214,33 @@ function runbookDeclarations(string $script, string $shown): array
         return $words;
     };
 
+    $words = static fn (string $call, string $as): array => $plain(preg_split('/[ \t]+/', trim((string) preg_replace('/(^|[ \t])#.*$/', '', $call)), -1, PREG_SPLIT_NO_EMPTY) ?: [], $as);
+
     if (str_ends_with($script, '.sh')) {
-        preg_match_all('/^[ \t]*family[ \t]+(.*)$/m', str_replace("\\\n", ' ', File::get($script)), $calls);
+        $source = str_replace("\\\n", ' ', File::get($script));
+        preg_match_all('/^[ \t]*family[ \t]+(.*)$/m', $source, $calls);
+        preg_match_all('/^[ \t]*topologies[ \t]+(.*)$/m', $source, $runs);
+
+        if (count($calls[1]) !== count($runs[1])) {
+            throw new RuntimeException("{$shown} declares ".count($calls[1]).' families and '.count($runs[1]).' topology lines, where a family declares each once');
+        }
+
         $declarations = [];
 
-        foreach ($calls[1] as $call) {
-            $words = $plain(preg_split('/[ \t]+/', trim((string) preg_replace('/(^|[ \t])#.*$/', '', $call)), -1, PREG_SPLIT_NO_EMPTY) ?: [], 'its family');
-            $checks = array_slice($words, 1);
+        foreach ($calls[1] as $at => $call) {
+            $declared = $words($call, 'its family');
+            $checks = array_slice($declared, 1);
+            $topologies = $words($runs[1][$at], 'its topologies');
             sort($checks);
-            $declarations[] = [$words[0] ?? '', $checks];
+            sort($topologies);
+            $declarations[] = [$declared[0] ?? '', $checks, $topologies];
         }
 
         return $declarations;
     }
 
     $tokens = array_values(array_filter(PhpToken::tokenize(File::get($script)), static fn (PhpToken $token): bool => ! $token->isIgnorable()));
-    $constants = ['FAMILY' => [], 'CHECKS' => []];
+    $constants = ['FAMILY' => [], 'CHECKS' => [], 'TOPOLOGIES' => []];
 
     foreach ($tokens as $at => $token) {
         if (! $token->is(T_CONST)) {
@@ -259,18 +272,21 @@ function runbookDeclarations(string $script, string $shown): array
         $constants[$name][] = $plain(array_map(static fn (PhpToken $token): string => substr($token->text, 1, -1), $strings), $name);
     }
 
-    if ($constants['FAMILY'] === [] && $constants['CHECKS'] === []) {
+    if ($constants['FAMILY'] === [] && $constants['CHECKS'] === [] && $constants['TOPOLOGIES'] === []) {
         return [];
     }
 
-    if (count($constants['FAMILY']) !== 1 || count($constants['CHECKS']) !== 1) {
-        throw new RuntimeException("{$shown} declares FAMILY ".count($constants['FAMILY']).' times and CHECKS '.count($constants['CHECKS']).' times, where a family declares each once');
+    if (count($constants['FAMILY']) !== 1 || count($constants['CHECKS']) !== 1 || count($constants['TOPOLOGIES']) !== 1) {
+        throw new RuntimeException("{$shown} declares FAMILY ".count($constants['FAMILY']).' times, CHECKS '.count($constants['CHECKS'])
+            .' times and TOPOLOGIES '.count($constants['TOPOLOGIES']).' times, where a family declares each once');
     }
 
     $checks = $constants['CHECKS'][0];
+    $topologies = $constants['TOPOLOGIES'][0];
     sort($checks);
+    sort($topologies);
 
-    return [[$constants['FAMILY'][0][0], $checks]];
+    return [[$constants['FAMILY'][0][0], $checks, $topologies]];
 }
 
 /**
@@ -316,12 +332,13 @@ function runbookShippedFamilies(?string $root = null): array
 }
 
 /**
- * The checks a family script declares, sorted, read by the same parser that found the family. Each is enforced
- * by that family's own verdict(), so the declaration is exactly what the family can report.
+ * The one declaration a family script makes, as [name, checks, topologies], read by the parser that found the
+ * family. The family enforces each part itself: its verdict() refuses a check it did not declare, and it refuses
+ * a run for a topology it did not — so the declaration is exactly what the family can report, and where.
  *
- * @return list<string>
+ * @return array{0: string, 1: list<string>, 2: list<string>}
  */
-function runbookDeclaredChecks(string $script): array
+function runbookDeclaration(string $script): array
 {
     $declarations = runbookDeclarations($script, basename($script));
 
@@ -329,7 +346,7 @@ function runbookDeclaredChecks(string $script): array
         throw new RuntimeException(basename($script).' declares '.count($declarations).' families');
     }
 
-    return $declarations[0][1];
+    return $declarations[0];
 }
 
 it('is valid bash', function (): void {
@@ -648,6 +665,22 @@ it('refuses to run when TMPDIR names a directory it cannot use, and says to fix 
         ->and($run->getErrorOutput())->toContain("Refusing to run: a directory for the families' output could not be made in {$missing}, which TMPDIR names, and a failed run keeps its evidence there.")
         ->and($run->getErrorOutput())->toContain('Create that directory or make it writable, or unset TMPDIR to use /tmp.')
         ->and($run->getOutput())->not->toContain('--- good');
+});
+
+it('refuses a family sent to check a topology it does not declare', function (): void {
+    /*
+     * Where a family runs is the family's own declaration, and manifest.txt is held to it. A run that reaches a family
+     * on some other topology — a hand-edited manifest, or a --manifest of the operator's own — gets a refusal rather
+     * than a report on a host the family was never written for.
+     */
+    runbookManifest($this->runbook, "dns-only elsewhere E-1\n");
+    runbookFamily($this->runbook, 'elsewhere', "family elsewhere E-1\ntopologies tunnel\nverdict E-1 PASS \"never reached\"\n");
+
+    $run = runbookRun($this->dir, [], 'dns-only');
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and($run->getOutput())->toContain('VOID  E-1 (elsewhere) — the family refused to check (this family runs on [tunnel], and it was sent to check a [dns-only] host)')
+        ->and($run->getOutput())->not->toContain('PASS  E-1');
 });
 
 it('refuses a verdict for an id the family never declared', function (): void {
@@ -1255,12 +1288,17 @@ it('promises exactly the families the runbook ships, and no other', function ():
     }
 });
 
-it('promises every check each family declares, under every topology it runs on', function (): void {
+it('promises every check each family declares, under exactly the topologies it declares', function (): void {
     /*
-     * A family's checks are its declaration — a host script's `family` line, an outside script's `const
-     * CHECKS` — and its own verdict() refuses any other id, so the declaration is exactly what it can report.
-     * It must equal the committed rows under every topology that promises the family: a partial promise leaves
-     * a check that runs and counts for nothing.
+     * A family's checks and the topologies it runs on are its own declaration — a host script's `family` and
+     * `topologies` lines, an outside script's `const CHECKS` and `const TOPOLOGIES` — and the family enforces both:
+     * verdict() refuses any other id, and it refuses a run for any other topology. The committed rows must be exactly
+     * that, under exactly those topologies: a partial promise leaves a check that runs and counts for nothing.
+     *
+     * ⚠️ READ FROM THE MANIFEST, THIS PROVED NOTHING ABOUT A MISSING BLOCK. The topologies a family "runs on" came
+     * from the manifest itself, so deleting relays' five dns-only rows simply made relays tunnel-only, and all of
+     * these tests passed — while a dns-only run promised 5 checks, dispatched nginx alone, and exited 0 over relays'
+     * FAIL of ADR-034's central condition.
      */
     $judged = [];
     $pairs = [];
@@ -1272,11 +1310,13 @@ it('promises every check each family declares, under every topology it runs on',
     }
 
     foreach (runbookShippedFamilies() as $family => $scripts) {
-        $declared = runbookDeclaredChecks($scripts[0]);
+        [, $declared, $runs] = runbookDeclaration($scripts[0]);
 
-        expect($declared)->not->toBe([], "[{$family}] declares no checks in {$scripts[0]}");
+        expect($declared)->not->toBe([], "[{$family}] declares no checks in {$scripts[0]}")
+            ->and($runs)->not->toBe([], "[{$family}] declares no topologies in {$scripts[0]}")
+            ->and(runbookTopologiesFor($family))->toBe($runs, "[{$family}] is promised under topologies other than the ones it declares");
 
-        foreach (runbookTopologiesFor($family) as $topology) {
+        foreach ($runs as $topology) {
             expect(runbookPromised($family, $topology))->toBe($declared, "[{$family}] on a {$topology} host");
             $judged[] = "{$topology} {$family}";
         }
@@ -1321,7 +1361,7 @@ it('runs each outside family without its instruments and sees it void every chec
             continue;
         }
 
-        foreach (runbookTopologiesFor($family) as $topology) {
+        foreach (runbookDeclaration($scripts[0])[2] as $topology) {
             $run = new Process(
                 ['php', $scripts[0], '--host', 'forge@fixture', '--expect', $topology, '--runbook', $this->dir.'/bare'],
                 $this->dir,
@@ -1341,7 +1381,7 @@ it('runs each outside family without its instruments and sees it void every chec
             $reported = preg_split('/ +/', trim((string) preg_replace('/^SENTINEL \S+ \d+/', '', $sentinels[0])), -1, PREG_SPLIT_NO_EMPTY) ?: [];
             sort($reported);
 
-            expect($reported)->toBe(runbookDeclaredChecks($scripts[0]), $context)
+            expect($reported)->toBe(runbookDeclaration($scripts[0])[1], $context)
                 ->and($reported)->toBe(runbookPromised($family, $topology), $context)
                 ->and($verdicts)->toHaveCount(count($reported), $context);
 
@@ -1393,15 +1433,15 @@ it('finds a family however its declaration is written', function (): void {
      * never dispatched them. The real instruments sit beside them, and must read as declaring nothing.
      */
     $root = runbookTree($this->dir, [
-        'host/sshd.sh' => "main() {\n  family sshd SSH-2 \\\n    SSH-1  # forwarding, then the sweep\n  verdict SSH-1 PASS ok\n}\n\nmain \"\$@\"\n",
-        'outside/throttle.php' => "<?php\n\nfinal class Throttle\n{\n    public const string FAMILY = 'throttle';\n\n    final public const array CHECKS = [\n        'THR-1',\n        \"THR-2\",\n    ];\n}\n",
+        'host/sshd.sh' => "main() {\n  family sshd SSH-2 \\\n    SSH-1  # forwarding, then the sweep\n  topologies dns-only \\\n    tunnel  # sshd is sshd on both\n  verdict SSH-1 PASS ok\n}\n\nmain \"\$@\"\n",
+        'outside/throttle.php' => "<?php\n\nfinal class Throttle\n{\n    public const string FAMILY = 'throttle';\n\n    final public const array CHECKS = [\n        'THR-1',\n        \"THR-2\",\n    ];\n\n    public const array TOPOLOGIES = ['tunnel', \"dns-only\"];\n}\n",
     ]);
 
     $families = runbookShippedFamilies($root);
 
     expect(array_keys($families))->toBe(['sshd', 'throttle'])
-        ->and(runbookDeclaredChecks($families['sshd'][0]))->toBe(['SSH-1', 'SSH-2'])
-        ->and(runbookDeclaredChecks($families['throttle'][0]))->toBe(['THR-1', 'THR-2']);
+        ->and(runbookDeclaration($families['sshd'][0]))->toBe(['sshd', ['SSH-1', 'SSH-2'], ['dns-only', 'tunnel']])
+        ->and(runbookDeclaration($families['throttle'][0]))->toBe(['throttle', ['THR-1', 'THR-2'], ['dns-only', 'tunnel']]);
 });
 
 it('fails loudly on a script whose family it cannot read, rather than leaving the family out', function (string $path, string $source, string $message): void {
@@ -1411,10 +1451,13 @@ it('fails loudly on a script whose family it cannot read, rather than leaving th
     expect(fn () => runbookShippedFamilies($root))->toThrow(RuntimeException::class, $message);
 })->with([
     'a host script that declares nothing' => ['host/sweep.sh', "verdict SSH-9 PASS ok\n", 'host/sweep.sh declares 0 families'],
-    'a host script that declares twice' => ['host/sshd.sh', "family sshd SSH-1\nfamily sshd SSH-2\n", 'host/sshd.sh declares 2 families'],
-    'a host family named by a variable' => ['host/sshd.sh', "family \"\$name\" SSH-1\n", 'host/sshd.sh declares its family as ["$name" SSH-1], which cannot be read as plain words'],
+    'a host script that declares twice' => ['host/sshd.sh', "family sshd SSH-1\ntopologies tunnel\nfamily sshd SSH-2\ntopologies tunnel\n", 'host/sshd.sh declares 2 families'],
+    'a host family named by a variable' => ['host/sshd.sh', "family \"\$name\" SSH-1\ntopologies tunnel\n", 'host/sshd.sh declares its family as ["$name" SSH-1], which cannot be read as plain words'],
+    'a host family that declares no topologies' => ['host/sshd.sh', "family sshd SSH-1\n", 'host/sshd.sh declares 1 families and 0 topology lines'],
+    'host topologies named by a variable' => ['host/sshd.sh', "family sshd SSH-1\ntopologies \"\$expect\"\n", 'host/sshd.sh declares its topologies as ["$expect"], which cannot be read as plain words'],
     'an outside script that declares nothing' => ['outside/throttle.php', "<?php\n\ndefine('FAMILY', 'throttle');\n", 'outside/throttle.php declares 0 families'],
-    'checks built from another constant' => ['outside/throttle.php', "<?php\n\nconst FAMILY = 'throttle';\nconst CHECKS = [PREFIX.'-1'];\n", "outside/throttle.php declares CHECKS as [[PREFIX.'-1']], which cannot be read as quoted plain words"],
-    'a family with no checks declared' => ['outside/throttle.php', "<?php\n\nconst FAMILY = 'throttle';\n", 'outside/throttle.php declares FAMILY 1 times and CHECKS 0 times'],
-    'an instrument that declares a family' => ['host/probe-log.sh', "family probe PRB-1\n", 'host/probe-log.sh is an instrument, and declares a family'],
+    'checks built from another constant' => ['outside/throttle.php', "<?php\n\nconst FAMILY = 'throttle';\nconst CHECKS = [PREFIX.'-1'];\nconst TOPOLOGIES = ['tunnel'];\n", "outside/throttle.php declares CHECKS as [[PREFIX.'-1']], which cannot be read as quoted plain words"],
+    'a family with no checks declared' => ['outside/throttle.php', "<?php\n\nconst FAMILY = 'throttle';\nconst TOPOLOGIES = ['tunnel'];\n", 'outside/throttle.php declares FAMILY 1 times, CHECKS 0 times and TOPOLOGIES 1 times'],
+    'an outside family with no topologies declared' => ['outside/throttle.php', "<?php\n\nconst FAMILY = 'throttle';\nconst CHECKS = ['THR-1'];\n", 'outside/throttle.php declares FAMILY 1 times, CHECKS 1 times and TOPOLOGIES 0 times'],
+    'an instrument that declares a family' => ['host/probe-log.sh', "family probe PRB-1\ntopologies tunnel\n", 'host/probe-log.sh is an instrument, and declares a family'],
 ]);

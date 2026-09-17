@@ -45,6 +45,14 @@ const FAMILY = 'tunnel-log';
  */
 const CHECKS = ['TUN-1', 'TUN-2'];
 
+/**
+ * The topologies this family runs on — the counterpart of a host family's `topologies` line, and the answer to
+ * "which rows may manifest.txt hold for it", which RunbookManifestTest holds this file to. Read from the manifest
+ * instead, a family's whole block could be deleted and nothing would say it was missing. alpha has no tunnel, so
+ * on any other topology this voids its checks rather than skipping, which the gate would read as a family that died.
+ */
+const TOPOLOGIES = ['tunnel'];
+
 /** RFC 5737 documentation space: a valid address Symfony keeps, and not routable. */
 const SENTINEL_XFF = '192.0.2.77';
 
@@ -506,7 +514,7 @@ foreach ($files as $file) {
     $payload .= $contents;
 }
 
-if ($expect !== 'tunnel') {
+if (! in_array($expect, TOPOLOGIES, true)) {
     // alpha's shape is its own family's to judge. Saying so beats a silent skip, which the
     // completeness gate would read as a family that died.
     verdict('TUN-1', 'VOID', 'this family checks what a tunnel delivers, and the topology is dns-only', $verdicts);
