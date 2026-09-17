@@ -530,8 +530,13 @@ function update(string $state, array $case, string $hostname, string $path, stri
     // release cannot reach. Nothing is counted and nothing is ever refused, while `config` still calls the
     // store `file`, so the store-that-forgets FAIL cannot fire. This is the single most dangerous host
     // state this family exists to find.
+    // ⚠️ THE NUMBER A HOST REFUSES AT IS THE HOST'S. Filament hardcodes `rateLimit(5)` inside
+    // `authenticate()` and offers no configuration for it, so a panel that overrides that method refuses at
+    // a number of its own — and the family sends six attempts, which can see neither a higher limit nor a
+    // lower one for what it is.
+    $limit = (int) ($case['limit'] ?? 5);
     $counting = ($case['no_limiter'] ?? false) !== true;
-    $throttled = $counting && $held['attempts'] >= 5 && $alive;
+    $throttled = $counting && $held['attempts'] >= $limit && $alive;
 
     if (! $throttled) {
         // The limiter arms the timer on the bucket's FIRST hit and never refreshes it.
@@ -1055,6 +1060,46 @@ it('fails a host whose login throttle never engages, though its store persists',
         // bucket to meet, a probe against them would measure nothing and lock their sign-in out for it.
         ->and(throttleAnswers($this->state))->toHaveCount(6);
 });
+
+it('voids, and never fails, a host whose login page refuses at a number of its own', function (array $case, string $named): void {
+    /*
+     * ⚠️ THE ACCUSATION THE RECORD ONE LINE ABOVE IT REFUTED. Filament hardcodes `rateLimit(5)` inside
+     * `authenticate()`, so a panel that overrides that method refuses at a number of its own — and against
+     * one that refuses at ten, this family reported FAIL "the login throttle does not hold on this host"
+     * while its own store read said every attempt had been counted under the requester's own address and
+     * every forged and loopback bucket was empty. That is a sound host, holding exactly the condition
+     * ADR-034 asks for, told it has no login throttle; ADR-034 constrains what the throttle counts BY, and
+     * says nothing about what it counts TO.
+     *
+     * Six attempts cannot tell a limit of ten from no limit at all, and cannot tell a limit of three from a
+     * bucket somebody else had filled — which the pre-window read had just proved empty. Both are VOID,
+     * both still exit non-zero, and both now say which number the host really used rather than inventing a
+     * cause.
+     */
+    throttleCase($this->state, $case);
+
+    $run = throttleRun($this->dir, $this->family);
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and(throttleVerdict($run, 'THR-1'))->toContain('VOID')
+        ->and(throttleVerdict($run, 'THR-1'))->toContain($named)
+        // ⚠️ AND NO CHECK MAY BLAME THE HOST FOR IT, the way the moving-egress cases are held: asserting
+        // this check's own verdict alone would pass a family that moved the accusation to the other one.
+        ->and($run->getOutput())->not->toContain('the login throttle does not hold on this host')
+        ->and($run->getOutput())->not->toContain('the bucket did not start empty')
+        // The first LIMIT attempts were rejected identically; a throttle among them carries no message of
+        // its own, and counting it as one produced a second false clause on the same verdict.
+        ->and($run->getOutput())->not->toContain('rejected with different messages');
+})->with([
+    'it refuses at ten, so six attempts meet no throttle' => [
+        ['limit' => 10],
+        'the limiter counted 6 attempts under the requester\'s own address and refused none of them',
+    ],
+    'it refuses at three, so the fourth attempt is thrown' => [
+        ['limit' => 3],
+        'the store read this run\'s own bucket empty before the window, so this host refuses at 3 attempts',
+    ],
+]);
 
 it('fails a key that holds the session or the email as well as the address', function (string $key): void {
     // One hostname, because every hostname gets a session of its own: with three, a per-session key is

@@ -71,7 +71,17 @@ const CHECKS = ['THR-1', 'THR-2', 'THR-3'];
  */
 const TOPOLOGIES = ['tunnel'];
 
-/** Filament's `rateLimit(5)` on the login page: five hits fill the bucket, and the sixth is thrown. */
+/**
+ * Filament's `rateLimit(5)` on the login page: five hits fill the bucket, and the sixth is thrown.
+ *
+ * ⚠️ AN ASSUMPTION ABOUT THE HOST'S LOGIN PAGE, NOT A MEASUREMENT OF IT. Filament hardcodes the number
+ * inside `authenticate()` and exposes no configuration for it, so a panel that overrides that method
+ * refuses at a number of its own — and a run that sends LIMIT+1 attempts can tell neither a higher limit
+ * from no limit at all, nor a lower one from a bucket somebody else filled. What it CAN tell, from the
+ * store read, is whether the attempts were counted under the requester's own address, which is the
+ * condition ADR-034 asks for: the count is not. So a limit that is not this one is unmeasurable here, and
+ * never a FAIL against the host.
+ */
 const LIMIT = 5;
 
 /**
@@ -1160,7 +1170,19 @@ function examine(string $host, string $nonce, string $payload, string $storeSour
         }
 
         if ($number <= LIMIT && $outcome !== 'FAILED') {
-            $voids[] = "{$first}: attempt {$number} of the first ".LIMIT." was {$outcome}, so the bucket did not start empty and nothing after it can be told apart";
+            /*
+             * ⚠️ AND THE BUCKET DID START EMPTY, WHEN THE STORE READ SAYS IT DID. This blamed an early
+             * throttle on a bucket somebody else had filled — which the pre-window read had just proved
+             * empty, and which the dirty-bucket guard above refuses to measure through. What an attempt
+             * refused before the LIMIT this family assumes really says is that the host's own limit is
+             * lower, and an operator sent after a phantom co-tenant cannot see that in the reason.
+             */
+            $voids[] = "{$first}: attempt {$number} of the first ".LIMIT." was {$outcome}"
+                .(bucket($pre, 'v4') === 0
+                    ? ', and the store read this run\'s own bucket empty before the window, so this host refuses at '
+                        .($number - 1).' attempts rather than the '.LIMIT.' this family assumes'
+                    : ', so the bucket did not start empty')
+                .' and nothing after it can be told apart';
             $stopped = "attempt {$number} was {$outcome}";
 
             break;
@@ -1267,7 +1289,26 @@ function examine(string $host, string $nonce, string $payload, string $storeSour
             // loudest finding this family exists to make was reported as a fault of the runbook's own
             // instrument: "the writes went somewhere this instrument did not look", about a host with no
             // working login throttle at all.
-            if (! $throttled) {
+            if (! $throttled && bucket($post, 'v4') >= LIMIT + 1) {
+                /*
+                 * ⚠️ A LIMIT THIS RUN DID NOT MEASURE IS NOT A THROTTLE THE HOST DOES NOT HAVE. The
+                 * loudest verdict this family owns was reported against a host whose login page calls
+                 * `rateLimit(10)` rather than Filament's stock five — and the refuting evidence was
+                 * printed one line above it, in the RECORD the store read produced: every one of this
+                 * run's attempts counted under the requester's OWN address, every forged and loopback
+                 * bucket empty. A limiter that counted them and refused none of them is a limiter whose
+                 * limit is higher than the six attempts this family sends, which is not the same as a
+                 * host with no login throttle — where the bucket reads 0, because nothing counted at all.
+                 *
+                 * ADR-034 asks what the throttle counts BY, not what it counts TO, so a sound host with a
+                 * higher limit holds the condition and must not be accused of breaking it. It is still
+                 * unmeasurable and still exits non-zero: six attempts cannot tell a limit of ten from no
+                 * limit at all.
+                 */
+                $voids[] = 'the limiter counted '.bucket($post, 'v4').' attempts under the requester\'s own address and refused '
+                    .'none of them, so this host does not refuse at the '.LIMIT.' attempts this family assumes — no forged or '
+                    .'loopback bucket grew and the count is this run\'s own, so what could not be measured is the limit, not the key';
+            } elseif (! $throttled) {
                 $fails[] = 'the sixth attempt from one address was not throttled, and the store holds '
                     .bucket($post, 'v4').' attempts for that address, so the login throttle does not hold on this host';
             } elseif (bucket($post, 'v4') === 0) {
@@ -1364,9 +1405,14 @@ function examine(string $host, string $nonce, string $payload, string $storeSour
         $voids[] = 'no attempt was made against '.implode(', ', $missing).', so this says nothing about those hostnames';
     }
 
+    // ⚠️ REJECTIONS ONLY, BECAUSE A THROTTLE IS NOT A KIND OF REJECTION. A throttled answer carries no
+    // detail, so on a host that refuses before the LIMIT this family assumes the empty string sat beside
+    // the rejections and this reported "different messages" about a difference it had invented — a second
+    // false clause on a verdict whose first one was already wrong.
     $messages = array_unique(array_map(
         static fn (array $answer): string => $answer['detail'],
-        array_filter($answers, static fn (array $answer, int $number): bool => $number <= LIMIT, ARRAY_FILTER_USE_BOTH),
+        array_filter($answers, static fn (array $answer, int $number): bool => $number <= LIMIT
+            && $answer['outcome'] === 'FAILED', ARRAY_FILTER_USE_BOTH),
     ));
 
     if (count($messages) > 1) {
