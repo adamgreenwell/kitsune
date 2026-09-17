@@ -141,7 +141,16 @@ $livewireLimit = static function (string $property): ?int {
         return null;
     }
 
-    $held = (new ReflectionProperty(Checksum::class, $property))->getValue();
+    $declared = new ReflectionProperty(Checksum::class, $property);
+
+    // ⚠️ AND STATIC, OR NOTHING. `getValue()` takes an instance for a property that is not static, and
+    // throws without one — so a package that made this one an instance property would kill the instrument,
+    // and a run would be voided entirely over a number this only has to admit it could not read.
+    if (! $declared->isStatic()) {
+        return null;
+    }
+
+    $held = $declared->getValue();
 
     return is_int($held) && $held > 0 ? $held : null;
 };
