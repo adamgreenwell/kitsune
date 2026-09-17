@@ -49,6 +49,15 @@ const CHECKS = ['TUN-1', 'TUN-2'];
 const SENTINEL_XFF = '192.0.2.77';
 
 /**
+ * The status run() reports when a command never started, which no process can exit with.
+ *
+ * ⚠️ "ssh NEVER RAN" AND "ssh EXITED 255" DECIDE TUN-2 DIFFERENTLY. After a start that ran, the probe may be
+ * installed and stop has to say what it found; after one that never reached the host, nothing was installed and
+ * running stop could only report a failure of its own.
+ */
+const NOT_STARTED = -1;
+
+/**
  * One line, always: a reason that spans lines would reach run.sh as a verdict followed by something
  * no parser recognises.
  */
@@ -123,7 +132,7 @@ function run(array $command, string $input = '', int $timeout = 180): array
     $process = proc_open($command, $descriptors, $pipes);
 
     if (! is_resource($process)) {
-        return [255, '', 'could not start '.($command[0] ?? '?')];
+        return [NOT_STARTED, '', 'could not start '.($command[0] ?? '?')];
     }
 
     fwrite($pipes[0], $input);
@@ -167,28 +176,50 @@ function run(array $command, string $input = '', int $timeout = 180): array
  * Drive the probe-log instrument on the host, sending it exactly as run.sh sends a family: common.sh
  * and the instrument concatenated on stdin, under `sudo -n bash -s`.
  *
+ * ⚠️ THE BYTES ARE READ ONCE, BEFORE ANY OF THIS RUNS. A file that could not be read here would fail `start` and
+ * `stop` alike, and a stop that never ran cannot say whether the probe is on the server — so TUN-2 would report a
+ * probe left behind that was never installed. Read up front, an unreadable instrument is measured before anything
+ * is sent, and stop sends exactly the bytes start did.
+ *
  * @param  list<string>  $argv
- * @param  list<string>  $files
  * @return array{0: int, 1: string, 2: string}
  */
-function instrument(string $host, array $argv, array $files): array
+function instrument(string $host, array $argv, string $payload): array
 {
-    $payload = '';
-
-    foreach ($files as $file) {
-        $contents = @file_get_contents($file);
-
-        if ($contents === false) {
-            return [255, '', "could not read {$file}"];
-        }
-
-        $payload .= $contents;
-    }
-
     return run([
         'ssh', '-o', 'BatchMode=yes', '-o', 'ClearAllForwardings=yes', '-o', 'ConnectTimeout=10',
         $host, 'sudo', '-n', 'bash', '-s', '--', ...$argv,
     ], $payload);
+}
+
+/**
+ * Remove the probe, and say what the instrument found and removed.
+ *
+ * ⚠️ STOP RUNS WHENEVER START WAS ATTEMPTED, WHATEVER START RETURNED. `start` can fail after it has written the
+ * snippet, armed the dead-man timer and reloaded nginx: its drain wait can expire, and ssh can exit 255 once the
+ * remote start has finished. Both were reported as TUN-2 VOID "nothing was installed", and stop never ran — so the
+ * probe served on until the dead-man timer fired fifteen minutes later, and a rerun inside that window refused
+ * because a probe was already installed. Nothing measured any of it.
+ *
+ * ⚠️ AND TUN-2 IS WHAT STOP FOUND. `removed` is the instrument's own proof that the configuration hashes back to
+ * its baseline, and `absent` is its answer for a nonce that installed nothing — which is a VOID, since nothing was
+ * there to remove. Anything else is a probe that may still be on the server, and a probe left behind is the worst
+ * outcome this family can have, so it is a FAIL of its own rather than a footnote on another verdict.
+ *
+ * @return array{0: string, 1: string} TUN-2's outcome, and its reason
+ */
+function removal(string $host, string $nonce, string $payload): array
+{
+    [$status, $out, $err] = instrument($host, ['stop', $nonce], $payload);
+    $said = [];
+
+    if ($status === 0 && preg_match('/^STATE stop (removed|absent)\b/m', $out, $said) === 1) {
+        return $said[1] === 'removed'
+            ? ['PASS', $out]
+            : ['VOID', 'nothing of the probe was installed, so nothing had to be removed: '.oneLine($out)];
+    }
+
+    return ['FAIL', 'THE PROBE LOG WAS NOT REMOVED: '.substr(oneLine($err !== '' ? $err : $out), 0, 300)];
 }
 
 /**
@@ -380,10 +411,9 @@ function judge(array $line, string $hostname, string $edgeAddress, string $owner
 /**
  * One hostname: request it through the edge, collect its line, judge it.
  *
- * @param  list<string>  $files
  * @return array{0: list<string>, 1: list<string>} fails, then voids
  */
-function checkHostname(string $host, string $hostname, string $nonce, int $index, array $files, string $work): array
+function checkHostname(string $host, string $hostname, string $nonce, int $index, string $payload, string $work): array
 {
     $probeId = $nonce.'-'.$index;
     [$status, $rows, $paths, $curlError] = curlProbe($hostname, $probeId, '/kitsune-runbook-'.$probeId, $work);
@@ -409,7 +439,7 @@ function checkHostname(string $host, string $hostname, string $nonce, int $index
         return [[], ["{$hostname}: the edge reported the requester as [{$before}] then [{$after}]"]];
     }
 
-    [$status, $out, $err] = instrument($host, ['collect', $nonce, $probeId], $files);
+    [$status, $out, $err] = instrument($host, ['collect', $nonce, $probeId], $payload);
 
     if ($status !== 0) {
         return [[], ["{$hostname}: the probe line could not be collected: ".substr(oneLine($err !== '' ? $err : $out), 0, 200)]];
@@ -459,14 +489,21 @@ if ($host === '' || ! in_array($expect, ['tunnel', 'dns-only'], true)) {
 
 $files = [$runbook.'/host/common.sh', $runbook.'/host/probe-log.sh'];
 $verdicts = [];
+$payload = '';
 
 foreach ($files as $file) {
-    if (! is_file($file)) {
-        verdict('TUN-1', 'VOID', "the instrument is missing at {$file}", $verdicts);
-        verdict('TUN-2', 'VOID', 'nothing was installed, so nothing had to be removed', $verdicts);
+    $contents = @file_get_contents($file);
+
+    if ($contents === false) {
+        verdict('TUN-1', 'VOID', is_file($file)
+            ? "the instrument at {$file} could not be read"
+            : "the instrument is missing at {$file}", $verdicts);
+        verdict('TUN-2', 'VOID', 'nothing was installed: nothing was sent to the host', $verdicts);
         sentinel($verdicts);
         exit(1);
     }
+
+    $payload .= $contents;
 }
 
 if ($expect !== 'tunnel') {
@@ -479,11 +516,15 @@ if ($expect !== 'tunnel') {
 }
 
 $nonce = bin2hex(random_bytes(16));
-[$status, $out, $err] = instrument($host, ['start', $nonce], $files);
+[$status, $out, $err] = instrument($host, ['start', $nonce], $payload);
 
 if ($status !== 0) {
-    verdict('TUN-1', 'VOID', 'the probe log could not be installed: '.substr(oneLine($err !== '' ? $err : $out), 0, 300), $verdicts);
-    verdict('TUN-2', 'VOID', 'nothing was installed, so nothing had to be removed', $verdicts);
+    // The start may have installed the probe before it failed, so TUN-2 is what stop finds (see removal).
+    verdict('TUN-1', 'VOID', 'the probe log did not start: '.substr(oneLine($err !== '' ? $err : $out), 0, 300), $verdicts);
+    [$outcome, $reason] = $status === NOT_STARTED
+        ? ['VOID', 'nothing was installed: nothing was sent to the host']
+        : removal($host, $nonce, $payload);
+    verdict('TUN-2', $outcome, $reason, $verdicts);
     sentinel($verdicts);
     exit(1);
 }
@@ -507,7 +548,7 @@ try {
     }
 
     foreach ($sites as $index => $hostname) {
-        [$siteFails, $siteVoids] = checkHostname($host, $hostname, $nonce, $index + 1, $files, $work);
+        [$siteFails, $siteVoids] = checkHostname($host, $hostname, $nonce, $index + 1, $payload, $work);
         $fails = [...$fails, ...$siteFails];
         $voids = [...$voids, ...$siteVoids];
     }
@@ -530,15 +571,8 @@ try {
 
     @rmdir($work);
 
-    [$status, $out, $err] = instrument($host, ['stop', $nonce], $files);
-
-    if ($status !== 0) {
-        // ⚠️ A PROBE LEFT BEHIND IS THE WORST OUTCOME HERE, so it is a FAIL of its own rather than a
-        // footnote: the operator has to know the server is not as it was.
-        verdict('TUN-2', 'FAIL', 'THE PROBE LOG WAS NOT REMOVED: '.substr(oneLine($err !== '' ? $err : $out), 0, 300), $verdicts);
-    } else {
-        verdict('TUN-2', 'PASS', $out, $verdicts);
-    }
+    [$outcome, $reason] = removal($host, $nonce, $payload);
+    verdict('TUN-2', $outcome, $reason, $verdicts);
 
     // ⚠️ NO SENTINEL AFTER A REFUSAL (see refuse()). A refusal here, in TUN-2's own verdict, never reaches
     // this line; one from `try` is held above, and would otherwise be closed over as if it had not happened.

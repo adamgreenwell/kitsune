@@ -10,7 +10,8 @@
 #
 #   probe-log.sh start <nonce>        install the log, reload nginx, and prove the reload happened
 #   probe-log.sh collect <nonce> <id> print the line for one request, and who owned its socket
-#   probe-log.sh stop <nonce>         remove it, and prove the configuration is back as it was
+#   probe-log.sh stop <nonce>         remove it and prove the configuration is back as it was, or say that
+#                                     nothing of it was installed
 #
 # ⚠️ AN INSTRUMENT, NOT A FAMILY — SO IT EMITS NO VERDICTS. run.sh dispatches exactly one script per
 # family named in the manifest, with the topology as its only argument. This is driven three times
@@ -19,7 +20,9 @@
 # the runbook's own shape. So this refuses loudly — non-zero, with the reason on stderr — and prints
 # lines its caller parses:
 #
-#   STATE <action> <detail>        what it did, and the facts the caller needs (worker set, drain time)
+#   STATE <action> <detail>        what it did, and the facts the caller needs (worker set, drain time).
+#                                  `stop` opens its detail with `removed` or `absent`, which is what the
+#                                  tunnel-log family judges TUN-2 on.
 #   PROBE <id> <json>              the one log line for that request
 #   PROBE-OWNER <id> <ss row>      who owned the socket that request arrived on
 #
@@ -223,6 +226,21 @@ CONF
     ;;
 
   stop)
+    # ⚠️ A STOP THAT FINDS NOTHING SAYS SO, AND RELOADS NOTHING. The tunnel-log family runs stop whenever start was
+    # attempted, because start can fail after it has installed the probe — its drain wait expiring, or ssh dropping
+    # once the remote start had finished. For a nonce whose start never got that far, the proof below would refuse
+    # for want of a baseline, and that refusal reads as a probe left behind on a server that never had one. So what
+    # the server holds decides: the snippet, and the dead-man timer that would reload nginx later. Neither, and
+    # there is nothing to remove and no reason to reload a live server.
+    armed=$(systemctl list-units --all "$unit.timer" --no-legend 2>/dev/null | grep -c "$unit" || true)
+
+    if [[ ! -e "$conf" ]] && (( armed == 0 )); then
+      rm -f "$log" "$state".* 2>/dev/null || true
+      printf 'STATE stop absent no snippet at %s and no dead-man timer %s, so nothing of this probe was installed and nginx was not reloaded\n' \
+        "$conf" "$unit.timer"
+      exit 0
+    fi
+
     rm -f "$conf"
     systemctl stop "$unit.timer" 2>/dev/null || true
 

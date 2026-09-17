@@ -172,6 +172,13 @@ function tunnelLogStubs(): array
             ;;
           *" start "*)
             [[ -e "$d/start-fail" ]] && { echo "Refusing to check: a probe is already installed" >&2; exit 1; }
+            # The marker is the probe on the server: `start` writes the snippet and reloads nginx before its
+            # drain wait, so a start that fails after that point leaves one for `stop` to find.
+            touch "$d/installed"
+            if [[ -s "$d/start-installed-then-failed" ]]; then
+              cat "$d/start-installed-then-failed" >&2
+              exit "$(cat "$d/start-status")"
+            fi
             echo "STATE start installed, reloaded, drained in 0s; workers now 29271"
             ;;
           *" collect "*)
@@ -182,8 +189,14 @@ function tunnelLogStubs(): array
             echo "STATE collect one line"
             ;;
           *" stop "*)
+            echo "$args" >> "$d/stopped"
             [[ -e "$d/stop-fail" ]] && { echo "Refusing to check: the configuration does not hash back" >&2; exit 1; }
-            echo "STATE stop removed, dead-man cancelled, configuration hashes back to its baseline"
+            if [[ -e "$d/installed" ]]; then
+              rm -f "$d/installed"
+              echo "STATE stop removed, dead-man cancelled, configuration hashes back to its baseline"
+            else
+              echo "STATE stop absent no snippet and no dead-man timer, so nothing of this probe was installed and nginx was not reloaded"
+            fi
             ;;
         esac
         exit 0
@@ -309,15 +322,85 @@ it('says so plainly on a host with no tunnel, rather than skipping', function ()
         ->and($run->getOutput())->toContain('SENTINEL tunnel-log 2');
 });
 
-it('voids both checks when the probe log could not be installed', function (): void {
+it('voids both checks when the probe log could not be installed, having asked what is on the server', function (): void {
+    /*
+     * ⚠️ "NOTHING WAS INSTALLED" IS A MEASUREMENT NOW, NOT AN ASSUMPTION. This start refuses before it installs
+     * anything, and stop is what says so: it finds no snippet and no dead-man timer for the nonce.
+     */
     touch($this->dir.'/start-fail');
 
     $run = tunnelLogRun($this->dir, $this->family);
 
     expect($run->isSuccessful())->toBeFalse()
         ->and(tunnelLogVerdict($run, 'TUN-1'))->toContain('VOID')
-        ->and(tunnelLogVerdict($run, 'TUN-1'))->toContain('could not be installed')
-        ->and(tunnelLogVerdict($run, 'TUN-2'))->toContain('nothing was installed');
+        ->and(tunnelLogVerdict($run, 'TUN-1'))->toContain('did not start')
+        ->and(tunnelLogVerdict($run, 'TUN-2'))->toContain('VOID')
+        ->and(tunnelLogVerdict($run, 'TUN-2'))->toContain('nothing of the probe was installed, so nothing had to be removed: STATE stop absent')
+        ->and(File::get($this->dir.'/stopped'))->toContain('stop');
+});
+
+it('removes a probe the failed start had installed, rather than reporting that nothing was', function (string $status, string $said, string $named): void {
+    /*
+     * ⚠️ THE PROBE STAYED ON THE SERVER, AND TUN-2 SAID NOTHING WAS INSTALLED. `start` writes the snippet, arms the
+     * dead-man timer and reloads nginx before it waits for the old workers to drain, so it can fail with the probe
+     * live: the drain wait expiring, or ssh exiting 255 once the remote start had finished. Any non-zero start was
+     * read as "nothing was installed" and stop never ran, so the probe served until the dead-man timer fired
+     * fifteen minutes later — and a rerun inside that window refused, because a probe was already installed.
+     */
+    File::put($this->dir.'/start-installed-then-failed', $said);
+    File::put($this->dir.'/start-status', $status);
+
+    $run = tunnelLogRun($this->dir, $this->family);
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and(tunnelLogVerdict($run, 'TUN-1'))->toContain('VOID')
+        ->and(tunnelLogVerdict($run, 'TUN-1'))->toContain($named)
+        ->and(tunnelLogVerdict($run, 'TUN-2'))->toContain('PASS STATE stop removed')
+        ->and(tunnelLogVerdict($run, 'TUN-2'))->not->toContain('nothing')
+        ->and(is_file($this->dir.'/installed'))->toBeFalse()
+        ->and($run->getOutput())->toContain('SENTINEL tunnel-log 2 TUN-1 TUN-2');
+})->with([
+    'the drain wait expired after the reload' => [
+        '1',
+        "Refusing to check: after 90s of the runbook's own patience the pre-reload workers 3120 were still serving, so a probe line could not be attributed to this configuration.",
+        "the runbook's own patience",
+    ],
+    'ssh exited 255 once the remote start had finished' => [
+        '255',
+        'Connection to stage.example closed by remote host.',
+        'closed by remote host',
+    ],
+]);
+
+it('fails TUN-2 when the probe a failed start installed could not be removed', function (): void {
+    File::put($this->dir.'/start-installed-then-failed', "Refusing to check: after 90s of the runbook's own patience the pre-reload workers 3120 were still serving");
+    File::put($this->dir.'/start-status', '1');
+    touch($this->dir.'/stop-fail');
+
+    $run = tunnelLogRun($this->dir, $this->family);
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and(tunnelLogVerdict($run, 'TUN-2'))->toContain('FAIL')
+        ->and(tunnelLogVerdict($run, 'TUN-2'))->toContain('THE PROBE LOG WAS NOT REMOVED')
+        ->and(tunnelLogVerdict($run, 'TUN-2'))->toContain('does not hash back');
+});
+
+it('says nothing was installed, and runs no stop, when the instrument never reached the host', function (): void {
+    /*
+     * ⚠️ THE ONE CASE STOP CANNOT MEASURE. With ssh unreachable, start sent nothing, and a stop that cannot start
+     * either could only report a failure of its own — TUN-2 FAIL "THE PROBE LOG WAS NOT REMOVED" against a server
+     * that never had one. `run()` reports a command that never started as a status no process can exit with.
+     */
+    File::makeDirectory($this->dir.'/nossh');
+    symlink(PHP_BINARY, $this->dir.'/nossh/php');
+
+    $run = tunnelLogRun($this->dir, $this->family, 'tunnel', ['PATH' => $this->dir.'/nossh']);
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and(tunnelLogVerdict($run, 'TUN-1'))->toContain('VOID')
+        ->and(tunnelLogVerdict($run, 'TUN-1'))->toContain('could not start ssh')
+        ->and(tunnelLogVerdict($run, 'TUN-2'))->toContain('VOID nothing was installed: nothing was sent to the host')
+        ->and(is_file($this->dir.'/stopped'))->toBeFalse();
 });
 
 it('fails loudly when the probe log was left behind', function (): void {
@@ -493,7 +576,7 @@ it('refuses without the instrument it drives, and looks for it where it was told
     expect($run->isSuccessful())->toBeFalse()
         ->and(tunnelLogVerdict($run, 'TUN-1'))->toContain('the instrument is missing')
         ->and(tunnelLogVerdict($run, 'TUN-1'))->toContain($this->dir.'/runbook/host/probe-log.sh')
-        ->and(tunnelLogVerdict($run, 'TUN-2'))->toContain('nothing was installed')
+        ->and(tunnelLogVerdict($run, 'TUN-2'))->toContain('nothing was installed: nothing was sent to the host')
         ->and($run->getOutput())->not->toContain('PROBE ');
 });
 

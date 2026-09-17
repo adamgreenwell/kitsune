@@ -77,6 +77,8 @@ function probeStubs(): array
         'nginx' => <<<'BASH'
         #!/usr/bin/env bash
         d=$(dirname "$(dirname "$0")")
+        # Every call, so a case can assert that a live server was not reloaded for nothing.
+        echo "$*" >> "$d/nginx-calls"
         case "$*" in
           *-T*)
             echo "nginx: the configuration file /etc/nginx/nginx.conf syntax is ok" >&2
@@ -420,6 +422,34 @@ it('removes the probe and proves the configuration is back as it was', function 
         ->and($run->getOutput())->toContain('hashes back to its baseline')
         ->and(File::files($this->dir.'/confd'))->toBe([])
         ->and(is_file($this->dir.'/run/probe/'.$this->nonce.'.log'))->toBeFalse();
+});
+
+it('says nothing of a probe is installed, and reloads nothing, when stop finds neither snippet nor timer', function (): void {
+    /*
+     * ⚠️ STOP RUNS AFTER A START THAT FAILED, so it has to be truthful about a nonce that installed nothing. It used
+     * to remove, reload a live server and then refuse for want of a baseline — which the tunnel-log family reports
+     * as THE PROBE LOG WAS NOT REMOVED, against a server that never had one.
+     */
+    $run = probeRun($this->dir, $this->common, $this->instrument, ['stop', $this->nonce]);
+
+    expect($run->isSuccessful())->toBeTrue($run->getErrorOutput())
+        ->and($run->getOutput())->toContain('STATE stop absent no snippet at '.$this->dir.'/confd/kitsune-probe-'.$this->nonce.'.conf')
+        ->and($run->getOutput())->toContain('nothing of this probe was installed and nginx was not reloaded')
+        ->and((string) @file_get_contents($this->dir.'/nginx-calls'))->not->toContain('reload');
+});
+
+it('does not call a probe absent while its dead-man timer could still reload nginx', function (): void {
+    // The snippet is gone and the timer is not: something of this probe is still on the server, so stop removes and
+    // proves rather than reporting an empty server.
+    probeRun($this->dir, $this->common, $this->instrument, ['start', $this->nonce]);
+    File::delete($this->dir.'/confd/kitsune-probe-'.$this->nonce.'.conf');
+    touch($this->dir.'/timer-lives');
+
+    $run = probeRun($this->dir, $this->common, $this->instrument, ['stop', $this->nonce]);
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and($run->getOutput())->not->toContain('STATE stop absent')
+        ->and($run->getErrorOutput())->toContain('would reload nginx later');
 });
 
 it('refuses to call the server restored when the configuration changed underneath it', function (): void {
