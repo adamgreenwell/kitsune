@@ -718,6 +718,34 @@ it('voids a family whose stream carries a refusal, even when it closes as if not
         ->and($run->getOutput())->not->toContain('PASS  R-1');
 });
 
+it('voids a family whose refusal gave no reason, where the run used to pass', function (string $body): void {
+    /*
+     * ⚠️ EXIT 0, AND THE EVIDENCE DELETED. The gate found a refusal by its reason text, so a refusal with none was not
+     * one. `refuse "$MEASURED"` after a command that failed without a word prints `REFUSED fa `, and inside a pipeline
+     * its subshell cannot withhold the parent's sentinel, so the stream closed and added up.
+     */
+    runbookManifest($this->runbook, "tunnel fa FA-1\ntunnel fa FA-2\n");
+    runbookFamily($this->runbook, 'fa', $body);
+
+    $run = runbookRun($this->dir);
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and($run->getOutput())->toContain('VOID  FA-1 (fa) — the family refused to check (no reason given), and what a family refuses is invisible to its count, so none of its verdicts stand; for this check it reported PASS: ok')
+        ->and($run->getOutput())->toContain('VOID  FA-2 (fa) — the family refused to check (no reason given)')
+        ->and($run->getOutput())->not->toContain('Every promised check passed.')
+        ->and(glob($this->dir.'/tmp/kitsune-runbook.*') ?: [])->toHaveCount(1);
+})->with([
+    'from a pipeline, after a command that said nothing' => [<<<'BASH'
+        family fa FA-1 FA-2
+        verdict FA-1 PASS ok
+        printf 'a\n' | while read -r _; do measure false || refuse "$MEASURED"; done || true
+        verdict FA-2 PASS ok
+        BASH],
+    'written as the bare word' => [<<<'BASH'
+        printf 'VERDICT FA-1 PASS ok\nVERDICT FA-2 PASS ok\nREFUSED\nSENTINEL fa 2 FA-1 FA-2\n'
+        BASH],
+]);
+
 it('voids a check given two verdicts, naming both, rather than letting the last one stand', function (): void {
     /*
      * ⚠️ THE LAST LINE USED TO WIN. The gate took the final verdict line for an id, so a family that

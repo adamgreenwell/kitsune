@@ -328,14 +328,23 @@ for entry in "${expected[@]}"; do
   done
 
   closes=$(grep -acE '^SENTINEL ' "$out" || true)
-  # Every reason the family refused for, after its name, as "<reason>; <reason>".
-  refusals=$({ grep -aE '^REFUSED ' "$out" || true; } | sed -E 's/^REFUSED [^ ]* ?//' | awk '{ printf "%s%s", sep, $0; sep = "; " }')
+  # ⚠️ A REFUSAL IS ITS LINE, NOT ITS REASON. This used to key on the reason text, so `REFUSED fa `, which
+  # `refuse "$MEASURED"` prints after a command that failed without a word, was no refusal at all: from a pipeline,
+  # whose refusal cannot withhold its parent's sentinel, the stream closed as if nothing were refused, and the run
+  # passed.
+  refused=$(grep -acE '^REFUSED( |$)' "$out" || true)
+  # Every reason the family refused for, after its name, as "<reason>; <reason>", and one it gave no reason for as such.
+  refusals=$({ grep -aE '^REFUSED( |$)' "$out" || true; } | awk '{
+    sub(/^REFUSED( [^ ]*)? ?/, "")
+    printf "%s%s", sep, ($0 ~ /[^ ]/ ? $0 : "no reason given")
+    sep = "; "
+  }')
   # The first line with a verdict, sentinel or refusal after other output.
   glued=$({ grep -anE '.(VERDICT [^ ]+ (PASS|FAIL|VOID) |SENTINEL [^ ]+ |REFUSED [^ ]+ )' "$out" || true; } | head -1 | cut -d: -f1)
   listed=""
   distrust=""
 
-  if [[ -n "$refusals" ]]; then
+  if (( refused > 0 )); then
     distrust="the family refused to check ($refusals), and what a family refuses is invisible to its count, so none of its verdicts stand"
   elif [[ -n "$glued" ]]; then
     distrust="the family's stream has a verdict, sentinel or refusal partway through line $glued, after output that did not end its line, and one that does not start its line cannot be told from text quoting one"
