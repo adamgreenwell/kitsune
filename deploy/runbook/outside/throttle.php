@@ -1262,8 +1262,36 @@ function examine(string $host, string $nonce, string $payload, string $storeSour
             }
         }
 
+        /*
+         * ⚠️ THE ONE FORGED BUCKET A REAL CLIENT CAN HAVE OF ITS OWN. RFC 5737 documentation space belongs
+         * to nobody, so growth in a forged bucket can only be this run's own forgery arriving — but
+         * 127.0.0.1 and ::1 are precisely the addresses the host's own traffic carries. A login monitor, a
+         * smoke test or an admin on an `ssh -L` port-forward signing in during the window fills the
+         * loopback bucket by itself, successfully or not: `rateLimit()` hits the limiter before any
+         * credential is checked.
+         *
+         * Read one-sidedly, that was a FAIL — "one bucket holds every visitor" — against a sound host, on
+         * a line the RECORD above it disproves: a store read holding exactly this run's own LIMIT attempts
+         * under the requester's own address is the state that world cannot produce, because there v4 is 0.
+         * It also voided THR-2 with a premise the same output refutes, and hid the partial fault where
+         * only the IPv6 path is mis-keyed, which THR-2's own check names precisely.
+         *
+         * So the growth is still measured, and what it means is decided by what the rest of the read says.
+         * With this run's own writes positively in it, somebody else wrote that bucket — which this run
+         * cannot attribute to itself and must not certify around either, since a host counting every
+         * request twice, under the requester AND under loopback, reads the same from here. VOID, as the
+         * same rule below holds for a bucket that is not exactly LIMIT.
+         */
         foreach (['lo4', 'lo6'] as $label) {
-            if (bucket($post, $label) > bucket($pre, $label)) {
+            if (bucket($post, $label) <= bucket($pre, $label)) {
+                continue;
+            }
+
+            if (bucket($post, 'v4') === LIMIT) {
+                $voids[] = "the bucket for [{$labels[$label]}] grew from ".bucket($pre, $label).' to '.bucket($post, $label)
+                    ." while this run's own ".LIMIT.' attempts were counted under '.$edge4
+                    .', so something else on this host signed in over loopback during the window and this read is not only this run\'s writes';
+            } else {
                 $fails[] = "every request is being counted as the loopback address: the bucket for [{$labels[$label]}] grew from "
                     .bucket($pre, $label).' to '.bucket($post, $label).', so one bucket holds every visitor';
             }

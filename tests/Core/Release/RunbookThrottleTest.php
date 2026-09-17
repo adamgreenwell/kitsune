@@ -507,6 +507,11 @@ function update(string $state, array $case, string $hostname, string $path, stri
         'leftmost' => $forwarded === '' ? $edge : trim(explode(',', $forwarded)[0]),
         'underscore' => in_array($number, $case['underscore_on'] ?? [], true) && $underscore !== '' ? $underscore : $edge,
         'loopback' => '127.0.0.1',
+        // ⚠️ ONE FAMILY MIS-KEYED, NOT BOTH. A host that resolves the IPv4 path correctly and the IPv6 one
+        // to ::1 — a listener trusting the wrong proxy over one family only — produces the same store read
+        // as a co-tenant's loopback sign-in during the window: this run's five under the requester, one
+        // loopback bucket at 1. Only the second address's own empty bucket separates them.
+        'v6-loopback' => $family === '-6' ? '::1' : $edge,
         'address-family' => 'constant-'.($family === '-6' ? 'v6' : 'v4'),
         'session' => 'session-'.$session,
         'email' => 'email-'.$email,
@@ -549,6 +554,35 @@ function update(string $state, array $case, string $hostname, string $path, stri
             $buckets[$key] = $held;
             writeJson($state.'/buckets.json', $buckets);
         }
+    }
+
+    /*
+     * ⚠️ SOMEBODY ELSE SIGNS IN WHILE THE WINDOW IS OPEN, AND THE HOST IS NOT WHAT CHANGED. The family
+     * reads the store around its window, so anything else that reaches the login page in between lands in
+     * the read: a login monitor or a smoke test on the box (over loopback), the operator's own browser on
+     * a dual-stack network (over IPv6, which RFC 6724 prefers while the run's own window is forced onto
+     * `-4`), or a co-tenant of the egress. It need not be a mistyped password either — `rateLimit()` hits
+     * the limiter before any credential is checked, so a SUCCESSFUL sign-in fills a bucket too.
+     *
+     * `cotenant_at` is the attempt during which that one hit lands, applied by the limiter's own rule to a
+     * bucket of `cotenant`'s own.
+     */
+    if ($number === (int) ($case['cotenant_at'] ?? 0) && is_string($case['cotenant'] ?? null)) {
+        $buckets = readJson($state.'/buckets.json');
+        $other = $buckets[$case['cotenant']] ?? ['attempts' => 0, 'timer' => null];
+        $ticking = is_int($other['timer'] ?? null) && $other['timer'] > $now;
+
+        if (! $ticking) {
+            $other = ['attempts' => 0, 'timer' => $now + 60];
+        }
+
+        // At the limit the limiter refuses rather than counting, exactly as it does for this run.
+        if ($other['attempts'] < $limit) {
+            $other['attempts']++;
+        }
+
+        $buckets[$case['cotenant']] = $other;
+        writeJson($state.'/buckets.json', $buckets);
     }
 
     probe($state, $case, $header, $hostname, $path, $edge, '200');
@@ -991,6 +1025,62 @@ it('fails a host where every request is counted as the loopback address', functi
         ->and(throttleVerdict($run, 'THR-1'))->toContain('FAIL')
         ->and(throttleVerdict($run, 'THR-1'))->toContain('every request is being counted as the loopback address')
         ->and(throttleVerdict($run, 'THR-1'))->toContain('127.0.0.1');
+});
+
+it('voids, and never fails, a loopback bucket that grew while this run\'s own attempts were counted', function (string $address, string $named): void {
+    /*
+     * ⚠️ THE ONE FORGED ADDRESS A REAL CLIENT CAN HAVE OF ITS OWN. The forged buckets are RFC 5737
+     * documentation space, which belongs to nobody — but 127.0.0.1 and ::1 are what the host's own traffic
+     * carries, and `rateLimit()` hits the limiter before credentials are checked, so a login monitor, a
+     * smoke test or an admin on an `ssh -L` port-forward fills the loopback bucket during the window,
+     * successfully or not. The pre-window guard cannot catch that: it is a write that arrives after the
+     * read that proved the bucket clean.
+     *
+     * Read one-sidedly it was a FAIL — "one bucket holds every visitor" — against a host that is sound,
+     * contradicted by the line printed directly above it: the store holds this run's own five attempts
+     * under the requester's own address, which the world the FAIL names cannot produce, because there the
+     * requester's bucket reads 0. It voided THR-2 with the same false premise on the way past.
+     */
+    throttleCase($this->state, ['cotenant' => $address, 'cotenant_at' => 3]);
+
+    $run = throttleRun($this->dir, $this->family);
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and(throttleVerdict($run, 'THR-1'))->toContain('VOID')
+        ->and(throttleVerdict($run, 'THR-1'))->toContain($named)
+        ->and(throttleVerdict($run, 'THR-1'))->not->toContain('one bucket holds every visitor')
+        // ⚠️ AND THR-2, WHOSE OWN EVIDENCE IS UNTOUCHED, IS NOT VOIDED ON THIS RUN'S BEHALF. It used to be,
+        // with "the address the throttle counts by is already wrong" — a claim the same stream refutes.
+        ->and(throttleVerdict($run, 'THR-2'))->toContain('PASS')
+        ->and($run->getOutput())->not->toContain('the address the throttle counts by is already wrong');
+})->with([
+    'a login monitor on the box' => [
+        '127.0.0.1',
+        'the bucket for [127.0.0.1] grew from 0 to 1 while this run\'s own 5 attempts were counted under 203.0.113.50',
+    ],
+    'an admin on a port-forward over IPv6' => [
+        '::1',
+        'the bucket for [::1] grew from 0 to 1 while this run\'s own 5 attempts were counted under 203.0.113.50',
+    ],
+]);
+
+it('still fails the loopback world when only the IPv6 path is mis-keyed', function (): void {
+    /*
+     * ⚠️ AND THE GATE MUST NOT HIDE A PARTIAL FAULT. A host that keys the IPv4 path correctly and the IPv6
+     * path on ::1 reads from the store exactly as the co-tenant world above does — this run's five under
+     * the requester's address, one loopback bucket at 1 — so THR-1 cannot tell them apart and says so.
+     * What separates them is THR-2's own check, which the old one-sided FAIL pre-empted with a VOID: the
+     * second address's bucket is empty, because its attempt was counted somewhere else.
+     */
+    throttleCase($this->state, ['key' => 'v6-loopback']);
+
+    $run = throttleRun($this->dir, $this->family);
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and(throttleVerdict($run, 'THR-2'))->toContain('FAIL')
+        ->and(throttleVerdict($run, 'THR-2'))->toContain('was not counted under its own address')
+        ->and(throttleVerdict($run, 'THR-1'))->toContain('VOID')
+        ->and(throttleVerdict($run, 'THR-1'))->not->toContain('one bucket holds every visitor');
 });
 
 it('voids, and never fails, when the store holds nothing this run could have written', function (string $key, array $case): void {
