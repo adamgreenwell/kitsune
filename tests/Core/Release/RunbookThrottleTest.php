@@ -1630,7 +1630,38 @@ it('voids a forged entry that never arrived at nginx', function (array $case, st
     'no forwarded header at all' => [['xff' => ''], 'did not arrive at nginx'],
     'the last entry is not what the edge saw' => [['xff' => '192.0.2.1, 198.51.100.9'], 'as the last forwarded entry'],
     'nginx wrote no line for it' => [['probe_missing' => [1]], 'nginx\'s own record of it is missing'],
-    'PHP did not answer it' => [['upstream' => ''], 'so PHP did not answer it'],
+    'nginx answered it without an upstream at all' => [['upstream' => ''], 'so PHP did not answer it'],
+    'nginx logged a dash for the upstream' => [['upstream' => '-'], 'so PHP did not answer it'],
+]);
+
+it('measures a host whose nginx reaches PHP-FPM over TCP', function (string $upstream): void {
+    /*
+     * ⚠️ AN UNDECLARED PRECONDITION, ENFORCED IN THE LOUDEST PLACE IT COULD BE. The audit asked that every
+     * attempt's `upstream_addr` match `unix:/<path>.sock`, so a host that is sound in every way ADR-034
+     * cares about but runs PHP-FPM over TCP — which the official php-fpm container does — turned three
+     * PASSes into two VOIDs, one clause per attempt, saying "PHP did not answer it" about attempts PHP
+     * demonstrably answered: an attempt only reaches that audit once classify() has decoded a Livewire
+     * snapshot out of its body and matched the login component the page named.
+     *
+     * ADR-034 constrains what reaches `request()->ip()`; it says nothing about fastcgi, FPM or a socket,
+     * and neither does the README, which has a spelling for a precondition a family cannot meet and does
+     * not use it here. What the check is for is nginx answering without an upstream at all, which the
+     * dataset above still holds it to.
+     */
+    throttleCase($this->state, ['upstream' => $upstream]);
+
+    $run = throttleRun($this->dir, $this->family);
+
+    expect($run->isSuccessful())->toBeTrue($run->getOutput().$run->getErrorOutput())
+        ->and(throttleVerdict($run, 'THR-1'))->toContain('PASS')
+        ->and(throttleVerdict($run, 'THR-2'))->toContain('PASS')
+        ->and($run->getOutput())->not->toContain('so PHP did not answer it')
+        // ⚠️ AND THE CASE IS LIVE: the line nginx wrote really does name a TCP upstream, so the assertions
+        // above cannot pass by the fixture quietly falling back to the socket the default case carries.
+        ->and($run->getOutput())->toContain('upstream '.$upstream);
+})->with([
+    'a loopback FPM pool' => ['127.0.0.1:9000'],
+    'an FPM container' => ['172.18.0.3:9000'],
 ]);
 
 it('voids everything and installs nothing without the instruments it drives', function (string $instrument): void {

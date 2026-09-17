@@ -1428,8 +1428,26 @@ function examine(string $host, string $nonce, string $payload, string $storeSour
             $found[] = "{$hostname}: attempt {$number} arrived for host [".($line['host'] ?? '').']';
         }
 
-        if (preg_match('#^unix:/.*\.sock$#', $line['upstream_addr'] ?? '') !== 1) {
-            $found[] = "{$hostname}: attempt {$number} was answered by [".($line['upstream_addr'] ?? '').'], so PHP did not answer it';
+        /*
+         * ⚠️ THAT AN UPSTREAM ANSWERED IT, NOT WHICH SOCKET FAMILY REACHED ONE. This asked for
+         * `unix:/<path>.sock`, so a host running PHP-FPM over TCP — `fastcgi_pass 127.0.0.1:9000`, which the
+         * official php-fpm container listens on — turned three PASSes into two VOIDs saying "PHP did not
+         * answer it", about attempts PHP demonstrably answered: an attempt only reaches this audit after
+         * classify() decoded a Livewire snapshot out of its body and matched the login component the page
+         * named, which nothing but PHP running Filament produces.
+         *
+         * Nor is the socket family a condition anyone declared. ADR-034 never mentions fastcgi, FPM or a
+         * socket; neither does README.md, which has a spelling for a precondition a family cannot meet
+         * (`REFUSED`) that this did not use. If a unix socket ever becomes a condition, it belongs in
+         * relays.sh, which already reads the running configuration and has a verdict of its own for it —
+         * not implied by a per-attempt VOID inside a family about forwarded headers.
+         *
+         * What this check is really for is nginx short-circuiting the request — a cached or static answer,
+         * a `return`, an error page — which leaves no upstream at all, and that is what it now asserts.
+         */
+        if (in_array($line['upstream_addr'] ?? '', ['', '-'], true)) {
+            $found[] = "{$hostname}: attempt {$number} reached no upstream at all (nginx logged ["
+                .($line['upstream_addr'] ?? '').']), so PHP did not answer it';
         }
 
         $tokens = array_values(array_filter(array_map('trim', explode(',', $line['xff'] ?? '')), static fn (string $t): bool => $t !== ''));
