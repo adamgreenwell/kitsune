@@ -662,6 +662,19 @@ if (str_contains($arguments, 'nginx -T')) {
 }
 
 if (str_contains($arguments, 'stat -c %U')) {
+    /*
+     * ⚠️ A RELEASE IS NOT READABLE BY THE USER THE RUNBOOK SIGNS IN AS, and this stub used to answer whoever
+     * asked. Measured on stage: /home/forge is `drwxr-x--- forge:forge`, the runbook connects as another user,
+     * and an unprivileged `stat` returns "Permission denied (os error 13)" — so the family VOIDed on a host in
+     * perfect health while every test passed. A fixture directory is readable by whoever created it, which is
+     * exactly the comfort that hid it. The stub now refuses the unprivileged spelling, the way the host does.
+     */
+    if (! str_contains($arguments, 'sudo -n stat')) {
+        fwrite(STDERR, "stat: cannot stat '/home/forge/site/current/skeleton/bootstrap/app.php': Permission denied (os error 13)\n");
+
+        exit(1);
+    }
+
     if (($case['owner_fails'] ?? false) === true) {
         fwrite(STDERR, "stat: cannot stat: No such file or directory\n");
 

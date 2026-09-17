@@ -796,8 +796,15 @@ function examine(string $host, string $nonce, string $payload, string $storeSour
         return $both('the release the throttle belongs to could not be named: '.$why);
     }
 
+    // ⚠️ `sudo -n stat`, BECAUSE THE RUNBOOK'S OWN USER CANNOT SEE INSIDE THE SITE. Measured on stage: the
+    // release lives under /home/forge, which is `drwxr-x--- forge:forge`, and the runbook signs in as another
+    // user entirely — so an unprivileged `stat` returned "Permission denied (os error 13)" and this family
+    // VOIDed on a host that was in perfect health. Every other privileged read here already goes through
+    // `sudo -n` (the nginx dump, the instrument), and the answer this one produces is what the store is then
+    // asked AS: `sudo -n -u <owner>`. Asking unprivileged for the name and privileged for the use was the
+    // inconsistency. The stubs could not catch it: a fixture directory is readable by whoever made it.
     [$status, $out, $err] = run(['ssh', '-n', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10',
-        $host, 'stat', '-c', '%U', '--', $base.'/bootstrap/app.php'], '', 60);
+        $host, 'sudo', '-n', 'stat', '-c', '%U', '--', $base.'/bootstrap/app.php'], '', 60);
     $owner = trim($out);
 
     if ($status !== 0 || preg_match('/^[a-z_][a-z0-9_-]*$/', $owner) !== 1) {
