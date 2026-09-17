@@ -2510,7 +2510,7 @@ configuration text kept passing hosts that still broke an item.
 
 ## ADR-035 — A release is built by one script both servers run, pinned to the commit stage rehearsed
 
-**Status:** Decided · 2026-09-15
+**Status:** Decided · 2026-09-15 · **Amended 2026-09-17** — the path repository's stated reason expired when `kitsune/core` was published; the decision did not, and the reason that always mattered is now written down
 
 Stage rehearses alpha (#111). Stage is an Ubuntu VM with a zero-downtime layout built by hand; alpha is a Laravel Forge
 site with zero-downtime deployments. If the two servers built a release differently, a green stage deploy would say
@@ -2543,8 +2543,19 @@ job.
   withholds its message, because a provider's can quote configuration. Artisan prints that message, so nothing runs
   artisan before this check, `package:discover` included. The boot builds the missing package manifest itself (read), so
   package providers boot under the same redaction.
-- **kitsune/core is a copy of this checkout's `packages/core`,** installed through a path repository with symlinks off,
-  because it is not on Packagist yet (#8).
+- **kitsune/core is a copy of this checkout's `packages/core`,** installed through a path repository with symlinks off.
+
+  > ⚠️ **Amended 2026-09-17 — the stated reason expired, and the decision did not.** This read "because it is not on
+  > Packagist yet (#8)". It is now: `kitsune/core` v0.1.0 publishes from `Kitsune-CMS/core`, and #8 is closed. The path
+  > repository stays, for the reason that was always the stronger one and was never written down: **a release pinned to
+  > a commit must install that commit's core.** `DEPLOY_SHA` names what stage rehearsed, and resolving `kitsune/core`
+  > from Packagist would install whatever the constraint resolves to at deploy time — a different build from the one
+  > that was proven, and one that could not be built at all before its tag was published. Step 7 already refuses a
+  > release where core arrived as anything but a copy; that check is what this reason is enforced by.
+  >
+  > What genuinely changes now that the package is published: a consumer who is not this repository — the skeleton in
+  > someone else's application, a plugin author — installs `kitsune/core` from Packagist like any other package. That
+  > was the point of #8. It is not the deploy path's problem.
 - **Caches are built one command at a time:** `config:cache`, `event:cache`, `route:cache`, `view:cache` and
   `icons:cache`. Never `optimize` or `filament:optimize`, which exit 0 when one of their tasks fails (read). A
   provider-registered optimize task the script does not know is refused.
