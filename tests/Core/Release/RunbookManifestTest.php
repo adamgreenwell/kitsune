@@ -108,17 +108,23 @@ function runbookRun(string $dir, array $env = [], string $expect = 'tunnel'): Pr
 }
 
 /**
- * The committed promise, read the way run.sh reads it: `#` comments stripped, blank lines skipped, and
- * each row split on whitespace.
+ * The committed promise — or another manifest — read the way run.sh reads it: split into rows at each newline,
+ * the last row read whether or not one ends it, everything from a `#` removed, and each row split on spaces and
+ * tabs, the only whitespace in bash's default IFS a row can hold.
+ *
+ * ⚠️ AS run.sh READS IT, OR THE TREE TESTS JUDGE A PROMISE NO RUN MAKES. This split on "\n" and so read a last row
+ * with no newline, which run.sh then dropped: every tree test passed on a manifest whose last row no run promised.
+ * And `\s` and trim() also strip a carriage return, which run.sh keeps as part of the check id.
  *
  * @return list<list<string>>
  */
-function runbookCommittedRows(): array
+function runbookCommittedRows(?string $manifest = null): array
 {
     $rows = [];
 
-    foreach (explode("\n", File::get(dirname(__DIR__, 3).'/deploy/runbook/manifest.txt')) as $line) {
-        $fields = preg_split('/\s+/', trim((string) preg_replace('/#.*/', '', $line)), -1, PREG_SPLIT_NO_EMPTY);
+    foreach (explode("\n", File::get($manifest ?? dirname(__DIR__, 3).'/deploy/runbook/manifest.txt')) as $line) {
+        $comment = strpos($line, '#');
+        $fields = preg_split('/[ \t]+/', $comment === false ? $line : substr($line, 0, $comment), -1, PREG_SPLIT_NO_EMPTY);
 
         if (is_array($fields) && $fields !== []) {
             $rows[] = $fields;
@@ -591,6 +597,41 @@ it('refuses a family name that is not one plain path segment', function (string 
     'outside host/' => ['../fa', '../fa.sh'],
 ]);
 
+it('dispatches the family named on a last row that has no newline', function (): void {
+    /*
+     * ⚠️ EXIT 0 OVER A FAIL. `read` fails on a last line with no newline, and the loop stopped there, so `dropped` was
+     * never promised or dispatched: "against 1 promised checks", and "Every promised check passed." over its FAIL.
+     */
+    File::put($this->runbook.'/manifest.txt', "# a fixture manifest\ndns-only good G-1\ndns-only dropped D-1");
+    runbookFamily($this->runbook, 'good', "family good G-1\nverdict G-1 PASS holds\n");
+    runbookFamily($this->runbook, 'dropped', "family dropped D-1\nverdict D-1 FAIL \"a relay dials the web server\"\n");
+
+    $run = runbookRun($this->dir, [], 'dns-only');
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and($run->getOutput())->toContain('against 2 promised checks')
+        ->and($run->getOutput())->toContain('--- dropped (host)')
+        ->and($run->getOutput())->toContain('FAIL  D-1 — a relay dials the web server');
+});
+
+it('refuses a bad last row that has no newline, as it refuses one that has', function (string $row, string $refusal): void {
+    // Every refusal the manifest loop makes, on the row the loop used to stop before reading.
+    File::put($this->runbook.'/manifest.txt', "# a fixture manifest\ndns-only good G-1\n{$row}");
+    runbookFamily($this->runbook, 'good', "family good G-1\nverdict G-1 PASS holds\n");
+    runbookFamily($this->runbook, 'dropped', "family dropped D-1\nverdict D-1 PASS holds\n");
+
+    $run = runbookRun($this->dir, [], 'dns-only');
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and($run->getErrorOutput())->toContain($refusal)
+        ->and($run->getOutput())->not->toContain('PASS  G-1');
+})->with([
+    'a topology no run selects' => ['dns_only dropped D-1', 'the manifest row [dns_only dropped D-1] names the topology [dns_only], which is neither tunnel nor dns-only'],
+    'a family name that is not one path segment' => ['dns-only ../dropped D-1', 'names the family [../dropped], which is not one plain path segment'],
+    'a fourth field' => ['dns-only dropped D-1 GOOD', 'more than three fields'],
+    'a check promised to a second family' => ['dns-only dropped G-1', 'the check G-1 is promised to both [good] and [dropped]'],
+]);
+
 it('refuses to run when TMPDIR names a directory it cannot use, and says to fix TMPDIR', function (): void {
     /*
      * ⚠️ REFUSED, NOT WORKED AROUND. A failed run keeps its streams under TMPDIR, where the README tells the
@@ -975,6 +1016,37 @@ it('voids a family whose stream closes as a different family', function (): void
     expect($run->isSuccessful())->toBeFalse()
         ->and($run->getOutput())->toContain('VOID  A-1 (a) — the family closed its stream as [relays], so the script that ran is not the family promised; for this check it reported PASS: holds');
 });
+
+it('reads a manifest row for row as run.sh does, the committed one included', function (?string $manifest): void {
+    /*
+     * ⚠️ THE TREE TESTS BELOW JUDGE runbookCommittedRows(), SO IT MUST BE THE PROMISE A RUN MAKES. It read a last row
+     * with no newline that run.sh dropped, and every tree test passed on a manifest whose last row no run promised.
+     * Here run.sh reads the same file, with a family for every name that checks nothing, so it reports each check it
+     * promised as one no verdict answered, and that list must be the helper's rows for the topology.
+     */
+    File::put($this->runbook.'/manifest.txt', $manifest ?? File::get(dirname(__DIR__, 3).'/deploy/runbook/manifest.txt'));
+    $rows = runbookCommittedRows($this->runbook.'/manifest.txt');
+
+    foreach (array_unique(array_column($rows, 1)) as $family) {
+        runbookFamily($this->runbook, $family, "family {$family}\n");
+    }
+
+    foreach (['tunnel', 'dns-only'] as $topology) {
+        $run = runbookRun($this->dir, [], $topology);
+        preg_match_all('/^VOID  ([^ ]+) \(([^ )]+)\) — promised by the manifest, and no verdict arrived$/m', $run->getOutput(), $voids, PREG_SET_ORDER);
+
+        $promised = array_map(static fn (array $void): string => "{$void[2]} {$void[1]}", $voids);
+        $read = array_map(static fn (array $row): string => "{$row[1]} {$row[2]}", array_filter($rows, static fn (array $row): bool => $row[0] === $topology));
+        sort($promised);
+        sort($read);
+
+        expect($promised)->toBe($read, "a {$topology} run: ".$run->getOutput().$run->getErrorOutput())
+            ->and($read)->not->toBe([]);
+    }
+})->with([
+    'the committed manifest' => [null],
+    'tabs, a carriage return, a trailing comment and a last row with no newline' => ["tunnel\ta A-1\r\n  tunnel a A-2 # a comment\n\ndns-only b B-1"],
+]);
 
 it('promises exactly the families the runbook ships, and no other', function (): void {
     /*

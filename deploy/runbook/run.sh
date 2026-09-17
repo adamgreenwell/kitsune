@@ -94,7 +94,12 @@ plain='^[[:alnum:]][[:alnum:]._-]*$'
 # so a row like `tunnel good G-1 GOOD` would promise the id "G-1 GOOD" — which no verdict can ever
 # match, so the run would report VOID and blame the host for a mistake in this file. (Measured: that
 # is exactly what a stray word in a fixture row did.)
-while read -r topology family id extra; do
+#
+# ⚠️ THE LAST ROW COUNTS WITHOUT ITS NEWLINE. `read` fails on a line that reaches the end of the file without
+# one, having read it all the same, and the loop used to stop there. So a last row saved without a newline was
+# neither checked nor promised: a family named only there was never dispatched, so the run passed over its
+# FAIL, and a misspelt topology or family name there was never refused.
+while read -r topology family id extra || [[ -n "${topology:-}" ]]; do
   [[ -z "${topology:-}" || "$topology" == \#* ]] && continue
   [[ -n "${family:-}" && -n "${id:-}" ]] || refuse "malformed manifest row: $topology ${family:-} ${id:-}"
   [[ -z "${extra:-}" ]] || refuse "manifest row has more than three fields, so the id would be unmatchable: $topology $family $id $extra"
