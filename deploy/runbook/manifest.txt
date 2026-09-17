@@ -61,9 +61,10 @@ dns-only relays RLY-5
 # --- the tunnel hostnames (outside/tunnel-log.php, driving host/probe-log.sh) ---
 # ⚠️ TWO IDS, NOT ONE PER HOSTNAME. This file is static and committed, and a server's hostnames are a
 # property of that server, so a per-hostname id could never be promised in advance. TUN-1 covers the
-# requests across every hostname the server serves the application at — one failing hostname fails it, each
-# one's detail is recorded, and a hostname that declares no application, such as a `www`→apex redirect
-# vhost, is recorded and never requested — and TUN-2 covers the probe log being removed afterwards.
+# requests across every hostname the server serves — one failing hostname fails it, each one's detail is
+# recorded, and a hostname that roots no application, such as a `www`→apex redirect vhost, is requested and
+# held to every rule but the two about what answered it — and TUN-2 covers the probe log being removed
+# afterwards.
 #
 # There are no dns-only rows because the family declares `tunnel` alone: alpha has no tunnel, and its own
 # family judges what a request without one must look like. Run on any other topology, this family says so as

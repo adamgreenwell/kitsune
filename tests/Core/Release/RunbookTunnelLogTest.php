@@ -95,10 +95,41 @@ function tunnelLogLine(array $changes = []): array
     ], $changes);
 }
 
+/**
+ * The probe line for one of a host's other hostnames — the same compliant line, arriving for that name.
+ *
+ * @param  array<string, string>  $changes
+ * @return array<string, string>
+ */
+function tunnelLogLineFor(string $hostname, array $changes = []): array
+{
+    return tunnelLogLine(array_replace([
+        'host' => $hostname,
+        'http_host' => $hostname,
+        'server_name' => $hostname,
+    ], $changes));
+}
+
+/** The line a vhost that redirects everything produces: nginx answers it, so no upstream is reached. */
+function tunnelLogRedirectLine(string $hostname, array $changes = []): array
+{
+    return tunnelLogLineFor($hostname, array_replace([
+        'status' => '301',
+        'upstream_status' => '',
+        'upstream_addr' => '',
+    ], $changes));
+}
+
 /** Write one fixture file the stubs read. */
 function tunnelLogFixture(string $dir, string $name, string $contents): void
 {
     File::put($dir.'/'.$name, $contents);
+}
+
+/** Write the probe line the collect stub answers with for the nth hostname requested. */
+function tunnelLogProbe(string $dir, int $index, array $line): void
+{
+    File::put($dir.'/probe.'.$index, json_encode($line) ?: '{}');
 }
 
 /**
@@ -106,12 +137,12 @@ function tunnelLogFixture(string $dir, string $name, string $contents): void
  * ports. The names repeat across the two blocks because they do on a real host, which is what makes
  * collapsing them part of the measurement rather than an accident of the fixture.
  *
- * ⚠️ THE ROOTS ARE PART OF THE FIXTURE NOW, BECAUSE THEY ARE WHAT MAKES A HOSTNAME A SITE. A block that
- * declares no server-level root ending in `/public` serves no application — a `www`→apex redirect vhost is
- * exactly that shape — and the family requests only the hostnames that do. A fixture whose site blocks
- * declared none described a host serving nothing, which no real one this family runs against does: the
- * `:80` block redirects and the `:443` block carries the root, and a `location` carries one of its own
- * that is not the site's.
+ * ⚠️ THE ROOTS ARE PART OF THE FIXTURE, BECAUSE THEY ARE WHAT SAYS AN APPLICATION ANSWERS HERE. A hostname
+ * with no root ending in `/public` in the block that would answer an https request for it roots no
+ * application — a `www`→apex redirect vhost is exactly that shape — and the family asks only the rooted ones
+ * what answered their request. A fixture whose site blocks declared none described a host serving nothing,
+ * which no real one this family runs against does: the `:80` block redirects and the `:443` block carries the
+ * root, and a `location` carries one of its own that is not the site's.
  */
 function tunnelLogDump(string $siteNames = 'stage.kitsune.test', string $extra = ''): string
 {
@@ -221,8 +252,15 @@ function tunnelLogStubs(): array
           *" collect "*)
             [[ -e "$d/collect-fail" ]] && { echo "Refusing to check: no line carries the id" >&2; exit 1; }
             id=${args##* }
-            echo "PROBE $id $(cat "$d/probe")"
-            echo "PROBE-OWNER $id $(cat "$d/owner")"
+            # ⚠️ ONE LINE PER PROBE ID WHERE A CASE WRITES ONE. A host's hostnames do not answer alike: a
+            # redirect vhost answers 301 with no upstream, and one that is not behind the tunnel answers from
+            # a public peer. A stub that gave every id the same line could model only a host with one.
+            probe="$d/probe"
+            owner="$d/owner"
+            [[ -e "$d/probe.${id##*-}" ]] && probe="$d/probe.${id##*-}"
+            [[ -e "$d/owner.${id##*-}" ]] && owner="$d/owner.${id##*-}"
+            echo "PROBE $id $(cat "$probe")"
+            echo "PROBE-OWNER $id $(cat "$owner")"
             echo "STATE collect one line"
             ;;
           *" stop "*)
@@ -524,24 +562,31 @@ it('fails what the host got wrong', function (array $changes, string $named): vo
     'the catch-all answered' => [['server_name' => '_'], 'catch-all'],
     'TLS did not terminate here' => [['https' => ''], 'TLS did not terminate here'],
     // Both spellings nginx writes when the request never reached an upstream: no variable at all, and
-    // the dash its escape=json log format writes for an unset one.
+    // the dash its escape=json log format writes for an unset one. The third is what an actual
+    // short-circuit looks like — a cache hit, a static file, an error page — where the status is the
+    // answer nginx made up and no upstream appears at all.
     'nginx answered, not PHP' => [['upstream_addr' => ''], 'PHP did not answer'],
     'nginx answered, and the field is a dash' => [['upstream_addr' => '-'], 'reached no upstream at all'],
+    'nginx answered from its own cache' => [
+        ['status' => '200', 'upstream_status' => '', 'upstream_addr' => ''],
+        'reached no upstream at all',
+    ],
     'the last entry is not what the edge saw' => [['xff' => '192.0.2.77, 198.51.100.9'], 'the edge saw'],
 ]);
 
-it('passes a host whose PHP answers over TCP rather than a unix socket', function (string $upstream): void {
+it('judges that an upstream answered, not which socket reached it', function (string $upstream): void {
     /*
-     * ⚠️ THAT AN UPSTREAM ANSWERED IT, NOT WHICH SOCKET FAMILY REACHED ONE. The rule asked for
+     * ⚠️ WHICH SOCKET FAMILY REACHED THE UPSTREAM IS NOT WHAT THIS FAMILY MEASURES. The rule asked for
      * `unix:/<path>.sock`, so a host whose nginx has `fastcgi_pass 127.0.0.1:9000` — what the official
      * php-fpm container listens on — FAILed with "PHP did not answer" about a request PHP demonstrably
      * answered: the very line being judged carries upstream_status 404, which is Laravel's own fallback for
      * an unrouted path and nothing an nginx short-circuit produces.
      *
-     * The socket family is not this family's condition to assert either. ADR-034 does not mention fastcgi,
-     * FPM or a socket, and where PHP is, the families that read the configuration already judge — nginx's
-     * NGX-3 and relays' RLY-2 and RLY-3. This is the same change the throttle family's finding 10 made to
-     * the same assertion.
+     * ⚠️ WHICH IS NOT THE SAME AS SAYING THE RUNBOOK ALLOWS IT. NGX-3 reads `fastcgi_pass` from the
+     * configuration and FAILs one that is not a unix socket, in its own words, so a whole run against such a
+     * host still exits non-zero — this case is about which family says it, and in what words. A per-request
+     * FAIL here said it a second time, inside a family about forwarded headers, blaming the wrong thing.
+     * This is the same change the throttle family's finding 10 made to the same assertion.
      */
     tunnelLogFixture($this->dir, 'probe', json_encode(tunnelLogLine(['upstream_addr' => $upstream])) ?: '{}');
 
@@ -551,7 +596,12 @@ it('passes a host whose PHP answers over TCP rather than a unix socket', functio
         ->and(tunnelLogVerdict($run, 'TUN-1'))->toContain('PASS')
         ->and(tunnelLogVerdict($run, 'TUN-2'))->toContain('PASS')
         // The evidence still names what answered, so an operator reading the report can see it was TCP.
-        ->and($run->getOutput())->toContain('upstream '.$upstream);
+        ->and($run->getOutput())->toContain('upstream '.$upstream)
+        // ⚠️ AND THE REASON CLAIMS ONLY THAT. The rule behind "answered by PHP" is the one that just went;
+        // any upstream that 404s an unrouted path satisfies what is left, so a proxy_pass to a Node app
+        // would have passed under a sentence saying PHP had answered.
+        ->and(tunnelLogVerdict($run, 'TUN-1'))->not->toContain('answered by PHP')
+        ->and(tunnelLogVerdict($run, 'TUN-1'))->toContain('reached an upstream rather than being answered by nginx itself');
 })->with([
     'FPM over TCP on loopback' => ['127.0.0.1:9000'],
     'FPM over TCP on IPv6 loopback' => ['[::1]:9000'],
@@ -625,65 +675,109 @@ it('reads every name a directive carries, strips the semicolon, and collapses th
     expect(tunnelLogRequested($this->dir))->toBe(['alias.kitsune.test', 'stage.kitsune.test']);
 });
 
-it('requests the hostnames an application answers at, and records the ones that answer for none', function (): void {
+it('requests every hostname it serves, and asks only the rooted ones what answered', function (): void {
     /*
-     * ⚠️ A REDIRECT VHOST VOIDED A HOST THAT WAS ANSWERING CORRECTLY. `server_name www.<domain>; return 301
-     * …` declares no application: it answers 301 with no upstream and no 404, so the two rules that say the
-     * request reached PHP could not hold, and TUN-1 reported the whole host unmeasurable — after installing
-     * the probe log and reloading nginx twice — over a hostname that was behaving exactly as intended. Forge
-     * writes that block from its own UI, so the alpha host will have one, and the same is true of any
-     * co-resident vhost that is not this application: an old-domain redirect, a static docs site, an
+     * ⚠️ A REDIRECT VHOST FAILED A HOST THAT WAS ANSWERING CORRECTLY. `server_name www.<domain>; return 301
+     * …` roots no application: nginx answers it itself, so the line carries no upstream, and the rule that
+     * reads an empty `upstream_addr` FAILed — TUN-1 named the host broken, after installing the probe log and
+     * reloading nginx twice, over a hostname behaving exactly as intended. (A FAIL, not a VOID: the 301 also
+     * queues the "rather than 404" void, but fails are reported first, so what reached the operator was a
+     * host reported broken.) Forge writes that block from its own UI, so the alpha host will have one, and so
+     * does any co-resident vhost that is not this application: an old-domain redirect, a static docs site, an
      * ACME-only block.
      *
-     * The throttle family met the same vhost and got it wrong differently, which is why the split now lives
-     * in outside/lib.php and both families read it: a disagreement between two families about which
-     * hostnames a run is even about reaches the operator as a property of the host.
-     *
-     * ⚠️ AND THE ASSERTION IS THE REQUEST LOG. A family that still requested the redirect vhost and merely
-     * left it out of the sentence would pass a verdict-substring assertion, and would still be driving a
-     * request and a probe-log collect at a hostname that serves nothing.
+     * ⚠️ AND IT IS STILL REQUESTED, BECAUSE THE TUNNEL IS STILL THE QUESTION. Every other rule here — the
+     * peer, realip, the PROXY protocol, the port and scheme, the forwarded chain, who owned the socket — is
+     * about how the request reached nginx, and ADR-034 asks that of every hostname Cloudflare proxies to this
+     * host, redirect vhost included. Skipping the request is what let a `www` vhost answering straight off
+     * the internet pass unmeasured (the case below this one). The cost is one GET, not a lockout: what a
+     * hostname left out of the split costs is the caller's to weigh, and the throttle family weighs it
+     * differently.
      */
     tunnelLogFixture($this->dir, 'hostnames', tunnelLogDump('stage.kitsune.test', tunnelLogRedirectVhost()));
+    tunnelLogProbe($this->dir, 2, tunnelLogRedirectLine('www.stage.kitsune.test'));
 
     $run = tunnelLogRun($this->dir, $this->family);
 
     expect($run->isSuccessful())->toBeTrue($run->getOutput().$run->getErrorOutput())
         ->and(tunnelLogVerdict($run, 'TUN-1'))->toContain('PASS')
         ->and(tunnelLogVerdict($run, 'TUN-2'))->toContain('PASS')
-        ->and(tunnelLogRequested($this->dir))->toBe(['stage.kitsune.test'])
-        ->and($run->getOutput())->toContain('RECORD TUN-1 the configuration also serves hostnames that name no application: '
-            .'[www.stage.kitsune.test] has no server-level root ending in /public in the running configuration '
-            .'(it declares none), so nothing was requested there')
-        ->and(tunnelLogVerdict($run, 'TUN-1'))->not->toContain('www.stage.kitsune.test');
+        ->and(tunnelLogRequested($this->dir))->toBe(['stage.kitsune.test', 'www.stage.kitsune.test'])
+        ->and($run->getOutput())->toContain('RECORD TUN-1 the configuration also serves hostnames that root no application: '
+            .'[www.stage.kitsune.test] has no root ending in /public that an https request for it would use '
+            .'(it would use none), so they were requested and held to every rule but the two about what answered')
+        // The split is in the evidence too, beside the line it changes the reading of.
+        ->and($run->getOutput())->toContain('www.stage.kitsune.test: edge saw 203.0.113.50')
+        ->and($run->getOutput())->toContain('(it roots no application, so what answered it was not judged)')
+        // Both hostnames arrived through the tunnel; only the rooted one was asked what answered.
+        ->and(tunnelLogVerdict($run, 'TUN-1'))->toContain('every one of stage.kitsune.test, www.stage.kitsune.test arrived from 127.0.0.1')
+        ->and(tunnelLogVerdict($run, 'TUN-1'))->toContain('the request to stage.kitsune.test reached an upstream');
 });
 
-it('voids a host where every hostname it serves declares no application, and says which', function (): void {
+it('fails a hostname that roots no application and did not arrive through the tunnel', function (): void {
     /*
-     * The other end of the split: leaving a redirect vhost out is not the same as having nothing to measure,
-     * so a configuration where NO hostname declares an application is still VOID — and names them, rather
-     * than reporting that a host serving two vhosts names no site at all.
+     * ⚠️ THE TRUE POSITIVE THAT PAYS FOR THE REQUEST. A `www` vhost whose DNS is proxied but not routed
+     * through the tunnel — or not proxied at all — reaches nginx from a public peer, on a connection nginx
+     * owns rather than the connector. ADR-034 forbids exactly that ("every hostname in the operator's own
+     * zones that Cloudflare proxies to this host is a tunnel route"), and nothing else in the runbook would
+     * see it: a family that judged only the hostnames an application answers at reported PASS, exit 0, with
+     * one healthy hostname beside it and the broken one named nowhere but a RECORD saying it was skipped.
+     *
+     * The reasons are the assertion, not the FAIL: this must fail for the tunnel, never for the 301 a
+     * redirect vhost is supposed to answer with.
+     */
+    tunnelLogFixture($this->dir, 'hostnames', tunnelLogDump('stage.kitsune.test', tunnelLogRedirectVhost()));
+    tunnelLogProbe($this->dir, 2, tunnelLogRedirectLine('www.stage.kitsune.test', [
+        'remote_addr' => '203.0.113.9',
+        'realip_remote_addr' => '203.0.113.9',
+    ]));
+    tunnelLogFixture($this->dir, 'owner.2', '0 0 203.0.113.9:44000 203.0.113.9:443 users:(("nginx",pid=1,fd=7))');
+
+    $run = tunnelLogRun($this->dir, $this->family);
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and(tunnelLogRequested($this->dir))->toBe(['stage.kitsune.test', 'www.stage.kitsune.test'])
+        ->and(tunnelLogVerdict($run, 'TUN-1'))->toContain('FAIL')
+        ->and(tunnelLogVerdict($run, 'TUN-1'))->toContain('www.stage.kitsune.test: remote_addr is [203.0.113.9], not exactly 127.0.0.1')
+        ->and(tunnelLogVerdict($run, 'TUN-1'))->toContain('rather than a tunnel connector')
+        ->and(tunnelLogVerdict($run, 'TUN-1'))->not->toContain('PHP did not answer')
+        ->and(tunnelLogVerdict($run, 'TUN-2'))->toContain('PASS');
+});
+
+it('voids a host where no hostname it serves roots an application, and says which', function (): void {
+    /*
+     * The other end of the split: a hostname held to fewer rules is not a hostname that proves what they
+     * would have said, so a configuration where NO hostname roots an application is still VOID — and names
+     * them, rather than reporting that a host serving two vhosts names no site at all. The requests are still
+     * made, and everything they do show is still judged; what is missing is any evidence that a request
+     * reached an application at all, which is not something to pass over in silence.
      */
     tunnelLogFixture($this->dir, 'hostnames', tunnelLogDump('', tunnelLogRedirectVhost().tunnelLogRedirectVhost('old.kitsune.test')));
+    tunnelLogProbe($this->dir, 1, tunnelLogRedirectLine('old.kitsune.test'));
+    tunnelLogProbe($this->dir, 2, tunnelLogRedirectLine('www.stage.kitsune.test'));
 
     $run = tunnelLogRun($this->dir, $this->family);
 
     expect($run->isSuccessful())->toBeFalse()
         ->and(tunnelLogVerdict($run, 'TUN-1'))->toContain('VOID')
-        ->and(tunnelLogVerdict($run, 'TUN-1'))->toContain('no hostname this server serves declares an application to request')
-        ->and(tunnelLogVerdict($run, 'TUN-1'))->toContain('[old.kitsune.test] has no server-level root ending in /public')
-        ->and(tunnelLogVerdict($run, 'TUN-1'))->toContain('[www.stage.kitsune.test] has no server-level root ending in /public')
-        ->and(tunnelLogRequested($this->dir))->toBe([])
+        ->and(tunnelLogVerdict($run, 'TUN-1'))->toContain('no hostname this server serves roots an application')
+        ->and(tunnelLogVerdict($run, 'TUN-1'))->toContain('[old.kitsune.test] has no root ending in /public')
+        ->and(tunnelLogVerdict($run, 'TUN-1'))->toContain('[www.stage.kitsune.test] has no root ending in /public')
+        ->and(tunnelLogRequested($this->dir))->toBe(['old.kitsune.test', 'www.stage.kitsune.test'])
         ->and(tunnelLogVerdict($run, 'TUN-2'))->toContain('PASS');
 });
 
-it('still voids a hostname that declares an application and did not answer 404', function (string $status, string $upstream): void {
+it('still voids a hostname that roots an application and did not answer 404', function (string $status, string $upstream): void {
     /*
-     * ⚠️ THE TRUE POSITIVE THE SPLIT MUST NOT SWALLOW. Leaving out a hostname that declares no application is
-     * not the same as excusing a redirect from one that does: the path requested is unrouted, so Laravel's
-     * own fallback is what produces the 404, and anything else — a canonical-host redirect in front of the
-     * app, a cached or static answer, an error page — means the request did not reach the point this judges.
+     * ⚠️ THE TRUE POSITIVE THE SPLIT MUST NOT SWALLOW. Holding a hostname that roots no application to fewer
+     * rules is not the same as excusing a redirect from one that does: the path requested is unrouted, so
+     * Laravel's own fallback is what produces the 404, and anything else — a canonical-host redirect in front
+     * of the app, an application error page — means the request did not reach the point this judges.
      * Asserting only that the healthy world passes would be satisfied by a family that stopped judging the
      * status at all.
+     *
+     * Both datasets keep an upstream in the line, because that is what makes them voids: a short-circuit
+     * reaches none, and is a FAIL rather than a VOID ("fails what the host got wrong", above).
      */
     tunnelLogFixture($this->dir, 'probe', json_encode(tunnelLogLine(['status' => $status, 'upstream_status' => $upstream])) ?: '{}');
 
@@ -694,7 +788,7 @@ it('still voids a hostname that declares an application and did not answer 404',
         ->and(tunnelLogVerdict($run, 'TUN-1'))->toContain('rather than 404');
 })->with([
     'the application redirected it' => ['301', '301'],
-    'nginx answered from its own cache' => ['200', '200'],
+    'the application answered 200' => ['200', '200'],
 ]);
 
 it('refuses without the instrument it drives, and looks for it where it was told to', function (): void {
@@ -734,7 +828,9 @@ it('refuses a verdict for a check it does not declare, and still removes the pro
     File::put($mutant, str_replace($mutation, "verdict('TUN-9', 'PASS', 'every one of '", $source));
 
     $run = tunnelLogRun($this->dir, $mutant);
-    $refused = 'verdict TUN-9 PASS [every one of stage.kitsune.test arrived from 127.0.0.1 with TLS terminated here, answered by PHP, and the last forwarded entry as the edge saw it]: this family did not declare that id';
+    $refused = 'verdict TUN-9 PASS [every one of stage.kitsune.test arrived from 127.0.0.1 with TLS terminated here '
+        .'and the last forwarded entry as the edge saw it, and the request to stage.kitsune.test reached an upstream '
+        .'rather than being answered by nginx itself]: this family did not declare that id';
 
     expect($run->isSuccessful())->toBeFalse()
         ->and($run->getErrorOutput())->toContain($refused)
@@ -776,7 +872,7 @@ it('voids the whole family through run.sh when it refuses a verdict after every 
      * the FAIL appeared nowhere, and the report's one measurement of TUN-1 was the PASS before it.
      */
     $source = File::get($this->family);
-    $mutation = "the last forwarded entry as the edge saw it', \$verdicts);\n    }\n";
+    $mutation = "reached an upstream rather than being answered by nginx itself', \$verdicts);\n    }\n";
 
     expect(substr_count($source, $mutation))->toBe(1);
 

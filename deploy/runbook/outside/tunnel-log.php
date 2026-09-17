@@ -32,14 +32,16 @@ declare(strict_types=1);
  *
  * ⚠️ TWO CHECK IDS, NOT ONE PER HOSTNAME. The manifest is static and committed, and a server's
  * hostnames are a property of that server, so a per-hostname id could never be promised in advance.
- * TUN-1 covers the requests across every hostname the server serves the application at — one failure
- * fails it, and each hostname's detail is recorded — and TUN-2 covers the probe log being removed
- * afterwards.
+ * TUN-1 covers the requests across every hostname the server serves — one failure fails it, and each
+ * hostname's detail is recorded — and TUN-2 covers the probe log being removed afterwards.
  *
- * ⚠️ AND WHAT A SITE IS, THE THROTTLE FAMILY DECIDES TOO, SO BOTH READ ONE DEFINITION (lib.php's
- * servedSites). A hostname that declares no application — a `www`→apex redirect vhost, which Forge writes
- * from its own UI — answers with a `return 301`: no upstream, no 404, and this voided a host that was
- * answering correctly at every hostname that has one. Such a hostname is recorded and never requested.
+ * ⚠️ AND EVERY HOSTNAME IT SERVES IS REQUESTED, WHETHER OR NOT AN APPLICATION ANSWERS THERE. A `www`→apex
+ * redirect vhost, which Forge writes from its own UI, roots no application and answers `return 301` with no
+ * upstream — and the two rules that ask what answered the request FAILed it, so TUN-1 named a host as broken
+ * over a hostname behaving exactly as intended. Those two rules are now asked only where the configuration
+ * roots an application (lib.php's servedSites, which the throttle family reads too, so the two cannot
+ * disagree about what a site is); every rule about the tunnel itself is asked of every hostname, because
+ * that is what ADR-034's list asks of every hostname Cloudflare proxies here.
  */
 
 const FAMILY = 'tunnel-log';
@@ -664,10 +666,16 @@ function curlProbe(string $hostname, string $probeId, string $path, string $work
 /**
  * Every rule the probe line must satisfy.
  *
+ * ⚠️ MOST OF THEM HOLD FOR ANY HOSTNAME NGINX SERVES, AND TWO DO NOT. The peer, realip, the PROXY protocol,
+ * the Host, the catch-all, the port and scheme, the forwarded chain and who owned the socket are properties
+ * of how the request reached the web server, and a `www`→apex redirect vhost is behind the same tunnel as
+ * everything else. Only the two that ask what answered the request need an application to be there, so only
+ * those are held back — see the lede above them.
+ *
  * @param  array<string, string>  $line
  * @return array{0: list<string>, 1: list<string>} fails, then voids
  */
-function judge(array $line, string $hostname, string $edgeAddress, string $owner): array
+function judge(array $line, string $hostname, string $edgeAddress, string $owner, bool $servesApplication): array
 {
     $fails = [];
     $voids = [];
@@ -701,31 +709,40 @@ function judge(array $line, string $hostname, string $edgeAddress, string $owner
     }
 
     /*
-     * PHP answered rather than nginx short-circuiting: the path is unrouted, so Laravel's own fallback
-     * produces the 404 — which only happens if the request reached PHP at all.
+     * ⚠️ THE TWO RULES THAT NEED AN APPLICATION TO BE THERE, AND THEY ARE ASKED ONLY WHERE ONE IS. The path
+     * requested is unrouted, so the 404 is Laravel's own fallback and an upstream is what produces it — but a
+     * hostname the configuration roots at no application, a `www`→apex redirect vhost above all, answers 301
+     * with no upstream and never reaches either. Asked of one anyway, they FAILed TUN-1 with "PHP did not
+     * answer" — a host reported broken over a vhost behaving exactly as intended, after the probe log had been
+     * installed and nginx reloaded twice. The hostname is still requested and still held to every rule above:
+     * what is skipped is these two, and nothing else.
      *
-     * ⚠️ THAT AN UPSTREAM ANSWERED IT, NOT WHICH SOCKET FAMILY REACHED ONE. This asked for
+     * ⚠️ AND WHAT THEY ASSERT IS THAT AN UPSTREAM ANSWERED, NOT WHICH SOCKET REACHED IT. The first asked for
      * `unix:/<path>.sock`, so a host running PHP-FPM over TCP — `fastcgi_pass 127.0.0.1:9000`, which the
      * official php-fpm container listens on — FAILed with "PHP did not answer" about a request PHP
      * demonstrably answered: the same line carries `upstream_status` 404, which is Laravel's own fallback
      * and nothing an nginx short-circuit produces.
      *
-     * Nor is the socket family this family's condition to assert. ADR-034 never mentions fastcgi, FPM or a
-     * socket, and the runbook already judges where PHP is from the configuration, in the families that read
-     * it: nginx's NGX-3 and relays' RLY-2 and RLY-3. A per-request FAIL inside a family about forwarded
-     * headers said the same thing a second time, in words that blame the wrong thing.
-     *
-     * What this check is really for is nginx short-circuiting the request — a cached or static answer, a
-     * `return`, an error page — which leaves no upstream at all, and that is what it now asserts. The
-     * throttle family's finding 10 made the same change to the same assertion.
+     * The runbook does judge the socket, and does it once: NGX-3 reads `fastcgi_pass` from the configuration
+     * and FAILs one that is not a unix socket, in its own words, so a host serving PHP over TCP still fails
+     * its run — this family simply stops saying it a second time, in a family about forwarded headers, in
+     * words that blame the wrong thing. What is left is the claim these lines can carry on their own: an
+     * upstream answered, rather than nginx answering the request itself from a cache, a static file, a
+     * `return` or an error page. The FAIL below says only that, and it is sound in that direction — a request
+     * that reached no upstream reached no PHP either. The PASS at the end of the run says no more (ADR-034
+     * does name `fastcgi_param HTTP_X_FORWARDED_FOR` and PHP-FPM's handling of two headers, in conditions
+     * NGX-3 checks; neither is a claim about who answered this request). The throttle family's finding 10
+     * made the same change to the same assertion.
      */
-    if (in_array($field('upstream_addr'), ['', '-'], true)) {
-        $fails[] = "{$hostname}: it reached no upstream at all (nginx logged [{$field('upstream_addr')}]), so PHP did not answer";
-    }
+    if ($servesApplication) {
+        if (in_array($field('upstream_addr'), ['', '-'], true)) {
+            $fails[] = "{$hostname}: it reached no upstream at all (nginx logged [{$field('upstream_addr')}]), so PHP did not answer";
+        }
 
-    if ($field('status') !== '404' || $field('upstream_status') !== '404') {
-        $voids[] = "{$hostname}: it answered {$field('status')}/{$field('upstream_status')} rather than 404, "
-            .'so it did not reach the point this judges';
+        if ($field('status') !== '404' || $field('upstream_status') !== '404') {
+            $voids[] = "{$hostname}: it answered {$field('status')}/{$field('upstream_status')} rather than 404, "
+                .'so it did not reach the point this judges';
+        }
     }
 
     // ⚠️ THE ARRIVAL ASSERTION. Without it, "the last entry is the requester" is true of a one-entry
@@ -756,7 +773,7 @@ function judge(array $line, string $hostname, string $edgeAddress, string $owner
  *
  * @return array{0: list<string>, 1: list<string>} fails, then voids
  */
-function checkHostname(string $host, string $hostname, string $nonce, int $index, string $payload, string $work): array
+function checkHostname(string $host, string $hostname, string $nonce, int $index, string $payload, string $work, bool $servesApplication): array
 {
     $probeId = $nonce.'-'.$index;
     [$status, $rows, $paths, $curlError] = curlProbe($hostname, $probeId, '/kitsune-runbook-'.$probeId, $work);
@@ -804,10 +821,13 @@ function checkHostname(string $host, string $hostname, string $nonce, int $index
         return [[], ["{$hostname}: the instrument printed no line for {$probeId}"]];
     }
 
+    // The split is recorded with the line it changes the reading of, so an operator can see which rules this
+    // hostname was held to without working it back out of the configuration.
     record('TUN-1', "{$hostname}: edge saw {$before}, nginx logged remote_addr ".($line['remote_addr'] ?? '?')
-        .' xff ['.($line['xff'] ?? '').'] status '.($line['status'] ?? '?').' upstream '.($line['upstream_addr'] ?? '?'));
+        .' xff ['.($line['xff'] ?? '').'] status '.($line['status'] ?? '?').' upstream '.($line['upstream_addr'] ?? '?')
+        .($servesApplication ? '' : ' (it roots no application, so what answered it was not judged)'));
 
-    return judge($line, $hostname, $before, $owner);
+    return judge($line, $hostname, $before, $owner, $servesApplication);
 }
 
 // --- the run ---------------------------------------------------------------------------------------
@@ -895,26 +915,33 @@ try {
     [$served, $rootless] = servedSites($named);
 
     // Recorded for the reason a pattern is, and in the words the throttle family records the same split in:
-    // an operator whose redirect vhost this left out should read it here rather than wonder why a name the
-    // configuration carries was never requested.
+    // an operator whose redirect vhost this holds to fewer rules should read which here rather than work it
+    // back out of the configuration.
     if ($rootless !== []) {
-        record('TUN-1', 'the configuration also serves hostnames that name no application: '.implode('; ', $rootless)
-            .', so nothing was requested there');
+        record('TUN-1', 'the configuration also serves hostnames that root no application: '.implode('; ', $rootless)
+            .', so they were requested and held to every rule but the two about what answered');
     }
 
-    $sites = array_keys($served);
+    // ⚠️ EVERY HOSTNAME IT SERVES, NOT EVERY HOSTNAME THAT ROOTS AN APPLICATION. Whether a request arrived
+    // from the connector on loopback, with TLS terminated here and the chain the edge wrote, is a question
+    // about the tunnel, and ADR-034's list asks it of every hostname in the operator's zones that Cloudflare
+    // proxies to this host. Asking it only where an application answers let a `www` vhost that reached nginx
+    // straight off the internet — the shape ADR-034 forbids — pass unrequested beside one healthy hostname.
+    $sites = array_keys($named);
+    $applications = array_keys($served);
 
     if ($unreadable !== '') {
         $voids[] = 'the running configuration could not be read, so there was nothing to request: '.$unreadable;
     } elseif ($sites === []) {
-        $voids[] = $rootless === []
-            ? 'no site hostname was found in the running configuration, so there was nothing to request'
-                .($patterns === [] ? '' : ' (it names only '.implode(', ', $patterns).', which no request can be made to)')
-            : 'no hostname this server serves declares an application to request: '.implode('; ', $rootless);
+        $voids[] = 'no site hostname was found in the running configuration, so there was nothing to request'
+            .($patterns === [] ? '' : ' (it names only '.implode(', ', $patterns).', which no request can be made to)');
+    } elseif ($applications === []) {
+        $voids[] = 'no hostname this server serves roots an application, so nothing here shows a request '
+            .'reaching one: '.implode('; ', $rootless);
     }
 
     foreach ($sites as $index => $hostname) {
-        [$siteFails, $siteVoids] = checkHostname($host, $hostname, $nonce, $index + 1, $payload, $work);
+        [$siteFails, $siteVoids] = checkHostname($host, $hostname, $nonce, $index + 1, $payload, $work, isset($served[$hostname]));
         $fails = [...$fails, ...$siteFails];
         $voids = [...$voids, ...$siteVoids];
     }
@@ -924,8 +951,13 @@ try {
     } elseif ($voids !== []) {
         verdict('TUN-1', 'VOID', implode('; ', $voids), $verdicts);
     } else {
-        verdict('TUN-1', 'PASS', 'every one of '.implode(', ', $sites).' arrived from 127.0.0.1 with TLS terminated here, '
-            .'answered by PHP, and the last forwarded entry as the edge saw it', $verdicts);
+        // ⚠️ THE REASON SAYS WHAT WAS MEASURED, AND NO MORE. It used to end "answered by PHP", which the rule
+        // behind it had stopped asserting: an upstream answering is not PHP answering, and a `proxy_pass` to
+        // anything that 404s an unrouted path satisfies both rules above. What the line proves is that nginx
+        // did not answer the request itself — said here, so the report and the evidence agree.
+        verdict('TUN-1', 'PASS', 'every one of '.implode(', ', $sites).' arrived from 127.0.0.1 with TLS terminated '
+            .'here and the last forwarded entry as the edge saw it, and the request to '.implode(', ', $applications)
+            .' reached an upstream rather than being answered by nginx itself', $verdicts);
     }
 } catch (LogicException $refused) {
     // Held, not lost: the probe is still removed and TUN-2 still reported, and then it is thrown again.
