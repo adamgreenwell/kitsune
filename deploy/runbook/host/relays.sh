@@ -30,10 +30,11 @@
 set -euo pipefail
 
 family relays RLY-1 RLY-2 RLY-3 RLY-4 RLY-5
+# The expectation differs by topology, so this family runs on both, and common.sh refuses any other.
+topologies tunnel dns-only
 require_root
 
-topology=${1:-}
-[[ "$topology" == tunnel || "$topology" == dns-only ]] || refuse "the topology must be tunnel or dns-only, not [${topology}]"
+topology=$1
 
 work=$(mktemp -d) || refuse "could not make a working directory"
 cleanup_at_exit "$work"
@@ -114,7 +115,9 @@ else
   deadline=$((SECONDS + window))
 
   if [[ "$topology" == tunnel ]]; then
-    ( while (( SECONDS < deadline )); do curl -s -o /dev/null --max-time 3 "https://$site/up" || true; done ) >/dev/null 2>&1 &
+    # Descriptor 3 is the verdict stream (common.sh's family), and a curl still running when this is killed
+    # would hold the session open until its own timeout.
+    ( while (( SECONDS < deadline )); do curl -s -o /dev/null --max-time 3 "https://$site/up" || true; done ) >/dev/null 2>&1 3>&- &
     driver=$!
   else
     driver=""

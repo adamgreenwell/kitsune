@@ -137,7 +137,11 @@ function relayStub(string $name): string
         #!/usr/bin/env bash
         d=$(dirname "$(dirname "$0")")
         for arg in "$@"; do
-          case "$arg" in *diag/tunnel*) cat "$d/tunnel"; exit 0 ;; esac
+          case "$arg" in
+            *diag/tunnel*) cat "$d/tunnel"; exit 0 ;;
+            # The traffic driver's request, and whether it holds the verdict stream common.sh pins to descriptor 3.
+            */up) if { : >&3; } 2>/dev/null; then echo holds; else echo free; fi >> "$d/driven"; exit 0 ;;
+          esac
         done
         exit 0
         BASH,
@@ -324,6 +328,18 @@ it('fails a PHP socket whose holder no longer exists', function (): void {
 
     expect(relayVerdict($run, 'RLY-2'))->toContain('FAIL')
         ->and(relayVerdict($run, 'RLY-2'))->toContain('gone');
+});
+
+it('drives its traffic without holding the verdict stream open', function (): void {
+    /*
+     * common.sh pins the verdict stream to descriptor 3, and every child inherits it. The driver is killed rather than
+     * waited on, so a curl it left running would hold the session open until that curl's own timeout. Two seconds of
+     * window, so the driver makes at least one request whichever part of a second it starts in.
+     */
+    $run = relayRun($this->dir, $this->common, $this->family, ['KITSUNE_WINDOW' => '2']);
+
+    expect($run->isSuccessful())->toBeTrue($run->getErrorOutput())
+        ->and(array_values(array_unique(explode("\n", trim((string) @file_get_contents($this->dir.'/driven'))))))->toBe(['free']);
 });
 
 it('expects no loopback client at all on a host with no tunnel', function (): void {

@@ -172,6 +172,13 @@ function tunnelLogStubs(): array
             ;;
           *" start "*)
             [[ -e "$d/start-fail" ]] && { echo "Refusing to check: a probe is already installed" >&2; exit 1; }
+            # The marker is the probe on the server: `start` writes the snippet and reloads nginx before its
+            # drain wait, so a start that fails after that point leaves one for `stop` to find.
+            touch "$d/installed"
+            if [[ -s "$d/start-installed-then-failed" ]]; then
+              cat "$d/start-installed-then-failed" >&2
+              exit "$(cat "$d/start-status")"
+            fi
             echo "STATE start installed, reloaded, drained in 0s; workers now 29271"
             ;;
           *" collect "*)
@@ -182,8 +189,14 @@ function tunnelLogStubs(): array
             echo "STATE collect one line"
             ;;
           *" stop "*)
+            echo "$args" >> "$d/stopped"
             [[ -e "$d/stop-fail" ]] && { echo "Refusing to check: the configuration does not hash back" >&2; exit 1; }
-            echo "STATE stop removed, dead-man cancelled, configuration hashes back to its baseline"
+            if [[ -e "$d/installed" ]]; then
+              rm -f "$d/installed"
+              echo "STATE stop removed, dead-man cancelled, configuration hashes back to its baseline"
+            else
+              echo "STATE stop absent no snippet and no dead-man timer, so nothing of this probe was installed and nginx was not reloaded"
+            fi
             ;;
         esac
         exit 0
@@ -246,6 +259,31 @@ function tunnelLogRun(string $dir, string $family, string $expect = 'tunnel', ar
     return $process;
 }
 
+/**
+ * Run the family the way an operator does: through the real run.sh, against a fixture runbook whose
+ * outside/tunnel-log.php is the given source and whose manifest promises what the committed one does.
+ * TMPDIR is the fixture's own, so a kept streams directory is found, and removed, with the test.
+ */
+function tunnelLogGate(string $dir, string $source): Process
+{
+    File::copy(dirname(__DIR__, 3).'/deploy/runbook/run.sh', $dir.'/runbook/run.sh');
+    File::put($dir.'/runbook/manifest.txt', "tunnel tunnel-log TUN-1\ntunnel tunnel-log TUN-2\n");
+    File::ensureDirectoryExists($dir.'/runbook/outside');
+    File::put($dir.'/runbook/outside/tunnel-log.php', $source);
+    File::ensureDirectoryExists($dir.'/tmp');
+
+    $process = new Process(
+        ['bash', $dir.'/runbook/run.sh', '--host', 'forge@fixture', '--expect', 'tunnel'],
+        $dir,
+        ['HOME' => (string) getenv('HOME'), 'TMPDIR' => $dir.'/tmp', 'PATH' => $dir.'/bin:'.getenv('PATH')],
+    );
+
+    $process->setTimeout(60);
+    $process->run();
+
+    return $process;
+}
+
 /** The verdict line for one check id. */
 function tunnelLogVerdict(Process $run, string $id): string
 {
@@ -284,15 +322,85 @@ it('says so plainly on a host with no tunnel, rather than skipping', function ()
         ->and($run->getOutput())->toContain('SENTINEL tunnel-log 2');
 });
 
-it('voids both checks when the probe log could not be installed', function (): void {
+it('voids both checks when the probe log could not be installed, having asked what is on the server', function (): void {
+    /*
+     * ⚠️ "NOTHING WAS INSTALLED" IS A MEASUREMENT NOW, NOT AN ASSUMPTION. This start refuses before it installs
+     * anything, and stop is what says so: it finds no snippet and no dead-man timer for the nonce.
+     */
     touch($this->dir.'/start-fail');
 
     $run = tunnelLogRun($this->dir, $this->family);
 
     expect($run->isSuccessful())->toBeFalse()
         ->and(tunnelLogVerdict($run, 'TUN-1'))->toContain('VOID')
-        ->and(tunnelLogVerdict($run, 'TUN-1'))->toContain('could not be installed')
-        ->and(tunnelLogVerdict($run, 'TUN-2'))->toContain('nothing was installed');
+        ->and(tunnelLogVerdict($run, 'TUN-1'))->toContain('did not start')
+        ->and(tunnelLogVerdict($run, 'TUN-2'))->toContain('VOID')
+        ->and(tunnelLogVerdict($run, 'TUN-2'))->toContain('nothing of the probe was installed, so nothing had to be removed: STATE stop absent')
+        ->and(File::get($this->dir.'/stopped'))->toContain('stop');
+});
+
+it('removes a probe the failed start had installed, rather than reporting that nothing was', function (string $status, string $said, string $named): void {
+    /*
+     * ⚠️ THE PROBE STAYED ON THE SERVER, AND TUN-2 SAID NOTHING WAS INSTALLED. `start` writes the snippet, arms the
+     * dead-man timer and reloads nginx before it waits for the old workers to drain, so it can fail with the probe
+     * live: the drain wait expiring, or ssh exiting 255 once the remote start had finished. Any non-zero start was
+     * read as "nothing was installed" and stop never ran, so the probe served until the dead-man timer fired
+     * fifteen minutes later — and a rerun inside that window refused, because a probe was already installed.
+     */
+    File::put($this->dir.'/start-installed-then-failed', $said);
+    File::put($this->dir.'/start-status', $status);
+
+    $run = tunnelLogRun($this->dir, $this->family);
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and(tunnelLogVerdict($run, 'TUN-1'))->toContain('VOID')
+        ->and(tunnelLogVerdict($run, 'TUN-1'))->toContain($named)
+        ->and(tunnelLogVerdict($run, 'TUN-2'))->toContain('PASS STATE stop removed')
+        ->and(tunnelLogVerdict($run, 'TUN-2'))->not->toContain('nothing')
+        ->and(is_file($this->dir.'/installed'))->toBeFalse()
+        ->and($run->getOutput())->toContain('SENTINEL tunnel-log 2 TUN-1 TUN-2');
+})->with([
+    'the drain wait expired after the reload' => [
+        '1',
+        "Refusing to check: after 90s of the runbook's own patience the pre-reload workers 3120 were still serving, so a probe line could not be attributed to this configuration.",
+        "the runbook's own patience",
+    ],
+    'ssh exited 255 once the remote start had finished' => [
+        '255',
+        'Connection to stage.example closed by remote host.',
+        'closed by remote host',
+    ],
+]);
+
+it('fails TUN-2 when the probe a failed start installed could not be removed', function (): void {
+    File::put($this->dir.'/start-installed-then-failed', "Refusing to check: after 90s of the runbook's own patience the pre-reload workers 3120 were still serving");
+    File::put($this->dir.'/start-status', '1');
+    touch($this->dir.'/stop-fail');
+
+    $run = tunnelLogRun($this->dir, $this->family);
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and(tunnelLogVerdict($run, 'TUN-2'))->toContain('FAIL')
+        ->and(tunnelLogVerdict($run, 'TUN-2'))->toContain('THE PROBE LOG WAS NOT REMOVED')
+        ->and(tunnelLogVerdict($run, 'TUN-2'))->toContain('does not hash back');
+});
+
+it('says nothing was installed, and runs no stop, when the instrument never reached the host', function (): void {
+    /*
+     * ⚠️ THE ONE CASE STOP CANNOT MEASURE. With ssh unreachable, start sent nothing, and a stop that cannot start
+     * either could only report a failure of its own — TUN-2 FAIL "THE PROBE LOG WAS NOT REMOVED" against a server
+     * that never had one. `run()` reports a command that never started as a status no process can exit with.
+     */
+    File::makeDirectory($this->dir.'/nossh');
+    symlink(PHP_BINARY, $this->dir.'/nossh/php');
+
+    $run = tunnelLogRun($this->dir, $this->family, 'tunnel', ['PATH' => $this->dir.'/nossh']);
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and(tunnelLogVerdict($run, 'TUN-1'))->toContain('VOID')
+        ->and(tunnelLogVerdict($run, 'TUN-1'))->toContain('could not start ssh')
+        ->and(tunnelLogVerdict($run, 'TUN-2'))->toContain('VOID nothing was installed: nothing was sent to the host')
+        ->and(is_file($this->dir.'/stopped'))->toBeFalse();
 });
 
 it('fails loudly when the probe log was left behind', function (): void {
@@ -468,6 +576,95 @@ it('refuses without the instrument it drives, and looks for it where it was told
     expect($run->isSuccessful())->toBeFalse()
         ->and(tunnelLogVerdict($run, 'TUN-1'))->toContain('the instrument is missing')
         ->and(tunnelLogVerdict($run, 'TUN-1'))->toContain($this->dir.'/runbook/host/probe-log.sh')
-        ->and(tunnelLogVerdict($run, 'TUN-2'))->toContain('nothing was installed')
+        ->and(tunnelLogVerdict($run, 'TUN-2'))->toContain('nothing was installed: nothing was sent to the host')
         ->and($run->getOutput())->not->toContain('PROBE ');
 });
+
+it('refuses a verdict for a check it does not declare, and still removes the probe log', function (): void {
+    /*
+     * ⚠️ WHY verdict() THROWS RATHER THAN EXITS. This refusal fires inside the measuring path, after the
+     * probe log is installed; an exit would skip the `finally` that removes it and leave the server changed
+     * until the dead-man timer fired. The mutant reports its TUN-1 result under an id it never declared: the
+     * refusal reaches stderr and the stream, quoting the verdict it refused, TUN-2 still reports the probe removed,
+     * the undeclared id is never printed as a verdict, and the stream is not closed.
+     */
+    $source = File::get($this->family);
+    $mutation = "verdict('TUN-1', 'PASS', 'every one of '";
+
+    // The mutation must land exactly once, or this says nothing about the guard.
+    expect(substr_count($source, $mutation))->toBe(1);
+
+    $mutant = $this->dir.'/tunnel-log-undeclared.php';
+    File::put($mutant, str_replace($mutation, "verdict('TUN-9', 'PASS', 'every one of '", $source));
+
+    $run = tunnelLogRun($this->dir, $mutant);
+    $refused = 'verdict TUN-9 PASS [every one of stage.kitsune.test arrived from 127.0.0.1 with TLS terminated here, answered by PHP, and the last forwarded entry as the edge saw it]: this family did not declare that id';
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and($run->getErrorOutput())->toContain($refused)
+        ->and($run->getOutput())->toContain("REFUSED tunnel-log {$refused}\n")
+        ->and(tunnelLogVerdict($run, 'TUN-2'))->toContain('PASS STATE stop removed')
+        ->and($run->getOutput())->not->toContain('VERDICT TUN-9')
+        ->and($run->getOutput())->not->toContain('SENTINEL');
+});
+
+it('refuses a second verdict for one check', function (): void {
+    // A check reported twice leaves the gate unable to tell which verdict stands. Mutated on the dns-only
+    // path, which voids TUN-1 and then TUN-2: the second becomes TUN-1 again.
+    $source = File::get($this->family);
+    $mutation = "verdict('TUN-2', 'VOID', 'no probe was installed on a host this family does not check'";
+
+    expect(substr_count($source, $mutation))->toBe(1);
+
+    $mutant = $this->dir.'/tunnel-log-twice.php';
+    File::put($mutant, str_replace($mutation, "verdict('TUN-1', 'VOID', 'no probe was installed on a host this family does not check'", $source));
+
+    $run = tunnelLogRun($this->dir, $mutant, 'dns-only');
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and($run->getErrorOutput())->toContain('verdict TUN-1 VOID [no probe was installed on a host this family does not check]: emitted twice')
+        ->and($run->getOutput())->toContain("REFUSED tunnel-log verdict TUN-1 VOID [no probe was installed on a host this family does not check]: emitted twice\n")
+        ->and(substr_count($run->getOutput(), 'VERDICT TUN-1 '))->toBe(1)
+        ->and($run->getOutput())->not->toContain('SENTINEL');
+});
+
+it('voids the whole family through run.sh when it refuses a verdict after every promised one, and still removes the probe', function (string $refused, string $reason): void {
+    /*
+     * ⚠️ THE REFUSAL USED TO VANISH, AND THE RUN PASSED. verdict() throws inside `try`, and `finally` printed
+     * TUN-2 and a sentinel built from the verdicts it had accepted — so the stream added up without the refused
+     * one. run.sh printed "Every promised check passed.", exited 0 and deleted the streams, with the refusal
+     * only on stderr. Both mutants add their verdict at the end of `try`, after TUN-1's: a second hostname's
+     * FAIL reported as TUN-1 again, and a new check written without declaring it.
+     *
+     * ⚠️ AND THE REFUSED FAIL IS QUOTED, in the report and in the kept stream. The refusal named only the check, so
+     * the FAIL appeared nowhere, and the report's one measurement of TUN-1 was the PASS before it.
+     */
+    $source = File::get($this->family);
+    $mutation = "the last forwarded entry as the edge saw it', \$verdicts);\n    }\n";
+
+    expect(substr_count($source, $mutation))->toBe(1);
+
+    $run = tunnelLogGate($this->dir, str_replace($mutation, "{$mutation}\n    {$refused}\n", $source));
+    $kept = glob($this->dir.'/tmp/kitsune-runbook.*') ?: [];
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and($run->getOutput())->toContain("VOID  TUN-1 (tunnel-log) — the family refused to check ({$reason})")
+        ->and($run->getOutput())->toContain("VOID  TUN-2 (tunnel-log) — the family refused to check ({$reason})")
+        // The probe was still removed: TUN-2's own verdict, reported from `finally`, is shown with the VOID.
+        ->and($run->getOutput())->toContain('for this check it reported PASS: STATE stop removed')
+        ->and($run->getOutput())->not->toContain('after other output on its line')
+        ->and($run->getOutput())->not->toContain('Every promised check passed.')
+        ->and($kept)->toHaveCount(1)
+        ->and($run->getErrorOutput())->toContain("The families' own output is kept in {$kept[0]}")
+        ->and(File::get($kept[0].'/tunnel-log.out'))->toContain("REFUSED tunnel-log {$reason}\n")
+        ->and(File::get($kept[0].'/tunnel-log.out'))->not->toContain('SENTINEL');
+})->with([
+    'a second verdict for TUN-1' => [
+        "verdict('TUN-1', 'FAIL', 'other.kitsune.test: it arrived for host [stage.kitsune.test]', \$verdicts);",
+        'verdict TUN-1 FAIL [other.kitsune.test: it arrived for host [stage.kitsune.test]]: emitted twice',
+    ],
+    'a check it never declared' => [
+        "verdict('TUN-3', 'FAIL', 'a new check that found a problem', \$verdicts);",
+        'verdict TUN-3 FAIL [a new check that found a problem]: this family did not declare that id',
+    ],
+]);

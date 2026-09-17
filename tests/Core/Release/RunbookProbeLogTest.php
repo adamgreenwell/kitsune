@@ -45,6 +45,7 @@ beforeEach(function (): void {
     File::makeDirectory($this->dir.'/bin', 0755, true);
     File::makeDirectory($this->dir.'/confd', 0755, true);
     File::makeDirectory($this->dir.'/run', 0755, true);
+    File::makeDirectory($this->dir.'/proc', 0755, true);
 
     File::put($this->dir.'/run/nginx.pid', "1\n");
     File::put($this->dir.'/workers', "4242\n");
@@ -77,6 +78,8 @@ function probeStubs(): array
         'nginx' => <<<'BASH'
         #!/usr/bin/env bash
         d=$(dirname "$(dirname "$0")")
+        # Every call, so a case can assert that a live server was not reloaded for nothing.
+        echo "$*" >> "$d/nginx-calls"
         case "$*" in
           *-T*)
             echo "nginx: the configuration file /etc/nginx/nginx.conf syntax is ok" >&2
@@ -106,6 +109,10 @@ function probeStubs(): array
         'systemctl' => <<<'BASH'
         #!/usr/bin/env bash
         d=$(dirname "$(dirname "$0")")
+        if [[ "${1:-}" == list-units && -e "$d/manager-unreachable" ]]; then
+          echo "Failed to list units: Failed to activate service 'org.freedesktop.systemd1': timed out" >&2
+          exit 1
+        fi
         if [[ "${1:-}" == list-units && -e "$d/timer-lives" ]]; then
           echo "kitsune-probe-ab12ab12ab12ab12ab12ab12ab12ab12.timer loaded active waiting"
         fi
@@ -187,6 +194,13 @@ function probeRun(string $dir, string $common, string $instrument, array $args, 
         'KITSUNE_PROBE_DIR' => $dir.'/run/probe',
         'KITSUNE_NGINX_PID' => $dir.'/run/nginx.pid',
         'KITSUNE_DRAIN_PATIENCE' => '2',
+        // ⚠️ THE PROCESS TABLE IS A FIXTURE, NOT THE MACHINE'S. The drain asks whether each pre-reload
+        // worker is still alive, and this suite seeds worker 4242. Against the real /proc that is a
+        // claim about the runner: on macOS there is no /proc at all, so the wait never happened and its
+        // refusal went untested; on a Linux runner where something holds pid 4242, every start would
+        // wait out its patience and refuse. The directory below is empty, so the seeded worker is gone,
+        // which is what these cases mean; the drain case creates its pid under it.
+        'KITSUNE_PROC' => $dir.'/proc',
     ], $env));
 
     $process->setTimeout(60);
@@ -293,6 +307,23 @@ it('removes its own snippet when nginx will not reload', function (): void {
     expect($run->isSuccessful())->toBeFalse()
         ->and($run->getErrorOutput())->toContain('would not reload')
         ->and(is_file($this->dir.'/confd/kitsune-probe-'.$this->nonce.'.conf'))->toBeFalse();
+});
+
+it('refuses when a pre-reload worker outlives the runbook\'s patience, and leaves the probe for stop to remove', function (): void {
+    // The worker the reload was supposed to retire is still in the process table. A request it answered
+    // would have been served by a configuration that never had the probe, so the line could not be
+    // attributed to this run — which is a refusal, not a shrug.
+    File::makeDirectory($this->dir.'/proc/4242', 0755, true);
+
+    $run = probeRun($this->dir, $this->common, $this->instrument, ['start', $this->nonce]);
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and($run->getErrorOutput())->toContain('were still serving')
+        // ⚠️ AND THE SNIPPET STAYS. This refusal happens after the reload, so the server IS changed. The
+        // family that drove this instrument has to run stop regardless of what start returned, and its
+        // TUN-2 answers for what stop found — the case that used to report "nothing was installed" while
+        // the probe sat on the server until the dead-man timer fired.
+        ->and(is_file($this->dir.'/confd/kitsune-probe-'.$this->nonce.'.conf'))->toBeTrue();
 });
 
 it('will not install a probe it cannot guarantee to remove', function (): void {
@@ -422,6 +453,58 @@ it('removes the probe and proves the configuration is back as it was', function 
         ->and(is_file($this->dir.'/run/probe/'.$this->nonce.'.log'))->toBeFalse();
 });
 
+it('says nothing of a probe is installed, and reloads nothing, when stop finds neither snippet nor timer', function (): void {
+    /*
+     * ⚠️ STOP RUNS AFTER A START THAT FAILED, so it has to be truthful about a nonce that installed nothing. It used
+     * to remove, reload a live server and then refuse for want of a baseline — which the tunnel-log family reports
+     * as THE PROBE LOG WAS NOT REMOVED, against a server that never had one.
+     */
+    $run = probeRun($this->dir, $this->common, $this->instrument, ['stop', $this->nonce]);
+
+    expect($run->isSuccessful())->toBeTrue($run->getErrorOutput())
+        ->and($run->getOutput())->toContain('STATE stop absent no snippet at '.$this->dir.'/confd/kitsune-probe-'.$this->nonce.'.conf')
+        ->and($run->getOutput())->toContain('nothing of this probe was installed and nginx was not reloaded')
+        ->and((string) @file_get_contents($this->dir.'/nginx-calls'))->not->toContain('reload');
+});
+
+it('refuses to call a probe absent when the timer inventory could not be read at all', function (): void {
+    /*
+     * ⚠️ A FAILED QUERY IS NOT AN ANSWER OF NONE. The manager can fail to answer — D-Bus unavailable, the manager
+     * restarting — and it then prints nothing and exits non-zero, which discarded stderr and a trailing `|| true`
+     * turned into the same 0 an empty listing gives. Stop would have deleted the state and called the probe absent
+     * while a dead-man timer was still armed to reload nginx, which is the one case that changes the server later.
+     */
+    touch($this->dir.'/manager-unreachable');
+    // A start that reached the host wrote its baseline here, and a stop that cannot read the timer
+    // inventory must leave it: the operator needs it to finish the removal by hand.
+    File::makeDirectory($this->dir.'/run/probe', 0755, true);
+    File::put($this->dir.'/run/probe/'.$this->nonce.'.state.hash', "baseline\n");
+
+    $run = probeRun($this->dir, $this->common, $this->instrument, ['stop', $this->nonce]);
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and($run->getOutput())->not->toContain('STATE stop absent')
+        ->and($run->getErrorOutput())->toContain('whether kitsune-probe-'.$this->nonce.'.timer is still armed to reload nginx is unknown')
+        ->and($run->getErrorOutput())->toContain('Failed to list units')
+        // The state it could not judge is still there for the operator, and a live server was not reloaded.
+        ->and(is_file($this->dir.'/run/probe/'.$this->nonce.'.state.hash'))->toBeTrue()
+        ->and((string) @file_get_contents($this->dir.'/nginx-calls'))->not->toContain('reload');
+});
+
+it('does not call a probe absent while its dead-man timer could still reload nginx', function (): void {
+    // The snippet is gone and the timer is not: something of this probe is still on the server, so stop removes and
+    // proves rather than reporting an empty server.
+    probeRun($this->dir, $this->common, $this->instrument, ['start', $this->nonce]);
+    File::delete($this->dir.'/confd/kitsune-probe-'.$this->nonce.'.conf');
+    touch($this->dir.'/timer-lives');
+
+    $run = probeRun($this->dir, $this->common, $this->instrument, ['stop', $this->nonce]);
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and($run->getOutput())->not->toContain('STATE stop absent')
+        ->and($run->getErrorOutput())->toContain('would reload nginx later');
+});
+
 it('refuses to call the server restored when the configuration changed underneath it', function (): void {
     /*
      * ⚠️ RESTORATION IS PROVEN, NOT ANNOUNCED. The hash is of what nginx itself dumps, so an operator's
@@ -450,8 +533,10 @@ it('refuses to finish while its dead-man timer could still reload nginx', functi
 it('refuses an action it does not have', function (): void {
     $run = probeRun($this->dir, $this->common, $this->instrument, ['restart', $this->nonce]);
 
+    // An instrument opens no family, so it has no verdict stream to write its refusal into: stderr alone.
     expect($run->isSuccessful())->toBeFalse()
-        ->and($run->getErrorOutput())->toContain('it must be start, collect or stop');
+        ->and($run->getErrorOutput())->toContain('it must be start, collect or stop')
+        ->and($run->getOutput())->not->toContain('REFUSED');
 });
 
 it('refuses to run unprivileged, because it would change a server it cannot read', function (): void {

@@ -10,7 +10,8 @@
 #
 #   probe-log.sh start <nonce>        install the log, reload nginx, and prove the reload happened
 #   probe-log.sh collect <nonce> <id> print the line for one request, and who owned its socket
-#   probe-log.sh stop <nonce>         remove it, and prove the configuration is back as it was
+#   probe-log.sh stop <nonce>         remove it and prove the configuration is back as it was, or say that
+#                                     nothing of it was installed
 #
 # ⚠️ AN INSTRUMENT, NOT A FAMILY — SO IT EMITS NO VERDICTS. run.sh dispatches exactly one script per
 # family named in the manifest, with the topology as its only argument. This is driven three times
@@ -19,7 +20,9 @@
 # the runbook's own shape. So this refuses loudly — non-zero, with the reason on stderr — and prints
 # lines its caller parses:
 #
-#   STATE <action> <detail>        what it did, and the facts the caller needs (worker set, drain time)
+#   STATE <action> <detail>        what it did, and the facts the caller needs (worker set, drain time).
+#                                  `stop` opens its detail with `removed` or `absent`, which is what the
+#                                  tunnel-log family judges TUN-2 on.
 #   PROBE <id> <json>              the one log line for that request
 #   PROBE-OWNER <id> <ss row>      who owned the socket that request arrived on
 #
@@ -28,7 +31,8 @@
 # ⚠️ THIS IS THE ONLY PART OF THE RUNBOOK THAT CHANGES A LIVE SERVER, so every part of it undoes
 # itself. The file it writes is one `conf.d` snippet holding a log format and an `access_log` gated on
 # a 128-bit nonce, so a visitor who is not this check is never logged. `stop` removes it and fails
-# unless the configuration hashes back to what it was. A dead-man timer removes it even if the
+# unless the configuration hashes back to what it was — or, for a nonce whose start installed nothing,
+# says so and leaves the server alone. A dead-man timer removes it even if the
 # operator's session dies, and `start` refuses if an earlier probe is still installed: two probes would
 # each overwrite the other's idea of "before".
 #
@@ -51,13 +55,22 @@ nonce=${2:-}
 [[ -n "$action" ]] || refuse "probe-log.sh needs an action: start, collect or stop"
 [[ "$nonce" =~ ^[0-9a-f]{32}$ ]] || refuse "the nonce must be 32 hex characters, and it must come from the runbook rather than from this host"
 
-# ⚠️ THREE SEAMS, DECLARED, AND EACH DEFAULTS TO THE REAL THING. Everything else this instrument reads
+# ⚠️ FOUR SEAMS, DECLARED, AND EACH DEFAULTS TO THE REAL THING. Everything else this instrument reads
 # arrives from a command a test can stub on PATH; these are paths it WRITES, on a live server, and
 # nothing about start, collect or stop can be exercised off one without them. Same reason as relays.sh's
 # $proc: the alternative is an instrument whose only test is the production run.
+#
+# ⚠️ AND THE PROCESS TABLE IS THE FOURTH, for the reason relays.sh gives for its own: a test can stub
+# every command this instrument runs, but not the kernel's answer about a pid. Reading /proc directly
+# made the drain below untestable where there is no /proc — the wait never happens on macOS, so its
+# refusal was proven only in a Linux container — and, worse, made a test's own fixture pid a claim
+# about the machine: the suite seeds worker 4242, and on a Linux runner where some process happens to
+# hold that pid, every start would wait out its patience and then refuse. A fixture tree answers for
+# the fixture, on either platform.
 conf_dir=${KITSUNE_NGINX_CONF_D:-/etc/nginx/conf.d}
 run_dir=${KITSUNE_PROBE_DIR:-/run/kitsune-probe}
 pid_file=${KITSUNE_NGINX_PID:-/run/nginx.pid}
+proc=${KITSUNE_PROC:-/proc}
 
 conf="$conf_dir/kitsune-probe-$nonce.conf"
 dir="$run_dir"
@@ -146,7 +159,7 @@ CONF
     while (( waited < patience )); do
       still=""
       for pid in $before_workers; do
-        [[ -d "/proc/$pid" ]] && still="$still $pid"
+        [[ -d "$proc/$pid" ]] && still="$still $pid"
       done
       [[ -n "$still" ]] || break
       sleep 1
@@ -223,6 +236,30 @@ CONF
     ;;
 
   stop)
+    # ⚠️ A STOP THAT FINDS NOTHING SAYS SO, AND RELOADS NOTHING. The tunnel-log family runs stop whenever start was
+    # attempted, because start can fail after it has installed the probe — its drain wait expiring, or ssh dropping
+    # once the remote start had finished. For a nonce whose start never got that far, the proof below would refuse
+    # for want of a baseline, and that refusal reads as a probe left behind on a server that never had one. So what
+    # the server holds decides: the snippet, and the dead-man timer that would reload nginx later. Neither, and
+    # there is nothing to remove and no reason to reload a live server.
+    # ⚠️ AND A MANAGER THAT CANNOT ANSWER IS NOT AN ANSWER OF NONE. `systemctl list-units` lists units
+    # currently in memory, and a manager query that fails — D-Bus unavailable, the manager restarting,
+    # this host not running systemd at all — exits non-zero and prints nothing. Discarded stderr and a
+    # trailing `|| true` folded that into the same 0 a successful empty listing gives, and this branch
+    # then deleted the state and reported the probe absent while a dead-man timer could still be armed
+    # to reload nginx. The one case that must never be guessed is the one that changes the server later.
+    measure systemctl list-units --all "$unit.timer" --no-legend \
+      || refuse "the dead-man timer inventory could not be read, so whether $unit.timer is still armed to reload nginx is unknown, and this probe cannot be called absent: $MEASURED"
+
+    armed=$(grep -c "$unit" <<<"$MEASURED" || true)
+
+    if [[ ! -e "$conf" ]] && (( armed == 0 )); then
+      rm -f "$log" "$state".* 2>/dev/null || true
+      printf 'STATE stop absent no snippet at %s and no dead-man timer %s, so nothing of this probe was installed and nginx was not reloaded\n' \
+        "$conf" "$unit.timer"
+      exit 0
+    fi
+
     rm -f "$conf"
     systemctl stop "$unit.timer" 2>/dev/null || true
 

@@ -12,19 +12,21 @@
 # point: PASS, FAIL, and VOID — "this could not be measured". A host that cannot be measured must
 # never read as a host that is correct, so run.sh exits non-zero on a VOID exactly as it does on a
 # FAIL. An exit status cannot carry that, and a check that measures a failing command still has more
-# to report, so the verdicts go to stdout, one line each, and the exit status only says whether the
-# script itself survived.
+# to report, so the verdicts go to the family's stdout, one line each, and the exit status only says
+# whether the script itself survived.
 #
 #   VERDICT <check-id> PASS|FAIL|VOID <reason>
 #   RECORD  <check-id> <fact>                      (never a verdict: evidence for the report)
-#   SENTINEL <family> <count> <id> [<id> ...]      (the last line, always)
+#   REFUSED <family> <reason>                      (the family refused to go on; no sentinel follows)
+#   SENTINEL <family> <count> <id> [<id> ...]      (the last line of a family that did not refuse)
 #
 # ⚠️ THE SENTINEL IS WHAT MAKES SILENCE FAIL. The scripts are piped into `sudo bash -s` over ssh, so
 # a dropped connection, a killed process or an abort truncates the stream mid-family. Without a
 # terminator, run.sh cannot tell "this family said nothing because every check passed" from "this
 # family died before it spoke", and the second one would exit 0. So every family ends with a
 # sentinel carrying its own id count, printed from an EXIT trap so it survives an abort, and run.sh
-# treats a missing or short sentinel as VOID for the whole family.
+# treats a missing or short sentinel as VOID for the whole family. A family that refused is the one
+# exception, and `refuse` says why.
 #
 # ⚠️ AND `set -e` PULLS THE OTHER WAY. A measurement that exits non-zero is ordinary here — it is
 # what VOID exists for — but errexit would end the script at that line. Every measurement therefore
@@ -39,27 +41,79 @@
 #   - Never a shell redirect under sudo (`sudo cmd < /proc/…`): the redirect is opened by the
 #     calling user, before sudo runs, and fails as that user.
 
-# The family this script speaks for, and the ids it promises to emit. run.sh holds the same list in
-# manifest.txt; RunbookManifestTest asserts the two agree in both directions.
+# The family this script speaks for, the ids it promises to emit, and the topologies it runs on. manifest.txt
+# holds the same lists: RunbookManifestTest asserts this declaration and the committed manifest agree, on both,
+# and run.sh voids a family whose sentinel reports a check the manifest does not promise it.
 KITSUNE_FAMILY=""
 KITSUNE_EXPECTED=""
 KITSUNE_EMITTED=""
+KITSUNE_REFUSED=""
 
-# Refuse before measuring anything, the way deploy/release.sh does: a refusal is the operator's
-# problem to fix, not a verdict about the host.
+# What run.sh sent this script as its first argument: for a family, the topology the operator declared, which
+# `topologies` below holds it to. An instrument is driven by a family rather than dispatched, and is sent its
+# action here; it declares no topologies and never reads this.
+KITSUNE_SENT=${1:-}
+
+# Refuse, the way deploy/release.sh does. A refusal is not a verdict about the host: it is a condition
+# the operator has to fix, or a guard below catching this runbook's own bug.
+#
+# ⚠️ A REFUSAL IS WRITTEN INTO THE VERDICT STREAM, AND THE SENTINEL IS WITHHELD AFTER IT. The exit status
+# cannot carry it: a family that measured a FAIL exits 1 too, and over ssh 255 is also ssh's own failure.
+# stderr is not judged at all. So when `verdict X-1 FAIL` followed X-1's PASS, the refusal reached only
+# stderr, and the EXIT trap closed the stream with a sentinel naming the verdicts already accepted: the
+# refused FAIL was simply absent, the count added up, and run.sh passed the run and deleted its streams.
+# Now the stream says `REFUSED`, which voids the whole family, and is never closed, so even a gate that
+# ignored that line would void it as a stream with no sentinel. An instrument opens no family and has no
+# verdict stream, so it refuses on stderr alone.
+#
+# ⚠️ AND THE LINE REACHES THE STREAM FROM INSIDE A CAPTURE, where the sentinel cannot be withheld: a refusal
+# in `$(…)` or a pipeline exits only that subshell. It is written to descriptor 3 (see family), and run.sh
+# voids a stream that carries a refusal and still closes.
 refuse() {
   echo "Refusing to check: $*" >&2
+
+  if [[ -n "$KITSUNE_FAMILY" ]]; then
+    KITSUNE_REFUSED=1
+    printf 'REFUSED %s %s\n' "$KITSUNE_FAMILY" "$(kitsune_one_line "$*")" >&3
+  fi
+
   exit 1
 }
 
 # Open a family. Every id it may emit is declared here, so the sentinel can be checked against the
 # promise rather than against whatever happened to be printed.
+#
+# ⚠️ AND THE STREAM IS PINNED HERE, TO DESCRIPTOR 3, WHERE EVERY LINE OF THE PROTOCOL IS WRITTEN. These helpers
+# printed to whatever stdout was current, and `$(…)` captures that. So in `local site=$(pick_site)`, a
+# pick_site that refused put its REFUSED line into $site, `local` masked the exit, the parent's sentinel was
+# not withheld, and the run passed. A verdict inside a capture vanished the same way, leaving a later verdict
+# for its check to stand alone. Descriptor 3 stays the stream whatever a subshell, a pipeline or a capture
+# does with stdout, so the line arrives, and a verdict the tally never counted is caught by run.sh's count.
+#
+# ⚠️ A JOB THAT MAY OUTLIVE THE FAMILY GIVES DESCRIPTOR 3 UP. Every child inherits it, and the session does not
+# end while anything holds it: a background job that is killed rather than waited on, or a child that stays
+# running, closes it with `3>&-`, as relays.sh's traffic driver does. A family uses 3 for nothing else.
 family() {
   [[ -n "${1:-}" ]] || refuse "family needs a name"
+  exec 3>&1
   KITSUNE_FAMILY=$1
   shift
   KITSUNE_EXPECTED="$*"
   trap kitsune_sentinel EXIT
+}
+
+# The topologies this family runs on, and the check that it was sent to one of them.
+#
+# ⚠️ WHERE A FAMILY RUNS IS THE FAMILY'S OWN DECLARATION, NOT THE MANIFEST'S. The tests used to take the topologies a
+# family runs on from manifest.txt itself, so deleting relays' five dns-only rows made relays tunnel-only as far as
+# every tree test could see: a dns-only run then promised 5 checks, dispatched nginx alone, and exited 0 over relays'
+# FAIL of ADR-034's central condition. manifest.txt is now held to this line, and a family sent to a topology it was
+# never written for refuses rather than reporting on a host it does not understand.
+topologies() {
+  case " $* " in
+    *" $KITSUNE_SENT "*) ;;
+    *) refuse "this family runs on [$*], and it was sent to check a [$KITSUNE_SENT] host" ;;
+  esac
 }
 
 # Paths the family wants removed when it ends.
@@ -75,7 +129,7 @@ cleanup_at_exit() {
 }
 
 # The last line of the family, printed even when the script aborts, so run.sh can tell a truncated
-# stream from a quiet one.
+# stream from a quiet one — and never after a refusal (see refuse).
 kitsune_sentinel() {
   local status=$?
   local count=0 id path
@@ -90,7 +144,9 @@ kitsune_sentinel() {
 
   # The accumulator grows by prepending a space, which is an implementation detail no parser should
   # have to know: the sentinel prints the ids with exactly one space between them.
-  printf 'SENTINEL %s %d %s\n' "$KITSUNE_FAMILY" "$count" "${KITSUNE_EMITTED# }"
+  if [[ -z "$KITSUNE_REFUSED" ]]; then
+    printf 'SENTINEL %s %d %s\n' "$KITSUNE_FAMILY" "$count" "${KITSUNE_EMITTED# }" >&3
+  fi
 
   exit "$status"
 }
@@ -112,26 +168,35 @@ kitsune_one_line() {
 
 # One verdict. The reason is printed for every outcome, including PASS, because a PASS whose reason
 # reads as "nothing to check" is how a vacuous check announces itself to the person reading the log.
+#
+# ⚠️ A REFUSED VERDICT IS QUOTED, NOT DROPPED. Each guard below named only the id, so a FAIL it refused — a
+# second verdict for a check, or one for a check nobody declared — appeared nowhere: not in the report, the
+# kept stream or stderr, and the only measurement run.sh could quote for that check was the PASS before it.
+# The refusal now carries the verdict as it was called, starting `verdict` in lower case, which neither
+# run.sh's verdict patterns nor its search for a glued verdict can match.
 verdict() {
   local id=$1 outcome=$2
   shift 2
+  local reason refused
+  reason=$(kitsune_one_line "$*")
+  refused="verdict $id $outcome [$reason]"
 
   case "$outcome" in
     PASS | FAIL | VOID) ;;
-    *) refuse "verdict $id: [$outcome] is not PASS, FAIL or VOID" ;;
+    *) refuse "$refused: [$outcome] is not PASS, FAIL or VOID" ;;
   esac
 
   case " $KITSUNE_EXPECTED " in
     *" $id "*) ;;
-    *) refuse "verdict $id: this family did not declare that id" ;;
+    *) refuse "$refused: this family did not declare that id" ;;
   esac
 
   case " $KITSUNE_EMITTED " in
-    *" $id "*) refuse "verdict $id: emitted twice" ;;
+    *" $id "*) refuse "$refused: emitted twice" ;;
     *) KITSUNE_EMITTED="$KITSUNE_EMITTED $id" ;;
   esac
 
-  printf 'VERDICT %s %s %s\n' "$id" "$outcome" "$(kitsune_one_line "$*")"
+  printf 'VERDICT %s %s %s\n' "$id" "$outcome" "$reason" >&3
 }
 
 # Evidence that is not a verdict. It reaches the report and never the exit status.
@@ -139,7 +204,7 @@ record() {
   local id=$1
   shift
 
-  printf 'RECORD %s %s\n' "$id" "$(kitsune_one_line "$*")"
+  printf 'RECORD %s %s\n' "$id" "$(kitsune_one_line "$*")" >&3
 }
 
 # ⚠️ THE ONLY WAY A CHECK RUNS A COMMAND. It captures stdout and the status, so a non-zero status is
