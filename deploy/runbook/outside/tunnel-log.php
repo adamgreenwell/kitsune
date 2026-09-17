@@ -405,25 +405,66 @@ function nginxTokens(string $dump): array
 }
 
 /**
- * Each site hostname the server serves, the document roots the blocks naming it declare, and the
+ * Whether a `server` block can answer the https request both outside families make.
+ *
+ * ⚠️ WHICH BLOCK ANSWERS IS PART OF WHAT A HOSTNAME DECLARES. Both families request `https://<hostname>/…`,
+ * so only a block listening for TLS can answer one — and the apex+www shape Forge and certbot write puts the
+ * site's root on a `:80` block that carries both names, redirects, and keeps the ACME challenge, with the
+ * `www` name's `:443` block doing nothing but `return 301`. Reading the roots of every block that names a
+ * hostname made `www` look like a second application, which is the hostname this split exists to leave out.
+ *
+ * @param  list<list<string>>  $listens  the arguments of each `listen` the block declares
+ */
+function listensForHttps(array $listens): bool
+{
+    foreach ($listens as $arguments) {
+        foreach ($arguments as $at => $argument) {
+            if ($argument === 'ssl' || ($at === 0 && preg_match('/(^|:)443$/', $argument) === 1)) {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+/**
+ * Each site hostname the server serves, the document roots an https request for it would use, and the
  * `server_name` entries that are patterns rather than names.
  *
- * A `root` inside a `location` is that location's, not the site's, so only a root at the server block's
- * own level counts. The catch-all's `_` is not a site, and neither is a wildcard or a regex: both outside
- * families request every name they are given, and a wildcard sorts before every letter, so one made the
- * throttle family's preflight traces and its whole five-and-a-sixth window run against a name curl rejects
- * outright (literalHostname).
+ * The catch-all's `_` is not a site, and neither is a wildcard or a regex: both outside families request every
+ * name they are given, and a wildcard sorts before every letter, so one made the throttle family's preflight
+ * traces and its whole five-and-a-sixth window run against a name curl rejects outright (literalHostname).
+ *
+ * ⚠️ EVERY NAME COMES BACK; THE ROOTS ARE THE ONES A REQUEST WOULD USE. A hostname is listed whether or not
+ * anything roots it, because a family that skipped a hostname it serves would stop measuring the tunnel there
+ * (tunnel-log.php). What its roots are decides something narrower — whether an application answers there —
+ * so they are taken from the blocks that can answer an https request for it, and from every block naming it
+ * only when no block can (listensForHttps). A host whose nginx answers https for no name at all is a host
+ * where this reading has nothing to narrow, and the old answer is better than none.
+ *
+ * ⚠️ AND A ROOT IS INHERITED WHEN THE BLOCK DECLARES NONE. nginx resolves `root` from the `location`, then the
+ * `server`, then the `http` block, so a site that declares its root inside `location / { … }` or once at the
+ * top for every server is rooted exactly as one that declares it at the server's own level. Reading only the
+ * server's own level called such a host rootless and left its application unmeasured, with a reason — "it
+ * declares none" — that its operator could see was false. The order here is nginx's: the block's own root
+ * wins, then one declared deeper inside it, then the one outside every server block.
  *
  * @return array{0: array<string, list<string>>, 1: list<string>} the sites, and the patterns
  */
 function siteRoots(string $dump): array
 {
-    $sites = [];
+    $answering = [];
+    $named = [];
+    $https = [];
     $patterns = [];
+    $inherited = [];
     $depth = 0;
     $serverAt = null;
     $names = [];
     $roots = [];
+    $deeper = [];
+    $listens = [];
 
     foreach (nginxTokens($dump) as [$terminator, $words]) {
         if ($terminator === '{') {
@@ -438,14 +479,24 @@ function siteRoots(string $dump): array
 
         if ($terminator === '}') {
             if ($serverAt === $depth) {
+                $declared = $roots !== [] ? $roots : $deeper;
+                $answers = listensForHttps($listens);
+
                 // The block is closed where it closes: a by-reference closure put every write to these
                 // out of reach of the analyser, which then read each of these loops as one over nothing.
                 foreach ($names as $name) {
-                    $sites[$name] = array_replace($sites[$name] ?? [], array_fill_keys($roots, true));
+                    $named[$name] = array_replace($named[$name] ?? [], array_fill_keys($declared, true));
+
+                    if ($answers) {
+                        $https[$name] = true;
+                        $answering[$name] = array_replace($answering[$name] ?? [], array_fill_keys($declared, true));
+                    }
                 }
 
                 $names = [];
                 $roots = [];
+                $deeper = [];
+                $listens = [];
                 $serverAt = null;
             }
 
@@ -454,7 +505,22 @@ function siteRoots(string $dump): array
             continue;
         }
 
+        if ($serverAt === null) {
+            // Outside every server block: the root each one that declares none of its own inherits.
+            if (($words[0] ?? '') === 'root' && isset($words[1])) {
+                $inherited[] = rtrim($words[1], '/');
+            }
+
+            continue;
+        }
+
         if ($serverAt !== $depth) {
+            // Deeper in the block — a `location`'s own root, which is the site's only when nothing above it
+            // declares one.
+            if (($words[0] ?? '') === 'root' && isset($words[1])) {
+                $deeper[] = rtrim($words[1], '/');
+            }
+
             continue;
         }
 
@@ -468,6 +534,10 @@ function siteRoots(string $dump): array
             }
         }
 
+        if (($words[0] ?? '') === 'listen') {
+            $listens[] = array_slice($words, 1);
+        }
+
         if (($words[0] ?? '') === 'root' && isset($words[1])) {
             $roots[] = rtrim($words[1], '/');
         }
@@ -475,8 +545,14 @@ function siteRoots(string $dump): array
 
     $found = [];
 
-    foreach ($sites as $name => $declared) {
-        $found[$name] = array_keys($declared);
+    foreach ($named as $name => $declared) {
+        $found[$name] = array_keys(isset($https[$name]) ? $answering[$name] : $declared);
+
+        // Applied here rather than as each block closes, so a root declared after the servers that inherit it
+        // reads the same as one declared before them, which is how nginx reads it.
+        if ($found[$name] === []) {
+            $found[$name] = array_values(array_unique($inherited));
+        }
     }
 
     ksort($found);
@@ -492,19 +568,19 @@ function siteRoots(string $dump): array
  * the operator as a property of the host rather than of the runbook.
  *
  * ⚠️ A HOSTNAME THAT SERVES NO APPLICATION IS NOT A SECOND APPLICATION. A `www`→apex redirect vhost, an
- * old-domain redirect, a static docs site, an ACME-only block or a reverse proxy declares no server-level
- * root ending in `/public` — and Forge writes exactly that shape from its own UI, so the alpha host will
- * have one. Refusing the whole run on the first of them, which is what naming the release used to do,
- * voided both of the throttle family's measured checks on a host whose throttle is entirely sound, with a
- * reason that is false: the release IS nameable, from the hostnames that do declare a root. The tunnel-log
- * family met the same vhost and voided just as wrongly: `return 301` answers with no upstream and no 404, so
- * TUN-1 reported a host unmeasurable while every hostname that has an application had answered correctly.
- * They are recorded and left out, exactly as a `server_name` that is a pattern already is, and only a
- * configuration where NO hostname declares one has nothing to measure.
+ * old-domain redirect, a static docs site, an ACME-only block or a reverse proxy declares no root ending in
+ * `/public` — and Forge writes exactly that shape from its own UI, so the alpha host will have one. Refusing
+ * the whole run on the first of them, which is what naming the release used to do, voided both of the throttle
+ * family's measured checks on a host whose throttle is entirely sound, with a reason that is false: the release
+ * IS nameable, from the hostnames that do declare a root. The tunnel-log family met the same vhost and reported
+ * it worse still — `return 301` answers with no upstream, so TUN-1 FAILed, naming a host as broken over a
+ * hostname behaving exactly as intended.
  *
- * ⚠️ AND LEFT OUT MEANS NOT REQUESTED. The throttle family's cost is one more attempt per hostname it signs
- * in to, so a redirect vhost that is dropped here is a lockout that is never taken out on it, and the
- * tunnel-log family never asks the probe log for a line no request of its own produced.
+ * ⚠️ AND WHAT "LEFT OUT" COSTS IS THE CALLER'S TO DECIDE, NOT THIS. The throttle family pays one more failed
+ * sign-in per hostname it signs in at, so a redirect vhost it left out is a lockout never taken out on it. The
+ * tunnel family pays one GET it is making anyway, and every rule it has about the tunnel — the peer, realip,
+ * the PROXY protocol, the port, the forwarded chain, who owned the socket — is a rule about any hostname nginx
+ * serves, so it still requests these and only stops asking them what an application answered.
  *
  * @param  array<string, list<string>>  $sites
  * @return array{0: array<string, list<string>>, 1: array<string, string>} the sites, and why the others are not one
@@ -518,8 +594,8 @@ function servedSites(array $sites): array
             continue;
         }
 
-        $rootless[$name] = "[{$name}] has no server-level root ending in /public in the running configuration ("
-            .($roots === [] ? 'it declares none' : 'it declares '.implode(', ', $roots)).')';
+        $rootless[$name] = "[{$name}] has no root ending in /public that an https request for it would use ("
+            .($roots === [] ? 'it would use none' : 'it would use '.implode(', ', $roots)).')';
 
         unset($sites[$name]);
     }

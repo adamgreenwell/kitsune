@@ -224,15 +224,16 @@ it('gives both outside families one answer to which of a host\'s hostnames a run
      * The patterns come back rather than being dropped, so a family can say what it skipped instead of
      * reporting that a host naming a wildcard names no site at all — a true verdict with a false reason.
      *
-     * ⚠️ AND A HOSTNAME THAT SERVES NO APPLICATION IS THE SAME KIND OF ENTRY. A `www`→apex redirect vhost —
-     * which Forge writes from its own UI, so the alpha host will have one — declares no server-level root
-     * ending in `/public`. The two families used to meet it separately and get it wrong in two different
-     * ways: the throttle family refused to name the release at all, and the tunnel family requested it and
-     * voided on the 301 it answers with. Split here, in the one copy, they cannot disagree about which
-     * hostnames a run is about; requesting a name is the caller's business, deciding it is a site is not.
+     * ⚠️ AND A HOSTNAME THAT ROOTS NO APPLICATION IS THE SAME KIND OF ENTRY. A `www`→apex redirect vhost —
+     * which Forge writes from its own UI, so the alpha host will have one — has no root ending in `/public`
+     * in the block that would answer an https request for it. The two families used to meet it separately and
+     * get it wrong in two different ways: the throttle family refused to name the release at all, and the
+     * tunnel family failed it over the 301 it answers with. Split here, in the one copy, they cannot disagree
+     * about which hostnames root an application; what to do about one that does not — sign in to it or not,
+     * request it or not — is the caller's business, and the two answer that differently.
      *
      * The roots come back per hostname because a caller needs them — the throttle family names the release
-     * from them — and a `root` inside a `location` is that location's, not the site's.
+     * from them — and a `root` inside a `location` is that location's wherever the server declares its own.
      */
     File::put($this->dir.'/dump', <<<'CONF'
     server {
@@ -299,8 +300,8 @@ it('gives both outside families one answer to which of a host\'s hostnames a run
         'NAMED alias.kitsune.test stage.kitsune.test www.stage.kitsune.test',
         'SERVED alias.kitsune.test stage.kitsune.test',
         'ROOTS /home/kitsune/site/current/public',
-        'ROOTLESS [www.stage.kitsune.test] has no server-level root ending in /public in the running '
-            .'configuration (it declares none)',
+        'ROOTLESS [www.stage.kitsune.test] has no root ending in /public that an https request for it '
+            .'would use (it would use none)',
         'PATTERNS *.kitsune.test .kitsune.test ~^(?<sub>.+)\.kitsune\.test$',
         'UNREADABLE []',
         '',
@@ -341,6 +342,79 @@ it('reads a block whose brace abuts its own name', function (): void {
     $read = runbookSiteReading($this->dir, "server{\n listen 443 ssl;\n server_name a.test;\n root /srv/a/public;\n}\n");
 
     expect($read['served'])->toBe(['a.test']);
+});
+
+it('takes a root the block inherits when it declares none of its own', function (string $dump): void {
+    /*
+     * ⚠️ nginx RESOLVES `root` FROM THE LOCATION, THEN THE SERVER, THEN http — so a site that declares it in
+     * `location / { … }`, or once at the top for every server, is rooted exactly as one that declares it at
+     * the server's own level. Reading only the server's own level called both of those hosts rootless, which
+     * stopped the application being measured there at all and said, in the report, that the host declares no
+     * root — which its operator can see is false.
+     */
+    $read = runbookSiteReading($this->dir, $dump);
+
+    expect($read['named'])->toBe(['a.test' => ['/home/kitsune/site/current/public']])
+        ->and($read['served'])->toBe(['a.test'])
+        ->and($read['rootless'])->toBe([]);
+})->with([
+    'declared inside location /' => [<<<'CONF'
+    server {
+        listen 443 ssl;
+        server_name a.test;
+        location / {
+            root /home/kitsune/site/current/public;
+        }
+    }
+    CONF],
+    'inherited from the http block' => [<<<'CONF'
+    http {
+        root /home/kitsune/site/current/public;
+
+        server {
+            listen 443 ssl;
+            server_name a.test;
+        }
+    }
+    CONF],
+]);
+
+it('reads the roots of the block that would answer, not of every block that names the hostname', function (): void {
+    /*
+     * ⚠️ THE APEX+WWW SHAPE, WHICH IS WHAT A CERTBOT OR FORGE HOST LOOKS LIKE. One `:80` block carries both
+     * names, the site's root and the ACME challenge and redirects everything; the apex has a `:443` block with
+     * the root; `www` has a `:443` block that does nothing but `return 301`. Merging the roots of every block
+     * naming a hostname made `www` look like a second application — the very hostname this split exists to
+     * tell apart — and both outside families then measured it as one: the throttle family signed in at it, and
+     * the tunnel family asked what answered a request that is answered by a redirect.
+     *
+     * Both families request `https://<hostname>/…`, so the block that answers one is the block that decides.
+     */
+    $read = runbookSiteReading($this->dir, <<<'CONF'
+    server {
+        listen 80;
+        server_name site.test www.site.test;
+        root /home/forge/site.test/current/public;
+        location /.well-known/acme-challenge {
+        }
+        return 301 https://$host$request_uri;
+    }
+    server {
+        listen 443 ssl;
+        server_name site.test;
+        root /home/forge/site.test/current/public;
+    }
+    server {
+        listen [::]:443 ssl;
+        server_name www.site.test;
+        return 301 https://site.test$request_uri;
+    }
+    CONF);
+
+    expect($read['served'])->toBe(['site.test'])
+        ->and($read['named']['www.site.test'])->toBe([])
+        ->and($read['rootless'])->toBe(['[www.site.test] has no root ending in /public that an https request '
+            .'for it would use (it would use none)']);
 });
 
 it('keeps the protocol the shared helpers print exactly as the gate reads it', function (): void {
