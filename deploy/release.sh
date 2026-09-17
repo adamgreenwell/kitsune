@@ -26,8 +26,9 @@
 #   4. Links skeleton/.env and skeleton/storage to the shared ones. The app's base path is skeleton/, so the release
 #      root's own paths, which Forge's shared paths link, are never read.
 #   5. Resolves dependencies fresh. No composer.lock is restored or saved outside the release.
-#   6. Points the skeleton at this checkout's packages/core, mirrored rather than symlinked: kitsune/core is not on
-#      Packagist yet (#8).
+#   6. Points the skeleton at this checkout's packages/core, mirrored rather than symlinked. NOT because the package is
+#      unpublished — it is, since #8 — but because a release pinned to DEPLOY_SHA must install THAT commit's core
+#      rather than whatever Packagist resolves at deploy time (ADR-035, amended 2026-09-17).
 #   7. Installs runtime dependencies with --no-scripts, then proves core was copied. ⚠️ Composer's scripts would run
 #      package:discover, which boots Laravel before anything has proved the .env parses, and Laravel prints
 #      phpdotenv's message for a malformed line to stderr. That message quotes the value: a password, into the log.
@@ -365,7 +366,8 @@ ln -s "$site_root/storage" skeleton/storage
 # 5. No lock to restore: the skeleton commits none, and a lock saved per server would freeze each at its first resolve.
 
 # 6. kitsune/core from this checkout, as real files, the way a Packagist install will put them. The edit exists only in
-# this release's working tree, after step 1 proved it clean.
+# this release's working tree, after step 1 proved it clean. The package is on Packagist since #8; this stays a path
+# repository so the release installs the core of the commit it is pinned to, which step 7 then proves.
 "$PHP_BIN" "$composer_bin" config -d skeleton repositories.kitsune-core '{"type":"path","url":"../packages/core","options":{"symlink":false}}'
 
 # 7. Runtime dependencies, with Forge's documented flags plus --no-scripts (see the header).
