@@ -517,7 +517,7 @@ foreach ($files as $file) {
 if (! in_array($expect, TOPOLOGIES, true)) {
     // alpha's shape is its own family's to judge. Saying so beats a silent skip, which the
     // completeness gate would read as a family that died.
-    verdict('TUN-1', 'VOID', 'this family checks what a tunnel delivers, and the topology is dns-only', $verdicts);
+    verdict('TUN-1', 'VOID', "this family checks what a tunnel delivers, and the topology is {$expect}", $verdicts);
     verdict('TUN-2', 'VOID', 'no probe was installed on a host this family does not check', $verdicts);
     sentinel($verdicts);
     exit(1);

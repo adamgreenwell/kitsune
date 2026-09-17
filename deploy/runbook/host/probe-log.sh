@@ -31,7 +31,8 @@
 # ⚠️ THIS IS THE ONLY PART OF THE RUNBOOK THAT CHANGES A LIVE SERVER, so every part of it undoes
 # itself. The file it writes is one `conf.d` snippet holding a log format and an `access_log` gated on
 # a 128-bit nonce, so a visitor who is not this check is never logged. `stop` removes it and fails
-# unless the configuration hashes back to what it was. A dead-man timer removes it even if the
+# unless the configuration hashes back to what it was — or, for a nonce whose start installed nothing,
+# says so and leaves the server alone. A dead-man timer removes it even if the
 # operator's session dies, and `start` refuses if an earlier probe is still installed: two probes would
 # each overwrite the other's idea of "before".
 #
