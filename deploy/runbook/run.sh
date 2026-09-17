@@ -90,53 +90,71 @@ expected=()
 owners=" "
 # A family name that is one path segment: see the refusal below.
 plain='^[[:alnum:]][[:alnum:]._-]*$'
-# ⚠️ A FOURTH FIELD IS A TYPO, NOT A LONGER ID. `read` folds every extra word into the last variable,
-# so a row like `tunnel good G-1 GOOD` would promise the id "G-1 GOOD" — which no verdict can ever
-# match, so the run would report VOID and blame the host for a mistake in this file. (Measured: that
-# is exactly what a stray word in a fixture row did.)
-#
-# ⚠️ THE LAST ROW COUNTS WITHOUT ITS NEWLINE. `read` fails on a line that reaches the end of the file without
-# one, having read it all the same, and the loop used to stop there. So a last row saved without a newline was
-# neither checked nor promised: a family named only there was never dispatched, so the run passed over its
-# FAIL, and a misspelt topology or family name there was never refused.
-while read -r topology family id extra || [[ -n "${topology:-}" ]]; do
-  [[ -z "${topology:-}" || "$topology" == \#* ]] && continue
-  [[ -n "${family:-}" && -n "${id:-}" ]] || refuse "malformed manifest row: $topology ${family:-} ${id:-}"
-  [[ -z "${extra:-}" ]] || refuse "manifest row has more than three fields, so the id would be unmatchable: $topology $family $id $extra"
 
-  # ⚠️ A TOPOLOGY NO RUN SELECTS DROPS ITS FAMILY FROM EVERY RUN. --expect picks rows by their topology, so a
-  # row for `dns_only` promised its check to no run at all: a dns-only run never dispatched that family, never
-  # saw its FAIL, and passed on the others.
-  [[ "$topology" == tunnel || "$topology" == dns-only ]] \
-    || refuse "the manifest row [$topology $family $id] names the topology [$topology], which is neither tunnel nor dns-only, so no run would ever promise it"
+# ⚠️ BYTE FOR BYTE, IN THE C LOCALE, BECAUSE A MANIFEST IS BYTES TOO. The rows used to arrive through
+# `sed 's/#.*//'` in the operator's locale, and macOS sed in a UTF-8 locale stops at the first byte that is not
+# UTF-8, having written only the rows before it. A process substitution's exit status is lost, so the loop took
+# that for the end of the file: one Latin-1 byte in the comment above relays' rows dropped relays and tunnel-log
+# from a run, which promised 5 checks and passed over relays' FAIL. The shell's own matching is no steadier
+# there: `[[:alnum:]]` takes `é` for a letter, so the operator's locale decided whether a family name was one
+# plain path segment. So bash reads the manifest itself, with nothing between the file and the loop whose
+# failure a process substitution would hide, in the C locale. `local -x` keeps that locale to this function:
+# ssh and the families still run in the operator's.
+read_manifest() {
+  local -x LC_ALL=C
+  local row topology family id extra owner
 
-  # ⚠️ A FAMILY NAME IS ONE PATH SEGMENT. It becomes host/<family>.sh, outside/<family>.php and <family>.out in
-  # the streams directory. `sub/fa` ran a script from a subdirectory and then stopped this script under
-  # `set -e`, before any summary, writing into a directory that did not exist; `../fa` ran a script from
-  # outside host/, passed, and left its output outside the streams directory.
-  [[ "$family" =~ $plain ]] \
-    || refuse "the manifest row [$topology $family $id] names the family [$family], which is not one plain path segment: run.sh finds a family as host/<family>.sh or outside/<family>.php and keeps its output as <family>.out"
+  # ⚠️ A FOURTH FIELD IS A TYPO, NOT A LONGER ID. `read` folds every extra word into the last variable,
+  # so a row like `tunnel good G-1 GOOD` would promise the id "G-1 GOOD" — which no verdict can ever
+  # match, so the run would report VOID and blame the host for a mistake in this file. (Measured: that
+  # is exactly what a stray word in a fixture row did.)
+  #
+  # ⚠️ THE LAST ROW COUNTS WITHOUT ITS NEWLINE. `read` fails on a line that reaches the end of the file without
+  # one, having read it all the same, and the loop used to stop there. So a last row saved without a newline was
+  # neither checked nor promised: a family named only there was never dispatched, so the run passed over its
+  # FAIL, and a misspelt topology or family name there was never refused.
+  while IFS= read -r row || [[ -n "$row" ]]; do
+    read -r topology family id extra <<<"${row%%#*}"
+    [[ -n "${topology:-}" ]] || continue
+    [[ -n "${family:-}" && -n "${id:-}" ]] || refuse "malformed manifest row: $topology ${family:-} ${id:-}"
+    [[ -z "${extra:-}" ]] || refuse "manifest row has more than three fields, so the id would be unmatchable: $topology $family $id $extra"
 
-  # ⚠️ ONE CHECK, ONE FAMILY. A verdict line names its check and not its family, so a check promised to
-  # two families — a new family copied from an old one, keeping one of its ids — could not say whose
-  # verdict is whose. Refused here, before anything runs, in either topology.
-  case "$owners" in
-    *" $id="*)
-      owner=${owners#*" $id="}
-      owner=${owner%% *}
-      [[ "$owner" == "$family" ]] || refuse "the check $id is promised to both [$owner] and [$family], and a verdict line does not say which family printed it"
-      ;;
-    *) owners="$owners$id=$family " ;;
-  esac
+    # ⚠️ A TOPOLOGY NO RUN SELECTS DROPS ITS FAMILY FROM EVERY RUN. --expect picks rows by their topology, so a
+    # row for `dns_only` promised its check to no run at all: a dns-only run never dispatched that family, never
+    # saw its FAIL, and passed on the others.
+    [[ "$topology" == tunnel || "$topology" == dns-only ]] \
+      || refuse "the manifest row [$topology $family $id] names the topology [$topology], which is neither tunnel nor dns-only, so no run would ever promise it"
 
-  [[ "$topology" == "$expect" ]] || continue
-  expected+=("$family $id")
+    # ⚠️ A FAMILY NAME IS ONE PATH SEGMENT. It becomes host/<family>.sh, outside/<family>.php and <family>.out in
+    # the streams directory. `sub/fa` ran a script from a subdirectory and then stopped this script under
+    # `set -e`, before any summary, writing into a directory that did not exist; `../fa` ran a script from
+    # outside host/, passed, and left its output outside the streams directory.
+    [[ "$family" =~ $plain ]] \
+      || refuse "the manifest row [$topology $family $id] names the family [$family], which is not one plain path segment: run.sh finds a family as host/<family>.sh or outside/<family>.php and keeps its output as <family>.out"
 
-  case " ${families[*]:-} " in
-    *" $family "*) ;;
-    *) families+=("$family") ;;
-  esac
-done < <(sed 's/#.*//' "$manifest")
+    # ⚠️ ONE CHECK, ONE FAMILY. A verdict line names its check and not its family, so a check promised to
+    # two families — a new family copied from an old one, keeping one of its ids — could not say whose
+    # verdict is whose. Refused here, before anything runs, in either topology.
+    case "$owners" in
+      *" $id="*)
+        owner=${owners#*" $id="}
+        owner=${owner%% *}
+        [[ "$owner" == "$family" ]] || refuse "the check $id is promised to both [$owner] and [$family], and a verdict line does not say which family printed it"
+        ;;
+      *) owners="$owners$id=$family " ;;
+    esac
+
+    [[ "$topology" == "$expect" ]] || continue
+    expected+=("$family $id")
+
+    case " ${families[*]:-} " in
+      *" $family "*) ;;
+      *) families+=("$family") ;;
+    esac
+  done < "$manifest"
+}
+
+read_manifest
 
 # ⚠️ AN EMPTY PROMISE IS A VACUOUS RUN. With nothing expected, every check could be missing and the
 # run would still report success, which is precisely the shape this file exists to prevent.
@@ -159,6 +177,16 @@ fi
 # on the transport, and a family whose output ended mid-line glued its tail onto the next family's first
 # verdict. A family's own file holds only what that family's process wrote, so none of it is inferred.
 streams=""
+
+# The start of what a family wrote to stderr, on one line, for the operator.
+#
+# ⚠️ IN BYTES, FOR THE MANIFEST'S REASON. macOS tr in a UTF-8 locale stops at a byte that is not UTF-8, with
+# "Illegal byte sequence", so whatever ssh or the family said after one never reached the operator.
+complaint() {
+  local -x LC_ALL=C
+
+  tr '\n' ' ' < "$1" | cut -c1-200
+}
 
 finish() {
   local status=$?
@@ -216,7 +244,7 @@ for family in "${families[@]:-}"; do
     # the site's user ever runs under sudo — the bytes come from the operator's checkout.
     if ! cat "$common" "$on_host" | ssh -o BatchMode=yes -o ClearAllForwardings=yes "$host" \
       sudo -n bash -s -- "$expect" >> "$out" 2>"$err"; then
-      echo "  the family did not finish: $(tr '\n' ' ' < "$err" | cut -c1-200)" >&2
+      echo "  the family did not finish: $(complaint "$err")" >&2
     fi
   else
     # ⚠️ AN OUTSIDE FAMILY RUNS HERE, NOT THERE, AND THAT IS THE POINT. What ADR-034 turns on is what
@@ -225,7 +253,7 @@ for family in "${families[@]:-}"; do
     # server the way a visitor does, and drive anything they need on the host over their own ssh.
     if ! php "$from_outside" --host "$host" --expect "$expect" \
       ${token_file:+--token-file "$token_file"} >> "$out" 2>"$err"; then
-      echo "  the family did not finish: $(tr '\n' ' ' < "$err" | cut -c1-200)" >&2
+      echo "  the family did not finish: $(complaint "$err")" >&2
     fi
   fi
 done

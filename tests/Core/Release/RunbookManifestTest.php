@@ -978,6 +978,52 @@ it('reads a stream byte by byte, whatever the operator\'s locale', function (str
     ],
 ]);
 
+it('reads every manifest row past a byte that is not UTF-8, and runs the families in the operator\'s locale', function (): void {
+    /*
+     * ⚠️ EXIT 0 OVER A FAIL. The manifest reached run.sh's loop through sed in the operator's locale, and macOS sed in a
+     * UTF-8 locale stops at the first byte that is not UTF-8 and exits 1, which a process substitution hides. Every row
+     * after that byte dropped out: `later` was never promised or dispatched, and the run passed over its FAIL. Reading
+     * the manifest in the C locale must not take the operator's locale from the families, which ssh carries to the host.
+     */
+    File::put($this->runbook.'/manifest.txt', "# a fixture manifest\ntunnel good G-1\n# revis\xE9\ntunnel later L-1\n");
+    runbookFamily($this->runbook, 'good', "family good G-1\nverdict G-1 PASS \"holds, in \${LC_ALL:-no locale}\"\n");
+    runbookFamily($this->runbook, 'later', "family later L-1\nverdict L-1 FAIL \"a relay dials the web server\"\n");
+
+    $run = runbookRun($this->dir, ['LC_ALL' => 'en_US.UTF-8']);
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and($run->getOutput())->toContain('against 2 promised checks')
+        ->and($run->getOutput())->toContain('FAIL  L-1 — a relay dials the web server')
+        ->and($run->getOutput())->toContain('PASS  G-1 — holds, in en_US.UTF-8');
+});
+
+it('judges a family name by its bytes, not by what the operator\'s locale calls a letter', function (): void {
+    /*
+     * `[[:alnum:]]` in a UTF-8 locale takes `é` for a letter, so run.sh accepted `rélays` as one plain path segment in
+     * the operator's shell and refused it in the C locale. The manifest's header names the characters a family name may
+     * use, and RunbookManifestTest reads a declared name as exactly those, in ASCII.
+     */
+    runbookManifest($this->runbook, "tunnel r\u{E9}lays R-1\n");
+    runbookFamily($this->runbook, "r\u{E9}lays", "family r\u{E9}lays R-1\nverdict R-1 PASS holds\n");
+
+    $run = runbookRun($this->dir, ['LC_ALL' => 'en_US.UTF-8']);
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and($run->getErrorOutput())->toContain("names the family [r\u{E9}lays], which is not one plain path segment")
+        ->and($run->getOutput())->not->toContain('PASS  R-1');
+});
+
+it('shows what a family said on stderr past a byte that is not UTF-8', function (): void {
+    // macOS tr in a UTF-8 locale stopped at the byte, so why the family did not finish never reached the operator.
+    runbookManifest($this->runbook, "tunnel bytes I-1\n");
+    runbookFamily($this->runbook, 'bytes', "family bytes I-1\nprintf '\\377 banner, then: Connection reset by peer\\n' >&2\nexit 255\n");
+
+    $run = runbookRun($this->dir, ['LC_ALL' => 'en_US.UTF-8']);
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and($run->getErrorOutput())->toContain("the family did not finish: \xFF banner, then: Connection reset by peer");
+});
+
 it('reads a stream carrying a stray NUL byte as text, rather than as nothing', function (): void {
     /*
      * ⚠️ macOS grep calls a file with a NUL in it binary and matches no line of it. On the shared stream,
