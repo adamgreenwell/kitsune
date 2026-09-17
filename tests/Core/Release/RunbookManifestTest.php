@@ -177,14 +177,15 @@ function runbookPromised(string $family, string $topology): array
 }
 
 /**
- * The host scripts that are not families: common.sh travels ahead of every family, and probe-log.sh is the
- * instrument tunnel-log.php drives. Every other host script, and every outside script, is a family.
+ * The scripts that are not families: common.sh travels ahead of every family, probe-log.sh and
+ * throttle-store.php are instruments the outside families drive, and lib.php is the one copy of the
+ * helpers those families share. Every other host script, and every outside script, is a family.
  *
  * @return list<string>
  */
 function runbookInstruments(): array
 {
-    return ['host/common.sh', 'host/probe-log.sh'];
+    return ['host/common.sh', 'host/probe-log.sh', 'host/throttle-store.php', 'outside/lib.php'];
 }
 
 /**

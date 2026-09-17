@@ -69,6 +69,23 @@ dns-only relays RLY-5
 # a VOID rather than skipping, so the gate cannot read it as a family that died.
 tunnel   tunnel-log TUN-1
 tunnel   tunnel-log TUN-2
-# --- the throttle at PHP (outside/throttle.php) --- not landed yet
+# --- the throttle at PHP (outside/throttle.php, driving host/probe-log.sh and host/throttle-store.php) ---
+# ⚠️ THREE IDS, NOT ONE PER HOSTNAME, for the reason tunnel-log gives above. THR-1 covers the requests
+# across every hostname the server serves — the login throttle's key holds no hostname, so all of them
+# share one bucket per address, and one failing hostname fails it — THR-2 covers what that bucket is keyed
+# on, and THR-3 covers the probe log being removed afterwards.
+#
+# ⚠️ A RUN LOCKS SIGN-IN OUT, DELIBERATELY. It signs in wrongly eight times from the operator's address and
+# leaves Filament's login throttle tripped for that address, on every hostname at once, for up to 60
+# seconds. That is the measurement, not a side effect: run it against stage or a not-yet-live alpha, in a
+# maintenance window.
+#
+# There are no dns-only rows yet. The family declares `tunnel` alone, and the dns-only rows land with the
+# alpha bring-up, when a real dns-only host has produced them — a family is promised for a topology only
+# once some host has exercised it (README.md). Run on any other topology this family says so as a VOID
+# rather than skipping, so the gate cannot read it as a family that died.
+tunnel   throttle THR-1
+tunnel   throttle THR-2
+tunnel   throttle THR-3
 # --- sshd (host/sshd.sh, host/sshd-sweep.sh) --- not landed yet
 # --- Cloudflare account and zones (outside/cloudflare.php) --- not landed yet, needs the token

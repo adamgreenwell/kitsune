@@ -1,0 +1,216 @@
+<?php
+
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
+ */
+
+declare(strict_types=1);
+
+use Illuminate\Support\Facades\File;
+use Symfony\Component\Process\Process;
+
+/*
+ * The one copy of the helpers the outside families share — deploy/runbook/outside/lib.php (issue #111).
+ *
+ * ⚠️ WHAT THIS FILE IS ACTUALLY FOR. CLAUDE.md's rule is one file, one source of truth, and this project
+ * has already spent time reconciling exactly the drift that two copies produce. Every outside family needs
+ * the same verdict protocol, the same bounded `run()`, the same way of driving an instrument and the same
+ * reading of `nginx -T`; a second copy that diverged would make two families disagree about what a refusal
+ * or a sentinel is, and the completeness gate would report the difference as a host problem.
+ *
+ * ⚠️ AND WHY ONE FAMILY CARRIES THE BYTES RATHER THAN REQUIRING THEM. RunbookTunnelLogTest mutates
+ * tunnel-log.php's source and runs the copy from outside the runbook tree — from the fixture root, and
+ * from a fixture runbook with no outside/lib.php beside it — which is how it proves that family's refusal
+ * guards. A sibling `require` cannot resolve there, and that test is not this change's to edit. So
+ * tunnel-log.php carries the block inline, throttle.php loads it, and the cases below make the two
+ * impossible to drift apart: change a byte in either and this says which file has to follow.
+ *
+ * Needs only PHP, so it holds invariant 11: no services, no network, no Docker.
+ */
+
+const RUNBOOK_LIB_OPEN = '// --- the shared outside helpers ---';
+const RUNBOOK_LIB_CLOSE = '// --- end of the shared outside helpers ---';
+
+beforeEach(function (): void {
+    $this->runbook = dirname(__DIR__, 3).'/deploy/runbook';
+    $this->dir = realpath(sys_get_temp_dir()).'/kitsune-lib-'.bin2hex(random_bytes(6));
+
+    File::makeDirectory($this->dir, 0755, true);
+});
+
+afterEach(function (): void {
+    File::deleteDirectory($this->dir);
+});
+
+/**
+ * The shared block a file carries, between its markers — or an empty string when it carries none.
+ *
+ * The markers are matched at the start of a line, so the sentence in the block that names them cannot be
+ * mistaken for one.
+ */
+function runbookSharedBlock(string $source): string
+{
+    $open = strpos($source, "\n".RUNBOOK_LIB_OPEN);
+    $close = strpos($source, "\n".RUNBOOK_LIB_CLOSE);
+
+    if ($open === false || $close === false || $close < $open) {
+        return '';
+    }
+
+    $end = strpos($source, "\n", $close + 1);
+
+    return substr($source, $open + 1, ($end === false ? strlen($source) : $end) - $open - 1);
+}
+
+/**
+ * Every outside script that is a family: all of them but the library itself.
+ *
+ * ⚠️ FOUND HERE RATHER THAN BORROWED FROM RunbookManifestTest, whose helpers exist only when that file is
+ * the one being run — a case that passes in the full suite and fails on its own is worse than a second
+ * two-line list. What matters is that this one is derived from the directory, so a family added to it is
+ * held to the block without anybody remembering to add it here.
+ *
+ * @return array<string, string>
+ */
+function runbookOutsideFamilies(): array
+{
+    $families = [];
+
+    foreach (glob(dirname(__DIR__, 3).'/deploy/runbook/outside/*.php') ?: [] as $script) {
+        if (basename($script) !== 'lib.php') {
+            $families[pathinfo($script, PATHINFO_FILENAME)] = $script;
+        }
+    }
+
+    return $families;
+}
+
+it('is valid PHP', function (): void {
+    foreach (['outside/lib.php', 'outside/throttle.php', 'host/throttle-store.php'] as $script) {
+        $check = new Process(['php', '-l', dirname(__DIR__, 3).'/deploy/runbook/'.$script]);
+        $check->run();
+
+        expect($check->getExitCode())->toBe(0, $script.': '.$check->getOutput().$check->getErrorOutput());
+    }
+});
+
+it('holds every family that carries the shared helpers byte-identical to the one copy', function (): void {
+    /*
+     * ⚠️ BYTE FOR BYTE, NOT "ROUGHLY THE SAME". The point of the block is that a family's idea of a
+     * refusal, a sentinel and a bounded command is the runbook's idea of them. A copy that had drifted by a
+     * word in a reason, or by a guard, would still look like a copy to any looser comparison — and the two
+     * families would then disagree about the protocol run.sh judges them on.
+     */
+    $lib = File::get(dirname(__DIR__, 3).'/deploy/runbook/outside/lib.php');
+    $block = runbookSharedBlock($lib);
+
+    expect($block)->not->toBe('', 'outside/lib.php carries no marked shared block')
+        ->and($block)->toContain('function verdict(')
+        ->and($block)->toContain('function sentinel(')
+        ->and($block)->toContain('function run(');
+
+    $loaders = [];
+    $carriers = [];
+
+    foreach (runbookOutsideFamilies() as $family => $script) {
+        $source = File::get($script);
+        $carried = runbookSharedBlock($source);
+
+        if (str_contains($source, "require_once __DIR__.'/lib.php';")) {
+            $loaders[] = $family;
+
+            // A family that loads the library must not also carry a copy of it: that copy is the drift.
+            expect($carried)->toBe('', "[{$family}] loads lib.php and also carries a copy of the shared block");
+
+            continue;
+        }
+
+        $carriers[] = $family;
+
+        expect($carried)->toBe($block, "[{$family}] carries a shared block that is not lib.php's, so the two have drifted");
+    }
+
+    // Neither list may be empty, or this passes by checking nothing.
+    expect($loaders)->not->toBe([])
+        ->and($carriers)->not->toBe([]);
+});
+
+it('cannot run a family that loads the shared helpers without them', function (): void {
+    /*
+     * ⚠️ THE LOAD IS REAL, NOT DECORATIVE. Without this, "throttle.php requires lib.php" is a line of source
+     * nobody has ever seen matter: the family could carry its own copies of every helper and the require
+     * would be dead. Run from a directory with no lib.php beside it, the family must not run at all.
+     */
+    File::copy(dirname(__DIR__, 3).'/deploy/runbook/outside/throttle.php', $this->dir.'/throttle.php');
+
+    $run = new Process(
+        ['php', $this->dir.'/throttle.php', '--host', 'forge@fixture', '--expect', 'tunnel'],
+        $this->dir,
+        ['HOME' => (string) getenv('HOME'), 'TMPDIR' => $this->dir],
+    );
+    $run->setTimeout(60);
+    $run->run();
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and($run->getErrorOutput())->toContain('lib.php')
+        ->and($run->getOutput())->not->toContain('VERDICT ')
+        ->and($run->getOutput())->not->toContain('SENTINEL ');
+});
+
+it('keeps the protocol the shared helpers print exactly as the gate reads it', function (): void {
+    /*
+     * The four lines run.sh and common.sh agree on, printed by the one copy: a verdict starts its line, a
+     * refusal names its family, a sentinel names its family and counts its own ids, and a record is never
+     * a verdict. A family is judged on these bytes, so they are asserted as bytes rather than as behaviour
+     * seen through a whole family.
+     */
+    $harness = $this->dir.'/harness.php';
+    File::put($harness, <<<'PHP'
+    <?php
+
+    declare(strict_types=1);
+
+    require_once getenv('KITSUNE_LIB');
+
+    const FAMILY = 'harness';
+    const CHECKS = ['HRN-1', 'HRN-2'];
+
+    $verdicts = [];
+    record('HRN-1', "a fact\nover two lines");
+    verdict('HRN-1', 'PASS', "a reason\nover two lines", $verdicts);
+    verdict('HRN-2', 'FAIL', 'a plain reason', $verdicts);
+    sentinel(FAMILY, $verdicts);
+
+    try {
+        verdict('HRN-2', 'VOID', 'a second verdict', $verdicts);
+    } catch (LogicException) {
+        echo "held\n";
+    }
+
+    try {
+        verdict('HRN-9', 'PASS', 'an undeclared id', $verdicts);
+    } catch (LogicException) {
+        echo "held\n";
+    }
+    PHP);
+
+    $run = new Process(['php', $harness], $this->dir, [
+        'HOME' => (string) getenv('HOME'),
+        'KITSUNE_LIB' => dirname(__DIR__, 3).'/deploy/runbook/outside/lib.php',
+    ]);
+    $run->run();
+
+    expect($run->getOutput())->toBe(implode("\n", [
+        'RECORD HRN-1 a fact over two lines',
+        'VERDICT HRN-1 PASS a reason over two lines',
+        'VERDICT HRN-2 FAIL a plain reason',
+        'SENTINEL harness 2 HRN-1 HRN-2',
+        'REFUSED harness verdict HRN-2 VOID [a second verdict]: emitted twice',
+        'held',
+        'REFUSED harness verdict HRN-9 PASS [an undeclared id]: this family did not declare that id',
+        'held',
+        '',
+    ]), $run->getErrorOutput());
+});

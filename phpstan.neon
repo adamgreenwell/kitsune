@@ -21,5 +21,10 @@ parameters:
         # null reaching a comparison is the difference between a verdict and a wrong verdict. They are
         # written in PHP rather than in a third language precisely so that this analyses them.
         - deploy/runbook/outside
+        # And the host instruments that are PHP, for the same reason: host/throttle-store.php boots the
+        # release to read the rate-limiter store, and a null or a wrong type there is the difference
+        # between naming the bucket that filled and reporting a zero the family would read as a store it
+        # could not see. The shell instruments are held by their own tests.
+        - deploy/runbook/host
 
     tmpDir: build/phpstan
