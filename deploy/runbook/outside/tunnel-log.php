@@ -32,8 +32,14 @@ declare(strict_types=1);
  *
  * ⚠️ TWO CHECK IDS, NOT ONE PER HOSTNAME. The manifest is static and committed, and a server's
  * hostnames are a property of that server, so a per-hostname id could never be promised in advance.
- * TUN-1 covers the requests across every hostname the server serves — one failure fails it, and each
- * hostname's detail is recorded — and TUN-2 covers the probe log being removed afterwards.
+ * TUN-1 covers the requests across every hostname the server serves the application at — one failure
+ * fails it, and each hostname's detail is recorded — and TUN-2 covers the probe log being removed
+ * afterwards.
+ *
+ * ⚠️ AND WHAT A SITE IS, THE THROTTLE FAMILY DECIDES TOO, SO BOTH READ ONE DEFINITION (lib.php's
+ * servedSites). A hostname that declares no application — a `www`→apex redirect vhost, which Forge writes
+ * from its own UI — answers with a `return 301`: no upstream, no 404, and this voided a host that was
+ * answering correctly at every hostname that has one. Such a hostname is recorded and never requested.
  */
 
 const FAMILY = 'tunnel-log';
@@ -305,43 +311,201 @@ function literalHostname(string $name): bool
 }
 
 /**
- * The site hostnames the running configuration names, and the entries it names that are not hostnames.
+ * The running configuration, as words: every directive and every block, with quoting and comments already
+ * accounted for.
  *
- * The patterns are returned rather than dropped, because a caller that said "this host names no site"
- * about a configuration naming a wildcard would be giving a true verdict with a false reason.
+ * ⚠️ A TOKENIZER, NOT A LINE SCAN OR A REGEX. The outside families need each hostname's document root, and a
+ * root only means something inside the `server` block that names the hostname — which no line-based scan
+ * can tie together. A regex over the dump would repeat #118. And the dump this reads contains the probe log's
+ * own snippet, whose `log_format` holds braces, semicolons and double quotes INSIDE single-quoted strings:
+ * a brace counter that did not know about quotes would close the http block in the middle of a string and
+ * read every server after it as nested. So quotes come first, then comments, then the punctuation.
  *
- * @return array{0: list<string>, 1: list<string>, 2: string} the hostnames, the patterns, and why there are none
+ * @return list<array{0: string, 1: list<string>}> the terminator, and the words before it
  */
-function hostnames(string $host): array
+function nginxTokens(string $dump): array
 {
-    [$out, $unreadable] = nginxDump($host);
+    $tokens = [];
+    $words = [];
+    $word = '';
+    $quote = '';
+    $length = strlen($dump);
 
-    if ($unreadable !== '') {
-        return [[], [], $unreadable];
-    }
+    for ($at = 0; $at < $length; $at++) {
+        $char = $dump[$at];
 
-    $found = [];
-    $patterns = [];
+        if ($quote !== '') {
+            if ($char === $quote) {
+                $quote = '';
+            } else {
+                $word .= $char;
+            }
 
-    foreach (preg_split('/\R/', $out) ?: [] as $line) {
-        $fields = preg_split('/\s+/', trim($line)) ?: [];
-
-        if (($fields[0] ?? '') !== 'server_name') {
             continue;
         }
 
-        foreach (array_slice($fields, 1) as $name) {
-            $name = rtrim($name, ';');
+        if ($char === '"' || $char === "'") {
+            $quote = $char;
 
-            if (literalHostname($name)) {
-                $found[$name] = true;
-            } elseif ($name !== '' && $name !== '_') {
-                $patterns[$name] = true;
+            continue;
+        }
+
+        if ($char === '#') {
+            while ($at < $length && $dump[$at] !== "\n") {
+                $at++;
             }
+
+            $char = ' ';
+        }
+
+        if ($char === ' ' || $char === "\t" || $char === "\n" || $char === "\r") {
+            if ($word !== '') {
+                $words[] = $word;
+                $word = '';
+            }
+
+            continue;
+        }
+
+        if ($char === ';' || $char === '{' || $char === '}') {
+            if ($word !== '') {
+                $words[] = $word;
+                $word = '';
+            }
+
+            $tokens[] = [$char, $words];
+            $words = [];
+
+            continue;
+        }
+
+        $word .= $char;
+    }
+
+    return $tokens;
+}
+
+/**
+ * Each site hostname the server serves, the document roots the blocks naming it declare, and the
+ * `server_name` entries that are patterns rather than names.
+ *
+ * A `root` inside a `location` is that location's, not the site's, so only a root at the server block's
+ * own level counts. The catch-all's `_` is not a site, and neither is a wildcard or a regex: both outside
+ * families request every name they are given, and a wildcard sorts before every letter, so one made the
+ * throttle family's preflight traces and its whole five-and-a-sixth window run against a name curl rejects
+ * outright (literalHostname).
+ *
+ * @return array{0: array<string, list<string>>, 1: list<string>} the sites, and the patterns
+ */
+function siteRoots(string $dump): array
+{
+    $sites = [];
+    $patterns = [];
+    $depth = 0;
+    $serverAt = null;
+    $names = [];
+    $roots = [];
+
+    foreach (nginxTokens($dump) as [$terminator, $words]) {
+        if ($terminator === '{') {
+            $depth++;
+
+            if (($words[0] ?? '') === 'server' && $serverAt === null) {
+                $serverAt = $depth;
+            }
+
+            continue;
+        }
+
+        if ($terminator === '}') {
+            if ($serverAt === $depth) {
+                // The block is closed where it closes: a by-reference closure put every write to these
+                // out of reach of the analyser, which then read each of these loops as one over nothing.
+                foreach ($names as $name) {
+                    $sites[$name] = array_replace($sites[$name] ?? [], array_fill_keys($roots, true));
+                }
+
+                $names = [];
+                $roots = [];
+                $serverAt = null;
+            }
+
+            $depth--;
+
+            continue;
+        }
+
+        if ($serverAt !== $depth) {
+            continue;
+        }
+
+        if (($words[0] ?? '') === 'server_name') {
+            foreach (array_slice($words, 1) as $name) {
+                if (literalHostname($name)) {
+                    $names[] = $name;
+                } elseif ($name !== '' && $name !== '_') {
+                    $patterns[$name] = true;
+                }
+            }
+        }
+
+        if (($words[0] ?? '') === 'root' && isset($words[1])) {
+            $roots[] = rtrim($words[1], '/');
         }
     }
 
-    return [array_keys($found), array_keys($patterns), ''];
+    $found = [];
+
+    foreach ($sites as $name => $declared) {
+        $found[$name] = array_keys($declared);
+    }
+
+    ksort($found);
+
+    return [$found, array_keys($patterns)];
+}
+
+/**
+ * The served hostnames an application answers at, and the ones that answer for no application at all.
+ *
+ * ⚠️ ONE ANSWER TO "WHAT IS A SITE", BECAUSE BOTH OUTSIDE FAMILIES MEASURE THE SAME HOSTNAMES. Written twice,
+ * the two disagreed about which hostnames a run is even about — and a disagreement between two families reaches
+ * the operator as a property of the host rather than of the runbook.
+ *
+ * ⚠️ A HOSTNAME THAT SERVES NO APPLICATION IS NOT A SECOND APPLICATION. A `www`→apex redirect vhost, an
+ * old-domain redirect, a static docs site, an ACME-only block or a reverse proxy declares no server-level
+ * root ending in `/public` — and Forge writes exactly that shape from its own UI, so the alpha host will
+ * have one. Refusing the whole run on the first of them, which is what naming the release used to do,
+ * voided both of the throttle family's measured checks on a host whose throttle is entirely sound, with a
+ * reason that is false: the release IS nameable, from the hostnames that do declare a root. The tunnel-log
+ * family met the same vhost and voided just as wrongly: `return 301` answers with no upstream and no 404, so
+ * TUN-1 reported a host unmeasurable while every hostname that has an application had answered correctly.
+ * They are recorded and left out, exactly as a `server_name` that is a pattern already is, and only a
+ * configuration where NO hostname declares one has nothing to measure.
+ *
+ * ⚠️ AND LEFT OUT MEANS NOT REQUESTED. The throttle family's cost is one more attempt per hostname it signs
+ * in to, so a redirect vhost that is dropped here is a lockout that is never taken out on it, and the
+ * tunnel-log family never asks the probe log for a line no request of its own produced.
+ *
+ * @param  array<string, list<string>>  $sites
+ * @return array{0: array<string, list<string>>, 1: array<string, string>} the sites, and why the others are not one
+ */
+function servedSites(array $sites): array
+{
+    $rootless = [];
+
+    foreach ($sites as $name => $roots) {
+        if (array_filter($roots, static fn (string $root): bool => str_ends_with($root, '/public')) !== []) {
+            continue;
+        }
+
+        $rootless[$name] = "[{$name}] has no server-level root ending in /public in the running configuration ("
+            .($roots === [] ? 'it declares none' : 'it declares '.implode(', ', $roots)).')';
+
+        unset($sites[$name]);
+    }
+
+    return [$sites, $rootless];
 }
 
 /** The address the edge says it saw, from a /cdn-cgi/trace body. */
@@ -606,7 +770,8 @@ $voids = [];
 $refusal = null;
 
 try {
-    [$sites, $patterns, $unreadable] = hostnames($host);
+    [$dump, $unreadable] = nginxDump($host);
+    [$named, $patterns] = $unreadable === '' ? siteRoots($dump) : [[], []];
 
     // Named, not silently dropped: a wildcard or a regex server_name is not a name a request can be made
     // to, and a run that skipped one without saying so would leave an operator with no way to tell this
@@ -615,11 +780,25 @@ try {
         record('TUN-1', 'the configuration also names '.implode(', ', $patterns).', which no request can be made to');
     }
 
+    [$served, $rootless] = servedSites($named);
+
+    // Recorded for the reason a pattern is, and in the words the throttle family records the same split in:
+    // an operator whose redirect vhost this left out should read it here rather than wonder why a name the
+    // configuration carries was never requested.
+    if ($rootless !== []) {
+        record('TUN-1', 'the configuration also serves hostnames that name no application: '.implode('; ', $rootless)
+            .', so nothing was requested there');
+    }
+
+    $sites = array_keys($served);
+
     if ($unreadable !== '') {
         $voids[] = 'the running configuration could not be read, so there was nothing to request: '.$unreadable;
     } elseif ($sites === []) {
-        $voids[] = 'no site hostname was found in the running configuration, so there was nothing to request'
-            .($patterns === [] ? '' : ' (it names only '.implode(', ', $patterns).', which no request can be made to)');
+        $voids[] = $rootless === []
+            ? 'no site hostname was found in the running configuration, so there was nothing to request'
+                .($patterns === [] ? '' : ' (it names only '.implode(', ', $patterns).', which no request can be made to)')
+            : 'no hostname this server serves declares an application to request: '.implode('; ', $rootless);
     }
 
     foreach ($sites as $index => $hostname) {

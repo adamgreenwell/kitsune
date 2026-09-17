@@ -109,7 +109,11 @@ it('holds every family that carries the shared helpers byte-identical to the one
     expect($block)->not->toBe('', 'outside/lib.php carries no marked shared block')
         ->and($block)->toContain('function verdict(')
         ->and($block)->toContain('function sentinel(')
-        ->and($block)->toContain('function run(');
+        ->and($block)->toContain('function run(')
+        // What counts as a site is shared too: two families that answered that differently measured
+        // different hosts through the same hostnames and reported the difference as the host's doing.
+        ->and($block)->toContain('function siteRoots(')
+        ->and($block)->toContain('function servedSites(');
 
     $loaders = [];
     $carriers = [];
@@ -159,7 +163,7 @@ it('cannot run a family that loads the shared helpers without them', function ()
         ->and($run->getOutput())->not->toContain('SENTINEL ');
 });
 
-it('keeps only the server_name entries a request can be made to, and hands back the rest', function (): void {
+it('gives both outside families one answer to which of a host\'s hostnames a run is about', function (): void {
     /*
      * ⚠️ server_name IS NOT A LIST OF HOSTNAMES, and both outside families request every name this returns.
      * `_` is the catch-all's own name; `*.x`, `.x` and `~^…$` are patterns. None of them resolves — real
@@ -169,13 +173,38 @@ it('keeps only the server_name entries a request can be made to, and hands back 
      *
      * The patterns come back rather than being dropped, so a family can say what it skipped instead of
      * reporting that a host naming a wildcard names no site at all — a true verdict with a false reason.
+     *
+     * ⚠️ AND A HOSTNAME THAT SERVES NO APPLICATION IS THE SAME KIND OF ENTRY. A `www`→apex redirect vhost —
+     * which Forge writes from its own UI, so the alpha host will have one — declares no server-level root
+     * ending in `/public`. The two families used to meet it separately and get it wrong in two different
+     * ways: the throttle family refused to name the release at all, and the tunnel family requested it and
+     * voided on the 301 it answers with. Split here, in the one copy, they cannot disagree about which
+     * hostnames a run is about; requesting a name is the caller's business, deciding it is a site is not.
+     *
+     * The roots come back per hostname because a caller needs them — the throttle family names the release
+     * from them — and a `root` inside a `location` is that location's, not the site's.
      */
     File::put($this->dir.'/dump', <<<'CONF'
     server {
         server_name _;
+        root /var/www/html;
     }
     server {
+        listen 80;
         server_name stage.kitsune.test alias.kitsune.test;
+        return 301 https://$host$request_uri;
+    }
+    server {
+        listen 443 ssl;
+        server_name stage.kitsune.test alias.kitsune.test;
+        root /home/kitsune/site/current/public;
+        location /assets {
+            root /var/www/shared-assets;
+        }
+    }
+    server {
+        server_name www.stage.kitsune.test;
+        return 301 https://stage.kitsune.test$request_uri;
     }
     server {
         server_name *.kitsune.test .kitsune.test ~^(?<sub>.+)\.kitsune\.test$;
@@ -186,7 +215,7 @@ it('keeps only the server_name entries a request can be made to, and hands back 
     File::put($this->dir.'/ssh', "#!/bin/sh\ncat ".escapeshellarg($this->dir.'/dump')."\n");
     chmod($this->dir.'/ssh', 0755);
 
-    $harness = $this->dir.'/hostnames.php';
+    $harness = $this->dir.'/sites.php';
     File::put($harness, <<<'PHP'
     <?php
 
@@ -197,9 +226,14 @@ it('keeps only the server_name entries a request can be made to, and hands back 
     const FAMILY = 'harness';
     const CHECKS = ['HRN-1'];
 
-    [$names, $patterns, $unreadable] = hostnames('forge@fixture');
+    [$dump, $unreadable] = nginxDump('forge@fixture');
+    [$named, $patterns] = siteRoots($dump);
+    [$served, $rootless] = servedSites($named);
 
-    echo 'NAMES '.implode(' ', $names)."\n";
+    echo 'NAMED '.implode(' ', array_keys($named))."\n";
+    echo 'SERVED '.implode(' ', array_keys($served))."\n";
+    echo 'ROOTS '.implode(' ', $served['stage.kitsune.test'] ?? [])."\n";
+    echo 'ROOTLESS '.implode('; ', $rootless)."\n";
     echo 'PATTERNS '.implode(' ', $patterns)."\n";
     echo 'UNREADABLE ['.$unreadable."]\n";
     PHP);
@@ -212,7 +246,11 @@ it('keeps only the server_name entries a request can be made to, and hands back 
     $run->run();
 
     expect($run->getOutput())->toBe(implode("\n", [
-        'NAMES stage.kitsune.test alias.kitsune.test',
+        'NAMED alias.kitsune.test stage.kitsune.test www.stage.kitsune.test',
+        'SERVED alias.kitsune.test stage.kitsune.test',
+        'ROOTS /home/kitsune/site/current/public',
+        'ROOTLESS [www.stage.kitsune.test] has no server-level root ending in /public in the running '
+            .'configuration (it declares none)',
         'PATTERNS *.kitsune.test .kitsune.test ~^(?<sub>.+)\.kitsune\.test$',
         'UNREADABLE []',
         '',

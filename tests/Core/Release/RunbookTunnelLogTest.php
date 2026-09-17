@@ -105,18 +105,30 @@ function tunnelLogFixture(string $dir, string $name, string $contents): void
  * A configuration dump as `nginx -T` writes one: file banners, the catch-all, and the site on both
  * ports. The names repeat across the two blocks because they do on a real host, which is what makes
  * collapsing them part of the measurement rather than an accident of the fixture.
+ *
+ * ⚠️ THE ROOTS ARE PART OF THE FIXTURE NOW, BECAUSE THEY ARE WHAT MAKES A HOSTNAME A SITE. A block that
+ * declares no server-level root ending in `/public` serves no application — a `www`→apex redirect vhost is
+ * exactly that shape — and the family requests only the hostnames that do. A fixture whose site blocks
+ * declared none described a host serving nothing, which no real one this family runs against does: the
+ * `:80` block redirects and the `:443` block carries the root, and a `location` carries one of its own
+ * that is not the site's.
  */
-function tunnelLogDump(string $siteNames = 'stage.kitsune.test'): string
+function tunnelLogDump(string $siteNames = 'stage.kitsune.test', string $extra = ''): string
 {
     $site = $siteNames === '' ? '' : <<<CONF
         # configuration file /etc/nginx/sites-enabled/stage.kitsune.test:
         server {
             listen 80;
             server_name {$siteNames};
+            return 301 https://\$host\$request_uri;
         }
         server {
             listen 443 ssl;
             server_name {$siteNames};
+            root /home/kitsune/site/current/public;
+            location /assets {
+                root /var/www/shared-assets;
+            }
         }
 
         CONF;
@@ -132,10 +144,35 @@ function tunnelLogDump(string $siteNames = 'stage.kitsune.test'): string
             listen 80 default_server;
             listen 443 ssl default_server;
             server_name _;
+            root /var/www/html;
         }
 
-        {$site}
+        {$site}{$extra}
         CONF;
+}
+
+/** A vhost that redirects and declares no application, as Forge writes one from its own UI. */
+function tunnelLogRedirectVhost(string $hostname = 'www.stage.kitsune.test'): string
+{
+    return <<<CONF
+        # configuration file /etc/nginx/sites-enabled/{$hostname}:
+        server {
+            listen 80;
+            listen 443 ssl;
+            server_name {$hostname};
+            return 301 https://stage.kitsune.test\$request_uri;
+        }
+
+        CONF;
+}
+
+/** Every hostname the curl stub was asked for, sorted. */
+function tunnelLogRequested(string $dir): array
+{
+    $asked = array_values(array_filter(explode("\n", trim((string) @file_get_contents($dir.'/requested')))));
+    sort($asked);
+
+    return $asked;
 }
 
 /**
@@ -555,11 +592,80 @@ it('reads every name a directive carries, strips the semicolon, and collapses th
 
     tunnelLogRun($this->dir, $this->family);
 
-    $asked = array_values(array_filter(explode("\n", trim((string) @file_get_contents($this->dir.'/requested')))));
-    sort($asked);
-
-    expect($asked)->toBe(['alias.kitsune.test', 'stage.kitsune.test']);
+    expect(tunnelLogRequested($this->dir))->toBe(['alias.kitsune.test', 'stage.kitsune.test']);
 });
+
+it('requests the hostnames an application answers at, and records the ones that answer for none', function (): void {
+    /*
+     * ⚠️ A REDIRECT VHOST VOIDED A HOST THAT WAS ANSWERING CORRECTLY. `server_name www.<domain>; return 301
+     * …` declares no application: it answers 301 with no upstream and no 404, so the two rules that say the
+     * request reached PHP could not hold, and TUN-1 reported the whole host unmeasurable — after installing
+     * the probe log and reloading nginx twice — over a hostname that was behaving exactly as intended. Forge
+     * writes that block from its own UI, so the alpha host will have one, and the same is true of any
+     * co-resident vhost that is not this application: an old-domain redirect, a static docs site, an
+     * ACME-only block.
+     *
+     * The throttle family met the same vhost and got it wrong differently, which is why the split now lives
+     * in outside/lib.php and both families read it: a disagreement between two families about which
+     * hostnames a run is even about reaches the operator as a property of the host.
+     *
+     * ⚠️ AND THE ASSERTION IS THE REQUEST LOG. A family that still requested the redirect vhost and merely
+     * left it out of the sentence would pass a verdict-substring assertion, and would still be driving a
+     * request and a probe-log collect at a hostname that serves nothing.
+     */
+    tunnelLogFixture($this->dir, 'hostnames', tunnelLogDump('stage.kitsune.test', tunnelLogRedirectVhost()));
+
+    $run = tunnelLogRun($this->dir, $this->family);
+
+    expect($run->isSuccessful())->toBeTrue($run->getOutput().$run->getErrorOutput())
+        ->and(tunnelLogVerdict($run, 'TUN-1'))->toContain('PASS')
+        ->and(tunnelLogVerdict($run, 'TUN-2'))->toContain('PASS')
+        ->and(tunnelLogRequested($this->dir))->toBe(['stage.kitsune.test'])
+        ->and($run->getOutput())->toContain('RECORD TUN-1 the configuration also serves hostnames that name no application: '
+            .'[www.stage.kitsune.test] has no server-level root ending in /public in the running configuration '
+            .'(it declares none), so nothing was requested there')
+        ->and(tunnelLogVerdict($run, 'TUN-1'))->not->toContain('www.stage.kitsune.test');
+});
+
+it('voids a host where every hostname it serves declares no application, and says which', function (): void {
+    /*
+     * The other end of the split: leaving a redirect vhost out is not the same as having nothing to measure,
+     * so a configuration where NO hostname declares an application is still VOID — and names them, rather
+     * than reporting that a host serving two vhosts names no site at all.
+     */
+    tunnelLogFixture($this->dir, 'hostnames', tunnelLogDump('', tunnelLogRedirectVhost().tunnelLogRedirectVhost('old.kitsune.test')));
+
+    $run = tunnelLogRun($this->dir, $this->family);
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and(tunnelLogVerdict($run, 'TUN-1'))->toContain('VOID')
+        ->and(tunnelLogVerdict($run, 'TUN-1'))->toContain('no hostname this server serves declares an application to request')
+        ->and(tunnelLogVerdict($run, 'TUN-1'))->toContain('[old.kitsune.test] has no server-level root ending in /public')
+        ->and(tunnelLogVerdict($run, 'TUN-1'))->toContain('[www.stage.kitsune.test] has no server-level root ending in /public')
+        ->and(tunnelLogRequested($this->dir))->toBe([])
+        ->and(tunnelLogVerdict($run, 'TUN-2'))->toContain('PASS');
+});
+
+it('still voids a hostname that declares an application and did not answer 404', function (string $status, string $upstream): void {
+    /*
+     * ⚠️ THE TRUE POSITIVE THE SPLIT MUST NOT SWALLOW. Leaving out a hostname that declares no application is
+     * not the same as excusing a redirect from one that does: the path requested is unrouted, so Laravel's
+     * own fallback is what produces the 404, and anything else — a canonical-host redirect in front of the
+     * app, a cached or static answer, an error page — means the request did not reach the point this judges.
+     * Asserting only that the healthy world passes would be satisfied by a family that stopped judging the
+     * status at all.
+     */
+    tunnelLogFixture($this->dir, 'probe', json_encode(tunnelLogLine(['status' => $status, 'upstream_status' => $upstream])) ?: '{}');
+
+    $run = tunnelLogRun($this->dir, $this->family);
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and(tunnelLogVerdict($run, 'TUN-1'))->toContain('VOID')
+        ->and(tunnelLogVerdict($run, 'TUN-1'))->toContain('rather than 404');
+})->with([
+    'the application redirected it' => ['301', '301'],
+    'nginx answered from its own cache' => ['200', '200'],
+]);
 
 it('refuses without the instrument it drives, and looks for it where it was told to', function (): void {
     /*
