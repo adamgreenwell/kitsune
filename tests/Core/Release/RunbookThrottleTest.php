@@ -1214,6 +1214,31 @@ it('fails a key that holds the session or the email as well as the address', fun
     'the email' => ['address+email'],
 ]);
 
+it('voids a second address whose bucket holds more than this run put there', function (): void {
+    /*
+     * ⚠️ A NUMBER THAT REFUTES THE SENTENCE IT IS PRINTED IN. THR-2's last branch FAILed "the attempt from
+     * [<v6>] was not counted under its own address: that bucket holds 2 attempts, not 1" — and a bucket
+     * holding 2 proves the attempt WAS counted there. The branch three lines above it treats the identical
+     * contamination of the IPv4 bucket as a VOID, in both directions, with a comment saying that calling
+     * it a FAIL would accuse the host of a fault nothing here can measure.
+     *
+     * The state is structurally favoured rather than exotic: the family forces its whole window onto `-4`
+     * and makes exactly one IPv6 attempt, so the operator's own browser on a dual-stack network — where
+     * RFC 6724 prefers IPv6 — contaminates the v6 bucket alone, and a successful sign-in counts as much as
+     * a mistyped one. A contaminant that touched IPv4 as well would have landed in the VOID above.
+     */
+    throttleCase($this->state, ['cotenant' => '2001:db8::50', 'cotenant_at' => 10]);
+
+    $run = throttleRun($this->dir, $this->family);
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and(throttleVerdict($run, 'THR-1'))->toContain('PASS')
+        ->and(throttleVerdict($run, 'THR-2'))->toContain('VOID')
+        ->and(throttleVerdict($run, 'THR-2'))->toContain('holds 2 attempts rather than exactly 1, so it is not only this run\'s writes')
+        ->and(throttleVerdict($run, 'THR-2'))->not->toContain('FAIL')
+        ->and($run->getOutput())->not->toContain('was not counted under its own address');
+});
+
 it('fails a hostname that answers a sign-in while the shared bucket is full', function (): void {
     /*
      * The throttle key holds no hostname, so every hostname of one app shares a bucket per address. A

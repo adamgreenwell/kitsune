@@ -1503,9 +1503,21 @@ function examine(string $host, string $nonce, string $payload, string $storeSour
         // could not see, and calling it a FAIL would accuse the host of a fault nothing here can measure.
         $twoVoids[] = 'the store read holds no positive record of this run\'s writes for '.$edge4
             .' ('.bucket($post, 'v4').' attempts, not '.LIMIT.'), so what it says about '.$edge6.' cannot be relied on';
+    } elseif (bucket($post, 'v6') === 0) {
+        $twoFails[] = "the attempt from [{$edge6}] was not counted under its own address: that bucket holds 0 attempts";
     } elseif (bucket($post, 'v6') !== 1) {
-        $twoFails[] = "the attempt from [{$edge6}] was not counted under its own address: that bucket holds "
-            .bucket($post, 'v6').' attempts, not 1';
+        /*
+         * ⚠️ THE SAME RULE AS THE BRANCH ABOVE, AND FOR THE SAME REASON. A bucket holding MORE than this
+         * run's one write proves the attempt WAS counted under its own address — the opposite of the FAIL
+         * this branch used to give it, whose own number refuted it. The extra writes are somebody else's:
+         * the run's whole window is forced onto `-4`, so the operator's own browser signing in over IPv6,
+         * which RFC 6724 prefers, lands in this bucket and nowhere else, and a successful sign-in counts
+         * too. The $dirty guard catches such a bucket before the window; arriving during it, it is
+         * unmeasurable rather than a fault of the host. A bucket of -1 is the instrument naming no bucket
+         * at all, which is unmeasurable for the same reason.
+         */
+        $twoVoids[] = 'the bucket for '.$edge6.' holds '.bucket($post, 'v6')
+            .' attempts rather than exactly 1, so it is not only this run\'s writes';
     }
 
     $two = $twoFails !== []
