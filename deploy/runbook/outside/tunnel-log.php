@@ -311,6 +311,12 @@ function literalHostname(string $name): bool
 }
 
 /**
+ * The block directives nginx opens with no argument between the name and the brace, which are therefore the
+ * only ones whose brace can abut the name (nginxTokens).
+ */
+const NGINX_BLOCKS_WITHOUT_ARGUMENTS = ['events', 'http', 'mail', 'server', 'stream', 'types'];
+
+/**
  * The running configuration, as words: every directive and every block, with quoting and comments already
  * accounted for.
  *
@@ -320,6 +326,16 @@ function literalHostname(string $name): bool
  * own snippet, whose `log_format` holds braces, semicolons and double quotes INSIDE single-quoted strings:
  * a brace counter that did not know about quotes would close the http block in the middle of a string and
  * read every server after it as nested. So quotes come first, then comments, then the punctuation.
+ *
+ * ⚠️ AND A BRACE OR A `#` INSIDE A WORD IS A CHARACTER, NOT PUNCTUATION — WHICH IS WHERE THIS DROPPED A WHOLE
+ * DIRECTIVE. `root /sites/${host}/public;`, which nginx accepts, and a quoted `server_name "~^www\d{1,3}\.x$"`
+ * both carry braces in the middle of a word; read as a block, the words before the brace went into a `{` token
+ * that siteRoots() does not look at, and everything the directive said — the root, or a literal hostname
+ * declared beside the regex — was gone. Silently: no request was made to that hostname, no RECORD named it,
+ * and TUN-1 passed on the hostnames that survived. So `{`, `}` and `#` are read where nginx reads them, at the
+ * start of a word. The exception is a block directive that takes no argument, whose brace may abut its name
+ * (`server{`), and that is what the list above is for. An unquoted brace regex is not a case: nginx documents
+ * that such a regex must be quoted, and a configuration nginx refuses to load is not one `nginx -T` can dump.
  *
  * @return list<array{0: string, 1: list<string>}> the terminator, and the words before it
  */
@@ -350,12 +366,15 @@ function nginxTokens(string $dump): array
             continue;
         }
 
-        if ($char === '#') {
+        // Where a word begins, and so where nginx's own reader takes a character for punctuation.
+        $begins = $word === '' || ($char === '{' && $words === [] && in_array($word, NGINX_BLOCKS_WITHOUT_ARGUMENTS, true));
+
+        if ($begins && $char === '#') {
             while ($at < $length && $dump[$at] !== "\n") {
                 $at++;
             }
 
-            $char = ' ';
+            continue;
         }
 
         if ($char === ' ' || $char === "\t" || $char === "\n" || $char === "\r") {
@@ -367,7 +386,7 @@ function nginxTokens(string $dump): array
             continue;
         }
 
-        if ($char === ';' || $char === '{' || $char === '}') {
+        if ($char === ';' || ($begins && ($char === '{' || $char === '}'))) {
             if ($word !== '') {
                 $words[] = $word;
                 $word = '';

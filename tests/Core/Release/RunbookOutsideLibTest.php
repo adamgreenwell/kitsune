@@ -87,6 +87,56 @@ function runbookOutsideFamilies(): array
     return $families;
 }
 
+/**
+ * What the one shared reading makes of one dump, through a harness shaped like a family: it loads lib.php,
+ * asks `nginx -T` through the stubbed ssh, and prints the answer.
+ *
+ * @return array{named: array<string, list<string>>, served: list<string>, rootless: list<string>, patterns: list<string>}
+ */
+function runbookSiteReading(string $dir, string $dump): array
+{
+    File::put($dir.'/dump', $dump);
+    File::put($dir.'/ssh', "#!/bin/sh\ncat ".escapeshellarg($dir.'/dump')."\n");
+    chmod($dir.'/ssh', 0755);
+
+    $harness = $dir.'/reading.php';
+    File::put($harness, <<<'PHP'
+    <?php
+
+    declare(strict_types=1);
+
+    require_once getenv('KITSUNE_LIB');
+
+    const FAMILY = 'harness';
+    const CHECKS = ['HRN-1'];
+
+    [$dump, $unreadable] = nginxDump('forge@fixture');
+    [$named, $patterns] = siteRoots($dump);
+    [$served, $rootless] = servedSites($named);
+
+    echo json_encode([
+        'named' => $named,
+        'served' => array_keys($served),
+        'rootless' => array_values($rootless),
+        'patterns' => $patterns,
+        'unreadable' => $unreadable,
+    ]);
+    PHP);
+
+    $run = new Process(['php', $harness], $dir, [
+        'HOME' => (string) getenv('HOME'),
+        'PATH' => $dir.':'.getenv('PATH'),
+        'KITSUNE_LIB' => dirname(__DIR__, 3).'/deploy/runbook/outside/lib.php',
+    ]);
+    $run->run();
+
+    $read = json_decode($run->getOutput(), true);
+
+    expect($read)->toBeArray($run->getOutput().$run->getErrorOutput());
+
+    return $read;
+}
+
 it('is valid PHP', function (): void {
     foreach (['outside/lib.php', 'outside/throttle.php', 'host/throttle-store.php'] as $script) {
         $check = new Process(['php', '-l', dirname(__DIR__, 3).'/deploy/runbook/'.$script]);
@@ -255,6 +305,42 @@ it('gives both outside families one answer to which of a host\'s hostnames a run
         'UNREADABLE []',
         '',
     ]), $run->getErrorOutput());
+});
+
+it('reads a directive whose value carries a brace, rather than dropping the whole directive', function (): void {
+    /*
+     * ⚠️ A DROPPED DIRECTIVE IS A HOSTNAME NOBODY EVER HEARS ABOUT. `{` and `}` were punctuation wherever they
+     * appeared, so a value carrying one — `root /sites/${host}/public;`, which nginx accepts, or a quoted
+     * regex with a `{1,3}` quantifier beside a literal name — put its words into a `{` token siteRoots() does
+     * not read. The root vanished and the host was called rootless with "it declares none"; the literal
+     * hostname vanished with no RECORD naming it, so it was never requested and the check passed on whatever
+     * was left. Both shapes are one case here because one rule answers both: the punctuation is read where
+     * nginx reads it, at the start of a word.
+     *
+     * The regex is quoted because nginx requires it — one carrying `}` or `;` unquoted is a configuration it
+     * refuses to load, and so one `nginx -T` cannot dump — and it must still come back as a pattern, since a
+     * request can no more be made to it than to a wildcard.
+     */
+    $read = runbookSiteReading($this->dir, <<<'CONF'
+    server {
+        listen 443 ssl;
+        server_name real.test "~^www\d{1,3}\.kitsune\.test$";
+        root /sites/${host}/public;
+    }
+    CONF);
+
+    expect($read['named'])->toBe(['real.test' => ['/sites/${host}/public']])
+        ->and($read['served'])->toBe(['real.test'])
+        ->and($read['rootless'])->toBe([])
+        ->and($read['patterns'])->toBe(['~^www\d{1,3}\.kitsune\.test$']);
+});
+
+it('reads a block whose brace abuts its own name', function (): void {
+    // `server{` is the one shape with no whitespace before the brace, because `server` takes no argument —
+    // and reading the brace only at the start of a word would have stopped seeing the block at all.
+    $read = runbookSiteReading($this->dir, "server{\n listen 443 ssl;\n server_name a.test;\n root /srv/a/public;\n}\n");
+
+    expect($read['served'])->toBe(['a.test']);
 });
 
 it('keeps the protocol the shared helpers print exactly as the gate reads it', function (): void {
