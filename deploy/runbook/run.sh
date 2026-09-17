@@ -306,7 +306,8 @@ number='^(0|[1-9][0-9]*)$'
 # line by line.
 #
 # ⚠️ AND THE NULs GO BEFORE awk SEES THEM. macOS awk ends a record at the first NUL, so a verdict glued after
-# NUL-separated output — `cat /proc/<pid>/cmdline` left uncaptured, which the sshd family will read — matched
+# NUL-separated output — `cat /proc/<pid>/cmdline` left uncaptured, as a family reading a process's own words
+# does — matched
 # nothing here: the family was voided for the glue, and the FAIL it had measured was shown nowhere at all.
 reported() {
   local id=$1 file=$2
