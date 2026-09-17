@@ -873,6 +873,44 @@ it('states the same sign-in count in all three places it tells the operator, and
     expect(throttleAnswers($this->state))->toHaveCount(7 + count(throttleSites()));
 });
 
+it('claims of the underscore spelling only what it could see, and names what it could not', function (): void {
+    /*
+     * ⚠️ HALF THE FORGERY IS UNOBSERVABLE, AND THE PASS TEXT SAID IT HAD BEEN OBSERVED. Every forged
+     * attempt carries both spellings — `X-Forwarded-For` and `X_Forwarded_For`, which FPM maps onto the
+     * same PHP variable — and the arrival assertion reads only the dashed one out of the probe line,
+     * because nginx's default `underscores_in_headers off` drops an underscored header before any log sees
+     * it. On a default host an underscore bucket reading 0 is therefore exactly as consistent with "nginx
+     * discarded it before PHP could see it" as with "the host ignored the forgery" — the very tautology
+     * the probe log exists to prevent for the dashed spelling, and the family's own comment says so.
+     *
+     * A correct verdict with a false explanation is the defect class this runbook treats as its own, and
+     * the design had already settled which way to resolve it: the underscore spelling's PASS claims only
+     * that it filled no bucket.
+     */
+    $run = throttleRun($this->dir, $this->family);
+    $verdict = throttleVerdict($run, 'THR-1');
+
+    expect($run->isSuccessful())->toBeTrue($run->getOutput().$run->getErrorOutput())
+        ->and($verdict)->toContain('PASS')
+        // What it may claim: the dashed spelling arrived, and neither spelling filled a bucket.
+        ->and($verdict)->toContain('every forged X-Forwarded-For arrived at nginx and filled nothing')
+        ->and($verdict)->toContain('the X_Forwarded_For sent beside it filled nothing either')
+        ->and($verdict)->toContain('underscores_in_headers')
+        // What it may not claim: that both spellings were seen to arrive.
+        ->and($verdict)->not->toContain('X-Forwarded-For and X_Forwarded_For arrived');
+
+    /*
+     * ⚠️ AND THE CASE IS LIVE. The stub builds the chain nginx logs from the dashed header alone, exactly
+     * as an `underscores_in_headers off` host does, so the underscore value really is in no line nginx
+     * wrote — while the dashed one is in every one of them. Without this the assertions above could pass
+     * against a fixture where both spellings happened to be visible.
+     */
+    $probes = (string) File::get($this->state.'/probes.jsonl');
+
+    expect($probes)->toContain('192.0.2.1')
+        ->and($probes)->not->toContain('198.51.100.');
+});
+
 it('reads the throttle out of the snapshot, where the body text says the opposite', function (): void {
     /*
      * ⚠️ THE TRAP THE #111 DRAFT WALKED INTO. Every 200 re-renders the login form, and the form contains

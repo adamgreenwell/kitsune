@@ -1293,12 +1293,26 @@ function examine(string $host, string $nonce, string $payload, string $storeSour
             .'), so they were not all the same kind of rejection';
     }
 
+    /*
+     * ⚠️ THE PASS SAYS WHAT WAS SEEN, AND NAMES WHAT COULD NOT BE. Every forged attempt carries both
+     * spellings — `X-Forwarded-For` and `X_Forwarded_For`, which FPM maps onto the same PHP variable — and
+     * the arrival assertion can only read the dashed one out of the probe line: nginx's default is
+     * `underscores_in_headers off`, which drops an underscored header before any log sees it. So an
+     * underscore bucket at 0 is exactly as consistent with "nginx discarded it" as with "the host ignored
+     * the forgery", which is the tautology the probe log exists to prevent for the dashed spelling.
+     *
+     * Claiming both had arrived made this a correct verdict with a false explanation — the defect class
+     * this runbook treats as its own. The design settled it the other way round: the underscore spelling's
+     * PASS claims only that it filled no bucket (scratchpad draft-corrections).
+     */
     $one = $fails !== []
         ? ['FAIL', implode('; ', $fails)]
         : ($voids !== []
             ? ['VOID', implode('; ', $voids)]
             : ['PASS', 'across '.implode(', ', $hostnames).', '.LIMIT.' rejected sign-ins from one address filled that address\'s bucket and only it — '
-                .'every forged X-Forwarded-For and X_Forwarded_For arrived at nginx and filled nothing — and the sixth was throttled on every hostname']);
+                .'every forged X-Forwarded-For arrived at nginx and filled nothing, and the X_Forwarded_For sent beside it filled nothing either, '
+                .'though nginx drops an underscored header under its default underscores_in_headers off, so this run cannot say that one reached the server — '
+                .'and the sixth was throttled on every hostname']);
 
     // --- THR-2: what the bucket is keyed on ---------------------------------------------------------
     //
