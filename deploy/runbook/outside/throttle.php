@@ -929,7 +929,7 @@ function examine(string $host, string $nonce, string $payload, string $storeSour
      * limitation of the machine reported as a limitation of the server.
      */
     $send = static function (array $page, string $family, string $jar, int $number, ?int $forged, string $email, string $check) use (
-        $host, $nonce, $payload, $work, &$records, &$answers, &$voids, &$twoVoids, $elapsed
+        $host, $nonce, $payload, $work, $edge4, $edge6, &$records, &$answers, &$voids, &$twoVoids, $elapsed
     ): string {
         $hostname = $page['hostname'];
         $unmeasured = static function (string $reason) use ($check, &$voids, &$twoVoids): string {
@@ -959,6 +959,27 @@ function examine(string $host, string $nonce, string $payload, string $storeSour
 
         if ($edge === '') {
             return $unmeasured("attempt {$number}: ".$notOneConnection);
+        }
+
+        /*
+         * ⚠️ AND THE ADDRESS IT LEFT FROM MUST BE THE ONE ITS BUCKET IS READ UNDER. The labels are fixed
+         * once, before the window, from two preflight traces; every attempt then measures its own address
+         * again, and nothing compared the two. curl opens a fresh connection per attempt, so a machine
+         * whose egress moves during the run — a NAT/SNAT pool, a multi-homed or load-balanced egress, a CI
+         * runner, or simply a second global or RFC 4941 temporary IPv6 address — splits the
+         * five-and-a-sixth across two buckets while only one of them is ever read. The sixth then comes
+         * back unthrottled against a bucket holding five, and that read as FAIL: "the login throttle does
+         * not hold on this host", against a host that is entirely sound. The evidence was already in this
+         * family's own RECORD lines and never looked at.
+         *
+         * A moving egress is a limitation of the operator's machine, exactly as having no second egress
+         * already is, so it is a VOID of the check whose attempt it was and never a FAIL.
+         */
+        $labelled = $family === '-6' ? $edge6 : $edge4;
+
+        if ($edge !== $labelled) {
+            return $unmeasured("{$hostname}: attempt {$number} left from [{$edge}] and this run reads the bucket for ["
+                .$labelled.'], so this machine\'s address moved and what the attempt was counted under is not what was read');
         }
 
         [$outcome, $detail] = classify($page, $rows[1] ?? [], $paths['body']);

@@ -260,7 +260,29 @@ function writeJson(string $path, array $value): void
 }
 
 $case = readJson($state.'/case.json', []);
-$edges = ['-4' => $case['edge4'] ?? '203.0.113.50', '-6' => $case['edge6'] ?? '2001:db8::50'];
+
+// The attempt this invocation is making, read from the probe id every attempt carries. The preflight
+// traces and the login-page fetches carry none, so they are attempt 0.
+$attempt = 0;
+
+foreach ($argv as $argument) {
+    if (preg_match('/^X-Kitsune-Probe: [0-9a-f]+-(\d+)$/', $argument, $said) === 1) {
+        $attempt = (int) $said[1];
+    }
+}
+
+/*
+ * ⚠️ THIS MACHINE'S OWN ADDRESS CAN MOVE MID-RUN, AND THE HOST IS NOT WHAT CHANGED. curl opens a fresh
+ * connection per attempt, so a NAT/SNAT pool, a multi-homed or load-balanced egress, a CI runner or an
+ * RFC 4941 temporary IPv6 address can map a later attempt to a second public address. `moved_from` is the
+ * attempt at which this machine starts leaving from `moved4`/`moved6`: the trace, the bucket key and the
+ * entry the edge appends all move together, exactly as a real remapping does.
+ */
+$moved = isset($case['moved_from']) && $attempt >= (int) $case['moved_from'];
+$edges = [
+    '-4' => ($moved ? ($case['moved4'] ?? '') : '') ?: ($case['edge4'] ?? '203.0.113.50'),
+    '-6' => ($moved ? ($case['moved6'] ?? '') : '') ?: ($case['edge6'] ?? '2001:db8::50'),
+];
 
 // Split the argument list into transfer groups exactly as --next does.
 $groups = [[]];
@@ -1083,6 +1105,40 @@ it('voids an attempt that did not leave over the address family it was meant to'
 })->with([
     'an IPv4 local address on the -6 transfer' => ['192.168.1.9', 'did not leave over the family it was meant to'],
     'a mapped address' => ['::ffff:192.168.1.9', 'did not leave over the family it was meant to'],
+]);
+
+it('voids, and never fails, an attempt that left from an address other than the one its bucket is read under', function (array $case, string $check, string $named): void {
+    /*
+     * ⚠️ A LIMITATION OF THE OPERATOR'S MACHINE, REPORTED AS A FAULT OF THE SERVER — the one thing this
+     * family's own doctrine forbids. The labels are fixed before the window from two preflight traces, and
+     * curl opens a fresh connection per attempt: a NAT/SNAT pool, a multi-homed or load-balanced egress, a
+     * CI runner, or a second global or RFC 4941 temporary IPv6 address gives a later attempt a second
+     * public address. The host is sound in both worlds below.
+     *
+     * Over IPv4 the five-and-a-sixth split across two buckets, the sixth came back unthrottled, the bucket
+     * that WAS read still held exactly five — so neither the blind-store VOID nor the exactly-LIMIT VOID
+     * fired — and THR-1 FAILed "the login throttle does not hold on this host". Over IPv6 the second
+     * address's bucket read 0 and THR-2 FAILed "was not counted under its own address".
+     */
+    throttleCase($this->state, $case);
+
+    $run = throttleRun($this->dir, $this->family);
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and(throttleVerdict($run, $check))->toContain('VOID')
+        ->and(throttleVerdict($run, $check))->toContain($named)
+        ->and(throttleVerdict($run, $check))->not->toContain('FAIL')
+        // ⚠️ AND NO CHECK MAY BLAME THE HOST FOR IT. Asserting only this check's own verdict would pass a
+        // family that moved the accusation to the other one.
+        ->and($run->getOutput())->not->toContain('the login throttle does not hold on this host')
+        ->and($run->getOutput())->not->toContain('was not counted under its own address');
+})->with([
+    'this machine takes a second IPv4 address before the sixth attempt' => [
+        ['moved_from' => 6, 'moved4' => '203.0.113.77'], 'THR-1', 'attempt 6 left from [203.0.113.77]',
+    ],
+    'a second IPv6 source address answers for the second-address attempt' => [
+        ['moved_from' => 9, 'moved6' => '2001:db8::99'], 'THR-2', 'attempt 9 left from [2001:db8::99]',
+    ],
 ]);
 
 it('voids a forged entry that never arrived at nginx', function (array $case, string $named): void {
