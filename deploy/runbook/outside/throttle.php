@@ -1106,12 +1106,21 @@ function examine(string $host, string $nonce, string $payload, string $storeSour
         }
 
         if ($fails === [] && $stopped === '') {
-            if (bucket($post, 'v4') === 0) {
+            // ⚠️ THE UNTHROTTLED SIXTH IS JUDGED BEFORE THE EMPTY STORE, BECAUSE TOGETHER THEY ARE NOT
+            // AMBIGUOUS. A blind instrument cannot explain a sixth attempt that was answered like the first:
+            // had the host throttled and this merely read the wrong store, the sixth answer would still have
+            // been THROTTLED. Five rejections, a sixth rejection and an empty store is one world only — the
+            // limiter does not hold — and it is the state a limiter whose writes go nowhere produces, on a
+            // store `config` calls `file`, where the driver FAIL above cannot fire. Judged store-first, the
+            // loudest finding this family exists to make was reported as a fault of the runbook's own
+            // instrument: "the writes went somewhere this instrument did not look", about a host with no
+            // working login throttle at all.
+            if (! $throttled) {
+                $fails[] = 'the sixth attempt from one address was not throttled, and the store holds '
+                    .bucket($post, 'v4').' attempts for that address, so the login throttle does not hold on this host';
+            } elseif (bucket($post, 'v4') === 0) {
                 $voids[] = 'no bucket this run could have written holds anything: the store read finds 0 for the requester and 0 for every forged and loopback address, '
                     .'so the writes went somewhere this instrument did not look (another store, another prefix, or after they expired), which is unmeasurable';
-            } elseif (! $throttled) {
-                $fails[] = 'the sixth attempt from one address was not throttled, and the requester\'s own bucket holds '
-                    .bucket($post, 'v4').' attempts, so the login throttle does not hold on this host';
             } elseif (bucket($post, 'v4') !== LIMIT) {
                 $voids[] = 'the requester\'s bucket holds '.bucket($post, 'v4').' attempts rather than exactly '.LIMIT
                     .', so it is not only this run\'s writes and the sixth attempt cannot be attributed to them';

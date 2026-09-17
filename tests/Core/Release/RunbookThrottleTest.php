@@ -502,15 +502,22 @@ function update(string $state, array $case, string $hostname, string $path, stri
         $held = ['attempts' => 0, 'timer' => null];
     }
 
-    $throttled = $held['attempts'] >= 5 && $alive;
+    // ⚠️ A HOST WITH NO WORKING LOGIN THROTTLE AT ALL. `rateLimit()` dropped from a customised login page,
+    // or a limiter store whose writes silently go nowhere — a file cache on an unwritable path, a cache the
+    // release cannot reach. Nothing is counted and nothing is ever refused, while `config` still calls the
+    // store `file`, so the store-that-forgets FAIL cannot fire. This is the single most dangerous host
+    // state this family exists to find.
+    $counting = ($case['no_limiter'] ?? false) !== true;
+    $throttled = $counting && $held['attempts'] >= 5 && $alive;
 
     if (! $throttled) {
         // The limiter arms the timer on the bucket's FIRST hit and never refreshes it.
         $held['timer'] = $alive ? $held['timer'] : $now + 60;
         $held['attempts']++;
 
-        // A store that forgets between requests can never reach the limit.
-        if (($case['driver'] ?? 'file') !== 'array') {
+        // A store that forgets between requests can never reach the limit, and a limiter that was never
+        // called writes nothing at all.
+        if ($counting && ($case['driver'] ?? 'file') !== 'array') {
             $buckets[$key] = $held;
             writeJson($state.'/buckets.json', $buckets);
         }
@@ -903,6 +910,34 @@ it('fails a throttle that never engages, and names the store that forgets', func
         // ⚠️ AND IT LEFT THE OTHER HOSTNAMES ALONE. With no full bucket to meet, a probe against them would
         // measure nothing and lock another hostname's sign-in out for it.
         ->and(throttleVerdict($run, 'THR-1'))->not->toContain('answered a sign-in normally');
+});
+
+it('fails a host whose login throttle never engages, though its store persists', function (): void {
+    /*
+     * ⚠️ THE LOUDEST FINDING THIS FAMILY EXISTS TO MAKE, AND IT USED TO READ AS A FAULT OF THE RUNBOOK.
+     * `rateLimit()` dropped from a customised login page, or a limiter store whose writes silently go
+     * nowhere, answers every attempt like the first and leaves every labelled bucket at 0 — while the
+     * driver is an ordinary `file`, so the store-that-forgets FAIL cannot fire either.
+     *
+     * Judged store-first, that produced "the writes went somewhere this instrument did not look", which
+     * points the operator at the runbook's own instrument rather than at a host with no login throttle at
+     * all. The two observations are not ambiguous together: a blind reader cannot explain an unthrottled
+     * sixth attempt, because a host that throttled would have answered THROTTLED whichever store was read.
+     */
+    throttleCase($this->state, ['no_limiter' => true]);
+
+    $run = throttleRun($this->dir, $this->family);
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and(throttleVerdict($run, 'THR-1'))->toContain('FAIL')
+        ->and(throttleVerdict($run, 'THR-1'))->toContain('the sixth attempt from one address was not throttled')
+        ->and(throttleVerdict($run, 'THR-1'))->toContain('the login throttle does not hold on this host')
+        // ⚠️ AND NOT A WORD ABOUT THE INSTRUMENT. The blind-store reason is true of this run's store read
+        // and says nothing about why the host answered six attempts in a row.
+        ->and(throttleVerdict($run, 'THR-1'))->not->toContain('this instrument did not look')
+        // The five and the sixth were answered, and nothing was sent to the other hostnames: with no full
+        // bucket to meet, a probe against them would measure nothing and lock their sign-in out for it.
+        ->and(throttleAnswers($this->state))->toHaveCount(6);
 });
 
 it('fails a key that holds the session or the email as well as the address', function (string $key): void {
