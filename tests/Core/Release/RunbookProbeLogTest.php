@@ -45,6 +45,7 @@ beforeEach(function (): void {
     File::makeDirectory($this->dir.'/bin', 0755, true);
     File::makeDirectory($this->dir.'/confd', 0755, true);
     File::makeDirectory($this->dir.'/run', 0755, true);
+    File::makeDirectory($this->dir.'/proc', 0755, true);
 
     File::put($this->dir.'/run/nginx.pid', "1\n");
     File::put($this->dir.'/workers', "4242\n");
@@ -189,6 +190,13 @@ function probeRun(string $dir, string $common, string $instrument, array $args, 
         'KITSUNE_PROBE_DIR' => $dir.'/run/probe',
         'KITSUNE_NGINX_PID' => $dir.'/run/nginx.pid',
         'KITSUNE_DRAIN_PATIENCE' => '2',
+        // ⚠️ THE PROCESS TABLE IS A FIXTURE, NOT THE MACHINE'S. The drain asks whether each pre-reload
+        // worker is still alive, and this suite seeds worker 4242. Against the real /proc that is a
+        // claim about the runner: on macOS there is no /proc at all, so the wait never happened and its
+        // refusal went untested; on a Linux runner where something holds pid 4242, every start would
+        // wait out its patience and refuse. The directory below is empty, so the seeded worker is gone,
+        // which is what these cases mean; the drain case creates its pid under it.
+        'KITSUNE_PROC' => $dir.'/proc',
     ], $env));
 
     $process->setTimeout(60);
@@ -295,6 +303,23 @@ it('removes its own snippet when nginx will not reload', function (): void {
     expect($run->isSuccessful())->toBeFalse()
         ->and($run->getErrorOutput())->toContain('would not reload')
         ->and(is_file($this->dir.'/confd/kitsune-probe-'.$this->nonce.'.conf'))->toBeFalse();
+});
+
+it('refuses when a pre-reload worker outlives the runbook\'s patience, and leaves the probe for stop to remove', function (): void {
+    // The worker the reload was supposed to retire is still in the process table. A request it answered
+    // would have been served by a configuration that never had the probe, so the line could not be
+    // attributed to this run — which is a refusal, not a shrug.
+    File::makeDirectory($this->dir.'/proc/4242', 0755, true);
+
+    $run = probeRun($this->dir, $this->common, $this->instrument, ['start', $this->nonce]);
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and($run->getErrorOutput())->toContain('were still serving')
+        // ⚠️ AND THE SNIPPET STAYS. This refusal happens after the reload, so the server IS changed. The
+        // family that drove this instrument has to run stop regardless of what start returned, and its
+        // TUN-2 answers for what stop found — the case that used to report "nothing was installed" while
+        // the probe sat on the server until the dead-man timer fired.
+        ->and(is_file($this->dir.'/confd/kitsune-probe-'.$this->nonce.'.conf'))->toBeTrue();
 });
 
 it('will not install a probe it cannot guarantee to remove', function (): void {

@@ -55,13 +55,22 @@ nonce=${2:-}
 [[ -n "$action" ]] || refuse "probe-log.sh needs an action: start, collect or stop"
 [[ "$nonce" =~ ^[0-9a-f]{32}$ ]] || refuse "the nonce must be 32 hex characters, and it must come from the runbook rather than from this host"
 
-# ⚠️ THREE SEAMS, DECLARED, AND EACH DEFAULTS TO THE REAL THING. Everything else this instrument reads
+# ⚠️ FOUR SEAMS, DECLARED, AND EACH DEFAULTS TO THE REAL THING. Everything else this instrument reads
 # arrives from a command a test can stub on PATH; these are paths it WRITES, on a live server, and
 # nothing about start, collect or stop can be exercised off one without them. Same reason as relays.sh's
 # $proc: the alternative is an instrument whose only test is the production run.
+#
+# ⚠️ AND THE PROCESS TABLE IS THE FOURTH, for the reason relays.sh gives for its own: a test can stub
+# every command this instrument runs, but not the kernel's answer about a pid. Reading /proc directly
+# made the drain below untestable where there is no /proc — the wait never happens on macOS, so its
+# refusal was proven only in a Linux container — and, worse, made a test's own fixture pid a claim
+# about the machine: the suite seeds worker 4242, and on a Linux runner where some process happens to
+# hold that pid, every start would wait out its patience and then refuse. A fixture tree answers for
+# the fixture, on either platform.
 conf_dir=${KITSUNE_NGINX_CONF_D:-/etc/nginx/conf.d}
 run_dir=${KITSUNE_PROBE_DIR:-/run/kitsune-probe}
 pid_file=${KITSUNE_NGINX_PID:-/run/nginx.pid}
+proc=${KITSUNE_PROC:-/proc}
 
 conf="$conf_dir/kitsune-probe-$nonce.conf"
 dir="$run_dir"
@@ -150,7 +159,7 @@ CONF
     while (( waited < patience )); do
       still=""
       for pid in $before_workers; do
-        [[ -d "/proc/$pid" ]] && still="$still $pid"
+        [[ -d "$proc/$pid" ]] && still="$still $pid"
       done
       [[ -n "$still" ]] || break
       sleep 1
