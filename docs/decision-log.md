@@ -2625,7 +2625,7 @@ and MIT for its browser widget. So the question was never whether to build chat.
 
 ⚠️ **Commercial interest, disclosed per ADR-023.** Wayfindr is the maintainer's other product. This decision makes it
 Kitsune's only supported chat path, which is an adoption route into it, and the interests are not symmetric: KaaS could
-operate that second service for a tenant, while a self-hoster provisions a database server, queue, scheduler and
+operate that second service for an org, while a self-hoster provisions a database server, queue, scheduler and
 realtime server themselves — the asymmetry ADR-027 exists to watch, pointing the same way ADR-026 already discloses. It
 is decided anyway because building a second chat product is the worse engineering answer, and because the alternative
 that avoids the conflict — no chat at all — serves nobody. The asymmetry is named here rather than left to be found.
@@ -2637,11 +2637,13 @@ none of them. ADR-027's floor is untouched for an install that does not want cha
 second service rather than a second set of requirements.
 
 **It runs a published release, unmodified.** ⚠️ That rule is not satisfiable today and the gap is the schedule, not a
-detail: Wayfindr's only published release is `v0.7.0` (25 August 2026), and everything this integration needs — the API
-writes, the outbound webhooks, and the two upstream gaps named at the end — sits on unreleased `main`. Every claim in
-this ADR was read at `main` `13541b3d`, which is 817 commits past that tag. Until a release carries those contracts,
-there is nothing to integrate against, and running a fork instead would take on AGPL §13's source-offer duty for a
-service Kitsune's users reach over a network.
+detail, and it has two halves that must not be confused. **Built but unreleased:** the API writes and the outbound
+webhooks this module would call exist on `main` and are in no published release — Wayfindr's only one is `v0.7.0`
+(25 August 2026), which `main` is 817 commits past, and which predates both. **Not built anywhere:** signed visitor
+identity and per-subject erasure and export, the two gaps named at the end of this ADR. So waiting for a release is
+necessary and not sufficient: a release closes the first half, and upstream development has to close the second. Every
+claim here was read at `main` `13541b3d`. Running a fork in the meantime would take on AGPL §13's source-offer duty for
+a service Kitsune's users reach over a network.
 
 **`kitsune/support` will be the only Kitsune-side code**: a first-party module that links a Site to a Wayfindr site,
 puts the widget on that Site's public pages, mints the visitor identity, receives webhooks, and fans erasure and export
@@ -2755,15 +2757,19 @@ means no reader, not a guessed one.
 **A reader cannot reach a panel.** The reader guard is not a Filament guard, and `canAccessPanel()` stays a question
 only a panel user is ever asked.
 
-**One identity, org-wide; everything else per site.** A reader is one row in one org, so a publisher's seven brands are
-one account rather than seven, and consent, subscriptions, entitlements and profiles hang off it per site. The panel
-user is already org-wide in the same sense — `#[OrgScopedThroughPivot(table: 'org_user')]` — so this is that pattern
-applied to a second population, not a new one.
+**One identity per org, and everything else per site.** A reader is one row that belongs to exactly one org, so a
+publisher's brands are one account rather than one per brand, while consent, subscriptions, entitlements and profiles
+hang off it per site. That makes a reader `#[OrgScoped]`, carrying its own `org_id` — **not** the panel user's
+`#[OrgScopedThroughPivot]`, which exists because staff membership is many-to-many and one person may work for several
+orgs. A reader deliberately may not: an identity that spanned orgs would cross the customer boundary the attribute
+table calls the one with no safety net.
 
-⚠️ **One identity is not one session, and this ADR does not decide the session.** ADR-021 gives each Site its own
-hostname, and a session cookie does not cross hosts. "Manage every brand in one place" is therefore satisfied by a
-single account on a single preference-centre host; making the reader appear signed in on all seven brand hostnames is
-single sign-on, which is a separate decision with its own cost, and nothing here settles it.
+⚠️ **One identity is not automatically one session, and how far a session reaches depends on the URL strategy.**
+ADR-021 lets a Site be a path prefix, a subdomain or its own domain (`sites.url_strategy`). A cookie already spans
+path-prefixed Sites on one host, and sibling subdomains can share one set on the parent domain; only Sites on unrelated
+domains need anything more. So "manage every brand in one place" is satisfied outright for the first two shapes, and
+only the third raises single sign-on — a separate decision with its own cost, which this ADR does not make and which
+v1.1 should not build machinery for before it knows which shape an install uses.
 
 **Kitsune is not the customer record.** Where an audience platform is the custodian, Kitsune keeps its own internal
 identifier and that platform's customer id. Email is an attribute rather than the identity, because it changes on either
@@ -2776,7 +2782,7 @@ subject-access export and erasure tooling for v1.1, and the roadmap had omitted 
 back on it.
 
 ⚠️ **ADR-020's `pii_class` does not reach these columns, and pretending otherwise would be the failure this log keeps
-recording.** That classification lives on `field_storage` — a row the schema engine creates when a tenant defines a
+recording.** That classification lives on `field_storage` — a row the schema engine creates when an org defines a
 runtime field — and its fail-closed enforcement is over that table. A reader model supplied by the host has ordinary
 migration columns, which the mechanism cannot see. So the reader model records its own classification, in a form the
 erasure and export tooling can read, and whether that becomes an extension of `pii_class` or a second declaration is
