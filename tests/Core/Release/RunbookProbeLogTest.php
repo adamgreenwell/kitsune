@@ -109,6 +109,10 @@ function probeStubs(): array
         'systemctl' => <<<'BASH'
         #!/usr/bin/env bash
         d=$(dirname "$(dirname "$0")")
+        if [[ "${1:-}" == list-units && -e "$d/manager-unreachable" ]]; then
+          echo "Failed to list units: Failed to activate service 'org.freedesktop.systemd1': timed out" >&2
+          exit 1
+        fi
         if [[ "${1:-}" == list-units && -e "$d/timer-lives" ]]; then
           echo "kitsune-probe-ab12ab12ab12ab12ab12ab12ab12ab12.timer loaded active waiting"
         fi
@@ -460,6 +464,30 @@ it('says nothing of a probe is installed, and reloads nothing, when stop finds n
     expect($run->isSuccessful())->toBeTrue($run->getErrorOutput())
         ->and($run->getOutput())->toContain('STATE stop absent no snippet at '.$this->dir.'/confd/kitsune-probe-'.$this->nonce.'.conf')
         ->and($run->getOutput())->toContain('nothing of this probe was installed and nginx was not reloaded')
+        ->and((string) @file_get_contents($this->dir.'/nginx-calls'))->not->toContain('reload');
+});
+
+it('refuses to call a probe absent when the timer inventory could not be read at all', function (): void {
+    /*
+     * ⚠️ A FAILED QUERY IS NOT AN ANSWER OF NONE. The manager can fail to answer — D-Bus unavailable, the manager
+     * restarting — and it then prints nothing and exits non-zero, which discarded stderr and a trailing `|| true`
+     * turned into the same 0 an empty listing gives. Stop would have deleted the state and called the probe absent
+     * while a dead-man timer was still armed to reload nginx, which is the one case that changes the server later.
+     */
+    touch($this->dir.'/manager-unreachable');
+    // A start that reached the host wrote its baseline here, and a stop that cannot read the timer
+    // inventory must leave it: the operator needs it to finish the removal by hand.
+    File::makeDirectory($this->dir.'/run/probe', 0755, true);
+    File::put($this->dir.'/run/probe/'.$this->nonce.'.state.hash', "baseline\n");
+
+    $run = probeRun($this->dir, $this->common, $this->instrument, ['stop', $this->nonce]);
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and($run->getOutput())->not->toContain('STATE stop absent')
+        ->and($run->getErrorOutput())->toContain('whether kitsune-probe-'.$this->nonce.'.timer is still armed to reload nginx is unknown')
+        ->and($run->getErrorOutput())->toContain('Failed to list units')
+        // The state it could not judge is still there for the operator, and a live server was not reloaded.
+        ->and(is_file($this->dir.'/run/probe/'.$this->nonce.'.state.hash'))->toBeTrue()
         ->and((string) @file_get_contents($this->dir.'/nginx-calls'))->not->toContain('reload');
 });
 

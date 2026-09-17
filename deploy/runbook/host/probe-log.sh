@@ -242,7 +242,16 @@ CONF
     # for want of a baseline, and that refusal reads as a probe left behind on a server that never had one. So what
     # the server holds decides: the snippet, and the dead-man timer that would reload nginx later. Neither, and
     # there is nothing to remove and no reason to reload a live server.
-    armed=$(systemctl list-units --all "$unit.timer" --no-legend 2>/dev/null | grep -c "$unit" || true)
+    # ⚠️ AND A MANAGER THAT CANNOT ANSWER IS NOT AN ANSWER OF NONE. `systemctl list-units` lists units
+    # currently in memory, and a manager query that fails — D-Bus unavailable, the manager restarting,
+    # this host not running systemd at all — exits non-zero and prints nothing. Discarded stderr and a
+    # trailing `|| true` folded that into the same 0 a successful empty listing gives, and this branch
+    # then deleted the state and reported the probe absent while a dead-man timer could still be armed
+    # to reload nginx. The one case that must never be guessed is the one that changes the server later.
+    measure systemctl list-units --all "$unit.timer" --no-legend \
+      || refuse "the dead-man timer inventory could not be read, so whether $unit.timer is still armed to reload nginx is unknown, and this probe cannot be called absent: $MEASURED"
+
+    armed=$(grep -c "$unit" <<<"$MEASURED" || true)
 
     if [[ ! -e "$conf" ]] && (( armed == 0 )); then
       rm -f "$log" "$state".* 2>/dev/null || true
