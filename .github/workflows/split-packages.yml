@@ -5,12 +5,12 @@ name: Split packages
 # history. Contributions go through this monorepo; the mirrors take no pull requests.
 #
 # SETUP REQUIRED before this can run:
-#   1. Create the `kitsune-cms` GitHub organisation, then an EMPTY public repository `kitsune-cms/core`
+#   1. Create the `kitsunecms` GitHub organisation, then an EMPTY public repository `kitsunecms/core`
 #      inside it — no README, licence or .gitignore. The split is pushed without force, so a mirror with a
 #      commit of its own is refused rather than silently replaced; creating it empty is what lets the first
 #      release through.
 #   2. On THIS repository, add a secret ACCESS_TOKEN. Prefer a fine-grained PAT
-#      scoped to `kitsune-cms/core` alone with Contents: read and write — a
+#      scoped to `kitsunecms/core` alone with Contents: read and write — a
 #      classic `repo`-scope token grants write access to every repository the
 #      owner has, and this needs exactly one. Fine-grained tokens must be
 #      permitted in the org's settings; otherwise a classic PAT is the fallback.
@@ -81,5 +81,5 @@ jobs:
           SOURCE_SHA: ${{ github.sha }}
           PREFIX: packages/${{ matrix.package }}
           MAIN_REF: origin/main
-          REMOTE: https://x-access-token:${{ secrets.ACCESS_TOKEN }}@github.com/kitsune-cms/${{ matrix.repository }}.git
+          REMOTE: https://x-access-token:${{ secrets.ACCESS_TOKEN }}@github.com/kitsunecms/${{ matrix.repository }}.git
         run: bash .github/scripts/split-package.sh
