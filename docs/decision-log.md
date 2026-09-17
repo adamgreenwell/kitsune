@@ -2510,7 +2510,7 @@ configuration text kept passing hosts that still broke an item.
 
 ## ADR-035 — A release is built by one script both servers run, pinned to the commit stage rehearsed
 
-**Status:** Decided · 2026-09-15
+**Status:** Decided · 2026-09-15 · **Amended 2026-09-17** — the path repository's stated reason expired when `kitsune/core` was published; the decision did not, and the reason that always mattered is now written down
 
 Stage rehearses alpha (#111). Stage is an Ubuntu VM with a zero-downtime layout built by hand; alpha is a Laravel Forge
 site with zero-downtime deployments. If the two servers built a release differently, a green stage deploy would say
