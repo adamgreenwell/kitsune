@@ -304,10 +304,15 @@ number='^(0|[1-9][0-9]*)$'
 # Every verdict a family's stream gave one check, as "FAIL: <reason> | PASS: <reason>", wherever on its line it
 # starts. `-a` throughout: a stray NUL anywhere in a stream makes grep call the file binary and match nothing
 # line by line.
+#
+# ⚠️ AND THE NULs GO BEFORE awk SEES THEM. macOS awk ends a record at the first NUL, so a verdict glued after
+# NUL-separated output — `cat /proc/<pid>/cmdline` left uncaptured, which the sshd family will read — matched
+# nothing here: the family was voided for the glue, and the FAIL it had measured was shown nowhere at all.
 reported() {
   local id=$1 file=$2
 
   { grep -aE "VERDICT $id (PASS|FAIL|VOID) " "$file" || true; } |
+    tr '\000' ' ' |
     awk -v verdict="VERDICT $id (PASS|FAIL|VOID) " 'match($0, verdict) {
       printf "%s%s%s: %s", sep, substr($0, RSTART + RLENGTH - 5, 4), (RSTART > 1 ? ", after other output on its line" : ""), substr($0, RSTART + RLENGTH)
       sep = " | "

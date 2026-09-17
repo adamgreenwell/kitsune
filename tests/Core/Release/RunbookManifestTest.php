@@ -1054,6 +1054,14 @@ it('shows a verdict glued onto the family\'s own unterminated output, and says i
         verdict G-1 FAIL "the API answered 403 to a forged header"
         verdict G-2 PASS "login is limited"
         BASH, 'line 1', 'FAIL, after other output on its line: the API answered 403 to a forged header'],
+    // ⚠️ A NUL BEFORE THE GLUED VERDICT. macOS awk ends the record at it, so the FAIL that arrived was reported
+    // nowhere, while the glue check still voided the family — "could not be measured" over a measurement.
+    'glued onto NUL-separated output' => [<<<'BASH'
+        family glue G-1 G-2
+        printf 'nginx: master process\000/usr/sbin/nginx\000-g\000daemon on;\000'
+        verdict G-1 FAIL "the API answered 403 to a forged header"
+        verdict G-2 PASS "login is limited"
+        BASH, 'line 1', 'FAIL, after other output on its line: the API answered 403 to a forged header'],
     'glued onto the sentinel' => [<<<'BASH'
         family glue G-1 G-2
         verdict G-1 FAIL "the API answered 403 to a forged header"
