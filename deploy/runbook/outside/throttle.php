@@ -123,6 +123,20 @@ function maxWait(): int
 }
 
 /**
+ * How long a hit keeps a bucket alive: `WithRateLimiting::rateLimit()` takes the default 60 seconds, and
+ * `RateLimiter::increment()` gives the count that decay as well as the `:timer` beside it — which is why a
+ * counter whose timer is gone still expires on its own, and why waiting a whole decay out clears it.
+ *
+ * A seam for the same reason the two above are: the only other way to exercise a wait is a real minute.
+ */
+function decay(): int
+{
+    $seam = getenv('KITSUNE_THROTTLE_DECAY');
+
+    return is_string($seam) && preg_match('/^\d+$/', $seam) === 1 ? (int) $seam : 60;
+}
+
+/**
  * The running configuration, as words: every directive and every block, with quoting and comments already
  * accounted for.
  *
@@ -1026,15 +1040,58 @@ function examine(string $host, string $nonce, string $payload, string $storeSour
     }
 
     if ($dirty !== []) {
-        $timers = array_filter(array_map(static fn (array $read): mixed => $read['timer'] ?? null, $pre['buckets']), 'is_int');
-        $wait = $timers === [] ? 0 : max($timers) - (int) ($pre['store']['now'] ?? 0) + 2;
+        /*
+         * ⚠️ THE TIMERS THAT DECIDE THE WAIT ARE THE DIRTY BUCKETS' OWN. This took the latest timer of
+         * EVERY label, so an unrelated bucket decided how long to wait for one that was in the way — and a
+         * clean bucket carrying a long timer is ordinary, not exotic: `tooManyAttempts()` forgets the
+         * COUNT of a full bucket whose timer has gone and leaves `:timer` behind it. A run that a
+         * six-second wait would have measured cleanly was refused outright, with a statement about the
+         * dirty bucket that its own timer, in the same store read, contradicted.
+         *
+         * ⚠️ AND A BUCKET WITH NO TIMER IS NOT A BUCKET THAT OUTLIVES US. `RateLimiter::increment()` adds
+         * the count with the same decay it adds `:timer` with, so a counter whose timer has been evicted
+         * still expires on its own within that decay — we simply cannot see how much of it is left. It was
+         * reported as a bucket that "does not expire within 65s", which sends an operator after a wedged
+         * cache on a host that is fine; the honest answer is to wait the whole decay out. The instrument
+         * reports that state deliberately (`timer` null, never 0) and the post-window audit already
+         * branches on it: this was the one place that threw the distinction away.
+         */
+        $timers = [];
+        $timerless = [];
 
-        if ($wait <= 0 || $wait > maxWait()) {
+        foreach (array_keys($labels) as $label) {
+            if (bucket($pre, $label) <= 0) {
+                continue;
+            }
+
+            $held = $pre['buckets'][$label]['timer'] ?? null;
+
+            if (is_int($held)) {
+                $timers[] = $held;
+            } else {
+                $timerless[] = $label;
+            }
+        }
+
+        $wait = $timerless === [] ? 0 : decay() + 2;
+
+        if ($timers !== []) {
+            $wait = max($wait, max($timers) - (int) ($pre['store']['now'] ?? 0) + 2);
+        }
+
+        if ($wait > maxWait()) {
             return $both('a login bucket was already filled before this run began ('.implode(', ', $dirty)
                 .') and it does not expire within '.maxWait().'s, so nothing this run wrote could be told from it');
         }
 
-        record('THR-1', 'waiting '.$wait.'s for a bucket this run did not fill to expire ('.implode(', ', $dirty).')');
+        if ($wait <= 0) {
+            return $both('a login bucket was already filled before this run began ('.implode(', ', $dirty)
+                .') and its timer had already passed when the store was read, so nothing this run wrote could be told from it');
+        }
+
+        record('THR-1', 'waiting '.$wait.'s for a bucket this run did not fill to expire ('.implode(', ', $dirty)
+            .($timerless === [] ? '' : '; ['.implode(', ', $timerless).'] carries no timer, so the counter\'s own '
+                .decay().'-second decay is waited out instead').')');
         sleep($wait);
 
         [$pre, $unreadable] = storeRead($host, $owner, $base, $labels, $component, $storeSource);
@@ -1081,8 +1138,8 @@ function examine(string $host, string $nonce, string $payload, string $storeSour
         };
 
         if ($elapsed() > windowGuard()) {
-            return $unmeasured(sprintf('%s: attempt %d was not sent, because %.0fs of the 60-second window had already gone',
-                $hostname, $number, $elapsed()));
+            return $unmeasured(sprintf('%s: attempt %d was not sent, because %.0fs of the %d-second window had already gone',
+                $hostname, $number, $elapsed(), decay()));
         }
 
         $probeId = $nonce.'-'.$number;
@@ -1245,12 +1302,13 @@ function examine(string $host, string $nonce, string $payload, string $storeSour
         if ($stopped !== '') {
             // No window was opened, and the reason is already recorded: the timer says nothing here.
         } elseif (! is_int($timer)) {
-            $voids[] = 'the requester\'s bucket carries no timer after the window, so the 60 seconds this measured were not the ones the host armed';
+            $voids[] = 'the requester\'s bucket carries no timer after the window, so the '.decay()
+                .' seconds this measured were not the ones the host armed';
         } elseif ($now >= $timer) {
-            $voids[] = 'the 60-second window had already closed when the store was read, so what it holds is not what this run wrote';
-        } elseif (($now - ($timer - 60)) > $elapsed() + 5) {
+            $voids[] = 'the '.decay().'-second window had already closed when the store was read, so what it holds is not what this run wrote';
+        } elseif (($now - ($timer - decay())) > $elapsed() + 5) {
             $voids[] = sprintf('the requester\'s bucket was first hit %ds before the store was read, and this run began %.0fs before it, so the bucket it read was already running',
-                $now - ($timer - 60), $elapsed());
+                $now - ($timer - decay()), $elapsed());
         }
 
         foreach ($labels as $label => $address) {

@@ -148,11 +148,24 @@ function throttleCase(string $state, array $case): void
     File::put($state.'/case.json', (string) json_encode($case, JSON_PRETTY_PRINT));
 }
 
-/** Seed a bucket that this run did not fill, as an earlier run or a co-tenant of the egress would. */
-function throttleBucket(string $state, string $address, int $attempts, int $expiresIn): void
+/**
+ * Seed a bucket that this run did not fill, as an earlier run or a co-tenant of the egress would.
+ *
+ * ⚠️ TWO EXPIRIES, BECAUSE THE LIMITER KEEPS TWO KEYS. `RateLimiter::increment()` adds the COUNT with the
+ * same decay it adds `:timer` with, so the two normally go together — but the timer can be evicted first
+ * (ordinary LRU on redis or memcached, a narrow race on a file store), and the count then survives with its
+ * own decay left to run. That is the state the instrument reports as `timer: null`, deliberately rather
+ * than as a 0, and `$countedFor` is how long the count itself has left: a fixture where a timerless bucket
+ * lived forever would be a model of a host that cannot exist.
+ */
+function throttleBucket(string $state, string $address, int $attempts, ?int $expiresIn, ?int $countedFor = null): void
 {
     $buckets = json_decode((string) @file_get_contents($state.'/buckets.json'), true) ?: [];
-    $buckets[$address] = ['attempts' => $attempts, 'timer' => time() + $expiresIn];
+    $buckets[$address] = [
+        'attempts' => $attempts,
+        'timer' => $expiresIn === null ? null : time() + $expiresIn,
+        'counted_until' => time() + ($countedFor ?? $expiresIn ?? 0),
+    ];
 
     File::put($state.'/buckets.json', (string) json_encode($buckets, JSON_PRETTY_PRINT));
 }
@@ -764,9 +777,14 @@ if (str_contains($arguments, 'php -d display_errors=stderr')) {
         // store, a wrong prefix or a read after the window all look exactly like this from outside.
         $held = (($case['store_blind'] ?? false) === true || $asked !== $serves) ? null : ($buckets[$address] ?? null);
 
-        // An entry whose timer has passed is gone: a cache with a TTL forgets it, and a store that kept
-        // handing it back would make the family's bounded wait one it could never come out of.
-        if (is_array($held) && is_int($held['timer'] ?? null) && $held['timer'] <= time()) {
+        // An entry whose decay has passed is gone: a cache with a TTL forgets it, and a store that kept
+        // handing it back would make the family's bounded wait one it could never come out of. The COUNT
+        // carries that decay of its own — `RateLimiter::increment()` adds it with the same TTL as the
+        // `:timer` — so a bucket whose timer was evicted early still goes on its own, and a fixture is free
+        // to say when.
+        $expires = is_array($held) ? ($held['counted_until'] ?? $held['timer'] ?? null) : null;
+
+        if (is_int($expires) && $expires <= time()) {
             $held = null;
         }
 
@@ -1324,6 +1342,49 @@ it('waits out a bucket that is about to expire, and then measures', function ():
     expect($run->isSuccessful())->toBeTrue($run->getOutput().$run->getErrorOutput())
         ->and($run->getOutput())->toContain('for a bucket this run did not fill to expire (v4 at 5)')
         ->and(throttleVerdict($run, 'THR-1'))->toContain('PASS')
+        ->and((int) File::get($this->state.'/store-reads'))->toBe(3);
+});
+
+it('waits out a dirty bucket whose timer is gone, rather than calling it one that will not expire', function (): void {
+    /*
+     * ⚠️ A COUNT WITH NO TIMER IS NOT A COUNT THAT OUTLIVES THE RUN. `RateLimiter::increment()` adds the
+     * count with the same decay it adds `:timer` with, so a bucket whose timer was evicted first — ordinary
+     * LRU on redis or memcached — still clears within that decay; what cannot be seen is how much is left.
+     * This was reported as a bucket that "does not expire within 65s", which sends an operator after a
+     * wedged cache on a host that is fine, and nothing was waited out or measured. The instrument goes out
+     * of its way to report the state (`timer` null, never 0) and the post-window audit already branches on
+     * it; the pre-window wait was the one place that folded it into "does not expire".
+     */
+    throttleBucket($this->state, '203.0.113.50', 3, null, 3);
+
+    $run = throttleRun($this->dir, $this->family, 'tunnel', ['KITSUNE_THROTTLE_DECAY' => '3']);
+
+    expect($run->isSuccessful())->toBeTrue($run->getOutput().$run->getErrorOutput())
+        ->and($run->getOutput())->toContain('waiting 5s for a bucket this run did not fill to expire '
+            ."(v4 at 3; [v4] carries no timer, so the counter's own 3-second decay is waited out instead)")
+        ->and($run->getOutput())->not->toContain('does not expire within')
+        ->and(throttleVerdict($run, 'THR-1'))->toContain('PASS')
+        ->and((int) File::get($this->state.'/store-reads'))->toBe(3);
+});
+
+it('waits for the bucket that is in the way, not for one that is not', function (): void {
+    /*
+     * ⚠️ AND AN UNRELATED BUCKET DECIDED HOW LONG TO WAIT. The wait took the latest timer of EVERY label,
+     * so a clean bucket carrying a long one refused a run that six seconds would have measured — and a
+     * clean bucket with a live timer is what the limiter itself leaves behind: `tooManyAttempts()` forgets
+     * the COUNT of a full bucket whose timer has gone and leaves `:timer` in place. The dirty bucket's own
+     * timer, in the same store read, said six seconds.
+     */
+    throttleBucket($this->state, '203.0.113.50', 2, 4);
+    throttleBucket($this->state, '127.0.0.1', 0, 600);
+
+    $run = throttleRun($this->dir, $this->family);
+
+    expect($run->isSuccessful())->toBeTrue($run->getOutput().$run->getErrorOutput())
+        ->and($run->getOutput())->toContain('for a bucket this run did not fill to expire (v4 at 2)')
+        ->and($run->getOutput())->not->toContain('does not expire within')
+        ->and(throttleVerdict($run, 'THR-1'))->toContain('PASS')
+        ->and(throttleVerdict($run, 'THR-2'))->toContain('PASS')
         ->and((int) File::get($this->state.'/store-reads'))->toBe(3);
 });
 
