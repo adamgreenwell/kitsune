@@ -12,8 +12,8 @@
 # point: PASS, FAIL, and VOID — "this could not be measured". A host that cannot be measured must
 # never read as a host that is correct, so run.sh exits non-zero on a VOID exactly as it does on a
 # FAIL. An exit status cannot carry that, and a check that measures a failing command still has more
-# to report, so the verdicts go to stdout, one line each, and the exit status only says whether the
-# script itself survived.
+# to report, so the verdicts go to the family's stdout, one line each, and the exit status only says
+# whether the script itself survived.
 #
 #   VERDICT <check-id> PASS|FAIL|VOID <reason>
 #   RECORD  <check-id> <fact>                      (never a verdict: evidence for the report)
@@ -60,12 +60,16 @@ KITSUNE_REFUSED=""
 # Now the stream says `REFUSED`, which voids the whole family, and is never closed, so even a gate that
 # ignored that line would void it as a stream with no sentinel. An instrument opens no family and has no
 # verdict stream, so it refuses on stderr alone.
+#
+# ⚠️ AND THE LINE REACHES THE STREAM FROM INSIDE A CAPTURE, where the sentinel cannot be withheld: a refusal
+# in `$(…)` or a pipeline exits only that subshell. It is written to descriptor 3 (see family), and run.sh
+# voids a stream that carries a refusal and still closes.
 refuse() {
   echo "Refusing to check: $*" >&2
 
   if [[ -n "$KITSUNE_FAMILY" ]]; then
     KITSUNE_REFUSED=1
-    printf 'REFUSED %s %s\n' "$KITSUNE_FAMILY" "$(kitsune_one_line "$*")"
+    printf 'REFUSED %s %s\n' "$KITSUNE_FAMILY" "$(kitsune_one_line "$*")" >&3
   fi
 
   exit 1
@@ -73,8 +77,20 @@ refuse() {
 
 # Open a family. Every id it may emit is declared here, so the sentinel can be checked against the
 # promise rather than against whatever happened to be printed.
+#
+# ⚠️ AND THE STREAM IS PINNED HERE, TO DESCRIPTOR 3, WHERE EVERY LINE OF THE PROTOCOL IS WRITTEN. These helpers
+# printed to whatever stdout was current, and `$(…)` captures that. So in `local site=$(pick_site)`, a
+# pick_site that refused put its REFUSED line into $site, `local` masked the exit, the parent's sentinel was
+# not withheld, and the run passed. A verdict inside a capture vanished the same way, leaving a later verdict
+# for its check to stand alone. Descriptor 3 stays the stream whatever a subshell, a pipeline or a capture
+# does with stdout, so the line arrives, and a verdict the tally never counted is caught by run.sh's count.
+#
+# ⚠️ A JOB THAT MAY OUTLIVE THE FAMILY GIVES DESCRIPTOR 3 UP. Every child inherits it, and the session does not
+# end while anything holds it: a background job that is killed rather than waited on, or a child that stays
+# running, closes it with `3>&-`, as relays.sh's traffic driver does. A family uses 3 for nothing else.
 family() {
   [[ -n "${1:-}" ]] || refuse "family needs a name"
+  exec 3>&1
   KITSUNE_FAMILY=$1
   shift
   KITSUNE_EXPECTED="$*"
@@ -110,7 +126,7 @@ kitsune_sentinel() {
   # The accumulator grows by prepending a space, which is an implementation detail no parser should
   # have to know: the sentinel prints the ids with exactly one space between them.
   if [[ -z "$KITSUNE_REFUSED" ]]; then
-    printf 'SENTINEL %s %d %s\n' "$KITSUNE_FAMILY" "$count" "${KITSUNE_EMITTED# }"
+    printf 'SENTINEL %s %d %s\n' "$KITSUNE_FAMILY" "$count" "${KITSUNE_EMITTED# }" >&3
   fi
 
   exit "$status"
@@ -152,7 +168,7 @@ verdict() {
     *) KITSUNE_EMITTED="$KITSUNE_EMITTED $id" ;;
   esac
 
-  printf 'VERDICT %s %s %s\n' "$id" "$outcome" "$(kitsune_one_line "$*")"
+  printf 'VERDICT %s %s %s\n' "$id" "$outcome" "$(kitsune_one_line "$*")" >&3
 }
 
 # Evidence that is not a verdict. It reaches the report and never the exit status.
@@ -160,7 +176,7 @@ record() {
   local id=$1
   shift
 
-  printf 'RECORD %s %s\n' "$id" "$(kitsune_one_line "$*")"
+  printf 'RECORD %s %s\n' "$id" "$(kitsune_one_line "$*")" >&3
 }
 
 # ⚠️ THE ONLY WAY A CHECK RUNS A COMMAND. It captures stdout and the status, so a non-zero status is

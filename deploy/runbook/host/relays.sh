@@ -114,7 +114,9 @@ else
   deadline=$((SECONDS + window))
 
   if [[ "$topology" == tunnel ]]; then
-    ( while (( SECONDS < deadline )); do curl -s -o /dev/null --max-time 3 "https://$site/up" || true; done ) >/dev/null 2>&1 &
+    # Descriptor 3 is the verdict stream (common.sh's family), and a curl still running when this is killed
+    # would hold the session open until its own timeout.
+    ( while (( SECONDS < deadline )); do curl -s -o /dev/null --max-time 3 "https://$site/up" || true; done ) >/dev/null 2>&1 3>&- &
     driver=$!
   else
     driver=""

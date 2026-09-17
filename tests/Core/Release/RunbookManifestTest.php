@@ -718,6 +718,74 @@ it('voids a family whose stream carries a refusal, even when it closes as if not
         ->and($run->getOutput())->not->toContain('PASS  R-1');
 });
 
+it('carries a refusal out of a capture whose status is masked, where the run used to pass', function (string $body): void {
+    /*
+     * ⚠️ EXIT 0, AND THE REFUSAL NOWHERE BUT STDERR. refuse() printed to whatever stdout was current, so inside `$(…)`
+     * the REFUSED line became the value captured, and inside a pipeline whose output was thrown away it went with it.
+     * The subshell's exit was masked, the parent never learned of the refusal, and its sentinel closed a stream that
+     * added up. The shapes are a helper called as `local site=$(pick_site)` in a family written with main(), and a
+     * loop piped into `head`.
+     */
+    runbookManifest($this->runbook, "tunnel fa FA-1\ntunnel fa FA-2\n");
+    runbookFamily($this->runbook, 'fa', $body);
+
+    $run = runbookRun($this->dir);
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and($run->getOutput())->toContain('VOID  FA-1 (fa) — the family refused to check (no server_name to drive traffic through)')
+        ->and($run->getOutput())->toContain('VOID  FA-2 (fa) — the family refused to check (no server_name to drive traffic through)')
+        ->and($run->getOutput())->not->toContain('Every promised check passed.')
+        ->and(glob($this->dir.'/tmp/kitsune-runbook.*') ?: [])->toHaveCount(1);
+})->with([
+    'in $(…), its status masked by local' => [<<<'BASH'
+        pick_site() {
+          refuse "no server_name to drive traffic through"
+        }
+
+        main() {
+          family fa FA-1 FA-2
+          verdict FA-1 PASS ok
+          local site=$(pick_site)
+          verdict FA-2 PASS ok
+        }
+
+        main
+        BASH],
+    'in a pipeline whose output is discarded' => [<<<'BASH'
+        family fa FA-1 FA-2
+        verdict FA-1 PASS ok
+        printf 'a\n' | while read -r _; do refuse "no server_name to drive traffic through"; done | head -1 >/dev/null || true
+        verdict FA-2 PASS ok
+        BASH],
+]);
+
+it('carries a verdict out of a capture, so the count sees the verdict its tally missed', function (): void {
+    /*
+     * ⚠️ EXIT 0 OVER A FAIL. A helper that reports a verdict and prints a value, called as `$(…)`: its FAIL became part of
+     * the captured value, the subshell's tally was thrown away, and the main shell's PASS for the same check was the only
+     * verdict in the stream. Now the FAIL arrives, and the stream holds two verdicts for a tally of one.
+     */
+    runbookManifest($this->runbook, "tunnel fa FA-1\n");
+    runbookFamily($this->runbook, 'fa', <<<'BASH'
+    first_site() {
+      verdict FA-1 FAIL "a relay dials the web server"
+      echo stage.example
+    }
+
+    family fa FA-1
+    site=$(first_site)
+    [[ -n "$site" ]]
+    verdict FA-1 PASS "no relay dials the web server"
+    BASH);
+
+    $run = runbookRun($this->dir);
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and($run->getOutput())->toContain('VOID  FA-1 (fa) — the family printed 2 verdicts and its sentinel counts 1: it printed more verdicts than its own tally counted for FA-1')
+        ->and($run->getOutput())->toContain('for this check it reported FAIL: a relay dials the web server | PASS: no relay dials the web server')
+        ->and($run->getOutput())->not->toContain('PASS  FA-1');
+});
+
 it('voids a family whose refusal gave no reason, where the run used to pass', function (string $body): void {
     /*
      * ⚠️ EXIT 0, AND THE EVIDENCE DELETED. The gate found a refusal by its reason text, so a refusal with none was not
