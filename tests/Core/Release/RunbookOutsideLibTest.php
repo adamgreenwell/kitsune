@@ -344,6 +344,37 @@ it('reads a block whose brace abuts its own name', function (): void {
     expect($read['served'])->toBe(['a.test']);
 });
 
+it('reads a block whose brace abuts an argument, and not only one that abuts a block name', function (): void {
+    /*
+     * ⚠️ A SWALLOWED `{` LEAVES ITS `}` TO CLOSE SOMETHING ELSE, AND THE DAMAGE LANDS ON A LATER HOST.
+     * Allowing an abutting brace only after a block directive that takes no argument — `server{` — is close
+     * to nginx but not nginx: `location /assets{` and `upstream app{` open blocks too. Read that way, this
+     * dump's location never opens, its `}` closes the server instead, and `root` then lands outside every
+     * server block, where it is read as the root they all inherit. The redirect vhost below inherits it, is
+     * called an application, and TUN-1 asks it what answered — the exact verdict this branch exists to
+     * remove, reintroduced through the tokenizer rather than through the rule.
+     */
+    $read = runbookSiteReading($this->dir, <<<'CONF'
+    server {
+        listen 443 ssl;
+        server_name a.test;
+        location /assets{
+            alias /srv/assets;
+        }
+        root /srv/a/public;
+    }
+    server {
+        listen 443 ssl;
+        server_name redirect.test;
+        return 301 https://a.test$request_uri;
+    }
+    CONF);
+
+    expect($read['served'])->toBe(['a.test'])
+        ->and($read['named'])->toBe(['a.test' => ['/srv/a/public'], 'redirect.test' => []])
+        ->and($read['rootless'])->toBe(['[redirect.test] has no root ending in /public that an https request for it would use (it would use none)']);
+});
+
 it('takes a root the block inherits when it declares none of its own', function (string $dump): void {
     /*
      * ⚠️ nginx RESOLVES `root` FROM THE LOCATION, THEN THE SERVER, THEN http — so a site that declares it in

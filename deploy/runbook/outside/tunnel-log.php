@@ -313,12 +313,6 @@ function literalHostname(string $name): bool
 }
 
 /**
- * The block directives nginx opens with no argument between the name and the brace, which are therefore the
- * only ones whose brace can abut the name (nginxTokens).
- */
-const NGINX_BLOCKS_WITHOUT_ARGUMENTS = ['events', 'http', 'mail', 'server', 'stream', 'types'];
-
-/**
  * The running configuration, as words: every directive and every block, with quoting and comments already
  * accounted for.
  *
@@ -329,15 +323,17 @@ const NGINX_BLOCKS_WITHOUT_ARGUMENTS = ['events', 'http', 'mail', 'server', 'str
  * a brace counter that did not know about quotes would close the http block in the middle of a string and
  * read every server after it as nested. So quotes come first, then comments, then the punctuation.
  *
- * ⚠️ AND A BRACE OR A `#` INSIDE A WORD IS A CHARACTER, NOT PUNCTUATION — WHICH IS WHERE THIS DROPPED A WHOLE
- * DIRECTIVE. `root /sites/${host}/public;`, which nginx accepts, and a quoted `server_name "~^www\d{1,3}\.x$"`
- * both carry braces in the middle of a word; read as a block, the words before the brace went into a `{` token
- * that siteRoots() does not look at, and everything the directive said — the root, or a literal hostname
- * declared beside the regex — was gone. Silently: no request was made to that hostname, no RECORD named it,
- * and TUN-1 passed on the hostnames that survived. So `{`, `}` and `#` are read where nginx reads them, at the
- * start of a word. The exception is a block directive that takes no argument, whose brace may abut its name
- * (`server{`), and that is what the list above is for. An unquoted brace regex is not a case: nginx documents
- * that such a regex must be quoted, and a configuration nginx refuses to load is not one `nginx -T` can dump.
+ * ⚠️ AND THE PUNCTUATION RULES ARE nginx'S OWN, NOT A GUESS AT THEM — WHICH IS WHERE THIS DROPPED A WHOLE
+ * DIRECTIVE. `root /sites/${host}/public;`, which nginx accepts, carries braces in the middle of a word; read
+ * as a block, the words before the brace went into a `{` token that siteRoots() does not look at, and
+ * everything the directive said was gone. Silently: no request was made to that hostname, no RECORD named it,
+ * and TUN-1 passed on the hostnames that survived. So each character is read where ngx_conf_read_token reads
+ * it: `{` opens a block wherever it falls UNLESS it follows a `$`, which is the one place nginx keeps it in
+ * the word; `}` and `#` are punctuation only at the start of a word. Guessing instead that a brace may abut
+ * only a block name that takes no argument — `server{` — was close but not nginx: `location /assets{` and
+ * `upstream app{` are blocks nginx opens and that reading swallowed, leaving a `}` with no `{` and every
+ * depth after it out by one. An unquoted brace regex is not a case either way: nginx documents that such a
+ * regex must be quoted, and a configuration nginx refuses to load is not one `nginx -T` can dump.
  *
  * @return list<array{0: string, 1: list<string>}> the terminator, and the words before it
  */
@@ -368,8 +364,8 @@ function nginxTokens(string $dump): array
             continue;
         }
 
-        // Where a word begins, and so where nginx's own reader takes a character for punctuation.
-        $begins = $word === '' || ($char === '{' && $words === [] && in_array($word, NGINX_BLOCKS_WITHOUT_ARGUMENTS, true));
+        // Where a word begins, and so where nginx's own reader takes `}` or `#` for punctuation.
+        $begins = $word === '';
 
         if ($begins && $char === '#') {
             while ($at < $length && $dump[$at] !== "\n") {
@@ -388,7 +384,9 @@ function nginxTokens(string $dump): array
             continue;
         }
 
-        if ($char === ';' || ($begins && ($char === '{' || $char === '}'))) {
+        // `$` is the one thing that keeps a brace in the word, because `${name}` is how nginx spells a
+        // variable whose name would otherwise run into the text beside it.
+        if ($char === ';' || ($char === '{' && ! str_ends_with($word, '$')) || ($begins && $char === '}')) {
             if ($word !== '') {
                 $words[] = $word;
                 $word = '';
