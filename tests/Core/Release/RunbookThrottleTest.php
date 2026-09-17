@@ -581,8 +581,11 @@ function probe(string $state, array $case, callable $header, string $hostname, s
         'upstream_addr' => $case['upstream'] ?? 'unix:/run/php/php8.5-fpm.sock',
         'upstream_status' => $status,
         // The edge appends what it saw to whatever arrived, which is what makes "the last entry" mean
-        // something. A case can rewrite it, as Cloudflare's own transforms do.
-        'xff' => $case['xff'] ?? ($forwarded === '' ? $edge : $forwarded.', '.$edge),
+        // something. A case can rewrite it, as Cloudflare's own transforms do, and `hop` is a forwarding
+        // hop on the OPERATOR's side of the edge — a corporate egress proxy, a CI runner's outbound proxy
+        // — which is in every chain that reaches nginx and is not a forgery this run planted.
+        'xff' => $case['xff'] ?? trim(($forwarded === '' ? '' : $forwarded.', ')
+            .(($case['hop'] ?? '') !== '' ? $case['hop'].', ' : '').$edge),
         'cf_connecting_ip' => $edge,
         'cf_ray' => 'a3bb0208bab4efad-CMH',
         'probe' => $id,
@@ -1106,6 +1109,50 @@ it('voids an attempt that did not leave over the address family it was meant to'
     'an IPv4 local address on the -6 transfer' => ['192.168.1.9', 'did not leave over the family it was meant to'],
     'a mapped address' => ['::ffff:192.168.1.9', 'did not leave over the family it was meant to'],
 ]);
+
+it('passes a host reached through a forwarding hop on the operator\'s own side of the edge', function (): void {
+    /*
+     * ⚠️ A HOP IN THE OPERATOR'S OWN PATH IS NOT A FORGERY THIS RUN PLANTED. A corporate egress proxy or a
+     * CI runner's outbound proxy puts a second entry in every chain that reaches nginx. The rule "an
+     * attempt sent with no forged entry must arrive with no more than one entry" read those as this run's
+     * own forgeries — and voided THR-1, whose six attempts were untouched by it, for the two attempts that
+     * were THR-2's. What has to hold is that none of the values THIS RUN plants arrived, and that the
+     * edge's own entry is still the last one.
+     */
+    throttleCase($this->state, ['hop' => '198.51.100.200']);
+
+    $run = throttleRun($this->dir, $this->family);
+
+    expect($run->isSuccessful())->toBeTrue($run->getOutput().$run->getErrorOutput())
+        ->and(throttleVerdict($run, 'THR-1'))->toContain('PASS')
+        ->and(throttleVerdict($run, 'THR-2'))->toContain('PASS')
+        // ⚠️ AND THE HOP REALLY WAS THERE. Without this the case could pass by not happening: the chain
+        // nginx logged carries it on a forged attempt and on an unforged one alike.
+        ->and($run->getOutput())->toContain('xff [192.0.2.1, 198.51.100.200, 203.0.113.50]')
+        ->and($run->getOutput())->toContain('xff [198.51.100.200, 203.0.113.50]');
+});
+
+it('voids the second address, and leaves THR-1 alone, when the address that arrived is not the one the edge named', function (): void {
+    /*
+     * ⚠️ CLOUDFLARE'S PSEUDO IPv4 IS EXACTLY THIS, and this family's own live-verification list names it as
+     * something that must be off without ever measuring it: the edge's trace reports the IPv6 client while
+     * the address that reaches the origin is a rewritten one. The unforged branch of the arrival audit
+     * never checked what arrived, so the bucket was read for an address nothing had written to and THR-2
+     * FAILed that a correctly behaving host had not counted the attempt under itself.
+     *
+     * ⚠️ AND IT IS THR-2's ATTEMPT, SO IT IS THR-2's VOID. THR-1's own six are untouched and still pass.
+     */
+    throttleCase($this->state, ['trace-6' => '2001:db8::99']);
+
+    $run = throttleRun($this->dir, $this->family);
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and(throttleVerdict($run, 'THR-1'))->toContain('PASS')
+        ->and(throttleVerdict($run, 'THR-2'))->toContain('VOID')
+        ->and(throttleVerdict($run, 'THR-2'))->toContain('as the last forwarded entry')
+        ->and(throttleVerdict($run, 'THR-2'))->not->toContain('FAIL')
+        ->and($run->getOutput())->not->toContain('was not counted under its own address');
+});
 
 it('voids, and never fails, an attempt that left from an address other than the one its bucket is read under', function (array $case, string $check, string $named): void {
     /*

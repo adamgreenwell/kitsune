@@ -845,9 +845,17 @@ function examine(string $host, string $nonce, string $payload, string $storeSour
         $labels['v6'] = $edge6;
     }
 
+    // ⚠️ AND THE EXACT VALUES, NOT A PREFIX. An attempt sent with no forged entry must arrive carrying none
+    // of this run's own, and what has to be excluded is precisely the set this run plants — not everything
+    // that happens to sit in the same documentation block, which a prefix test would refuse and which a hop
+    // on the operator's own side of the edge can legitimately be.
+    $planted = [];
+
     for ($n = 1; $n <= $forgeries; $n++) {
         $labels['xff-'.$n] = FORGED_DASHED.$n;
         $labels['usc-'.$n] = FORGED_UNDERSCORE.$n;
+        $planted[] = FORGED_DASHED.$n;
+        $planted[] = FORGED_UNDERSCORE.$n;
     }
 
     $component = 'Filament\\Auth\\Pages\\Login';
@@ -1005,6 +1013,9 @@ function examine(string $host, string $nonce, string $payload, string $storeSour
             'outcome' => $outcome,
             'detail' => $detail,
             'line' => $line,
+            // ⚠️ WHOSE ATTEMPT THIS WAS, CARRIED WITH IT. The post-window audit below judges these again,
+            // and without this it had no way to route what it found to the check the attempt belonged to.
+            'check' => $check,
         ];
 
         $records[] = sprintf('%s: attempt %d over %s, the edge saw %s, nginx logged %s %s status %s upstream %s xff [%s] — %s',
@@ -1149,39 +1160,72 @@ function examine(string $host, string $nonce, string $payload, string $storeSour
         }
     }
 
+    /*
+     * ⚠️ AND WHAT THIS FINDS BELONGS TO THE CHECK WHOSE ATTEMPT IT WAS, exactly as $send's own voids do.
+     * $answers holds THR-2's two attempts as well, and pushing every finding into THR-1's list discarded
+     * the routing $send is careful about: one forwarding hop on the operator's side of the edge, or a
+     * second IPv6 address, made THR-1 — whose own six attempts were flawless — report itself unmeasurable,
+     * while THR-2, whose attempts they were, passed. An inverted and self-contradictory pair of verdicts.
+     */
     foreach ($answers as $number => $answer) {
         $line = $answer['line'];
         $hostname = $answer['hostname'];
+        $found = [];
 
         if (($line['request_method'] ?? '') !== 'POST' || ($line['request_uri'] ?? '') !== $pages[$hostname]['path']) {
-            $voids[] = "{$hostname}: attempt {$number} was logged as ".($line['request_method'] ?? '?').' '
+            $found[] = "{$hostname}: attempt {$number} was logged as ".($line['request_method'] ?? '?').' '
                 .($line['request_uri'] ?? '?').', which is not the attempt that was sent';
         }
 
         if (($line['host'] ?? '') !== $hostname) {
-            $voids[] = "{$hostname}: attempt {$number} arrived for host [".($line['host'] ?? '').']';
+            $found[] = "{$hostname}: attempt {$number} arrived for host [".($line['host'] ?? '').']';
         }
 
         if (preg_match('#^unix:/.*\.sock$#', $line['upstream_addr'] ?? '') !== 1) {
-            $voids[] = "{$hostname}: attempt {$number} was answered by [".($line['upstream_addr'] ?? '').'], so PHP did not answer it';
+            $found[] = "{$hostname}: attempt {$number} was answered by [".($line['upstream_addr'] ?? '').'], so PHP did not answer it';
         }
 
         $tokens = array_values(array_filter(array_map('trim', explode(',', $line['xff'] ?? '')), static fn (string $t): bool => $t !== ''));
 
         if ($answer['forged'] === null) {
-            // ⚠️ AN ATTEMPT THAT WAS MEANT TO CARRY NOTHING MUST HAVE CARRIED NOTHING. A forged entry on the
-            // second-address attempt would bucket separately and read as "a different address is not
-            // throttled" — the exact false PASS this family exists to refuse.
-            if (count($tokens) > 1) {
-                $voids[] = "{$hostname}: attempt {$number} was sent with no forged entry and arrived with "
-                    .count($tokens).' forwarded entries ['.($line['xff'] ?? '').']';
+            /*
+             * ⚠️ AN ATTEMPT MEANT TO CARRY NOTHING MUST HAVE CARRIED NONE OF THIS RUN'S, AND MUST STILL
+             * HAVE CROSSED THE EDGE. A forged entry from this run would bucket separately and read as "a
+             * different address is not throttled" — the exact false PASS this family exists to refuse.
+             *
+             * But "more than one entry" refused far more than that: any forwarding hop on the OPERATOR's
+             * side of the edge — a corporate egress proxy, a CI runner's outbound proxy — puts a second
+             * entry in every chain that reaches nginx, and voided a sound host.
+             *
+             * And it never asserted arrival at all, which the forged branch below does: whenever the
+             * address that reaches the origin differs from the one /cdn-cgi/trace named — Cloudflare's
+             * Pseudo IPv4 rewriting the header for an IPv6 client is exactly this, and the live-verification
+             * list names it without ever measuring it — the bucket was read for an address nothing wrote
+             * to, and THR-2 FAILed that a sound host had not counted the attempt under itself.
+             */
+            $carried = array_values(array_intersect($tokens, $planted));
+
+            if ($carried !== []) {
+                $found[] = "{$hostname}: attempt {$number} was sent with no forged entry and arrived carrying ["
+                    .implode(', ', $carried).'], which this run planted on another attempt';
+            } elseif ($tokens === [] || end($tokens) !== $answer['edge']) {
+                $found[] = "{$hostname}: attempt {$number} arrived with [".($tokens === [] ? '' : end($tokens))
+                    .'] as the last forwarded entry and the edge saw ['.$answer['edge'].']';
             }
         } elseif ($tokens === [] || $tokens[0] !== FORGED_DASHED.$answer['forged']) {
-            $voids[] = "{$hostname}: the forged entry ".FORGED_DASHED.$answer['forged'].' did not arrive at nginx for attempt '
+            $found[] = "{$hostname}: the forged entry ".FORGED_DASHED.$answer['forged'].' did not arrive at nginx for attempt '
                 .$number.' (X-Forwarded-For was ['.($line['xff'] ?? '').']), so this run never tested a forwarded header at all';
         } elseif (end($tokens) !== $answer['edge']) {
-            $voids[] = "{$hostname}: attempt {$number} arrived with [".end($tokens).'] as the last forwarded entry and the edge saw ['
+            $found[] = "{$hostname}: attempt {$number} arrived with [".end($tokens).'] as the last forwarded entry and the edge saw ['
                 .$answer['edge'].']';
+        }
+
+        foreach ($found as $reason) {
+            if ($answer['check'] === 'THR-2') {
+                $twoVoids[] = $reason;
+            } else {
+                $voids[] = $reason;
+            }
         }
     }
 
@@ -1218,7 +1262,15 @@ function examine(string $host, string $nonce, string $payload, string $storeSour
                 .'every forged X-Forwarded-For and X_Forwarded_For arrived at nginx and filled nothing — and the sixth was throttled on every hostname']);
 
     // --- THR-2: what the bucket is keyed on ---------------------------------------------------------
-    if ($one[0] === 'FAIL') {
+    //
+    // ⚠️ NOTHING BELOW MAY REACH A FAIL WHILE THR-2's OWN ATTEMPTS ARE UNMEASURABLE. $twoVoids already
+    // holds every reason one of them could not be judged — it left from an address this run is not reading
+    // a bucket for, or it did not arrive as it was sent — and a bucket read of 0 is exactly what each of
+    // those produces. Judged past them, the address the attempt really used was accused of not having been
+    // counted under itself, which is a FAIL against a host nothing had measured.
+    if ($twoVoids !== []) {
+        // The reasons are listed already, and every branch below would be about a bucket nothing measured.
+    } elseif ($one[0] === 'FAIL') {
         $twoVoids[] = 'the address the throttle counts by is already wrong: '.$one[1];
     } elseif (! $throttled || $stopped !== '') {
         $twoVoids[] = 'no attempt was ever throttled, so there was no full bucket to test a second address against'
