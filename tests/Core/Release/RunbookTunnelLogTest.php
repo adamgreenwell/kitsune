@@ -523,8 +523,38 @@ it('fails what the host got wrong', function (array $changes, string $named): vo
     'the PROXY protocol in front' => [['proxy_protocol_addr' => '203.0.113.50'], 'PROXY protocol'],
     'the catch-all answered' => [['server_name' => '_'], 'catch-all'],
     'TLS did not terminate here' => [['https' => ''], 'TLS did not terminate here'],
+    // Both spellings nginx writes when the request never reached an upstream: no variable at all, and
+    // the dash its escape=json log format writes for an unset one.
     'nginx answered, not PHP' => [['upstream_addr' => ''], 'PHP did not answer'],
+    'nginx answered, and the field is a dash' => [['upstream_addr' => '-'], 'reached no upstream at all'],
     'the last entry is not what the edge saw' => [['xff' => '192.0.2.77, 198.51.100.9'], 'the edge saw'],
+]);
+
+it('passes a host whose PHP answers over TCP rather than a unix socket', function (string $upstream): void {
+    /*
+     * ⚠️ THAT AN UPSTREAM ANSWERED IT, NOT WHICH SOCKET FAMILY REACHED ONE. The rule asked for
+     * `unix:/<path>.sock`, so a host whose nginx has `fastcgi_pass 127.0.0.1:9000` — what the official
+     * php-fpm container listens on — FAILed with "PHP did not answer" about a request PHP demonstrably
+     * answered: the very line being judged carries upstream_status 404, which is Laravel's own fallback for
+     * an unrouted path and nothing an nginx short-circuit produces.
+     *
+     * The socket family is not this family's condition to assert either. ADR-034 does not mention fastcgi,
+     * FPM or a socket, and where PHP is, the families that read the configuration already judge — nginx's
+     * NGX-3 and relays' RLY-2 and RLY-3. This is the same change the throttle family's finding 10 made to
+     * the same assertion.
+     */
+    tunnelLogFixture($this->dir, 'probe', json_encode(tunnelLogLine(['upstream_addr' => $upstream])) ?: '{}');
+
+    $run = tunnelLogRun($this->dir, $this->family);
+
+    expect($run->isSuccessful())->toBeTrue($run->getOutput().$run->getErrorOutput())
+        ->and(tunnelLogVerdict($run, 'TUN-1'))->toContain('PASS')
+        ->and(tunnelLogVerdict($run, 'TUN-2'))->toContain('PASS')
+        // The evidence still names what answered, so an operator reading the report can see it was TCP.
+        ->and($run->getOutput())->toContain('upstream '.$upstream);
+})->with([
+    'FPM over TCP on loopback' => ['127.0.0.1:9000'],
+    'FPM over TCP on IPv6 loopback' => ['[::1]:9000'],
 ]);
 
 it('fails a connection owned by something other than a connector', function (): void {

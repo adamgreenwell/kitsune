@@ -605,10 +605,27 @@ function judge(array $line, string $hostname, string $edgeAddress, string $owner
         $fails[] = "{$hostname}: it arrived on port [{$field('server_port')}] with https=[{$field('https')}], so TLS did not terminate here";
     }
 
-    // PHP answered rather than nginx short-circuiting: the path is unrouted, so Laravel's own fallback
-    // produces the 404 — which only happens if the request reached PHP at all.
-    if (preg_match('#^unix:/.*\.sock$#', $field('upstream_addr')) !== 1) {
-        $fails[] = "{$hostname}: upstream_addr is [{$field('upstream_addr')}], so PHP did not answer";
+    /*
+     * PHP answered rather than nginx short-circuiting: the path is unrouted, so Laravel's own fallback
+     * produces the 404 — which only happens if the request reached PHP at all.
+     *
+     * ⚠️ THAT AN UPSTREAM ANSWERED IT, NOT WHICH SOCKET FAMILY REACHED ONE. This asked for
+     * `unix:/<path>.sock`, so a host running PHP-FPM over TCP — `fastcgi_pass 127.0.0.1:9000`, which the
+     * official php-fpm container listens on — FAILed with "PHP did not answer" about a request PHP
+     * demonstrably answered: the same line carries `upstream_status` 404, which is Laravel's own fallback
+     * and nothing an nginx short-circuit produces.
+     *
+     * Nor is the socket family this family's condition to assert. ADR-034 never mentions fastcgi, FPM or a
+     * socket, and the runbook already judges where PHP is from the configuration, in the families that read
+     * it: nginx's NGX-3 and relays' RLY-2 and RLY-3. A per-request FAIL inside a family about forwarded
+     * headers said the same thing a second time, in words that blame the wrong thing.
+     *
+     * What this check is really for is nginx short-circuiting the request — a cached or static answer, a
+     * `return`, an error page — which leaves no upstream at all, and that is what it now asserts. The
+     * throttle family's finding 10 made the same change to the same assertion.
+     */
+    if (in_array($field('upstream_addr'), ['', '-'], true)) {
+        $fails[] = "{$hostname}: it reached no upstream at all (nginx logged [{$field('upstream_addr')}]), so PHP did not answer";
     }
 
     if ($field('status') !== '404' || $field('upstream_status') !== '404') {
