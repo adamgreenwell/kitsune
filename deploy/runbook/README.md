@@ -50,6 +50,10 @@ deploy/runbook/run.sh --host forge@stage.example --expect tunnel --token-file ~/
   case ADR-034 forbids, and a flag would hide it.
 - `--token-file` names a **read-only** Cloudflare API token. Without it, the Cloudflare checks are
   VOID and the run cannot report success; the checks that measure the running host still run.
+- `--egress-trace` names an **https** endpoint that answers with this machine's address as a server sees
+  it. Behind a tunnel a check asks the edge, on the same connection as the request it is making; a host
+  with no edge has nothing to ask, so the operator supplies one. It is the operator's to choose, because
+  a default would send every run's address to whoever this file happened to name.
 - The host needs **passwordless sudo** for this user. The scripts arrive on the remote shell's stdin,
   so a sudo that prompted would read the password from the script itself.
 
@@ -61,11 +65,37 @@ deploy/runbook/run.sh --host forge@stage.example --expect tunnel --token-file ~/
 | `manifest.txt` | The promised check ids, per topology. |
 | `host/common.sh` | Verdicts, records, the sentinel, and the guards every host check needs. Sent ahead of each host family in the same stream, never run on its own. |
 | `host/*.sh` | One file per family that must run **on** the server, as root, piped over ssh. |
-| `host/probe-log.sh` | Not a family: the instrument `outside/tunnel-log.php` drives to see what nginx received. The one part of the runbook that changes a live server, and it undoes itself. |
+| `host/probe-log.sh` | Not a family: the instrument the outside families drive to see what nginx received. The one part of the runbook that changes a live server, and it undoes itself. |
+| `host/throttle-store.php` | Not a family: the instrument `outside/throttle.php` drives to ask the host's own application which rate-limiter bucket filled. Runs as the release owner, never as root, and reads without writing. |
 | `outside/*.php` | One file per family that must reach the server from somewhere else, over the real network. Runs on the operator's machine. |
+| `outside/lib.php` | Not a family: the one copy of the helpers the outside families share — the verdict protocol, running a command, driving an instrument, and reading the running configuration. |
 
 Tests live in `tests/Core/Release/Runbook*Test.php` and run the real scripts against fixtures, in the
 style of `ReleaseScriptTest`: a deploy script is prose until something executes it.
+
+## What a run does to the server, and to signing in
+
+Nothing here is read-only, and the two parts that are not say so loudly.
+
+- **Sign-in is locked out on purpose, for up to 60 seconds.** The throttle family signs in wrongly
+  **seven times plus once more for every hostname the server serves the application at** — ten against a
+  host serving it at three, and a hostname that declares no application, such as a `www`→apex redirect
+  vhost, is recorded and left alone —
+  from the machine it runs on, which is what fills and then trips Filament's login throttle. That
+  throttle's key holds the component, the method and the address — and **no hostname** — so the lockout
+  covers **every hostname the app serves at once**, for the operator and for anyone sharing that egress
+  address. On a host that is broken in the way the check is looking for, it covers every visitor. Run it
+  against stage or a not-yet-live alpha, in a maintenance window, never a server real admins are using.
+- **The probe log changes the running nginx, and undoes itself.** One `conf.d` snippet gated on a 128-bit
+  nonce, two reloads, a 900-second dead-man timer, and a removal that is refused unless the configuration
+  hashes back to its baseline. A family that installed one FAILs loudly if it is not removed — that is a
+  check of its own, not a footnote on another.
+- **It signs nothing in.** Every attempt uses an address under `.invalid` and a fixed string that is not a
+  password, so no real account is ever touched and no lockout of a user's own can follow.
+- **It reads the host's application once per window.** `host/throttle-store.php` boots the release as its
+  owner to read the two limiters' cache keys for the addresses it is asked about, and the numbers the
+  release's own Livewire declares for one of them. It never writes, never warms a cache, and refuses to
+  run as root.
 
 ## How it is being built
 
