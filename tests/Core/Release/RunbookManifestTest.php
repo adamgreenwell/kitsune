@@ -1166,11 +1166,17 @@ it('judges a family name by its bytes, not by what the operator\'s locale calls 
 });
 
 it('shows what a family said on stderr past a byte that is not UTF-8', function (): void {
-    // macOS tr in a UTF-8 locale stopped at the byte, so why the family did not finish never reached the operator.
+    /*
+     * macOS tr in a UTF-8 locale stopped at the byte, so why the family did not finish never reached the operator.
+     *
+     * ⚠️ LANG, NOT LC_ALL. Where en_US.UTF-8 does not exist — a container, and some Linux runners — bash warns twice
+     * that it cannot set the LC_ALL it was given, and those two warnings are the 200 bytes the excerpt would quote.
+     * An unavailable LANG is taken silently, and on macOS it pins the locale just as well.
+     */
     runbookManifest($this->runbook, "tunnel bytes I-1\n");
     runbookFamily($this->runbook, 'bytes', "family bytes I-1\nprintf '\\377 banner, then: Connection reset by peer\\n' >&2\nexit 255\n");
 
-    $run = runbookRun($this->dir, ['LC_ALL' => 'en_US.UTF-8']);
+    $run = runbookRun($this->dir, ['LANG' => 'en_US.UTF-8']);
 
     expect($run->isSuccessful())->toBeFalse()
         ->and($run->getErrorOutput())->toContain("the family did not finish: \xFF banner, then: Connection reset by peer");
