@@ -362,7 +362,8 @@ foreach ($groups as $group) {
         $memo = 'memo'.bin2hex(random_bytes(6));
         $snapshot = json_encode([
             'data' => [['email' => null, 'password' => null], []],
-            'memo' => ['id' => $memo, 'name' => 'Filament\\Auth\\Pages\\Login', 'path' => 'admin/login', 'method' => 'GET', 'children' => [], 'scripts' => [], 'assets' => [], 'errors' => [], 'locale' => 'en'],
+            // The panel's own login page class, which a case can change: it is part of the throttle key.
+            'memo' => ['id' => $memo, 'name' => $case['components'][$hostname] ?? $case['component'] ?? 'Filament\\Auth\\Pages\\Login', 'path' => 'admin/login', 'method' => 'GET', 'children' => [], 'scripts' => [], 'assets' => [], 'errors' => [], 'locale' => 'en'],
             'checksum' => bin2hex(random_bytes(16)),
         ], JSON_UNESCAPED_SLASHES);
 
@@ -696,10 +697,16 @@ if (str_contains($arguments, 'php -d display_errors=stderr')) {
         'now' => time(),
     ], JSON_UNESCAPED_SLASHES)."\n";
 
+    // ⚠️ THE KEY HOLDS THE COMPONENT, SO A READ FOR ANOTHER CLASS FINDS NOTHING. A stub that answered by
+    // address alone could not tell a family that asks about the login page the host actually named from
+    // one that asks about a class it knew in advance.
+    $asked = (string) ($request['component'] ?? '');
+    $serves = $case['component'] ?? 'Filament\\Auth\\Pages\\Login';
+
     foreach ($labels as $label => $address) {
         // ⚠️ A STORE THIS INSTRUMENT CANNOT SEE READS AS EMPTY, WHICH IS THE POINT OF THE CASE. A wrong
         // store, a wrong prefix or a read after the window all look exactly like this from outside.
-        $held = ($case['store_blind'] ?? false) === true ? null : ($buckets[$address] ?? null);
+        $held = (($case['store_blind'] ?? false) === true || $asked !== $serves) ? null : ($buckets[$address] ?? null);
 
         // An entry whose timer has passed is gone: a cache with a TTL forgets it, and a store that kept
         // handing it back would make the family's bounded wait one it could never come out of.
@@ -1109,6 +1116,46 @@ it('voids an attempt that did not leave over the address family it was meant to'
     'an IPv4 local address on the -6 transfer' => ['192.168.1.9', 'did not leave over the family it was meant to'],
     'a mapped address' => ['::ffff:192.168.1.9', 'did not leave over the family it was meant to'],
 ]);
+
+it('asks the store about the login component the page named, not one it knew in advance', function (): void {
+    /*
+     * ⚠️ THE CLASS IS PART OF THE BUCKET'S NAME. The key is sha1($component.'|'.$method.'|'.ip()) with
+     * $component the login page's own class, so a panel with a login page of its own — `->login(App\…)`,
+     * routine for branding — or a host on a Filament major where the class was `Filament\Pages\Auth\Login`
+     * has a bucket a hardcoded class never names. Every label then read 0 on a host that throttled
+     * correctly six times in the same run, and the run reported that the writes went somewhere the
+     * instrument did not look.
+     *
+     * The family already parses memo.name off the login component's own snapshot and refuses any answer
+     * that disagrees with it; only the store read ignored it.
+     */
+    throttleCase($this->state, ['component' => 'App\\Filament\\Auth\\Login']);
+
+    $run = throttleRun($this->dir, $this->family);
+
+    expect($run->isSuccessful())->toBeTrue($run->getOutput().$run->getErrorOutput())
+        ->and(throttleVerdict($run, 'THR-1'))->toContain('PASS')
+        ->and(throttleVerdict($run, 'THR-2'))->toContain('PASS')
+        ->and($run->getOutput())->not->toContain('this instrument did not look');
+});
+
+it('refuses to name one bucket for hostnames whose login pages are different components', function (): void {
+    /*
+     * The store is read once for every hostname, and two panels with login pages of their own have two
+     * different buckets per address. Which one a read belongs to could not be said, so it is unmeasurable
+     * rather than a guess — the rule releaseBase() already holds for the release itself.
+     */
+    throttleCase($this->state, ['components' => ['stage-he.kitsune.test' => 'App\\Filament\\Auth\\Login']]);
+
+    $run = throttleRun($this->dir, $this->family);
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and(throttleVerdict($run, 'THR-1'))->toContain('VOID')
+        ->and(throttleVerdict($run, 'THR-1'))->toContain('name different login components')
+        ->and(throttleVerdict($run, 'THR-2'))->toContain('VOID')
+        // Nothing was signed in to: a window against a bucket that could not be named measures nothing.
+        ->and(throttleAnswers($this->state))->toBe([]);
+});
 
 it('passes a host reached through a forwarding hop on the operator\'s own side of the edge', function (): void {
     /*

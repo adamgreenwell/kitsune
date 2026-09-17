@@ -858,7 +858,30 @@ function examine(string $host, string $nonce, string $payload, string $storeSour
         $planted[] = FORGED_UNDERSCORE.$n;
     }
 
-    $component = 'Filament\\Auth\\Pages\\Login';
+    /*
+     * ⚠️ THE COMPONENT THE PAGE NAMED, NOT ONE THIS FILE KNOWS IN ADVANCE. The key is
+     * `sha1($component.'|'.$method.'|'.request()->ip())` with `$component` the login page's own class
+     * (WithRateLimiting.php:22-28), so the class is part of the bucket's name. A panel with a login page of
+     * its own — `->login(App\Filament\Auth\Login::class)`, which is routine for branding — or a host on a
+     * Filament major where the class was `Filament\Pages\Auth\Login` had its bucket read under a class
+     * nobody writes: every label came back 0 on a host that throttled correctly six times in the same run,
+     * and the operator was told the writes went somewhere this instrument did not look.
+     *
+     * parseLogin() already reads it off the login component's own snapshot and classify() already refuses
+     * any answer whose memo.name disagrees; the one place that decided which bucket to read ignored it.
+     *
+     * ⚠️ AND ONE CLASS, OR NONE, for the reason releaseBase() takes one base or none: the store is read
+     * once for every hostname, and hostnames whose panels have different login pages have different
+     * buckets, which one read could not name.
+     */
+    $named = array_values(array_unique(array_column([...array_values($pages), $secondPage], 'name')));
+
+    if (count($named) !== 1) {
+        return $both('the login pages this run fetched name different login components ('.implode(', ', $named)
+            .'), so one rate-limiter bucket could not be named for all of them');
+    }
+
+    $component = $named[0];
     [$pre, $unreadable] = storeRead($host, $owner, $base, $labels, $component, $storeSource);
 
     if ($pre === []) {
