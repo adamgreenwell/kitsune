@@ -21,6 +21,28 @@ concurrency:
 # pgsql 9.8, mariadb 27.0, mysql 73.9, Playwright 3.2. Every figure predates
 # migrating the test schema once per process; re-measure before lowering one.
 jobs:
+  # What this run needs, decided once and consumed by every matrix below. The reasoning, the measured
+  # cost per run and the fail-closed rule are in .github/scripts/ci-scope.sh, which the test suite drives —
+  # one source of truth, and a decision this cheap to get wrong is not one to leave untested in YAML.
+  scope:
+    name: What this run needs
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      docs_only: ${{ steps.decide.outputs.docs_only }}
+      php: ${{ steps.decide.outputs.php }}
+      engine: ${{ steps.decide.outputs.engine }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.pull_request.number }}
+          EVENT: ${{ github.event_name }}
+        run: bash .github/scripts/ci-scope.sh
+
   lint:
     name: Pint + PHPStan
     runs-on: ubuntu-latest
@@ -51,11 +73,14 @@ jobs:
   bare-clone:
     name: Bare clone (PHP ${{ matrix.php }}, no services)
     runs-on: ubuntu-latest
+    needs: scope
+    # Prose cannot break a bare `composer install`, and on main one PHP version is the merge check.
+    if: needs.scope.outputs.docs_only != 'true'
     timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
-        php: ['8.4', '8.5']
+        php: ${{ fromJSON(needs.scope.outputs.php) }}
     steps:
       - uses: actions/checkout@v5
 
@@ -73,20 +98,21 @@ jobs:
   engines:
     name: PHP ${{ matrix.php }} / ${{ matrix.engine }}
     runs-on: ubuntu-latest
+    needs: scope
     # The widest ceiling, for the slowest lane (see the top of this file). Some runner VMs slow MySQL 3-8x, and one
     # run was cancelled here while still passing tests. Raising this hides that; see "Describe the runner".
     timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
-        php: ['8.4', '8.5']
+        php: ${{ fromJSON(needs.scope.outputs.php) }}
         # ⚠️ mariadb is in the matrix because README, architecture.md and
         # roadmap.md all document it as supported and DriverFactory routes it
         # to MySqlDriver — and nothing ran against it, so two MySQL-only
         # constructs had shipped: the `->>` operator, which MariaDB does not
         # have, and `CAST(... AS JSON)`, which it rejects. Documented support
         # that is never exercised is a claim, not a feature.
-        engine: [sqlite, pgsql, mysql, mariadb]
+        engine: ${{ fromJSON(needs.scope.outputs.engine) }}
 
     # ⚠️ ONLY THE LANE'S OWN DATABASE STARTS. Every engine job used to start all three
     # service containers, so the sqlite lane booted PostgreSQL, MySQL and MariaDB and
@@ -174,11 +200,15 @@ jobs:
   browser:
     name: Playwright (PHP ${{ matrix.php }}, skeleton smoke)
     runs-on: ubuntu-latest
+    needs: scope
+    # ⚠️ NOT for a prose-only change: the browser lane boots the skeleton and clicks it, and no file
+    # under docs/ is reachable from a rendered page. It still runs on main, where it is the merge check.
+    if: needs.scope.outputs.docs_only != 'true'
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        php: ['8.4', '8.5']
+        php: ${{ fromJSON(needs.scope.outputs.php) }}
     steps:
       - uses: actions/checkout@v5
 
