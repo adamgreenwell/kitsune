@@ -307,7 +307,11 @@ function runbookShippedFamilies(?string $root = null): array
         }
     }
 
-    foreach ([...glob($root.'/host/*.sh') ?: [], ...glob($root.'/outside/*.php') ?: []] as $script) {
+    // ⚠️ host/*.php IS READ TOO, NOT JUST host/*.sh. A host family is a shell script by convention, and a
+    // convention is not a guard: a PHP script under host/ was invisible to this, so one that declared a
+    // family would never be listed, never dispatched, and every check here would still pass — the drift
+    // this file exists to catch. Read, an instrument there must be listed as one.
+    foreach ([...glob($root.'/host/*.sh') ?: [], ...glob($root.'/host/*.php') ?: [], ...glob($root.'/outside/*.php') ?: []] as $script) {
         $shown = substr($script, strlen($root) + 1);
         $declarations = runbookDeclarations($script, $shown);
 
@@ -1467,3 +1471,18 @@ it('fails loudly on a script whose family it cannot read, rather than leaving th
     'an outside family with no topologies declared' => ['outside/throttle.php', "<?php\n\nconst FAMILY = 'throttle';\nconst CHECKS = ['THR-1'];\n", 'outside/throttle.php declares FAMILY 1 times, CHECKS 1 times and TOPOLOGIES 0 times'],
     'an instrument that declares a family' => ['host/probe-log.sh', "family probe PRB-1\ntopologies tunnel\n", 'host/probe-log.sh is an instrument, and declares a family'],
 ]);
+
+it('reads a family declared by a host script that is not a shell script', function (): void {
+    /*
+     * ⚠️ A CONVENTION IS NOT A GUARD. Discovery globbed `host/*.sh` and `outside/*.php`, so a PHP script
+     * under host/ was in neither list: one declaring a family would be unlisted, never dispatched, and
+     * every tree check here would still pass — while run.sh, which finds a family as `host/<family>.sh`,
+     * could never run it either. Found, it is either a family this holds to the manifest or an instrument
+     * listed as one.
+     */
+    $root = runbookTree($this->dir, [
+        'host/sweep.php' => "<?php\n\nconst FAMILY = 'sweep';\nconst CHECKS = ['SWP-1'];\nconst TOPOLOGIES = ['tunnel'];\n",
+    ]);
+
+    expect(array_keys(runbookShippedFamilies($root)))->toBe(['sweep']);
+});
