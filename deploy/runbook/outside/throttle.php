@@ -37,7 +37,9 @@ require_once __DIR__.'/lib.php';
  * report five rejections and a rejection, and call a throttle a failure to throttle.
  *
  * ⚠️ WHAT A RUN DOES TO THE SERVER. It signs in wrongly
- * seven times plus once more for every hostname the server serves — ten against a host serving three:
+ * seven times plus once more for every hostname the server serves the application at — ten against a host
+ * serving it at three; a hostname that declares no application, such as a redirect vhost, is recorded and
+ * left alone:
  * LIMIT+1 attempts on the first hostname, one already-throttled probe on each of the others, and two more
  * for THR-2 — and then leaves the login throttle tripped for the operator's egress address for up to 60
  * seconds. The key carries no hostname, so that lockout covers EVERY hostname the app serves at once, for
@@ -265,29 +267,60 @@ function siteRoots(string $dump): array
 }
 
 /**
- * The one release base every served hostname points at.
+ * The served hostnames an application answers at, and the ones that answer for no application at all.
+ *
+ * ⚠️ A HOSTNAME THAT SERVES NO APPLICATION IS NOT A SECOND APPLICATION. A `www`→apex redirect vhost, an
+ * old-domain redirect, a static docs site, an ACME-only block or a reverse proxy declares no server-level
+ * root ending in `/public` — and Forge writes exactly that shape from its own UI, so the alpha host will
+ * have one. Refusing the whole run on the first of them, which is what naming the release used to do,
+ * voided both measured checks on a host whose throttle is entirely sound, with a reason that is false: the
+ * release IS nameable, from the hostnames that do declare a root. They are recorded and left out, exactly
+ * as a `server_name` that is a pattern already is, and only a configuration where NO hostname declares one
+ * has nothing to sign in to.
+ *
+ * ⚠️ AND LEFT OUT MEANS NOT SIGNED IN TO. The run's cost is one more attempt per hostname it signs in to,
+ * so a redirect vhost that is dropped here is a lockout that is never taken out on it.
+ *
+ * @param  array<string, list<string>>  $sites
+ * @return array{0: array<string, list<string>>, 1: array<string, string>} the sites, and why the others are not one
+ */
+function servedSites(array $sites): array
+{
+    $rootless = [];
+
+    foreach ($sites as $name => $roots) {
+        if (array_filter($roots, static fn (string $root): bool => str_ends_with($root, '/public')) !== []) {
+            continue;
+        }
+
+        $rootless[$name] = "[{$name}] has no server-level root ending in /public in the running configuration ("
+            .($roots === [] ? 'it declares none' : 'it declares '.implode(', ', $roots)).')';
+
+        unset($sites[$name]);
+    }
+
+    return [$sites, $rootless];
+}
+
+/**
+ * The one release base every hostname an application answers at points at.
  *
  * ⚠️ ONE BASE, OR NONE. The store instrument boots the application at this path, and a host whose
  * hostnames resolve to two different applications has two different caches and two different throttles:
  * which one a bucket belongs to could not be said, so it is unmeasurable rather than a guess.
  *
- * @param  array<string, list<string>>  $sites
+ * @param  array<string, list<string>>  $sites  the sites servedSites() kept, each declaring a /public root
  * @return array{0: string, 1: string} the base, and why there is none when there is none
  */
 function releaseBase(array $sites): array
 {
     $bases = [];
 
-    foreach ($sites as $name => $roots) {
-        $public = array_values(array_filter($roots, static fn (string $root): bool => str_ends_with($root, '/public')));
-
-        if ($public === []) {
-            return ['', "[{$name}] has no server-level root ending in /public in the running configuration ("
-                .($roots === [] ? 'it declares none' : 'it declares '.implode(', ', $roots)).')'];
-        }
-
-        foreach ($public as $root) {
-            $bases[substr($root, 0, -strlen('/public'))] = true;
+    foreach ($sites as $roots) {
+        foreach ($roots as $root) {
+            if (str_ends_with($root, '/public')) {
+                $bases[substr($root, 0, -strlen('/public'))] = true;
+            }
         }
     }
 
@@ -788,6 +821,19 @@ function examine(string $host, string $nonce, string $payload, string $storeSour
     if ($sites === []) {
         return $both('no site hostname was found in the running configuration, so there was nothing to sign in to'
             .($patterns === [] ? '' : ' (it names only '.implode(', ', $patterns).', which no request can be made to)'));
+    }
+
+    [$sites, $rootless] = servedSites($sites);
+
+    // Recorded for the reason a pattern is: an operator whose redirect vhost this left out should read it
+    // here rather than wonder why a name the configuration carries was never signed in to.
+    if ($rootless !== []) {
+        record('THR-1', 'the configuration also serves '.implode('; ', $rootless)
+            .', so there is no application there to sign in to');
+    }
+
+    if ($sites === []) {
+        return $both('no hostname this server serves declares an application to sign in to: '.implode('; ', $rootless));
     }
 
     [$base, $why] = releaseBase($sites);

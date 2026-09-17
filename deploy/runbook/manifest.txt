@@ -76,7 +76,8 @@ tunnel   tunnel-log TUN-2
 # on, and THR-3 covers the probe log being removed afterwards.
 #
 # ⚠️ A RUN LOCKS SIGN-IN OUT, DELIBERATELY. It signs in wrongly
-# seven times plus once more for every hostname the server serves — ten against a host serving three —
+# seven times plus once more for every hostname the server serves the application at — ten against a host
+# serving it at three, and a hostname declaring no application, such as a redirect vhost, is left alone —
 # from the operator's address, and leaves Filament's login throttle tripped for that address, on every
 # hostname at once, for up to 60 seconds. That is the measurement, not a side effect: run it against stage
 # or a not-yet-live alpha, in a maintenance window.

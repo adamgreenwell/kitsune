@@ -869,7 +869,7 @@ it('states the same sign-in count in all three places it tells the operator, and
      * actually sends: a count that changed in the code and not in the docs fails here.
      */
     $repo = dirname(__DIR__, 3);
-    $stated = 'seven times plus once more for every hostname the server serves';
+    $stated = 'seven times plus once more for every hostname the server serves the application at';
 
     // ⚠️ str_contains RATHER THAN toContain, BECAUSE toContain IS VARIADIC: a second argument meant as a
     // failure message becomes a second needle, and the assertion then demands its own message be in the
@@ -1222,6 +1222,38 @@ it('signs in to the names a request can be made to, and records the patterns it 
         ->and($run->getOutput())->not->toContain('https://*.kitsune.test')
         ->and($run->getOutput())->toContain('RECORD THR-1 the configuration also names *.kitsune.test, .kitsune.test, '
             .'~^(?<sub>.+)\.kitsune\.test$, which no request can be made to');
+});
+
+it('signs in at the hostnames an application answers at, and records the ones that serve none', function (): void {
+    /*
+     * ⚠️ A REDIRECT VHOST IS NOT A SECOND APPLICATION, AND IT USED TO STOP THE WHOLE RUN. Naming the release
+     * returned on the FIRST served hostname declaring no root ending in /public, before it ever reached its
+     * own "one base, or none" rule — so one ordinary `server_name www.<domain>; return 301 …` block, which
+     * Forge writes from its own UI and the alpha host will have, voided both measured checks on a host whose
+     * throttle is sound, after installing the probe log and reloading nginx twice. The stated reason was
+     * false as well: the release is perfectly nameable from the hostnames that do declare a root.
+     *
+     * The same is true of any co-resident vhost that is not this application — an old-domain redirect, a
+     * static docs site, an ACME-only block — and the fixture's three hostnames, all rooted at one release,
+     * are exactly the configuration that hid it.
+     */
+    throttleDump($this->state, throttleSites(), "    server {\n        listen 80;\n        listen 443 ssl;\n"
+        ."        server_name www.stage.kitsune.test;\n        return 301 https://stage.kitsune.test\$request_uri;\n    }\n");
+
+    $run = throttleRun($this->dir, $this->family);
+
+    expect($run->isSuccessful())->toBeTrue($run->getOutput().$run->getErrorOutput())
+        ->and(throttleVerdict($run, 'THR-1'))->toContain('PASS')
+        ->and(throttleVerdict($run, 'THR-2'))->toContain('PASS')
+        ->and($run->getOutput())->toContain('RECORD THR-1 the configuration also serves [www.stage.kitsune.test] '
+            .'has no server-level root ending in /public in the running configuration (it declares none), '
+            .'so there is no application there to sign in to')
+        // ⚠️ AND NOTHING WAS ASKED OF IT. Asserting only the verdict would pass a family that still fetched
+        // the redirect vhost's login page and merely left it out of the sentence; every /admin/login the
+        // stub answers leaves a session behind, and the run's cost is one attempt per hostname it signs in at.
+        ->and((string) File::get($this->state.'/sessions.json'))->not->toContain('www.stage.kitsune.test')
+        ->and(throttleVerdict($run, 'THR-1'))->not->toContain('www.stage.kitsune.test')
+        ->and(throttleAnswers($this->state))->toHaveCount(7 + count(throttleSites()));
 });
 
 it('asks the store about the login component the page named, not one it knew in advance', function (): void {

@@ -78,7 +78,9 @@ style of `ReleaseScriptTest`: a deploy script is prose until something executes 
 Nothing here is read-only, and the two parts that are not say so loudly.
 
 - **Sign-in is locked out on purpose, for up to 60 seconds.** The throttle family signs in wrongly
-  **seven times plus once more for every hostname the server serves** — ten against a host serving three —
+  **seven times plus once more for every hostname the server serves the application at** — ten against a
+  host serving it at three, and a hostname that declares no application, such as a `www`→apex redirect
+  vhost, is recorded and left alone —
   from the machine it runs on, which is what fills and then trips Filament's login throttle. That
   throttle's key holds the component, the method and the address — and **no hostname** — so the lockout
   covers **every hostname the app serves at once**, for the operator and for anyone sharing that egress
