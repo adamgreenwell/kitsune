@@ -50,6 +50,10 @@ deploy/runbook/run.sh --host forge@stage.example --expect tunnel --token-file ~/
   case ADR-034 forbids, and a flag would hide it.
 - `--token-file` names a **read-only** Cloudflare API token. Without it, the Cloudflare checks are
   VOID and the run cannot report success; the checks that measure the running host still run.
+- `--egress-trace` names an **https** endpoint that answers with this machine's address as a server sees
+  it. Behind a tunnel a check asks the edge, on the same connection as the request it is making; a host
+  with no edge has nothing to ask, so the operator supplies one. It is the operator's to choose, because
+  a default would send every run's address to whoever this file happened to name.
 - The host needs **passwordless sudo** for this user. The scripts arrive on the remote shell's stdin,
   so a sudo that prompted would read the password from the script itself.
 

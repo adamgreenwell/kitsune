@@ -16,6 +16,8 @@
 #   --expect tunnel|dns-only   the topology the operator believes this host has (required)
 #   --manifest <path>      the promise file (default: deploy/runbook/manifest.txt)
 #   --token-file <path>    a Cloudflare read-only token file; without it every CF check is VOID
+#   --egress-trace <url>   an https endpoint that reports this machine's address as a server sees it,
+#                          for the families that must know it on a host with no edge to ask
 #
 # ⚠️ WHAT A VERDICT MEANS. PASS, FAIL, and VOID — "this could not be measured". A run exits non-zero
 # on a VOID exactly as on a FAIL, because a host that could not be measured must never read as a host
@@ -58,6 +60,11 @@ host=""
 expect=""
 manifest="$here/manifest.txt"
 token_file=""
+# ⚠️ WHAT THIS IS FOR, AND WHY IT IS NOT A DEFAULT. Behind a tunnel a family can ask the edge what address
+# it sees, on the same connection as the request it is making. A host with no edge has nothing to ask, so
+# the operator names an endpoint that will say — and it is theirs to choose, because a default would send
+# every run's address to whoever the runbook happened to name.
+egress_trace=""
 
 while (( $# > 0 )); do
   case "$1" in
@@ -65,6 +72,7 @@ while (( $# > 0 )); do
     --expect) expect=${2:-}; shift 2 || refuse "--expect needs a value" ;;
     --manifest) manifest=${2:-}; shift 2 || refuse "--manifest needs a value" ;;
     --token-file) token_file=${2:-}; shift 2 || refuse "--token-file needs a value" ;;
+    --egress-trace) egress_trace=${2:-}; shift 2 || refuse "--egress-trace needs a value" ;;
     *) refuse "unknown option: $1" ;;
   esac
 done
@@ -76,6 +84,13 @@ done
 # Checked here, with the other options, so a mistyped path is reported as a mistyped path. Left
 # later, it would be reached only after the manifest had already refused for its own reason.
 [[ -z "$token_file" || -f "$token_file" ]] || refuse "the token file $token_file does not exist"
+
+# ⚠️ https, AND CHECKED HERE RATHER THAN BY EACH FAMILY. What comes back decides which address a check
+# believes is its own, so a plaintext endpoint would let anything on the path choose it — and a family
+# that validated it for itself would be one more place for the rule to drift. Checked before anything
+# runs, a typo is a refusal rather than a family voiding halfway through a measurement.
+[[ -z "$egress_trace" || "$egress_trace" =~ ^https://[A-Za-z0-9._~-]+(:[0-9]+)?(/|$) ]] \
+  || refuse "--egress-trace [$egress_trace] is not an https URL, and what it answers decides which address a check believes is its own"
 
 # ⚠️ ONE LIST, NOT TWO. The families to run are derived from the manifest itself, because a separate
 # table would be one more thing to drift apart: a family in the table but not the manifest runs and
@@ -251,8 +266,15 @@ for family in "${families[@]:-}"; do
     # arrives at the server from the network a visitor uses: a request made on the host would traverse
     # neither the edge nor the tunnel, and would prove nothing about either. These families reach the
     # server the way a visitor does, and drive anything they need on the host over their own ssh.
+    # ⚠️ EVERY OPTION GOES TO EVERY OUTSIDE FAMILY, AND EVERY OUTSIDE FAMILY DECLARES EVERY OPTION. PHP's
+    # getopt stops at the first long option it was not told about: an undeclared `--egress-trace` ahead of
+    # `--host` empties the whole set, and the family then refuses for want of a host it was given. Passing
+    # it only to the families that want it would put the same trap one step further away, in a table of who
+    # wants what. So run.sh forwards what it has, and RunbookManifestTest runs each outside family with
+    # every one of these options to prove it still speaks.
     if ! php "$from_outside" --host "$host" --expect "$expect" \
-      ${token_file:+--token-file "$token_file"} >> "$out" 2>"$err"; then
+      ${token_file:+--token-file "$token_file"} \
+      ${egress_trace:+--egress-trace "$egress_trace"} >> "$out" 2>"$err"; then
       echo "  the family did not finish: $(complaint "$err")" >&2
     fi
   fi

@@ -485,7 +485,7 @@ ini_set('display_errors', 'stderr');
 // back to its own directory, ran against the repository's instrument instead of the one it was told
 // to use, and reported a pass. One colon keeps the option optional while letting its value be
 // space-separated, which is how run.sh and the tests pass it.
-$options = getopt('', ['host:', 'expect:', 'token-file:', 'runbook:']);
+$options = getopt('', ['host:', 'expect:', 'token-file:', 'egress-trace:', 'runbook:']);
 $host = is_string($options['host'] ?? null) ? $options['host'] : '';
 $expect = is_string($options['expect'] ?? null) ? $options['expect'] : '';
 $runbook = is_string($options['runbook'] ?? null) ? $options['runbook'] : dirname(__DIR__);

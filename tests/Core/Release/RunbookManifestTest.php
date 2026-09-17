@@ -1486,3 +1486,125 @@ it('reads a family declared by a host script that is not a shell script', functi
 
     expect(array_keys(runbookShippedFamilies($root)))->toBe(['sweep']);
 });
+
+it('runs each outside family with every option run.sh passes, and sees it still speak', function (): void {
+    /*
+     * ⚠️ AN OPTION A FAMILY DOES NOT DECLARE SILENCES IT COMPLETELY. PHP's getopt stops at the first long
+     * option it was not told about, so `--egress-trace` arriving ahead of `--host` empties the whole set:
+     * the family refuses for want of a host it was given, on stderr, with no verdict and no sentinel — and
+     * the gate reports a family that died on a host that is fine. It is the same shape as the double-colon
+     * `--runbook` defect that shipped once already.
+     *
+     * ⚠️ AND IT GOES THROUGH THE REAL run.sh, so the option list under test is the one that ships rather
+     * than a copy of it here. ssh and curl are stubbed to fail, so the verdicts are VOID and nothing
+     * reaches the network; what is asserted is that every family parsed its arguments and closed its
+     * stream.
+     */
+    foreach (['ssh', 'curl'] as $command) {
+        File::put($this->dir.'/bin/'.$command, "#!/usr/bin/env bash\ncat > /dev/null 2>&1 || true\necho 'stubbed: no host here' >&2\nexit 97\n");
+        chmod($this->dir.'/bin/'.$command, 0755);
+    }
+
+    File::put($this->dir.'/token', "not-a-token\n");
+    File::makeDirectory($this->dir.'/bare/host', 0755, true);
+
+    $outside = array_filter(runbookShippedFamilies(), static fn (array $scripts): bool => str_contains($scripts[0], '/outside/'));
+    $rows = array_filter(runbookCommittedRows(), static fn (array $row): bool => count($row) === 3 && $row[0] === 'tunnel' && isset($outside[$row[1]]));
+
+    expect($rows)->not->toBe([]);
+
+    File::put($this->dir.'/manifest.txt', implode('', array_map(
+        static fn (array $row): string => implode(' ', $row)."\n",
+        $rows,
+    )));
+
+    $run = new Process(
+        [
+            'bash', dirname(__DIR__, 3).'/deploy/runbook/run.sh',
+            '--host', 'forge@fixture', '--expect', 'tunnel',
+            '--manifest', $this->dir.'/manifest.txt',
+            '--token-file', $this->dir.'/token',
+            '--egress-trace', 'https://trace.example/cdn-cgi/trace',
+        ],
+        $this->dir,
+        ['HOME' => (string) getenv('HOME'), 'TMPDIR' => $this->dir.'/tmp', 'PATH' => $this->dir.'/bin:'.getenv('PATH')],
+    );
+    $run->setTimeout(120);
+    $run->run();
+
+    $kept = glob($this->dir.'/tmp/kitsune-runbook.*') ?: [];
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and($kept)->toHaveCount(1);
+
+    foreach (array_keys($outside) as $family) {
+        $stream = File::get($kept[0].'/'.$family.'.out');
+        $complaint = File::get($kept[0].'/'.$family.'.err');
+
+        // ⚠️ NO SECOND ARGUMENT TO toContain: it is variadic, so a message passed there becomes another
+        // needle, and the assertion silently widens into one the stream cannot meet.
+        expect(str_contains($stream, 'SENTINEL '.$family.' '))
+            ->toBeTrue("[{$family}] closed no stream: ".$stream)
+            ->and(str_contains($complaint, '--host and --expect'))
+            ->toBeFalse("[{$family}] did not see the --host it was given, so it does not declare one of run.sh's options: ".$complaint);
+    }
+
+    // ⚠️ AND EVERY PROMISED CHECK WAS ANSWERED, not reported as a family that never ran.
+    expect($run->getOutput())->not->toContain('produced no sentinel');
+
+    /*
+     * ⚠️ AND AGAIN IN THE ORDER THAT BREAKS, because run.sh's own order hides the defect. Measured with
+     * PHP 8.4.25: an undeclared long option that TRAILS is dropped and everything before it still parses —
+     * which is where run.sh puts `--egress-trace` today — but one that comes first makes getopt return
+     * nothing at all, and one in the middle drops every option after it. So a family that does not declare
+     * an option run.sh passes is fine until the day the options are reordered, and then it refuses for want
+     * of a host it was given. Each family is run here with the option first, where only a declaration saves
+     * it.
+     */
+    foreach ($outside as $family => $scripts) {
+        $hostile = new Process(
+            [
+                'php', $scripts[0],
+                '--egress-trace', 'https://trace.example/cdn-cgi/trace',
+                '--token-file', $this->dir.'/token',
+                '--host', 'forge@fixture', '--expect', runbookDeclaration($scripts[0])[2][0],
+                '--runbook', $this->dir.'/bare',
+            ],
+            $this->dir,
+            ['HOME' => (string) getenv('HOME'), 'TMPDIR' => $this->dir.'/tmp', 'PATH' => $this->dir.'/bin:'.getenv('PATH')],
+        );
+        $hostile->setTimeout(60);
+        $hostile->run();
+
+        expect(str_contains($hostile->getOutput(), 'SENTINEL '.$family.' '))
+            ->toBeTrue("[{$family}] closed no stream when --egress-trace came first: ".$hostile->getOutput().$hostile->getErrorOutput())
+            ->and(str_contains($hostile->getErrorOutput(), '--host and --expect'))
+            ->toBeFalse("[{$family}] lost the --host it was given when --egress-trace came first, so it does not declare that option");
+    }
+});
+
+it('refuses an --egress-trace that is not an https URL, before anything runs', function (string $value): void {
+    /*
+     * What that endpoint answers decides which address a check believes is its own, so a plaintext or
+     * malformed one would let anything on the path choose it. Refused with the other options, so a typo is
+     * a refusal rather than a family voiding halfway through a measurement it cannot finish.
+     */
+    runbookManifest($this->runbook, "tunnel good G-1\n");
+    runbookFamily($this->runbook, 'good', "family good G-1\nverdict G-1 PASS holds\n");
+
+    $process = new Process(
+        ['bash', $this->runbook.'/run.sh', '--host', 'forge@fixture', '--expect', 'tunnel', '--egress-trace', $value],
+        $this->dir,
+        ['HOME' => (string) getenv('HOME'), 'TMPDIR' => $this->dir.'/tmp', 'PATH' => $this->dir.'/bin:'.getenv('PATH')],
+    );
+    $process->setTimeout(60);
+    $process->run();
+
+    expect($process->isSuccessful())->toBeFalse()
+        ->and($process->getErrorOutput())->toContain("Refusing to run: --egress-trace [{$value}] is not an https URL")
+        ->and($process->getOutput())->not->toContain('PASS  G-1');
+})->with([
+    'plaintext' => ['http://trace.example/cdn-cgi/trace'],
+    'no scheme' => ['trace.example/cdn-cgi/trace'],
+    'a shell word that is not a URL' => ['; rm -rf /'],
+]);
