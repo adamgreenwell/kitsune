@@ -184,16 +184,20 @@ function nginxTokens(string $dump): array
 }
 
 /**
- * Each site hostname the server serves, and the document roots the blocks naming it declare.
+ * Each site hostname the server serves, the document roots the blocks naming it declare, and the
+ * `server_name` entries that are patterns rather than names.
  *
  * A `root` inside a `location` is that location's, not the site's, so only a root at the server block's
- * own level counts. The catch-all's `_` is not a site.
+ * own level counts. The catch-all's `_` is not a site, and neither is a wildcard or a regex: this family
+ * signs in to every name it is given, and a wildcard sorts before every letter, so one made the preflight
+ * traces and the whole five-and-a-sixth window run against a name curl rejects outright (literalHostname).
  *
- * @return array<string, list<string>>
+ * @return array{0: array<string, list<string>>, 1: list<string>} the sites, and the patterns
  */
 function siteRoots(string $dump): array
 {
     $sites = [];
+    $patterns = [];
     $depth = 0;
     $serverAt = null;
     $names = [];
@@ -234,8 +238,10 @@ function siteRoots(string $dump): array
 
         if (($words[0] ?? '') === 'server_name') {
             foreach (array_slice($words, 1) as $name) {
-                if ($name !== '' && $name !== '_') {
+                if (literalHostname($name)) {
                     $names[] = $name;
+                } elseif ($name !== '' && $name !== '_') {
+                    $patterns[$name] = true;
                 }
             }
         }
@@ -253,7 +259,7 @@ function siteRoots(string $dump): array
 
     ksort($found);
 
-    return $found;
+    return [$found, array_keys($patterns)];
 }
 
 /**
@@ -768,10 +774,18 @@ function examine(string $host, string $nonce, string $payload, string $storeSour
         return $both('the running configuration could not be read, so there was nothing to sign in to: '.$unreadable);
     }
 
-    $sites = siteRoots($dump);
+    [$sites, $patterns] = siteRoots($dump);
+
+    // Named, not silently dropped: an operator whose wildcard vhost this skipped should read that here
+    // rather than wonder why a name the configuration carries was never signed in to.
+    if ($patterns !== []) {
+        record('THR-1', 'the configuration also names '.implode(', ', $patterns)
+            .', which no request can be made to, so nothing was signed in to there');
+    }
 
     if ($sites === []) {
-        return $both('no site hostname was found in the running configuration, so there was nothing to sign in to');
+        return $both('no site hostname was found in the running configuration, so there was nothing to sign in to'
+            .($patterns === [] ? '' : ' (it names only '.implode(', ', $patterns).', which no request can be made to)'));
     }
 
     [$base, $why] = releaseBase($sites);

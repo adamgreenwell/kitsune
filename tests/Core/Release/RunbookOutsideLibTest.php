@@ -159,6 +159,66 @@ it('cannot run a family that loads the shared helpers without them', function ()
         ->and($run->getOutput())->not->toContain('SENTINEL ');
 });
 
+it('keeps only the server_name entries a request can be made to, and hands back the rest', function (): void {
+    /*
+     * ⚠️ server_name IS NOT A LIST OF HOSTNAMES, and both outside families request every name this returns.
+     * `_` is the catch-all's own name; `*.x`, `.x` and `~^…$` are patterns. None of them resolves — real
+     * curl answers `curl: (3) URL rejected: Bad hostname` — and a wildcard sorts before every letter, so
+     * one wildcard vhost made the first request of every run a failure and voided the family while naming
+     * the operator's own nginx as the reason. A wildcard subdomain is part of the planned alpha bring-up.
+     *
+     * The patterns come back rather than being dropped, so a family can say what it skipped instead of
+     * reporting that a host naming a wildcard names no site at all — a true verdict with a false reason.
+     */
+    File::put($this->dir.'/dump', <<<'CONF'
+    server {
+        server_name _;
+    }
+    server {
+        server_name stage.kitsune.test alias.kitsune.test;
+    }
+    server {
+        server_name *.kitsune.test .kitsune.test ~^(?<sub>.+)\.kitsune\.test$;
+    }
+    CONF);
+
+    // `nginx -T` is whatever this answers with; the helper's own parsing is what is under test.
+    File::put($this->dir.'/ssh', "#!/bin/sh\ncat ".escapeshellarg($this->dir.'/dump')."\n");
+    chmod($this->dir.'/ssh', 0755);
+
+    $harness = $this->dir.'/hostnames.php';
+    File::put($harness, <<<'PHP'
+    <?php
+
+    declare(strict_types=1);
+
+    require_once getenv('KITSUNE_LIB');
+
+    const FAMILY = 'harness';
+    const CHECKS = ['HRN-1'];
+
+    [$names, $patterns, $unreadable] = hostnames('forge@fixture');
+
+    echo 'NAMES '.implode(' ', $names)."\n";
+    echo 'PATTERNS '.implode(' ', $patterns)."\n";
+    echo 'UNREADABLE ['.$unreadable."]\n";
+    PHP);
+
+    $run = new Process(['php', $harness], $this->dir, [
+        'HOME' => (string) getenv('HOME'),
+        'PATH' => $this->dir.':'.getenv('PATH'),
+        'KITSUNE_LIB' => dirname(__DIR__, 3).'/deploy/runbook/outside/lib.php',
+    ]);
+    $run->run();
+
+    expect($run->getOutput())->toBe(implode("\n", [
+        'NAMES stage.kitsune.test alias.kitsune.test',
+        'PATTERNS *.kitsune.test .kitsune.test ~^(?<sub>.+)\.kitsune\.test$',
+        'UNREADABLE []',
+        '',
+    ]), $run->getErrorOutput());
+});
+
 it('keeps the protocol the shared helpers print exactly as the gate reads it', function (): void {
     /*
      * The four lines run.sh and common.sh agree on, printed by the one copy: a verdict starts its line, a

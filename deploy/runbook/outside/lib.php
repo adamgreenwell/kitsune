@@ -253,19 +253,41 @@ function nginxDump(string $host): array
 }
 
 /**
- * The site hostnames the running configuration names.
+ * Whether one `server_name` entry is a name a request can actually be made to.
  *
- * @return array{0: list<string>, 1: string} the hostnames, and why there are none when there are none
+ * ⚠️ server_name IS NOT A LIST OF HOSTNAMES. `_` is the catch-all's own name, not a site's, and a request
+ * to it proves nothing about the site — the tunnel family fails a line the catch-all answered for exactly
+ * that reason. `*.example.com`, `.example.com` and `~^(?<sub>.+)\.example\.com$` are legal server_name
+ * values too, and none of them is a name that resolves: real curl answers `curl: (3) URL rejected: Bad
+ * hostname`. A family that took one for a site would request it, fail, and name the operator's own
+ * configuration as the reason it could not measure the host — and a wildcard sorts before every letter, so
+ * it would be the FIRST name tried. A wildcard subdomain is part of the planned alpha bring-up, so this is
+ * a configuration a real run will meet.
+ */
+function literalHostname(string $name): bool
+{
+    return $name !== '' && $name !== '_'
+        && preg_match('/^(?!-)[A-Za-z0-9-]{1,63}(\.(?!-)[A-Za-z0-9-]{1,63})*\.?$/', $name) === 1;
+}
+
+/**
+ * The site hostnames the running configuration names, and the entries it names that are not hostnames.
+ *
+ * The patterns are returned rather than dropped, because a caller that said "this host names no site"
+ * about a configuration naming a wildcard would be giving a true verdict with a false reason.
+ *
+ * @return array{0: list<string>, 1: list<string>, 2: string} the hostnames, the patterns, and why there are none
  */
 function hostnames(string $host): array
 {
     [$out, $unreadable] = nginxDump($host);
 
     if ($unreadable !== '') {
-        return [[], $unreadable];
+        return [[], [], $unreadable];
     }
 
     $found = [];
+    $patterns = [];
 
     foreach (preg_split('/\R/', $out) ?: [] as $line) {
         $fields = preg_split('/\s+/', trim($line)) ?: [];
@@ -277,15 +299,15 @@ function hostnames(string $host): array
         foreach (array_slice($fields, 1) as $name) {
             $name = rtrim($name, ';');
 
-            // `_` is the catch-all's own name, not a site's, and a request to it proves nothing about
-            // the site — the tunnel family fails a line the catch-all answered for exactly that reason.
-            if ($name !== '' && $name !== '_') {
+            if (literalHostname($name)) {
                 $found[$name] = true;
+            } elseif ($name !== '' && $name !== '_') {
+                $patterns[$name] = true;
             }
         }
     }
 
-    return [array_keys($found), ''];
+    return [array_keys($found), array_keys($patterns), ''];
 }
 
 /** The address the edge says it saw, from a /cdn-cgi/trace body. */

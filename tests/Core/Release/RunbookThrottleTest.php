@@ -1117,6 +1117,33 @@ it('voids an attempt that did not leave over the address family it was meant to'
     'a mapped address' => ['::ffff:192.168.1.9', 'did not leave over the family it was meant to'],
 ]);
 
+it('signs in to the names a request can be made to, and records the patterns it skipped', function (): void {
+    /*
+     * ⚠️ A WILDCARD SORTS BEFORE EVERY LETTER, so `*.kitsune.test` became the hostname the two preflight
+     * traces and the whole five-and-a-sixth window ran against — and real curl rejects it outright
+     * (`curl: (3) URL rejected: Bad hostname`, checked locally), so both checks voided naming the
+     * operator's own nginx as the reason. `*.x`, `.x` and `~^…$` are all legal server_name values, and a
+     * wildcard subdomain is part of the planned alpha bring-up: this is a configuration a real run meets.
+     */
+    throttleDump($this->state, [
+        '*.kitsune.test' => ['/home/kitsune/site/current/public'],
+        'stage.kitsune.test' => ['/home/kitsune/site/current/public'],
+        'stage-fr.kitsune.test' => ['/home/kitsune/site/current/public'],
+    ], "    server {\n        listen 443 ssl;\n        server_name .kitsune.test ~^(?<sub>.+)\\.kitsune\\.test\$;\n"
+        ."        root /home/kitsune/site/current/public;\n    }\n");
+
+    $run = throttleRun($this->dir, $this->family);
+
+    expect($run->isSuccessful())->toBeTrue($run->getOutput().$run->getErrorOutput())
+        ->and(throttleVerdict($run, 'THR-1'))->toContain('PASS')
+        ->and(throttleVerdict($run, 'THR-1'))->toContain('across stage-fr.kitsune.test, stage.kitsune.test')
+        // ⚠️ AND NOTHING WAS EVER REQUESTED FROM ONE. Asserting only the verdict would pass a family that
+        // still signed in to `*.kitsune.test` and merely left it out of the sentence.
+        ->and($run->getOutput())->not->toContain('https://*.kitsune.test')
+        ->and($run->getOutput())->toContain('RECORD THR-1 the configuration also names *.kitsune.test, .kitsune.test, '
+            .'~^(?<sub>.+)\.kitsune\.test$, which no request can be made to');
+});
+
 it('asks the store about the login component the page named, not one it knew in advance', function (): void {
     /*
      * ⚠️ THE CLASS IS PART OF THE BUCKET'S NAME. The key is sha1($component.'|'.$method.'|'.ip()) with
@@ -1343,6 +1370,13 @@ it('reads the running configuration as nginx writes it, and refuses to guess at 
         'point at 2 different releases',
     ],
     'a server that names only the catch-all' => [[], '', 'no site hostname was found'],
+    // A configuration that names a wildcard and nothing else has no site to sign in to, and the reason
+    // says which pattern it found rather than claiming the host named nothing at all.
+    'a server that names only a wildcard' => [
+        ['*.kitsune.test' => ['/home/kitsune/site/current/public']],
+        '',
+        'it names only *.kitsune.test, which no request can be made to',
+    ],
 ]);
 
 it('voids a dump it could not read, and says what nginx said', function (): void {
