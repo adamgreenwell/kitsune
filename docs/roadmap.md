@@ -339,9 +339,12 @@ Run it once Phase 4 lands, and let what you learn inform the real adapter framew
 
 # Post-1.0
 
-## v1.1 — API and theming
+## v1.1 — API and theming, reader accounts and the privacy tooling
 
-*2–3 months.*
+*4–6 months, grown from 2–3.* [ADR-036](decision-log.md) and [ADR-037](decision-log.md) added the chat module and
+reader accounts, and the three [ADR-020](decision-log.md) deliverables below were promised for v1.1 and missing from
+this list. Per **Honest timeline** at the end of this file, the phase absorbs the work and the estimate moves with it,
+rather than the estimate standing still while the work grows underneath it ([ADR-011](decision-log.md)).
 
 - [ ] REST API generated from schema, site-scoped, per-entity permissions
 - [ ] Token auth + scopes (Sanctum); consider Laravel 13's first-party JSON:API resources
@@ -349,6 +352,9 @@ Run it once Phase 4 lands, and let what you learn inform the real adapter framew
 - [ ] Menus, routing, slugs, redirects
 - [ ] Media library + Flysystem
 - [ ] Caching, correctly scope-keyed (org and site)
+- [ ] **Reader accounts** ([ADR-037](decision-log.md)) — their own guard, provider and model, provided by the host; registration, sign-in and recovery. A reader is not a panel user, and `canAccessPanel()` returns true for every row of the one that exists
+- [ ] **Consent records, subject-access export and erasure tooling** — [ADR-020](decision-log.md) promised all three for v1.1 and this list omitted them, which is how a privacy promise quietly becomes a later one. `erasure_log` has its table and no writer
+- [ ] **`kitsune/support`** ([ADR-036](decision-log.md)) — the chat module: per-Site link, widget injection through the theme layer above, signed visitor identity, webhook receiver. Prototyped against stage, and merged only once Phase 3's registry and settings store exist, since its settings hold secrets core cannot yet store encrypted
 
 ## v1.2 — Plugin SDK and API freeze
 

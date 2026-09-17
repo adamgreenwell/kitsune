@@ -2605,6 +2605,193 @@ behind the shell's own check, the internal check-mode guard, a PHP really missin
 the clone checked out `DEPLOY_SHA`.
 ---
 
+## ADR-036 — Chat support runs as its own service, and Kitsune talks to it over the network
+
+**Status:** Decided · 2026-09-17 · **Enlarges v1.1 (ADR-011); the estimate moved with it**
+
+Support chat is wanted for the two real installs driving this platform: a trade publisher whose readers ask about a
+subscription, and a marketplace whose buyers and sellers ask about an order. Those scenarios are the maintainer's and are
+not in this repository, so nothing below argues from them by number — what they contribute is the requirement, which is
+that a signed-in person can reach support from a Kitsune site and an agent can answer.
+
+Wayfindr is already that product: live chat, cobrowsing, ticketing and a help centre, `AGPL-3.0-or-later` for its server
+and MIT for its browser widget. So the question was never whether to build chat. It was where its code runs.
+
+| Rejected | Why it lost |
+|---|---|
+| Port Wayfindr's server into Kitsune's process | AGPL §5(c) makes a combined program AGPL unless the copyright holder relicenses first, and ADR-004's open-core line cannot absorb that. It is also 91,198 lines of application PHP and 119 Blade views, kept by hand against a product that has moved 817 commits since its last release, and none of it could ship before v1.2's API freeze. |
+| Extract a shared support domain both hosts consume | There is no domain layer to extract: a message is created in six separate places. **Licensing is not the obstacle** — Wayfindr's own ADR 0001 already reserves `packages/laravel-sdk` under MIT for exactly this, on the reasoning that integration packages should be permissive. The obstacles are that the package is an empty placeholder, and that its ports would be designed against one real host and one imagined one. |
+| Build chat inside Kitsune instead | Duplicates a working product to avoid a network call, and puts a second realtime stack inside the floor ADR-027 defends. |
+
+⚠️ **Commercial interest, disclosed per ADR-023.** Wayfindr is the maintainer's other product. This decision makes it
+Kitsune's only supported chat path, which is an adoption route into it, and the interests are not symmetric: KaaS could
+operate that second service for a tenant, while a self-hoster provisions a database server, queue, scheduler and
+realtime server themselves — the asymmetry ADR-027 exists to watch, pointing the same way ADR-026 already discloses. It
+is decided anyway because building a second chat product is the worse engineering answer, and because the alternative
+that avoids the conflict — no chat at all — serves nobody. The asymmetry is named here rather than left to be found.
+
+### Decision
+
+**Wayfindr runs as its own application** — its own database, queue, scheduler and realtime server — and Kitsune requires
+none of them. ADR-027's floor is untouched for an install that does not want chat, and an install that does adds a
+second service rather than a second set of requirements.
+
+**It runs a published release, unmodified.** ⚠️ That rule is not satisfiable today and the gap is the schedule, not a
+detail: Wayfindr's only published release is `v0.7.0` (25 August 2026), and everything this integration needs — the API
+writes, the outbound webhooks, and the two upstream gaps named at the end — sits on unreleased `main`. Every claim in
+this ADR was read at `main` `13541b3d`, which is 817 commits past that tag. Until a release carries those contracts,
+there is nothing to integrate against, and running a fork instead would take on AGPL §13's source-offer duty for a
+service Kitsune's users reach over a network.
+
+**`kitsune/support` will be the only Kitsune-side code**: a first-party module that links a Site to a Wayfindr site,
+puts the widget on that Site's public pages, mints the visitor identity, receives webhooks, and fans erasure and export
+out to every mapped site. None of it exists, and two things it needs do not exist either — the v1.1 theme layer it would
+inject through, and encrypted module settings for the secrets it would hold.
+
+**Kitsune never stores a transcript.** It stores references: the Wayfindr site id, support codes, and a per-site subject
+key, `HMAC(K_subject, <the Site's stable identifier> ":" <the reader's stable identifier>)`, with `K_subject` held only
+by Kitsune. Wayfindr therefore cannot link one reader across a publisher's brands, and Kitsune can, which is exactly
+what an erasure request has to reach. The join is never Wayfindr's own visitor id: its identity merges re-anchor a
+visitor's rows onto a surviving id and record the old one as an alias, so that id answers a lookup without being a
+stable key to store.
+
+⚠️ **Two things that formula needs, and neither exists.** `sites` has an auto-increment `id`, an org-unique `handle` and
+a globally-unique `slug`, and no immutable public identifier: a slug can be renamed, and renaming one would silently
+re-key every subject derived from it. And `K_subject` cannot be rotated in place — rotation means re-deriving and
+re-mapping every subject on both sides, and losing it means erasure can no longer be targeted at all, which makes it
+backup-critical in the way `APP_KEY` is. The module chooses and records both before it writes a single subject.
+
+**Identity crosses the boundary signed, and only one way.** Kitsune signs a short-lived token for the reader it has
+authenticated, on the Site that resolved the request, and Wayfindr verifies it before binding the visitor. The reader
+model that makes this possible is ADR-037.
+
+**Agents work in Wayfindr's own dashboard, and Kitsune is neither an identity provider nor a host for Wayfindr's UI.**
+The admin links out rather than embedding: `e2e/admin.spec.js` holds the admin pages it visits to requesting nothing
+from another host, and ADR-027's floor names external services as something core does not require. Making Kitsune an
+OIDC provider would also be new public surface before v1.2, which CONTRIBUTING forbids.
+
+**The module is free**, under Kitsune's own `MPL-2.0`. ADR-004 says the free/paid line is declared once and never moves,
+and this is that declaration. The value sits in Wayfindr, which is AGPL and free, and in an MIT widget, so a paid thin
+client would be trivially reproducible anyway.
+
+**Promotion into core is closed, not merely unplanned.** Wayfindr needs a database server and always-on workers, and
+ADR-027 says core may require neither for a default single-site install. Promoting chat into core would mean amending
+that ADR, which this one does not do.
+
+**Erasure is not shipped as the operator's problem.** ADR-020 rejects leaving compliance to the operator because it
+ships a legal liability to every self-hoster, and a first-party module that cannot erase would do exactly that. So the
+module is not released as generally available until a subject's erasure and export reach the second service. Anyone
+running it before then — the maintainer, on the two real installs — is told plainly, in the module and in its docs, that
+chat-side erasure and export are manual, and that gap is a release blocker rather than a footnote.
+
+**Scope is customers talking to staff.** Buyer-to-seller and dispute threads are not this: a Wayfindr agent sees every
+conversation on a site they support, and a ticket has a single requester, so per-transaction visibility and legal holds
+belong to a marketplace module rather than here.
+
+### What would reopen the shared package
+
+Any one of these, and none is a schedule:
+
+1. After Wayfindr's erase, export and provisioning APIs ship, network fan-out proves unworkable in practice for a
+   multi-site publisher.
+2. Evidence justifies promoting chat into core, which would mean amending ADR-027 first.
+3. Wayfindr passes 1.0 and a second real host needs its domain in-process.
+
+### Open, and deliberately not decided here
+
+- **How the widget reaches a page.** Server-rendered into the theme's markup, or loaded client-side. The first puts a
+  per-reader token into a cacheable document; the second costs a request and needs the token fetched from a same-origin
+  endpoint. The theme layer and Kitsune's caching (both v1.1) decide this together, and neither exists.
+- **What the site does when Wayfindr is unreachable**, for the widget and for the webhook receiver's replay.
+- **Which identifier is stable**, per the warning above.
+
+### Enforced by
+
+**Nothing, and saying so is the point.** No module exists; Phase 3's registry, manifest and settings store come first,
+and the paragraphs above are a decision rather than a description. AGENTS.md #14 exists because consequences written
+before the code read as done.
+
+When it lands, these are the claims a test can hold: core's manifest names no Wayfindr package; a Site with no link
+renders no widget; nothing is injected without a consent record or under `Sec-GPC`; the webhook receiver verifies a
+signature over the raw body before parsing and sets the site context before any scoped write; and an erasure reaches
+every mapped site and records a pseudonymous receipt.
+
+⚠️ **Two things this ADR depends on do not exist in Wayfindr**, read at `13541b3d`. It neither signs nor verifies a
+host's statement about who a visitor is: `external_id` arrives from the browser as a plain field, and the first visitor
+to present an unclaimed value keeps it. And it has no per-subject erasure, and no subject-access export — a dashboard
+CSV of visitor directory rows exists, which is a contact list rather than a subject's conversations, messages, tickets
+and attachments. Both are upstream work this integration waits on, and an ADR that assumed them would be describing a
+product that does not ship.
+
+---
+
+## ADR-037 — A reader is not a panel user, and gets a guard of their own
+
+**Status:** Decided · 2026-09-17 · **Enlarges v1.1 (ADR-011); the estimate moved with it**
+
+Kitsune has no concept of a person who is not staff. The scenarios driving the platform need one: readers who register
+for gated downloads and manage subscriptions in one place, buyers and sellers, and the signed-in visitor chat recognises
+(ADR-036). The skeleton's `User` is the panel user, and its `canAccessPanel()` returns `true` for every row, so a reader
+stored there is one missing check away from the admin.
+
+| Rejected | Why it lost |
+|---|---|
+| A flag or role on the panel user | The protection would be one `canAccessPanel()` edit, and the blast radius is the whole admin. RBAC assignment is per org (ADR-033) and a reader holds no org role, so the two populations do not share the question the table exists to answer. The reader population is also the larger one by orders of magnitude, sitting in the table the admin authenticates against. |
+| A reader model in core | Core owns no user model and does not need one (ADR-033): `role_user` references a `users` table core did not create, and `Permissions::userModel()` asks the panel's own auth provider instead. The same reasoning applies unchanged. |
+| Defer readers; offer anonymous chat and no accounts | Registration, a preference centre, gated downloads and recognised chat all reduce to this one missing concept, and it does not get smaller by waiting. |
+
+### Decision
+
+**Readers get their own guard, provider and model, provided by the host**, exactly as the panel user is. Core owns none
+of them.
+
+**The host declares which guard is the reader guard; core never guesses.** This is the one mechanism the panel-user
+precedent does not hand over: Filament tells core which panel is handling the request, and `Permissions::userModel()`
+asks *that panel's* provider for its model. Nothing announces a reader guard the same way, and ADR-033 already records
+what guessing costs — a `config('auth.providers.users.model')` fallback that failed open on a host not shaped like the
+skeleton. So the host declares the guard explicitly, and core fails closed when nothing has: no declared reader guard
+means no reader, not a guessed one.
+
+**A reader cannot reach a panel.** The reader guard is not a Filament guard, and `canAccessPanel()` stays a question
+only a panel user is ever asked.
+
+**One identity, org-wide; everything else per site.** A reader is one row in one org, so a publisher's seven brands are
+one account rather than seven, and consent, subscriptions, entitlements and profiles hang off it per site. The panel
+user is already org-wide in the same sense — `#[OrgScopedThroughPivot(table: 'org_user')]` — so this is that pattern
+applied to a second population, not a new one.
+
+⚠️ **One identity is not one session, and this ADR does not decide the session.** ADR-021 gives each Site its own
+hostname, and a session cookie does not cross hosts. "Manage every brand in one place" is therefore satisfied by a
+single account on a single preference-centre host; making the reader appear signed in on all seven brand hostnames is
+single sign-on, which is a separate decision with its own cost, and nothing here settles it.
+
+**Kitsune is not the customer record.** Where an audience platform is the custodian, Kitsune keeps its own internal
+identifier and that platform's customer id. Email is an attribute rather than the identity, because it changes on either
+side — including by a customer-service edit Kitsune never sees — and a change propagates both ways.
+
+**Consent is a precondition, not a later nicety.** A per-reader profile for recommendations may be built only behind
+explicit consent that names what it spans, including across brands; `Sec-GPC` declines it; retention is bounded; and
+erasure reaches the profile as well as the support service's copy (ADR-036). ADR-020 already promised consent records,
+subject-access export and erasure tooling for v1.1, and the roadmap had omitted all three — this ADR is why they are
+back on it.
+
+⚠️ **ADR-020's `pii_class` does not reach these columns, and pretending otherwise would be the failure this log keeps
+recording.** That classification lives on `field_storage` — a row the schema engine creates when a tenant defines a
+runtime field — and its fail-closed enforcement is over that table. A reader model supplied by the host has ordinary
+migration columns, which the mechanism cannot see. So the reader model records its own classification, in a form the
+erasure and export tooling can read, and whether that becomes an extension of `pii_class` or a second declaration is
+decided when that tooling is built rather than asserted here.
+
+### Enforced by
+
+**Nothing yet.** No guard, provider or model exists, and no roadmap phase scheduled one before this ADR.
+
+When it lands: a reader cannot reach any panel route, asserted from the reader's side rather than the panel's; core
+refuses to resolve a reader when no guard is declared; a profile cannot be written without a consent record; `Sec-GPC`
+declines one; and erasing a reader removes the profile and calls the support fan-out.
+
+---
+
 ## Open questions
 
 - Storage benchmark at 10k / 100k / 1M entries
