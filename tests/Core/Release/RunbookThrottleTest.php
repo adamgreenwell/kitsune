@@ -1208,6 +1208,17 @@ it('fails a key that holds the session or the email as well as the address', fun
 
     expect($run->isSuccessful())->toBeFalse()
         ->and(throttleVerdict($run, 'THR-2'))->toContain('FAIL')
+        /*
+         * ⚠️ AND THE PREMISE, NOT ONLY THE CONCLUSION. Only the trailing clause was held here, so the FAIL
+         * described the eighth attempt as having "a new address of its own" — which belongs to the seventh,
+         * whose unthrottled rejection is the PASS condition — while its own RECORD line two lines above said
+         * the edge saw 203.0.113.50, and this family's PASS text for the same attempt called it "a new
+         * session with a new email from 203.0.113.50". The two now agree, and the wrong half cannot come
+         * back unnoticed.
+         */
+        ->and(throttleVerdict($run, 'THR-2'))->toContain('a new session with a new email from 203.0.113.50 was not throttled')
+        ->and(throttleVerdict($run, 'THR-2'))->not->toContain('a new address of its own')
+        ->and($run->getOutput())->toContain('attempt 8 over IPv4, the edge saw 203.0.113.50')
         ->and(throttleVerdict($run, 'THR-2'))->toContain('holds the session or the email rather than the address alone');
 })->with([
     'the session' => ['address+session'],

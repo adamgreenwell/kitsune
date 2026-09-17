@@ -1492,7 +1492,15 @@ function examine(string $host, string $nonce, string $payload, string $storeSour
     } elseif ($ipv6 !== 'FAILED') {
         $twoVoids[] = 'the attempt from the second address could not be judged';
     } elseif ($fresh === 'FAILED') {
-        $twoFails[] = 'a new session with a new address of its own was not throttled from the address that is, so the key holds the session or the email rather than the address alone';
+        // ⚠️ THE ATTEMPT THIS IS ABOUT CARRIES NO ADDRESS OF ITS OWN, AND MUST NOT BE SAID TO. The eighth
+        // attempt is sent from $edge4 deliberately — a new session and a new email are the only things
+        // that change, and that reuse is the whole basis of the inference. Calling it "a new address of
+        // its own" described the SEVENTH attempt, whose unthrottled rejection is the PASS condition, and
+        // contradicted this family's own PASS text for this very attempt twenty lines below. A correct
+        // verdict with a false explanation is the defect class this runbook treats as its own, and on such
+        // a host THR-1 comes back VOID, so this line is the only one that names the fault.
+        $twoFails[] = 'a new session with a new email from '.$edge4.' was not throttled, though that address\'s bucket is full, '
+            .'so the key holds the session or the email rather than the address alone';
     } elseif ($fresh !== 'THROTTLED') {
         $twoVoids[] = 'the attempt from a fresh session could not be judged';
     } elseif ($post === []) {
