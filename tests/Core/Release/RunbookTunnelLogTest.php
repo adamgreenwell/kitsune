@@ -588,8 +588,8 @@ it('voids a host that named no site, and still removes the probe', function (): 
 
 it('voids a dump it could not read, and says what nginx said, rather than blaming the host', function (): void {
     /*
-     * ⚠️ THIS IS THE ONE THAT SHIPPED. `hostnames()` ran `sudo -n bash -c 'nginx -T 2>/dev/null | awk …'`,
-     * and wrapped in a shell the dump never arrives: nginx writes nothing to stdout and complains that it
+     * ⚠️ THIS IS THE ONE THAT SHIPPED. The family read the dump with `sudo -n bash -c 'nginx -T 2>/dev/null
+     * | awk …'`, and wrapped in a shell the dump never arrives: nginx writes nothing to stdout and says it
      * cannot bind, because the running server holds those listeners. Measured on stage (2026-09-16): the
      * wrapped form 0 stdout lines and 21 on stderr, the direct form 280 and exit 0, same host, same minute.
      * `2>/dev/null` threw away the explanation and the status came from `sort`, so a total failure arrived
