@@ -1481,9 +1481,9 @@ it('signs in at the hostnames an application answers at, and records the ones th
     expect($run->isSuccessful())->toBeTrue($run->getOutput().$run->getErrorOutput())
         ->and(throttleVerdict($run, 'THR-1'))->toContain('PASS')
         ->and(throttleVerdict($run, 'THR-2'))->toContain('PASS')
-        ->and($run->getOutput())->toContain('RECORD THR-1 the configuration also serves [www.stage.kitsune.test] '
-            .'has no server-level root ending in /public in the running configuration (it declares none), '
-            .'so there is no application there to sign in to')
+        ->and($run->getOutput())->toContain('RECORD THR-1 the configuration also serves hostnames that name no application: '
+            .'[www.stage.kitsune.test] has no server-level root ending in /public in the running configuration '
+            .'(it declares none), so nothing was signed in to there')
         // ⚠️ AND NOTHING WAS ASKED OF IT. Asserting only the verdict would pass a family that still fetched
         // the redirect vhost's login page and merely left it out of the sentence; every /admin/login the
         // stub answers leaves a session behind, and the run's cost is one attempt per hostname it signs in at.

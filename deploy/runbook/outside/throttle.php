@@ -852,8 +852,8 @@ function examine(string $host, string $nonce, string $payload, string $storeSour
     // Recorded for the reason a pattern is: an operator whose redirect vhost this left out should read it
     // here rather than wonder why a name the configuration carries was never signed in to.
     if ($rootless !== []) {
-        record('THR-1', 'the configuration also serves '.implode('; ', $rootless)
-            .', so there is no application there to sign in to');
+        record('THR-1', 'the configuration also serves hostnames that name no application: '.implode('; ', $rootless)
+            .', so nothing was signed in to there');
     }
 
     if ($sites === []) {
