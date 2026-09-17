@@ -664,8 +664,18 @@ it('refuses a verdict for an id the family never declared', function (): void {
     $run = runbookRun($this->dir);
 
     expect($run->isSuccessful())->toBeFalse()
-        ->and($run->getErrorOutput())->toContain('this family did not declare that id')
+        ->and($run->getErrorOutput())->toContain('verdict S-9 PASS [an id this family never promised]: this family did not declare that id')
         ->and($run->getOutput())->toContain('VOID  S-1');
+});
+
+it('quotes a verdict refused for an outcome that is not one of the three', function (): void {
+    runbookManifest($this->runbook, "tunnel odd O-1\n");
+    runbookFamily($this->runbook, 'odd', "family odd O-1\nverdict O-1 FAILED \"a relay dials the web server\"\n");
+
+    $run = runbookRun($this->dir);
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and($run->getOutput())->toContain('VOID  O-1 (odd) — the family refused to check (verdict O-1 FAILED [a relay dials the web server]: [FAILED] is not PASS, FAIL or VOID)');
 });
 
 it('voids a family that refused a verdict after every promised one, where the run used to pass', function (): void {
@@ -675,6 +685,10 @@ it('voids a family that refused a verdict after every promised one, where the ru
      * promised check had a PASS, and the refusal existed only on stderr, which run.sh echoes and does not judge:
      * the run printed "Every promised check passed." and removed the streams. A refusal exits 1, as a FAIL does,
      * so the stream has to say it.
+     *
+     * ⚠️ AND THE REFUSED FAIL IS QUOTED. The refusal named only the check, so the FAIL appeared nowhere, and the one
+     * measurement the report could quote for X-1 was the PASS before it. The quote must not read as a verdict itself,
+     * glued onto the refusal.
      */
     runbookManifest($this->runbook, "tunnel twice X-1\ntunnel twice X-2\n");
     runbookFamily($this->runbook, 'twice', <<<'BASH'
@@ -688,13 +702,14 @@ it('voids a family that refused a verdict after every promised one, where the ru
     $kept = glob($this->dir.'/tmp/kitsune-runbook.*') ?: [];
 
     expect($run->isSuccessful())->toBeFalse()
-        ->and($run->getOutput())->toContain('VOID  X-1 (twice) — the family refused to check (verdict X-1: emitted twice)')
+        ->and($run->getOutput())->toContain('VOID  X-1 (twice) — the family refused to check (verdict X-1 FAIL [a second look found a relay]: emitted twice)')
         ->and($run->getOutput())->toContain('for this check it reported PASS: no relay dials the web server')
-        ->and($run->getOutput())->toContain('VOID  X-2 (twice) — the family refused to check (verdict X-1: emitted twice)')
+        ->and($run->getOutput())->toContain('VOID  X-2 (twice) — the family refused to check (verdict X-1 FAIL [a second look found a relay]: emitted twice)')
+        ->and($run->getOutput())->not->toContain('after other output on its line')
         ->and($run->getOutput())->not->toContain('Every promised check passed.')
         ->and($kept)->toHaveCount(1)
         ->and($run->getErrorOutput())->toContain("The families' own output is kept in {$kept[0]}")
-        ->and(File::get($kept[0].'/twice.out'))->toContain("REFUSED twice verdict X-1: emitted twice\n")
+        ->and(File::get($kept[0].'/twice.out'))->toContain("REFUSED twice verdict X-1 FAIL [a second look found a relay]: emitted twice\n")
         ->and(File::get($kept[0].'/twice.out'))->not->toContain('SENTINEL');
 });
 

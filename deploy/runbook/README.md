@@ -35,8 +35,8 @@ Three rules make silence fail with everything else:
 - **A refusal is written into the stream.** A family that refuses — a precondition it cannot meet, or
   a verdict its own guard rejects — prints `REFUSED <family> <reason>` and withholds its sentinel, and
   either one voids the whole family with the reason shown. A refusal exits 1, as a FAIL does, so the
-  exit status cannot say it, and a refused verdict is never printed, so without this a refusal after
-  every promised verdict left a stream that added up.
+  exit status cannot say it. A rejected verdict is quoted in the reason and never printed as a verdict,
+  so without this a refusal after every promised verdict left a stream that added up.
 
 ## Running it
 

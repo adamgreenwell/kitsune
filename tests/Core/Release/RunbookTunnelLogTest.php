@@ -502,8 +502,8 @@ it('refuses a verdict for a check it does not declare, and still removes the pro
      * ⚠️ WHY verdict() THROWS RATHER THAN EXITS. This refusal fires inside the measuring path, after the
      * probe log is installed; an exit would skip the `finally` that removes it and leave the server changed
      * until the dead-man timer fired. The mutant reports its TUN-1 result under an id it never declared: the
-     * refusal reaches stderr and the stream, TUN-2 still reports the probe removed, the undeclared id is never
-     * printed as a verdict, and the stream is not closed.
+     * refusal reaches stderr and the stream, quoting the verdict it refused, TUN-2 still reports the probe removed,
+     * the undeclared id is never printed as a verdict, and the stream is not closed.
      */
     $source = File::get($this->family);
     $mutation = "verdict('TUN-1', 'PASS', 'every one of '";
@@ -515,10 +515,11 @@ it('refuses a verdict for a check it does not declare, and still removes the pro
     File::put($mutant, str_replace($mutation, "verdict('TUN-9', 'PASS', 'every one of '", $source));
 
     $run = tunnelLogRun($this->dir, $mutant);
+    $refused = 'verdict TUN-9 PASS [every one of stage.kitsune.test arrived from 127.0.0.1 with TLS terminated here, answered by PHP, and the last forwarded entry as the edge saw it]: this family did not declare that id';
 
     expect($run->isSuccessful())->toBeFalse()
-        ->and($run->getErrorOutput())->toContain('verdict TUN-9: this family did not declare that id')
-        ->and($run->getOutput())->toContain("REFUSED tunnel-log verdict TUN-9: this family did not declare that id\n")
+        ->and($run->getErrorOutput())->toContain($refused)
+        ->and($run->getOutput())->toContain("REFUSED tunnel-log {$refused}\n")
         ->and(tunnelLogVerdict($run, 'TUN-2'))->toContain('PASS STATE stop removed')
         ->and($run->getOutput())->not->toContain('VERDICT TUN-9')
         ->and($run->getOutput())->not->toContain('SENTINEL');
@@ -538,8 +539,8 @@ it('refuses a second verdict for one check', function (): void {
     $run = tunnelLogRun($this->dir, $mutant, 'dns-only');
 
     expect($run->isSuccessful())->toBeFalse()
-        ->and($run->getErrorOutput())->toContain('verdict TUN-1: emitted twice')
-        ->and($run->getOutput())->toContain("REFUSED tunnel-log verdict TUN-1: emitted twice\n")
+        ->and($run->getErrorOutput())->toContain('verdict TUN-1 VOID [no probe was installed on a host this family does not check]: emitted twice')
+        ->and($run->getOutput())->toContain("REFUSED tunnel-log verdict TUN-1 VOID [no probe was installed on a host this family does not check]: emitted twice\n")
         ->and(substr_count($run->getOutput(), 'VERDICT TUN-1 '))->toBe(1)
         ->and($run->getOutput())->not->toContain('SENTINEL');
 });
@@ -551,6 +552,9 @@ it('voids the whole family through run.sh when it refuses a verdict after every 
      * one. run.sh printed "Every promised check passed.", exited 0 and deleted the streams, with the refusal
      * only on stderr. Both mutants add their verdict at the end of `try`, after TUN-1's: a second hostname's
      * FAIL reported as TUN-1 again, and a new check written without declaring it.
+     *
+     * ⚠️ AND THE REFUSED FAIL IS QUOTED, in the report and in the kept stream. The refusal named only the check, so
+     * the FAIL appeared nowhere, and the report's one measurement of TUN-1 was the PASS before it.
      */
     $source = File::get($this->family);
     $mutation = "the last forwarded entry as the edge saw it', \$verdicts);\n    }\n";
@@ -565,6 +569,7 @@ it('voids the whole family through run.sh when it refuses a verdict after every 
         ->and($run->getOutput())->toContain("VOID  TUN-2 (tunnel-log) — the family refused to check ({$reason})")
         // The probe was still removed: TUN-2's own verdict, reported from `finally`, is shown with the VOID.
         ->and($run->getOutput())->toContain('for this check it reported PASS: STATE stop removed')
+        ->and($run->getOutput())->not->toContain('after other output on its line')
         ->and($run->getOutput())->not->toContain('Every promised check passed.')
         ->and($kept)->toHaveCount(1)
         ->and($run->getErrorOutput())->toContain("The families' own output is kept in {$kept[0]}")
@@ -573,10 +578,10 @@ it('voids the whole family through run.sh when it refuses a verdict after every 
 })->with([
     'a second verdict for TUN-1' => [
         "verdict('TUN-1', 'FAIL', 'other.kitsune.test: it arrived for host [stage.kitsune.test]', \$verdicts);",
-        'verdict TUN-1: emitted twice',
+        'verdict TUN-1 FAIL [other.kitsune.test: it arrived for host [stage.kitsune.test]]: emitted twice',
     ],
     'a check it never declared' => [
         "verdict('TUN-3', 'FAIL', 'a new check that found a problem', \$verdicts);",
-        'verdict TUN-3: this family did not declare that id',
+        'verdict TUN-3 FAIL [a new check that found a problem]: this family did not declare that id',
     ],
 ]);

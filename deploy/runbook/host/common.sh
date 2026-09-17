@@ -149,26 +149,35 @@ kitsune_one_line() {
 
 # One verdict. The reason is printed for every outcome, including PASS, because a PASS whose reason
 # reads as "nothing to check" is how a vacuous check announces itself to the person reading the log.
+#
+# ⚠️ A REFUSED VERDICT IS QUOTED, NOT DROPPED. Each guard below named only the id, so a FAIL it refused — a
+# second verdict for a check, or one for a check nobody declared — appeared nowhere: not in the report, the
+# kept stream or stderr, and the only measurement run.sh could quote for that check was the PASS before it.
+# The refusal now carries the verdict as it was called, starting `verdict` in lower case, which neither
+# run.sh's verdict patterns nor its search for a glued verdict can match.
 verdict() {
   local id=$1 outcome=$2
   shift 2
+  local reason refused
+  reason=$(kitsune_one_line "$*")
+  refused="verdict $id $outcome [$reason]"
 
   case "$outcome" in
     PASS | FAIL | VOID) ;;
-    *) refuse "verdict $id: [$outcome] is not PASS, FAIL or VOID" ;;
+    *) refuse "$refused: [$outcome] is not PASS, FAIL or VOID" ;;
   esac
 
   case " $KITSUNE_EXPECTED " in
     *" $id "*) ;;
-    *) refuse "verdict $id: this family did not declare that id" ;;
+    *) refuse "$refused: this family did not declare that id" ;;
   esac
 
   case " $KITSUNE_EMITTED " in
-    *" $id "*) refuse "verdict $id: emitted twice" ;;
+    *" $id "*) refuse "$refused: emitted twice" ;;
     *) KITSUNE_EMITTED="$KITSUNE_EMITTED $id" ;;
   esac
 
-  printf 'VERDICT %s %s %s\n' "$id" "$outcome" "$(kitsune_one_line "$*")" >&3
+  printf 'VERDICT %s %s %s\n' "$id" "$outcome" "$reason" >&3
 }
 
 # Evidence that is not a verdict. It reaches the report and never the exit status.

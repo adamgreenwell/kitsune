@@ -64,13 +64,16 @@ function verdict(string $id, string $outcome, string $reason, array &$verdicts):
 {
     // ⚠️ THE GUARDS common.sh's verdict() APPLIES. An undeclared id or a second verdict for one check is
     // this runbook's bug, and printing it would let the gate judge a check nobody promised or pick between
-    // two.
+    // two. A refusal quotes the verdict it refused, for the reason common.sh gives: a FAIL refused here was
+    // otherwise reported nowhere.
+    $refused = "verdict {$id} {$outcome} [".oneLine($reason).']';
+
     if (! in_array($id, CHECKS, true)) {
-        refuse("verdict {$id}: this family did not declare that id");
+        refuse("{$refused}: this family did not declare that id");
     }
 
     if (in_array($id, array_column($verdicts, 0), true)) {
-        refuse("verdict {$id}: emitted twice");
+        refuse("{$refused}: emitted twice");
     }
 
     echo 'VERDICT '.$id.' '.$outcome.' '.oneLine($reason)."\n";

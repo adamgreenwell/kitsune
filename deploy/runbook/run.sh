@@ -261,8 +261,9 @@ done
 # 3. Each family's own stream, judged against its own sentinel and against the promise.
 #
 # ⚠️ A STREAM CAN MISLEAD IN MORE WAYS THAN BY STOPPING EARLY, and each of them voids the whole family:
-#   - it refused. A refused verdict is never printed, so a refusal after every promised verdict used to leave
-#     a stream that added up — and when a family closed over its refusal, the run passed;
+#   - it refused. A refused verdict is never printed as a verdict, only quoted in its refusal, so a refusal after
+#     every promised verdict used to leave a stream that added up — and when a family closed over it, the run
+#     passed;
 #   - a verdict, sentinel or refusal starts partway through a line, glued onto output that did not end its
 #     own. The gate accepts one only at the start of a line, because a reason may quote one, so a glued FAIL
 #     counted for nothing and was reported nowhere, and a glued sentinel read as a family that never ran;
