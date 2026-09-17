@@ -93,7 +93,9 @@ Nothing here is read-only, and the two parts that are not say so loudly.
 - **It signs nothing in.** Every attempt uses an address under `.invalid` and a fixed string that is not a
   password, so no real account is ever touched and no lockout of a user's own can follow.
 - **It reads the host's application once per window.** `host/throttle-store.php` boots the release as its
-  owner to read two cache keys. It never writes, never warms a cache, and refuses to run as root.
+  owner to read the two limiters' cache keys for the addresses it is asked about, and the numbers the
+  release's own Livewire declares for one of them. It never writes, never warms a cache, and refuses to
+  run as root.
 
 ## How it is being built
 
