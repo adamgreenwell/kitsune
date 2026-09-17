@@ -13,6 +13,7 @@ use Illuminate\Foundation\Application;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\RateLimiter;
+use Livewire\Mechanisms\HandleComponents\Checksum;
 use Livewire\Mechanisms\HandleRequests\EndpointResolver;
 
 /*
@@ -35,7 +36,8 @@ use Livewire\Mechanisms\HandleRequests\EndpointResolver;
  * id here would make the completeness gate demand a verdict from a script run.sh never dispatches. So it
  * refuses loudly — non-zero, with the reason on stderr — and prints lines its caller parses:
  *
- *   STORE {json}                 the store the limiter really uses, its prefix, the host clock, the base
+ *   STORE {json}                 the store the limiter really uses, its prefix, the host clock, the base,
+ *                                and the release's own numbers for the checksum-failure limiter
  *   BUCKET <label> {json}        one address's key, its attempts and the raw timer behind it
  *   CHECKSUM <label> {json}      the same for Livewire's checksum-failure limiter, which can 429 a run
  *
@@ -123,6 +125,27 @@ $keys = [];
 $store = config('cache.limiter') ?: config('cache.default');
 $cache = Cache::store(is_string($store) ? $store : null);
 
+/**
+ * One of Livewire's own numbers for the checksum-failure limiter, or null when this release does not
+ * carry it.
+ *
+ * ⚠️ THE PACKAGE'S NUMBER, NOT A COPY OF IT — the reason the key formula above is asked for rather than
+ * computed. `Checksum::$maxFailures` failures inside `$decaySeconds` answer every later request with a
+ * 429 (Checksum.php:11-12, refused at `>=`), both are protected statics, and a copy of either in the
+ * runbook would keep agreeing with itself after the package moved it — which is how the family came to
+ * refuse at Filament's five on a limiter that refuses at ten. Absent or not a count is reported as null,
+ * never as a number the caller would then believe.
+ */
+$livewireLimit = static function (string $property): ?int {
+    if (! class_exists(Checksum::class) || ! property_exists(Checksum::class, $property)) {
+        return null;
+    }
+
+    $held = (new ReflectionProperty(Checksum::class, $property))->getValue();
+
+    return is_int($held) && $held > 0 ? $held : null;
+};
+
 echo 'STORE '.json_encode([
     'base' => $real,
     'driver' => is_string($store) ? $store : (string) config('cache.default'),
@@ -130,6 +153,8 @@ echo 'STORE '.json_encode([
     'livewire_prefix' => EndpointResolver::prefix(),
     'component' => $component,
     'method' => $method,
+    'checksum_max' => $livewireLimit('maxFailures'),
+    'checksum_decay' => $livewireLimit('decaySeconds'),
     // The host's clock, for a window the operator's clock is measuring from its own side. The two are
     // never subtracted from each other: each is compared only with itself.
     'now' => time(),
@@ -174,8 +199,10 @@ foreach ($labels as $label => $address) {
         'timer' => is_numeric($timer) ? (int) $timer : null,
     ], JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES)."\n";
 
-    // Livewire's own limiter, keyed on the same ip(): ten checksum failures in 600s answer every later
-    // request with a 429, which would void a run for a reason that has nothing to do with the throttle.
+    // Livewire's own limiter, keyed on the same ip(): `checksum_max` failures inside `checksum_decay`
+    // answer every later request with a 429, which would void a run for a reason that has nothing to do
+    // with the throttle. The count is here and the maximum is on the STORE line, because the maximum is
+    // the release's, not this address's.
     $checksum = 'livewire-checksum-failures:'.$address;
 
     echo 'CHECKSUM '.$label.' '.json_encode([

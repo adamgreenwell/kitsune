@@ -707,6 +707,10 @@ if (str_contains($arguments, 'php -d display_errors=stderr')) {
         'livewire_prefix' => $case['store_prefix'] ?? '/livewire-'.($case['prefix'] ?? 'b8bf0447'),
         'component' => $request['component'] ?? '',
         'method' => $request['method'] ?? '',
+        // The release's own numbers for Livewire's checksum-failure limiter, which the instrument reads off
+        // the vendored class. A case can take either away, as a release whose package renamed it would.
+        'checksum_max' => array_key_exists('checksum_max', $case) ? $case['checksum_max'] : 10,
+        'checksum_decay' => array_key_exists('checksum_decay', $case) ? $case['checksum_decay'] : 600,
         'now' => time(),
     ], JSON_UNESCAPED_SLASHES)."\n";
 
@@ -1522,8 +1526,53 @@ it('voids a store it could not read, or one that belongs to another application'
     'the release serves another Livewire endpoint' => [['store_prefix' => '/livewire-deadbeef'], 'belongs to another application'],
     'the owner could not be read' => [['owner_fails' => true], 'could not be read'],
     'the release is owned by root' => [['owner' => 'root'], 'will not run application code as root'],
-    "Livewire's checksum limiter is already spent" => [['checksum' => ['v4' => 9]], 'checksum-failure limiter already holds'],
+    // ⚠️ SPENT IS THE RELEASE'S NUMBER, NOT FILAMENT'S. Livewire refuses at `Checksum::$maxFailures`, which
+    // is ten in the version vendored here, so the fixture that voids a run has to reach ten.
+    "Livewire's checksum limiter is already spent" => [['checksum' => ['v4' => 10]], 'checksum-failure limiter already holds'],
+    'the release does not say what spends it' => [
+        ['checksum' => ['v4' => 3], 'checksum_max' => null],
+        'does not say how many of them answer a 429',
+    ],
 ]);
+
+it('measures a host whose checksum limiter is short of the maximum that spends it', function (int $failures): void {
+    /*
+     * ⚠️ THE FIVE-WIDE BAND THAT VOIDED A MEASURABLE HOST. The guard compared the checksum-failure count
+     * against LIMIT — Filament's `rateLimit(5)` — while Livewire refuses at `Checksum::$maxFailures`, ten
+     * in the version vendored here. Between five and nine failures every request is still served: the run
+     * would have been measured end to end, and was instead declared unmeasurable with a reason that is not
+     * true of the host. The run itself adds no failures, because parseLogin sends the snapshot back
+     * verbatim, so nine before the window is nine after it.
+     */
+    throttleCase($this->state, ['checksum' => ['v4' => $failures]]);
+
+    $run = throttleRun($this->dir, $this->family);
+
+    expect($run->isSuccessful())->toBeTrue($run->getOutput().$run->getErrorOutput())
+        ->and(throttleVerdict($run, 'THR-1'))->toContain('PASS')
+        ->and(throttleVerdict($run, 'THR-2'))->toContain('PASS')
+        ->and(throttleAnswers($this->state))->toHaveCount(7 + count(throttleSites()));
+})->with([
+    'one short of it' => [9],
+    'the old threshold' => [5],
+]);
+
+it('still names the loopback bucket when the checksum limiter is part-filled', function (): void {
+    /*
+     * ⚠️ AND THE CONVERSION THAT MATTERED MOST. On a host where every visitor is 127.0.0.1, every visitor's
+     * checksum failures share `livewire-checksum-failures:127.0.0.1` too — so that is the bucket most likely
+     * to be sitting between five and nine, on the one host whose FAIL this family was built to produce. The
+     * guard turned it into "could not measure" without sending a single attempt.
+     */
+    throttleCase($this->state, ['key' => 'loopback', 'checksum' => ['lo4' => 6]]);
+
+    $run = throttleRun($this->dir, $this->family);
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and(throttleVerdict($run, 'THR-1'))->toContain('FAIL')
+        ->and(throttleVerdict($run, 'THR-1'))->toContain('every request is being counted as the loopback address')
+        ->and(throttleVerdict($run, 'THR-1'))->not->toContain('checksum-failure limiter');
+});
 
 it('refuses a verdict for a check it does not declare, and still removes the probe log', function (): void {
     /*

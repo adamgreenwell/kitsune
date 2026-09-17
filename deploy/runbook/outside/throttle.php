@@ -971,10 +971,38 @@ function examine(string $host, string $nonce, string $payload, string $storeSour
             .$pages[$first]['path'].'], so the store read belongs to another application');
     }
 
+    /*
+     * ⚠️ LIVEWIRE'S LIMITER IS NOT THE LOGIN THROTTLE, AND ITS MAXIMUM IS THE RELEASE'S TO STATE. This
+     * compared the checksum-failure count against LIMIT — Filament's `rateLimit(5)`, which has nothing to
+     * do with it. Livewire refuses at `Checksum::$maxFailures`, ten in the version vendored here, so
+     * between five and nine failures every request is still served and a host that was entirely measurable
+     * was declared unmeasurable with a reason that is not true of it. On the host this family exists to
+     * catch — where every visitor is 127.0.0.1, so every visitor's checksum failures share one bucket —
+     * that VOID replaced the loudest FAIL the family can make.
+     *
+     * The maximum now comes from the release's own Livewire (host/throttle-store.php reads it), and the run
+     * adds nothing to the count: parseLogin sends the snapshot back verbatim, so a count that is short of
+     * the maximum before the window is still short of it after. A bucket at zero is below every maximum,
+     * including one this run could not read; above zero with no maximum to compare it against is
+     * unmeasurable, not safe.
+     */
+    $checksumMax = $pre['store']['checksum_max'] ?? null;
+
     foreach ($pre['checksums'] as $label => $checksum) {
-        if ((int) ($checksum['attempts'] ?? 0) >= LIMIT) {
-            return $both("Livewire's checksum-failure limiter already holds ".(int) $checksum['attempts']
-                ." failures for [{$label}], so this run's attempts could be answered 429 before they reach the throttle");
+        $failures = (int) ($checksum['attempts'] ?? 0);
+
+        if ($failures === 0) {
+            continue;
+        }
+
+        if (! is_int($checksumMax) || $checksumMax < 1) {
+            return $both("Livewire's checksum-failure limiter holds {$failures} failures for [{$label}] and the release "
+                .'does not say how many of them answer a 429, so whether this run\'s attempts would reach the throttle cannot be told');
+        }
+
+        if ($failures >= $checksumMax) {
+            return $both("Livewire's checksum-failure limiter already holds {$failures} of the {$checksumMax} failures "
+                ."that answer every later request with a 429 for [{$label}], so this run's attempts would be answered before they reach the throttle");
         }
     }
 

@@ -193,6 +193,16 @@ it('reads the bucket the release itself filled, and names it by the key the trai
         ->and($store['base'])->toBe(realpath($this->base))
         ->and($store['now'])->toBeGreaterThan(time() - 120);
 
+    /*
+     * ⚠️ AND THE OTHER LIMITER'S OWN NUMBERS, FOR THE REASON THE KEY IS THE PACKAGE'S. Livewire answers 429
+     * after `Checksum::$maxFailures` failures within `$decaySeconds` — ten and 600 in livewire/livewire
+     * v4.4.4, Checksum.php:11-12 — and the family stops a run it could not measure through that. It used to
+     * compare against Filament's `rateLimit(5)` instead, which refused runs Livewire would have served. A
+     * package that moves either number fails here, where the copy that would have gone stale was.
+     */
+    expect($store['checksum_max'])->toBe(10)
+        ->and($store['checksum_decay'])->toBe(600);
+
     expect(storeLines($run, 'CHECKSUM')['v4']['key'])->toBe('livewire-checksum-failures:203.0.113.50');
 });
 
