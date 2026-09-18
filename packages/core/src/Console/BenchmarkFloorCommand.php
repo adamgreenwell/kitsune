@@ -72,13 +72,22 @@ final class BenchmarkFloorCommand extends Command
         // storage benchmark's index probe.
         [$org, $site, $type] = $this->fixture();
 
+        // ⚠️ BEFORE SEEDING, OR IT IS NOT THE BOOTSTRAP. Taken after ensureVolume(), this figure carried the
+        // high-water mark of inserting the benchmark's own rows — so it grew with `--entries` and was reported
+        // as the cost of booting the framework. The seeding is scaffolding for the measurement, not part of the
+        // request being measured, and no worker ever does it.
+        $bootstrap = memory_get_peak_usage(true);
+
         try {
             $seeded = $this->ensureVolume($org, $site, $type, max(0, (int) $this->option('entries')));
 
             $this->line("  content in scope: <info>{$seeded}</info> entries");
             $this->newLine();
 
-            $bootstrap = memory_get_peak_usage(true);
+            // The samples are what a request does; the seeding is not. Resetting here makes the peak below the
+            // high-water mark of serving, on top of a framework that is already resident — which is what a
+            // PHP-FPM worker holds, and what the workers arithmetic then divides the floor by.
+            memory_reset_peak_usage();
 
             $samples = [
                 'count entries' => fn () => Entry::count(),
@@ -111,7 +120,7 @@ final class BenchmarkFloorCommand extends Command
 
             $this->newLine();
             $this->line(sprintf('  framework bootstrap peak   %6.1f MB', $bootstrap / 1_048_576));
-            $this->line(sprintf('  peak across all operations %6.1f MB', $peak / 1_048_576));
+            $this->line(sprintf('  peak serving a request     %6.1f MB', $peak / 1_048_576));
 
             // A single PHP-FPM worker is what has to fit; the floor must also
             // hold several concurrently alongside the OS and the database.
@@ -136,7 +145,13 @@ final class BenchmarkFloorCommand extends Command
              * behind it: an install that resolves kitsune/core through a symlinked path repository needs the
              * symlink's target mounted too, or the autoloader breaks inside the container.
              */
-            $this->line('    docker run --rm --cpus=1 --memory=1g \\');
+            /*
+             * ⚠️ AND THE LIMITS ARE THE FLOOR CONSTANTS, NOT A SECOND COPY OF THEM. Written out as `--cpus=1
+             * --memory=1g`, the recipe was a third place the floor lived, free to disagree with the two above
+             * it — and an operator following a stale one would measure against a floor this code no longer
+             * claims. FloorTest holds these constants, this hint and bin/benchmark-floor.sh to one number.
+             */
+            $this->line(sprintf('    docker run --rm --cpus=%d --memory=%dm \\', Kitsune::FLOOR_VCPU, $budgetMb));
             $this->line('      -v "$PWD":/app -w /app php:8.4-cli \\');
             $this->line('      php artisan kitsune:benchmark-floor');
             $this->line('  <comment>If kitsune/core is a symlinked path repository, mount its target as well.</comment>');
@@ -179,13 +194,24 @@ final class BenchmarkFloorCommand extends Command
         });
     }
 
-    /** Top the benchmark site up to the requested volume. Returns the total in scope. */
+    /**
+     * Top the benchmark site up to the requested volume, and report what the measured queries can actually see.
+     *
+     * ⚠️ COUNTED THROUGH THE SCOPED MODEL AT THE END, NOT ECHOED BACK FROM THE ARGUMENT. This used to
+     * `return $target` — the number it had just been passed — so "content in scope: 1000 entries" was the
+     * request repeated, not an observation. Every caller that checked it, this command's own line and the test
+     * named for the `WHERE 1 = 0` defect, was therefore comparing the option with itself and could not fail:
+     * rows are inserted through the UNSCOPED query builder below, so a run that had lost its site context would
+     * insert all 1,000, print all 1,000, and then time four empty result sets — which is exactly the
+     * 2026-09-07 defect this was written to make impossible. Proven by removing `setSite()` and watching the
+     * whole file still pass. `Entry::count()` goes through SiteScope, so it answers 0 when the samples will.
+     */
     private function ensureVolume(Org $org, Site $site, EntryType $type, int $target): int
     {
         $existing = Entry::query()->where('site_id', $site->getKey())->count();
 
         if ($existing >= $target) {
-            return $existing;
+            return Entry::count();
         }
 
         $prefix = $this->runPrefix(self::SLUG_PREFIX);
@@ -218,7 +244,7 @@ final class BenchmarkFloorCommand extends Command
             DB::table('entries')->insert($rows);
         }
 
-        return $target;
+        return Entry::count();
     }
 
     /**

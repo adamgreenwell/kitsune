@@ -44,3 +44,20 @@ it('reports a peak that leaves room for several workers', function (): void {
         ->assertSuccessful()
         ->expectsOutputToContain('workers that fit in half the floor');
 });
+
+it('prints a constrained-run recipe built from the floor it just reported', function (): void {
+    /*
+     * ⚠️ THE RECIPE USED TO BE A THIRD COPY OF THE FLOOR. `--cpus=1 --memory=1g` was written into the output
+     * by hand, so raising FLOOR_MEMORY_MB would have left every operator following a recipe that measures
+     * against a floor this code no longer claims — and the command would have gone on printing it, confidently.
+     */
+    $this->artisan('kitsune:benchmark-floor', ['--entries' => 25])
+        ->assertSuccessful()
+        ->expectsOutputToContain('--cpus='.Kitsune::FLOOR_VCPU.' --memory='.Kitsune::FLOOR_MEMORY_MB.'m');
+});
+
+it('keeps the harness that reproduces it runnable', function (): void {
+    // What the harness DOES is judged by tests/Core/Release/FloorHarnessTest.php, which runs it against stub
+    // binaries. This only records that the two belong together: the constants live here, the runner there.
+    expect(dirname(__DIR__, 2).'/bin/benchmark-floor.sh')->toBeReadableFile();
+});

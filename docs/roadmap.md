@@ -116,24 +116,31 @@ The routing question is **already settled** — ADR-012 was resolved by a workin
   ⚠️ **An earlier version of this table was wrong**, and the corrections are worth keeping: the slug probe omitted `entry_type_id` and so used only a prefix of the `(site_id, entry_type_id, slug)` index — and with multiple locales searched for a row that never existed, timing a miss. SQLite's size excluded index B-trees, and MySQL's came from cached `information_schema` statistics with no schema filter, reporting **131 KB for 100k rows**. Numbers a benchmark reports confidently are still wrong if the probe is wrong.
 
   **Still open:** the 1M run, and media-as-entries (ADR-016) at scale
-- [x] ⚠️ **Resource-floor benchmark (ADR-027)** — ✅ **2026-09-07** via `php artisan kitsune:benchmark-floor`, verified inside a container limited to **1 vCPU and 1 GB**, not merely on the dev machine:
+- [x] ⚠️ **Resource-floor benchmark (ADR-027)** — first run **2026-09-07**, re-measured **2026-09-18** and now reproducible on demand with `bin/benchmark-floor.sh`. Measured with **1,000 entries in scope**, which matters — see the corrections below.
 
-  | | value |
-  |---|---|
-  Measured with **1,000 entries in scope**, which matters — see the correction below.
+  Measured on `php@sha256:a545b904…` (`php:8.4-cli`, PHP 8.4.25), **CLI, `memory_limit=128M`, OPcache off** — the harness records all of this beside the numbers, because the interpreter decides the answer.
 
-  | | constrained (1 vCPU / 1 GB) | unconstrained |
+  | | constrained (1 vCPU / 1024 MB) | unconstrained |
   |---|---|---|
-  | peak memory per request | 38.5 MB | 40.5 MB |
-  | workers fitting in half the floor | 13 | 12 |
-  | list page (25 rows) | 1.9 ms | 1.2 ms |
-  | entry with relations | 2.2 ms | 1.9 ms |
+  | framework bootstrap peak | 40.5 MB | 40.5 MB |
+  | peak serving a request | 42.5 MB | 42.5 MB |
+  | workers fitting in half the floor | 12 | 12 |
+  | list page (25 rows) | 2.0 ms | 1.9 ms |
+  | entry with relations | 2.3 ms | 2.1 ms |
 
-  Memory barely moves between the two, which is the point: **peak memory per request is the part that transfers between machines**, while wall-clock is a property of the host.
+  **Peak memory while serving is the part that transfers between machines**, while wall-clock is a property of the host.
 
-  ⚠️ **The first version measured nothing.** It established no site context, so `SiteScope` added `WHERE 1 = 0` and every sample timed an empty result set — and the advertised `--entries` option was never read. The same shape of mistake as the storage benchmark's index probe, caught the same way, in review.
+  ⚠️ **These numbers are not comparable with 2026-09-07's, because the measurement was wrong then and is different now.** Not a regression and not an improvement — a different quantity. Three defects were found on 2026-09-18 by re-measuring, and all three are fixed:
 
-  `Kitsune::FLOOR_VCPU` and `FLOOR_MEMORY_MB` are asserted by a test, so raising the floor is a visible code change rather than a drift
+  - **The reported peak included the benchmark seeding its own rows.** `memory_get_peak_usage()` was taken *after* `ensureVolume()`, so the figure grew with `--entries` and was printed as the cost of booting the framework. Bootstrap is now sampled before seeding, and the peak the workers arithmetic divides is taken after `memory_reset_peak_usage()` — the high-water mark of serving, on a framework already resident, which is what a PHP-FPM worker actually holds.
+  - **The scope line was the request echoed back, not an observation.** `ensureVolume()` returned the `--entries` argument it was handed, so "content in scope: 1,000 entries" could not disagree with it — and neither could the test named for the `WHERE 1 = 0` defect, which passed with `setSite()` deleted. It now returns `Entry::count()` through the scoped model, so a run that lost its site context reports 0 and the harness refuses it. Proven by deleting that line and watching the case fail.
+  - **The old two-column gap was a confound.** 38.5 vs 40.5 MB compared a container against the dev machine, measuring two PHP builds as well as two limit sets. From one image, with a fresh copy of the application per run and only the limits changed, the peaks are identical.
+
+  ⚠️ **What the pairing does and does not prove.** It is a *control*, not a stress test: neither limit binds one request — a PHP CLI process uses at most one CPU anyway, and 42 MB of 1024 MB is not pressure — so identical columns are the expected result, and a difference would mean the two runs differed in something other than their limits. The workers figure remains arithmetic from a single request, not an observation of twelve running at once.
+
+  `Kitsune::FLOOR_VCPU` and `FLOOR_MEMORY_MB` are asserted by a test, so raising the floor is a visible code change rather than a drift — and `tests/Core/Release/FloorHarnessTest.php` runs the harness against stub binaries and reads the `docker` argv it builds, so the container size, the constants and the recipe the command prints to operators cannot drift apart.
+
+  **Still open:** the same measurement under concurrency, and under an FPM-shaped interpreter (OPcache on, a real `php.ini`) rather than bare CLI
 
 **Done when:** you have numbers, written down.
 

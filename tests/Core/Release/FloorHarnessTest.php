@@ -1,0 +1,198 @@
+<?php
+
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
+ */
+
+declare(strict_types=1);
+
+use Illuminate\Support\Facades\File;
+use Kitsune\Core\Kitsune;
+use Symfony\Component\Process\Process;
+
+/*
+ * bin/benchmark-floor.sh reproduces ADR-027's resource-floor measurement under the floor's own limits.
+ *
+ * ⚠️ IT IS RUN HERE, NOT GREPPED. The first version of this file asserted that the script CONTAINED certain
+ * substrings, which a harness with its limits hardcoded — or with no limits at all — could satisfy while
+ * measuring the wrong thing entirely. The precedent is CiScopeScriptTest: drive the real script with stub
+ * binaries on PATH and judge what it actually does.
+ *
+ * ⚠️ AND WHAT IT GUARDS IS A NUMBER NOBODY COULD RE-CHECK. docs/roadmap.md recorded a constrained column for
+ * eleven days while compose.yaml pinned no limit and no script did either. An unreproducible measurement is
+ * not evidence, however careful the run that produced it was.
+ */
+
+beforeEach(function (): void {
+    $this->harness = dirname(__DIR__, 3).'/bin/benchmark-floor.sh';
+    $this->dir = realpath(sys_get_temp_dir()).'/kitsune-floor-harness-'.bin2hex(random_bytes(6));
+    File::makeDirectory($this->dir.'/bin', 0755, true);
+});
+
+afterEach(function (): void {
+    File::deleteDirectory($this->dir);
+});
+
+/**
+ * A `docker` stub that records every argv it is given and answers with a canned benchmark run.
+ *
+ * ⚠️ A STUB THAT ANSWERS LIKE THE REAL COMMAND, not one tidier than it. `docker info`, `image inspect`, the
+ * two `php -r` probes and the benchmark itself all come through the same binary, so the stub has to tell them
+ * apart the way Docker would — and a stub that answered everything identically would hide the very argv this
+ * test exists to read.
+ */
+function floorStubs(string $dir, string $scope = 'ENTRIES', int $exit = 0): void
+{
+    File::put($dir.'/bin/docker', <<<STUB
+    #!/usr/bin/env bash
+    printf '%s\\n' "\$*" >> "$dir/argv.log"
+
+    case "\$*" in
+      info*) exit 0 ;;
+      *image\\ inspect*) echo 'php:8.4-cli@sha256:stubbed' ; exit 0 ;;
+    esac
+
+    # The floor the harness must size its container from, and the interpreter line it records.
+    case "\$*" in
+      *FLOOR_VCPU*) echo '{$dir}' >/dev/null; echo "1 1024" ; exit 0 ;;
+      *memory_limit*) echo '8.4.25 memory_limit=128M opcache.enable_cli=0' ; exit 0 ;;
+    esac
+
+    case "\$*" in
+      *benchmark-floor*)
+        entries=\$(printf '%s\\n' "\$*" | sed -n 's/.*--entries=\\([0-9]*\\).*/\\1/p')
+        scope="$scope"
+        [[ "\$scope" == ENTRIES ]] && scope=\$entries
+        echo "  content in scope: \$scope entries"
+        echo "  peak serving a request       31.5 MB"
+        echo "  workers that fit in half the floor: 16"
+        exit $exit
+        ;;
+    esac
+
+    exit 0
+    STUB);
+
+    // `artisan` calls go through the same stub; composer only has to leave a real-looking core in place.
+    File::put($dir.'/bin/composer', <<<STUB
+    #!/usr/bin/env bash
+    printf 'composer %s\\n' "\$*" >> "$dir/argv.log"
+    for arg in "\$@"; do
+      case "\$prev" in -d) app=\$arg ;; esac
+      prev=\$arg
+    done
+    if [[ "\$1" == install ]]; then
+      mkdir -p "\$app/vendor/kitsune/core"
+      echo '{"name":"kitsune/core"}' > "\$app/vendor/kitsune/core/composer.json"
+    fi
+    exit 0
+    STUB);
+
+    chmod($dir.'/bin/docker', 0755);
+    chmod($dir.'/bin/composer', 0755);
+}
+
+function runHarness(string $dir, string $harness, array $args = []): Process
+{
+    $process = Process::fromShellCommandline(
+        'bash '.escapeshellarg($harness).' '.implode(' ', array_map('escapeshellarg', $args)),
+        $dir,
+        ['PATH' => $dir.'/bin:'.getenv('PATH'), 'TMPDIR' => $dir],
+    );
+
+    $process->setTimeout(120);
+    $process->run();
+
+    return $process;
+}
+
+it('is valid bash', function (): void {
+    $check = Process::fromShellCommandline('bash -n '.escapeshellarg($this->harness));
+    $check->run();
+
+    expect($check->isSuccessful())->toBeTrue($check->getErrorOutput())
+        ->and(is_executable($this->harness))->toBeTrue('bin/benchmark-floor.sh is not executable');
+});
+
+it('sizes the container from the floor the application reports, not from a number written in the script', function (): void {
+    /*
+     * ⚠️ THE POINT OF THE WHOLE EXERCISE. A harness carrying its own copy of the floor is a second floor, free
+     * to disagree with Kitsune::FLOOR_* the day either moves — and the disagreement would show up as a
+     * measurement against limits the code no longer claims, reported as though it were the floor.
+     */
+    floorStubs($this->dir);
+    $run = runHarness($this->dir, $this->harness, ['--entries', '25']);
+
+    expect($run->isSuccessful())->toBeTrue($run->getErrorOutput());
+
+    $argv = (string) File::get($this->dir.'/argv.log');
+
+    expect($argv)
+        ->toContain('--cpus='.Kitsune::FLOOR_VCPU)
+        ->toContain('--memory='.Kitsune::FLOOR_MEMORY_MB.'m')
+        // Without this Docker grants twice the memory as swap, and the cap the run is named for is not the cap.
+        ->toContain('--memory-swap='.Kitsune::FLOOR_MEMORY_MB.'m');
+});
+
+it('measures the unconstrained column from the same image, with no limits at all', function (): void {
+    // Two columns from two different PHP builds measure the builds as much as the limits — which is what the
+    // 2026-09-07 table did, and why its 2 MB "difference" was a confound rather than a finding.
+    floorStubs($this->dir);
+    $run = runHarness($this->dir, $this->harness, ['--entries', '25']);
+
+    $benchmarkRuns = array_values(array_filter(
+        explode("\n", (string) File::get($this->dir.'/argv.log')),
+        static fn (string $line): bool => str_contains($line, 'benchmark-floor'),
+    ));
+
+    expect($benchmarkRuns)->toHaveCount(2)
+        ->and($benchmarkRuns[0])->toContain('--cpus=')
+        ->and($benchmarkRuns[1])->not->toContain('--cpus=')
+        ->and($benchmarkRuns[1])->not->toContain('--memory=')
+        ->and($run->getOutput())->toContain('unconstrained');
+});
+
+it('refuses a run that died after announcing its scope, rather than printing a blank column', function (): void {
+    /*
+     * ⚠️ THE FAILURE THAT LOOKED LIKE A MEASUREMENT. The scope line is printed before the first sample, so a
+     * container killed by the cgroup — or a PHP fatal at the image's own 128 MB limit — had already said
+     * everything the harness checked. Without the exit status the columns came out empty and the run exited 0.
+     */
+    floorStubs($this->dir, exit: 137);
+    $run = runHarness($this->dir, $this->harness, ['--entries', '25']);
+
+    expect($run->isSuccessful())->toBeFalse('a killed container was reported as a measurement')
+        ->and($run->getErrorOutput())->toContain('exited 137');
+});
+
+it('refuses a run whose scope is not the volume it asked for', function (): void {
+    // The 2026-09-07 defect: no site context, so SiteScope adds WHERE 1 = 0 and every sample times an empty
+    // result set. The command now reports what the scoped model can see, so the harness can compare.
+    floorStubs($this->dir, scope: '0');
+    $run = runHarness($this->dir, $this->harness, ['--entries', '25']);
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and($run->getErrorOutput())->toContain('measured nothing');
+});
+
+it('refuses an --entries that is not a positive integer', function (string $value): void {
+    floorStubs($this->dir);
+    $run = runHarness($this->dir, $this->harness, ['--entries', $value]);
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and($run->getErrorOutput())->toContain('positive integer');
+})->with(['zero' => '0', 'negative' => '-5', 'words' => 'lots', 'empty' => '']);
+
+it('leaves nothing of the disposable install behind', function (): void {
+    floorStubs($this->dir);
+    runHarness($this->dir, $this->harness, ['--entries', '25']);
+
+    $leftovers = array_values(array_filter(
+        (array) scandir($this->dir),
+        static fn (string $entry): bool => str_starts_with($entry, 'kitsune-floor-'),
+    ));
+
+    expect($leftovers)->toBe([], 'the disposable install survived the run');
+});
