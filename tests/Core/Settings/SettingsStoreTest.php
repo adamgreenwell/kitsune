@@ -596,6 +596,43 @@ describe('a timezone is an identifier PHP lists, by every path', function (): vo
             ->and(DB::table('sites')->where('handle', 'late')->exists())->toBeFalse();
     });
 
+    it('checks a whole map an arithmetic write carries inside the escape hatch', function (string $method): void {
+        /*
+         * ⚠️ THE CONTRACT BELOW SAID EVERY WHOLE MAP IS CHECKED IN THE ESCAPE HATCH, AND FOUR WRITES WERE NOT.
+         * `increment()`, `decrement()`, `incrementEach()` and `decrementEach()` carry an `$extra` of plain
+         * assignments; `guardArithmetic()` stands down inside `withoutScopeBecause()` and did not call the settings
+         * check, so `['settings' => …EST…]` beside a no-op increment of `id` was stored. Codex found it on #127.
+         */
+        $bad = json_encode(['timezone' => 'EST']);
+
+        foreach ([Org::class => $this->org, SiteGroup::class => $this->group, Site::class => $this->site] as $class => $scope) {
+            $write = match ($method) {
+                'increment', 'decrement' => fn ($query) => $query->whereKey($scope->id)->{$method}('id', 0, ['settings' => $bad]),
+                'incrementEach', 'decrementEach' => fn ($query) => $query->whereKey($scope->id)->{$method}(['id' => 0], ['settings' => $bad]),
+            };
+
+            expect(fn () => $class::withoutScopeBecause('the test writes past the per-row refusal', $write))
+                ->toThrow(RuntimeException::class, 'is not a timezone identifier PHP lists', "{$class}: {$method}() stored an unchecked map");
+
+            expect(DB::table($scope->getTable())->where('id', $scope->id)->value('settings'))->toBeNull();
+        }
+    })->with(['increment', 'decrement', 'incrementEach', 'decrementEach']);
+
+    it('checks a whole map an upsert carries inside the escape hatch', function (): void {
+        // Refused outside the escape hatch; inside it, `upsert()` went straight to the parent with its rows unread —
+        // the same hole as the arithmetic extras, in a method the finding did not name. Found by listing every write.
+        foreach ([Org::class => $this->org, SiteGroup::class => $this->group, Site::class => $this->site] as $class => $scope) {
+            $row = (array) DB::table($scope->getTable())->where('id', $scope->id)->first();
+            $row['settings'] = json_encode(['timezone' => 'EST']);
+
+            expect(fn () => $class::withoutScopeBecause('the test writes past the per-row refusal', fn ($query) => $query
+                ->upsert([$row], ['id'], ['settings'])))
+                ->toThrow(RuntimeException::class, 'is not a timezone identifier PHP lists', "{$class}: upsert() stored an unchecked map");
+
+            expect(DB::table($scope->getTable())->where('id', $scope->id)->value('settings'))->toBeNull();
+        }
+    });
+
     it('checks a whole map written inside the escape hatch, which stands down the per-row refusal and not this', function (): void {
         // `withoutScopeBecause()` is about WHICH path may write a column; this is about WHAT a column may hold, so
         // standing the first down does not stand down the second. A JSON-path write there is still unchecked —

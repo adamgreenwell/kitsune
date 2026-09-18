@@ -89,6 +89,12 @@ class ScopedBuilder extends Builder
      * it is checked here; the listener stays, because it also checks the whole map on a save that does not write
      * `settings`, which this never sees.
      *
+     * Called from every write that can carry a whole map: `update()`, `insertGetId()`, the rest of the insert family
+     * through `guardEveryInsertedRow()`, the arithmetic writes' `$extra` through `guardArithmetic()`, and `upsert()`'s
+     * rows and explicit `$update`. The arithmetic and upsert calls were missing when this was first written, and each
+     * let a refused map through inside `withoutScopeBecause()` — so the claim below, that the escape hatch does not
+     * stand this check down, was false until they were added.
+     *
      * Every spelling the database would store into the column is the column — `bareColumn()` folds case and strips
      * a qualifier. A JSON-path write (`settings->timezone`) is not judged here: outside `withoutScopeBecause()`
      * `refusePerRowColumns()` has already refused it, and inside the escape hatch it is one of the paths ADR-022
@@ -1006,6 +1012,12 @@ class ScopedBuilder extends Builder
     {
         $this->refuseScopeArithmetic($values);
         $this->refusePerRowColumns($values);
+
+        // ⚠️ AND THE SETTINGS CHECK, which the two refusals above do not replace: they stand down inside
+        // `withoutScopeBecause()`, and the `$extra` of an increment is a plain assignment that can carry a whole
+        // `settings` map. Without this, `increment('id', 0, ['settings' => …])` stored a refused timezone there —
+        // Codex found it on #127, after `checkWrittenSettings()` had been added to every other write but these.
+        $this->checkWrittenSettings($values);
     }
 
     /**
@@ -1074,6 +1086,21 @@ class ScopedBuilder extends Builder
                 .'deliberate.',
                 $this->getModel()::class,
             ));
+        }
+
+        /*
+         * ⚠️ INSIDE THE ESCAPE HATCH AN UPSERT WROTE ITS ROWS UNREAD. It is refused above, and inside
+         * `withoutScopeBecause()` it went straight to the parent — so a whole `settings` map in a row, or in an
+         * explicit `$update` assignment, was stored unchecked. Not named by the finding that found the arithmetic
+         * hole; found by listing every write this builder takes. A `$update` that is a list of column names takes
+         * its values from the rows, which are checked here already.
+         */
+        foreach (self::insertRows($values) as $row) {
+            $this->checkWrittenSettings($row);
+        }
+
+        if (is_array($update) && ! array_is_list($update)) {
+            $this->checkWrittenSettings($update);
         }
 
         return parent::upsert($values, $uniqueBy, $update);
