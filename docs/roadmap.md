@@ -118,13 +118,26 @@ The routing question is **already settled** — ADR-012 was resolved by a workin
   **Still open:** the 1M run, and media-as-entries (ADR-016) at scale
 - [x] ⚠️ **Resource-floor benchmark (ADR-027)** — first run **2026-09-07**, re-measured **2026-09-18** and now reproducible on demand with `bin/benchmark-floor.sh`. Measured with **1,000 entries in scope**, which matters — see the corrections below.
 
-  Measured on `php:8.4-cli` at PHP 8.4.25, **CLI, `memory_limit=128M`, OPcache off** — the harness records all of this beside the numbers, because the interpreter decides the answer. `php:8.4-cli` is a tag that moves, so the numbers are pinned to the image they came from, in full:
+  **What a recorded figure depends on, and which of it is pinned.** Four inputs decide the numbers, and a figure can be re-checked exactly only when all four are the ones it was measured with:
+
+  | input | recorded for these figures | pinned by |
+  |---|---|---|
+  | the interpreter | `php:8.4-cli` at PHP 8.4.25 — CLI, `memory_limit=128M`, OPcache off | the image digest, in full: `php@sha256:a545b9041fb0e378cb597b4d0509f77c6a4d996dd485763af92e5b7e59c469cc` |
+  | the dependency graph | lock `sha256:b9f447ee4c2433e2` — laravel/framework v13.32.0, filament/filament v5.8.2, livewire/livewire v4.4.5 | [`docs/benchmarks/floor.composer.lock`](benchmarks/floor.composer.lock), the graph these figures were measured with |
+  | `kitsune/core` itself | the tree of the commit that last changed that lock | the checkout — the harness installs core from `packages/core` |
+  | the host | not recorded | nothing; wall-clock is the host's, and peak memory is the part that transfers |
+
+  So a figure is re-checked with the commit that recorded it checked out, and:
 
   ```bash
-  bin/benchmark-floor.sh --entries 1000 --image php@sha256:a545b9041fb0e378cb597b4d0509f77c6a4d996dd485763af92e5b7e59c469cc
+  bin/benchmark-floor.sh --entries 1000 \
+    --image php@sha256:a545b9041fb0e378cb597b4d0509f77c6a4d996dd485763af92e5b7e59c469cc \
+    --lock docs/benchmarks/floor.composer.lock
   ```
 
-  ⚠️ **The digest is recorded whole because a truncated one reproduces nothing** — Docker needs all of it to pull that image, and this line is the only durable copy (Codex, #126). Re-run from it on 2026-09-18: the same interpreter, 40.5 MB and 12 workers in both columns.
+  Re-run that way on 2026-09-18: the same interpreter, the same lock hash, 40.5 MB and 12 workers in both columns.
+
+  ⚠️ **A default run pins neither, on purpose.** Without `--image` and `--lock` the harness takes the moving tag and resolves the graph fresh — which is what an operator installing today gets, and so what the floor is actually a claim about. A different number from a default run means the application or its dependencies changed; that is the regression the floor exists to catch, not a failure to reproduce. Every run names the graph it measured (the lock's hash and those three versions) in its header, and `--save-lock` keeps it. The digest is recorded whole because a truncated one pulls nothing (Codex, #126), and the lock because the digest pins the interpreter and not the application (Codex, #126).
 
   | | constrained (1 vCPU / 1024 MB) | unconstrained |
   |---|---|---|

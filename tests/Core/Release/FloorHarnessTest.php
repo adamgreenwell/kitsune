@@ -93,6 +93,14 @@ function floorStubs(string $dir, string $scope = 'ENTRIES', int $exit = 0, int $
     if [[ "\$1" == install ]]; then
       mkdir -p "\$app/vendor/kitsune/core"
       echo '{"name":"kitsune/core"}' > "\$app/vendor/kitsune/core/composer.json"
+      # As the real command: install from a lock that is there, and resolve (writing one) when it is not. Which it
+      # did is recorded, so a test can tell a lock handed in before the install from one written after it.
+      if [[ -f "\$app/composer.lock" ]]; then
+        echo "install: from an existing lock" >> "$dir/argv.log"
+      else
+        echo '{"packages":[{"name":"laravel/framework","version":"v13.0.0-resolved"}]}' > "\$app/composer.lock"
+        echo "install: resolved fresh" >> "$dir/argv.log"
+      fi
     fi
     exit 0
     STUB);
@@ -238,4 +246,45 @@ it('leaves nothing of the disposable install behind', function (): void {
     ));
 
     expect($leftovers)->toBe([], 'the disposable install survived the run');
+});
+
+it('installs a recorded dependency graph from --lock, before composer resolves anything', function (): void {
+    /*
+     * ⚠️ THE IMAGE DIGEST PINS THE INTERPRETER, NOT THE APPLICATION. The skeleton commits no lock, so a plain run
+     * resolves whatever satisfies its constraints that day — right for the floor, which is a claim about what an
+     * operator installs today, and wrong for re-checking a recorded figure, which the next compatible release
+     * changes (Codex, #126). --lock puts the recorded graph in place BEFORE the install, so the install uses it.
+     */
+    floorStubs($this->dir);
+    $lock = $this->dir.'/recorded.lock';
+    File::put($lock, (string) json_encode(['packages' => [['name' => 'laravel/framework', 'version' => 'v13.32.0']]]));
+
+    $run = runHarness($this->dir, $this->harness, ['--entries', '25', '--lock', $lock]);
+
+    expect($run->isSuccessful())->toBeTrue($run->getErrorOutput())
+        ->and((string) File::get($this->dir.'/argv.log'))->toContain('install: from an existing lock')
+        ->and($run->getOutput())->toContain('laravel/framework v13.32.0')
+        ->and($run->getOutput())->toContain('installed from '.$lock);
+});
+
+it('keeps the graph it measured when asked, and names it either way', function (): void {
+    floorStubs($this->dir);
+    $saved = $this->dir.'/measured.lock';
+
+    $run = runHarness($this->dir, $this->harness, ['--entries', '25', '--save-lock', $saved]);
+
+    expect($run->isSuccessful())->toBeTrue($run->getErrorOutput())
+        ->and((string) File::get($this->dir.'/argv.log'))->toContain('install: resolved fresh')
+        ->and($saved)->toBeReadableFile()
+        ->and((string) File::get($saved))->toContain('v13.0.0-resolved')
+        // Named in the header whether or not it was saved, so a pasted result still says what it measured.
+        ->and($run->getOutput())->toContain('laravel/framework v13.0.0-resolved');
+});
+
+it('refuses a --lock that is not a file, rather than resolving fresh and calling it a re-check', function (): void {
+    floorStubs($this->dir);
+    $run = runHarness($this->dir, $this->harness, ['--entries', '25', '--lock', $this->dir.'/missing.lock']);
+
+    expect($run->isSuccessful())->toBeFalse()
+        ->and($run->getErrorOutput())->toContain('which is not a file');
 });
