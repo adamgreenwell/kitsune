@@ -118,7 +118,13 @@ The routing question is **already settled** — ADR-012 was resolved by a workin
   **Still open:** the 1M run, and media-as-entries (ADR-016) at scale
 - [x] ⚠️ **Resource-floor benchmark (ADR-027)** — first run **2026-09-07**, re-measured **2026-09-18** and now reproducible on demand with `bin/benchmark-floor.sh`. Measured with **1,000 entries in scope**, which matters — see the corrections below.
 
-  Measured on `php@sha256:a545b904…` (`php:8.4-cli`, PHP 8.4.25), **CLI, `memory_limit=128M`, OPcache off** — the harness records all of this beside the numbers, because the interpreter decides the answer.
+  Measured on `php:8.4-cli` at PHP 8.4.25, **CLI, `memory_limit=128M`, OPcache off** — the harness records all of this beside the numbers, because the interpreter decides the answer. `php:8.4-cli` is a tag that moves, so the numbers are pinned to the image they came from, in full:
+
+  ```bash
+  bin/benchmark-floor.sh --entries 1000 --image php@sha256:a545b9041fb0e378cb597b4d0509f77c6a4d996dd485763af92e5b7e59c469cc
+  ```
+
+  ⚠️ **The digest is recorded whole because a truncated one reproduces nothing** — Docker needs all of it to pull that image, and this line is the only durable copy (Codex, #126). Re-run from it on 2026-09-18: the same interpreter, 40.5 MB and 12 workers in both columns.
 
   | | constrained (1 vCPU / 1024 MB) | unconstrained |
   |---|---|---|
