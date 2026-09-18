@@ -11,6 +11,7 @@ declare(strict_types=1);
 namespace Kitsune\Core\Settings\Concerns;
 
 use Kitsune\Core\Settings\SettingsGuard;
+use Kitsune\Core\Tenancy\ScopeWrites;
 
 /**
  * An org, site group or site: a level of ADR-022's hierarchy, holding its overrides in a `settings` column.
@@ -65,9 +66,12 @@ trait HoldsSettings
             return $model->getAttribute('settings');
         }
 
-        return static::withoutScopeBecause(
-            'a save checks the settings its own row holds, and this instance was loaded without them',
-            fn ($query) => $query->whereKey($model->getKey())->value('settings'),
-        );
+        // ⚠️ FROM THE INSTANCE, ON ITS OWN CONNECTION. `withoutScopeBecause()` is a static call and makes a fresh model
+        // on the default connection, so a holder loaded from another one had its key read in the default database —
+        // another row, or none, and a refused value on the real row survived the save (Codex, #127). Every scope is
+        // removed, soft deletes included: this is the exact row being saved, not a lookup of rows it may see.
+        return ScopeWrites::suspend(fn () => $model->newQueryWithoutScopes()
+            ->whereKey($model->getKey())
+            ->value('settings'));
     }
 }

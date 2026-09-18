@@ -889,3 +889,58 @@ describe('reading what the row holds, not what the instance remembers', function
         expect(resolvedAt($this->site))->toBe(['Europe/Paris', 'site_group']);
     });
 });
+
+describe('reading on the connection the model came from', function (): void {
+    /*
+     * ⚠️ A STATIC CALL READS THE DEFAULT DATABASE, WHATEVER CONNECTION THE MODEL IS ON. `withoutScopeBecause()` makes a
+     * fresh model on the default connection, so a holder or a site loaded from another one had its rows re-read
+     * somewhere else — where the same id can be another org's row, or no row at all. Codex found both on #127.
+     *
+     * `mirror` is a second name for this test's own database: it shares the default connection's PDO, so it sees the
+     * same rows inside the same transaction, on every engine. What differs is only which connection issues each
+     * query — which is the property, and what a prefixed or second database turns into a different row.
+     */
+    beforeEach(function (): void {
+        $default = (string) config('database.default');
+        config(['database.connections.mirror' => config("database.connections.{$default}")]);
+        DB::connection('mirror')->setPdo(DB::connection()->getPdo());
+
+        $this->reads = [];
+        DB::listen(function ($query): void {
+            if (preg_match('/^select .* from [`"]?(orgs|site_groups|sites)[`"]? /i', $query->sql, $table) === 1) {
+                $this->reads[] = [$query->connectionName, $table[1]];
+            }
+        });
+    });
+
+    afterEach(fn () => DB::purge('mirror'));
+
+    it('resolves a site on the connection it was loaded from, for every level it reads', function (): void {
+        $this->group->update(['settings' => ['timezone' => 'Europe/Paris']]);
+        $site = Site::on('mirror')->findOrFail($this->site->id);
+
+        $this->resolver->forget();
+        $this->reads = [];
+        $resolved = $this->resolver->resolve($site, 'timezone');
+
+        expect($resolved?->value)->toBe('Europe/Paris')
+            ->and(array_column($this->reads, 1))->toContain('sites', 'orgs', 'site_groups')
+            ->and(array_values(array_unique(array_column($this->reads, 0))))->toBe(['mirror']);
+    });
+
+    it('checks the stored map of a partial model on the connection it was loaded from', function (): void {
+        // Through a site group: the check is `HoldsSettings`', shared by all three levels, and `Site::save()` opens its
+        // own transaction for the host mutex — which on a connection sharing this test's PDO is a nested BEGIN that
+        // SQLite refuses, an artefact of the instrument rather than of the code under test.
+        $partial = SiteGroup::on('mirror')->select(['id', 'name'])->findOrFail($this->group->id);
+        $partial->name = 'Renamed';
+
+        $this->reads = [];
+        $partial->save();
+
+        $settingsReads = array_values(array_filter($this->reads, static fn (array $read): bool => $read[1] === 'site_groups'));
+
+        expect($settingsReads)->not->toBe([])
+            ->and(array_values(array_unique(array_column($settingsReads, 0))))->toBe(['mirror']);
+    });
+});

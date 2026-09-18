@@ -10,9 +10,14 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Settings;
 
+use Illuminate\Database\Eloquent\Builder;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Models\SiteGroup;
+use Kitsune\Core\Tenancy\Scopes\OrgMembershipScope;
+use Kitsune\Core\Tenancy\Scopes\OrgScope;
+use Kitsune\Core\Tenancy\Scopes\SiteScope;
+use Kitsune\Core\Tenancy\ScopeWrites;
 use WeakMap;
 
 /**
@@ -138,13 +143,14 @@ final class SettingsResolver
 
         $resolved = $this->defaults();
 
-        $org = $orgId === null ? null : Org::query()->find($orgId, ['id', 'settings']);
+        // On the site's own connection, like every read here — see siteRow().
+        $org = $orgId === null ? null : Org::on($site->getConnectionName())->find($orgId, ['id', 'settings']);
 
         foreach ((array) ($org->settings ?? []) as $key => $value) {
             $resolved[$key] = new Resolved($key, $value, 'org');
         }
 
-        $group = $groupId === null || $orgId === null ? null : $this->groupRow($groupId, $orgId);
+        $group = $groupId === null || $orgId === null ? null : $this->groupRow($groupId, $orgId, $site->getConnectionName());
 
         foreach ((array) ($group->settings ?? []) as $key => $value) {
             $resolved[$key] = new Resolved($key, $value, 'site_group', $group?->name);
@@ -229,10 +235,13 @@ final class SettingsResolver
             return $site;
         }
 
-        $row = Site::withoutScopeBecause(
-            'settings resolution re-reads the site it was handed, which may be outside any org context',
-            fn ($query) => $query->whereKey($site->getKey())->first(['id', 'org_id', 'site_group_id', 'name', 'settings']),
-        );
+        // Past the scopes `withoutScopeBecause()` removes, and no others — but on THIS site's connection, which that
+        // static call cannot be: it makes a fresh model on the default one (see `Site::rivalClaimsOnThisConnection()`,
+        // the other crossing built this way for the same reason). A site on another connection had its key re-read
+        // in the default database, where the same id can be another org's site (Codex, #127).
+        $row = ScopeWrites::suspend(fn () => self::pastScope(Site::on($site->getConnectionName()))
+            ->whereKey($site->getKey())
+            ->first(['id', 'org_id', 'site_group_id', 'name', 'settings']));
 
         if ($row instanceof Site) {
             return $row;
@@ -256,14 +265,32 @@ final class SettingsResolver
      * `siteGroup` relation, a site resolved with no org context found no group at all and silently skipped the
      * brand level — returning the org's value, labelled as the org's, where the group overrides it.
      */
-    private function groupRow(string $groupId, string $orgId): ?SiteGroup
+    private function groupRow(string $groupId, string $orgId, ?string $connection): ?SiteGroup
     {
-        $group = SiteGroup::withoutScopeBecause(
-            'settings resolution reads the site group of a site it was handed, within that site\'s own org',
-            fn ($query) => $query->whereKey($groupId)->where('org_id', $orgId)->first(['id', 'org_id', 'name', 'settings']),
-        );
+        $group = ScopeWrites::suspend(fn () => self::pastScope(SiteGroup::on($connection))
+            ->whereKey($groupId)
+            ->where('org_id', $orgId)
+            ->first(['id', 'org_id', 'name', 'settings']));
 
         return $group instanceof SiteGroup ? $group : null;
+    }
+
+    /**
+     * A query past the three scopes `withoutScopeBecause()` removes, and no others.
+     *
+     * ⚠️ BUILT HERE RATHER THAN THROUGH THE HATCH, BECAUSE THE HATCH CANNOT TAKE A CONNECTION. Its static call makes a
+     * fresh model on the default connection, and a new public argument to it is ruled out before v1.2 — the same
+     * reasoning `Site::rivalClaimsOnThisConnection()` records. The callers wrap this in `ScopeWrites::suspend()`, the
+     * greppable marker for a crossing that builds its own query, and the reason each crosses is in its docblock.
+     *
+     * @template TModel of \Illuminate\Database\Eloquent\Model
+     *
+     * @param  Builder<TModel>  $query
+     * @return Builder<TModel>
+     */
+    private static function pastScope($query)
+    {
+        return $query->withoutGlobalScopes([SiteScope::class, OrgScope::class, OrgMembershipScope::class]);
     }
 
     /** A key as the memo compares it: a string, or null when there is none. */
