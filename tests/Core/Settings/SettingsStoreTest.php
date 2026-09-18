@@ -8,6 +8,8 @@
 
 declare(strict_types=1);
 
+use Illuminate\Foundation\Auth\User as AuthUser;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Kitsune\Core\KitsuneServiceProvider;
 use Kitsune\Core\Models\AuditLog;
@@ -175,11 +177,103 @@ describe('the audit trail', function (): void {
         expect(AuditLog::query()->count())->toBe($before);
     });
 
+    it('records nothing for a value that only looks different before it is stored', function (): void {
+        /*
+         * ⚠️ THE WRITER DECIDED "CHANGED" FROM ITS OWN `===`, AND THE ROW IS JSON. A float 1.0 is stored as 1, an
+         * object as a map, and a map's keys in whatever order the engine keeps — MySQL keeps its own. So a repeat
+         * of each compared the caller's PHP value with the decoded row, saw a change, and recorded `settings.set`
+         * for a write that changed nothing (on SQLite no UPDATE was even issued). Measured before the fix: +1 each.
+         */
+        $this->writer->set($this->site, 'ratio', 1.0);
+        $this->writer->set($this->site, 'brand', (object) ['colour' => 'red']);
+        $this->writer->set($this->site, 'nav', ['colour' => 'red', 'font' => 'serif']);
+        $this->writer->set($this->site, 'weights', ['b' => 2, 'a' => 1]);
+        $before = AuditLog::query()->count();
+
+        $this->writer->set($this->site, 'ratio', 1.0);
+        $this->writer->set($this->site, 'brand', (object) ['colour' => 'red']);
+        // The identical map: MySQL hands its keys back in its own order, so only the matrix sees this line matter.
+        $this->writer->set($this->site, 'nav', ['colour' => 'red', 'font' => 'serif']);
+        $this->writer->set($this->site, 'nav', ['font' => 'serif', 'colour' => 'red']);
+        // Both at once: the same map, as an object, in another order — and a float stored as an integer, reordered.
+        $this->writer->set($this->site, 'nav', (object) ['font' => 'serif', 'colour' => 'red']);
+        $this->writer->set($this->site, 'weights', ['a' => 1.0, 'b' => 2]);
+
+        expect(AuditLog::query()->count())->toBe($before);
+    });
+
+    it('records a change of type, which is a change', function (): void {
+        $this->writer->set($this->site, 'limit', 1);
+        $before = AuditLog::query()->count();
+
+        $this->writer->set($this->site, 'limit', '1');
+
+        expect(AuditLog::query()->count())->toBe($before + 1)
+            ->and(settingsStoredIn('sites', $this->site->id))->toBe(['limit' => '1']);
+    });
+
+    it('refuses a save a listener cancels, and neither records it nor describes it as written', function (): void {
+        /*
+         * ⚠️ `save()` RETURNS FALSE WHEN A LISTENER CANCELS, and the writer did not look: it recorded
+         * `settings.set` for a row that was never written and set the caller's instance to the value — measured,
+         * stored NULL, one audit row, and `$site->settings` reading Asia/Tokyo. ADR-020: the audited set and the
+         * written set are the same set.
+         */
+        $before = AuditLog::query()->count();
+        Site::updating(fn (): bool => false);
+
+        expect(fn () => $this->writer->set($this->site, 'timezone', 'Asia/Tokyo'))
+            ->toThrow(RuntimeException::class, 'cancelled');
+
+        expect(settingsStoredIn('sites', $this->site->id))->toBeNull()
+            ->and(AuditLog::query()->count())->toBe($before)
+            ->and($this->site->settings)->toBeNull();
+    });
+
+    it('records nothing when a listener undoes the change before it is written', function (): void {
+        // The save succeeds and writes nothing to `settings`, so there is no change to record.
+        $before = AuditLog::query()->count();
+        Site::saving(function (Site $site): void {
+            $site->setAttribute('settings', $site->getOriginal('settings'));
+        });
+
+        $this->writer->set($this->site, 'timezone', 'Asia/Tokyo');
+
+        expect(settingsStoredIn('sites', $this->site->id))->toBeNull()
+            ->and(AuditLog::query()->count())->toBe($before)
+            ->and($this->site->settings)->toBeNull();
+    });
+
+    it('keeps no write it could not record', function (): void {
+        // ⚠️ The record is made inside the write's transaction, so an audit store that refuses takes the write with it.
+        AuditLog::creating(fn () => throw new RuntimeException('audit store unavailable'));
+
+        expect(fn () => $this->writer->set($this->site, 'timezone', 'Asia/Tokyo'))
+            ->toThrow(RuntimeException::class, 'audit store unavailable');
+
+        expect(settingsStoredIn('sites', $this->site->id))->toBeNull();
+    });
+
+    it('records who made the change, and nobody when nobody did', function (): void {
+        $actor = new AuthUser;
+        $actor->forceFill(['id' => 47]);
+        Auth::login($actor);
+
+        $this->writer->set($this->site, 'timezone', 'Asia/Tokyo');
+
+        expect(DB::table('audit_log')->orderByDesc('id')->value('actor_id'))->toBe('47');
+
+        Auth::logout();
+        $this->writer->revert($this->site, 'timezone');
+
+        expect(DB::table('audit_log')->orderByDesc('id')->value('actor_id'))->toBeNull();
+    });
+
     it('keeps neither the write nor a record when the value is refused', function (): void {
         $before = AuditLog::query()->count();
 
         expect(fn () => $this->writer->set($this->site, 'timezone', 'Mars/Olympus'))
-            ->toThrow(RuntimeException::class, 'not an IANA timezone identifier');
+            ->toThrow(RuntimeException::class, 'is not a timezone identifier PHP lists');
 
         expect(settingsStoredIn('sites', $this->site->id))->toBeNull()
             ->and(AuditLog::query()->count())->toBe($before);
@@ -213,6 +307,29 @@ describe('the org boundary', function (): void {
 
         expect(settingsStoredIn('orgs', $this->rival->id))->toBeNull()
             ->and(settingsStoredIn('site_groups', $this->rivalGroup->id))->toBeNull()
+            ->and(settingsStoredIn('sites', $this->rivalSite->id))->toBeNull()
+            ->and(AuditLog::query()->count())->toBe($before);
+    });
+
+    it('refuses a rival\'s level whose org was rewritten in memory, because it asks the database', function (): void {
+        /*
+         * ⚠️ THE CHECK ABOVE READS AN ATTRIBUTE, WHICH ANY CALLER CAN SET. What stops a rival's site group or site
+         * once `org_id` is forged is `lockedRow()` re-reading the row through the model's scoped query — and no
+         * test reached it, so reading the row unscoped left the suite green while the rival's configuration was
+         * written and the trail filed in this org's log. An org is not here: forging its key names this org's row.
+         */
+        $before = AuditLog::query()->count();
+
+        foreach ([$this->rivalGroup, $this->rivalSite] as $scope) {
+            $forged = (clone $scope)->forceFill(['org_id' => $this->org->id]);
+
+            expect(fn () => $this->writer->set($forged, 'timezone', 'America/New_York'))
+                ->toThrow(RuntimeException::class, 'is not visible from the current org')
+                ->and(fn () => $this->writer->revert($forged, 'timezone'))
+                ->toThrow(RuntimeException::class, 'is not visible from the current org');
+        }
+
+        expect(settingsStoredIn('site_groups', $this->rivalGroup->id))->toBeNull()
             ->and(settingsStoredIn('sites', $this->rivalSite->id))->toBeNull()
             ->and(AuditLog::query()->count())->toBe($before);
     });
@@ -267,6 +384,108 @@ describe('invalidation is automatic', function (): void {
         expect($this->resolver->get($this->site, 'timezone'))->toBe('UTC');
     });
 
+    it('drops it when the group is renamed, because the provenance quotes the name', function (): void {
+        $this->group->update(['settings' => ['timezone' => 'Europe/Paris']]);
+        expect($this->resolver->resolve($this->site, 'timezone')?->describe())->toBe('inherited from site group Golfdom');
+
+        SiteGroup::query()->findOrFail($this->group->id)->update(['name' => 'Golfdom Rebrand']);
+
+        expect($this->resolver->resolve($this->site, 'timezone')?->describe())->toBe('inherited from site group Golfdom Rebrand');
+    });
+
+    it('drops only the level a model save wrote, and the sites beneath it', function (): void {
+        /*
+         * An evented save names its row, so it drops that level and no further — a save to one org must not throw
+         * away another org's work. Observed through staleness: the raw write to the rival fires nothing, so the
+         * rival's site still reads the old value only if its memo was kept.
+         */
+        $rival = Org::create(['name' => 'Rival', 'slug' => 'rival-precise', 'settings' => ['timezone' => 'Asia/Tokyo']]);
+        $stranger = Site::withoutScopeBecause('a rival org\'s site, for the test', fn () => Site::create([
+            'org_id' => $rival->id, 'handle' => 'stranger', 'slug' => 'stranger', 'name' => 'Stranger',
+        ]));
+
+        expect($this->resolver->get($stranger, 'timezone'))->toBe('Asia/Tokyo');
+        DB::table('orgs')->where('id', $rival->id)->update(['settings' => json_encode(['timezone' => 'Europe/Oslo'])]);
+
+        $this->org->update(['settings' => ['timezone' => 'Europe/London']]);
+
+        expect($this->resolver->get($this->site, 'timezone'))->toBe('Europe/London')
+            ->and($this->resolver->get($stranger, 'timezone'))->toBe('Asia/Tokyo');
+    });
+
+    describe('by the paths that fire no model event', function (): void {
+        /*
+         * ⚠️ `saved` AND `deleted` FIRE FOR AN EVENTED SAVE OR DELETE OF ONE INSTANCE AND NOTHING ELSE, which is
+         * where invalidation used to hang. Every write below changes what the site resolves and fires neither —
+         * measured stale before invalidation moved to the builder they all go through.
+         */
+        beforeEach(function (): void {
+            $this->org->update(['settings' => ['timezone' => 'Europe/London']]);
+            $this->group->update(['settings' => ['timezone' => 'America/Chicago']]);
+            $this->other = SiteGroup::create([
+                'org_id' => $this->org->id, 'handle' => 'other', 'name' => 'Other',
+                'settings' => ['timezone' => 'Australia/Sydney'],
+            ]);
+
+            expect(resolvedAt($this->site))->toBe(['America/Chicago', 'site_group']);
+        });
+
+        it('a bulk move to another group', function (): void {
+            Site::query()->whereKey($this->site->id)->update(['site_group_id' => $this->other->id]);
+
+            expect(resolvedAt($this->site))->toBe(['Australia/Sydney', 'site_group']);
+        });
+
+        it('a relation update that detaches the site', function (): void {
+            $this->group->sites()->update(['site_group_id' => null]);
+
+            expect(resolvedAt($this->site))->toBe(['Europe/London', 'org']);
+        });
+
+        it('a quiet move', function (): void {
+            $fresh = Site::query()->findOrFail($this->site->id);
+            $fresh->site_group_id = $this->other->id;
+            $fresh->saveQuietly();
+
+            expect(resolvedAt($this->site))->toBe(['Australia/Sydney', 'site_group']);
+        });
+
+        it('a bulk delete of the group, whose sites the database detaches', function (): void {
+            SiteGroup::query()->whereKey($this->group->id)->delete();
+
+            expect(resolvedAt($this->site))->toBe(['Europe/London', 'org']);
+        });
+
+        it('a quiet delete of the group', function (): void {
+            SiteGroup::query()->findOrFail($this->group->id)->deleteQuietly();
+
+            expect(resolvedAt($this->site))->toBe(['Europe/London', 'org']);
+        });
+
+        it('a bulk soft delete of the org', function (): void {
+            $this->group->update(['settings' => null]);
+            expect(resolvedAt($this->site))->toBe(['Europe/London', 'org']);
+
+            Org::query()->whereKey($this->org->id)->delete();
+
+            expect(resolvedAt($this->site))->toBe(['UTC', 'default']);
+        });
+
+        it('a bulk rename of the group', function (): void {
+            SiteGroup::query()->whereKey($this->group->id)->update(['name' => 'Rebranded']);
+
+            expect($this->resolver->resolve($this->site, 'timezone')?->describe())->toBe('inherited from site group Rebranded');
+        });
+
+        it('a bulk settings write inside the escape hatch, which stands the guards down and not this', function (): void {
+            SiteGroup::withoutScopeBecause('the test writes past the per-row refusal', fn ($query) => $query
+                ->whereKey($this->group->id)
+                ->update(['settings' => json_encode(['timezone' => 'Asia/Tokyo'])]));
+
+            expect(resolvedAt($this->site))->toBe(['Asia/Tokyo', 'site_group']);
+        });
+    });
+
     it('drops it when a transaction holding the write rolls back', function (): void {
         /*
          * The write drops the memo, a lookup inside the transaction memoises the uncommitted value, and the
@@ -283,11 +502,14 @@ describe('invalidation is automatic', function (): void {
         } catch (RuntimeException) {
         }
 
-        expect($this->resolver->get($this->site, 'timezone'))->toBe('UTC');
+        expect($this->resolver->get($this->site, 'timezone'))->toBe('UTC')
+            // The caller's instance is not restored, as with any Eloquent save; what reads settings re-reads the rows.
+            ->and($this->site->settings)->toBe(['timezone' => 'Asia/Tokyo'])
+            ->and(settingsStoredIn('sites', $this->site->id))->toBeNull();
     });
 });
 
-describe('a timezone is an IANA identifier, by every path', function (): void {
+describe('a timezone is an identifier PHP lists, by every path', function (): void {
     it('accepts a canonical identifier and refuses what only looks like one', function (): void {
         $this->site->update(['settings' => ['timezone' => 'America/New_York']]);
 
@@ -295,26 +517,44 @@ describe('a timezone is an IANA identifier, by every path', function (): void {
         // no unset sentinel — a key is reverted by removing it.
         foreach (['+05:00', 'EST', 'america/new_york', 'US/Eastern', 'Mars/Olympus', '', null, 5, ['UTC']] as $bad) {
             expect(fn () => $this->site->update(['settings' => ['timezone' => $bad]]))
-                ->toThrow(RuntimeException::class, 'not an IANA timezone identifier');
+                ->toThrow(RuntimeException::class, 'is not a timezone identifier PHP lists');
         }
 
         expect(settingsStoredIn('sites', $this->site->id))->toBe(['timezone' => 'America/New_York']);
     });
 
+    it('says what it checks, since a name it refuses may still be an IANA one', function (): void {
+        /*
+         * ⚠️ `Etc/UTC`, `GMT` and `US/Eastern` are all in the IANA database — as a zone, and as backward links — and
+         * PHP's list leaves them out. The refusal said "not an IANA timezone identifier", which was untrue of each.
+         */
+        foreach (['Etc/UTC', 'GMT', 'US/Eastern'] as $alias) {
+            try {
+                $this->site->update(['settings' => ['timezone' => $alias]]);
+                $message = null;
+            } catch (RuntimeException $refused) {
+                $message = $refused->getMessage();
+            }
+
+            expect($message)->toContain('is not a timezone identifier PHP lists', 'DateTimeZone::listIdentifiers()')
+                ->and(str_contains((string) $message, 'not an IANA'))->toBeFalse("{$alias} was called not IANA");
+        }
+    });
+
     it('refuses it on create and update at every level', function (): void {
         expect(fn () => Org::create(['name' => 'Bad', 'slug' => 'bad', 'settings' => ['timezone' => 'Mars/Olympus']]))
-            ->toThrow(RuntimeException::class, 'not an IANA timezone identifier')
+            ->toThrow(RuntimeException::class, 'is not a timezone identifier PHP lists')
             ->and(fn () => SiteGroup::create([
                 'org_id' => $this->org->id, 'handle' => 'bad', 'name' => 'Bad', 'settings' => ['timezone' => 'Mars/Olympus'],
-            ]))->toThrow(RuntimeException::class, 'not an IANA timezone identifier')
+            ]))->toThrow(RuntimeException::class, 'is not a timezone identifier PHP lists')
             ->and(fn () => Site::create([
                 'org_id' => $this->org->id, 'handle' => 'bad', 'slug' => 'bad', 'name' => 'Bad',
                 'settings' => ['timezone' => 'Mars/Olympus'],
-            ]))->toThrow(RuntimeException::class, 'not an IANA timezone identifier');
+            ]))->toThrow(RuntimeException::class, 'is not a timezone identifier PHP lists');
 
         foreach ([$this->org, $this->group, $this->site] as $scope) {
             expect(fn () => $scope->update(['settings' => ['timezone' => 'Mars/Olympus']]))
-                ->toThrow(RuntimeException::class, 'not an IANA timezone identifier');
+                ->toThrow(RuntimeException::class, 'is not a timezone identifier PHP lists');
         }
 
         expect(DB::table('orgs')->where('slug', 'bad')->exists())->toBeFalse()
@@ -338,6 +578,19 @@ describe('a timezone is an IANA identifier, by every path', function (): void {
                 'increment extras' => fn () => $class::query()->whereKey($scope->id)->increment('id', 0, ['settings' => $bad]),
                 'quiet update' => fn () => $scope->fresh()->fill(['settings' => ['timezone' => 'Mars/Olympus']])->saveQuietly(),
                 'without events' => fn () => $class::withoutEvents(fn () => $scope->fresh()->update(['settings' => ['timezone' => 'Mars/Olympus']])),
+                /*
+                 * ⚠️ A COLUMN NAME IS CASE-INSENSITIVE on SQLite, MySQL and MariaDB, so each of these writes
+                 * `settings` — and the builder compared names exactly, so each was allowed. Measured before the
+                 * fold: `SETTINGS` stored Mars/Olympus, and the memo kept describing the old value.
+                 */
+                'upper-cased column' => fn () => $class::query()->whereKey($scope->id)->update(['SETTINGS' => $bad]),
+                'mis-cased JSON path' => fn () => $class::query()->whereKey($scope->id)->update(['Settings->timezone' => 'Mars/Olympus']),
+                'mis-cased qualified column' => fn () => $class::query()->whereKey($scope->id)->update([$scope->getTable().'.Settings' => $bad]),
+                'mis-cased increment extras' => fn () => $class::query()->whereKey($scope->id)->increment('id', 0, ['SETTINGS' => $bad]),
+                // A JSON path may hold a dot; the table qualifier was found by the last one, so this read as `b`.
+                // Allowed on MySQL and MariaDB before the fix; SQLite and PostgreSQL reject the SQL, so only the matrix
+                // sees the refusal matter.
+                'JSON path with a dot' => fn () => $class::query()->whereKey($scope->id)->update(['settings->a.b' => 'x']),
             ];
 
             foreach ($attempts as $path => $attempt) {
@@ -347,6 +600,41 @@ describe('a timezone is an IANA identifier, by every path', function (): void {
             expect(DB::table($scope->getTable())->where('id', $scope->id)->value('settings'))
                 ->toBeNull("{$class}: a path stored settings past the guard");
         }
+    });
+
+    it('refuses a save that writes settings under another spelling, which the check does not read', function (): void {
+        /*
+         * ⚠️ AN ORDINARY SAVE, WITH EVERY EVENT, AND STILL PAST THE GUARD. `HoldsSettings` checks
+         * `getAttribute('settings')`; `update(['Settings' => …])` sets a second attribute, the check passes on the
+         * untouched first one, and the engine writes the second into the same column. Measured on SQLite, MySQL
+         * and MariaDB before the fix: Mars/Olympus stored through `$site->update()`. Folding case in the bulk
+         * comparison does not reach this, because a genuine save is the path that comparison stands aside for.
+         */
+        $bad = json_encode(['timezone' => 'Mars/Olympus']);
+        $rows = [
+            Org::class => ['name' => 'Spelled', 'slug' => 'spelled'],
+            SiteGroup::class => ['org_id' => $this->org->id, 'handle' => 'spelled', 'name' => 'Spelled'],
+            Site::class => ['org_id' => $this->org->id, 'handle' => 'spelled', 'slug' => 'spelled', 'name' => 'Spelled'],
+        ];
+
+        foreach ([Org::class => $this->org, SiteGroup::class => $this->group, Site::class => $this->site] as $class => $scope) {
+            $attempts = [
+                'update' => fn () => $scope->fresh()->update(['Settings' => $bad]),
+                'JSON-path update' => fn () => $scope->fresh()->update(['SETTINGS->timezone' => 'Mars/Olympus']),
+                'create' => fn () => $class::create($rows[$class] + ['Settings' => $bad]),
+            ];
+
+            foreach ($attempts as $path => $attempt) {
+                expect($attempt)->toThrow(RuntimeException::class, 'the value would be stored unchecked', "{$class}: {$path} was allowed");
+            }
+
+            expect(DB::table($scope->getTable())->where('id', $scope->id)->value('settings'))
+                ->toBeNull("{$class}: a save stored settings past the guard");
+        }
+
+        expect(DB::table('orgs')->where('slug', 'spelled')->exists())->toBeFalse()
+            ->and(DB::table('site_groups')->where('handle', 'spelled')->exists())->toBeFalse()
+            ->and(DB::table('sites')->where('handle', 'spelled')->exists())->toBeFalse();
     });
 
     it('refuses to create a level in bulk, or quietly with settings', function (): void {
@@ -363,6 +651,9 @@ describe('a timezone is an IANA identifier, by every path', function (): void {
                 ->toThrow(RuntimeException::class, 'cannot be created in bulk', "{$class}: bulk insert")
                 ->and(fn () => $class::query()->insertGetId($withSettings))
                 ->toThrow(RuntimeException::class, 'never set that value', "{$class}: insertGetId")
+                // The engine writes `SETTINGS` into `settings`; the guard looked the name up exactly.
+                ->and(fn () => $class::query()->insertGetId(array_diff_key($withSettings, ['settings' => 0]) + ['SETTINGS' => $withSettings['settings']]))
+                ->toThrow(RuntimeException::class, 'never set that value', "{$class}: insertGetId, upper-cased")
                 ->and(fn () => $class::createQuietly(array_merge($row, ['settings' => ['timezone' => 'Mars/Olympus']])))
                 ->toThrow(RuntimeException::class, 'never set that value', "{$class}: createQuietly");
         }
@@ -370,6 +661,25 @@ describe('a timezone is an IANA identifier, by every path', function (): void {
         expect(DB::table('orgs')->where('slug', 'bulk')->exists())->toBeFalse()
             ->and(DB::table('site_groups')->where('handle', 'bulk')->exists())->toBeFalse()
             ->and(DB::table('sites')->where('handle', 'bulk')->exists())->toBeFalse();
+    });
+
+    it('refuses every save of a row holding a refused value, until the value is reverted', function (): void {
+        /*
+         * The whole map is checked on every save, so a value written past the check — below Eloquent here, or stored
+         * before the check existed — blocks a rename as surely as a settings change. The revert is the way out: it
+         * removes the key, and the map it leaves passes.
+         */
+        DB::table('sites')->where('id', $this->site->id)->update(['settings' => json_encode(['timezone' => 'EST', 'logo' => 'a.svg'])]);
+        $site = $this->site->fresh();
+
+        expect(fn () => $site->update(['name' => 'Renamed']))
+            ->toThrow(RuntimeException::class, 'is not a timezone identifier PHP lists');
+
+        $this->writer->revert($site, 'timezone');
+        $site->update(['name' => 'Renamed']);
+
+        expect(settingsStoredIn('sites', $this->site->id))->toBe(['logo' => 'a.svg'])
+            ->and(DB::table('sites')->where('id', $this->site->id)->value('name'))->toBe('Renamed');
     });
 
     it('refuses a settings value that is not a map of names', function (): void {
@@ -398,14 +708,33 @@ describe('the defaults', function (): void {
             ->toThrow(RuntimeException::class, 'the configured defaults');
     });
 
-    it('are not built by a write that nothing resolved against', function (): void {
-        // The invalidation hook asks whether this request has a resolver before touching one, so an unrelated save
-        // neither pays for building it nor fails where a bad default would.
-        app()->offsetUnset(SettingsResolver::class);
-        app()->scoped(SettingsResolver::class, fn () => throw new RuntimeException('a write built a resolver'));
+    it('are not built by a write that nothing in this job resolved against', function (): void {
+        /*
+         * Invalidation drops what live resolvers hold and builds none, so an unrelated save neither pays for building
+         * one nor fails where a bad default would.
+         *
+         * ⚠️ A WORKER'S RESET, NOT `offsetUnset()`, which is what this test used and why it could not see the defect.
+         * `offsetUnset()` also clears the container's record that the abstract was ever resolved; the queue worker's
+         * `forgetScopedInstances()` clears only the instance. The check asked `app()->resolved()`, which stayed true
+         * for every later job — so each org, site group or site write built a fresh resolver to empty it. Measured:
+         * with the defaults since made invalid, the next job's rename failed.
+         */
+        $this->resolver->get($this->site, 'timezone');
 
+        // The previous job ends: the worker resets scope, and nothing but the container held the resolver.
+        $this->resolver = null;
+        app()->forgetScopedInstances();
+
+        $built = 0;
+        app()->afterResolving(SettingsResolver::class, function () use (&$built): void {
+            $built++;
+        });
+        config(['kitsune.settings' => ['timezone' => 'Mars/Olympus']]);
+
+        $this->site->update(['name' => 'Renamed in the next job']);
         $this->site->update(['settings' => ['timezone' => 'America/New_York']]);
 
-        expect(settingsStoredIn('sites', $this->site->id))->toBe(['timezone' => 'America/New_York']);
+        expect($built)->toBe(0)
+            ->and(settingsStoredIn('sites', $this->site->id))->toBe(['timezone' => 'America/New_York']);
     });
 });

@@ -57,9 +57,10 @@ final class KitsuneServiceProvider extends ServiceProvider
          * long-lived worker must not carry one request's resolved settings into the next job.
          *
          * ⚠️ THE DEFAULTS ARE CHECKED HERE, by the rules a stored override meets, because configuration is the one
-         * way a value becomes resolvable without passing a model's `saving` hook. A host that configures
-         * `Mars/Olympus` is refused when the resolver is first built, with a message naming the key, rather than
-         * resolved as though it were a timezone.
+         * source of a resolvable value that no model-layer path could check: a stored override passes the model's
+         * `saving` hook unless it was written past Eloquent's guards (`HoldsSettings` names those paths). A host
+         * that configures `Mars/Olympus` is refused when the resolver is first built, with a message naming the
+         * key, rather than resolved as though it were a timezone.
          */
         $this->app->scoped(SettingsResolver::class, static function (): SettingsResolver {
             $defaults = config('kitsune.settings');
@@ -121,11 +122,10 @@ final class KitsuneServiceProvider extends ServiceProvider
             /*
              * ⚠️ AND THE RESOLVED SETTINGS, for the same reason. A settings write inside a transaction drops the
              * memo when it saves, a lookup before the rollback memoises the uncommitted value, and nothing drops
-             * it again — so the rest of the request resolved a setting that no longer exists.
+             * it again — so the rest of the request resolved a setting that no longer exists. Every resolver
+             * alive, and none built: see `SettingsResolver::forgetEverywhere()`.
              */
-            if (app()->resolved(SettingsResolver::class)) {
-                app(SettingsResolver::class)->forget();
-            }
+            SettingsResolver::forgetEverywhere();
         });
 
         if ($this->app->runningInConsole()) {

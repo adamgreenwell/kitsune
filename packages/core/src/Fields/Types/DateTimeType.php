@@ -21,10 +21,13 @@ use Kitsune\Core\Fields\Projection;
  *
  * Stored UTC. The admin shows and takes it in the current site's resolved
  * `timezone` setting (ADR-022) — `SiteTime` builds the picker and the list
- * cell, and Filament converts at both — while `toApi()` returns the stored
- * UTC string unchanged. Storing local time is how a scheduled post fires an
- * hour early twice a year — the conversion belongs at the edges, not in
- * storage.
+ * cell, and Filament converts at both, per item when the field holds several
+ * — while `toApi()` returns the stored UTC string unchanged. Storing local
+ * time is how a scheduled post fires an hour early twice a year — the
+ * conversion belongs at the edges, not in storage.
+ *
+ * ⚠️ A wall-clock time the site's zone repeats or skips does not round-trip
+ * through the picker, which holds no offset — see `SiteTime::picker()`.
  */
 final class DateTimeType extends BaseFieldType
 {

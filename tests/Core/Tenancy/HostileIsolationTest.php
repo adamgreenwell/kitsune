@@ -187,6 +187,46 @@ describe('cross-org isolation', function (): void {
             ->toThrow(RuntimeException::class, 'Refusing to write');
     });
 
+    it('catches a MIS-CASED column name, which the engine reads as the same column', function (): void {
+        /*
+         * ⚠️ SQLite, MySQL and MariaDB compare column names without regard to case, so `ORG_ID` IS `org_id` to the
+         * database — and the guard compared the name exactly, so it saw a column it does not guard. Measured before
+         * the fix: from org A, `update(['ORG_ID' => $orgB])` moved the row into org B. (PostgreSQL folds an
+         * unquoted name and rejects a quoted one it does not have, so there the write fails at the database.)
+         */
+        app(Context::class)->setSite($this->siteA1);
+        $mine = SiteThing::create(['label' => 'mine']);
+        $shared = SharedThing::create(['label' => 'shared']);
+
+        $attempts = [
+            'mass update' => fn () => SiteThing::query()->update(['ORG_ID' => $this->orgB->id]),
+            'mass update of the site key' => fn () => SiteThing::query()->update(['Site_Id' => $this->siteB1->id]),
+            'qualified' => fn () => SiteThing::query()->update(['Site_Things.Org_Id' => $this->orgB->id]),
+            'through a save' => fn () => $mine->fresh()->update(['ORG_ID' => $this->orgB->id]),
+            'a site' => fn () => Site::query()->whereKey($this->siteA1->id)->update(['ORG_ID' => $this->orgB->id]),
+            'a site group' => fn () => SiteGroup::query()->update(['Org_Id' => $this->orgB->id]),
+            'an org-scoped row' => fn () => SharedThing::query()->whereKey($shared->id)->update(['ORG_ID' => $this->orgB->id]),
+            'arithmetic' => fn () => SiteThing::query()->increment('ORG_ID'),
+            'a hand-rolled insert' => fn () => SharedThing::query()->insertGetId(['ORG_ID' => $this->orgB->id, 'label' => 'planted']),
+            'an insert-or-ignore' => fn () => SharedThing::query()->insertOrIgnore(['Org_Id' => $this->orgB->id, 'label' => 'planted']),
+        ];
+
+        foreach ($attempts as $path => $attempt) {
+            expect($attempt)->toThrow(RuntimeException::class, null, "{$path} was allowed");
+        }
+
+        app(Context::class)->forget();
+
+        expect(SiteThing::withoutScopeBecause('the test reads every row', fn ($q) => $q->pluck('org_id')->all()))
+            ->toBe([$this->orgA->id])
+            ->and(SharedThing::withoutScopeBecause('the test reads every row', fn ($q) => $q->pluck('org_id')->all()))
+            ->toBe([$this->orgA->id])
+            ->and(Site::withoutScopeBecause('the test reads every row', fn ($q) => $q->whereKey($this->siteA1->id)->value('org_id')))
+            ->toBe($this->orgA->id)
+            ->and(SiteGroup::withoutScopeBecause('the test reads every row', fn ($q) => $q->where('org_id', $this->orgB->id)->count()))
+            ->toBe(0);
+    });
+
     it('refuses updateFrom, whose assignments are invisible here', function (): void {
         app(Context::class)->setSite($this->siteA1);
 

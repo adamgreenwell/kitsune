@@ -11,6 +11,7 @@ declare(strict_types=1);
 namespace Kitsune\Core\Settings;
 
 use Kitsune\Core\Tenancy\Context;
+use RuntimeException;
 
 /**
  * The timezone an instant is shown and entered in: the current site's resolved `timezone` setting.
@@ -25,7 +26,11 @@ use Kitsune\Core\Tenancy\Context;
  */
 final class SiteTimezone
 {
-    /** When nothing supplies a timezone at all: a host whose own `settings` map omits it (see config/kitsune.php). */
+    /**
+     * When no level and no configured default supplies a `timezone` at all — a host whose own `settings` map omits
+     * the key (see config/kitsune.php). A value that IS supplied and is not a timezone never falls back to this:
+     * see `current()`.
+     */
     public const FALLBACK = 'UTC';
 
     /**
@@ -34,13 +39,34 @@ final class SiteTimezone
      * ⚠️ NO SITE IS THE DEFAULT, NOT AN ERROR. An org-level page, a console command and a queued job have no site, and
      * each of them may still format a date; they get the platform default.
      *
+     * ⚠️ A STORED VALUE THAT IS NOT A TIMEZONE FAILS, CLOSED AND BY NAME. `SettingsGuard` refuses one on every
+     * Eloquent path, but a write below Eloquent or inside `withoutScopeBecause()` is not checked, and neither is a
+     * value stored before the check existed. Such a value was handled two ways: a string reached Carbon, which threw
+     * "Unknown or bad timezone" from every cell and picker; anything else was read as UTC, hiding a valid value set
+     * above it, so authors entered instants in the wrong zone and nothing said so. Measured, both. Now each fails
+     * here, with the level that holds it — the provenance the resolver already carries.
+     *
      * Asked per call rather than captured, so a long-lived worker and a request that changes the setting both see
      * the value as it stands — the resolver's per-request memo is what keeps that cheap.
      */
     public static function current(): string
     {
-        $timezone = app(SettingsResolver::class)->get(app(Context::class)->site(), SettingsGuard::TIMEZONE);
+        $resolved = app(SettingsResolver::class)->resolve(app(Context::class)->site(), SettingsGuard::TIMEZONE);
 
-        return is_string($timezone) ? $timezone : self::FALLBACK;
+        if ($resolved === null) {
+            return self::FALLBACK;
+        }
+
+        if (! SettingsGuard::isTimezone($resolved->value)) {
+            throw new RuntimeException(sprintf(
+                'The timezone resolved for this site is %s, %s, and it is not a timezone identifier PHP lists. It '
+                .'was stored past the check that refuses one — below Eloquent, or inside withoutScopeBecause() — so '
+                .'no date is formatted with it. Replace it, or revert it at that level (SettingsWriter::revert()).',
+                is_string($resolved->value) ? '"'.$resolved->value.'"' : get_debug_type($resolved->value),
+                $resolved->describe(),
+            ));
+        }
+
+        return $resolved->value;
     }
 }

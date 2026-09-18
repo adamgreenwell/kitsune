@@ -639,7 +639,7 @@ Twelve types. Deliberately small — every one added before the API freeze is a 
 | `number` | Inline | ✅ | ✅ | `integer` \| `decimal`, precision, min/max, step. Bounded by its projection: `integer` by signed BIGINT, `decimal` by `10^precision` |
 | `boolean` | Inline | ✅ | ❌ | |
 | `date` | Inline | ✅ | ✅ | Date only, and never converted through a timezone |
-| `datetime` | Inline | ✅ | ✅ | Stored UTC; the admin shows and takes it in the current site's resolved `timezone` setting (ADR-022), and `toApi()` returns the stored UTC string |
+| `datetime` | Inline | ✅ | ✅ | Stored UTC; the admin shows and takes it — one value or several — in the current site's resolved `timezone` setting (ADR-022), and `toApi()` returns the stored UTC string. ⚠️ A wall-clock time the zone repeats or skips does not round-trip; see ADR-022's amendment |
 | `select` | Inline | ✅ | ❌ | Options from `settings`, or from an entry type |
 | `multi_select` | Inline | ❌ | — | Always an array; cardinality is intrinsic |
 | `relation` | **Relational** | via table | ✅ | Target entry types constrained in `settings` |

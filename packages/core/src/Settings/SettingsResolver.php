@@ -13,6 +13,7 @@ namespace Kitsune\Core\Settings;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Models\SiteGroup;
+use WeakMap;
 
 /**
  * Resolves a setting through default → org → site group → site (ADR-022).
@@ -45,9 +46,46 @@ final class SettingsResolver
     private array $memo = [];
 
     /**
+     * Every resolver still alive in this process, held weakly.
+     *
+     * ⚠️ WEAKLY, SO "ALIVE" MEANS WHAT IT SAYS. The invalidation hook asked the container
+     * `resolved(SettingsResolver::class)`, which answers whether one was EVER built in the process:
+     * `forgetScopedInstances()` — what a queue worker runs before each job, and Octane between requests — drops
+     * the instance and not that memory. So once any job had resolved a setting, every later job's org, site
+     * group or site write built a fresh resolver only to empty it, reading the configured defaults to do so and
+     * failing the write if they had become invalid since. Measured in the worker's own reset. The container is
+     * what holds a scoped resolver; when it lets go and nothing else holds it, it leaves this map.
+     *
+     * @var WeakMap<self, true>|null
+     */
+    private static ?WeakMap $alive = null;
+
+    /**
      * @param  array<string, mixed>  $defaults
      */
-    public function __construct(private readonly array $defaults = []) {}
+    public function __construct(private readonly array $defaults = [])
+    {
+        self::$alive ??= new WeakMap;
+        self::$alive[$this] = true;
+    }
+
+    /**
+     * Drop what was resolved from a level that was just written, from every resolver alive — and build none.
+     *
+     * The entry point for invalidation: `ScopedBuilder` calls it after every write to an org, site group or site,
+     * and `KitsuneServiceProvider` after a rollback. A write that nothing has resolved against has nothing to
+     * drop, and building a resolver to empty it would read the configured defaults, and fail the write if they
+     * are invalid.
+     *
+     * Every one alive rather than the container's alone, because a resolver somebody constructed or kept holds a
+     * memo that describes the rows as they were just as surely.
+     */
+    public static function forgetEverywhere(Org|SiteGroup|Site|null $scope = null): void
+    {
+        foreach (self::$alive ?? [] as $resolver => $ignored) {
+            $resolver->forget($scope);
+        }
+    }
 
     /** A site's value for a key, or the platform default when no site is given. */
     public function get(?Site $site, string $key, mixed $fallback = null): mixed
@@ -127,9 +165,12 @@ final class SettingsResolver
      * Drop what was resolved from a scope and from everything beneath it — no more, no less.
      *
      * "I changed the setting and nothing happened" is a well-known support burden in scope-based config systems,
-     * caused by caching (ADR-022). Nothing needs to call this by hand after a write: `HoldsSettings` calls it
-     * whenever an org, site group or site row is saved or deleted, and `KitsuneServiceProvider` calls it with no
-     * scope when a transaction rolls back.
+     * caused by caching (ADR-022). A write through Eloquent does not need to call this by hand: `ScopedBuilder`
+     * calls `forgetEverywhere()` after every update, delete and arithmetic write to an org, site group or site —
+     * the written level when the write is that model's own save, and everything when it is a bulk or relation
+     * write, a delete, or one inside `withoutScopeBecause()`, whose rows it cannot name — and
+     * `KitsuneServiceProvider` drops everything when a transaction rolls back. A write below Eloquent —
+     * `DB::table()`, `toBase()`, raw SQL — is not seen, and needs this call.
      *
      * An org reaches every site that resolved through it, a site group every site that resolved through that
      * group, and a site only itself. Null drops everything.

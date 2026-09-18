@@ -16,15 +16,18 @@ use RuntimeException;
 /**
  * What a settings map may hold (ADR-022).
  *
- * Asked in two places, which between them are every way a value can become resolvable: `HoldsSettings` asks it on
- * `saving` for an org, a site group or a site — `FieldStorage::guardShape()`'s pattern — and
- * `KitsuneServiceProvider` asks it of the configured defaults when it builds the resolver.
+ * Asked in two places: `HoldsSettings` asks it on `saving` for an org, a site group or a site —
+ * `FieldStorage::guardShape()`'s pattern — and `KitsuneServiceProvider` asks it of the configured defaults when it
+ * builds the resolver. Between them they cover every value that reaches the resolver through Eloquent or through
+ * configuration, and not every value that can: see below.
  *
- * ⚠️ THE `saving` HOOK IS THE ONLY DOOR BECAUSE THE BUILDER MAKES IT ONE. `settings` is listed in
+ * ⚠️ THE `saving` HOOK IS THE ONLY DOOR THROUGH ELOQUENT BECAUSE THE BUILDER MAKES IT ONE. `settings` is listed in
  * `columnsRequiringModelSave()` on all three models, so a bulk write, a quiet save or a hand-rolled insert that
- * names it is refused by `ScopedBuilder` rather than stored unchecked. Below Eloquent — `toBase()`, `DB::table()`,
- * raw SQL — nothing at the model layer can stand, which is the boundary `ScopedBuilder` already states; and
- * `withoutScopeBecause()` stands the builder's per-row refusals down, as it does for every other guarded column.
+ * names it — under any spelling the database accepts — is refused by `ScopedBuilder` rather than stored unchecked.
+ * Below Eloquent — `toBase()`, `DB::table()`, raw SQL — nothing at the model layer can stand, which is the boundary
+ * `ScopedBuilder` already states; and `withoutScopeBecause()` stands the builder's per-row refusals down, as it
+ * does for every other guarded column. A timezone stored by either is refused when it is read, by
+ * `SiteTimezone::current()`, rather than used.
  */
 final class SettingsGuard
 {
@@ -75,8 +78,9 @@ final class SettingsGuard
     }
 
     /**
-     * ⚠️ AN IANA IDENTIFIER AS PHP LISTS THEM, spelled exactly — `DateTimeZone::listIdentifiers()`, which is the list
-     * Laravel's own `timezone` rule checks by default. `new DateTimeZone()` would accept far more (`EST`, `+05:00`,
+     * ⚠️ A CANONICAL IANA IDENTIFIER AS PHP LISTS THEM, spelled exactly — `DateTimeZone::listIdentifiers()`, which is
+     * the list Laravel's own `timezone` rule checks by default, and which leaves out the database's aliases
+     * (`Etc/UTC`, `GMT`, `US/Eastern`). `new DateTimeZone()` would accept far more (`EST`, `+05:00`,
      * `america/new_york`), and an offset is not a timezone: it has no daylight-saving rules, so a site configured
      * with one shows the wrong hour for half of every year.
      *
@@ -85,15 +89,31 @@ final class SettingsGuard
      */
     private static function checkTimezone(mixed $value, string $holder): void
     {
-        if (is_string($value) && in_array($value, DateTimeZone::listIdentifiers(), true)) {
+        if (self::isTimezone($value)) {
             return;
         }
 
+        /*
+         * ⚠️ WHAT IS CHECKED, NOT "IANA". PHP's list is the canonical IANA names; the IANA database also carries
+         * `Etc/UTC`, `GMT` and backward links such as `US/Eastern`, which the list leaves out — and this refused
+         * each of them as "not an IANA timezone identifier", which they are.
+         */
         throw new RuntimeException(sprintf(
-            'Refusing [timezone] on %s: %s is not an IANA timezone identifier, such as Europe/London or '
-            .'America/New_York, spelled exactly. To inherit instead, revert the key rather than storing an empty one.',
+            'Refusing [timezone] on %s: %s is not a timezone identifier PHP lists (DateTimeZone::listIdentifiers()), '
+            .'such as Europe/London or America/New_York, spelled exactly. To inherit instead, revert the key rather '
+            .'than storing an empty one.',
             $holder,
             is_string($value) ? '"'.$value.'"' : get_debug_type($value),
         ));
+    }
+
+    /**
+     * Whether a value is a timezone this store accepts — see `checkTimezone()`.
+     *
+     * @phpstan-assert-if-true =string $value
+     */
+    public static function isTimezone(mixed $value): bool
+    {
+        return is_string($value) && in_array($value, DateTimeZone::listIdentifiers(), true);
     }
 }

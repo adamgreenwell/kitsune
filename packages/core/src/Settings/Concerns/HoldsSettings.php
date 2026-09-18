@@ -11,26 +11,29 @@ declare(strict_types=1);
 namespace Kitsune\Core\Settings\Concerns;
 
 use Kitsune\Core\Settings\SettingsGuard;
-use Kitsune\Core\Settings\SettingsResolver;
 
 /**
  * An org, site group or site: a level of ADR-022's hierarchy, holding its overrides in a `settings` column.
  *
- * Two jobs, both on model events and both for every path that saves the model, the settings writer included:
+ * **Validation**, on `saving`, for every path that saves the model — the settings writer included. `SettingsGuard`
+ * refuses a map that is not one and a timezone PHP does not list, so the write fails before it reaches the row.
  *
- * - **Validation**, on `saving`. `SettingsGuard` refuses a map that is not one and a timezone that is not an IANA
- *   identifier, so the write fails before it reaches the row. The model's `columnsRequiringModelSave()` names
- *   `settings`, which is what makes this the only door: `ScopedBuilder` refuses the bulk and quiet paths that
- *   would skip the event.
+ * ⚠️ THE `saving` HOOK IS THE ONLY DOOR THROUGH ELOQUENT, NOT THE ONLY DOOR. The model's
+ * `columnsRequiringModelSave()` names `settings`, so `ScopedBuilder` refuses the bulk update, the JSON-path update,
+ * the arithmetic extras, the hand-rolled insert and the quiet save that would skip this hook, under any spelling
+ * of the column the database would accept. Three paths are not refused: below Eloquent — `toBase()`,
+ * `DB::table()`, raw SQL — where no model-layer guard can stand, and a bulk write inside `withoutScopeBecause()`,
+ * which stands the builder's per-row refusals down for every guarded column.
  *
- * - **Invalidation**, on `saved` and `deleted` — ADR-022: "cache invalidation must be correct and automatic". A
- *   write that reaches `settings` by `$site->update([...])` invalidates exactly as one through `SettingsWriter`
- *   does, because it is the same event.
+ * ⚠️ THE WHOLE MAP IS CHECKED ON EVERY SAVE, not only when `settings` is dirty. So a row holding a value the guard
+ * refuses — written by one of those three paths, or stored before this check existed — refuses every save of that
+ * row, a rename included, until the value is replaced or reverted (`SettingsWriter::revert()` removes it, and the
+ * map it leaves passes). A check that ran only on a dirty column would let the row be re-saved around a value
+ * that breaks every page formatting a date.
  *
- * ⚠️ ANY CHANGE TO THE ROW INVALIDATES, NOT ONLY A CHANGE TO `settings`. Resolution also reads a site's
- * `site_group_id`, which decides which brand it inherits from, and the `name` of the site and its group, which the
- * provenance label quotes. A list of "the columns resolution reads" is one more thing to keep in step with the
- * resolver; the cost of not keeping one is re-reading at most three rows.
+ * **Invalidation** is not here. It was, on `saved` and `deleted`, and those fire for an evented save or delete of
+ * one instance and nothing else — see `ScopedBuilder::forgettingResolvedSettings()`, which runs after every write
+ * through Eloquent's builder, evented or not.
  */
 trait HoldsSettings
 {
@@ -39,26 +42,5 @@ trait HoldsSettings
         static::saving(static function (self $model): void {
             SettingsGuard::check($model->getAttribute('settings'), class_basename($model).' '.($model->getKey() ?? '(new)'));
         });
-
-        static::saved(static function (self $model): void {
-            if ($model->wasChanged()) {
-                self::forgetResolvedSettings($model);
-            }
-        });
-
-        static::deleted(static function (self $model): void {
-            self::forgetResolvedSettings($model);
-        });
-    }
-
-    /**
-     * ⚠️ ONLY WHEN THIS REQUEST HAS A RESOLVER, so a write that nothing has resolved against does not build one — and
-     * does not fail because the configured defaults would.
-     */
-    private static function forgetResolvedSettings(self $model): void
-    {
-        if (app()->resolved(SettingsResolver::class)) {
-            app(SettingsResolver::class)->forget($model);
-        }
     }
 }

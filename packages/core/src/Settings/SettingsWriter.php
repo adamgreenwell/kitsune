@@ -82,16 +82,45 @@ final class SettingsWriter
         $written = $scope->getConnection()->transaction(function () use ($scope, $action, $change): ?array {
             $row = $this->lockedRow($scope);
             $before = self::settingsOf($row);
-            $after = $change($before);
+            $after = self::asStored($change($before));
 
-            // Nothing changed, so nothing is written and nothing is recorded: the log counts changes, not calls.
-            if ($after === $before) {
+            /*
+             * Nothing changed, so nothing is written and nothing is recorded: the log counts changes, not calls.
+             *
+             * ⚠️ "CHANGED" AS THE ROW SEES IT, NOT AS PHP DOES. `$before` is the stored JSON decoded, and `===`
+             * against the caller's raw value called a repeat a change whenever the value does not survive JSON
+             * unchanged — `1.0` is stored as `1`, an object as a map — and whenever a map's keys come back in
+             * another order, which MySQL's own ordering does to a map set exactly as before. Measured on SQLite: a
+             * `settings.set` row for each such repeat, for `1.0` and an object with no UPDATE issued at all. So
+             * `$after` is what the column will hold, and a map is compared without regard to its keys' order —
+             * which Eloquent's own dirty check does not do, so the save below cannot be the judge of this.
+             */
+            if (self::sameValue($after, $before)) {
                 return null;
             }
 
             // An empty map is stored as NULL — "overrides nothing" — rather than as a JSON `[]`.
             $row->setAttribute('settings', $after === [] ? null : $after);
-            $row->save();
+
+            /*
+             * ⚠️ RECORDED FROM THE WRITE'S EFFECT, NOT FROM THE ATTEMPT — `Role::grant()`'s rule, and ADR-020's
+             * amendment: the audited set and the written set are the same set. A listener that returns false
+             * cancels the save and `save()` says so, which this did not ask: it recorded a change that was never
+             * written and set the caller's instance to it.
+             */
+            if (! $row->save()) {
+                throw new RuntimeException(sprintf(
+                    'Refusing to change a setting on %s %s: a listener cancelled the save, so nothing was written, '
+                    .'and nothing is recorded.',
+                    class_basename($row),
+                    (string) $row->getKey(),
+                ));
+            }
+
+            // And a save that a listener emptied of the change wrote nothing to record.
+            if (! $row->wasChanged('settings')) {
+                return null;
+            }
 
             // Inside the transaction, so a write that cannot be recorded is not kept (ADR-020).
             $this->auditor->recordOrFail($action, $row);
@@ -100,10 +129,62 @@ final class SettingsWriter
         });
 
         if ($written !== null) {
-            // The caller's own instance, so it does not go on describing the row as it was.
+            /*
+             * The caller's own instance, so it does not go on describing the row as it was. As with any Eloquent
+             * save, an enclosing transaction that later rolls back does not restore it; the resolver, which re-reads
+             * the rows, is dropped on that rollback.
+             */
             $scope->setAttribute('settings', $written['settings']);
             $scope->syncOriginalAttribute('settings');
         }
+    }
+
+    /**
+     * A settings map as the column will hold it: through JSON and back, the way the `array` cast stores it.
+     *
+     * @param  array<string, mixed>  $settings
+     * @return array<string, mixed>
+     */
+    private static function asStored(array $settings): array
+    {
+        $stored = json_decode(json_encode($settings, JSON_THROW_ON_ERROR), true, 512, JSON_THROW_ON_ERROR);
+
+        return is_array($stored) ? $stored : [];
+    }
+
+    /**
+     * Whether two stored values are the same value: maps without regard to key order, everything else exactly.
+     *
+     * ⚠️ NOT `DerivesGuardedColumns::sameGuardedValue()`, which compares scalars as strings so a form's `'255'`
+     * proves a model's `255`. Here `1` and `'1'` are different settings, stored differently, and changing one to
+     * the other is a change the log records.
+     */
+    private static function sameValue(mixed $a, mixed $b): bool
+    {
+        if (! is_array($a) || ! is_array($b)) {
+            return $a === $b;
+        }
+
+        if (array_is_list($a) !== array_is_list($b) || count($a) !== count($b)) {
+            return false;
+        }
+
+        if (! array_is_list($a)) {
+            ksort($a);
+            ksort($b);
+        }
+
+        if (array_keys($a) !== array_keys($b)) {
+            return false;
+        }
+
+        foreach ($a as $key => $value) {
+            if (! self::sameValue($value, $b[$key])) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**

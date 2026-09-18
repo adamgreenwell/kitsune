@@ -117,6 +117,10 @@ final class FieldValueRenderer
                     ->hiddenLabel(),
             );
 
+        if ($control === Control::DateTime) {
+            $repeater = self::hydrateEachItemThroughItsPicker($repeater);
+        }
+
         /*
          * ⚠️ THE TYPE'S EFFECTIVE BOUND, NOT THE DECLARED CARDINALITY, which review found this reading.
          * `TextType::maxItems()` narrows the item count when a pattern costs quadratic work per value —
@@ -131,6 +135,53 @@ final class FieldValueRenderer
         }
 
         return self::describe($repeater, $config);
+    }
+
+    /**
+     * Run each stored value through the inner picker's hydrating cast, as the save already runs the other half.
+     *
+     * ⚠️ A MULTI-VALUE INSTANT MOVED BY THE SITE'S OFFSET ON EVERY UNTOUCHED SAVE. Filament's simple repeater wraps
+     * each stored value as an item raw (`Repeater::hydrateItems()`) and never runs the inner control's state cast
+     * on the way in, while on the way out `DateTimeStateCast::get()` does run — reading whatever the item holds as
+     * wall-clock time in the picker's zone. Stored `13:00` UTC was read as 13:00 in New York and saved as 17:00,
+     * then 21:00 on the next save; measured, and the item showed the raw ISO string, which a datetime input
+     * cannot display. With no timezone on the picker the same skipped cast was lossless, which is why it went
+     * unseen until `SiteTime::picker()` gave the inner control one.
+     *
+     * Only for an instant: the gap is Filament's and general, but a date, a number and the rest round-trip through
+     * a skipped cast unchanged, and this is the control the timezone makes lossy.
+     *
+     * ⚠️ IT REPLACES THE REPEATER'S OWN HOOK, because `afterStateHydrated()` holds one callback — so it runs
+     * `hydrateItems()` first, which is all the replaced hook did.
+     */
+    private static function hydrateEachItemThroughItsPicker(Repeater $repeater): Repeater
+    {
+        return $repeater->afterStateHydrated(static function (Repeater $component): void {
+            $component->hydrateItems();
+
+            $picker = $component->getSimpleField();
+            $items = $component->getRawState();
+
+            if ($picker === null || ! is_array($items)) {
+                return;
+            }
+
+            $name = $picker->getName();
+
+            foreach ($items as $key => $item) {
+                if (! is_array($item) || ! array_key_exists($name, $item)) {
+                    continue;
+                }
+
+                foreach ($picker->getStateCasts() as $cast) {
+                    $item[$name] = $cast->set($item[$name]);
+                }
+
+                $items[$key] = $item;
+            }
+
+            $component->rawState($items);
+        });
     }
 
     /**

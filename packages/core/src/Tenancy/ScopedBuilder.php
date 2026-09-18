@@ -15,6 +15,10 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
+use Kitsune\Core\Models\Org;
+use Kitsune\Core\Models\Site;
+use Kitsune\Core\Models\SiteGroup;
+use Kitsune\Core\Settings\SettingsResolver;
 use Kitsune\Core\Tenancy\Attributes\Unscoped;
 use Kitsune\Core\Tenancy\Contracts\RefusesCascadingDeletes;
 use Kitsune\Core\Tenancy\Contracts\RequiresModelSave;
@@ -68,7 +72,42 @@ class ScopedBuilder extends Builder
         $this->guardScopeKeys($values);
         $this->refusePerRowColumns($values);
 
-        return parent::update($values);
+        return $this->forgettingResolvedSettings(parent::update($values));
+    }
+
+    /**
+     * Hand back a write's result once the settings resolved from what it may have changed are dropped (ADR-022).
+     *
+     * ⚠️ HERE, NOT ON THE MODEL'S EVENTS, which is where it was and why it was not automatic. `saved` and
+     * `deleted` fire for an evented save or delete of one instance and for nothing else, so a bulk or relation
+     * update of `site_group_id`, a quiet save, a bulk rename, `SiteGroup::query()->delete()` (whose sites the
+     * database detaches), an org's bulk soft delete and a bulk settings write inside `withoutScopeBecause()` all
+     * changed what a site resolves while the memo kept describing the row as it was — each measured. Every one of
+     * them writes through this builder, events or not.
+     *
+     * ⚠️ PRECISE ONLY WHEN THE WRITE IS THE MODEL'S OWN SAVE. `isPerformingModelSave()` cannot be arranged, so
+     * when it is true the row written is that instance, and only the level it is and the sites beneath it are
+     * dropped. Any other write — bulk, relation, arithmetic, every delete — could have touched any row matching
+     * its predicate, and a builder cannot name them without reading them, so it drops everything: the cost is
+     * re-reading at most three rows per site on the next lookup, and the alternative is the stale value.
+     *
+     * After the write rather than before it, and outside every guard's early return — the escape hatch stands
+     * the guards down, not the invalidation.
+     *
+     * @template TResult
+     *
+     * @param  TResult  $result
+     * @return TResult
+     */
+    private function forgettingResolvedSettings(mixed $result): mixed
+    {
+        $model = $this->getModel();
+
+        if ($model instanceof Org || $model instanceof SiteGroup || $model instanceof Site) {
+            SettingsResolver::forgetEverywhere($model->isPerformingModelSave($this) ? $model : null);
+        }
+
+        return $result;
     }
 
     /**
@@ -505,8 +544,16 @@ class ScopedBuilder extends Builder
             return;
         }
 
-        foreach ($model::columnsRequiringModelSave() as $column => $reason) {
-            if (! array_key_exists($column, $values)) {
+        $guarded = $model::columnsRequiringModelSave();
+
+        /*
+         * ⚠️ EVERY NAME THE ROW WRITES, AS THE DATABASE READS IT — not each guarded name looked up exactly. The
+         * lookup missed `Site::query()->insertGetId([… 'SETTINGS' => …])`, which the engine writes into `settings`.
+         */
+        foreach (array_keys($values) as $written) {
+            $column = $this->bareColumn((string) $written);
+
+            if (! isset($guarded[$column])) {
                 continue;
             }
 
@@ -538,6 +585,8 @@ class ScopedBuilder extends Builder
              * ask the model for the builder it is being saved through.
              */
             if ($model->isPerformingModelSave($this) && $model->guardedColumnsAreDerived()) {
+                $this->refuseMisnamedGuardedColumn((string) $written, $column);
+
                 continue;
             }
 
@@ -548,9 +597,37 @@ class ScopedBuilder extends Builder
                 $column,
                 $method,
                 $model::class,
-                $reason,
+                $guarded[$column],
             ));
         }
+    }
+
+    /**
+     * Refuse a guarded column that a genuine model save writes under a name other than its own.
+     *
+     * ⚠️ THE GUARDS READ ONE ATTRIBUTE, AND THE DATABASE WRITES ANOTHER. A model's `saving` hooks check the
+     * attribute by its own name — `HoldsSettings` asks for `$model->getAttribute('settings')` — and
+     * `$site->update(['Settings' => …])` leaves that attribute alone and sets a second one, which SQLite, MySQL
+     * and MariaDB then write into the same column. The hooks passed, the proof was armed, and a value nothing
+     * checked was stored — measured on all three, and case-folding the bulk comparison does not reach it,
+     * because a save is the path that comparison stands aside for. So a save that stands behind its guards
+     * writes each guarded column under exactly the name they read, or not at all.
+     */
+    private function refuseMisnamedGuardedColumn(string $written, string $column): void
+    {
+        if ($written === $column) {
+            return;
+        }
+
+        throw new RuntimeException(sprintf(
+            '[%s] cannot be written on %s: it reaches [%s], and the checks this save ran read [%s] by that name '
+            .'alone, so the value would be stored unchecked. Set [%s] itself.',
+            $written,
+            $this->getModel()::class,
+            $column,
+            $column,
+            $column,
+        ));
     }
 
     /**
@@ -688,7 +765,7 @@ class ScopedBuilder extends Builder
      */
     public function delete()
     {
-        return $this->guardingCascade(fn () => parent::delete());
+        return $this->forgettingResolvedSettings($this->guardingCascade(fn () => parent::delete()));
     }
 
     /**
@@ -698,7 +775,7 @@ class ScopedBuilder extends Builder
      */
     public function forceDelete()
     {
-        return $this->guardingCascade(fn () => parent::forceDelete());
+        return $this->forgettingResolvedSettings($this->guardingCascade(fn () => parent::forceDelete()));
     }
 
     /**
@@ -821,25 +898,31 @@ class ScopedBuilder extends Builder
          * `isPerformingModelSave()` cannot be arranged: it is private, has no setter, and is true only
          * inside the instance's own `performUpdate()`. A model handed to `setModel()` is not in one.
          */
-        if ($model->isPerformingModelSave($this) && $model->guardedColumnsAreDerived()) {
-            return;
-        }
-
+        $isGuardedSave = $model->isPerformingModelSave($this) && $model->guardedColumnsAreDerived();
         $guarded = $model::columnsRequiringModelSave();
 
         foreach (array_keys($values) as $column) {
             $bare = $this->bareColumn((string) $column);
 
-            if (isset($guarded[$bare])) {
-                throw new RuntimeException(sprintf(
-                    '[%s] cannot be written in bulk on %s: %s A bulk update dispatches no model '
-                    .'events, so the check that would refuse this never runs. Save the model '
-                    .'instead.',
-                    $bare,
-                    $model::class,
-                    $guarded[$bare],
-                ));
+            if (! isset($guarded[$bare])) {
+                continue;
             }
+
+            // A save whose guards ran may write the column — under the name they read, and no other.
+            if ($isGuardedSave) {
+                $this->refuseMisnamedGuardedColumn((string) $column, $bare);
+
+                continue;
+            }
+
+            throw new RuntimeException(sprintf(
+                '[%s] cannot be written in bulk on %s: %s A bulk update dispatches no model '
+                .'events, so the check that would refuse this never runs. Save the model '
+                .'instead.',
+                $bare,
+                $model::class,
+                $guarded[$bare],
+            ));
         }
     }
 
@@ -879,7 +962,7 @@ class ScopedBuilder extends Builder
     {
         $this->guardArithmetic([(string) $column => $amount, ...$extra]);
 
-        return parent::increment($column, $amount, $extra);
+        return $this->forgettingResolvedSettings(parent::increment($column, $amount, $extra));
     }
 
     /**
@@ -890,7 +973,7 @@ class ScopedBuilder extends Builder
     {
         $this->guardArithmetic([(string) $column => $amount, ...$extra]);
 
-        return parent::decrement($column, $amount, $extra);
+        return $this->forgettingResolvedSettings(parent::decrement($column, $amount, $extra));
     }
 
     /**
@@ -901,7 +984,7 @@ class ScopedBuilder extends Builder
     {
         $this->guardArithmetic([...$columns, ...$extra]);
 
-        return parent::incrementEach($columns, $extra);
+        return $this->forgettingResolvedSettings(parent::incrementEach($columns, $extra));
     }
 
     /**
@@ -912,7 +995,7 @@ class ScopedBuilder extends Builder
     {
         $this->guardArithmetic([...$columns, ...$extra]);
 
-        return parent::decrementEach($columns, $extra);
+        return $this->forgettingResolvedSettings(parent::decrementEach($columns, $extra));
     }
 
     /**
@@ -958,21 +1041,21 @@ class ScopedBuilder extends Builder
     }
 
     /**
-     * A row this scope writes has to belong to this scope.
+     * The column a written name reaches, as the guards compare it: `Entries`.`ORG_ID->x` is `org_id`.
      *
-     * Silent with no context, matching EnforcesScope: console commands,
-     * migrations and the installer legitimately run without one. NULL
-     * `site_id` is org-shared and legitimate.
+     * Strips table qualification, quoting and the JSON path, and folds case.
      *
-     * @param  array<string, mixed>  $values
+     * ⚠️ THE CASE FOLD IS WHAT THE DATABASE DOES, and this did not. SQLite, MySQL and MariaDB compare column
+     * names without regard to case, so `update(['SETTINGS' => …])` writes `settings` — and every guard here
+     * compared the name exactly, saw a column it does not guard, and let it through. Measured before the fold:
+     * a timezone refused as `settings` stored as `SETTINGS`, and from org A `update(['ORG_ID' => $orgB])` moved
+     * the row into org B. PostgreSQL folds an unquoted name the same way and refuses a quoted one it does not
+     * have, so folding here refuses nothing any engine would store under another spelling.
+     *
+     * For the comparison only: the name handed to the database is the caller's, untouched.
      */
-    /** Strip table qualification and quoting, so `entries`.`org_id` is `org_id`. */
     protected function bareColumn(string $column): string
     {
-        $bare = str_contains($column, '.')
-            ? substr($column, (int) strrpos($column, '.') + 1)
-            : $column;
-
         // ⚠️ And the JSON PATH is rooted at its column, which this did not do.
         //
         // Laravel accepts `update(['values->body' => ...])`. That returned
@@ -984,9 +1067,19 @@ class ScopedBuilder extends Builder
         // fixed; the same wrong assumption was sitting in the guard beside it. Two
         // places that must agree about what a column is, and only one of them had
         // been told.
-        $bare = explode('->', $bare)[0];
+        //
+        // ⚠️ THE PATH COMES OFF FIRST, because a path may hold a dot and a table
+        // qualifier is found by its last one. Stripping the qualifier first read
+        // `settings->a.b` as the column `b`, while Laravel's MySQL and MariaDB
+        // grammars write it into `settings` at the key `a.b` — measured allowed on
+        // both. SQLite's and PostgreSQL's reject that SQL, which is luck, not a guard.
+        $bare = explode('->', $column)[0];
 
-        return trim($bare, '`"[]');
+        $bare = str_contains($bare, '.')
+            ? substr($bare, (int) strrpos($bare, '.') + 1)
+            : $bare;
+
+        return strtolower(trim($bare, '`"[]'));
     }
 
     /**
