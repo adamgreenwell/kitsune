@@ -1103,7 +1103,9 @@ class ScopedBuilder extends Builder
             $this->checkWrittenSettings($update);
         }
 
-        return parent::upsert($values, $uniqueBy, $update);
+        // And dropped after, like every other write that can change an existing row: on conflict an upsert IS an
+        // update, and without this the memo kept the row as it was (Codex, #127).
+        return $this->forgettingResolvedSettings(parent::upsert($values, $uniqueBy, $update));
     }
 
     /**

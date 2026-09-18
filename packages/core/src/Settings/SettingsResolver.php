@@ -166,7 +166,7 @@ final class SettingsResolver
      *
      * "I changed the setting and nothing happened" is a well-known support burden in scope-based config systems,
      * caused by caching (ADR-022). A write through Eloquent does not need to call this by hand: `ScopedBuilder`
-     * calls `forgetEverywhere()` after every update, delete and arithmetic write to an org, site group or site —
+     * calls `forgetEverywhere()` after every update, delete, arithmetic write and upsert to an org, site group or site —
      * the written level when the write is that model's own save, and everything when it is a bulk or relation
      * write, a delete, or one inside `withoutScopeBecause()`, whose rows it cannot name — and
      * `KitsuneServiceProvider` drops everything when a transaction rolls back. A write below Eloquent —

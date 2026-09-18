@@ -484,6 +484,23 @@ describe('invalidation is automatic', function (): void {
 
             expect(resolvedAt($this->site))->toBe(['Asia/Tokyo', 'site_group']);
         });
+
+        it('an upsert of an existing row inside the escape hatch', function (): void {
+            /*
+             * ⚠️ THE ONE WRITE THAT CHANGED A ROW AND DROPPED NOTHING. `upsert()` updates an existing row on conflict,
+             * and inside `withoutScopeBecause()` it went to the parent without `forgettingResolvedSettings()`, so the
+             * memo primed above kept describing the old row. Codex found it on #127 after the settings check had been
+             * added to `upsert()` but the invalidation had not. An audit of every write for BOTH properties — checks
+             * the value, drops the memo, or refuses outright — found no other.
+             */
+            $row = (array) DB::table('site_groups')->where('id', $this->group->id)->first();
+            $row['settings'] = json_encode(['timezone' => 'Asia/Tokyo']);
+
+            SiteGroup::withoutScopeBecause('the test writes past the per-row refusal', fn ($query) => $query
+                ->upsert([$row], ['id'], ['settings']));
+
+            expect(resolvedAt($this->site))->toBe(['Asia/Tokyo', 'site_group']);
+        });
     });
 
     it('drops it when a transaction holding the write rolls back', function (): void {
