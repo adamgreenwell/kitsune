@@ -55,10 +55,10 @@ enum Control: string
     /** A yes or no. `boolean`. */
     case Toggle = 'toggle';
 
-    /** A calendar date. `date`. */
+    /** A calendar date, which has no timezone. `date`. */
     case Date = 'date';
 
-    /** A date and a time, stored UTC. `datetime`. */
+    /** A date and a time, stored UTC and entered in the current site's timezone. `datetime`. */
     case DateTime = 'datetime';
 
     /** One option from a constrained set. `select`. */
@@ -117,7 +117,9 @@ enum Control: string
             self::Line, self::Paragraph, self::EntryPicker => Cell::Text,
             self::Number => Cell::Numeric,
             self::Toggle => Cell::Boolean,
-            self::Date, self::DateTime => Cell::Timestamp,
+            // ⚠️ Two cells, because only an instant has a timezone — see `Cell::Date`.
+            self::Date => Cell::Date,
+            self::DateTime => Cell::Timestamp,
             self::Choice, self::Choices => Cell::Badge,
             // No useful one-line form: a truncated document costs a query and tells
             // the reader nothing.

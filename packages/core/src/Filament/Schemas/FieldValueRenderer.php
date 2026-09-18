@@ -259,8 +259,9 @@ final class FieldValueRenderer
                 ->plugins([new BlockDirectionPlugin]),
             Control::Number => TextInput::make($path ?? 'value')->numeric(),
             Control::Toggle => Toggle::make($path ?? 'value'),
+            // ⚠️ No timezone for a date — see `SiteTime`. An instant is entered in the site's.
             Control::Date => DatePicker::make($path ?? 'value'),
-            Control::DateTime => DateTimePicker::make($path ?? 'value'),
+            Control::DateTime => SiteTime::picker($path ?? 'value'),
             Control::Choice => Select::make($path ?? 'value')->options(self::options($config)),
             Control::Choices => Select::make($path ?? 'value')
                 ->multiple()
@@ -540,7 +541,9 @@ final class FieldValueRenderer
             Cell::Text => TextColumn::make($path),
             Cell::Numeric => TextColumn::make($path)->numeric(),
             Cell::Boolean => IconColumn::make($path)->boolean(),
-            Cell::Timestamp => TextColumn::make($path)->dateTime(),
+            Cell::Timestamp => SiteTime::column($path),
+            // `date()`, not `dateTime()`: a date has no time to show and no timezone to convert through.
+            Cell::Date => TextColumn::make($path)->date(),
             Cell::Badge => TextColumn::make($path)->badge(),
             // `isListed()` is checked by the caller, so reaching this would be a bug
             // rather than a configuration. Stated to keep the match exhaustive.

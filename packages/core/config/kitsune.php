@@ -22,9 +22,10 @@ return [
      *
      * ⚠️ Laravel's `mergeConfigFrom()` merges the TOP level only. A host whose `config/kitsune.php` declares
      * `settings` replaces this whole map, not the keys it names — so a host that overrides one default
-     * restates the others.
+     * restates the others. `SiteTimezone` falls back to UTC if `timezone` is then missing.
      */
     'settings' => [
+        // Where nothing overrides it, the zone the admin shows and takes instants in. Storage is UTC regardless.
         'timezone' => 'UTC',
     ],
 ];

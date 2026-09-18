@@ -39,6 +39,7 @@ use Kitsune\Core\Filament\Resources\Entries\Pages\ListEntries;
 use Kitsune\Core\Filament\Resources\Entries\Pages\ManageEntryRelations;
 use Kitsune\Core\Filament\Resources\Entries\Pages\ViewEntry;
 use Kitsune\Core\Filament\Schemas\FieldValueRenderer;
+use Kitsune\Core\Filament\Schemas\SiteTime;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Field;
@@ -355,7 +356,7 @@ class EntryResource extends Resource
                     ->extraAttributes(['dir' => 'auto']),
                 TextColumn::make('type_handle')->badge()->label('Type'),
                 TextColumn::make('status')->badge()->sortable(),
-                TextColumn::make('updated_at')->dateTime()->sortable()->toggleable(isToggledHiddenByDefault: true),
+                SiteTime::column('updated_at')->sortable()->toggleable(isToggledHiddenByDefault: true),
                 ...self::fieldColumns(),
             ])
             // Record links are exactly what 500s without isPersistent: true.
