@@ -18,15 +18,21 @@ use Kitsune\Core\Settings\SettingsGuard;
  * **Validation**, on `saving`, for every path that saves the model — the settings writer included. `SettingsGuard`
  * refuses a map that is not one and a timezone PHP does not list, so the write fails before it reaches the row.
  *
- * ⚠️ THE `saving` HOOK IS THE ONLY DOOR THROUGH ELOQUENT, NOT THE ONLY DOOR. The model's
- * `columnsRequiringModelSave()` names `settings`, so `ScopedBuilder` refuses the bulk update, the JSON-path update,
- * the arithmetic extras, the hand-rolled insert and the quiet save that would skip this hook, under any spelling
- * of the column the database would accept. Three paths are not refused: below Eloquent — `toBase()`,
- * `DB::table()`, raw SQL — where no model-layer guard can stand, and a bulk write inside `withoutScopeBecause()`,
- * which stands the builder's per-row refusals down for every guarded column.
+ * ⚠️ THIS HOOK IS THE EARLY CHECK, NOT THE LAST ONE. Listeners run in registration order, so a host's `saving`
+ * listener registered after the model boots runs after this one and before the write — and one that set a refused
+ * timezone was stored (Codex, #127). `ScopedBuilder::checkWrittenSettings()` therefore checks the value it is
+ * handed to write, which is what reaches the row. This one stays because it checks the whole map on every save,
+ * including one that does not write `settings`, which the builder never sees.
+ *
+ * The model's `columnsRequiringModelSave()` names `settings`, so `ScopedBuilder` also refuses the bulk update, the
+ * JSON-path update, the arithmetic extras, the hand-rolled insert and the quiet save that would skip this hook,
+ * under any spelling of the column the database would accept. What reaches the row unchecked: anything below
+ * Eloquent — `toBase()`, `DB::table()`, raw SQL — where no model-layer guard can stand, and a JSON-path write inside
+ * `withoutScopeBecause()`, which stands the per-row refusals down and leaves no whole map to judge. A whole map
+ * written inside the escape hatch is still checked by the builder.
  *
  * ⚠️ THE WHOLE MAP IS CHECKED ON EVERY SAVE, not only when `settings` is dirty. So a row holding a value the guard
- * refuses — written by one of those three paths, or stored before this check existed — refuses every save of that
+ * refuses — written by one of those unchecked paths, or stored before this check existed — refuses every save of that
  * row, a rename included, until the value is replaced or reverted (`SettingsWriter::revert()` removes it, and the
  * map it leaves passes). A check that ran only on a dirty column would let the row be re-saved around a value
  * that breaks every page formatting a date.

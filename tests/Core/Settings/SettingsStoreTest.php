@@ -562,6 +562,54 @@ describe('a timezone is an identifier PHP lists, by every path', function (): vo
             ->and(DB::table('sites')->where('handle', 'bad')->exists())->toBeFalse();
     });
 
+    it('checks the value a save actually writes, after every saving listener has run', function (): void {
+        /*
+         * ⚠️ THE CHECK RAN FIRST, AND THE WRITE CAME LAST. `HoldsSettings` validates in a `saving` listener
+         * registered when the model boots, and listeners run in the order they were registered — so a host's
+         * `saving` listener, registered afterwards, runs after the check and before the write. One that set a
+         * refused timezone was stored: the check had already passed on the value before it. Codex found it on
+         * #127, and this file's own "listener undoes the change" case shows a later listener rewriting
+         * `settings` is a path the store has to survive. The builder now checks what it is handed to write.
+         */
+        $rows = [
+            Org::class => ['name' => 'Late', 'slug' => 'late'],
+            SiteGroup::class => ['org_id' => $this->org->id, 'handle' => 'late', 'name' => 'Late'],
+            Site::class => ['org_id' => $this->org->id, 'handle' => 'late', 'slug' => 'late', 'name' => 'Late'],
+        ];
+
+        foreach ([Org::class => $this->org, SiteGroup::class => $this->group, Site::class => $this->site] as $class => $scope) {
+            $class::saving(static function ($model): void {
+                $model->setAttribute('settings', ['timezone' => 'EST']);
+            });
+
+            expect(fn () => $scope->fresh()->update(['name' => 'Renamed']))
+                ->toThrow(RuntimeException::class, 'is not a timezone identifier PHP lists', "{$class}: an update stored a later listener's value")
+                ->and(fn () => $class::create($rows[$class]))
+                ->toThrow(RuntimeException::class, 'is not a timezone identifier PHP lists', "{$class}: a create stored a later listener's value");
+
+            expect(DB::table($scope->getTable())->where('id', $scope->id)->value('settings'))
+                ->toBeNull("{$class}: the refused value reached the row");
+        }
+
+        expect(DB::table('orgs')->where('slug', 'late')->exists())->toBeFalse()
+            ->and(DB::table('site_groups')->where('handle', 'late')->exists())->toBeFalse()
+            ->and(DB::table('sites')->where('handle', 'late')->exists())->toBeFalse();
+    });
+
+    it('checks a whole map written inside the escape hatch, which stands down the per-row refusal and not this', function (): void {
+        // `withoutScopeBecause()` is about WHICH path may write a column; this is about WHAT a column may hold, so
+        // standing the first down does not stand down the second. A JSON-path write there is still unchecked —
+        // ADR-022 names it — because no whole map exists to judge until the database has merged the path in.
+        foreach ([Org::class => $this->org, SiteGroup::class => $this->group, Site::class => $this->site] as $class => $scope) {
+            expect(fn () => $class::withoutScopeBecause('the test writes past the per-row refusal', fn ($query) => $query
+                ->whereKey($scope->id)
+                ->update(['settings' => json_encode(['timezone' => 'EST'])])))
+                ->toThrow(RuntimeException::class, 'is not a timezone identifier PHP lists', "{$class}: the escape hatch stored an unchecked map");
+
+            expect(DB::table($scope->getTable())->where('id', $scope->id)->value('settings'))->toBeNull();
+        }
+    });
+
     it('refuses the paths that skip the model event, at every level', function (): void {
         /*
          * ⚠️ THE `saving` HOOK IS ONE DOOR, and a model event is not "the one place every path goes through" — this

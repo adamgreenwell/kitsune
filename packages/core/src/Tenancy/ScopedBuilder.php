@@ -18,6 +18,8 @@ use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Models\SiteGroup;
+use Kitsune\Core\Settings\Concerns\HoldsSettings;
+use Kitsune\Core\Settings\SettingsGuard;
 use Kitsune\Core\Settings\SettingsResolver;
 use Kitsune\Core\Tenancy\Attributes\Unscoped;
 use Kitsune\Core\Tenancy\Contracts\RefusesCascadingDeletes;
@@ -71,8 +73,58 @@ class ScopedBuilder extends Builder
     {
         $this->guardScopeKeys($values);
         $this->refusePerRowColumns($values);
+        $this->checkWrittenSettings($values);
 
         return $this->forgettingResolvedSettings(parent::update($values));
+    }
+
+    /**
+     * Refuse a settings map this write would store that ADR-022's guard refuses — judged on the value handed to
+     * the database, not on the value some listener saw earlier.
+     *
+     * ⚠️ THE CHECK HAS TO BE THE LAST THING BEFORE THE WRITE, AND A LISTENER WAS NOT. `HoldsSettings` validates
+     * in a `saving` listener registered when the model boots, and listeners run in registration order — so a
+     * host's `saving` listener, registered afterwards, ran after the check and before the write, and a refused
+     * timezone it set was stored. Codex found it on #127. What this builder is handed IS what reaches the row, so
+     * it is checked here; the listener stays, because it also checks the whole map on a save that does not write
+     * `settings`, which this never sees.
+     *
+     * Every spelling the database would store into the column is the column — `bareColumn()` folds case and strips
+     * a qualifier. A JSON-path write (`settings->timezone`) is not judged here: outside `withoutScopeBecause()`
+     * `refusePerRowColumns()` has already refused it, and inside the escape hatch it is one of the paths ADR-022
+     * names as reaching the row unchecked. An `Expression` is raw SQL, which no model-layer guard can read.
+     *
+     * @param  array<array-key, mixed>  $values
+     */
+    private function checkWrittenSettings(array $values): void
+    {
+        $model = $this->getModel();
+
+        if (! in_array(HoldsSettings::class, class_uses_recursive($model), true)) {
+            return;
+        }
+
+        foreach ($values as $written => $value) {
+            if (str_contains((string) $written, '->') || $this->bareColumn((string) $written) !== 'settings') {
+                continue;
+            }
+
+            if ($value instanceof Expression) {
+                continue;
+            }
+
+            // The array cast hands the builder its JSON; a caller writing the column directly may hand either. JSON
+            // that does not decode goes to the guard as the string it is, which refuses it as not being a map —
+            // one refusal for every bad value rather than a JsonException for this one.
+            $map = $value;
+
+            if (is_string($value)) {
+                $decoded = json_decode($value, true);
+                $map = json_last_error() === JSON_ERROR_NONE ? $decoded : $value;
+            }
+
+            SettingsGuard::check($map, class_basename($model).' '.($model->getKey() ?? '(new)'));
+        }
     }
 
     /**
@@ -175,6 +227,7 @@ class ScopedBuilder extends Builder
         foreach (self::insertRows($values) as $row) {
             $this->refuseDetachedScopeKeys($row);
             $this->refuseDetachedInsert('insert', $row);
+            $this->checkWrittenSettings($row);
         }
     }
 
@@ -319,6 +372,7 @@ class ScopedBuilder extends Builder
          */
         $this->refuseDetachedScopeKeys($values);
         $this->refuseDetachedInsert('insertGetId', $values);
+        $this->checkWrittenSettings($values);
 
         return parent::insertGetId($values, $sequence);
     }
