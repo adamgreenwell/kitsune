@@ -141,6 +141,21 @@ measure() {
   rm -rf "$run"
   cp -R "$app" "$run"
 
+  # ⚠️ SEEDED IN ONE PROCESS, MEASURED IN ANOTHER. PHP keeps the heap an insert grew, and
+  # `memory_reset_peak_usage()` only moves the recorded mark down to what the process still holds — so a
+  # measurement taken in the process that seeded reported the seeding as the request. Measured: 40.5 MB after
+  # seeding 100 entries, 42.5 MB after 1,000 or 5,000, for requests reading the same 25 rows. Codex found it on
+  # #126. So the rows go in first, kept, in a process of their own without the limits, and the measuring
+  # process below finds them already there and inserts nothing.
+  local seeded
+  seeded=$(docker run --rm -v "$run":/app -w /app "$image" \
+    php artisan kitsune:benchmark-floor --entries="$entries" --keep 2>&1) || status=$?
+
+  if ((status != 0)); then
+    printf '%s\n' "$seeded" >&2
+    refuse "seeding for the $label run exited $status"
+  fi
+
   # ⚠️ THE STATUS IS PART OF THE MEASUREMENT. Captured without it, a run killed by the cgroup or dying on a PHP
   # fatal still reached the checks below with whatever it had printed before it died — and since the scope line
   # is printed before the first sample, that was enough to look like a measurement. The columns then came out
@@ -168,6 +183,13 @@ measure() {
   scope=$(printf '%s\n' "$out" | awk '/content in scope:/ {print $4; exit}' | tr -cd '0-9')
   [[ "$scope" == "$entries" ]] \
     || refuse "the $label run measured [${scope:-no}] entries in scope rather than $entries, so it measured nothing"
+
+  # And the process that measured must not have seeded, or its peak is the seeding's. Absent counts as seeded:
+  # a command that stopped reporting it can no longer show the measurement is clean.
+  local inserted
+  inserted=$(printf '%s\n' "$out" | awk '/seeded by this run:/ {print $5; exit}' | tr -cd '0-9')
+  [[ "$inserted" == 0 ]] \
+    || refuse "the $label run seeded [${inserted:-an unknown number of}] entries itself, so its peak includes the seeding"
 
   printf '%s\n' "$out"
 }
@@ -225,7 +247,7 @@ printf '  %-28s %14s %14s\n' 'workers in half the floor' "$constrained_workers" 
 echo
 echo "  Equal peaks are the EXPECTED result, and what the pairing is for: it is a control, not a stress"
 echo "  test. Neither limit binds one single-threaded request — a PHP CLI process uses at most one CPU"
-echo "  anyway, and 42 MB of a 1024 MB cap is not pressure — so a difference between these columns means"
+echo "  anyway, and 40 MB of a 1024 MB cap is not pressure — so a difference between these columns means"
 echo "  the two runs differed in something other than their limits, which is the confound this exists to"
 echo "  catch. What the floor still needs, and this does not give, is the same measurement under"
 echo "  CONCURRENCY: the workers figure above is arithmetic from one request, not an observation of that"

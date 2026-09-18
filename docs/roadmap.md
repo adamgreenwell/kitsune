@@ -123,7 +123,7 @@ The routing question is **already settled** — ADR-012 was resolved by a workin
   | | constrained (1 vCPU / 1024 MB) | unconstrained |
   |---|---|---|
   | framework bootstrap peak | 40.5 MB | 40.5 MB |
-  | peak serving a request | 42.5 MB | 42.5 MB |
+  | peak serving a request | 40.5 MB | 40.5 MB |
   | workers fitting in half the floor | 12 | 12 |
   | list page (25 rows) | 2.0 ms | 1.9 ms |
   | entry with relations | 2.3 ms | 2.1 ms |
@@ -132,11 +132,11 @@ The routing question is **already settled** — ADR-012 was resolved by a workin
 
   ⚠️ **These numbers are not comparable with 2026-09-07's, because the measurement was wrong then and is different now.** Not a regression and not an improvement — a different quantity. Three defects were found on 2026-09-18 by re-measuring, and all three are fixed:
 
-  - **The reported peak included the benchmark seeding its own rows.** `memory_get_peak_usage()` was taken *after* `ensureVolume()`, so the figure grew with `--entries` and was printed as the cost of booting the framework. Bootstrap is now sampled before seeding, and the peak the workers arithmetic divides is taken after `memory_reset_peak_usage()` — the high-water mark of serving, on a framework already resident, which is what a PHP-FPM worker actually holds.
+  - **The reported peak included the benchmark seeding its own rows — and moving the sample did not remove it.** `memory_get_peak_usage()` was taken *after* `ensureVolume()`, so the figure grew with `--entries` and was printed as the cost of booting the framework. The first fix sampled bootstrap before seeding and took the serving peak after `memory_reset_peak_usage()`, and Codex found on #126 that this cannot work: the reset moves the recorded mark down to what the process still holds, and PHP keeps the heap an insert grew. Measured: a serving peak of 40.5 MB after seeding 100 entries and 42.5 MB after 1,000 or 5,000, for requests reading the same 25 rows. The harness now **seeds in one process and measures in another**, and refuses a measurement whose process seeded; the command reports how many entries each run inserted, and warns when a run's peak includes them. Measured that way the serving peak is 40.5 MB at 1,000 entries and at 5,000 — the framework's own footprint, which the 25-row samples fit inside.
   - **The scope line was the request echoed back, not an observation.** `ensureVolume()` returned the `--entries` argument it was handed, so "content in scope: 1,000 entries" could not disagree with it — and neither could the test named for the `WHERE 1 = 0` defect, which passed with `setSite()` deleted. It now returns `Entry::count()` through the scoped model, so a run that lost its site context reports 0 and the harness refuses it. Proven by deleting that line and watching the case fail.
   - **The old two-column gap was a confound.** 38.5 vs 40.5 MB compared a container against the dev machine, measuring two PHP builds as well as two limit sets. From one image, with a fresh copy of the application per run and only the limits changed, the peaks are identical.
 
-  ⚠️ **What the pairing does and does not prove.** It is a *control*, not a stress test: neither limit binds one request — a PHP CLI process uses at most one CPU anyway, and 42 MB of 1024 MB is not pressure — so identical columns are the expected result, and a difference would mean the two runs differed in something other than their limits. The workers figure remains arithmetic from a single request, not an observation of twelve running at once.
+  ⚠️ **What the pairing does and does not prove.** It is a *control*, not a stress test: neither limit binds one request — a PHP CLI process uses at most one CPU anyway, and 40 MB of 1024 MB is not pressure — so identical columns are the expected result, and a difference would mean the two runs differed in something other than their limits. The workers figure remains arithmetic from a single request, not an observation of twelve running at once.
 
   `Kitsune::FLOOR_VCPU` and `FLOOR_MEMORY_MB` are asserted by a test, so raising the floor is a visible code change rather than a drift — and `tests/Core/Release/FloorHarnessTest.php` runs the harness against stub binaries and reads the `docker` argv it builds, so the container size, the constants and the recipe the command prints to operators cannot drift apart.
 

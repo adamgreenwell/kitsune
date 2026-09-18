@@ -43,7 +43,7 @@ afterEach(function (): void {
  * apart the way Docker would — and a stub that answered everything identically would hide the very argv this
  * test exists to read.
  */
-function floorStubs(string $dir, string $scope = 'ENTRIES', int $exit = 0): void
+function floorStubs(string $dir, string $scope = 'ENTRIES', int $exit = 0, int $seededOnMeasure = 0): void
 {
     File::put($dir.'/bin/docker', <<<STUB
     #!/usr/bin/env bash
@@ -63,9 +63,16 @@ function floorStubs(string $dir, string $scope = 'ENTRIES', int $exit = 0): void
     case "\$*" in
       *benchmark-floor*)
         entries=\$(printf '%s\\n' "\$*" | sed -n 's/.*--entries=\\([0-9]*\\).*/\\1/p')
+        # A --keep run is the harness seeding: it inserts every entry, as the real command's first run does.
+        if [[ "\$*" == *--keep* ]]; then
+          echo "  content in scope: \$entries entries"
+          echo "  seeded by this run: \$entries entries"
+          exit 0
+        fi
         scope="$scope"
         [[ "\$scope" == ENTRIES ]] && scope=\$entries
         echo "  content in scope: \$scope entries"
+        echo "  seeded by this run: $seededOnMeasure entries"
         echo "  peak serving a request       31.5 MB"
         echo "  workers that fit in half the floor: 16"
         exit $exit
@@ -142,16 +149,52 @@ it('measures the unconstrained column from the same image, with no limits at all
     floorStubs($this->dir);
     $run = runHarness($this->dir, $this->harness, ['--entries', '25']);
 
+    $measureRuns = array_values(array_filter(
+        explode("\n", (string) File::get($this->dir.'/argv.log')),
+        static fn (string $line): bool => str_contains($line, 'benchmark-floor') && ! str_contains($line, '--keep'),
+    ));
+
+    expect($measureRuns)->toHaveCount(2)
+        ->and($measureRuns[0])->toContain('--cpus=')
+        ->and($measureRuns[1])->not->toContain('--cpus=')
+        ->and($measureRuns[1])->not->toContain('--memory=')
+        ->and($run->getOutput())->toContain('unconstrained');
+});
+
+it('seeds each column in a process of its own before measuring in another', function (): void {
+    /*
+     * ⚠️ PHP KEEPS THE HEAP AN INSERT GREW. `memory_reset_peak_usage()` moves the recorded mark down to what the
+     * process holds, not to what a request needs, so measuring in the process that seeded reported the seeding
+     * as the request: 40.5 MB after 100 entries, 42.5 MB after 1,000 or 5,000, for requests reading the same 25
+     * rows. Codex found it on #126. So every measuring run must follow a seeding run, and seed nothing itself.
+     */
+    floorStubs($this->dir);
+    $run = runHarness($this->dir, $this->harness, ['--entries', '25']);
+
+    expect($run->isSuccessful())->toBeTrue($run->getErrorOutput());
+
     $benchmarkRuns = array_values(array_filter(
         explode("\n", (string) File::get($this->dir.'/argv.log')),
         static fn (string $line): bool => str_contains($line, 'benchmark-floor'),
     ));
 
-    expect($benchmarkRuns)->toHaveCount(2)
-        ->and($benchmarkRuns[0])->toContain('--cpus=')
-        ->and($benchmarkRuns[1])->not->toContain('--cpus=')
-        ->and($benchmarkRuns[1])->not->toContain('--memory=')
-        ->and($run->getOutput())->toContain('unconstrained');
+    // Seed, measure constrained; seed, measure unconstrained — each measurement preceded by its own seeding.
+    expect($benchmarkRuns)->toHaveCount(4);
+
+    foreach ([0, 2] as $seed) {
+        expect($benchmarkRuns[$seed])->toContain('--keep')
+            // The seeding is setup, not the measurement, so the floor's limits are not what it runs under.
+            ->and($benchmarkRuns[$seed])->not->toContain('--cpus=')
+            ->and($benchmarkRuns[$seed + 1])->not->toContain('--keep');
+    }
+});
+
+it('refuses a measurement taken in a process that seeded, because its peak is the seeding\'s', function (): void {
+    floorStubs($this->dir, seededOnMeasure: 25);
+    $run = runHarness($this->dir, $this->harness, ['--entries', '25']);
+
+    expect($run->isSuccessful())->toBeFalse('a measurement that seeded was reported as a request')
+        ->and($run->getErrorOutput())->toContain('its peak includes the seeding');
 });
 
 it('refuses a run that died after announcing its scope, rather than printing a blank column', function (): void {

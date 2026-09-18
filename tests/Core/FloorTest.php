@@ -61,3 +61,21 @@ it('keeps the harness that reproduces it runnable', function (): void {
     // binaries. This only records that the two belong together: the constants live here, the runner there.
     expect(dirname(__DIR__, 2).'/bin/benchmark-floor.sh')->toBeReadableFile();
 });
+
+it('says when it seeded, because then its peak is not a request\'s', function (): void {
+    /*
+     * ⚠️ PHP KEEPS THE HEAP AN INSERT GREW, and resetting the peak does not give it back — so a run that seeded
+     * reports the seeding as the request (Codex, #126). The command cannot un-seed itself, but it can say so on
+     * the run it concerns: a first run seeds and warns, and a run that finds the entries already in place
+     * inserts nothing and does not.
+     */
+    $this->artisan('kitsune:benchmark-floor', ['--entries' => 25, '--keep' => true])
+        ->assertSuccessful()
+        ->expectsOutputToContain('seeded by this run: 25 entries')
+        ->expectsOutputToContain('peak above includes the seeding');
+
+    $this->artisan('kitsune:benchmark-floor', ['--entries' => 25])
+        ->assertSuccessful()
+        ->expectsOutputToContain('seeded by this run: 0 entries')
+        ->doesntExpectOutputToContain('peak above includes the seeding');
+});

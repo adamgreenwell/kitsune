@@ -48,6 +48,18 @@ final class BenchmarkFloorCommand extends Command
     /** The start of every slug this command inserts; each run adds its own token after it — see LeavesNothingBehind. */
     private const SLUG_PREFIX = 'floor-';
 
+    /**
+     * How many entries this process inserted before it measured.
+     *
+     * ⚠️ NOT ZERO MEANS THE PEAK IS NOT A REQUEST'S. PHP keeps the heap an insert grew — `memory_reset_peak_usage()`
+     * resets the recorded high-water mark to what the process currently holds, it does not hand arenas back — so
+     * a run that seeded reports a peak that includes the seeding. Measured: 40.5 MB after seeding 100 entries,
+     * 42.5 MB after 1,000 or 5,000, for a request that reads the same 25 rows each time. Codex found it on #126.
+     * The figure is only a request's when the process that measured it did not seed, which is why
+     * bin/benchmark-floor.sh seeds in one process and measures in another, and refuses a measurement that seeded.
+     */
+    private int $seededThisRun = 0;
+
     protected $signature = 'kitsune:benchmark-floor
         {--entries=1000 : Content volume to measure against}
         {--keep : Leave the benchmark org, its site and its entries in place}
@@ -82,11 +94,14 @@ final class BenchmarkFloorCommand extends Command
             $seeded = $this->ensureVolume($org, $site, $type, max(0, (int) $this->option('entries')));
 
             $this->line("  content in scope: <info>{$seeded}</info> entries");
+            $this->line("  seeded by this run: <info>{$this->seededThisRun}</info> entries");
             $this->newLine();
 
-            // The samples are what a request does; the seeding is not. Resetting here makes the peak below the
-            // high-water mark of serving, on top of a framework that is already resident — which is what a
-            // PHP-FPM worker holds, and what the workers arithmetic then divides the floor by.
+            // Resetting here leaves out the fixture lookup, so the peak below is the high-water mark of the
+            // samples on top of a framework already resident — what a PHP-FPM worker holds. ⚠️ It cannot leave out
+            // SEEDING: the reset moves the recorded mark down to what the process holds now, and PHP still holds
+            // the heap an insert grew. That is what `$seededThisRun` is for, and why the harness never measures in
+            // the process that seeded.
             memory_reset_peak_usage();
 
             $samples = [
@@ -134,6 +149,15 @@ final class BenchmarkFloorCommand extends Command
                 $this->warn('  ⚠️ one request exceeds a quarter of the floor — that is a ceiling worth watching');
             } else {
                 $this->info('  ✓ comfortable inside the floor for a single-site install');
+            }
+
+            // Said on the run it concerns, not left to a docblock: a figure printed under "serving a request" that
+            // includes the seeding is the one an operator is most likely to copy down.
+            if ($this->seededThisRun > 0) {
+                $this->newLine();
+                $this->warn("  ⚠️ this run seeded {$this->seededThisRun} entries first, and PHP keeps the heap that grew, so the");
+                $this->warn('  peak above includes the seeding. For a request alone, measure in a process that did not seed:');
+                $this->warn('  run once with --keep to seed, then again with the entries in place.');
             }
 
             $this->newLine();
@@ -208,6 +232,12 @@ final class BenchmarkFloorCommand extends Command
      */
     private function ensureVolume(Org $org, Site $site, EntryType $type, int $target): int
     {
+        // ⚠️ SET ON EVERY RUN, NOT ONLY WHEN IT SEEDS. Laravel resolves a command once and `Artisan::call()` reuses
+        // that instance, so a value set by one run survives into the next in the same process — measured: a run
+        // that found its entries in place and inserted none reported the previous run's 25. `LeavesNothingBehind`
+        // clears its `runToken` for the same reason.
+        $this->seededThisRun = 0;
+
         $existing = Entry::query()->where('site_id', $site->getKey())->count();
 
         if ($existing >= $target) {
@@ -215,6 +245,7 @@ final class BenchmarkFloorCommand extends Command
         }
 
         $prefix = $this->runPrefix(self::SLUG_PREFIX);
+        $this->seededThisRun = $target - $existing;
 
         $now = now();
         $rows = [];
