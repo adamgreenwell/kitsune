@@ -353,6 +353,16 @@ describe('what the picker does not resolve yet — stated in ADR-022\'s amendmen
      * `SiteTime::picker()` and the ADR stays true; the day one is fixed, its test fails and the statement goes.
      */
     it('saves a wall-clock time in the repeated hour as its first occurrence, even untouched', function (): void {
+        /*
+         * ⚠️ THIS PINS A KNOWN DEFECT, NOT A DESIRED BEHAVIOUR. An untouched save must not change what is stored —
+         * the multi-value case above is that rule, fixed — and here it does: the second 01:30 of the night is
+         * rewritten as the first, and a revision is recorded for a change nobody made. It is pinned so it is
+         * seen rather than discovered, and so a fix shows up as this assertion failing ON PURPOSE. When it
+         * does, change the expectation to the stored instant, do not restore the old one.
+         *
+         * Unreachable today: every site resolves to the default, UTC, which repeats no hour, and nothing but code
+         * can set another zone. ADR-022 makes fixing this a precondition of any admin screen that can.
+         */
         // 06:30 UTC on 2026-11-01 is 01:30 EST, the second 01:30 in New York that night.
         $entry = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Late', 'values' => ['starts_at' => '2026-11-01 06:30:00']]);
         $revisions = EntryRevision::query()->where('entry_id', $entry->id)->count();
