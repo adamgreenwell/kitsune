@@ -1482,8 +1482,8 @@ it('signs in at the hostnames an application answers at, and records the ones th
         ->and(throttleVerdict($run, 'THR-1'))->toContain('PASS')
         ->and(throttleVerdict($run, 'THR-2'))->toContain('PASS')
         ->and($run->getOutput())->toContain('RECORD THR-1 the configuration also serves hostnames that name no application: '
-            .'[www.stage.kitsune.test] has no server-level root ending in /public in the running configuration '
-            .'(it declares none), so nothing was signed in to there')
+            .'[www.stage.kitsune.test] has no root ending in /public that an https request for it would use '
+            .'(it would use none), so nothing was signed in to there')
         // ⚠️ AND NOTHING WAS ASKED OF IT. Asserting only the verdict would pass a family that still fetched
         // the redirect vhost's login page and merely left it out of the sentence; every /admin/login the
         // stub answers leaves a session behind, and the run's cost is one attempt per hostname it signs in at.
@@ -1726,7 +1726,9 @@ it('reads the running configuration as nginx writes it, and refuses to guess at 
     /*
      * The dump is where the hostnames and the release come from, and the store instrument is booted at that
      * release: a base that cannot be named from the configuration is a run that cannot name a bucket. The
-     * `location` block in every fixture server carries a root of its own, which is not the site's.
+     * `location` block in every fixture server carries a root of its own, which the site's own root wins over
+     * — and which, where the site declares none, is all there is, so a host rooted only in a `location` at
+     * `/assets` still has no application to sign in to.
      */
     throttleDump($this->state, $sites, $extra);
 
@@ -1737,7 +1739,11 @@ it('reads the running configuration as nginx writes it, and refuses to guess at 
         ->and(throttleVerdict($run, 'THR-1'))->toContain($named)
         ->and(throttleAnswers($this->state))->toBe([]);
 })->with([
-    'a hostname with no root of its own' => [['stage.kitsune.test' => []], '', 'has no server-level root ending in /public'],
+    'a hostname rooted only inside a location that is not the site' => [
+        ['stage.kitsune.test' => []],
+        '',
+        'has no root ending in /public that an https request for it would use (it would use /var/www/shared-assets)',
+    ],
     'two roots for one hostname' => [
         ['stage.kitsune.test' => ['/home/kitsune/site/current/public', '/home/kitsune/other/current/public']],
         '',

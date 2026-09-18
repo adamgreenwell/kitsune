@@ -271,43 +271,294 @@ function literalHostname(string $name): bool
 }
 
 /**
- * The site hostnames the running configuration names, and the entries it names that are not hostnames.
+ * The running configuration, as words: every directive and every block, with quoting and comments already
+ * accounted for.
  *
- * The patterns are returned rather than dropped, because a caller that said "this host names no site"
- * about a configuration naming a wildcard would be giving a true verdict with a false reason.
+ * ⚠️ A TOKENIZER, NOT A LINE SCAN OR A REGEX. The outside families need each hostname's document root, and a
+ * root only means something inside the `server` block that names the hostname — which no line-based scan
+ * can tie together. A regex over the dump would repeat #118. And the dump this reads contains the probe log's
+ * own snippet, whose `log_format` holds braces, semicolons and double quotes INSIDE single-quoted strings:
+ * a brace counter that did not know about quotes would close the http block in the middle of a string and
+ * read every server after it as nested. So quotes come first, then comments, then the punctuation.
  *
- * @return array{0: list<string>, 1: list<string>, 2: string} the hostnames, the patterns, and why there are none
+ * ⚠️ AND THE PUNCTUATION RULES ARE nginx'S OWN, NOT A GUESS AT THEM — WHICH IS WHERE THIS DROPPED A WHOLE
+ * DIRECTIVE. `root /sites/${host}/public;`, which nginx accepts, carries braces in the middle of a word; read
+ * as a block, the words before the brace went into a `{` token that siteRoots() does not look at, and
+ * everything the directive said was gone. Silently: no request was made to that hostname, no RECORD named it,
+ * and TUN-1 passed on the hostnames that survived. So each character is read where ngx_conf_read_token reads
+ * it: `{` opens a block wherever it falls UNLESS it follows a `$`, which is the one place nginx keeps it in
+ * the word; `}` and `#` are punctuation only at the start of a word. Guessing instead that a brace may abut
+ * only a block name that takes no argument — `server{` — was close but not nginx: `location /assets{` and
+ * `upstream app{` are blocks nginx opens and that reading swallowed, leaving a `}` with no `{` and every
+ * depth after it out by one. An unquoted brace regex is not a case either way: nginx documents that such a
+ * regex must be quoted, and a configuration nginx refuses to load is not one `nginx -T` can dump.
+ *
+ * @return list<array{0: string, 1: list<string>}> the terminator, and the words before it
  */
-function hostnames(string $host): array
+function nginxTokens(string $dump): array
 {
-    [$out, $unreadable] = nginxDump($host);
+    $tokens = [];
+    $words = [];
+    $word = '';
+    $quote = '';
+    $length = strlen($dump);
 
-    if ($unreadable !== '') {
-        return [[], [], $unreadable];
-    }
+    for ($at = 0; $at < $length; $at++) {
+        $char = $dump[$at];
 
-    $found = [];
-    $patterns = [];
+        if ($quote !== '') {
+            if ($char === $quote) {
+                $quote = '';
+            } else {
+                $word .= $char;
+            }
 
-    foreach (preg_split('/\R/', $out) ?: [] as $line) {
-        $fields = preg_split('/\s+/', trim($line)) ?: [];
-
-        if (($fields[0] ?? '') !== 'server_name') {
             continue;
         }
 
-        foreach (array_slice($fields, 1) as $name) {
-            $name = rtrim($name, ';');
+        if ($char === '"' || $char === "'") {
+            $quote = $char;
 
-            if (literalHostname($name)) {
-                $found[$name] = true;
-            } elseif ($name !== '' && $name !== '_') {
-                $patterns[$name] = true;
+            continue;
+        }
+
+        // Where a word begins, and so where nginx's own reader takes `}` or `#` for punctuation.
+        $begins = $word === '';
+
+        if ($begins && $char === '#') {
+            while ($at < $length && $dump[$at] !== "\n") {
+                $at++;
+            }
+
+            continue;
+        }
+
+        if ($char === ' ' || $char === "\t" || $char === "\n" || $char === "\r") {
+            if ($word !== '') {
+                $words[] = $word;
+                $word = '';
+            }
+
+            continue;
+        }
+
+        // `$` is the one thing that keeps a brace in the word, because `${name}` is how nginx spells a
+        // variable whose name would otherwise run into the text beside it.
+        if ($char === ';' || ($char === '{' && ! str_ends_with($word, '$')) || ($begins && $char === '}')) {
+            if ($word !== '') {
+                $words[] = $word;
+                $word = '';
+            }
+
+            $tokens[] = [$char, $words];
+            $words = [];
+
+            continue;
+        }
+
+        $word .= $char;
+    }
+
+    return $tokens;
+}
+
+/**
+ * Whether a `server` block can answer the https request both outside families make.
+ *
+ * ⚠️ WHICH BLOCK ANSWERS IS PART OF WHAT A HOSTNAME DECLARES. Both families request `https://<hostname>/…`,
+ * so only a block listening for TLS can answer one — and the apex+www shape Forge and certbot write puts the
+ * site's root on a `:80` block that carries both names, redirects, and keeps the ACME challenge, with the
+ * `www` name's `:443` block doing nothing but `return 301`. Reading the roots of every block that names a
+ * hostname made `www` look like a second application, which is the hostname this split exists to leave out.
+ *
+ * @param  list<list<string>>  $listens  the arguments of each `listen` the block declares
+ */
+function listensForHttps(array $listens): bool
+{
+    foreach ($listens as $arguments) {
+        foreach ($arguments as $at => $argument) {
+            if ($argument === 'ssl' || ($at === 0 && preg_match('/(^|:)443$/', $argument) === 1)) {
+                return true;
             }
         }
     }
 
-    return [array_keys($found), array_keys($patterns), ''];
+    return false;
+}
+
+/**
+ * Each site hostname the server serves, the document roots an https request for it would use, and the
+ * `server_name` entries that are patterns rather than names.
+ *
+ * The catch-all's `_` is not a site, and neither is a wildcard or a regex: both outside families request every
+ * name they are given, and a wildcard sorts before every letter, so one made the throttle family's preflight
+ * traces and its whole five-and-a-sixth window run against a name curl rejects outright (literalHostname).
+ *
+ * ⚠️ EVERY NAME COMES BACK; THE ROOTS ARE THE ONES A REQUEST WOULD USE. A hostname is listed whether or not
+ * anything roots it, because a family that skipped a hostname it serves would stop measuring the tunnel there
+ * (tunnel-log.php). What its roots are decides something narrower — whether an application answers there —
+ * so they are taken from the blocks that can answer an https request for it, and from every block naming it
+ * only when no block can (listensForHttps). A host whose nginx answers https for no name at all is a host
+ * where this reading has nothing to narrow, and the old answer is better than none.
+ *
+ * ⚠️ AND A ROOT IS INHERITED WHEN THE BLOCK DECLARES NONE. nginx resolves `root` from the `location`, then the
+ * `server`, then the `http` block, so a site that declares its root inside `location / { … }` or once at the
+ * top for every server is rooted exactly as one that declares it at the server's own level. Reading only the
+ * server's own level called such a host rootless and left its application unmeasured, with a reason — "it
+ * declares none" — that its operator could see was false. The order here is nginx's: the block's own root
+ * wins, then one declared deeper inside it, then the one outside every server block.
+ *
+ * @return array{0: array<string, list<string>>, 1: list<string>} the sites, and the patterns
+ */
+function siteRoots(string $dump): array
+{
+    $answering = [];
+    $named = [];
+    $https = [];
+    $patterns = [];
+    $inherited = [];
+    $depth = 0;
+    $serverAt = null;
+    $names = [];
+    $roots = [];
+    $deeper = [];
+    $listens = [];
+
+    foreach (nginxTokens($dump) as [$terminator, $words]) {
+        if ($terminator === '{') {
+            $depth++;
+
+            if (($words[0] ?? '') === 'server' && $serverAt === null) {
+                $serverAt = $depth;
+            }
+
+            continue;
+        }
+
+        if ($terminator === '}') {
+            if ($serverAt === $depth) {
+                $declared = $roots !== [] ? $roots : $deeper;
+                $answers = listensForHttps($listens);
+
+                // The block is closed where it closes: a by-reference closure put every write to these
+                // out of reach of the analyser, which then read each of these loops as one over nothing.
+                foreach ($names as $name) {
+                    $named[$name] = array_replace($named[$name] ?? [], array_fill_keys($declared, true));
+
+                    if ($answers) {
+                        $https[$name] = true;
+                        $answering[$name] = array_replace($answering[$name] ?? [], array_fill_keys($declared, true));
+                    }
+                }
+
+                $names = [];
+                $roots = [];
+                $deeper = [];
+                $listens = [];
+                $serverAt = null;
+            }
+
+            $depth--;
+
+            continue;
+        }
+
+        if ($serverAt === null) {
+            // Outside every server block: the root each one that declares none of its own inherits.
+            if (($words[0] ?? '') === 'root' && isset($words[1])) {
+                $inherited[] = rtrim($words[1], '/');
+            }
+
+            continue;
+        }
+
+        if ($serverAt !== $depth) {
+            // Deeper in the block — a `location`'s own root, which is the site's only when nothing above it
+            // declares one.
+            if (($words[0] ?? '') === 'root' && isset($words[1])) {
+                $deeper[] = rtrim($words[1], '/');
+            }
+
+            continue;
+        }
+
+        if (($words[0] ?? '') === 'server_name') {
+            foreach (array_slice($words, 1) as $name) {
+                if (literalHostname($name)) {
+                    $names[] = $name;
+                } elseif ($name !== '' && $name !== '_') {
+                    $patterns[$name] = true;
+                }
+            }
+        }
+
+        if (($words[0] ?? '') === 'listen') {
+            $listens[] = array_slice($words, 1);
+        }
+
+        if (($words[0] ?? '') === 'root' && isset($words[1])) {
+            $roots[] = rtrim($words[1], '/');
+        }
+    }
+
+    $found = [];
+
+    foreach ($named as $name => $declared) {
+        $found[$name] = array_keys(isset($https[$name]) ? $answering[$name] : $declared);
+
+        // Applied here rather than as each block closes, so a root declared after the servers that inherit it
+        // reads the same as one declared before them, which is how nginx reads it.
+        if ($found[$name] === []) {
+            $found[$name] = array_values(array_unique($inherited));
+        }
+    }
+
+    ksort($found);
+
+    return [$found, array_keys($patterns)];
+}
+
+/**
+ * The served hostnames an application answers at, and the ones that answer for no application at all.
+ *
+ * ⚠️ ONE ANSWER TO "WHAT IS A SITE", BECAUSE BOTH OUTSIDE FAMILIES MEASURE THE SAME HOSTNAMES. Written twice,
+ * the two disagreed about which hostnames a run is even about — and a disagreement between two families reaches
+ * the operator as a property of the host rather than of the runbook.
+ *
+ * ⚠️ A HOSTNAME THAT SERVES NO APPLICATION IS NOT A SECOND APPLICATION. A `www`→apex redirect vhost, an
+ * old-domain redirect, a static docs site, an ACME-only block or a reverse proxy declares no root ending in
+ * `/public` — and Forge writes exactly that shape from its own UI, so the alpha host will have one. Refusing
+ * the whole run on the first of them, which is what naming the release used to do, voided both of the throttle
+ * family's measured checks on a host whose throttle is entirely sound, with a reason that is false: the release
+ * IS nameable, from the hostnames that do declare a root. The tunnel-log family met the same vhost and reported
+ * it worse still — `return 301` answers with no upstream, so TUN-1 FAILed, naming a host as broken over a
+ * hostname behaving exactly as intended.
+ *
+ * ⚠️ AND WHAT "LEFT OUT" COSTS IS THE CALLER'S TO DECIDE, NOT THIS. The throttle family pays one more failed
+ * sign-in per hostname it signs in at, so a redirect vhost it left out is a lockout never taken out on it. The
+ * tunnel family pays one GET it is making anyway, and every rule it has about the tunnel — the peer, realip,
+ * the PROXY protocol, the port, the forwarded chain, who owned the socket — is a rule about any hostname nginx
+ * serves, so it still requests these and only stops asking them what an application answered.
+ *
+ * @param  array<string, list<string>>  $sites
+ * @return array{0: array<string, list<string>>, 1: array<string, string>} the sites, and why the others are not one
+ */
+function servedSites(array $sites): array
+{
+    $rootless = [];
+
+    foreach ($sites as $name => $roots) {
+        if (array_filter($roots, static fn (string $root): bool => str_ends_with($root, '/public')) !== []) {
+            continue;
+        }
+
+        $rootless[$name] = "[{$name}] has no root ending in /public that an https request for it would use ("
+            .($roots === [] ? 'it would use none' : 'it would use '.implode(', ', $roots)).')';
+
+        unset($sites[$name]);
+    }
+
+    return [$sites, $rootless];
 }
 
 /** The address the edge says it saw, from a /cdn-cgi/trace body. */

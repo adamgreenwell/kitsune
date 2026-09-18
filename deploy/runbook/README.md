@@ -68,7 +68,7 @@ deploy/runbook/run.sh --host forge@stage.example --expect tunnel --token-file ~/
 | `host/probe-log.sh` | Not a family: the instrument the outside families drive to see what nginx received. The one part of the runbook that changes a live server, and it undoes itself. |
 | `host/throttle-store.php` | Not a family: the instrument `outside/throttle.php` drives to ask the host's own application which rate-limiter bucket filled. Runs as the release owner, never as root, and reads without writing. |
 | `outside/*.php` | One file per family that must reach the server from somewhere else, over the real network. Runs on the operator's machine. |
-| `outside/lib.php` | Not a family: the one copy of the helpers the outside families share — the verdict protocol, running a command, driving an instrument, and reading the running configuration. |
+| `outside/lib.php` | Not a family: the one copy of the helpers the outside families share — the verdict protocol, running a command, driving an instrument, and reading the running configuration, down to which hostnames it serves and which of those root an application. What each family then does about one that roots none is its own. |
 
 Tests live in `tests/Core/Release/Runbook*Test.php` and run the real scripts against fixtures, in the
 style of `ReleaseScriptTest`: a deploy script is prose until something executes it.
@@ -79,7 +79,7 @@ Nothing here is read-only, and the two parts that are not say so loudly.
 
 - **Sign-in is locked out on purpose, for up to 60 seconds.** The throttle family signs in wrongly
   **seven times plus once more for every hostname the server serves the application at** — ten against a
-  host serving it at three, and a hostname that declares no application, such as a `www`→apex redirect
+  host serving it at three, and a hostname that roots no application, such as a `www`→apex redirect
   vhost, is recorded and left alone —
   from the machine it runs on, which is what fills and then trips Filament's login throttle. That
   throttle's key holds the component, the method and the address — and **no hostname** — so the lockout
