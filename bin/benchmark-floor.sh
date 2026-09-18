@@ -88,6 +88,11 @@ mkdir -p "$work/packages"
 cp -R "$repo/skeleton" "$app"
 cp -R "$repo/packages/core" "$work/packages/core"
 rm -rf "$app/vendor" "$app/.env" "$app/database/database.sqlite" "$work/packages/core/vendor"
+# And any lock the checkout holds — `skeleton/composer.lock` is ignored, so running Composer in the skeleton leaves
+# one, and `cp -R` carried it in. A run without --lock then installed that graph while its header said it had
+# resolved one fresh, and --save-lock kept it as new (Codex, #126). The only lock an install may start from is
+# the one --lock names.
+rm -f "$app/composer.lock"
 # bootstrap/cache is gitignored, so `cp -R` may carry a config cache built against another .env — which the
 # container would then load in preference to the one written below, silently measuring a different app.
 rm -f "$app/bootstrap/cache"/*.php

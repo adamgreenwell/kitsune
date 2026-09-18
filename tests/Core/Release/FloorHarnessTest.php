@@ -288,3 +288,30 @@ it('refuses a --lock that is not a file, rather than resolving fresh and calling
     expect($run->isSuccessful())->toBeFalse()
         ->and($run->getErrorOutput())->toContain('which is not a file');
 });
+
+it('resolves fresh when told nothing, even if the checkout holds a stale skeleton lock', function (): void {
+    /*
+     * ⚠️ A LOCK LEFT IN THE CHECKOUT WAS INSTALLED UNDER THE LABEL "RESOLVED FRESH". `skeleton/composer.lock` is
+     * ignored, so running Composer in the skeleton leaves one, and `cp -R` carried it into the disposable install
+     * — where a run without --lock installed that graph while its header said it had resolved one, and
+     * --save-lock preserved it as new. Codex found it on #126. Run from a scratch copy of the repository, so the
+     * stale lock is planted there and never in the real checkout.
+     */
+    floorStubs($this->dir);
+
+    $repo = $this->dir.'/repo';
+    foreach (['bin', 'skeleton/database', 'skeleton/bootstrap/cache', 'packages/core'] as $path) {
+        File::makeDirectory($repo.'/'.$path, 0755, true);
+    }
+    File::copy($this->harness, $repo.'/bin/benchmark-floor.sh');
+    chmod($repo.'/bin/benchmark-floor.sh', 0755);
+    File::put($repo.'/skeleton/composer.json', '{"name":"kitsune/kitsune"}');
+    File::put($repo.'/packages/core/composer.json', '{"name":"kitsune/core"}');
+    File::put($repo.'/skeleton/composer.lock', (string) json_encode(['packages' => [['name' => 'laravel/framework', 'version' => 'v1.0.0-stale']]]));
+
+    $run = runHarness($this->dir, $repo.'/bin/benchmark-floor.sh', ['--entries', '25']);
+
+    expect($run->isSuccessful())->toBeTrue($run->getErrorOutput())
+        ->and((string) File::get($this->dir.'/argv.log'))->toContain('install: resolved fresh')
+        ->and($run->getOutput())->not->toContain('v1.0.0-stale');
+});
