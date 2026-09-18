@@ -840,3 +840,52 @@ describe('the defaults', function (): void {
             ->and(settingsStoredIn('sites', $this->site->id))->toBe(['timezone' => 'America/New_York']);
     });
 });
+
+describe('reading what the row holds, not what the instance remembers', function (): void {
+    it('checks the stored map on a save of a model loaded without it', function (): void {
+        /*
+         * ⚠️ A PROJECTION HID THE STORED VALUE FROM THE CHECK. `HoldsSettings` checks `getAttribute('settings')`, and
+         * a model loaded with `select('id', 'name')` has no such attribute — so it read null and a rename passed,
+         * though the row held a refused value written below Eloquent. The contract is that such a row refuses every
+         * save until the value is replaced or reverted. Codex found it on #127.
+         */
+        $bad = json_encode(['timezone' => 'EST']);
+
+        // Every projection leaves out `settings`, which is the case. A site's also carries the columns its own URL
+        // hook reads — without them that hook refuses the save first, with a TypeError, and this check is not reached.
+        $projections = [
+            Org::class => ['id', 'name'],
+            SiteGroup::class => ['id', 'name'],
+            Site::class => ['id', 'name', 'org_id', 'base_url', 'url_strategy', 'canonical_host', 'path_prefix'],
+        ];
+
+        foreach ([Org::class => $this->org, SiteGroup::class => $this->group, Site::class => $this->site] as $class => $scope) {
+            DB::table($scope->getTable())->where('id', $scope->id)->update(['settings' => $bad]);
+
+            $partial = $class::query()->select($projections[$class])->find($scope->id);
+            $partial->name = 'Renamed';
+
+            expect(fn () => $partial->save())
+                ->toThrow(RuntimeException::class, 'is not a timezone identifier PHP lists', "{$class}: a partial model saved past a refused value");
+        }
+    });
+
+    it('resolves only rows that exist, not the overrides of a site whose row is gone', function (): void {
+        /*
+         * ⚠️ THE FALLBACK SERVED A DELETED ROW. When the re-read found no site, the resolver fell back to the caller's
+         * instance — right for a site never saved, which has no row to read, and wrong for one whose row was deleted
+         * since, whose stale overrides and provenance it kept applying. Codex found it on #127. A row that no longer
+         * exists contributes nothing; the org and site group rows it pointed at still do.
+         */
+        $this->group->update(['settings' => ['timezone' => 'Europe/Paris']]);
+        $this->site->update(['settings' => ['timezone' => 'Asia/Tokyo']]);
+
+        expect(resolvedAt($this->site))->toBe(['Asia/Tokyo', 'site']);
+
+        // Deleted below Eloquent, which calls `forget()` itself as ADR-022 says such a caller must.
+        DB::table('sites')->where('id', $this->site->id)->delete();
+        $this->resolver->forget($this->site);
+
+        expect(resolvedAt($this->site))->toBe(['Europe/Paris', 'site_group']);
+    });
+});

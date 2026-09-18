@@ -234,7 +234,21 @@ final class SettingsResolver
             fn ($query) => $query->whereKey($site->getKey())->first(['id', 'org_id', 'site_group_id', 'name', 'settings']),
         );
 
-        return $row instanceof Site ? $row : $site;
+        if ($row instanceof Site) {
+            return $row;
+        }
+
+        /*
+         * ⚠️ A SAVED SITE WHOSE ROW IS GONE CONTRIBUTES NO OVERRIDES OF ITS OWN. This used to fall back to the
+         * caller's instance here as well as above — right for a site never saved, which has no row to read, and
+         * wrong for one deleted since, whose stale overrides and provenance it went on applying. Codex found it on
+         * #127. Resolution reads rows, and this one no longer exists; the org and site group it pointed at still do,
+         * so their keys are kept and only the site's own map is dropped.
+         */
+        $gone = clone $site;
+        $gone->setAttribute('settings', null);
+
+        return $gone;
     }
 
     /**

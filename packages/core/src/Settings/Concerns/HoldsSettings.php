@@ -46,7 +46,28 @@ trait HoldsSettings
     public static function bootHoldsSettings(): void
     {
         static::saving(static function (self $model): void {
-            SettingsGuard::check($model->getAttribute('settings'), class_basename($model).' '.($model->getKey() ?? '(new)'));
+            SettingsGuard::check(self::settingsThisSaveLeaves($model), class_basename($model).' '.($model->getKey() ?? '(new)'));
         });
+    }
+
+    /**
+     * The map the row will hold once this save is done: the instance's own when it carries the column, the stored
+     * one when it was loaded without it.
+     *
+     * ⚠️ A PROJECTION HID THE STORED VALUE. A model loaded with `select('id', 'name')` has no `settings` attribute,
+     * so `getAttribute('settings')` read null and a rename passed — though the row held a refused value, which the
+     * docblock above says refuses every save until it is replaced. Codex found it on #127. Such a save writes only
+     * its dirty columns and leaves the stored map where it is, so the stored map is the one to judge.
+     */
+    private static function settingsThisSaveLeaves(self $model): mixed
+    {
+        if (! $model->exists || array_key_exists('settings', $model->getAttributes())) {
+            return $model->getAttribute('settings');
+        }
+
+        return static::withoutScopeBecause(
+            'a save checks the settings its own row holds, and this instance was loaded without them',
+            fn ($query) => $query->whereKey($model->getKey())->value('settings'),
+        );
     }
 }
