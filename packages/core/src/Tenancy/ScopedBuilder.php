@@ -206,8 +206,8 @@ class ScopedBuilder extends Builder
 
         /*
          * ⚠️ AND THE SCOPE KEYS, because `refuseBulkCreate()` returns immediately for a model with no
-         * per-row columns — which review found leaves a SCOPED one unguarded. `SiteGroup` is
-         * `#[OrgScoped]` and declares no derived columns, so from org A
+         * per-row columns — which review found leaves a SCOPED one unguarded. `SiteGroup` was
+         * `#[OrgScoped]` and declared no per-row columns then, so from org A
          * `SiteGroup::query()->insertOrIgnore(['org_id' => $orgB, …])` created org B's row. Measured.
          *
          * "Refused in bulk" and "the keys are somebody else's" are different questions and the first
@@ -256,8 +256,9 @@ class ScopedBuilder extends Builder
      * guarded value in `$values` came off its own attributes — the `saving` hooks having already put
      * them there. `Site::query()` builds one from a fresh, empty instance, so a guarded column in
      * `$values` has nothing on the model to match. That is a general test rather than a per-model one,
-     * which matters because the four guarded models guard different KINDS of column: `Site`'s are
-     * derived, `EntryType`'s and `Field`'s are validated, and a create legitimately names those.
+     * which matters because the guarded models guard different KINDS of column: `Site`'s URL columns are
+     * derived, `EntryType`'s, `Field`'s and every level's `settings` are validated, and a create legitimately
+     * names those.
      *
      * @param  array<string, mixed>  $values
      * @param  string|null  $sequence

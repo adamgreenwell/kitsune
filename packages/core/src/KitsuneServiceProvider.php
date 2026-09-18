@@ -27,12 +27,17 @@ use Kitsune\Core\Fields\FieldTypeRegistry;
 use Kitsune\Core\Filament\RichText\BlockDirectionPlugin;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Schema\RecordedRevisions;
+use Kitsune\Core\Settings\SettingsGuard;
+use Kitsune\Core\Settings\SettingsResolver;
 use Kitsune\Core\Tenancy\Context;
 
 final class KitsuneServiceProvider extends ServiceProvider
 {
     public function register(): void
     {
+        // Beneath the host's own `config/kitsune.php`, so a host overrides a key by declaring it there.
+        $this->mergeConfigFrom(__DIR__.'/../config/kitsune.php', 'kitsune');
+
         $this->app->singleton(Kitsune::class, static fn (): Kitsune => new Kitsune);
 
         // One context per request. Scoped rather than singleton so a queued
@@ -46,6 +51,23 @@ final class KitsuneServiceProvider extends ServiceProvider
          * long-lived worker — which is the unbounded-map finding one step further on.
          */
         $this->app->scoped(RecordedRevisions::class, static fn (): RecordedRevisions => new RecordedRevisions);
+
+        /*
+         * Settings resolution (ADR-022), scoped for the reason `Context` is: its memo is per request, and a
+         * long-lived worker must not carry one request's resolved settings into the next job.
+         *
+         * ⚠️ THE DEFAULTS ARE CHECKED HERE, by the rules a stored override meets, because configuration is the one
+         * way a value becomes resolvable without passing a model's `saving` hook. A host that configures
+         * `Mars/Olympus` is refused when the resolver is first built, with a message naming the key, rather than
+         * resolved as though it were a timezone.
+         */
+        $this->app->scoped(SettingsResolver::class, static function (): SettingsResolver {
+            $defaults = config('kitsune.settings');
+
+            SettingsGuard::check($defaults, 'the configured defaults (config/kitsune.php)');
+
+            return new SettingsResolver(is_array($defaults) ? $defaults : []);
+        });
 
         // One registry per application. Modules register their own types
         // against it during boot, which is the extension point ADR-001
@@ -95,6 +117,15 @@ final class KitsuneServiceProvider extends ServiceProvider
          */
         Event::listen(TransactionRolledBack::class, static function (): void {
             Permissions::forget();
+
+            /*
+             * ⚠️ AND THE RESOLVED SETTINGS, for the same reason. A settings write inside a transaction drops the
+             * memo when it saves, a lookup before the rollback memoises the uncommitted value, and nothing drops
+             * it again — so the rest of the request resolved a setting that no longer exists.
+             */
+            if (app()->resolved(SettingsResolver::class)) {
+                app(SettingsResolver::class)->forget();
+            }
         });
 
         if ($this->app->runningInConsole()) {
