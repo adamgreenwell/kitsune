@@ -8,6 +8,7 @@
 
 declare(strict_types=1);
 
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Kitsune\Core\Models\Org;
@@ -226,6 +227,52 @@ describe('cross-org isolation', function (): void {
             ->toBe($this->orgA->id)
             ->and(SiteGroup::withoutScopeBecause('the test reads every row', fn ($q) => $q->where('org_id', $this->orgB->id)->count()))
             ->toBe(0);
+    });
+
+    it('catches a scope key spelled outside ASCII, which MySQL folds onto the key', function (): void {
+        /*
+         * ⚠️ THE CASE FOLD WAS ASCII AND MYSQL'S IS NOT. MySQL 8.4 resolves a column name through a Unicode fold that
+         * takes a dotted capital I to `i` and the Kelvin sign to `k`, so `ORG_İD` IS `org_id` there. The guard folded
+         * with `strtolower()`, compared `org_İd` with `org_id`, found no scope key, and let the write through —
+         * measured through PDO with utf8mb4, the charset Laravel connects with: from org A, `update(['ORG_İD' =>
+         * $orgB])` moved the row into org B. SQLite, MariaDB and PostgreSQL refuse the name as unknown, which is luck
+         * rather than a guard, so each attempt is asserted refused BY THE BUILDER.
+         */
+        app(Context::class)->setSite($this->siteA1);
+        $mine = SiteThing::create(['label' => 'mine']);
+        $shared = SharedThing::create(['label' => 'shared']);
+
+        $attempts = [
+            'mass update' => fn () => SiteThing::query()->update(["ORG_\u{0130}D" => $this->orgB->id]),
+            'mass update of the site key' => fn () => SiteThing::query()->update(["S\u{0130}TE_\u{0130}D" => $this->siteB1->id]),
+            'qualified' => fn () => SiteThing::query()->update(["site_things.Org_\u{0130}d" => $this->orgB->id]),
+            'through a save' => fn () => $mine->fresh()->update(["ORG_\u{0130}D" => $this->orgB->id]),
+            'a site' => fn () => Site::query()->whereKey($this->siteA1->id)->update(["ORG_\u{0130}D" => $this->orgB->id]),
+            'an org-scoped row' => fn () => SharedThing::query()->whereKey($shared->id)->update(["ORG_\u{0130}D" => $this->orgB->id]),
+            'arithmetic' => fn () => SiteThing::query()->increment("ORG_\u{0130}D"),
+            'arithmetic extras' => fn () => SiteThing::query()->increment('id', 0, ["ORG_\u{0130}D" => $this->orgB->id]),
+            'a hand-rolled insert' => fn () => SharedThing::query()->insertGetId(["ORG_\u{0130}D" => $this->orgB->id, 'label' => 'planted']),
+            'an insert-or-ignore' => fn () => SharedThing::query()->insertOrIgnore(["ORG_\u{0130}D" => $this->orgB->id, 'label' => 'planted']),
+            'beside the real key' => fn () => SharedThing::query()->insertGetId(['org_id' => $this->orgA->id, "ORG_\u{0130}D" => $this->orgB->id, 'label' => 'planted']),
+        ];
+
+        foreach ($attempts as $path => $attempt) {
+            $thrown = null;
+
+            try {
+                $attempt();
+            } catch (Throwable $e) {
+                $thrown = $e;
+            }
+
+            expect($thrown)->toBeInstanceOf(RuntimeException::class, "{$path} was allowed")
+                ->and($thrown)->not->toBeInstanceOf(QueryException::class, "{$path} was refused by the database, not a guard");
+        }
+
+        expect(DB::table('site_things')->get(['org_id', 'site_id'])->map(fn (object $row): array => (array) $row)->all())
+            ->toBe([['org_id' => $this->orgA->id, 'site_id' => $this->siteA1->id]])
+            ->and(DB::table('shared_things')->pluck('org_id')->all())->toBe([$this->orgA->id])
+            ->and(DB::table('sites')->where('id', $this->siteA1->id)->value('org_id'))->toBe($this->orgA->id);
     });
 
     it('refuses a write that names one column twice, which each engine resolves its own way', function (): void {

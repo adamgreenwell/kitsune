@@ -10,12 +10,14 @@ declare(strict_types=1);
 
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
+use Kitsune\Core\Models\AuditLog;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryRelation;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Field;
 use Kitsune\Core\Models\FieldStorage;
 use Kitsune\Core\Models\Org;
+use Kitsune\Core\Models\Role;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Concerns\ResolvesWrittenColumns;
 use Kitsune\Core\Tenancy\Context;
@@ -29,6 +31,10 @@ use Kitsune\Core\Tenancy\Context;
  * was a column they did not guard. And the model hooks behind them read each attribute by its own name, so a save
  * that sets `FIELD_STORAGE_ID` leaves `field_storage_id` untouched, passes every check, and the engine writes the
  * other one.
+ *
+ * And MySQL's fold is wider than ASCII: it takes `İ` to `i` and the Kelvin sign to `k`, so a name outside ASCII
+ * reached a guarded column on every builder that folded with `strtolower()` — `ScopedBuilder` included. Those names
+ * are refused outright now, and the cases below that spell one are live bypasses on MySQL alone.
  *
  * Written from the attacker's side: every attempt here is refused when spelled `org_id`, and each is asserted
  * refused BY A GUARD — a database error would satisfy a bare RuntimeException, and PostgreSQL rejects a quoted
@@ -60,10 +66,32 @@ describe('the one comparison every guarded builder shares', function (): void {
         // The path comes off first: the last dot here is inside the path, not before the column.
         'a JSON path holding a dot' => ['settings->a.b', 'settings'],
         'a qualified JSON path holding a dot' => ['fs.Settings->a.b', 'settings'],
-        // ASCII only, as every engine is: these are unknown columns on all three, measured.
-        'an accented letter' => ['org_íd', 'org_íd'],
-        'a dotted capital I' => ['ORG_İD', 'org_İd'],
+        // A key inside the JSON document is data, not a column name, and may hold anything.
+        'a JSON path key outside ASCII' => ["settings->na\u{00EF}ve", 'settings'],
     ]);
+
+    it('refuses a name outside ASCII rather than folding it', function (string $written): void {
+        expect(fn () => $this->columns->bareColumn($written))->toThrow(RuntimeException::class, 'outside ASCII');
+    })->with([
+        /*
+         * MySQL 8.4 folds a dotted capital I onto `i` and the Kelvin sign onto `k`, so to it each of these IS the
+         * guarded column — measured through PDO with utf8mb4, the charset Laravel connects with. `strtolower()`
+         * folds neither, so a guard comparing the folded names saw a column it does not guard.
+         */
+        'a dotted capital I' => ["ORG_\u{0130}D"],
+        'the Kelvin sign' => ["is_loc\u{212A}ed"],
+        'qualified' => ["field_storage.\u{0130}S_LOCKED"],
+        'before a JSON path' => ["SETT\u{0130}NGS->format"],
+        // Unknown columns on every engine, and refused all the same: the guard need not know which characters fold.
+        'an accented letter' => ["org_\u{00ED}d"],
+        'a fullwidth letter' => ["\u{FF4F}rg_id"],
+    ]);
+
+    it('refuses a name outside ASCII beside its own column, before any duplicate is judged', function (): void {
+        // Two keys to PHP, one column to MySQL — and whichever value it keeps, no guard compared it.
+        expect(fn () => $this->columns->refuseAmbiguousColumns(['org_id' => 1, "ORG_\u{0130}D" => 2]))
+            ->toThrow(RuntimeException::class, 'outside ASCII');
+    });
 
     it('refuses a column named twice, and allows several paths into one', function (): void {
         foreach ([
@@ -87,7 +115,18 @@ describe('the one comparison every guarded builder shares', function (): void {
  */
 function storedGuardedRows(): array
 {
-    return collect(['field_storage', 'entry_relations'])
+    return storedRows(['field_storage', 'entry_relations']);
+}
+
+/**
+ * These tables as the database holds them, read below every builder and scope.
+ *
+ * @param  list<string>  $tables
+ * @return array<string, list<array<string, mixed>>>
+ */
+function storedRows(array $tables): array
+{
+    return collect($tables)
         ->mapWithKeys(fn (string $table): array => [$table => DB::table($table)->orderBy('id')->get()
             ->map(fn (object $row): array => (array) $row)
             ->all()])
@@ -199,6 +238,14 @@ describe('field storage', function (): void {
         'save PII_CLASS' => [fn () => $this->locked->fresh()->update(['PII_CLASS' => 'bogus'])],
         'save ORG_ID from under an attached field' => [fn () => $this->email->fresh()->update(['ORG_ID' => $this->rival->id])],
         'quiet save HANDLE' => [fn () => $this->locked->fresh()->forceFill(['HANDLE' => 'cost'])->saveQuietly()],
+        // Outside ASCII: MySQL folds `İ` onto `i` and the Kelvin sign onto `k`, so these reach the guarded columns.
+        "bulk \u{0130}S_LOCKED cleared" => [fn () => FieldStorage::query()->whereKey($this->locked->id)->update(["\u{0130}S_LOCKED" => false])],
+        'bulk is_locked cleared, with the Kelvin sign' => [fn () => FieldStorage::query()->whereKey($this->locked->id)->update(["is_loc\u{212A}ed" => false])],
+        "bulk ORG_\u{0130}D" => [fn () => FieldStorage::query()->whereKey($this->locked->id)->update(["ORG_\u{0130}D" => $this->rival->id])],
+        "bulk P\u{0130}\u{0130}_CLASS" => [fn () => FieldStorage::query()->whereKey($this->locked->id)->update(["P\u{0130}\u{0130}_CLASS" => 'bogus'])],
+        "bulk SETT\u{0130}NGS on a locked field" => [fn () => FieldStorage::query()->whereKey($this->locked->id)->update(["SETT\u{0130}NGS" => '{"format":"integer"}'])],
+        "increment CARD\u{0130}NAL\u{0130}TY" => [fn () => FieldStorage::query()->whereKey($this->locked->id)->increment("CARD\u{0130}NAL\u{0130}TY")],
+        "save \u{0130}S_LOCKED cleared" => [fn () => $this->locked->fresh()->update(["\u{0130}S_LOCKED" => false])],
         // Two names for one column: the guard read `is_locked`, and every engine keeps the LAST in an UPDATE.
         'save IS_LOCKED beside is_locked' => [fn () => $this->locked->fresh()->update(['is_locked' => true, 'IS_LOCKED' => false])],
     ]);
@@ -289,6 +336,11 @@ describe('entry relations', function (): void {
         'save Target_Entry_Id of a forbidden type' => [fn () => $this->named->fresh()->update(['Target_Entry_Id' => $this->article->id])],
         'updateExistingPivot onto a full single-valued field' => [fn () => $this->src->related()->updateExistingPivot($this->p2->id, ['FIELD_STORAGE_ID' => $this->subject->id])],
         'quiet save FIELD_STORAGE_ID' => [fn () => EntryRelation::withoutEvents(fn () => $this->held->fresh()->update(['FIELD_STORAGE_ID' => $this->subject->id]))],
+        // Outside ASCII: MySQL folds `İ` onto `i`, so these reach the guarded columns.
+        "bulk F\u{0130}ELD_STORAGE_\u{0130}D onto a full single-valued field" => [fn () => EntryRelation::query()->whereKey($this->held->id)->update(["F\u{0130}ELD_STORAGE_\u{0130}D" => $this->subject->id])],
+        "bulk ORG_\u{0130}D" => [fn () => EntryRelation::query()->whereKey($this->held->id)->update(["ORG_\u{0130}D" => $this->rival->id])],
+        "save F\u{0130}ELD_STORAGE_\u{0130}D onto a full single-valued field" => [fn () => $this->held->fresh()->update(["F\u{0130}ELD_STORAGE_\u{0130}D" => $this->subject->id])],
+        "attach a second subject under F\u{0130}ELD_STORAGE_\u{0130}D" => [fn () => $this->src->related()->attach($this->article->id, ["F\u{0130}ELD_STORAGE_\u{0130}D" => $this->subject->id])],
         // Two names for one column: the guard read `field_storage_id`, and SQLite keeps the FIRST in an INSERT.
         'insertGetId naming the storage twice' => [fn () => EntryRelation::query()->insertGetId([
             'FIELD_STORAGE_ID' => $this->subject->id, 'field_storage_id' => $this->links->id,
@@ -305,4 +357,55 @@ describe('entry relations', function (): void {
             ->and(DB::table('entry_relations')->where('target_entry_id', $this->article->id)->value('field_storage_id'))
             ->toBe($this->links->id);
     })->skip(fn (): bool => DB::connection()->getDriverName() === 'pgsql', 'PostgreSQL has no column by another spelling');
+});
+
+describe('a column spelled outside ASCII, on the builders every other model shares', function (): void {
+    beforeEach(function (): void {
+        // A site that claims an address, a field with its storage, and a role — each guarding a column with an `i`.
+        $this->claimed = Site::create([
+            'org_id' => $this->org->id, 'handle' => 'claimed', 'slug' => 'spelling-claimed', 'name' => 'Claimed',
+            'url_strategy' => 'domain', 'base_url' => 'https://claimed.spelling.test',
+        ]);
+        $storage = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'summary', 'type' => 'text', 'pii_class' => 'none', 'cardinality' => 1,
+        ]);
+        $this->other = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'other', 'type' => 'text', 'pii_class' => 'none', 'cardinality' => 1,
+        ]);
+        $this->field = Field::create(['entry_type_id' => $this->patient->id, 'field_storage_id' => $storage->id, 'label' => 'Summary']);
+        $this->role = Role::create(['handle' => 'spelling-editor', 'name' => 'Editor']);
+    });
+
+    it('refuses the column rather than letting MySQL fold it onto a guarded one', function (Closure $attempt): void {
+        $tables = ['orgs', 'sites', 'entry_types', 'fields', 'field_storage', 'roles', 'audit_log', 'entries'];
+        $before = storedRows($tables);
+        $thrown = null;
+
+        try {
+            $attempt->call($this);
+        } catch (Throwable $e) {
+            $thrown = $e;
+        }
+
+        expect($thrown)->toBeInstanceOf(RuntimeException::class, 'the write was allowed')
+            ->and($thrown)->not->toBeInstanceOf(QueryException::class, 'the database refused it, not a guard: '.$thrown?->getMessage());
+
+        expect(storedRows($tables))->toBe($before);
+    })->with([
+        // `ScopedBuilder`'s scope keys: a row moved into another org, from this org's context.
+        "a site moved by ORG_\u{0130}D" => [fn () => Site::query()->whereKey($this->claimed->id)->update(["ORG_\u{0130}D" => $this->rival->id])],
+        "a site's address taken by CANON\u{0130}CAL_HOST" => [fn () => Site::query()->whereKey($this->claimed->id)->update(["CANON\u{0130}CAL_HOST" => 'stolen.example.test'])],
+        "a site's prefix moved by PATH_PREF\u{0130}X" => [fn () => Site::query()->whereKey($this->claimed->id)->update(["PATH_PREF\u{0130}X" => 'x'])],
+        "a site's settings replaced by SETT\u{0130}NGS" => [fn () => Site::query()->whereKey($this->claimed->id)->update(["SETT\u{0130}NGS" => '"not a map"'])],
+        "an org's settings replaced by SETT\u{0130}NGS" => [fn () => Org::query()->whereKey($this->org->id)->update(["SETT\u{0130}NGS" => '"not a map"'])],
+        "a field repointed by F\u{0130}ELD_STORAGE_\u{0130}D" => [fn () => Field::query()->whereKey($this->field->id)->update(["F\u{0130}ELD_STORAGE_\u{0130}D" => $this->other->id])],
+        "a field moved by ENTRY_TYPE_\u{0130}D" => [fn () => Field::query()->whereKey($this->field->id)->update(["ENTRY_TYPE_\u{0130}D" => $this->articleType->id])],
+        "a type moved by ORG_\u{0130}D" => [fn () => EntryType::query()->whereKey($this->articleType->id)->update(["ORG_\u{0130}D" => $this->rival->id])],
+        "a subject nominated by SUBJECT_F\u{0130}ELD_\u{0130}D" => [fn () => EntryType::query()->whereKey($this->patient->id)->update(["SUBJECT_F\u{0130}ELD_\u{0130}D" => $this->field->id])],
+        "a role promoted by \u{0130}S_OWNER" => [fn () => Role::query()->update(["\u{0130}S_OWNER" => true])],
+        "a role promoted by a save of \u{0130}S_OWNER" => [fn () => $this->role->fresh()->update(["\u{0130}S_OWNER" => true])],
+        "an audit row appended to another org by ORG_\u{0130}D" => [fn () => AuditLog::query()->insert([["ORG_\u{0130}D" => $this->rival->id, 'action' => 'forged.spelled', 'created_at' => now()]])],
+        "an entry moved by S\u{0130}TE_\u{0130}D" => [fn () => Entry::query()->update(["S\u{0130}TE_\u{0130}D" => null])],
+        "an entry retyped by ENTRY_TYPE_\u{0130}D" => [fn () => Entry::query()->update(["ENTRY_TYPE_\u{0130}D" => $this->articleType->id])],
+    ]);
 });

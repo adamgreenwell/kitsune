@@ -39,16 +39,23 @@ trait ResolvesWrittenColumns
     /**
      * The column a written name reaches, as the guards compare it: `Entries`.`ORG_ID->x` is `org_id`.
      *
-     * Strips table qualification, quoting and the JSON path, and folds case.
+     * Strips table qualification, quoting and the JSON path, and folds case — and refuses a name outside ASCII.
      *
      * ⚠️ THE CASE FOLD IS WHAT THE DATABASE DOES, and a guard that compares exactly is comparing something else.
      * SQLite, MySQL and MariaDB match column names without regard to ASCII case, so `update(['SETTINGS' => …])`
      * writes `settings`. PostgreSQL folds an unquoted name the same way and refuses a quoted one it does not have,
      * so folding here refuses nothing any engine would store under another spelling.
      *
-     * ⚠️ ASCII ONLY, AND SO IS EVERY ENGINE. Measured on all three that accept another spelling at all: `org_íd`,
-     * `ORG_İD`, a fullwidth `ｏrg_id` and `org_id ` with a trailing space are each an unknown column. `strtolower()`
-     * folds exactly ASCII and nothing else, which is the same set.
+     * ⚠️ OUTSIDE ASCII THE NAME IS REFUSED, NOT FOLDED, because one engine folds further than `strtolower()` does.
+     * MySQL 8.4 resolves a column name through a Unicode fold that takes a dotted capital I (U+0130) to `i` and the
+     * Kelvin sign (U+212A) to `k`, so `ORG_İD` IS `org_id` there — while this folded it to `org_İd`, a column no
+     * guard names, and every guarded column with an `i` or a `k` in it could be written past its guard. Measured
+     * through PDO with utf8mb4, the charset Laravel connects with; MariaDB 10.6, SQLite and PostgreSQL each refuse
+     * those names as unknown. An earlier draft of this docblock said the opposite, "measured" through the
+     * container's `mysql` client, whose `character_set_client` is latin1 — so the name that reached the server
+     * was not the one typed. No list of foldable characters is kept here, because which ones fold is the
+     * server's version's business: every column Kitsune has is ASCII, so refusing everything else refuses nothing
+     * a caller needs. A key inside a JSON path is data, not a name, and stays free.
      *
      * For the comparison only: the name handed to the database is the caller's, untouched.
      */
@@ -63,6 +70,16 @@ trait ResolvesWrittenColumns
         // MariaDB grammars write it into `settings` at the key `a.b` — measured allowed on both. SQLite's and
         // PostgreSQL's reject that SQL, which is luck, not a guard.
         $bare = explode('->', $column)[0];
+
+        // Byte-wise on purpose: any byte outside printable ASCII is refused, whatever encoding it belongs to.
+        if (preg_match('/[^\x20-\x7E]/', $bare) === 1) {
+            throw new RuntimeException(sprintf(
+                'The written column [%s] is named with a character outside ASCII. Every Kitsune column is ASCII, '
+                .'and MySQL folds some characters outside it onto ASCII letters, so no guard comparing names can '
+                .'say which column this reaches. Write the column under its own name.',
+                $column,
+            ));
+        }
 
         $bare = str_contains($bare, '.')
             ? substr($bare, (int) strrpos($bare, '.') + 1)
