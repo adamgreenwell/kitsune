@@ -1036,6 +1036,8 @@ it('refuses the owner flag under another spelling, which the engine writes into 
         'a qualified bulk write' => fn () => Role::query()->update(['roles.Is_Owner' => true]),
         'arithmetic extras' => fn () => Role::query()->increment('id', 0, ['IS_OWNER' => true]),
         'a save' => fn () => $this->alphaRole->fresh()?->update(['IS_OWNER' => true]),
+        // `fill()` drops a dotted key; `forceFill()` keeps it, and the hooks ask about `is_owner` by that name alone.
+        'a qualified save' => fn () => $this->alphaRole->fresh()?->forceFill(['roles.is_owner' => true])->save(),
         'a quiet save' => fn () => $this->alphaRole->fresh()?->forceFill(['Is_Owner' => true])->saveQuietly(),
     ];
 

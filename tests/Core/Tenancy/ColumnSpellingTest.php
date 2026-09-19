@@ -267,8 +267,40 @@ describe('field storage', function (): void {
         'touch PII_CLASS' => [fn () => FieldStorage::query()->whereKey($this->locked->id)->touch('PII_CLASS')],
         'touch is_locked' => [fn () => FieldStorage::query()->whereKey($this->locked->id)->touch('is_locked')],
         'touch a list of shape columns' => [fn () => FieldStorage::query()->whereKey($this->locked->id)->touch(['handle', 'pii_class', 'type'])],
-        // Two names for one column: the guard read `is_locked`, and every engine keeps the LAST in an UPDATE.
-        'save IS_LOCKED beside is_locked' => [fn () => $this->locked->fresh()->update(['is_locked' => true, 'IS_LOCKED' => false])],
+        // `is_locked` is already true, so it is not dirty and the save sends `IS_LOCKED` alone: the misnamed-column
+        // refusal, not the duplicate one — which has cases of its own below.
+        'save IS_LOCKED beside an unchanged is_locked' => [fn () => $this->locked->fresh()->update(['is_locked' => true, 'IS_LOCKED' => false])],
+        // Spelled correctly and qualified — `fill()` drops a dotted key, `forceFill()` does not — and the engine writes
+        // `is_locked`, which the hook never read: the lock cleared on SQLite and MySQL before a proven save refused it.
+        'save a qualified field_storage.is_locked cleared' => [fn () => $this->locked->fresh()->forceFill(['field_storage.is_locked' => false])->save()],
+    ]);
+
+    it('refuses a column named twice, on every write that carries values', function (Closure $attempt): void {
+        /*
+         * The duplicate refusal on its own: `is_indexed` is a column no other guard here reads, so nothing but that
+         * refusal stands between these writes and an engine choosing which of the two values to keep.
+         */
+        $before = storedGuardedRows();
+        $thrown = null;
+
+        try {
+            $attempt->call($this);
+        } catch (Throwable $e) {
+            $thrown = $e;
+        }
+
+        expect($thrown)->toBeInstanceOf(RuntimeException::class, 'the write was allowed')
+            ->and($thrown?->getMessage())->toContain('more than once');
+
+        expect(storedGuardedRows())->toBe($before);
+    })->with([
+        'a bulk update' => [fn () => FieldStorage::query()->whereKey($this->email->id)->update(['is_indexed' => true, 'IS_INDEXED' => false])],
+        'a save' => [fn () => $this->email->fresh()->update(['is_indexed' => true, 'IS_INDEXED' => false])],
+        'a create' => [fn () => FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'twice', 'type' => 'text', 'pii_class' => 'none', 'cardinality' => 1,
+            'is_indexed' => true, 'IS_INDEXED' => false,
+        ])],
+        'arithmetic extras' => [fn () => FieldStorage::query()->whereKey($this->email->id)->increment('id', 0, ['is_indexed' => true, 'IS_INDEXED' => false])],
     ]);
 
     it('refuses clearing a lock in bulk, whatever PHP makes of the value', function (Closure $attempt): void {
@@ -418,11 +450,38 @@ describe('entry relations', function (): void {
         // touch() is an update Eloquent writes past `update()`; only a foreign key stood in its way.
         'touch field_storage_id' => [fn () => EntryRelation::query()->whereKey($this->held->id)->touch('field_storage_id')],
         'touch ORG_ID' => [fn () => EntryRelation::query()->whereKey($this->held->id)->touch('ORG_ID')],
+        // Spelled correctly and qualified: the `updating` hook asks `isDirty('field_storage_id')`, which this never sets.
+        'save a qualified entry_relations.field_storage_id' => [fn () => $this->held->fresh()->forceFill(['entry_relations.field_storage_id' => $this->subject->id])->save()],
         // Two names for one column: the guard read `field_storage_id`, and SQLite keeps the FIRST in an INSERT.
         'insertGetId naming the storage twice' => [fn () => EntryRelation::query()->insertGetId([
             'FIELD_STORAGE_ID' => $this->subject->id, 'field_storage_id' => $this->links->id,
             'org_id' => $this->org->id, 'source_entry_id' => $this->src->id, 'target_entry_id' => $this->article->id,
         ])],
+    ]);
+
+    it('refuses a column named twice, on every write that carries values', function (Closure $attempt): void {
+        // The duplicate refusal on its own: `ordering` is permitted in bulk, so no other guard here reads it.
+        $before = storedGuardedRows();
+        $thrown = null;
+
+        try {
+            $attempt->call($this);
+        } catch (Throwable $e) {
+            $thrown = $e;
+        }
+
+        expect($thrown)->toBeInstanceOf(RuntimeException::class, 'the write was allowed')
+            ->and($thrown?->getMessage())->toContain('more than once');
+
+        expect(storedGuardedRows())->toBe($before);
+    })->with([
+        'a bulk update' => [fn () => EntryRelation::query()->whereKey($this->held->id)->update(['ordering' => 1, 'ORDERING' => 2])],
+        'a save' => [fn () => $this->held->fresh()->update(['ordering' => 1, 'ORDERING' => 2])],
+        'a create' => [fn () => EntryRelation::create([
+            'org_id' => $this->org->id, 'source_entry_id' => $this->src->id, 'target_entry_id' => $this->article->id,
+            'field_storage_id' => $this->links->id, 'ordering' => 1, 'ORDERING' => 2,
+        ])],
+        'arithmetic extras' => [fn () => EntryRelation::query()->whereKey($this->held->id)->increment('id', 0, ['ordering' => 1, 'ORDERING' => 2])],
     ]);
 
     it('refuses a key that is not a whole id, which MySQL and MariaDB round onto another row', function (Closure $attempt): void {

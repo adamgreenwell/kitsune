@@ -354,8 +354,9 @@ describe('cross-org isolation', function (): void {
          * map, so of `ORG_ID` and `org_id` it judged whichever came last — and SQLite keeps the FIRST of a
          * duplicated INSERT column. Measured before the refusal: from org A, `insertGetId(['ORG_ID' => $orgB,
          * 'org_id' => $orgA, …])` passed the check and stored the row in org B, and `SITE_ID` beside `site_id`
-         * planted one on org B's site. MySQL and MariaDB refuse a duplicated INSERT column themselves (error 1110)
-         * and every engine keeps the last in an UPDATE, which is luck rather than a guard. So the builder refuses
+         * planted one on org B's site. MySQL and MariaDB refuse a duplicated INSERT column themselves (error 1110),
+         * PostgreSQL refuses a column named twice in either statement, and SQLite, MySQL and MariaDB keep the last in
+         * an UPDATE — luck wherever it held, rather than a guard. So the builder refuses
          * the ambiguity before any engine resolves it, and the tests assert it is the builder that refused.
          */
         app(Context::class)->setSite($this->siteA1);
@@ -384,6 +385,25 @@ describe('cross-org isolation', function (): void {
         expect(DB::table('shared_things')->where('label', 'planted')->exists())->toBeFalse()
             ->and(DB::table('site_things')->where('label', 'planted')->exists())->toBeFalse()
             ->and(DB::table('site_things')->where('id', $mine->id)->value('org_id'))->toBe($this->orgA->id);
+    });
+
+    it('refuses an upsert that names one column twice, inside the escape hatch as well', function (): void {
+        /*
+         * The escape hatch stands the scope guards down and not this one: which value a database keeps is not a scope
+         * question. An upsert is refused outright outside the hatch, so inside it is the only place to ask — of its
+         * rows, and of an explicit `$update` map.
+         */
+        app(Context::class)->setSite($this->siteA1);
+        $mine = SiteThing::create(['label' => 'mine']);
+
+        $row = ['id' => $mine->id, 'org_id' => $this->orgA->id, 'site_id' => $this->siteA1->id, 'label' => 'first'];
+
+        expect(fn () => SiteThing::withoutScopeBecause('an import', fn ($q) => $q->upsert([[...$row, 'LABEL' => 'second']], ['id'], ['label'])))
+            ->toThrow(RuntimeException::class, 'more than once')
+            ->and(fn () => SiteThing::withoutScopeBecause('an import', fn ($q) => $q->upsert([$row], ['id'], ['label' => 'x', 'LABEL' => 'y'])))
+            ->toThrow(RuntimeException::class, 'more than once');
+
+        expect(DB::table('site_things')->where('id', $mine->id)->value('label'))->toBe('mine');
     });
 
     it('refuses updateFrom, whose assignments are invisible here', function (): void {
