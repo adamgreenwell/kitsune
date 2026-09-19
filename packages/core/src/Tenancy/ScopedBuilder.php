@@ -51,12 +51,12 @@ use RuntimeException;
 class ScopedBuilder extends Builder
 {
     /*
-     * ⚠️ `bareColumn()` STAYS PROTECTED, because `AuditedBuilder` compares through it. The two refusals are this
-     * class's own business and stay private, as `refuseMisnamedGuardedColumn()` was.
+     * Protected as the trait declares them, because `AuditedBuilder` compares through `bareColumn()` and
+     * `GuardedRoleBuilder` refuses a misnamed owner flag with `refuseMisnamedGuardedColumn()`. The ambiguity refusal
+     * runs on every write this class takes that carries values, so no subclass needs to call it.
      */
     use ResolvesWrittenColumns {
         refuseAmbiguousColumns as private;
-        refuseMisnamedGuardedColumn as private;
     }
 
     /**

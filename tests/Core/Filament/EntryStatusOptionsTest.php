@@ -480,3 +480,44 @@ it('refuses creating an entry already published, from somebody who may not publi
     expect(DB::table('entries')->where('title', 'Fresh draft')->value('status'))->toBe('draft')
         ->and(DB::table('entries')->where('title', 'Fresh')->value('status'))->toBe('published');
 });
+
+it('reads the status under every spelling the database writes into it', function (): void {
+    /*
+     * ⚠️ EACH OF THESE GUARDS LOOKED THE COLUMN UP BY EXACTLY TWO NAMES, `status` and `entries.status`, while
+     * SQLite, MySQL and MariaDB match column names without regard to case. Measured before they read through
+     * `ResolvesWrittenColumns`: `update(['STATUS' => 'publíshed'])` stored a status outside the vocabulary, and
+     * `$entry->update(['STATUS' => 'published'])` and `increment('id', 0, ['Status' => 'published'])` each
+     * published an article for somebody holding `update` and not `publish`.
+     */
+    $this->role->grant(Permissions::forEntryType('article', 'update'));
+
+    $entry = publishedArticle($this->org);
+
+    $entry->status = 'draft';
+    $entry->save();
+
+    Auth::login($this->user);
+    Permissions::forget();
+
+    $doors = [
+        'a bulk write outside the vocabulary' => [
+            fn () => Entry::query()->whereKey($entry->getKey())->update(['STATUS' => 'publíshed']), 'entry status',
+        ],
+        'a qualified bulk write outside the vocabulary' => [
+            fn () => Entry::query()->whereKey($entry->getKey())->update(['entries.Status' => 'publíshed']), 'entry status',
+        ],
+        'arithmetic extras outside the vocabulary' => [
+            fn () => Entry::query()->whereKey($entry->getKey())->incrementEach(['id' => 0], ['STATUS' => 'publíshed']), 'entry status',
+        ],
+        'a save that publishes' => [fn () => $entry->fresh()->update(['STATUS' => 'published']), 'entry.article.publish'],
+        'arithmetic extras that publish' => [
+            fn () => $entry->fresh()->increment('id', 0, ['Status' => 'published']), 'entry.article.publish',
+        ],
+    ];
+
+    foreach ($doors as $door => [$write, $refusal]) {
+        expect($write)->toThrow(RuntimeException::class, $refusal, "{$door} was not refused");
+    }
+
+    expect(DB::table('entries')->where('id', $entry->getKey())->value('status'))->toBe('draft');
+});

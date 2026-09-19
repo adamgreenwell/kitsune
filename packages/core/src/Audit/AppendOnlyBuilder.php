@@ -13,6 +13,7 @@ namespace Kitsune\Core\Audit;
 use Illuminate\Contracts\Database\Query\Expression;
 use Illuminate\Database\Eloquent\Builder;
 use Kitsune\Core\Models\AuditLog;
+use Kitsune\Core\Tenancy\Concerns\ResolvesWrittenColumns;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tenancy\ScopeWrites;
 use RuntimeException;
@@ -33,6 +34,13 @@ use RuntimeException;
  */
 class AppendOnlyBuilder extends Builder
 {
+    // Only `bareColumn()` is asked here; the refusals are imported private so they add nothing to this class.
+    use ResolvesWrittenColumns {
+        bareColumn as private;
+        refuseAmbiguousColumns as private;
+        refuseMisnamedGuardedColumn as private;
+    }
+
     private const NO_SUBQUERY_APPEND =
         'Audit rows cannot be appended from a subquery: the values are never seen here, so the org '
         .'they claim cannot be checked, and a trail an outsider can write to is worse than no '
@@ -301,13 +309,24 @@ class AppendOnlyBuilder extends Builder
         }
 
         $context = app(Context::class);
+        $scope = ['org_id' => $context->orgId(), 'site_id' => $context->siteId()];
 
-        foreach (['org_id' => $context->orgId(), 'site_id' => $context->siteId()] as $column => $current) {
-            if (! array_key_exists($column, $values) || $values[$column] === null || $current === null) {
+        /*
+         * ⚠️ EVERY NAME THE ROW WRITES, AS THE DATABASE READS IT. This looked each key up by exactly `org_id` and
+         * `site_id`, while SQLite, MySQL and MariaDB match column names without regard to case — so measured, from
+         * one org, `insert(['ORG_ID' => $rival, …])` appended to the rival's trail, and a `create()` whose hook
+         * stamped the real `org_id` beside a forged `ORG_ID` did too. Every spelling is checked, not one per
+         * column, because which of two the database keeps depends on the engine.
+         */
+        foreach ($values as $written => $value) {
+            $column = $this->bareColumn((string) $written);
+            $current = $scope[$column] ?? null;
+
+            if ($current === null || $value === null) {
                 continue;
             }
 
-            if ((int) $values[$column] !== (int) $current) {
+            if ((int) $value !== (int) $current) {
                 throw new RuntimeException(
                     "Refusing to append an audit row with [{$column}] outside the current scope. "
                     .'A trail an outsider can write to is worse than no trail, because it is '

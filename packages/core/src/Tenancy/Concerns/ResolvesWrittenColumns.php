@@ -18,11 +18,14 @@ use RuntimeException;
  * ⚠️ EACH BUILDER HAD ITS OWN ANSWER, AND ONLY ONE WAS RIGHT. `ScopedBuilder` learned on #127 that SQLite, MySQL
  * and MariaDB compare column names without regard to case, and that a JSON path has to come off before a table
  * qualifier is looked for. `GuardedRelationBuilder` and `GuardedStorageBuilder` each kept a private copy of the
- * older rule. So `update(['ORG_ID' => $rival])` was refused on a site and allowed on a relation row;
- * `update(['IS_LOCKED' => false])` cleared a field's lock; and `update(['settings->format' => …])` changed a
- * locked field's projection without even changing case. Measured on SQLite, MySQL and MariaDB before this existed.
- * `AuditedBuilder` had once carried this very defect beside a fixed copy in `ScopedBuilder`, which is the argument
- * for one copy rather than for more care.
+ * older rule, and `GuardedRoleBuilder`, `AppendOnlyBuilder` and `AuditedBuilder`'s status and soft-delete checks
+ * each compared names their own way. So `update(['ORG_ID' => $rival])` was refused on a site and allowed on a
+ * relation row; `update(['IS_LOCKED' => false])` cleared a field's lock; `update(['settings->format' => …])`
+ * changed a locked field's projection without even changing case; `update(['IS_OWNER' => true])` promoted every
+ * role it matched; and `insert(['ORG_ID' => $rival, …])` appended to another org's audit trail. Measured on SQLite
+ * before this existed, and the two sibling builders' cases on MySQL and MariaDB as well. `AuditedBuilder` had once
+ * carried this very defect beside a fixed copy in `ScopedBuilder`, which is the argument for one copy rather than
+ * for more care.
  *
  * ⚠️ `use` IT; DO NOT COPY IT. A builder that compares a written column name any other way is the defect this
  * trait exists to end.

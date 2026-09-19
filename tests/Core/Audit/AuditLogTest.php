@@ -487,6 +487,29 @@ describe('a trail an outsider can append to is worse than no trail', function ()
         expect(AuditLog::withoutGlobalScopes()->where('action', 'forged.ignore')->exists())->toBeFalse();
     });
 
+    it('refuses another org\'s key under another spelling, which the engine writes into org_id', function (): void {
+        /*
+         * ⚠️ THE GUARD LOOKED FOR `org_id` BY THAT NAME ALONE, while SQLite, MySQL and MariaDB match column names
+         * without regard to case. Measured before it read through `ResolvesWrittenColumns`: `insert(['ORG_ID' =>
+         * $rival, …])` appended to the rival's trail from this org's context, and so did `insertGetId()` and a
+         * `create()` whose hook stamped the real `org_id` beside the forged one.
+         */
+        $rival = Org::create(['name' => 'S', 'slug' => 'append-rival-spelled']);
+
+        $attempts = [
+            'insert' => fn () => AuditLog::query()->insert([['ORG_ID' => $rival->id, 'action' => 'forged.spelled', 'created_at' => now()]]),
+            'insertOrIgnore' => fn () => AuditLog::query()->insertOrIgnore([['Org_Id' => $rival->id, 'action' => 'forged.spelled', 'created_at' => now()]]),
+            'insertGetId' => fn () => AuditLog::query()->insertGetId(['ORG_ID' => $rival->id, 'action' => 'forged.spelled', 'created_at' => now()]),
+            'create' => fn () => AuditLog::create(['ORG_ID' => $rival->id, 'action' => 'forged.spelled', 'created_at' => now()]),
+        ];
+
+        foreach ($attempts as $path => $attempt) {
+            expect($attempt)->toThrow(RuntimeException::class, 'worse than no trail', "{$path} was allowed");
+        }
+
+        expect(AuditLog::withoutGlobalScopes()->where('action', 'forged.spelled')->exists())->toBeFalse();
+    });
+
     it('still appends to its own trail', function (): void {
         expect(fn () => AuditLog::create([
             'org_id' => $this->org->id, 'action' => 'legitimate.action', 'created_at' => now(),
@@ -769,6 +792,19 @@ describe('bulk entry writes are audited too', function (): void {
         expect(AuditLog::for($this->one)->orderBy('id')->pluck('action')->all())
             ->toBe(['entry.created', 'entry.deleted', 'entry.restored']);
     });
+
+    it('names the action from the column the database writes, under any spelling', function (): void {
+        /*
+         * ⚠️ `actionFor()` looked for `deleted_at` and `entries.deleted_at` exactly, while SQLite, MySQL and MariaDB
+         * match column names without regard to case. Measured before it read through `bareColumn()`:
+         * `update(['DELETED_AT' => now()])` soft-deleted the entry and the trail called it `entry.updated`.
+         */
+        Entry::query()->whereKey($this->one->getKey())->update(['DELETED_AT' => now()]);
+        Entry::onlyTrashed()->whereKey($this->one->getKey())->update(['Deleted_At' => null]);
+
+        expect(AuditLog::for($this->one)->orderBy('id')->pluck('action')->all())
+            ->toBe(['entry.created', 'entry.deleted', 'entry.restored']);
+    })->skip(fn (): bool => DB::connection()->getDriverName() === 'pgsql', 'PostgreSQL has no column by another spelling');
 
     /*
      * ⚠️ The obvious design — model events for single rows, this builder for

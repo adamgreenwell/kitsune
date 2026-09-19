@@ -414,15 +414,13 @@ class AuditedBuilder extends ScopedBuilder
      */
     private function refuseNoncanonicalStatus(array $values): void
     {
-        $table = $this->getModel()->getTable();
-
-        foreach (['status', $table.'.status'] as $column) {
-            if (! array_key_exists($column, $values)) {
-                continue;
-            }
-
-            $status = $values[$column];
-
+        /*
+         * ⚠️ EVERY NAME THAT REACHES THE COLUMN, which was `status` and `entries.status` exactly. SQLite, MySQL and
+         * MariaDB match column names without regard to case, so `update(['STATUS' => 'publíshed'])` stored what
+         * this refuses — measured. Each spelling is judged, since which of two the database keeps depends on the
+         * engine; `ScopedBuilder` refuses the write that names the column twice as well.
+         */
+        foreach ($this->writtenStatuses($values) as $status) {
             if (is_string($status) && in_array($status, Entry::STATUSES, true)) {
                 continue;
             }
@@ -475,16 +473,21 @@ class AuditedBuilder extends ScopedBuilder
     private function refuseUnpermittedPublication(array $values): void
     {
         $model = $this->getModel();
-        $table = $model->getTable();
-        $status = $values['status'] ?? $values[$table.'.status'] ?? null;
 
         /*
          * ⚠️ CASE-INSENSITIVELY — see `Entry::isPublished()`. MySQL and MariaDB's default collations match a
          * stored `PUBLISHED` against `scopePublished()`'s `status = 'published'`, so a strict comparison here
          * let that spelling through a guard whose whole job is to catch it.
+         *
+         * ⚠️ AND THE COLUMN'S NAME THE SAME WAY, for the same reason: `$entry->update(['STATUS' => 'published'])`
+         * found no `status` here and published the article for somebody who may not — measured.
          */
-        if (! is_string($status) || mb_strtolower($status) !== 'published'
-            || ! $model->exists || $model->getKeyForAuthorization() === null) {
+        $publishing = array_filter(
+            $this->writtenStatuses($values),
+            static fn (mixed $status): bool => is_string($status) && mb_strtolower($status) === 'published',
+        );
+
+        if ($publishing === [] || ! $model->exists || $model->getKeyForAuthorization() === null) {
             return;
         }
 
@@ -503,9 +506,8 @@ class AuditedBuilder extends ScopedBuilder
     private function refuseUnpermittedCreationAsPublished(array $values): void
     {
         $model = $this->getModel();
-        $status = $values['status'] ?? $values[$model->getTable().'.status'] ?? null;
 
-        if ($status !== 'published') {
+        if (! in_array('published', $this->writtenStatuses($values), true)) {
             return;
         }
 
@@ -661,14 +663,35 @@ class AuditedBuilder extends ScopedBuilder
         $model = $this->getModel();
         $column = $model->getDeletedAtColumn();
 
-        // Bulk updates qualify their columns; instance saves do not.
-        foreach ([$column, $model->getTable().'.'.$column] as $key) {
-            if (array_key_exists($key, $values)) {
-                return $values[$key] === null ? 'restored' : 'deleted';
+        // Bulk updates qualify their columns; instance saves do not. ⚠️ And the database matches the name
+        // without regard to case, so `update(['DELETED_AT' => now()])` soft-deleted entries that this recorded
+        // as `entry.updated` — measured — until it read the name through `bareColumn()`.
+        foreach ($values as $written => $value) {
+            if ($this->bareColumn((string) $written) === strtolower($column)) {
+                return $value === null ? 'restored' : 'deleted';
             }
         }
 
         return 'updated';
+    }
+
+    /**
+     * Every value this write assigns to `status`, under whichever names reach it.
+     *
+     * @param  array<array-key, mixed>  $values
+     * @return list<mixed>
+     */
+    private function writtenStatuses(array $values): array
+    {
+        $statuses = [];
+
+        foreach ($values as $written => $value) {
+            if ($this->bareColumn((string) $written) === 'status') {
+                $statuses[] = $value;
+            }
+        }
+
+        return $statuses;
     }
 
     /**

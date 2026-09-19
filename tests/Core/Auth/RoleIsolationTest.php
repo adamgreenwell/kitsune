@@ -1019,6 +1019,34 @@ it('refuses a publication smuggled through the arithmetic family', function (): 
     Auth::logout();
 });
 
+it('refuses the owner flag under another spelling, which the engine writes into the same column', function (): void {
+    /*
+     * ⚠️ THE BUILDER COMPARED `last(explode('.', $column))` EXACTLY, while SQLite, MySQL and MariaDB match column
+     * names without regard to case. Measured before it compared through `ResolvesWrittenColumns`:
+     * `Role::query()->update(['IS_OWNER' => true])` promoted every role it matched, with no per-holder audit — the
+     * idiom review named for `is_owner`, one shift key away. A SAVE did the same: the lifecycle hooks ask about
+     * `is_owner` by name, `IS_OWNER` left it clean, and the proof let the write through.
+     */
+    app(Context::class)->setOrg($this->alpha);
+
+    $mark = (int) AuditLog::query()->max('id');
+
+    $attempts = [
+        'a bulk write' => fn () => Role::query()->update(['IS_OWNER' => true]),
+        'a qualified bulk write' => fn () => Role::query()->update(['roles.Is_Owner' => true]),
+        'arithmetic extras' => fn () => Role::query()->increment('id', 0, ['IS_OWNER' => true]),
+        'a save' => fn () => $this->alphaRole->fresh()?->update(['IS_OWNER' => true]),
+        'a quiet save' => fn () => $this->alphaRole->fresh()?->forceFill(['Is_Owner' => true])->saveQuietly(),
+    ];
+
+    foreach ($attempts as $path => $attempt) {
+        expect($attempt)->toThrow(RuntimeException::class, null, "{$path} was allowed");
+    }
+
+    expect(DB::table('roles')->where('is_owner', true)->count())->toBe(0)
+        ->and(AuditLog::query()->where('id', '>', $mark)->count())->toBe(0);
+});
+
 it('takes the org row before any role row, so two demotions queue rather than deadlock', function (): void {
     /*
      * ⚠️ THE OWNER SWEEP LOCKS A SET AND EVERY CALLER ALREADY HOLDS ONE OF ITS MEMBERS — review found the
