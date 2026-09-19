@@ -233,7 +233,7 @@ class GuardedStorageBuilder extends Builder
      */
     public function increment($column, $amount = 1, array $extra = [])
     {
-        $this->refuseGuardedColumns([(string) $column => $amount, ...$extra]);
+        $this->refuseGuardedColumns($extra, [(string) $column => $amount]);
 
         return parent::increment($column, $amount, $extra);
     }
@@ -244,7 +244,7 @@ class GuardedStorageBuilder extends Builder
      */
     public function decrement($column, $amount = 1, array $extra = [])
     {
-        $this->refuseGuardedColumns([(string) $column => $amount, ...$extra]);
+        $this->refuseGuardedColumns($extra, [(string) $column => $amount]);
 
         return parent::decrement($column, $amount, $extra);
     }
@@ -255,7 +255,7 @@ class GuardedStorageBuilder extends Builder
      */
     public function incrementEach(array $columns, array $extra = [])
     {
-        $this->refuseGuardedColumns([...$columns, ...$extra]);
+        $this->refuseGuardedColumns($extra, $columns);
 
         return parent::incrementEach($columns, $extra);
     }
@@ -266,48 +266,77 @@ class GuardedStorageBuilder extends Builder
      */
     public function decrementEach(array $columns, array $extra = [])
     {
-        $this->refuseGuardedColumns([...$columns, ...$extra]);
+        $this->refuseGuardedColumns($extra, $columns);
 
         return parent::decrementEach($columns, $extra);
     }
 
     /**
-     * Refuse any column whose guard is per-row.
+     * Refuse any column whose guard is per-row, and any bulk write to the lock but arming it.
      *
-     * @param  array<string, mixed>  $values
+     * @param  array<string, mixed>  $assigned  Columns the write sets to a value.
+     * @param  array<string, mixed>  $added  Columns the arithmetic doors add an AMOUNT to — not a value.
      */
-    private function refuseGuardedColumns(array $values): void
+    private function refuseGuardedColumns(array $assigned, array $added = []): void
     {
-        $this->refuseAmbiguousColumns($values);
+        $this->refuseAmbiguousColumns([...$added, ...$assigned]);
 
-        foreach ($values as $column => $value) {
+        foreach ($added as $column => $amount) {
+            $bare = $this->bareColumn((string) $column);
+
+            // ⚠️ AN AMOUNT IS NOT A DESTINATION, so there is nothing to judge: `decrement('is_locked')` cleared a lock
+            // on SQLite, MySQL and MariaDB while the value check below never ran. `ScopedBuilder` refuses arithmetic
+            // on a scope key for the same reason.
+            if ($bare === 'is_locked') {
+                throw new RuntimeException(
+                    'A lock cannot be incremented or decremented: an amount is not a value, and no amount added to '
+                    .'the record that data exists is one this builder can vouch arms it rather than clears it '
+                    .'(ADR-006). Arm it with update([\'is_locked\' => true]).'
+                );
+            }
+
+            $this->refusePerRowColumn($bare);
+        }
+
+        foreach ($assigned as $column => $value) {
             $bare = $this->bareColumn((string) $column);
 
             // ⚠️ The ONE bulk write that is both needed and safe: arming the
             // lock. `lockStorageHoldingData()` and `armLock()` do exactly this
             // and nothing else, and setting it true cannot invalidate content.
             // Clearing it in bulk is the thing that made every guard optional.
+            //
+            // ⚠️ ARMING IS A VALUE THAT CAN ONLY MEAN TRUE, NOT ONE PHP READS AS TRUE. The check was `(bool) $value
+            // === false`, and an `Expression`, `'00'`, `'0.0'`, `' 0'`, `'-0'` and `'0e0'` are all true to PHP while
+            // SQLite, MySQL and MariaDB store them as 0; PostgreSQL stores `'false'`, `'off'`, `'no'` and `'f'` as
+            // false. Each cleared a locked field's lock — measured, and an ordinary save then renamed the field. So
+            // `true`, `1` and `'1'` arm it, and everything else is refused, whatever it would have stored.
             if ($bare === 'is_locked') {
-                if ((bool) $value === false) {
+                if ($value !== true && $value !== 1 && $value !== '1') {
                     throw new RuntimeException(
-                        'A lock cannot be cleared in bulk. It is the record that data exists, not a '
-                        .'preference, and clearing it here would skip every shape guard behind it '
-                        .'(ADR-006).'
+                        'A lock cannot be cleared in bulk, and a bulk write may only arm it — with true, 1 or \'1\', '
+                        .'the values no engine stores as false. It is the record that data exists, not a preference, '
+                        .'and clearing it here would skip every shape guard behind it (ADR-006).'
                     );
                 }
 
                 continue;
             }
 
-            if (in_array($bare, self::PER_ROW, true)) {
-                throw new RuntimeException(sprintf(
-                    'Field storage [%s] cannot be written in bulk: its guards depend on the row — '
-                    .'the lock state, the type, and the projection the settings produce. A bulk '
-                    .'write sees one set of values and any number of rows (ADR-006). Save the model '
-                    .'instead.',
-                    $bare,
-                ));
-            }
+            $this->refusePerRowColumn($bare);
+        }
+    }
+
+    private function refusePerRowColumn(string $bare): void
+    {
+        if (in_array($bare, self::PER_ROW, true)) {
+            throw new RuntimeException(sprintf(
+                'Field storage [%s] cannot be written in bulk: its guards depend on the row — '
+                .'the lock state, the type, and the projection the settings produce. A bulk '
+                .'write sees one set of values and any number of rows (ADR-006). Save the model '
+                .'instead.',
+                $bare,
+            ));
         }
     }
 

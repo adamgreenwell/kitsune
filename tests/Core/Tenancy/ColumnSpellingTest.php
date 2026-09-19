@@ -266,6 +266,59 @@ describe('field storage', function (): void {
         'save IS_LOCKED beside is_locked' => [fn () => $this->locked->fresh()->update(['is_locked' => true, 'IS_LOCKED' => false])],
     ]);
 
+    it('refuses clearing a lock in bulk, whatever PHP makes of the value', function (Closure $attempt): void {
+        /*
+         * ⚠️ THE GUARD ASKED `(bool) $value === false`, WHICH IS PHP'S QUESTION AND NOT THE DATABASE'S. An object is
+         * true to PHP, and so are `'00'`, `'0.0'`, `' 0'`, `'-0'` and `'0e0'` — and SQLite, MySQL and MariaDB store
+         * each of them as 0. PostgreSQL stores `'false'`, `'off'`, `'no'` and `'f'` as false. Each cleared a locked
+         * field's lock, after which an ordinary save renamed it. And the arithmetic doors pass an AMOUNT, not a
+         * destination, so `decrement('is_locked')` cleared it on three engines with no value to judge at all.
+         */
+        $before = storedGuardedRows();
+        $thrown = null;
+
+        try {
+            $attempt->call($this);
+        } catch (Throwable $e) {
+            $thrown = $e;
+        }
+
+        expect($thrown)->toBeInstanceOf(RuntimeException::class, 'the write was allowed')
+            ->and($thrown)->not->toBeInstanceOf(QueryException::class, 'the database refused it, not a guard: '.$thrown?->getMessage());
+
+        expect(storedGuardedRows())->toBe($before);
+    })->with([
+        'a raw 0' => [fn () => FieldStorage::query()->whereKey($this->locked->id)->update(['is_locked' => DB::raw('0')])],
+        'a raw false' => [fn () => FieldStorage::query()->whereKey($this->locked->id)->update(['is_locked' => DB::raw('false')])],
+        "'00'" => [fn () => FieldStorage::query()->whereKey($this->locked->id)->update(['is_locked' => '00'])],
+        "'0.0'" => [fn () => FieldStorage::query()->whereKey($this->locked->id)->update(['is_locked' => '0.0'])],
+        "' 0'" => [fn () => FieldStorage::query()->whereKey($this->locked->id)->update(['is_locked' => ' 0'])],
+        "'-0'" => [fn () => FieldStorage::query()->whereKey($this->locked->id)->update(['is_locked' => '-0'])],
+        "'0e0'" => [fn () => FieldStorage::query()->whereKey($this->locked->id)->update(['is_locked' => '0e0'])],
+        "'false'" => [fn () => FieldStorage::query()->whereKey($this->locked->id)->update(['is_locked' => 'false'])],
+        "'off'" => [fn () => FieldStorage::query()->whereKey($this->locked->id)->update(['is_locked' => 'off'])],
+        "'f'" => [fn () => FieldStorage::query()->whereKey($this->locked->id)->update(['is_locked' => 'f'])],
+        'arithmetic extras' => [fn () => FieldStorage::query()->whereKey($this->locked->id)->increment('id', 0, ['is_locked' => '00'])],
+        'decrement' => [fn () => FieldStorage::query()->whereKey($this->locked->id)->decrement('is_locked')],
+        'increment by -1' => [fn () => FieldStorage::query()->whereKey($this->locked->id)->increment('is_locked', -1)],
+        'incrementEach' => [fn () => FieldStorage::query()->whereKey($this->locked->id)->incrementEach(['is_locked' => -1])],
+        'decrementEach' => [fn () => FieldStorage::query()->whereKey($this->locked->id)->decrementEach(['is_locked' => 1])],
+    ]);
+
+    it('still arms a lock in bulk, with the values that can only mean true', function (mixed $armed): void {
+        $open = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'open', 'type' => 'text', 'pii_class' => 'none', 'cardinality' => 1,
+        ]);
+
+        FieldStorage::query()->whereKey($open->id)->update(['is_locked' => $armed]);
+
+        expect((bool) DB::table('field_storage')->where('id', $open->id)->value('is_locked'))->toBeTrue();
+    })->with([
+        'true' => [true],
+        '1' => [1],
+        "'1'" => ['1'],
+    ]);
+
     it('still allows what it allowed, under any spelling', function (): void {
         // Arming a lock is the one bulk write the codebase needs, and a column no guard reads is nobody's business.
         $open = FieldStorage::create([
