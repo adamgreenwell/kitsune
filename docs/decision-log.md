@@ -155,7 +155,7 @@ Dual-licensing requires owning or being licensed all rights. **The first communi
 
 ## ADR-006 — Schema storage: JSON + generated columns
 
-**Status:** Decided · direction **forced** by ADR-010 · ⚠️ **Revised by ADR-021** · ✅ **Mechanism verified 2026-09-07** — composite indexes now lead with the model's scope key (`site_id` for site-scoped, `org_id` for org-scoped), not `tenant_id`. The original text below is left as written
+**Status:** Decided · direction **forced** by ADR-010 · ⚠️ **Revised by ADR-021** · ✅ **Mechanism verified 2026-09-07** — composite indexes now lead with the model's scope key (`site_id` for site-scoped, `org_id` for org-scoped), not `tenant_id`. The original text below is left as written · **Amended 2026-09-19** — the lock held on some Eloquent write paths and not others; see *the lock, on every Eloquent path*
 
 Steal Drupal's field-storage *shape*, not its storage *strategy*. The `FieldStorage` / `FieldConfig` split: storage defined once and reusable across entity types, per-type presentation separate, **storage locked once data exists**. The lock-on-data-present guard ships in v1.
 
@@ -170,6 +170,20 @@ The mechanism this ADR rests on is proven rather than assumed. `SchemaDriver` an
 Four divergences, not the two originally noted: the JSON path operator, the cast form, **identifier quoting** — `values` is reserved on MySQL and PostgreSQL, and this document's own SQL examples were unquoted and would have failed as written — and whether the column can be materialised at all. SQLite cannot add a STORED generated column through `ALTER TABLE`; it takes a VIRTUAL one, which is still indexable, and that inverts the cost model in SQLite's favour: no write amplification, no table rewrite, paid for by evaluating per row scanned.
 
 The driver fails closed on an unknown engine, because falling back to a probably-compatible driver is how a generated column silently indexes nothing.
+
+### Amendment — the lock, on every Eloquent path, 2026-09-19
+
+**Status:** Amended
+
+"Storage locked once data exists" is enforced by `FieldStorage::guardShape()` on a save and by `GuardedStorageBuilder` on the paths a save never takes. Review of ADR-021's column-spelling amendment measured five more ways past it, each spelled correctly — every one on SQLite, and the engine-specific ones on the engines named:
+
+- **A bulk write cleared the lock with a value PHP reads as true.** The builder refused clearing it with `(bool) $value === false`; an `Expression`, `'00'`, `'0.0'`, `' 0'`, `'-0'` and `'0e0'` are true to PHP and stored as 0 by SQLite, MySQL and MariaDB, and PostgreSQL stores `'false'`, `'off'`, `'no'` and `'f'` as false. `decrement('is_locked')` cleared it with no value to judge at all. A bulk write now arms the lock with `true`, `1` or `'1'` and nothing else, and arithmetic on it is refused.
+- **`truncate()` was not refused**, on the reasoning that this builder guards creation and truncating creates nothing. It removes every org's rows from a shared table — and on PostgreSQL Laravel compiles it `TRUNCATE … CASCADE`, which emptied every org's fields, entry types, entries and revisions with no audit row. Refused now, as on every guarded builder.
+- **`touch($column)` wrote past `update()`**, because Eloquent implements it through `toBase()`: `touch('handle')` renamed a locked field and `touch('pii_class')` stored a classification ADR-020 does not have. It is routed through `update()` on every guarded builder now (`TouchesThroughUpdate`, `@internal`).
+- **The save proof was a public boolean**, read off whatever model the builder was built on, so `$storage->shapeGuarded = true` or a hand call to `guardShape()` licensed `$storage->newQuery()->update([…])` to change a locked field's shape; and a save an observer cancelled left it armed for a `saveQuietly()`. It is private now, cleared as each save begins, and names the builder the instance is saving through — the pattern `Role` and `DerivesGuardedColumns` already used. `EntryRelation`'s proof had the same two defects, plus one of its own: its listener armed the proof before any guard ran.
+- **The lock was read from the instance**, not the row. It is armed in bulk, past every loaded instance, so an instance loaded while the field was open saved a rename and a retype onto a row the database held locked. `guardShape()` asks the row now when the instance believes the field open.
+
+**What it does not claim.** The lock is not taken with a row lock. A writer that stores a field's first value and then arms the lock takes no lock on the storage row, so a shape change saved between the two still lands on a field about to hold data. Closing that needs the data writers to lock the storage row before they write, which is a change to them rather than to this guard. And below Eloquent — `toBase()`, `DB::table()` — nothing here stands, as ADR-020 already says of the audit.
 
 ---
 
