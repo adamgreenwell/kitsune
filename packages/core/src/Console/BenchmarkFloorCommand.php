@@ -48,6 +48,18 @@ final class BenchmarkFloorCommand extends Command
     /** The start of every slug this command inserts; each run adds its own token after it — see LeavesNothingBehind. */
     private const SLUG_PREFIX = 'floor-';
 
+    /**
+     * How many entries this process inserted before it measured.
+     *
+     * ⚠️ NOT ZERO MEANS THE PEAK IS NOT A REQUEST'S. PHP keeps the heap an insert grew — `memory_reset_peak_usage()`
+     * resets the recorded high-water mark to what the process currently holds, it does not hand arenas back — so
+     * a run that seeded reports a peak that includes the seeding. Measured: 40.5 MB after seeding 100 entries,
+     * 42.5 MB after 1,000 or 5,000, for a request that reads the same 25 rows each time. Codex found it on #126.
+     * The figure is only a request's when the process that measured it did not seed, which is why
+     * bin/benchmark-floor.sh seeds in one process and measures in another, and refuses a measurement that seeded.
+     */
+    private int $seededThisRun = 0;
+
     protected $signature = 'kitsune:benchmark-floor
         {--entries=1000 : Content volume to measure against}
         {--keep : Leave the benchmark org, its site and its entries in place}
@@ -72,13 +84,25 @@ final class BenchmarkFloorCommand extends Command
         // storage benchmark's index probe.
         [$org, $site, $type] = $this->fixture();
 
+        // ⚠️ BEFORE SEEDING, OR IT IS NOT THE BOOTSTRAP. Taken after ensureVolume(), this figure carried the
+        // high-water mark of inserting the benchmark's own rows — so it grew with `--entries` and was reported
+        // as the cost of booting the framework. The seeding is scaffolding for the measurement, not part of the
+        // request being measured, and no worker ever does it.
+        $bootstrap = memory_get_peak_usage(true);
+
         try {
             $seeded = $this->ensureVolume($org, $site, $type, max(0, (int) $this->option('entries')));
 
             $this->line("  content in scope: <info>{$seeded}</info> entries");
+            $this->line("  seeded by this run: <info>{$this->seededThisRun}</info> entries");
             $this->newLine();
 
-            $bootstrap = memory_get_peak_usage(true);
+            // Resetting here leaves out the fixture lookup, so the peak below is the high-water mark of the
+            // samples on top of a framework already resident — what a PHP-FPM worker holds. ⚠️ It cannot leave out
+            // SEEDING: the reset moves the recorded mark down to what the process holds now, and PHP still holds
+            // the heap an insert grew. That is what `$seededThisRun` is for, and why the harness never measures in
+            // the process that seeded.
+            memory_reset_peak_usage();
 
             $samples = [
                 'count entries' => fn () => Entry::count(),
@@ -111,7 +135,7 @@ final class BenchmarkFloorCommand extends Command
 
             $this->newLine();
             $this->line(sprintf('  framework bootstrap peak   %6.1f MB', $bootstrap / 1_048_576));
-            $this->line(sprintf('  peak across all operations %6.1f MB', $peak / 1_048_576));
+            $this->line(sprintf('  peak serving a request     %6.1f MB', $peak / 1_048_576));
 
             // A single PHP-FPM worker is what has to fit; the floor must also
             // hold several concurrently alongside the OS and the database.
@@ -127,6 +151,15 @@ final class BenchmarkFloorCommand extends Command
                 $this->info('  ✓ comfortable inside the floor for a single-site install');
             }
 
+            // Said on the run it concerns, not left to a docblock: a figure printed under "serving a request" that
+            // includes the seeding is the one an operator is most likely to copy down.
+            if ($this->seededThisRun > 0) {
+                $this->newLine();
+                $this->warn("  ⚠️ this run seeded {$this->seededThisRun} entries first, and PHP keeps the heap that grew, so the");
+                $this->warn('  peak above includes the seeding. For a request alone, measure in a process that did not seed:');
+                $this->warn('  run once with --keep to seed, then again with the entries in place.');
+            }
+
             $this->newLine();
             $this->line('  <comment>Wall-clock above is indicative only. Timings at the floor need');
             $this->line('  constrained hardware — reproduce from the application root with:</comment>');
@@ -136,7 +169,13 @@ final class BenchmarkFloorCommand extends Command
              * behind it: an install that resolves kitsune/core through a symlinked path repository needs the
              * symlink's target mounted too, or the autoloader breaks inside the container.
              */
-            $this->line('    docker run --rm --cpus=1 --memory=1g \\');
+            /*
+             * ⚠️ AND THE LIMITS ARE THE FLOOR CONSTANTS, NOT A SECOND COPY OF THEM. Written out as `--cpus=1
+             * --memory=1g`, the recipe was a third place the floor lived, free to disagree with the two above
+             * it — and an operator following a stale one would measure against a floor this code no longer
+             * claims. FloorTest holds these constants, this hint and bin/benchmark-floor.sh to one number.
+             */
+            $this->line(sprintf('    docker run --rm --cpus=%d --memory=%dm \\', Kitsune::FLOOR_VCPU, $budgetMb));
             $this->line('      -v "$PWD":/app -w /app php:8.4-cli \\');
             $this->line('      php artisan kitsune:benchmark-floor');
             $this->line('  <comment>If kitsune/core is a symlinked path repository, mount its target as well.</comment>');
@@ -179,16 +218,34 @@ final class BenchmarkFloorCommand extends Command
         });
     }
 
-    /** Top the benchmark site up to the requested volume. Returns the total in scope. */
+    /**
+     * Top the benchmark site up to the requested volume, and report what the measured queries can actually see.
+     *
+     * ⚠️ COUNTED THROUGH THE SCOPED MODEL AT THE END, NOT ECHOED BACK FROM THE ARGUMENT. This used to
+     * `return $target` — the number it had just been passed — so "content in scope: 1000 entries" was the
+     * request repeated, not an observation. Every caller that checked it, this command's own line and the test
+     * named for the `WHERE 1 = 0` defect, was therefore comparing the option with itself and could not fail:
+     * rows are inserted through the UNSCOPED query builder below, so a run that had lost its site context would
+     * insert all 1,000, print all 1,000, and then time four empty result sets — which is exactly the
+     * 2026-09-07 defect this was written to make impossible. Proven by removing `setSite()` and watching the
+     * whole file still pass. `Entry::count()` goes through SiteScope, so it answers 0 when the samples will.
+     */
     private function ensureVolume(Org $org, Site $site, EntryType $type, int $target): int
     {
+        // ⚠️ SET ON EVERY RUN, NOT ONLY WHEN IT SEEDS. Laravel resolves a command once and `Artisan::call()` reuses
+        // that instance, so a value set by one run survives into the next in the same process — measured: a run
+        // that found its entries in place and inserted none reported the previous run's 25. `LeavesNothingBehind`
+        // clears its `runToken` for the same reason.
+        $this->seededThisRun = 0;
+
         $existing = Entry::query()->where('site_id', $site->getKey())->count();
 
         if ($existing >= $target) {
-            return $existing;
+            return Entry::count();
         }
 
         $prefix = $this->runPrefix(self::SLUG_PREFIX);
+        $this->seededThisRun = $target - $existing;
 
         $now = now();
         $rows = [];
@@ -218,7 +275,7 @@ final class BenchmarkFloorCommand extends Command
             DB::table('entries')->insert($rows);
         }
 
-        return $target;
+        return Entry::count();
     }
 
     /**

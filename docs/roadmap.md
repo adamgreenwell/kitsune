@@ -116,24 +116,50 @@ The routing question is **already settled** — ADR-012 was resolved by a workin
   ⚠️ **An earlier version of this table was wrong**, and the corrections are worth keeping: the slug probe omitted `entry_type_id` and so used only a prefix of the `(site_id, entry_type_id, slug)` index — and with multiple locales searched for a row that never existed, timing a miss. SQLite's size excluded index B-trees, and MySQL's came from cached `information_schema` statistics with no schema filter, reporting **131 KB for 100k rows**. Numbers a benchmark reports confidently are still wrong if the probe is wrong.
 
   **Still open:** the 1M run, and media-as-entries (ADR-016) at scale
-- [x] ⚠️ **Resource-floor benchmark (ADR-027)** — ✅ **2026-09-07** via `php artisan kitsune:benchmark-floor`, verified inside a container limited to **1 vCPU and 1 GB**, not merely on the dev machine:
+- [x] ⚠️ **Resource-floor benchmark (ADR-027)** — first run **2026-09-07**, re-measured **2026-09-18** and now reproducible on demand with `bin/benchmark-floor.sh`. Measured with **1,000 entries in scope**, which matters — see the corrections below.
 
-  | | value |
-  |---|---|
-  Measured with **1,000 entries in scope**, which matters — see the correction below.
+  **What a recorded figure depends on, and which of it is pinned.** Four inputs decide the numbers, and a figure can be re-checked exactly only when all four are the ones it was measured with:
 
-  | | constrained (1 vCPU / 1 GB) | unconstrained |
+  | input | recorded for these figures | pinned by |
   |---|---|---|
-  | peak memory per request | 38.5 MB | 40.5 MB |
-  | workers fitting in half the floor | 13 | 12 |
-  | list page (25 rows) | 1.9 ms | 1.2 ms |
-  | entry with relations | 2.2 ms | 1.9 ms |
+  | the interpreter | the floor image: PHP 8.4.25 with ext-intl (ICU 76.1) and ext-zip — CLI, `memory_limit=128M`, OPcache off | [`bin/benchmark-floor.Dockerfile`](../bin/benchmark-floor.Dockerfile): its base at the full digest `php@sha256:a545b9041fb0e378cb597b4d0509f77c6a4d996dd485763af92e5b7e59c469cc`; the ICU and libzip that apt installs are **recorded, not pinned** |
+  | the dependency graph | lock `sha256:4733b982a17afd70`, resolved for PHP 8.4.25 — laravel/framework v13.32.0, filament/filament v5.8.2, livewire/livewire v4.4.5 | [`docs/benchmarks/floor.composer.lock`](benchmarks/floor.composer.lock), the graph these figures were measured with |
+  | `kitsune/core` itself | the tree of the commit that last changed that lock | the checkout — the harness installs core from `packages/core` |
+  | the host | not recorded | nothing; wall-clock is the host's, and peak memory is the part that transfers |
 
-  Memory barely moves between the two, which is the point: **peak memory per request is the part that transfers between machines**, while wall-clock is a property of the host.
+  So a figure is re-checked with the commit that recorded it checked out, and:
 
-  ⚠️ **The first version measured nothing.** It established no site context, so `SiteScope` added `WHERE 1 = 0` and every sample timed an empty result set — and the advertised `--entries` option was never read. The same shape of mistake as the storage benchmark's index probe, caught the same way, in review.
+  ```bash
+  bin/benchmark-floor.sh --entries 1000 --lock docs/benchmarks/floor.composer.lock
+  ```
 
-  `Kitsune::FLOOR_VCPU` and `FLOOR_MEMORY_MB` are asserted by a test, so raising the floor is a visible code change rather than a drift
+  — the floor image is built from its Dockerfile when no `--image` is named. Re-run that way on 2026-09-19: the same interpreter, ICU 76.1, the same lock hash, 40.5 MB and 12 workers in both columns.
+
+  ⚠️ **For eleven days the floor was measured on an interpreter that could not run the application.** The official `php:8.4-cli` loads neither ext-intl, which `filament/support` requires, nor ext-zip, which `openspout/openspout` requires; the benchmark booted regardless, because its samples call neither. It surfaced on #126 when Composer was made to resolve for the image's PHP rather than the host's, and then — with `platform-check` on — refused the install outright. The harness now builds the floor image, resolves Composer for its PHP version, and runs Composer's own platform check *in the image* before anything boots, so an image missing an extension the graph requires is a refusal naming it rather than a measurement. With both extensions loaded the figures did not move — which says something about the metric as much as the image: `memory_get_peak_usage()` counts PHP's heap, not memory a native library such as ICU allocates for itself.
+
+  ⚠️ **A default run does not pin the graph, on purpose.** Without `--lock` the harness resolves the graph fresh — which is what an operator installing today gets, and so what the floor is actually a claim about. A different number from a default run means the application or its dependencies changed; that is the regression the floor exists to catch, not a failure to reproduce. Every run names the graph it measured (the lock's hash and those three versions) in its header, and `--save-lock` keeps it. The digest is recorded whole because a truncated one pulls nothing (Codex, #126), and the lock because the digest pins the interpreter and not the application (Codex, #126).
+
+  | | constrained (1 vCPU / 1024 MB) | unconstrained |
+  |---|---|---|
+  | framework bootstrap peak | 40.5 MB | 40.5 MB |
+  | peak serving a request | 40.5 MB | 40.5 MB |
+  | workers fitting in half the floor | 12 | 12 |
+  | list page (25 rows) | 2.0 ms | 1.9 ms |
+  | entry with relations | 2.3 ms | 2.1 ms |
+
+  **Peak memory while serving is the part that transfers between machines**, while wall-clock is a property of the host.
+
+  ⚠️ **These numbers are not comparable with 2026-09-07's, because the measurement was wrong then and is different now.** Not a regression and not an improvement — a different quantity. Three defects were found on 2026-09-18 by re-measuring, and all three are fixed:
+
+  - **The reported peak included the benchmark seeding its own rows — and moving the sample did not remove it.** `memory_get_peak_usage()` was taken *after* `ensureVolume()`, so the figure grew with `--entries` and was printed as the cost of booting the framework. The first fix sampled bootstrap before seeding and took the serving peak after `memory_reset_peak_usage()`, and Codex found on #126 that this cannot work: the reset moves the recorded mark down to what the process still holds, and PHP keeps the heap an insert grew. Measured: a serving peak of 40.5 MB after seeding 100 entries and 42.5 MB after 1,000 or 5,000, for requests reading the same 25 rows. The harness now **seeds in one process and measures in another**, and refuses a measurement whose process seeded; the command reports how many entries each run inserted, and warns when a run's peak includes them. Measured that way the serving peak is 40.5 MB at 1,000 entries and at 5,000 — the framework's own footprint, which the 25-row samples fit inside.
+  - **The scope line was the request echoed back, not an observation.** `ensureVolume()` returned the `--entries` argument it was handed, so "content in scope: 1,000 entries" could not disagree with it — and neither could the test named for the `WHERE 1 = 0` defect, which passed with `setSite()` deleted. It now returns `Entry::count()` through the scoped model, so a run that lost its site context reports 0 and the harness refuses it. Proven by deleting that line and watching the case fail.
+  - **The old two-column gap was a confound.** 38.5 vs 40.5 MB compared a container against the dev machine, measuring two PHP builds as well as two limit sets. From one image, with a fresh copy of the application per run and only the limits changed, the peaks are identical.
+
+  ⚠️ **What the pairing does and does not prove.** It is a *control*, not a stress test: neither limit binds one request — a PHP CLI process uses at most one CPU anyway, and 40 MB of 1024 MB is not pressure — so identical columns are the expected result, and a difference would mean the two runs differed in something other than their limits. The workers figure remains arithmetic from a single request, not an observation of twelve running at once.
+
+  `Kitsune::FLOOR_VCPU` and `FLOOR_MEMORY_MB` are asserted by a test, so raising the floor is a visible code change rather than a drift — and `tests/Core/Release/FloorHarnessTest.php` runs the harness against stub binaries and reads the `docker` argv it builds, so the container size, the constants and the recipe the command prints to operators cannot drift apart.
+
+  **Still open:** the same measurement under concurrency; under an FPM-shaped interpreter (OPcache on, a real `php.ini`) rather than bare CLI; and a worker's resident memory rather than PHP's heap — the workers figure divides the floor by the heap peak, and a real worker also holds the PHP binary, its extensions and whatever ICU loads, none of which that peak counts
 
 **Done when:** you have numbers, written down.
 
