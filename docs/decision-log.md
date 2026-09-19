@@ -745,7 +745,7 @@ at a time.
 
 ## ADR-021 — Sites: a third structural level, and Filament's tenant is the Site
 
-**Status:** Decided · 2026-09-07 · **Amended 2026-09-09** — three times while public site resolution was built (issue #38); see the amendments below
+**Status:** Decided · 2026-09-07 · **Amended 2026-09-09** — three times while public site resolution was built (issue #38); see the amendments below · **Amended 2026-09-19** — every guarded builder reads a written column the way the database does, through one comparison; see *a column is the one the database writes*
 **Revises** ADR-009 (two scoping levels, not one) and ADR-017 (locale is derived from site, not stored on the entry).
 
 ### The gap this closes
@@ -907,6 +907,26 @@ For most users this is merely awkward — route binding narrowed to their own si
 **`sites` therefore carries a `slug` column, globally unique, and it is the route key.** `handle` is unchanged and stays org-unique. The two are separate because they answer different questions: what the operator calls this site, and which URL owns it.
 
 Found by review, not by design — the original ADR reasoned about the route contract having three parameters and never asked whether the tenant segment was unambiguous.
+
+### Amendment — a column is the one the database writes, in every guarded builder, 2026-09-19
+
+**Status:** Amended
+
+The kernel enforces isolation at the write, and at the builder rather than in a model event, because a mass update dispatches nothing. That enforcement compares the columns a write names with the columns it guards — and six builders made the comparison, each its own way. After #127, `ScopedBuilder` folded case and rooted a JSON path at its column. `GuardedRelationBuilder` (`entry_relations`) and `GuardedStorageBuilder` (`field_storage`) each kept a private copy of the older, exact rule, which also read `settings->format` as a column nobody guards; `GuardedRoleBuilder`, `AppendOnlyBuilder` and `AuditedBuilder`'s status and soft-delete checks compared exactly by rules of their own. SQLite, MySQL and MariaDB match column names without regard to ASCII case, so each of those guards had a second spelling that walked past it. Measured before the fix, on SQLite and — for the two sibling builders — on MySQL and MariaDB too:
+
+- **A relation row moved across the org boundary.** `EntryRelation::query()->update(['ORG_ID' => $rival])` restamped it, `['Source_Entry_Id' => $theirs]` hung it off another org's entry, and `['FIELD_STORAGE_ID' => $single]` gave a full cardinality-one field a second target — ADR-020's two-subject disclosure, one shift key from the refusal.
+- **A locked field changed shape.** `FieldStorage::query()->update(['IS_LOCKED' => false])` cleared the lock ADR-006 calls the record that data exists, `['HANDLE' => 'cost']` renamed a locked field, `['PII_CLASS' => 'bogus']` stored a classification ADR-020 does not have — and `['settings->format' => 'integer']` moved a locked field's projection **spelled correctly**, because the path was never rooted at its column.
+- **A genuine save walked past the model's own hooks**, which read each attribute by its name. `$storage->update(['IS_LOCKED' => false])`, `$relation->update(['FIELD_STORAGE_ID' => …])` and `attach($id, ['FIELD_STORAGE_ID' => …])` each passed every check on the lowercase attribute — unchanged, or never set — while the engine wrote the other one.
+- **And beyond the two siblings:** `Role::query()->update(['IS_OWNER' => true])` promoted every role it matched with no per-holder audit (ADR-033); `AuditLog::query()->insert(['ORG_ID' => $rival, …])` appended to another org's trail; `$entry->update(['STATUS' => 'published'])` published for somebody without `publish` (ADR-033); and `update(['DELETED_AT' => now()])` was audited as `entry.updated`.
+- **#127's own fix was not closed either.** `ScopedBuilder` folded every written name into one map before comparing, so of `ORG_ID` and `org_id` it judged the last — and SQLite keeps the **first** of a duplicated column in an INSERT. From org A, `insertGetId(['ORG_ID' => $orgB, 'org_id' => $orgA, …])` planted a row in org B on the default engine. MySQL and MariaDB refuse a duplicated INSERT column themselves (error 1110), and every engine keeps the last in an UPDATE: luck on those, not a guard.
+
+**One comparison now — the `ResolvesWrittenColumns` trait, `@internal` — and every one of those builders uses it**, with three rules:
+
+1. **A written name is the column the database writes.** The JSON path comes off first, then the table qualifier by its last dot, then quoting, then ASCII case. That is exactly what the engines fold: an accented `org_íd`, a dotted `ORG_İD`, a fullwidth `ｏrg_id` and `org_id ` with a trailing space are unknown columns on all three, measured, so the fold refuses nothing any engine would store elsewhere.
+2. **A write that stands behind its guards writes each guarded column under the name they read, or not at all** — a save through either sibling or through `GuardedRoleBuilder`, and the siblings' `insertGetId()`, which builds the model its guards read from the written names verbatim. `ScopedBuilder` already asked this of a save for `columnsRequiringModelSave()`.
+3. **A write that names one column twice is refused**, on every write `ScopedBuilder` takes that carries values and in both siblings, because which value the database keeps depends on the engine and the statement. Several JSON paths into one column are partial writes rather than a duplicate, and stay allowed. `AppendOnlyBuilder` and `AuditedBuilder`'s status checks judge every spelling instead, and `AuditedBuilder`'s writes reach `ScopedBuilder`'s refusal as well.
+
+**What it does not claim.** A builder guards the columns it names. A model hook that reads some *other* attribute by name is covered only where a builder refuses that column under another spelling — this amendment makes the comparisons the builders make agree with the database, not every attribute read in every model. And below Eloquent — `toBase()`, `DB::table()`, raw SQL — nothing at this layer can stand, as every guard in the kernel already states.
 
 ### Naming rule
 
@@ -1704,7 +1724,7 @@ The raster exports were kept out of it and landed separately on `docs/brand-asse
 
 ## ADR-033 — Kitsune owns its RBAC, and a permission is a string a role holds
 
-**Status:** Decided · 2026-09-13 · **Amended 2026-09-13** — twice during the wiring: the owner bypass does not resolve in `Gate::before`, and the scope hatch does not suspend the authority guards; see the amendments below
+**Status:** Decided · 2026-09-13 · **Amended 2026-09-13** — twice during the wiring: the owner bypass does not resolve in `Gate::before`, and the scope hatch does not suspend the authority guards; see the amendments below · **Amended 2026-09-19** — the owner flag and the status vocabulary are read under every spelling the database writes; see the consequence on column names, and ADR-021's amendment of the same date
 
 Issue #81. Phase 4's last unchecked line is `EntryPolicy`, blocked rather than deferred: a policy needs roles and permissions to resolve against. `architecture.md` §4 already fixes the naming — `entry.{type_handle}.{view|create|update|delete|publish}`, resolved against `type_handle`, seeded by blueprints — and settles nothing about where any of it lives.
 
@@ -2327,6 +2347,16 @@ Filament's own opt-in for exactly that, and it is off by default.
   every assignment survived while the log said their authority was revoked, and a retry added another set of
   false rows. The holders still have to be READ first, because the database cascades `role_user` away with the
   role — so the read comes before and the write comes after, inside one transaction.
+
+- **The owner flag and the status are read under every spelling the database writes.** Two guarantees above
+  held for one spelling of a column. `GuardedRoleBuilder` compared `last(explode('.', $column))` exactly and
+  `AuditedBuilder` looked `status` up as `status` and `entries.status`, while SQLite, MySQL and MariaDB match
+  column names without regard to case. Measured before the fix: `Role::query()->update(['IS_OWNER' => true])`
+  promoted every role it matched with no per-holder audit, and so did a proven save of `IS_OWNER`, which the
+  lifecycle hooks — asking about `is_owner` by name — never saw; `update(['STATUS' =>
+  'publíshed'])` stored a value outside the closed vocabulary; and `$entry->update(['STATUS' => 'published'])`
+  published an article for somebody holding `update` and not `publish`. Both builders compare through
+  `ResolvesWrittenColumns` now, the one comparison ADR-021's amendment of 2026-09-19 describes.
 
 - **We own the resolution cache, the wildcard semantics, and the bugs in both.**
 
