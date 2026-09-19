@@ -13,6 +13,7 @@ namespace Kitsune\Core\Schema;
 use Illuminate\Contracts\Database\Query\Expression;
 use Illuminate\Database\Eloquent\Builder;
 use Kitsune\Core\Models\FieldStorage;
+use Kitsune\Core\Tenancy\Concerns\ResolvesWrittenColumns;
 use RuntimeException;
 
 /**
@@ -36,10 +37,27 @@ use RuntimeException;
  * way, *because* it skips the listener — which is what made the hole easy to
  * reach and easy to miss.
  *
+ * ⚠️ A COLUMN IS WHAT THE DATABASE WRITES, NOT WHAT THE CALLER TYPED. This class compared each written name
+ * exactly against its own list, by a private copy of the rule `ScopedBuilder` had already corrected, while SQLite,
+ * MySQL and MariaDB match column names without regard to case — so every refusal below had a second spelling that
+ * walked past it. Measured on all three before the fix: `update(['HANDLE' => 'cost'])` renamed a locked field,
+ * `update(['IS_LOCKED' => false])` cleared its lock, `increment('CARDINALITY')` resized it, and `update(['ORG_ID'
+ * => $rival])` moved it into another org. A JSON path never matched at all, spelled any way: `update(['settings->
+ * format' => 'integer'])` moved a locked field's projection. And a genuine save walked past the model's own hook,
+ * which reads each attribute by its name: `$storage->update(['IS_LOCKED' => false])` passed `guardShape()` on the
+ * untouched `is_locked` and the engine cleared the lock. The comparison is `ResolvesWrittenColumns` now, shared
+ * with every guarded builder, so it cannot drift from theirs again.
+ *
  * @extends Builder<FieldStorage>
  */
 class GuardedStorageBuilder extends Builder
 {
+    use ResolvesWrittenColumns {
+        bareColumn as private;
+        refuseAmbiguousColumns as private;
+        refuseMisnamedGuardedColumn as private;
+    }
+
     /**
      * Columns whose guards are PER-ROW and so cannot be evaluated in bulk.
      *
@@ -49,6 +67,12 @@ class GuardedStorageBuilder extends Builder
      */
     private const PER_ROW = ['type', 'cardinality', 'handle', 'settings', 'pii_class', 'org_id'];
 
+    /**
+     * Every column `FieldStorage::guardShape()` reads by name: the per-row columns and the lock it compares them
+     * against. A write that stands behind that method writes each of these under exactly its own name.
+     */
+    private const READ_BY_THE_GUARDS = [...self::PER_ROW, 'is_locked'];
+
     private const NO_BULK_CREATE =
         'Field storage cannot be created in bulk: `pii_class` fails closed per row and these paths '
         .'dispatch nothing, so an unclassified field would persist — which ADR-020 says cannot '
@@ -57,11 +81,17 @@ class GuardedStorageBuilder extends Builder
     /** @param  array<string, mixed>  $values */
     public function update(array $values)
     {
+        $this->refuseAmbiguousColumns($values);
+
         // ⚠️ An instance save arrives here too — `Model::performUpdate()`
         // writes through the builder — so the flag is what separates a save
         // whose guards have already run from a bulk write that dispatched
         // nothing and never could.
         if ($this->getModel()->shapeGuarded) {
+            // ⚠️ Under the names they read, or not at all: `IS_LOCKED` beside an untouched `is_locked`
+            // passed `guardShape()` and cleared the lock.
+            $this->refuseMisnamedColumns($values);
+
             return parent::update($values);
         }
 
@@ -81,6 +111,12 @@ class GuardedStorageBuilder extends Builder
      */
     public function insertGetId(array $values, $sequence = null)
     {
+        // ⚠️ The model below is built from these names verbatim, and `guardShape()` reads it by attribute:
+        // `SETTINGS` left `settings` empty, the check passed on nothing, and the engine stored the settings
+        // a text field refuses. Measured through `create()`, `createQuietly()` and a hand-rolled insert alike.
+        $this->refuseAmbiguousColumns($values);
+        $this->refuseMisnamedColumns($values);
+
         // ⚠️ setRawAttributes, NOT newModelInstance($values).
         //
         // These values are already database-ready: a JSON-cast attribute arrives
@@ -242,6 +278,8 @@ class GuardedStorageBuilder extends Builder
      */
     private function refuseGuardedColumns(array $values): void
     {
+        $this->refuseAmbiguousColumns($values);
+
         foreach ($values as $column => $value) {
             $bare = $this->bareColumn((string) $column);
 
@@ -273,13 +311,19 @@ class GuardedStorageBuilder extends Builder
         }
     }
 
-    /** Strip any table qualification and quoting, so `fs`.`handle` is `handle`. */
-    private function bareColumn(string $column): string
+    /**
+     * Refuse a column the guards read by name, written under any other.
+     *
+     * @param  array<string, mixed>  $values
+     */
+    private function refuseMisnamedColumns(array $values): void
     {
-        $bare = str_contains($column, '.')
-            ? substr($column, (int) strrpos($column, '.') + 1)
-            : $column;
+        foreach (array_keys($values) as $written) {
+            $column = $this->bareColumn((string) $written);
 
-        return trim($bare, '`"[]');
+            if (in_array($column, self::READ_BY_THE_GUARDS, true)) {
+                $this->refuseMisnamedGuardedColumn((string) $written, $column);
+            }
+        }
     }
 }

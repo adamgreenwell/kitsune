@@ -8,6 +8,7 @@
 
 declare(strict_types=1);
 
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
@@ -225,6 +226,44 @@ describe('cross-org isolation', function (): void {
             ->toBe($this->orgA->id)
             ->and(SiteGroup::withoutScopeBecause('the test reads every row', fn ($q) => $q->where('org_id', $this->orgB->id)->count()))
             ->toBe(0);
+    });
+
+    it('refuses a write that names one column twice, which each engine resolves its own way', function (): void {
+        /*
+         * ⚠️ THE CASE FOLD ALONE LEFT THIS OPEN ON SQLITE. The scope-key check folds every written name into one
+         * map, so of `ORG_ID` and `org_id` it judged whichever came last — and SQLite keeps the FIRST of a
+         * duplicated INSERT column. Measured before the refusal: from org A, `insertGetId(['ORG_ID' => $orgB,
+         * 'org_id' => $orgA, …])` passed the check and stored the row in org B, and `SITE_ID` beside `site_id`
+         * planted one on org B's site. MySQL and MariaDB refuse a duplicated INSERT column themselves (error 1110)
+         * and every engine keeps the last in an UPDATE, which is luck rather than a guard. So the builder refuses
+         * the ambiguity before any engine resolves it, and the tests assert it is the builder that refused.
+         */
+        app(Context::class)->setSite($this->siteA1);
+        $mine = SiteThing::create(['label' => 'mine']);
+
+        $attempts = [
+            'a hand-rolled insert' => fn () => SharedThing::query()->insertGetId(['ORG_ID' => $this->orgB->id, 'org_id' => $this->orgA->id, 'label' => 'planted']),
+            'an insert' => fn () => SharedThing::query()->insert(['ORG_ID' => $this->orgB->id, 'org_id' => $this->orgA->id, 'label' => 'planted']),
+            'an insert-or-ignore' => fn () => SharedThing::query()->insertOrIgnore([['Org_Id' => $this->orgB->id, 'org_id' => $this->orgA->id, 'label' => 'planted']]),
+            'the site key' => fn () => SiteThing::query()->insertGetId([
+                'SITE_ID' => $this->siteB1->id, 'site_id' => $this->siteA1->id, 'org_id' => $this->orgA->id, 'label' => 'planted',
+            ]),
+            'a qualified duplicate' => fn () => SiteThing::query()->insertGetId([
+                'site_things.org_id' => $this->orgB->id, 'org_id' => $this->orgA->id, 'label' => 'planted',
+            ]),
+            'a mass update' => fn () => SiteThing::query()->update(['ORG_ID' => $this->orgB->id, 'org_id' => $this->orgA->id]),
+            'arithmetic extras' => fn () => SiteThing::query()->increment('id', 0, ['ORG_ID' => $this->orgB->id, 'org_id' => $this->orgA->id]),
+        ];
+
+        foreach ($attempts as $path => $attempt) {
+            expect($attempt)->toThrow(RuntimeException::class, 'more than once', "{$path} was not refused by the builder");
+        }
+
+        app(Context::class)->forget();
+
+        expect(DB::table('shared_things')->where('label', 'planted')->exists())->toBeFalse()
+            ->and(DB::table('site_things')->where('label', 'planted')->exists())->toBeFalse()
+            ->and(DB::table('site_things')->where('id', $mine->id)->value('org_id'))->toBe($this->orgA->id);
     });
 
     it('refuses updateFrom, whose assignments are invisible here', function (): void {

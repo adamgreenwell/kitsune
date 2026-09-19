@@ -22,6 +22,7 @@ use Kitsune\Core\Settings\Concerns\HoldsSettings;
 use Kitsune\Core\Settings\SettingsGuard;
 use Kitsune\Core\Settings\SettingsResolver;
 use Kitsune\Core\Tenancy\Attributes\Unscoped;
+use Kitsune\Core\Tenancy\Concerns\ResolvesWrittenColumns;
 use Kitsune\Core\Tenancy\Contracts\RefusesCascadingDeletes;
 use Kitsune\Core\Tenancy\Contracts\RequiresModelSave;
 use RuntimeException;
@@ -49,6 +50,15 @@ use RuntimeException;
  */
 class ScopedBuilder extends Builder
 {
+    /*
+     * ⚠️ `bareColumn()` STAYS PROTECTED, because `AuditedBuilder` compares through it. The two refusals are this
+     * class's own business and stay private, as `refuseMisnamedGuardedColumn()` was.
+     */
+    use ResolvesWrittenColumns {
+        refuseAmbiguousColumns as private;
+        refuseMisnamedGuardedColumn as private;
+    }
+
     /**
      * Takes the model, so the type parameter is known at construction.
      *
@@ -71,6 +81,7 @@ class ScopedBuilder extends Builder
     /** @param  array<string, mixed>  $values */
     public function update(array $values)
     {
+        $this->refuseAmbiguousColumns($values);
         $this->guardScopeKeys($values);
         $this->refusePerRowColumns($values);
         $this->checkWrittenSettings($values);
@@ -231,6 +242,7 @@ class ScopedBuilder extends Builder
     private function guardEveryInsertedRow(array $values): void
     {
         foreach (self::insertRows($values) as $row) {
+            $this->refuseAmbiguousColumns($row);
             $this->refuseDetachedScopeKeys($row);
             $this->refuseDetachedInsert('insert', $row);
             $this->checkWrittenSettings($row);
@@ -376,6 +388,7 @@ class ScopedBuilder extends Builder
          * sites guarded the keys and the fourth delegated straight to the parent — the shape of gap
          * this whole issue is about, one method along again.
          */
+        $this->refuseAmbiguousColumns($values);
         $this->refuseDetachedScopeKeys($values);
         $this->refuseDetachedInsert('insertGetId', $values);
         $this->checkWrittenSettings($values);
@@ -660,34 +673,6 @@ class ScopedBuilder extends Builder
                 $guarded[$column],
             ));
         }
-    }
-
-    /**
-     * Refuse a guarded column that a genuine model save writes under a name other than its own.
-     *
-     * ⚠️ THE GUARDS READ ONE ATTRIBUTE, AND THE DATABASE WRITES ANOTHER. A model's `saving` hooks check the
-     * attribute by its own name — `HoldsSettings` asks for `$model->getAttribute('settings')` — and
-     * `$site->update(['Settings' => …])` leaves that attribute alone and sets a second one, which SQLite, MySQL
-     * and MariaDB then write into the same column. The hooks passed, the proof was armed, and a value nothing
-     * checked was stored — measured on all three, and case-folding the bulk comparison does not reach it,
-     * because a save is the path that comparison stands aside for. So a save that stands behind its guards
-     * writes each guarded column under exactly the name they read, or not at all.
-     */
-    private function refuseMisnamedGuardedColumn(string $written, string $column): void
-    {
-        if ($written === $column) {
-            return;
-        }
-
-        throw new RuntimeException(sprintf(
-            '[%s] cannot be written on %s: it reaches [%s], and the checks this save ran read [%s] by that name '
-            .'alone, so the value would be stored unchecked. Set [%s] itself.',
-            $written,
-            $this->getModel()::class,
-            $column,
-            $column,
-            $column,
-        ));
     }
 
     /**
@@ -1010,6 +995,7 @@ class ScopedBuilder extends Builder
      */
     protected function guardArithmetic(array $values): void
     {
+        $this->refuseAmbiguousColumns($values);
         $this->refuseScopeArithmetic($values);
         $this->refusePerRowColumns($values);
 
@@ -1096,10 +1082,12 @@ class ScopedBuilder extends Builder
          * its values from the rows, which are checked here already.
          */
         foreach (self::insertRows($values) as $row) {
+            $this->refuseAmbiguousColumns($row);
             $this->checkWrittenSettings($row);
         }
 
         if (is_array($update) && ! array_is_list($update)) {
+            $this->refuseAmbiguousColumns($update);
             $this->checkWrittenSettings($update);
         }
 
@@ -1121,48 +1109,6 @@ class ScopedBuilder extends Builder
             'updateFrom() assigns through a join, so the scope keys it writes cannot be checked '
             .'(ADR-021). Update through a predicate on the table instead.'
         );
-    }
-
-    /**
-     * The column a written name reaches, as the guards compare it: `Entries`.`ORG_ID->x` is `org_id`.
-     *
-     * Strips table qualification, quoting and the JSON path, and folds case.
-     *
-     * ⚠️ THE CASE FOLD IS WHAT THE DATABASE DOES, and this did not. SQLite, MySQL and MariaDB compare column
-     * names without regard to case, so `update(['SETTINGS' => …])` writes `settings` — and every guard here
-     * compared the name exactly, saw a column it does not guard, and let it through. Measured before the fold:
-     * a timezone refused as `settings` stored as `SETTINGS`, and from org A `update(['ORG_ID' => $orgB])` moved
-     * the row into org B. PostgreSQL folds an unquoted name the same way and refuses a quoted one it does not
-     * have, so folding here refuses nothing any engine would store under another spelling.
-     *
-     * For the comparison only: the name handed to the database is the caller's, untouched.
-     */
-    protected function bareColumn(string $column): string
-    {
-        // ⚠️ And the JSON PATH is rooted at its column, which this did not do.
-        //
-        // Laravel accepts `update(['values->body' => ...])`. That returned
-        // `values->body`, which never matched the guarded key `values` — so a bulk
-        // JSON-path write skipped the per-row refusal entirely, and with it the
-        // value-conversion pipeline that sanitises rich text (issue #42).
-        //
-        // `AuditedBuilder` had exactly this defect for exactly this reason and was
-        // fixed; the same wrong assumption was sitting in the guard beside it. Two
-        // places that must agree about what a column is, and only one of them had
-        // been told.
-        //
-        // ⚠️ THE PATH COMES OFF FIRST, because a path may hold a dot and a table
-        // qualifier is found by its last one. Stripping the qualifier first read
-        // `settings->a.b` as the column `b`, while Laravel's MySQL and MariaDB
-        // grammars write it into `settings` at the key `a.b` — measured allowed on
-        // both. SQLite's and PostgreSQL's reject that SQL, which is luck, not a guard.
-        $bare = explode('->', $column)[0];
-
-        $bare = str_contains($bare, '.')
-            ? substr($bare, (int) strrpos($bare, '.') + 1)
-            : $bare;
-
-        return strtolower(trim($bare, '`"[]'));
     }
 
     /**
