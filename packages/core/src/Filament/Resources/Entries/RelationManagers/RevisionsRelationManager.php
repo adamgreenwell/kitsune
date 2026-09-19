@@ -16,6 +16,7 @@ use Filament\Resources\RelationManagers\RelationManager;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Table;
 use Kitsune\Core\Filament\Resources\Entries\EntryResource;
+use Kitsune\Core\Filament\Schemas\SiteTime;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryRevision;
 use Livewire\Attributes\On;
@@ -83,7 +84,7 @@ class RevisionsRelationManager extends RelationManager
         return $table
             ->recordTitleAttribute('title')
             ->columns([
-                TextColumn::make('created_at')->label('Saved')->dateTime()->sortable(),
+                SiteTime::column('created_at')->label('Saved')->sortable(),
                 // Same reasoning as the related-records table: a revision list shows
                 // titles as they were, and those carry whatever script they were written
                 // in. Found by enumerating every `TextColumn::make('title')` rather than

@@ -33,8 +33,21 @@ enum Cell: string
     /** A yes/no, rendered as an icon rather than the words true and false. */
     case Boolean = 'boolean';
 
-    /** A date or timestamp, formatted in the site's timezone. */
+    /**
+     * An instant — a date and a time — formatted in the current site's timezone.
+     *
+     * Stored UTC; the conversion is made where it is shown (`SiteTime::column()`).
+     */
     case Timestamp = 'timestamp';
+
+    /**
+     * A calendar date, formatted as the date it is and in no timezone.
+     *
+     * ⚠️ NOT A `Timestamp`, and it was one. A date is not an instant: `2026-09-18` read as UTC midnight and shown in
+     * America/New_York is September 17th. Sharing the instant's cell is what would have moved it the moment the
+     * cell learned the site's timezone, so the two kinds are separate cases and only one of them converts.
+     */
+    case Date = 'date';
 
     /**
      * A short constrained value, rendered as a badge.
@@ -67,7 +80,7 @@ enum Cell: string
     {
         return match ($this) {
             self::Text, self::Badge => ValueDirection::Auto,
-            self::Numeric, self::Boolean, self::Timestamp => ValueDirection::Neutral,
+            self::Numeric, self::Boolean, self::Timestamp, self::Date => ValueDirection::Neutral,
             // ⚠️ Neutral rather than PerBlock: `None` renders nothing, so there is no
             // element to carry a direction. PerBlock would imply a wrapper exists.
             self::None => ValueDirection::Neutral,

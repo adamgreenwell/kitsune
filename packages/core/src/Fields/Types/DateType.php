@@ -37,8 +37,10 @@ final class DateType extends BaseFieldType
     }
 
     /**
-     * Rendered from a normalised ISO-8601 string in the site timezone, so the glyphs
-     * are the app's rather than the author's.
+     * Rendered from a normalised ISO-8601 string, so the glyphs are the app's rather
+     * than the author's — and in NO timezone, because a date is not an instant:
+     * converted, `2026-09-18` becomes the seventeenth west of UTC. It lists in a
+     * `Cell::Date` rather than the instant's `Cell::Timestamp` for that reason.
      */
     public function control(): Control
     {

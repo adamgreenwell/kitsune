@@ -27,8 +27,8 @@ use Illuminate\Database\Eloquent\Builder;
  * ⚠️ THE FLAG IS THE PROOF BECAUSE ONLY THE GUARD CAN SET IT. An attribute can be supplied by any
  * caller; this is set by the code that does the deriving, so a path that skipped the deriving cannot
  * present it. `FieldStorage::$shapeGuarded` and `GuardedStorageBuilder` are the same mechanism, and
- * this generalises them to the four models `RequiresModelSave` covers rather than copying them a
- * fifth time.
+ * this generalises them to every model `RequiresModelSave` covers rather than copying them into
+ * each.
  *
  * ⚠️ AND IT SAYS "DERIVED", NOT "THE HOOK RAN", because those are different claims and the narrower
  * one is what the builder needs. `Entry`'s guarded columns are made correct in

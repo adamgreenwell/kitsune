@@ -139,7 +139,7 @@ class Role extends Model
     /**
      * ⚠️ THE ONLY PLACE THE WRITE IDENTITY IS SET, and it is set on the way into Eloquent's own update path
      * rather than by anything a caller can reach. Cleared in a `finally`, so an aborted save leaves no proof
-     * behind — the rule `DerivesGuardedColumns` records for the four `RequiresModelSave` models.
+     * behind — the rule `DerivesGuardedColumns` records for the `RequiresModelSave` models.
      *
      * @param  EloquentBuilder<static>  $query
      */

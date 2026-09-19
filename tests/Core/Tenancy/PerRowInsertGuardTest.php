@@ -18,6 +18,7 @@ use Kitsune\Core\Models\Site;
 use Kitsune\Core\Models\SiteGroup;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tenancy\Contracts\RequiresModelSave;
+use Kitsune\Core\Tests\Fixtures\SharedThing;
 
 /**
  * `columnsRequiringModelSave()` covers the INSERT family too — issue #60.
@@ -182,17 +183,18 @@ it('names the columns and the reason, so an importer can act on the refusal', fu
 
 it('leaves a model with no per-row columns alone', function (): void {
     /*
-     * ⚠️ THE GUARD IS OPT-IN, so a scoped model that declares nothing keeps its fast path. `Org` is
-     * not a `RequiresModelSave`, and bulk-creating one is a legitimate thing a provisioning script
-     * might do.
+     * ⚠️ THE GUARD IS OPT-IN, so a scoped model that declares nothing keeps its fast path.
+     *
+     * ⚠️ THIS WAS `Org`, and bulk-creating an org is refused now. ADR-022's settings store made `settings` a
+     * per-row column on `Org`, `SiteGroup` and `Site` — validated and invalidated on the model's events — so all
+     * three are `RequiresModelSave`, and this guard refuses a bulk insert of any of them outright. The fixture
+     * is what "a model that declares nothing" means, and it cannot acquire a column by accident.
      */
-    expect(new Org)->not->toBeInstanceOf(RequiresModelSave::class);
+    expect(new SharedThing)->not->toBeInstanceOf(RequiresModelSave::class);
 
-    Org::query()->insert([
-        'name' => 'Bulk Org', 'slug' => 'bulk-org', 'created_at' => now(), 'updated_at' => now(),
-    ]);
+    SharedThing::query()->insert(['org_id' => $this->org->id, 'label' => 'bulk']);
 
-    expect(DB::table('orgs')->where('slug', 'bulk-org')->exists())->toBeTrue();
+    expect(DB::table('shared_things')->where('label', 'bulk')->exists())->toBeTrue();
 });
 
 it('rests on a discriminator no caller can arrange', function (): void {
@@ -213,8 +215,11 @@ it('rests on a discriminator no caller can arrange', function (): void {
      * ⚠️ FOUR MODELS, NOT ONE, and the first version of this test listed only `Site` because that is
      * the model the issue named. `Entry`, `EntryType` and `Field` declare per-row columns too, so the
      * guard reaches all of them — and the assertion below is what caught the short list.
+     *
+     * ⚠️ AND SIX NOW: `Org` and `SiteGroup` joined when ADR-022's settings store made `settings` a per-row
+     * column on every level of the hierarchy. The completeness check below is what asked for them.
      */
-    $guarded = [Entry::class, EntryType::class, Field::class, Site::class];
+    $guarded = [Entry::class, EntryType::class, Field::class, Org::class, Site::class, SiteGroup::class];
 
     foreach ($guarded as $class) {
         $model = new $class;
@@ -674,8 +679,13 @@ it('does not call two different numeric-looking strings the same value', functio
 it('guards the scope keys on every alternate insert path', function (): void {
     /*
      * ⚠️ `refuseBulkCreate()` RETURNS EARLY FOR A MODEL WITH NO PER-ROW COLUMNS, which review found
-     * leaves a SCOPED one unguarded. `SiteGroup` is `#[OrgScoped]` and declares no derived columns, so
+     * leaves a SCOPED one unguarded. `SiteGroup` was `#[OrgScoped]` and declared no derived columns, so
      * from org A every one of these created org B's row — measured, two of them before the fix.
+     *
+     * ⚠️ THE SUBJECT IS THE FIXTURE NOW, because `SiteGroup` gained a per-row column (`settings`, ADR-022)
+     * and `refuseBulkCreate()` refuses these calls for it before the scope keys are ever asked about — which
+     * would leave this passing on the wrong refusal. `SharedThing` is `#[OrgScoped]` with no per-row columns,
+     * which is the case the guard below exists for.
      *
      * "Refused in bulk" and "these keys are somebody else's" are different questions, and the first
      * returning early is not an answer to the second. Four paths kept getting different answers to the
@@ -684,12 +694,11 @@ it('guards the scope keys on every alternate insert path', function (): void {
      */
     $victim = Org::create(['name' => 'Victim', 'slug' => 'victim-alternates']);
 
-    $row = fn (string $handle): array => [
-        'org_id' => $victim->id, 'handle' => $handle, 'name' => ucfirst($handle),
-        'created_at' => now(), 'updated_at' => now(),
-    ];
+    $row = fn (string $label): array => ['org_id' => $victim->id, 'label' => $label];
 
-    expect(fn () => SiteGroup::query()->insertOrIgnore($row('ignored')))
+    expect(new SharedThing)->not->toBeInstanceOf(RequiresModelSave::class);
+
+    expect(fn () => SharedThing::query()->insertOrIgnore($row('ignored')))
         ->toThrow(RuntimeException::class, 'from a context scoped to');
 
     /*
@@ -698,24 +707,24 @@ it('guards the scope keys on every alternate insert path', function (): void {
      * as one row, the guard saw only the numeric top-level key, and the insert went through. This asks
      * what Laravel asks.
      */
-    expect(fn () => SiteGroup::query()->insert([42 => $row('keyed')]))
+    expect(fn () => SharedThing::query()->insert([42 => $row('keyed')]))
         ->toThrow(RuntimeException::class, 'from a context scoped to')
-        ->and(fn () => SiteGroup::query()->insert([$row('listed')]))
+        ->and(fn () => SharedThing::query()->insert([$row('listed')]))
         ->toThrow(RuntimeException::class, 'from a context scoped to');
 
     /*
      * ⚠️ AND A SUBQUERY INSERT IS REFUSED OUTRIGHT, because there are no values to guard: the rows'
      * scope keys are whatever the SELECT returns, and nothing at this layer can see them.
      */
-    expect(fn () => SiteGroup::query()->insertUsing(['org_id', 'handle', 'name'], SiteGroup::query()->toBase()))
+    expect(fn () => SharedThing::query()->insertUsing(['org_id', 'label'], SharedThing::query()->toBase()))
         ->toThrow(RuntimeException::class, 'the rows come from a subquery');
 
-    expect(DB::table('site_groups')->where('org_id', $victim->id)->count())
+    expect(DB::table('shared_things')->where('org_id', $victim->id)->count())
         ->toBe(0, 'an alternate insert path planted a row under another org');
 
     // ⚠️ And an ordinary create in the caller's own org still works, or these would be about the paths
     // rather than about the keys.
-    expect(SiteGroup::create(['org_id' => $this->org->id, 'handle' => 'mine', 'name' => 'Mine'])->exists)
+    expect(SharedThing::create(['org_id' => $this->org->id, 'label' => 'mine'])->exists)
         ->toBeTrue();
 });
 

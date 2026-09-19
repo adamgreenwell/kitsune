@@ -148,7 +148,7 @@ returning a finished `TextInput` is twelve chances to forget; a closed vocabular
 | `EntryPicker` | `Auto` | `Text` | Entry **titles**, which is what the related-records table missed |
 | `KeyValue` | `Auto` | `None` | An escape hatch holds anything, keys included |
 | `RichText` | `PerBlock` | `None` | One `dir` would impose the first block's direction on the rest |
-| `Number`, `Toggle`, `Date`, `DateTime` | `Neutral` | `Numeric` / `Boolean` / `Timestamp` | Glyphs the app chose, not the author |
+| `Number`, `Toggle`, `Date`, `DateTime` | `Neutral` | `Numeric` / `Boolean` / `Date` / `Timestamp` | Glyphs the app chose, not the author. ⚠️ A date and an instant list in different cells: only a `Timestamp` is converted to the site's timezone, because `2026-09-18` read as UTC midnight is the seventeenth in New York |
 
 ⚠️ **Adding a case to `Control` is a compile-time obligation.** `direction()` and `cell()` are
 `match` with no `default`, so PHPStan reports *"Match expression does not handle remaining
@@ -638,8 +638,8 @@ Twelve types. Deliberately small — every one added before the API freeze is a 
 | `rich_text` | Inline | ❌ | ❌ | Sanitized HTML — see §6 |
 | `number` | Inline | ✅ | ✅ | `integer` \| `decimal`, precision, min/max, step. Bounded by its projection: `integer` by signed BIGINT, `decimal` by `10^precision` |
 | `boolean` | Inline | ✅ | ❌ | |
-| `date` | Inline | ✅ | ✅ | Date only |
-| `datetime` | Inline | ✅ | ✅ | Stored UTC, displayed in the site's timezone |
+| `date` | Inline | ✅ | ✅ | Date only, and never converted through a timezone |
+| `datetime` | Inline | ✅ | ✅ | Stored UTC; the admin shows and takes it — one value or several — in the current site's resolved `timezone` setting (ADR-022), and `toApi()` returns the stored UTC string. ⚠️ A wall-clock time the zone repeats or skips does not round-trip; see ADR-022's amendment |
 | `select` | Inline | ✅ | ❌ | Options from `settings`, or from an entry type |
 | `multi_select` | Inline | ❌ | — | Always an array; cardinality is intrinsic |
 | `relation` | **Relational** | via table | ✅ | Target entry types constrained in `settings` |

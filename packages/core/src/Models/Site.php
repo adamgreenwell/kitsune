@@ -15,6 +15,8 @@ use Filament\Models\Contracts\HasTenants;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Kitsune\Core\Settings\Concerns\HoldsSettings;
+use Kitsune\Core\Settings\SettingsGuard;
 use Kitsune\Core\Tenancy\Attributes\OrgScoped;
 use Kitsune\Core\Tenancy\Concerns\DerivesGuardedColumns;
 use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
@@ -52,6 +54,7 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
 {
     use DerivesGuardedColumns;
     use EnforcesScope;
+    use HoldsSettings;
 
     protected $guarded = [];
 
@@ -150,6 +153,8 @@ class Site extends Model implements RefusesCascadingDeletes, RequiresModelSave
                 .'value. Set base_url and save the model.',
             'path_prefix' => 'it is derived, never authored. Writing it directly moves the site to '
                 .'a path its base_url does not name. Set base_url and save the model.',
+            // Validated and invalidated on save by `HoldsSettings`, as it is on an org and a site group.
+            'settings' => SettingsGuard::REFUSED_IN_BULK,
         ];
     }
 

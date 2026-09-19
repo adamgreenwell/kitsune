@@ -13,8 +13,12 @@ namespace Kitsune\Core\Models;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Kitsune\Core\Settings\Concerns\HoldsSettings;
+use Kitsune\Core\Settings\SettingsGuard;
 use Kitsune\Core\Tenancy\Attributes\OrgScoped;
+use Kitsune\Core\Tenancy\Concerns\DerivesGuardedColumns;
 use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
+use Kitsune\Core\Tenancy\Contracts\RequiresModelSave;
 
 /**
  * The brand. Exists for settings inheritance (ADR-022), not row ownership —
@@ -28,13 +32,33 @@ use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
  * @property array<string, mixed>|null $settings
  */
 #[OrgScoped]
-class SiteGroup extends Model
+class SiteGroup extends Model implements RequiresModelSave
 {
+    use DerivesGuardedColumns;
     use EnforcesScope;
+    use HoldsSettings;
 
     protected $guarded = [];
 
     protected $casts = ['settings' => 'array'];
+
+    /**
+     * ⚠️ `settings`, for the reason `Org::columnsRequiringModelSave()` gives — and with the same cost: a bulk
+     * `insert()` of site groups is refused outright now that this model declares a per-row column.
+     *
+     * @return array<string, string>
+     */
+    public static function columnsRequiringModelSave(): array
+    {
+        return ['settings' => SettingsGuard::REFUSED_IN_BULK];
+    }
+
+    protected static function booted(): void
+    {
+        // Armed inside the save attempt and last, for the reasons `EntryType::booted()` records.
+        static::creating(fn (self $group) => $group->noteGuardedColumnsDerived());
+        static::updating(fn (self $group) => $group->noteGuardedColumnsDerived());
+    }
 
     /** @return BelongsTo<Org, $this> */
     public function org(): BelongsTo
