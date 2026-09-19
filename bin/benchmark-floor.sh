@@ -6,7 +6,10 @@
 #
 # Reproduce ADR-027's resource-floor measurement under the floor's own limits — spike #14.
 #
-# Usage: bin/benchmark-floor.sh [--entries N] [--image php:8.4-cli] [--lock FILE] [--save-lock FILE] [--keep]
+# Usage: bin/benchmark-floor.sh [--entries N] [--image IMAGE] [--lock FILE] [--save-lock FILE] [--keep]
+#
+# Without --image the interpreter is built from bin/benchmark-floor.Dockerfile, which is the one the floor is
+# recorded on: `php:8.4-cli` at a pinned digest, plus the ext-intl and ext-zip the dependency graph requires.
 #
 # ⚠️ WHY THIS EXISTS. docs/roadmap.md recorded a constrained column — peak memory and workers "verified
 # inside a container limited to 1 vCPU and 1 GB, not merely on the dev machine" — and nothing in this
@@ -29,7 +32,7 @@
 set -euo pipefail
 
 entries=1000
-image=php:8.4-cli
+image=
 keep=false
 lock=
 save_lock=
@@ -63,6 +66,15 @@ repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 command -v docker >/dev/null 2>&1 || refuse "docker is not on PATH, and the floor is a claim about constrained hardware"
 docker info >/dev/null 2>&1 || refuse "docker is installed but its daemon is not answering"
 command -v composer >/dev/null 2>&1 || refuse "composer is not on PATH"
+
+# The floor's own interpreter, built when no other is named. Fed on stdin because it copies nothing in, so the build
+# has no context to send; the tag is local, and the header below records the image id a run actually used.
+if [[ -z "$image" ]]; then
+  echo "==> building the floor interpreter from bin/benchmark-floor.Dockerfile"
+  image=kitsune-floor:php8.4
+  docker build -q -t "$image" - < "$repo/bin/benchmark-floor.Dockerfile" >/dev/null \
+    || refuse "bin/benchmark-floor.Dockerfile did not build"
+fi
 
 # ⚠️ WITH A TEMPLATE. macOS's mktemp ignores TMPDIR without one and answers under /var/folders, which is not
 # shared with Docker Desktop by default — so the mount would be empty and every measurement would be of an
@@ -110,6 +122,16 @@ if [[ -n "$lock" ]]; then
   cp "$lock" "$app/composer.lock"
 fi
 
+# ⚠️ RESOLVED FOR THE IMAGE'S PHP, NOT THIS HOST'S. Composer runs here, and left alone it resolves against this
+# machine's PHP — so a host on 8.5 measuring an 8.4 image could install an 8.5-only release that then fails in the
+# container, and a lock valid for a newer image could be refused here (Codex, #126). Only the version is pinned to
+# the image, so the lock does not depend on which extensions this host happens to load; `platform-check` then has
+# the autoloader verify the extensions, IN the image, before anything boots — see the check after the install.
+image_php=$(docker run --rm "$image" php -r 'echo PHP_VERSION;') || refuse "could not read the PHP version of [$image]"
+[[ "$image_php" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]] || refuse "[$image] reported its PHP version as [$image_php]"
+composer config -d "$app" platform.php "$image_php" >/dev/null
+composer config -d "$app" platform-check true >/dev/null
+
 composer config -d "$app" repositories.kitsune-core \
   '{"type":"path","url":"../packages/core","options":{"symlink":false}}' >/dev/null
 if ! composer install -d "$app" --no-dev --no-interaction --prefer-dist --optimize-autoloader \
@@ -149,6 +171,14 @@ ENV
 touch "$app/database/database.sqlite"
 
 in_image() { docker run --rm -v "$app":/app -w /app "$image" "$@"; }
+
+# ⚠️ THE IMAGE MUST BE ABLE TO RUN WHAT WAS INSTALLED, AND IT WAS NOT. The official `php:8.4-cli` loads neither ext-intl
+# (filament/support) nor ext-zip (openspout/openspout); the benchmark booted regardless, because its samples call
+# neither, so the floor was measured on an interpreter Composer would refuse to install the application for. Composer's
+# own platform check runs here first, in the image, and a missing extension is a refusal naming it — not a measurement.
+if ! platform=$(in_image php vendor/composer/platform_check.php 2>&1); then
+  refuse "[$image] cannot run the installed application: $(printf '%s' "$platform" | tr -s '\n' ' ')"
+fi
 
 in_image php artisan key:generate --force --no-interaction >/dev/null
 in_image php artisan package:discover --no-interaction >/dev/null
@@ -232,8 +262,10 @@ measure() {
 # the answer: the official image activates no php.ini at all, so the process runs at PHP's built-in 128 MB
 # limit with OPcache off in CLI — neither of which an operator's FPM install shares. A figure copied into
 # docs/roadmap.md without this line is not reproducible, it only looks it.
-digest=$(docker image inspect "$image" --format '{{index .RepoDigests 0}}' 2>/dev/null || echo "$image (no digest; built or loaded locally)")
-phpline=$(in_image php -r 'echo PHP_VERSION, " memory_limit=", ini_get("memory_limit"), " opcache.enable_cli=", ini_get("opcache.enable_cli") ?: "0";')
+# A pulled image has a registry digest; one built here has only its id, which is what a rebuild is compared against.
+digest=$(docker image inspect "$image" --format '{{index .RepoDigests 0}}' 2>/dev/null) \
+  || digest="$image $(docker image inspect "$image" --format '{{.Id}}' 2>/dev/null) (built here)"
+phpline=$(in_image php -r 'echo PHP_VERSION, " memory_limit=", ini_get("memory_limit"), " opcache.enable_cli=", ini_get("opcache.enable_cli") ?: "0", " icu=", defined("INTL_ICU_VERSION") ? INTL_ICU_VERSION : "none";')
 
 echo "==> measuring, ${entries} entries in scope"
 echo "    image:       ${digest}"

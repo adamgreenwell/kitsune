@@ -43,15 +43,30 @@ afterEach(function (): void {
  * apart the way Docker would — and a stub that answered everything identically would hide the very argv this
  * test exists to read.
  */
-function floorStubs(string $dir, string $scope = 'ENTRIES', int $exit = 0, int $seededOnMeasure = 0): void
+function floorStubs(string $dir, string $scope = 'ENTRIES', int $exit = 0, int $seededOnMeasure = 0, bool $platformFails = false): void
 {
+    $platformFailsFlag = $platformFails ? 1 : 0;
+
     File::put($dir.'/bin/docker', <<<STUB
     #!/usr/bin/env bash
     printf '%s\\n' "\$*" >> "$dir/argv.log"
 
     case "\$*" in
       info*) exit 0 ;;
-      *image\\ inspect*) echo 'php:8.4-cli@sha256:stubbed' ; exit 0 ;;
+      build*) exit 0 ;;
+      *image\\ inspect*) echo 'kitsune-floor@sha256:stubbed' ; exit 0 ;;
+    esac
+
+    # The image's PHP version, read before Composer resolves; and Composer's own platform check, run in the image.
+    case "\$*" in
+      *"PHP_VERSION;"*) echo '8.4.25' ; exit 0 ;;
+      *platform_check.php*)
+        if [[ "$platformFailsFlag" == 1 ]]; then
+          echo 'Composer detected issues in your platform: Your Composer dependencies require the following PHP extensions to be installed: intl, zip.'
+          exit 255
+        fi
+        exit 0
+        ;;
     esac
 
     # The floor the harness must size its container from, and the interpreter line it records.
@@ -304,6 +319,7 @@ it('resolves fresh when told nothing, even if the checkout holds a stale skeleto
         File::makeDirectory($repo.'/'.$path, 0755, true);
     }
     File::copy($this->harness, $repo.'/bin/benchmark-floor.sh');
+    File::copy(dirname($this->harness).'/benchmark-floor.Dockerfile', $repo.'/bin/benchmark-floor.Dockerfile');
     chmod($repo.'/bin/benchmark-floor.sh', 0755);
     File::put($repo.'/skeleton/composer.json', '{"name":"kitsune/kitsune"}');
     File::put($repo.'/packages/core/composer.json', '{"name":"kitsune/core"}');
@@ -314,4 +330,48 @@ it('resolves fresh when told nothing, even if the checkout holds a stale skeleto
     expect($run->isSuccessful())->toBeTrue($run->getErrorOutput())
         ->and((string) File::get($this->dir.'/argv.log'))->toContain('install: resolved fresh')
         ->and($run->getOutput())->not->toContain('v1.0.0-stale');
+});
+
+it('builds the floor interpreter from the committed Dockerfile when no image is named', function (): void {
+    /*
+     * ⚠️ THE OFFICIAL IMAGE CANNOT RUN THE APPLICATION. `php:8.4-cli` loads neither ext-intl (filament/support) nor
+     * ext-zip (openspout/openspout), so the default is now the floor's own interpreter, built from
+     * bin/benchmark-floor.Dockerfile — and every measuring run uses the image that build tagged.
+     */
+    floorStubs($this->dir);
+    $run = runHarness($this->dir, $this->harness, ['--entries', '25']);
+
+    $argv = (string) File::get($this->dir.'/argv.log');
+
+    expect($run->isSuccessful())->toBeTrue($run->getErrorOutput())
+        ->and($argv)->toContain('build -q -t kitsune-floor:php8.4 -')
+        ->and($argv)->toMatch('/benchmark-floor.*kitsune-floor:php8\.4|kitsune-floor:php8\.4.*benchmark-floor/');
+});
+
+it('resolves the graph for the image\'s PHP, not this host\'s, before the install', function (): void {
+    /*
+     * ⚠️ COMPOSER RUNS ON THE HOST. Left alone it resolves for the host's PHP, so a host on 8.5 measuring an 8.4 image
+     * could install a release the image cannot run (Codex, #126). The image's version is read first and handed to
+     * Composer as its platform, and `platform-check` turned on, both before `composer install` runs.
+     */
+    floorStubs($this->dir);
+    runHarness($this->dir, $this->harness, ['--entries', '25']);
+
+    $lines = explode("\n", (string) File::get($this->dir.'/argv.log'));
+    $at = static fn (string $needle): int|false => array_key_first(array_filter($lines, static fn (string $line): bool => str_contains($line, $needle)));
+
+    expect($at('platform.php 8.4.25'))->not->toBeNull()
+        ->and($at('platform-check true'))->not->toBeNull()
+        ->and($at('platform.php 8.4.25'))->toBeLessThan($at('composer install'))
+        ->and($at('platform-check true'))->toBeLessThan($at('composer install'));
+});
+
+it('refuses an image that cannot run what was installed, naming what it lacks', function (): void {
+    // The floor was measured for eleven days on such an image, because the benchmark's samples never call intl or zip.
+    floorStubs($this->dir, platformFails: true);
+    $run = runHarness($this->dir, $this->harness, ['--entries', '25', '--image', 'php:8.4-cli']);
+
+    expect($run->isSuccessful())->toBeFalse('an image missing required extensions was measured')
+        ->and($run->getErrorOutput())->toContain('cannot run the installed application')
+        ->and($run->getErrorOutput())->toContain('intl, zip');
 });

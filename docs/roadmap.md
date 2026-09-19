@@ -122,22 +122,22 @@ The routing question is **already settled** — ADR-012 was resolved by a workin
 
   | input | recorded for these figures | pinned by |
   |---|---|---|
-  | the interpreter | `php:8.4-cli` at PHP 8.4.25 — CLI, `memory_limit=128M`, OPcache off | the image digest, in full: `php@sha256:a545b9041fb0e378cb597b4d0509f77c6a4d996dd485763af92e5b7e59c469cc` |
-  | the dependency graph | lock `sha256:b9f447ee4c2433e2` — laravel/framework v13.32.0, filament/filament v5.8.2, livewire/livewire v4.4.5 | [`docs/benchmarks/floor.composer.lock`](benchmarks/floor.composer.lock), the graph these figures were measured with |
+  | the interpreter | the floor image: PHP 8.4.25 with ext-intl (ICU 76.1) and ext-zip — CLI, `memory_limit=128M`, OPcache off | [`bin/benchmark-floor.Dockerfile`](../bin/benchmark-floor.Dockerfile): its base at the full digest `php@sha256:a545b9041fb0e378cb597b4d0509f77c6a4d996dd485763af92e5b7e59c469cc`; the ICU and libzip that apt installs are **recorded, not pinned** |
+  | the dependency graph | lock `sha256:4733b982a17afd70`, resolved for PHP 8.4.25 — laravel/framework v13.32.0, filament/filament v5.8.2, livewire/livewire v4.4.5 | [`docs/benchmarks/floor.composer.lock`](benchmarks/floor.composer.lock), the graph these figures were measured with |
   | `kitsune/core` itself | the tree of the commit that last changed that lock | the checkout — the harness installs core from `packages/core` |
   | the host | not recorded | nothing; wall-clock is the host's, and peak memory is the part that transfers |
 
   So a figure is re-checked with the commit that recorded it checked out, and:
 
   ```bash
-  bin/benchmark-floor.sh --entries 1000 \
-    --image php@sha256:a545b9041fb0e378cb597b4d0509f77c6a4d996dd485763af92e5b7e59c469cc \
-    --lock docs/benchmarks/floor.composer.lock
+  bin/benchmark-floor.sh --entries 1000 --lock docs/benchmarks/floor.composer.lock
   ```
 
-  Re-run that way on 2026-09-18: the same interpreter, the same lock hash, 40.5 MB and 12 workers in both columns.
+  — the floor image is built from its Dockerfile when no `--image` is named. Re-run that way on 2026-09-19: the same interpreter, ICU 76.1, the same lock hash, 40.5 MB and 12 workers in both columns.
 
-  ⚠️ **A default run pins neither, on purpose.** Without `--image` and `--lock` the harness takes the moving tag and resolves the graph fresh — which is what an operator installing today gets, and so what the floor is actually a claim about. A different number from a default run means the application or its dependencies changed; that is the regression the floor exists to catch, not a failure to reproduce. Every run names the graph it measured (the lock's hash and those three versions) in its header, and `--save-lock` keeps it. The digest is recorded whole because a truncated one pulls nothing (Codex, #126), and the lock because the digest pins the interpreter and not the application (Codex, #126).
+  ⚠️ **For eleven days the floor was measured on an interpreter that could not run the application.** The official `php:8.4-cli` loads neither ext-intl, which `filament/support` requires, nor ext-zip, which `openspout/openspout` requires; the benchmark booted regardless, because its samples call neither. It surfaced on #126 when Composer was made to resolve for the image's PHP rather than the host's, and then — with `platform-check` on — refused the install outright. The harness now builds the floor image, resolves Composer for its PHP version, and runs Composer's own platform check *in the image* before anything boots, so an image missing an extension the graph requires is a refusal naming it rather than a measurement. With both extensions loaded the figures did not move — which says something about the metric as much as the image: `memory_get_peak_usage()` counts PHP's heap, not memory a native library such as ICU allocates for itself.
+
+  ⚠️ **A default run does not pin the graph, on purpose.** Without `--lock` the harness resolves the graph fresh — which is what an operator installing today gets, and so what the floor is actually a claim about. A different number from a default run means the application or its dependencies changed; that is the regression the floor exists to catch, not a failure to reproduce. Every run names the graph it measured (the lock's hash and those three versions) in its header, and `--save-lock` keeps it. The digest is recorded whole because a truncated one pulls nothing (Codex, #126), and the lock because the digest pins the interpreter and not the application (Codex, #126).
 
   | | constrained (1 vCPU / 1024 MB) | unconstrained |
   |---|---|---|
@@ -159,7 +159,7 @@ The routing question is **already settled** — ADR-012 was resolved by a workin
 
   `Kitsune::FLOOR_VCPU` and `FLOOR_MEMORY_MB` are asserted by a test, so raising the floor is a visible code change rather than a drift — and `tests/Core/Release/FloorHarnessTest.php` runs the harness against stub binaries and reads the `docker` argv it builds, so the container size, the constants and the recipe the command prints to operators cannot drift apart.
 
-  **Still open:** the same measurement under concurrency, and under an FPM-shaped interpreter (OPcache on, a real `php.ini`) rather than bare CLI
+  **Still open:** the same measurement under concurrency; under an FPM-shaped interpreter (OPcache on, a real `php.ini`) rather than bare CLI; and a worker's resident memory rather than PHP's heap — the workers figure divides the floor by the heap peak, and a real worker also holds the PHP binary, its extensions and whatever ICU loads, none of which that peak counts
 
 **Done when:** you have numbers, written down.
 
