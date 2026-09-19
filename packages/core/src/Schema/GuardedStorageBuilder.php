@@ -333,8 +333,8 @@ class GuardedStorageBuilder extends Builder
             // ⚠️ ARMING IS A VALUE THAT CAN ONLY MEAN TRUE, NOT ONE PHP READS AS TRUE. The check was `(bool) $value
             // === false`, and an `Expression`, `'00'`, `'0.0'`, `' 0'`, `'-0'` and `'0e0'` are all true to PHP while
             // SQLite, MySQL and MariaDB store them as 0; PostgreSQL stores `'false'`, `'off'`, `'no'` and `'f'` as
-            // false. Each cleared a locked field's lock — measured, and an ordinary save then renamed the field. So
-            // `true`, `1` and `'1'` arm it, and everything else is refused, whatever it would have stored.
+            // false. Each cleared a locked field's lock — measured — and nothing then stood between an ordinary save
+            // and a rename. So `true`, `1` and `'1'` arm it, and everything else is refused, whatever it would store.
             if ($bare === 'is_locked') {
                 if ($value !== true && $value !== 1 && $value !== '1') {
                     throw new RuntimeException(
