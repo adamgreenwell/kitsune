@@ -16,10 +16,10 @@ namespace Kitsune\Core\Tenancy\Concerns;
  * ⚠️ PHP AND THE DATABASE READ A KEY DIFFERENTLY, AND THE GUARDS ASKED PHP. `(int) '13.9'` is 13, and MySQL and
  * MariaDB round `'13.9'` to 14 when they store it in an integer column — `'13.9e0'` and the float `13.9` too. So a
  * guard asking `(int) $value === $current` passed a key the database then wrote into the next org: measured on both,
- * from org 13, through a mass update, a save, a create, a hand-rolled insert and an audit append, each of which
- * stored 14. A relation's storage key went the same way by another road: looked up as `'5.4'` it found nothing, so
- * every check that needed the storage stood aside, and the engine stored 5. SQLite keeps the fraction and PostgreSQL
- * refuses it as a bigint, which is luck rather than a guard.
+ * from org 1 with a key of `'1.9'`, through a mass update, a save, a create, a hand-rolled insert and an audit
+ * append, each of which stored org 2. A relation's storage key went the same way by another road: looked up as
+ * `'5.4'` it found nothing, so every check that needed the storage stood aside, and the engine stored 5. SQLite keeps
+ * the fraction and PostgreSQL refuses it as a bigint, which is luck rather than a guard.
  *
  * So a key is an int, or exactly the decimal string of one — the two shapes a model and a form hand over — and
  * anything else names no row a guard can vouch for. That is the same rule `ResolvesWrittenColumns` applies to a
