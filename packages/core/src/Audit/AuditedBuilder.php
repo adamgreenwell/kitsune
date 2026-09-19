@@ -17,6 +17,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Schema\RevisionWrites;
+use Kitsune\Core\Tenancy\Concerns\ResolvesWrittenColumns;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tenancy\ScopedBuilder;
 use RuntimeException;
@@ -69,6 +70,27 @@ use RuntimeException;
  */
 class AuditedBuilder extends ScopedBuilder
 {
+    // Its own private copy of the refusals, as `GuardedRoleBuilder` takes one: `ScopedBuilder` keeps its copy private.
+    use ResolvesWrittenColumns {
+        refuseAmbiguousColumns as private;
+        refuseMisnamedGuardedColumn as private;
+    }
+
+    /**
+     * The columns `Entry`'s own checks read by that name alone, so the only name a write may give them.
+     *
+     * ⚠️ `entry_type_id` DECIDES WHICH TYPE EVERY CHECK ASKS ABOUT, AND EACH ASKED BY NAME. The creation guard read
+     * `$values['entry_type_id']`, `Entry::refuseUnpermittedPublication()` reads the instance's `entry_type_id`, and
+     * the `saving` restamp, the relation veto and `convertFieldValuesForWrite()` look for `entry_type_id` by name. SQLite,
+     * MySQL and MariaDB write `ENTRY_TYPE_ID` into the same column, so under that name each of them saw no type at
+     * all. Measured: somebody holding `create` and not `publish` created an article already published; somebody who
+     * may publish articles and not products retyped a draft article to a product and published it in one save, with
+     * `type_handle` left naming `article`; and a bulk retype under another name — a qualified one included — drifted
+     * `type_handle` the same way. `type_handle`, `values` and `site_id` are `columnsRequiringModelSave()`, which
+     * `ScopedBuilder` already holds to their own names; this is the one column those checks read that is not.
+     */
+    private const READ_BY_NAME = ['entry_type_id'];
+
     private const NO_BULK_CREATE =
         'Entries cannot be written in bulk, because these paths return a row count rather than '
         .'the keys they wrote — there would be nothing to record as the target, and an entry '
@@ -94,6 +116,8 @@ class AuditedBuilder extends ScopedBuilder
      */
     public function insertGetId(array $values, $sequence = null)
     {
+        $this->refuseMisnamedEntryColumns($values);
+
         $model = $this->getModel();
 
         // ⚠️ Conversion happens HERE, not in a `saving` listener, because this is the
@@ -342,6 +366,8 @@ class AuditedBuilder extends ScopedBuilder
     /** @param  array<string, mixed>  $values */
     public function update(array $values)
     {
+        $this->refuseMisnamedEntryColumns($values);
+
         // Same conversion as the insert path, at the same place: the write.
         $values = $this->getModel()->convertFieldValuesForWrite($values);
 
@@ -511,6 +537,7 @@ class AuditedBuilder extends ScopedBuilder
             return;
         }
 
+        // By this name alone, which is safe only because `refuseMisnamedEntryColumns()` has refused every other one.
         $model->refuseUnpermittedCreationAsPublished($values['entry_type_id'] ?? null);
     }
 
@@ -562,6 +589,7 @@ class AuditedBuilder extends ScopedBuilder
      */
     public function increment($column, $amount = 1, array $extra = [])
     {
+        $this->refuseMisnamedEntryColumns([(string) $column => $amount, ...$extra]);
         $this->refuseScopeArithmetic([(string) $column => $amount, ...$extra]);
         $this->refusePerRowExtras($extra);
         $this->refuseNoncanonicalStatus([(string) $column => $amount, ...$extra]);
@@ -584,6 +612,7 @@ class AuditedBuilder extends ScopedBuilder
      */
     public function decrement($column, $amount = 1, array $extra = [])
     {
+        $this->refuseMisnamedEntryColumns([(string) $column => $amount, ...$extra]);
         $this->refuseScopeArithmetic([(string) $column => $amount, ...$extra]);
         $this->refusePerRowExtras($extra);
         $this->refuseNoncanonicalStatus([(string) $column => $amount, ...$extra]);
@@ -611,6 +640,7 @@ class AuditedBuilder extends ScopedBuilder
      */
     public function incrementEach(array $columns, array $extra = [])
     {
+        $this->refuseMisnamedEntryColumns([...$columns, ...$extra]);
         $this->refuseScopeArithmetic([...$columns, ...$extra]);
         $this->refusePerRowExtras($extra);
         $this->refuseNoncanonicalStatus([...$columns, ...$extra]);
@@ -633,6 +663,7 @@ class AuditedBuilder extends ScopedBuilder
      */
     public function decrementEach(array $columns, array $extra = [])
     {
+        $this->refuseMisnamedEntryColumns([...$columns, ...$extra]);
         $this->refuseScopeArithmetic([...$columns, ...$extra]);
         $this->refusePerRowExtras($extra);
         $this->refuseNoncanonicalStatus([...$columns, ...$extra]);
@@ -921,6 +952,25 @@ class AuditedBuilder extends ScopedBuilder
                 $before[$entry->getKey()],
                 $after[$entry->getKey()],
             );
+        }
+    }
+
+    /**
+     * Refuse a column `Entry`'s checks read by name, written under any other name — qualified, cased or quoted.
+     *
+     * On every write that carries values, because every one reaches a check that reads the type by name: the
+     * creation guard, the publication guard (whose instance the arithmetic doors fill from `$extra`), and the restamp.
+     *
+     * @param  array<array-key, mixed>  $values
+     */
+    private function refuseMisnamedEntryColumns(array $values): void
+    {
+        foreach (array_keys($values) as $written) {
+            $column = $this->bareColumn((string) $written);
+
+            if (in_array($column, self::READ_BY_NAME, true)) {
+                $this->refuseMisnamedGuardedColumn((string) $written, $column);
+            }
         }
     }
 

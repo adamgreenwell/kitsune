@@ -116,6 +116,8 @@ class GuardedRelationBuilder extends Builder
         // pivot, so both moves acquire {A, B} in the same order and one waits for
         // the other instead of deadlocking. Lock order is a property of the whole
         // system, not of one method.
+        // By this name alone, which is safe only because a save has refused every other spelling above and a bulk
+        // write refuses the column under any spelling in `refuseGuardedColumns()` before it writes.
         $destination = isset($values['source_entry_id']) ? [$values['source_entry_id']] : [];
 
         return $this->versioned(

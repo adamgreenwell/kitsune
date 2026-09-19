@@ -8,6 +8,7 @@
 
 declare(strict_types=1);
 
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Auth\Permissions;
@@ -520,4 +521,97 @@ it('reads the status under every spelling the database writes into it', function
     }
 
     expect(DB::table('entries')->where('id', $entry->getKey())->value('status'))->toBe('draft');
+});
+
+/**
+ * Run each write, and collect the ones no guard refused — a database error is not a refusal.
+ *
+ * @param  array<string, Closure>  $doors
+ * @return list<string>
+ */
+function writesNoGuardRefused(array $doors): array
+{
+    $through = [];
+
+    foreach ($doors as $door => $write) {
+        try {
+            $write();
+            $through[] = "{$door}: allowed";
+        } catch (QueryException $e) {
+            $through[] = "{$door}: refused by the database, not a guard — {$e->getMessage()}";
+        } catch (RuntimeException) {
+            // A guard.
+        }
+    }
+
+    return $through;
+}
+
+it('reads the type under the one name its guards read, so a creation cannot publish past them', function (): void {
+    /*
+     * ⚠️ THE CREATION GUARD ASKED WHICH TYPE BY `entry_type_id` ALONE, and SQLite, MySQL and MariaDB write
+     * `ENTRY_TYPE_ID` into that column. Measured before the builder refused the other spelling: somebody holding
+     * `create` and not `publish` named `ENTRY_TYPE_ID`, the guard read no type, found no handle, stood aside — and an
+     * article was created already published. A quiet creation did the same.
+     */
+    $this->role->grant(Permissions::forEntryType('article', 'create'));
+
+    $type = publishedArticle($this->org)->entry_type_id;
+    $site = app(Context::class)->siteId();
+
+    Auth::login($this->user);
+    Permissions::forget();
+
+    $through = writesNoGuardRefused([
+        'a creation naming ENTRY_TYPE_ID' => fn () => Entry::create([
+            'ENTRY_TYPE_ID' => $type, 'type_handle' => 'article', 'title' => 'Smuggled', 'status' => 'published',
+        ]),
+        'a creation naming Entry_Type_Id' => fn () => Entry::create([
+            'Entry_Type_Id' => $type, 'type_handle' => 'article', 'title' => 'Smuggled', 'status' => 'published',
+        ]),
+        'a quiet creation naming ENTRY_TYPE_ID' => fn () => Entry::createQuietly([
+            'ENTRY_TYPE_ID' => $type, 'org_id' => $this->org->getKey(), 'site_id' => $site,
+            'type_handle' => 'article', 'title' => 'Smuggled', 'status' => 'published',
+        ]),
+    ]);
+
+    expect($through)->toBe([])
+        ->and(DB::table('entries')->where('title', 'Smuggled')->exists())->toBeFalse();
+});
+
+it('reads the type under the one name its guards read, so a retype cannot publish past them', function (): void {
+    /*
+     * ⚠️ AND THE SAME READ ON AN INSTANCE WRITE. `publish` is asked of the type the instance's `entry_type_id` names,
+     * and the `saving` restamp and the relation veto both ask `isDirty('entry_type_id')`. `ENTRY_TYPE_ID` left that
+     * attribute alone, so somebody who may publish articles and not products retyped a draft article to a product
+     * and published it in one save — measured, with `type_handle` still naming `article` on the product row. A bulk
+     * retype under another name drifted the same way, because the restamp looks for `entry_type_id` by name.
+     */
+    $this->role->grant(Permissions::forEntryType('article', 'update'));
+    $this->role->grant(Permissions::forEntryType('article', 'publish'));
+
+    $article = publishedArticle($this->org);
+    DB::table('entries')->where('id', $article->getKey())->update(['status' => 'draft']);
+
+    $product = EntryType::create([
+        'org_id' => $this->org->getKey(), 'handle' => 'product', 'name' => 'Product', 'plural_name' => 'Products',
+    ]);
+
+    Auth::login($this->user);
+    Permissions::forget();
+
+    $through = writesNoGuardRefused([
+        'a save naming ENTRY_TYPE_ID' => fn () => $article->fresh()?->update(['ENTRY_TYPE_ID' => $product->getKey(), 'status' => 'published']),
+        'a save naming Entry_Type_Id' => fn () => $article->fresh()?->update(['Entry_Type_Id' => $product->getKey(), 'status' => 'published']),
+        'arithmetic extras naming ENTRY_TYPE_ID' => fn () => $article->fresh()?->increment('id', 0, ['ENTRY_TYPE_ID' => $product->getKey(), 'status' => 'published']),
+        'decrement extras naming ENTRY_TYPE_ID' => fn () => $article->fresh()?->decrement('id', 0, ['ENTRY_TYPE_ID' => $product->getKey(), 'status' => 'published']),
+        'incrementEach extras naming ENTRY_TYPE_ID' => fn () => Entry::query()->whereKey($article->getKey())->incrementEach(['id' => 0], ['ENTRY_TYPE_ID' => $product->getKey()]),
+        'decrementEach extras naming ENTRY_TYPE_ID' => fn () => Entry::query()->whereKey($article->getKey())->decrementEach(['id' => 0], ['ENTRY_TYPE_ID' => $product->getKey()]),
+        'a bulk retype naming ENTRY_TYPE_ID' => fn () => Entry::query()->whereKey($article->getKey())->update(['ENTRY_TYPE_ID' => $product->getKey()]),
+        'a qualified bulk retype' => fn () => Entry::query()->whereKey($article->getKey())->update(['entries.entry_type_id' => $product->getKey()]),
+    ]);
+
+    expect($through)->toBe([])
+        ->and((array) DB::table('entries')->where('id', $article->getKey())->first(['status', 'entry_type_id', 'type_handle']))
+        ->toBe(['status' => 'draft', 'entry_type_id' => $article->entry_type_id, 'type_handle' => 'article']);
 });
