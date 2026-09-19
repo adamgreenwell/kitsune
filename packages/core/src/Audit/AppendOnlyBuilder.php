@@ -13,6 +13,7 @@ namespace Kitsune\Core\Audit;
 use Illuminate\Contracts\Database\Query\Expression;
 use Illuminate\Database\Eloquent\Builder;
 use Kitsune\Core\Models\AuditLog;
+use Kitsune\Core\Tenancy\Concerns\ReadsWrittenKeys;
 use Kitsune\Core\Tenancy\Concerns\ResolvesWrittenColumns;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tenancy\ScopeWrites;
@@ -34,6 +35,8 @@ use RuntimeException;
  */
 class AppendOnlyBuilder extends Builder
 {
+    use ReadsWrittenKeys;
+
     // Only `bareColumn()` is asked here; the refusals are imported private so they add nothing to this class.
     use ResolvesWrittenColumns {
         bareColumn as private;
@@ -326,7 +329,8 @@ class AppendOnlyBuilder extends Builder
                 continue;
             }
 
-            if ((int) $value !== (int) $current) {
+            // ⚠️ The key the DATABASE writes — see `ReadsWrittenKeys`: `'13.9'` is 13 to `(int)` and 14 to MySQL.
+            if (self::writtenKey($value) !== (int) $current) {
                 throw new RuntimeException(
                     "Refusing to append an audit row with [{$column}] outside the current scope. "
                     .'A trail an outsider can write to is worse than no trail, because it is '

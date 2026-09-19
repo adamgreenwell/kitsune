@@ -34,7 +34,8 @@ use Kitsune\Core\Tenancy\Context;
  *
  * And MySQL's fold is wider than ASCII: it takes `İ` to `i` and the Kelvin sign to `k`, so a name outside ASCII
  * reached a guarded column on every builder that folded with `strtolower()` — `ScopedBuilder` included. Those names
- * are refused outright now, and the cases below that spell one are live bypasses on MySQL alone.
+ * are refused outright now, and the cases below that spell one are live bypasses on MySQL alone. A relation's KEYS
+ * are judged the same way — as the database stores them, which for a fractional id on MySQL and MariaDB is another row.
  *
  * Written from the attacker's side: every attempt here is refused when spelled `org_id`, and each is asserted
  * refused BY A GUARD — a database error would satisfy a bare RuntimeException, and PostgreSQL rejects a quoted
@@ -345,6 +346,49 @@ describe('entry relations', function (): void {
         'insertGetId naming the storage twice' => [fn () => EntryRelation::query()->insertGetId([
             'FIELD_STORAGE_ID' => $this->subject->id, 'field_storage_id' => $this->links->id,
             'org_id' => $this->org->id, 'source_entry_id' => $this->src->id, 'target_entry_id' => $this->article->id,
+        ])],
+    ]);
+
+    it('refuses a key that is not a whole id, which MySQL and MariaDB round onto another row', function (Closure $attempt): void {
+        /*
+         * ⚠️ THE GUARDS LOOKED THE KEY UP, AND THE ENGINE ROUNDED IT. `guardStorageOwnership()` asked for the storage
+         * `'5.4'` names, found none — MySQL and MariaDB compare `id = '5.4'` as a number — and returned as though the
+         * storage were global; cardinality and target type did the same. Then the engine stored 5, the rival org's
+         * storage. And the org stamp was compared as `(int) '1.9' === 1` and stored as 2. Measured on both. SQLite and
+         * PostgreSQL refuse the fraction themselves, which is luck, not a guard.
+         */
+        expect($this->rival->id)->toBe($this->org->id + 1);
+
+        $before = storedGuardedRows();
+        $thrown = null;
+
+        try {
+            $attempt->call($this);
+        } catch (Throwable $e) {
+            $thrown = $e;
+        }
+
+        expect($thrown)->toBeInstanceOf(RuntimeException::class, 'the write was allowed')
+            ->and($thrown)->not->toBeInstanceOf(QueryException::class, 'the database refused it, not a guard: '.$thrown?->getMessage());
+
+        expect(storedGuardedRows())->toBe($before);
+    })->with([
+        'attach on a rival org\'s storage' => [fn () => $this->src->related()->attach($this->article->id, ['field_storage_id' => $this->rivalStorage->id.'.4'])],
+        'create on a rival org\'s storage' => [fn () => EntryRelation::create([
+            'org_id' => $this->org->id, 'source_entry_id' => $this->src->id, 'target_entry_id' => $this->article->id,
+            'field_storage_id' => $this->rivalStorage->id.'.4',
+        ])],
+        'save onto a rival org\'s storage' => [fn () => $this->held->fresh()->update(['field_storage_id' => $this->rivalStorage->id.'.4'])],
+        'a stamp that rounds into the rival org' => [fn () => $this->src->related()->attach($this->article->id, [
+            'field_storage_id' => $this->links->id, 'org_id' => $this->org->id.'.9',
+        ])],
+        'a source that rounds onto another entry' => [fn () => EntryRelation::create([
+            'org_id' => $this->org->id, 'source_entry_id' => $this->src->id.'.4', 'target_entry_id' => $this->article->id,
+            'field_storage_id' => $this->links->id,
+        ])],
+        // A whole id naming no storage: every check stood aside as though it were global, and only the foreign key spoke.
+        'a storage that does not exist' => [fn () => $this->src->related()->attach($this->article->id, [
+            'field_storage_id' => (int) DB::table('field_storage')->max('id') + 1000,
         ])],
     ]);
 

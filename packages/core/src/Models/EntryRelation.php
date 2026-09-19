@@ -105,6 +105,8 @@ class EntryRelation extends Pivot
         static::updating(function (self $relation): void {
             $relation->guardsRan = true;
 
+            $relation->refuseKeysThatAreNotWholeIds();
+
             // ⚠️ source_entry_id too, not only the field. Cardinality is
             // counted per (source, field), so moving a row from source B onto
             // source A — which `updateExistingPivot()` accepts — lands a
@@ -156,6 +158,7 @@ class EntryRelation extends Pivot
      */
     public function guardCreate(): void
     {
+        $this->refuseKeysThatAreNotWholeIds();
         $this->guardStorageOwnership();
         $this->guardEndpointsVisible();
         $this->guardCardinality();
@@ -225,6 +228,34 @@ class EntryRelation extends Pivot
     }
 
     /**
+     * Refuse a key that is not exactly a whole id — see `ReadsWrittenKeys`.
+     *
+     * ⚠️ THE GUARDS BELOW LOOK EACH KEY UP, AND THE ENGINE ROUNDS IT. MySQL and MariaDB compare `id = '5.4'` as a
+     * number and match nothing, then store `'5.4'` in an integer column as 5. So a fractional storage key found no
+     * storage, every check that needed one stood aside, and the relation landed on another org's field; a stamp of
+     * `'1.9'` compared equal to org 1 and was stored as org 2. Measured on both. SQLite and PostgreSQL refuse the
+     * fraction themselves, which is luck, not a guard — so it is refused here, before any lookup, on every engine.
+     */
+    private function refuseKeysThatAreNotWholeIds(): void
+    {
+        foreach (['source_entry_id', 'target_entry_id', 'field_storage_id', 'org_id'] as $column) {
+            $value = $this->getAttributes()[$column] ?? null;
+
+            if ($value === null || self::writtenKey($value) !== null) {
+                continue;
+            }
+
+            throw new RuntimeException(sprintf(
+                'Relation [%s] = %s is not a whole id. MySQL and MariaDB round such a key onto another row when '
+                .'they store it, after every check here has looked up the row it does not name (ADR-021). Pass '
+                .'the id itself, as an integer or its exact decimal string.',
+                $column,
+                is_scalar($value) ? var_export($value, true) : get_debug_type($value),
+            ));
+        }
+    }
+
+    /**
      * The storage has to be the source org's, or global.
      *
      * ⚠️ Nothing checked, and `field_storage` is #[Unscoped], so an org could
@@ -273,7 +304,24 @@ class EntryRelation extends Pivot
             ));
         }
 
-        $storageOrg = FieldStorage::query()->whereKey($this->field_storage_id)->value('org_id');
+        /*
+         * ⚠️ A STORAGE THAT IS NOT THERE IS NOT A GLOBAL ONE, and `value('org_id')` answered null for both. So a key
+         * naming no row passed as though it named global storage — and MySQL and MariaDB then rounded `'5.4'` onto
+         * storage 5, another org's. Keys are whole ids by now (`refuseKeysThatAreNotWholeIds()`), and a missing row
+         * is refused rather than guessed at: the foreign key would refuse it anyway, after every check had stood
+         * aside.
+         */
+        $storage = FieldStorage::query()->whereKey($this->field_storage_id)->first(['id', 'org_id']);
+
+        if ($storage === null) {
+            throw new RuntimeException(sprintf(
+                'Field storage %s does not exist, so nothing here can say whose it is, and a relation cannot be '
+                .'written against it (ADR-021).',
+                (string) $this->field_storage_id,
+            ));
+        }
+
+        $storageOrg = $storage->org_id;
 
         if ($storageOrg === null || ($sourceOrg !== null && (int) $storageOrg === (int) $sourceOrg)) {
             return;

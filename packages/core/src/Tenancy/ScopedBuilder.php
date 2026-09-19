@@ -22,6 +22,7 @@ use Kitsune\Core\Settings\Concerns\HoldsSettings;
 use Kitsune\Core\Settings\SettingsGuard;
 use Kitsune\Core\Settings\SettingsResolver;
 use Kitsune\Core\Tenancy\Attributes\Unscoped;
+use Kitsune\Core\Tenancy\Concerns\ReadsWrittenKeys;
 use Kitsune\Core\Tenancy\Concerns\ResolvesWrittenColumns;
 use Kitsune\Core\Tenancy\Contracts\RefusesCascadingDeletes;
 use Kitsune\Core\Tenancy\Contracts\RequiresModelSave;
@@ -55,6 +56,7 @@ class ScopedBuilder extends Builder
      * `GuardedRoleBuilder` refuses a misnamed owner flag with `refuseMisnamedGuardedColumn()`. The ambiguity refusal
      * runs on every write this class takes that carries values, so no subclass needs to call it.
      */
+    use ReadsWrittenKeys;
     use ResolvesWrittenColumns {
         refuseAmbiguousColumns as private;
     }
@@ -1141,18 +1143,20 @@ class ScopedBuilder extends Builder
 
             $value = $normalised[$column];
 
-            if ($value === null || $current === null || (int) $value === $current) {
+            // ⚠️ The key the DATABASE writes, not the one `(int)` reads: `'13.9'` is 13 to PHP and 14 to MySQL.
+            if ($value === null || $current === null || self::writtenKey($value) === $current) {
                 continue;
             }
 
             throw new RuntimeException(sprintf(
                 'Refusing to write %s with [%s] = %s from a context scoped to %s. A scope that only '
                 .'filters SELECTs still lets a caller move a row to somebody else, and a mass '
-                .'update dispatches no model events at all (ADR-021). Use withoutScopeBecause() if '
-                .'this is deliberate.',
+                .'update dispatches no model events at all (ADR-021). A key has to be the id itself, '
+                .'as an integer or its exact decimal string. Use withoutScopeBecause() if this is '
+                .'deliberate.',
                 $this->getModel()::class,
                 $column,
-                (string) $value,
+                is_scalar($value) ? var_export($value, true) : get_debug_type($value),
                 (string) $current,
             ));
         }

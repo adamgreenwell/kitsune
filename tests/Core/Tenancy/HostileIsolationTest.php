@@ -11,6 +11,7 @@ declare(strict_types=1);
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use Kitsune\Core\Models\AuditLog;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Models\SiteGroup;
@@ -273,6 +274,68 @@ describe('cross-org isolation', function (): void {
             ->toBe([['org_id' => $this->orgA->id, 'site_id' => $this->siteA1->id]])
             ->and(DB::table('shared_things')->pluck('org_id')->all())->toBe([$this->orgA->id])
             ->and(DB::table('sites')->where('id', $this->siteA1->id)->value('org_id'))->toBe($this->orgA->id);
+    });
+
+    it('refuses a scope key that is not a whole id, which MySQL and MariaDB round into the next org', function (): void {
+        /*
+         * ⚠️ THE GUARD ASKED `(int) $value === $current`, AND PHP AND THE DATABASE ROUND DIFFERENTLY. PHP truncates
+         * `'13.9'` to 13; MySQL and MariaDB round it to 14 when they store it in an integer column. So from org 13 a
+         * key of `'13.9'` passed every comparison and landed the row in org 14 — measured on both, through a mass
+         * update, a save, a create, a hand-rolled insert and an audit append. SQLite stores the fraction and fails
+         * the foreign key, and PostgreSQL rejects it as a bigint, which is luck rather than a guard.
+         */
+        expect($this->orgB->id)->toBe($this->orgA->id + 1)
+            ->and($this->siteB1->id)->toBe($this->siteA2->id + 1);
+
+        app(Context::class)->setSite($this->siteA2);
+        $mine = SiteThing::create(['label' => 'mine']);
+        $shared = SharedThing::create(['label' => 'shared']);
+        $audit = DB::table('audit_log')->count();
+
+        $intoB = $this->orgA->id.'.9';
+
+        // A save and a create meet the model's own guard first, so they are asserted refused THERE, not one layer on.
+        $theModel = 'separate holes';
+
+        $attempts = [
+            'a mass update' => [fn () => SiteThing::query()->update(['org_id' => $intoB]), null],
+            'a mass update of the site key' => [fn () => SiteThing::query()->update(['site_id' => $this->siteA2->id.'.9']), null],
+            'an exponent' => [fn () => SiteThing::query()->update(['org_id' => $this->orgA->id.'.9e0']), null],
+            'a save' => [fn () => $mine->fresh()->update(['org_id' => $intoB]), $theModel],
+            'a site' => [fn () => Site::query()->whereKey($this->siteA1->id)->update(['org_id' => $intoB]), null],
+            'an org-scoped row' => [fn () => SharedThing::query()->whereKey($shared->id)->update(['org_id' => $intoB]), null],
+            'a create' => [fn () => SharedThing::create(['org_id' => $intoB, 'label' => 'planted']), $theModel],
+            'a hand-rolled insert' => [fn () => SharedThing::query()->insertGetId(['org_id' => $intoB, 'label' => 'planted']), null],
+            'an audit append' => [fn () => AuditLog::query()->insert([['org_id' => $intoB, 'action' => 'forged.fraction', 'created_at' => now()]]), null],
+            'a float' => [fn () => SharedThing::query()->whereKey($shared->id)->update(['org_id' => $this->orgA->id + 0.9]), null],
+        ];
+
+        foreach ($attempts as $path => [$attempt, $refusedBy]) {
+            $thrown = null;
+
+            try {
+                $attempt();
+            } catch (Throwable $e) {
+                $thrown = $e;
+            }
+
+            expect($thrown)->toBeInstanceOf(RuntimeException::class, "{$path} was allowed")
+                ->and($thrown)->not->toBeInstanceOf(QueryException::class, "{$path} was refused by the database, not a guard");
+
+            if ($refusedBy !== null) {
+                expect($thrown?->getMessage())->toContain($refusedBy);
+            }
+        }
+
+        expect(DB::table('site_things')->get(['org_id', 'site_id'])->map(fn (object $row): array => (array) $row)->all())
+            ->toBe([['org_id' => $this->orgA->id, 'site_id' => $this->siteA2->id]])
+            ->and(DB::table('shared_things')->pluck('org_id')->all())->toBe([$this->orgA->id])
+            ->and(DB::table('sites')->where('id', $this->siteA1->id)->value('org_id'))->toBe($this->orgA->id)
+            ->and(DB::table('audit_log')->count())->toBe($audit);
+
+        // And a whole id, as a model holds it or as a form posts it, is still this org's own.
+        expect(fn () => SharedThing::query()->whereKey($shared->id)->update(['org_id' => (string) $this->orgA->id]))
+            ->not->toThrow(RuntimeException::class);
     });
 
     it('refuses a write that names one column twice, which each engine resolves its own way', function (): void {
