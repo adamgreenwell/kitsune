@@ -303,39 +303,9 @@ class AuditedBuilder extends ScopedBuilder
         );
     }
 
-    /**
-     * ⚠️ Eloquent implements bulk touching as `toBase()->update(...)`, which
-     * goes straight past the override above. Every matching entry had its
-     * `updated_at` moved with no audit row.
-     *
-     * Routed through update() rather than duplicated, so it inherits the
-     * capture-then-write-by-keys behaviour and names the same action.
-     *
-     * @param  array<int, string>|string|null  $column
-     * @return bool|int
-     */
-    public function touch($column = null)
-    {
-        $time = $this->model->freshTimestamp();
-
-        if ($column !== null) {
-            $columns = [];
-
-            foreach ((array) $column as $name) {
-                $columns[$name] = $time;
-            }
-
-            return $this->update($columns);
-        }
-
-        $column = $this->model->getUpdatedAtColumn();
-
-        if (! $this->model->usesTimestamps() || $column === null) {
-            return false;
-        }
-
-        return $this->update([$column => $time]);
-    }
+    // ⚠️ `touch()` is routed through `update()` — Eloquent writes it through `toBase()`, and every matching entry had
+    // its `updated_at` moved with no audit row. The override that did it here is `TouchesThroughUpdate` now, on
+    // `ScopedBuilder`, because every guarded builder had the same hole and only this one had closed it.
 
     /**
      * ⚠️ Forwarded WHOLE to the query builder, so neither these overrides nor

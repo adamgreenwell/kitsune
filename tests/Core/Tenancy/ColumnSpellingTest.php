@@ -262,6 +262,11 @@ describe('field storage', function (): void {
         "bulk SETT\u{0130}NGS on a locked field" => [fn () => FieldStorage::query()->whereKey($this->locked->id)->update(["SETT\u{0130}NGS" => '{"format":"integer"}'])],
         "increment CARD\u{0130}NAL\u{0130}TY" => [fn () => FieldStorage::query()->whereKey($this->locked->id)->increment("CARD\u{0130}NAL\u{0130}TY")],
         "save \u{0130}S_LOCKED cleared" => [fn () => $this->locked->fresh()->update(["\u{0130}S_LOCKED" => false])],
+        // touch() is an update Eloquent writes past `update()`, under any spelling — spelled correctly, too.
+        'touch handle on a locked field' => [fn () => FieldStorage::query()->whereKey($this->locked->id)->touch('handle')],
+        'touch PII_CLASS' => [fn () => FieldStorage::query()->whereKey($this->locked->id)->touch('PII_CLASS')],
+        'touch is_locked' => [fn () => FieldStorage::query()->whereKey($this->locked->id)->touch('is_locked')],
+        'touch a list of shape columns' => [fn () => FieldStorage::query()->whereKey($this->locked->id)->touch(['handle', 'pii_class', 'type'])],
         // Two names for one column: the guard read `is_locked`, and every engine keeps the LAST in an UPDATE.
         'save IS_LOCKED beside is_locked' => [fn () => $this->locked->fresh()->update(['is_locked' => true, 'IS_LOCKED' => false])],
     ]);
@@ -410,6 +415,9 @@ describe('entry relations', function (): void {
         "bulk ORG_\u{0130}D" => [fn () => EntryRelation::query()->whereKey($this->held->id)->update(["ORG_\u{0130}D" => $this->rival->id])],
         "save F\u{0130}ELD_STORAGE_\u{0130}D onto a full single-valued field" => [fn () => $this->held->fresh()->update(["F\u{0130}ELD_STORAGE_\u{0130}D" => $this->subject->id])],
         "attach a second subject under F\u{0130}ELD_STORAGE_\u{0130}D" => [fn () => $this->src->related()->attach($this->article->id, ["F\u{0130}ELD_STORAGE_\u{0130}D" => $this->subject->id])],
+        // touch() is an update Eloquent writes past `update()`; only a foreign key stood in its way.
+        'touch field_storage_id' => [fn () => EntryRelation::query()->whereKey($this->held->id)->touch('field_storage_id')],
+        'touch ORG_ID' => [fn () => EntryRelation::query()->whereKey($this->held->id)->touch('ORG_ID')],
         // Two names for one column: the guard read `field_storage_id`, and SQLite keeps the FIRST in an INSERT.
         'insertGetId naming the storage twice' => [fn () => EntryRelation::query()->insertGetId([
             'FIELD_STORAGE_ID' => $this->subject->id, 'field_storage_id' => $this->links->id,

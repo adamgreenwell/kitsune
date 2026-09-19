@@ -948,6 +948,11 @@ describe('bulk entry writes are audited too', function (): void {
             // insertGetId() and the second the increment() override, so both
             // halves are already audited.
             'incrementOrCreate',
+            // Declared once for every guarded builder, by `ScopedBuilder`'s
+            // `TouchesThroughUpdate`, which routes it into the update()
+            // override above — Kitsune's own declaration, not Eloquent's, and
+            // 'audits a bulk touch' holds it to the audit behaviourally.
+            'touch',
         ];
 
         // Append-only means exactly that: INSERTS are the one thing it must

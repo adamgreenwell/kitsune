@@ -14,6 +14,7 @@ use Illuminate\Contracts\Database\Query\Expression;
 use Illuminate\Database\Eloquent\Builder;
 use Kitsune\Core\Models\FieldStorage;
 use Kitsune\Core\Tenancy\Concerns\ResolvesWrittenColumns;
+use Kitsune\Core\Tenancy\Concerns\TouchesThroughUpdate;
 use RuntimeException;
 
 /**
@@ -57,6 +58,7 @@ class GuardedStorageBuilder extends Builder
         refuseAmbiguousColumns as private;
         refuseMisnamedGuardedColumn as private;
     }
+    use TouchesThroughUpdate;
 
     /**
      * Columns whose guards are PER-ROW and so cannot be evaluated in bulk.

@@ -16,6 +16,7 @@ use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryRelation;
 use Kitsune\Core\Tenancy\Concerns\ResolvesWrittenColumns;
+use Kitsune\Core\Tenancy\Concerns\TouchesThroughUpdate;
 use RuntimeException;
 
 /**
@@ -61,6 +62,7 @@ class GuardedRelationBuilder extends Builder
         refuseAmbiguousColumns as private;
         refuseMisnamedGuardedColumn as private;
     }
+    use TouchesThroughUpdate;
 
     /**
      * Columns whose guards are PER-ROW, so a bulk write cannot evaluate them.

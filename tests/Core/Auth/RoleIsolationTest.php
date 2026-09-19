@@ -1047,6 +1047,23 @@ it('refuses the owner flag under another spelling, which the engine writes into 
         ->and(AuditLog::query()->where('id', '>', $mark)->count())->toBe(0);
 });
 
+it('refuses touch() on the owner flag, which Eloquent writes past update()', function (): void {
+    /*
+     * ⚠️ `touch($column)` IS AN UPDATE THAT NEVER REACHES `update()`: Eloquent writes it through `toBase()`. So every
+     * refusal on this builder stood aside for `Role::query()->touch('is_owner')`, which wrote a timestamp into the
+     * flag of every role it matched. The value is never the caller's, and it is refused all the same.
+     */
+    app(Context::class)->setOrg($this->alpha);
+
+    $mark = (int) AuditLog::query()->max('id');
+    $before = DB::table('roles')->orderBy('id')->pluck('is_owner', 'id')->all();
+
+    expect(fn () => Role::query()->touch('is_owner'))->toThrow(RuntimeException::class, 'on roles');
+
+    expect(DB::table('roles')->orderBy('id')->pluck('is_owner', 'id')->all())->toBe($before)
+        ->and(AuditLog::query()->where('id', '>', $mark)->count())->toBe(0);
+});
+
 it('takes the org row before any role row, so two demotions queue rather than deadlock', function (): void {
     /*
      * ⚠️ THE OWNER SWEEP LOCKS A SET AND EVERY CALLER ALREADY HOLDS ONE OF ITS MEMBERS — review found the

@@ -24,6 +24,7 @@ use Kitsune\Core\Settings\SettingsResolver;
 use Kitsune\Core\Tenancy\Attributes\Unscoped;
 use Kitsune\Core\Tenancy\Concerns\ReadsWrittenKeys;
 use Kitsune\Core\Tenancy\Concerns\ResolvesWrittenColumns;
+use Kitsune\Core\Tenancy\Concerns\TouchesThroughUpdate;
 use Kitsune\Core\Tenancy\Contracts\RefusesCascadingDeletes;
 use Kitsune\Core\Tenancy\Contracts\RequiresModelSave;
 use RuntimeException;
@@ -63,6 +64,7 @@ class ScopedBuilder extends Builder
         refuseAmbiguousColumns as private;
         refuseMisnamedGuardedColumn as private;
     }
+    use TouchesThroughUpdate;
 
     /**
      * Takes the model, so the type parameter is known at construction.
