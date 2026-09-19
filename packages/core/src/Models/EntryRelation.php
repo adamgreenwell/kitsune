@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Models;
 
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Relations\Pivot;
 use Illuminate\Database\Query\Builder as QueryBuilder;
 use Kitsune\Core\Relations\GuardedRelationBuilder;
@@ -71,11 +72,6 @@ class EntryRelation extends Pivot
     {
         static::creating(fn (self $relation) => $relation->guardCreate());
 
-        // Cleared once the write lands, so the next one has to earn it again.
-        static::saved(function (self $relation): void {
-            $relation->guardsRan = false;
-        });
-
         // ⚠️ The lock arms HERE for a relation, not from `Entry::saved`.
         //
         // `$entry->related()->attach(...)` writes the pivot AFTER the entry
@@ -103,8 +99,6 @@ class EntryRelation extends Pivot
         // recreating the two-subject disclosure through the ordinary
         // relationship API, with no row ever being created.
         static::updating(function (self $relation): void {
-            $relation->guardsRan = true;
-
             $relation->refuseKeysThatAreNotWholeIds();
 
             // ⚠️ source_entry_id too, not only the field. Cardinality is
@@ -128,17 +122,63 @@ class EntryRelation extends Pivot
             if ($relation->isDirty(['field_storage_id', 'target_entry_id'])) {
                 $relation->guardTargetType();
             }
+
+            // ⚠️ LAST, AFTER EVERY GUARD HAS PASSED. It was the first line of this listener, so a save a guard refused
+            // left it armed — and `saved`, the only thing that disarmed it, never fires for a refused save or for an
+            // instance `increment()`, which dispatches `updating` and not `saved`. A `saveQuietly()` that ran no guard
+            // then presented the proof: measured, a move onto another org's storage was refused and the quiet retry
+            // landed it.
+            $relation->guardsRan = true;
         });
     }
 
     /**
-     * True only while THIS row's guards have run for the write in flight.
+     * True only while THIS row's guards have passed for the save in flight.
      *
      * ⚠️ How the guarded builder tells a model save from a bulk one. Both
      * reach the builder's methods, so refusing every bulk-shaped write would
      * refuse `attach()` as well.
+     *
+     * ⚠️ PRIVATE, AND IT WAS A PUBLIC BOOLEAN that the builder read off whatever model it was built on — so
+     * `$row->guardsRan = true`, or a hand call to the public `guardCreate()` that armed it, then
+     * `$row->newQuery()->update([…])` was read as a guarded save. `Role` and `DerivesGuardedColumns` had been
+     * through this already: the proof is two private facts now — the guards passed, set by the `updating` listener
+     * and cleared as each `performUpdate()` begins, and the builder this instance is being saved through, which only
+     * that method sets.
      */
-    public bool $guardsRan = false;
+    private bool $guardsRan = false;
+
+    /** The builder this instance is being saved through, or null when no save is in flight. */
+    private ?object $writingThrough = null;
+
+    /**
+     * Whether this write's guards passed — for THIS builder, inside this instance's own save.
+     *
+     * Asked by `GuardedRelationBuilder`, which has no other way to tell a move from a bulk write.
+     */
+    public function guardsRanFor(object $through): bool
+    {
+        return $this->guardsRan && $this->writingThrough === $through;
+    }
+
+    /**
+     * The one place the write identity is set. `updating` — which arms the proof — fires inside this method, so
+     * clearing the proof on entry costs a legitimate save nothing and a stale one everything: a refused save, or an
+     * instance `increment()`, which dispatches `updating` and never reaches here.
+     *
+     * @param  Builder<static>  $query
+     */
+    protected function performUpdate(Builder $query)
+    {
+        $this->guardsRan = false;
+        $this->writingThrough = $query;
+
+        try {
+            return parent::performUpdate($query);
+        } finally {
+            $this->writingThrough = null;
+        }
+    }
 
     /**
      * Every check a new relation row must pass.
@@ -163,8 +203,6 @@ class EntryRelation extends Pivot
         $this->guardEndpointsVisible();
         $this->guardCardinality();
         $this->guardTargetType();
-
-        $this->guardsRan = true;
     }
 
     /**

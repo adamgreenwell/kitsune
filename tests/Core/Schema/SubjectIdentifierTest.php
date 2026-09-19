@@ -1590,6 +1590,69 @@ describe('the pivot guards hold on the bulk path, which had none', function (): 
         expect(EntryRelation::query()->where('source_entry_id', $this->src->id)->count())->toBe(1);
     });
 
+    it('takes no proof of a guarded save from outside the save', function (): void {
+        /*
+         * ⚠️ THE BUILDER TOLD A SAVE FROM A BULK WRITE BY A PUBLIC BOOLEAN. `$guardsRan` was public, and
+         * `guardCreate()` — public too — set it after passing on the row as it stood. So `$row->guardsRan = true` or
+         * `$row->guardCreate()`, then `$row->newQuery()->whereKey($id)->update([…])`, was read as a guarded save:
+         * the builder re-ran cardinality on the MODEL, which had not moved, and wrote the move it was handed.
+         * Measured: a second subject onto a full single-valued field.
+         */
+        $open = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'links', 'type' => 'relation', 'pii_class' => 'none', 'cardinality' => -1,
+        ]);
+        $this->src->related()->attach($this->p2->id, ['field_storage_id' => $open->id]);
+
+        $forged = EntryRelation::query()->where('target_entry_id', $this->p2->id)->sole();
+        $forged->guardsRan = true;
+
+        $armed = EntryRelation::query()->where('target_entry_id', $this->p2->id)->sole();
+        $armed->guardCreate();
+
+        // `increment()` dispatches `updating`, whose guards pass on a row that has not moved, and never saves.
+        $incremented = EntryRelation::query()->where('target_entry_id', $this->p2->id)->sole();
+        $incremented->increment('ordering');
+
+        foreach (['a forged flag' => $forged, 'the public guard run by hand' => $armed, 'an instance increment' => $incremented] as $how => $row) {
+            expect(fn () => $row->newQuery()->whereKey($row->id)->update(['field_storage_id' => $this->one->id]))
+                ->toThrow(RuntimeException::class, 'cannot be written in bulk', "{$how} armed the proof");
+        }
+
+        expect(DB::table('entry_relations')->where('target_entry_id', $this->p2->id)->value('field_storage_id'))->toBe($open->id);
+    });
+
+    it('does not let a refused save, or an increment, arm the next quiet one', function (): void {
+        /*
+         * ⚠️ THE PROOF WAS ARMED BEFORE THE GUARDS RAN, AND ONLY `saved` DISARMED IT. The `updating` listener set
+         * `guardsRan` first, so a save a guard refused left it standing — and an instance `increment()`, which fires
+         * `updating` and never `saved`, did the same. The next `saveQuietly()` ran no guard and was read as a
+         * guarded one. Measured on all four engines: a move onto another org's storage was refused, and the quiet
+         * retry landed it.
+         */
+        $rival = Org::create(['name' => 'R', 'slug' => 'stale-proof-rival']);
+        $theirs = FieldStorage::create([
+            'org_id' => $rival->id, 'handle' => 'their_links', 'type' => 'relation', 'pii_class' => 'none', 'cardinality' => -1,
+        ]);
+        $open = FieldStorage::create([
+            'org_id' => $this->org->id, 'handle' => 'links', 'type' => 'relation', 'pii_class' => 'none', 'cardinality' => -1,
+        ]);
+        $this->src->related()->attach($this->p2->id, ['field_storage_id' => $open->id]);
+
+        $refused = EntryRelation::query()->where('target_entry_id', $this->p2->id)->sole();
+        $refused->field_storage_id = $theirs->id;
+
+        expect(fn () => $refused->save())->toThrow(RuntimeException::class, 'belongs to another organisation')
+            ->and(fn () => $refused->saveQuietly())->toThrow(RuntimeException::class, 'cannot be written in bulk');
+
+        $incremented = EntryRelation::query()->where('target_entry_id', $this->p2->id)->sole();
+        $incremented->increment('ordering');
+        $incremented->field_storage_id = $theirs->id;
+
+        expect(fn () => $incremented->saveQuietly())->toThrow(RuntimeException::class, 'cannot be written in bulk');
+
+        expect(DB::table('entry_relations')->where('target_entry_id', $this->p2->id)->value('field_storage_id'))->toBe($open->id);
+    });
+
     it('refuses a bulk repoint onto a nominated single-valued field', function (): void {
         $open = FieldStorage::create([
             'org_id' => $this->org->id, 'handle' => 'links', 'type' => 'relation',

@@ -87,7 +87,7 @@ class GuardedRelationBuilder extends Builder
         // `isDirty('field_storage_id')` and nothing else. `FIELD_STORAGE_ID` left that attribute clean, so no
         // guard ran, the proof was armed anyway, and the engine moved the row onto a full single-valued field.
         // Refused before any lock is taken, because the destination below is read by the same name.
-        if ($this->getModel()->guardsRan) {
+        if ($this->getModel()->guardsRanFor($this)) {
             $this->refuseMisnamedColumns($values);
         }
 
@@ -125,8 +125,8 @@ class GuardedRelationBuilder extends Builder
         return $this->versioned(
             fn (): array => $this->freezingRows($destination),
             function () use ($values) {
-                // An instance save arrives here too, with its guards already run.
-                if ($this->getModel()->guardsRan) {
+                // An instance save arrives here too, with its guards already run — through THIS builder.
+                if ($this->getModel()->guardsRanFor($this)) {
                     // ⚠️ But cardinality is RE-CHECKED here, under the lock.
                     //
                     // `EntryRelation::updating` counted before `save()` reached

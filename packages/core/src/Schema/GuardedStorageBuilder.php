@@ -86,10 +86,11 @@ class GuardedStorageBuilder extends Builder
         $this->refuseAmbiguousColumns($values);
 
         // ⚠️ An instance save arrives here too — `Model::performUpdate()`
-        // writes through the builder — so the flag is what separates a save
+        // writes through the builder — so the proof is what separates a save
         // whose guards have already run from a bulk write that dispatched
-        // nothing and never could.
-        if ($this->getModel()->shapeGuarded) {
+        // nothing and never could. It names THIS builder, so a model armed by
+        // hand and handed to a query of its own presents nothing.
+        if ($this->getModel()->shapeGuardedFor($this)) {
             // ⚠️ Under the names they read, or not at all: `IS_LOCKED` beside an untouched `is_locked`
             // passed `guardShape()` and cleared the lock.
             $this->refuseMisnamedColumns($values);

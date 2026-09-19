@@ -129,18 +129,67 @@ class FieldStorage extends Model
     }
 
     /**
-     * True only while THIS instance's guards have run for the write in flight.
+     * True only while THIS instance's guards have run for the save in flight.
      *
      * ⚠️ How the guarded builder tells an instance save from a bulk one. Both
      * arrive at `GuardedStorageBuilder::update()`, because
      * `Model::performUpdate()` writes through the builder — so refusing every
      * bulk-shaped write refused ordinary `$storage->update(...)` as well.
      *
-     * The flag is set by `guardShape()`, which only the `saving` event
-     * reaches. A bulk update dispatches nothing, so it can never be set, and
-     * the builder refuses.
+     * ⚠️ PRIVATE, AND IT WAS A PUBLIC BOOLEAN — which the builder read off whatever model it was built on. So
+     * `$storage->shapeGuarded = true`, or a hand call to the public `guardShape()`, then
+     * `$storage->newQuery()->update([…])` wrote any shape change to a LOCKED field. And `saved` was the only thing
+     * that disarmed it, so a save an observer cancelled after `guardShape()` left it armed for a `saveQuietly()`
+     * that ran no guard. Measured, both. `Role` and `DerivesGuardedColumns` had already been through this: the proof
+     * is two private facts now — the guards ran, set by `guardShape()` and cleared as each `save()` begins, and the
+     * builder this instance is being saved through, which only `performUpdate()` sets.
      */
-    public bool $shapeGuarded = false;
+    private bool $shapeGuarded = false;
+
+    /** The builder this instance is being saved through, or null when no save is in flight. */
+    private ?object $writingThrough = null;
+
+    /**
+     * Whether this write's shape guards ran — for THIS builder, inside this instance's own save.
+     *
+     * Asked by `GuardedStorageBuilder`, which has no other way to tell a save from a bulk write. A caller can only
+     * ever get false from it outside a real save, which is the point.
+     */
+    public function shapeGuardedFor(object $through): bool
+    {
+        return $this->shapeGuarded && $this->writingThrough === $through;
+    }
+
+    /**
+     * ⚠️ THE PROOF BELONGS TO THE ATTEMPT THAT EARNS IT. Cleared on the way in, so nothing earned before this save —
+     * a hand call to `guardShape()`, a save an observer cancelled after it — can stand for a `saveQuietly()` that
+     * runs no guard. Whatever this save earns can only be presented inside it: the builder asks for the builder
+     * this instance is saving through as well, and there is none outside `performUpdate()`.
+     *
+     * @param  array<string, mixed>  $options
+     */
+    public function save(array $options = []): bool
+    {
+        $this->shapeGuarded = false;
+
+        return parent::save($options);
+    }
+
+    /**
+     * The one place the write identity is set: on the way into Eloquent's own update, not by anything a caller reaches.
+     *
+     * @param  Builder<static>  $query
+     */
+    protected function performUpdate(Builder $query)
+    {
+        $this->writingThrough = $query;
+
+        try {
+            return parent::performUpdate($query);
+        } finally {
+            $this->writingThrough = null;
+        }
+    }
 
     /**
      * Every ADR-006 and ADR-020 guarantee this model makes.
@@ -191,9 +240,14 @@ class FieldStorage extends Model
         // guard below skipped itself. The model is fully mass assignable, so
         // that was one array key away from routing around ADR-006 entirely,
         // without an amendment.
-        if ($this->exists
-            && (bool) $this->getRawOriginal('is_locked')
-            && ! $this->is_locked) {
+        //
+        // ⚠️ AND THE ORIGINAL AS THE DATABASE HOLDS IT, NOT ONLY AS THIS INSTANCE REMEMBERS IT. The lock is armed in
+        // bulk — `lockStorageHoldingData()` and `armLock()` write it past every loaded instance — so an instance
+        // loaded while the field was open saved a rename and a retype onto a row the database held locked. Measured.
+        // Asked only when the instance believes the field open; a lock it already knows about needs no query.
+        $locked = $this->exists && ((bool) $this->getRawOriginal('is_locked') || $this->lockedInTheDatabase());
+
+        if ($locked && $this->isDirty('is_locked') && ! $this->is_locked) {
             throw new RuntimeException(
                 "Field [{$this->handle}] is locked because entries hold data for it, and "
                 .'the lock cannot be cleared while that is true. It is not a preference — it '
@@ -203,7 +257,7 @@ class FieldStorage extends Model
 
         // ADR-006: storage locks the moment data exists. Shipping this
         // guard in v1 rather than later is the whole point of copying it.
-        if ($this->exists && (bool) $this->getRawOriginal('is_locked')) {
+        if ($locked) {
             foreach (self::SHAPE_ATTRIBUTES as $attribute) {
                 if ($this->isDirty($attribute)) {
                     throw new RuntimeException(
@@ -218,6 +272,21 @@ class FieldStorage extends Model
         }
 
         $this->shapeGuarded = true;
+    }
+
+    /**
+     * Whether the row this instance was loaded from is locked now, read below every builder.
+     *
+     * ⚠️ NOT A LOCKING READ, and this does not claim to close the race. A writer that stores a field's first value
+     * and then arms its lock takes no lock on the storage row, so a save between the two can still change the
+     * shape under data that is about to exist. That needs the data writers to lock the row first, which is theirs
+     * to do; this closes the single-threaded case, where the instance was merely stale.
+     */
+    private function lockedInTheDatabase(): bool
+    {
+        return (bool) $this->newQueryWithoutScopes()->toBase()
+            ->where($this->getKeyName(), $this->getKeyForSaveQuery())
+            ->value('is_locked');
     }
 
     /**
