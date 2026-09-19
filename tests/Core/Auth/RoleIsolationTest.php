@@ -1039,8 +1039,23 @@ it('refuses the owner flag under another spelling, which the engine writes into 
         'a quiet save' => fn () => $this->alphaRole->fresh()?->forceFill(['Is_Owner' => true])->saveQuietly(),
     ];
 
+    /*
+     * ⚠️ REFUSED BY A GUARD, NOT MERELY THROWN. A database error is a RuntimeException too: PostgreSQL rejects a quoted
+     * `"IS_OWNER"` it does not have, and `Role::save()` runs in a transaction whose savepoint absorbs the failure — so
+     * with the proven-save refusal removed, a bare `toThrow(RuntimeException::class)` still passed on that engine.
+     * Measured. The database's refusal is luck; the assertion is about the builder's.
+     */
     foreach ($attempts as $path => $attempt) {
-        expect($attempt)->toThrow(RuntimeException::class, null, "{$path} was allowed");
+        $thrown = null;
+
+        try {
+            $attempt();
+        } catch (Throwable $e) {
+            $thrown = $e;
+        }
+
+        expect($thrown)->toBeInstanceOf(RuntimeException::class, "{$path} was allowed")
+            ->and($thrown)->not->toBeInstanceOf(QueryException::class, "{$path} was refused by the database, not a guard");
     }
 
     expect(DB::table('roles')->where('is_owner', true)->count())->toBe(0)

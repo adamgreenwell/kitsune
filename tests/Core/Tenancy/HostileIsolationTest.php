@@ -214,8 +214,18 @@ describe('cross-org isolation', function (): void {
             'an insert-or-ignore' => fn () => SharedThing::query()->insertOrIgnore(['Org_Id' => $this->orgB->id, 'label' => 'planted']),
         ];
 
+        // Refused by the builder, not merely thrown: PostgreSQL refuses a quoted `"ORG_ID"` itself, which is luck.
         foreach ($attempts as $path => $attempt) {
-            expect($attempt)->toThrow(RuntimeException::class, null, "{$path} was allowed");
+            $thrown = null;
+
+            try {
+                $attempt();
+            } catch (Throwable $e) {
+                $thrown = $e;
+            }
+
+            expect($thrown)->toBeInstanceOf(RuntimeException::class, "{$path} was allowed")
+                ->and($thrown)->not->toBeInstanceOf(QueryException::class, "{$path} was refused by the database, not a guard");
         }
 
         app(Context::class)->forget();
