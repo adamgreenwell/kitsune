@@ -789,10 +789,12 @@ class ScopedBuilder extends Builder
      * rows. It also bypasses the cascade refusal that `delete()` and `forceDelete()` route through, so
      * every referenced entry goes with it.
      *
-     * ⚠️ THE RULE THE SWEEP PRODUCED, rather than a list of methods to copy: `truncate()` belongs
-     * wherever `delete()` is guarded. The three builders that override it all guard deletion;
-     * `GuardedStorageBuilder` guards CREATION only and correctly has no override, because truncating
-     * creates nothing. This builder guards deletion, so the absence was a gap rather than a decision.
+     * ⚠️ THE RULE THE SWEEP PRODUCED WAS TOO NARROW. It said `truncate()` belongs wherever `delete()` is
+     * guarded, and that `GuardedStorageBuilder` — guarding creation only — "correctly has no override,
+     * because truncating creates nothing". Review measured otherwise: a truncate removes every row of a
+     * shared table whatever its builder guards, and on PostgreSQL Laravel compiles it `CASCADE`, so
+     * `FieldStorage::query()->truncate()` emptied every org's fields, entry types and entries. The rule is
+     * that every guarded builder refuses `truncate()`, and every one does now.
      */
     public function truncate(): void
     {

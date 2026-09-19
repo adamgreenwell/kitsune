@@ -8,6 +8,7 @@
 
 declare(strict_types=1);
 
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Kitsune\Core\Fields\Control;
@@ -428,6 +429,46 @@ describe('the guards hold on the bulk path, which had none', function (): void {
         expect(fn () => FieldStorage::query()->insert([[
             'org_id' => $this->orgA->id, 'handle' => 'bulk', 'type' => 'text', 'cardinality' => 1,
         ]]))->toThrow(RuntimeException::class, 'cannot be created in bulk');
+    });
+
+    it('refuses a truncate, which takes every org\'s fields with it', function (): void {
+        /*
+         * ⚠️ THIS BUILDER WAS SAID TO NEED NO `truncate()` BECAUSE IT GUARDS CREATION, AND TRUNCATING CREATES NOTHING.
+         * What a truncate REMOVES was the question. `field_storage` is unscoped and referenced by `fields` with
+         * `ON DELETE CASCADE`, so from one org's context `FieldStorage::query()->truncate()` emptied every org's
+         * storage and fields on SQLite. On PostgreSQL Laravel compiles it as `TRUNCATE … CASCADE`, which follows
+         * every foreign key into the table rather than only the cascading ones. MySQL and MariaDB refuse it
+         * themselves (error 1701), after committing the caller's open transaction — luck, not a guard.
+         */
+        Field::create(['entry_type_id' => $this->type->id, 'field_storage_id' => $this->guarded->id, 'label' => 'Price']);
+        Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Priced', 'values' => ['price' => 10]]);
+
+        app(Context::class)->forget()->setOrg($this->orgB);
+        $theirs = storageFor('stock', 'number', ['org_id' => $this->orgB->id]);
+        $theirType = EntryType::create(['org_id' => $this->orgB->id, 'handle' => 'part', 'name' => 'Part', 'plural_name' => 'Parts']);
+        Field::create(['entry_type_id' => $theirType->id, 'field_storage_id' => $theirs->id, 'label' => 'Stock']);
+        app(Context::class)->forget()->setOrg($this->orgA)->setSite($this->site);
+
+        $counts = fn (): array => collect(['field_storage', 'fields', 'entry_types', 'entries', 'entry_revisions'])
+            ->mapWithKeys(fn (string $table): array => [$table => DB::table($table)->count()])
+            ->all();
+        $before = $counts();
+        $thrown = null;
+
+        try {
+            FieldStorage::query()->truncate();
+        } catch (Throwable $e) {
+            $thrown = $e;
+        }
+
+        expect($thrown)->toBeInstanceOf(RuntimeException::class, 'the truncate was allowed: '.json_encode($counts()))
+            ->and($thrown)->not->toBeInstanceOf(QueryException::class, 'the database refused it, not a guard: '.$thrown?->getMessage())
+            ->and($counts())->toBe($before);
+
+        // A storage row still goes the way it always could: by a predicate, which names the rows it removes.
+        FieldStorage::query()->whereKey(storageFor('spare', 'text', ['org_id' => $this->orgA->id])->id)->delete();
+
+        expect(DB::table('field_storage')->where('handle', 'spare')->exists())->toBeFalse();
     });
 });
 

@@ -220,6 +220,27 @@ class GuardedStorageBuilder extends Builder
     }
 
     /**
+     * ⚠️ AND `truncate()`, WHICH THIS CLASS WAS SAID NOT TO NEED because it guards creation and truncating creates
+     * nothing. What a truncate REMOVES was the question nobody asked. `field_storage` is unscoped, and `fields`
+     * references it with `ON DELETE CASCADE`: from one org's context, `FieldStorage::query()->truncate()` emptied
+     * every org's field storage and every org's fields on SQLite. On PostgreSQL Laravel compiles it as `TRUNCATE …
+     * RESTART IDENTITY CASCADE`, which follows every foreign key into the table rather than the cascading ones, and
+     * it emptied every org's entry types, entries and revisions as well — with no audit row. Measured on both. MySQL
+     * and MariaDB refuse it themselves (error 1701), after committing the caller's open transaction.
+     *
+     * Refused outright, as `ScopedBuilder`, `AuditedBuilder`, `AppendOnlyBuilder` and `GuardedRelationBuilder`
+     * refuse it. A predicate delete names the rows it removes, and stays the way to remove one.
+     */
+    public function truncate(): void
+    {
+        throw new RuntimeException(
+            'Truncating field_storage would remove every org\'s fields at once — the table is shared and unscoped — '
+            .'and on PostgreSQL the truncate cascades into every table that references it, entries included '
+            .'(ADR-006, ADR-021). Delete the rows you mean through a predicate.'
+        );
+    }
+
+    /**
      * ⚠️ The increments can move `cardinality`, which is a shape attribute,
      * and they never reach update() where that is checked — but they must
      * still ADD.

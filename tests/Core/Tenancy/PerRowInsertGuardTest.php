@@ -1244,9 +1244,10 @@ it('refuses truncate, which has no WHERE clause for a scope to narrow', function
      * context left ZERO rows. It also bypasses the cascade refusal `delete()` and `forceDelete()` route
      * through, so every referenced entry goes with it.
      *
-     * ⚠️ The sweep produced a rule rather than a list: `truncate()` belongs wherever `delete()` is
-     * guarded. Three sibling builders override it and all three guard deletion; `GuardedStorageBuilder`
-     * guards creation only and correctly has none, because truncating creates nothing.
+     * ⚠️ The sweep produced a rule, and it was too narrow: `truncate()` belongs wherever `delete()` is
+     * guarded, it said, so `GuardedStorageBuilder`, guarding creation only, "correctly has none". A
+     * truncate removes every row whatever a builder guards, and on PostgreSQL it cascades — so every
+     * guarded builder refuses it now, that one included (`SchemaManagerTest`).
      */
     $theirs = Org::create(['name' => 'Theirs', 'slug' => 'theirs-trunc']);
     app(Context::class)->setOrg($theirs);
