@@ -15,16 +15,16 @@ use Illuminate\Support\Arr;
 /**
  * Eloquent's `touch()`, written through the builder's own `update()` instead of past it.
  *
- * ⚠️ `touch($column)` IS AN UPDATE THAT NEVER REACHES `update()`. Eloquent implements it as `$this->toBase()->update(
- * [$column => now])`, so every guard a builder hangs on `update()` stood aside for it, under any spelling of any column.
- * Measured on SQLite and MySQL: `FieldStorage::query()->touch('handle')` renamed a LOCKED field and
- * `touch('PII_CLASS')` stored a classification ADR-020 does not have; `Site::query()->touch('canonical_host')`
- * rewrote a claimed host `update()` refuses to write. On SQLite `RolePermission::query()->touch('permission')`
- * rewrote the grants it matched — a table with no org to narrow it — with no audit, and
- * `EntryRelation::query()->touch('ordering')` wrote `ordering` outside the versioning `update()` wraps it in. The
- * value written is always a timestamp, never the caller's, so it is an integrity hole rather than a way to choose
- * what lands — and it is closed the way `AuditedBuilder` already closed it for entries, which this now serves too:
- * routed through `update()`, so whatever that refuses, this refuses, and whatever it records, this records.
+ * ⚠️ `touch($column)` IS AN UPDATE THAT NEVER REACHES `update()`. Eloquent implements it as
+ * `$this->toBase()->update([$column => now])`, so every guard a builder hangs on `update()` stood aside for it, under
+ * any spelling of any column. Measured on SQLite and MySQL: `FieldStorage::query()->touch('handle')` renamed a LOCKED
+ * field and `touch('PII_CLASS')` stored a classification ADR-020 does not have;
+ * `Site::query()->touch('canonical_host')` rewrote a claimed host `update()` refuses to write. On SQLite
+ * `RolePermission::query()->touch('permission')` rewrote the grants it matched — a table with no org to narrow it —
+ * with no audit, and `EntryRelation::query()->touch('ordering')` wrote `ordering` outside the versioning `update()`
+ * wraps it in. The value written is always a timestamp, never the caller's, so it is an integrity hole rather than a
+ * way to choose what lands — and it is closed the way `AuditedBuilder` already closed it for entries, which this now
+ * serves too: routed through `update()`, so whatever that refuses, this refuses, and whatever it records, this records.
  *
  * `AppendOnlyBuilder` keeps its own `touch()`, which refuses outright: an append-only table has no `update()` to route
  * through.

@@ -81,9 +81,9 @@ class AuditedBuilder extends ScopedBuilder
      *
      * ⚠️ `entry_type_id` DECIDES WHICH TYPE EVERY CHECK ASKS ABOUT, AND EACH ASKED BY NAME. The creation guard read
      * `$values['entry_type_id']`, `Entry::refuseUnpermittedPublication()` reads the instance's `entry_type_id`, and
-     * the `saving` restamp, the relation veto and `convertFieldValuesForWrite()` look for `entry_type_id` by name. SQLite,
-     * MySQL and MariaDB write `ENTRY_TYPE_ID` into the same column, so under that name each of them saw no type at
-     * all. Measured: somebody holding `create` and not `publish` created an article already published; somebody who
+     * the `saving` restamp, the relation veto and `convertFieldValuesForWrite()` look for `entry_type_id` by name.
+     * SQLite, MySQL and MariaDB write `ENTRY_TYPE_ID` into the same column, so under that name each of them saw no type
+     * at all. Measured: somebody holding `create` and not `publish` created an article already published; somebody who
      * may publish articles and not products retyped a draft article to a product and published it in one save, with
      * `type_handle` left naming `article`; and a bulk retype under another name — a qualified one included — drifted
      * `type_handle` the same way. `type_handle`, `values` and `site_id` are `columnsRequiringModelSave()`, which

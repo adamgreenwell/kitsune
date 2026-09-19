@@ -94,9 +94,10 @@ trait ResolvesWrittenColumns
      * ⚠️ WHICH NAME THE DATABASE KEEPS IS NOT A QUESTION WITH ONE ANSWER, so a guard cannot know which value to
      * judge. SQLite keeps the FIRST of a duplicated column in an INSERT and the LAST in an UPDATE; MySQL and
      * MariaDB refuse a duplicated INSERT column outright (error 1110) and keep the last in an UPDATE; PostgreSQL
-     * refuses a column named twice in either. Measured on all four. A guard that folds the names into one map keeps one of them, and it kept the one SQLite did not:
-     * from org A, `SharedThing::query()->insertGetId(['ORG_ID' => $orgB, 'org_id' => $orgA, …])` passed the
-     * scope-key check on `org_id` and planted the row in org B — with #127's case fold already in place.
+     * refuses a column named twice in either. Measured on all four. A guard that folds the names into one map keeps
+     * one of them, and it kept the one SQLite did not: from org A,
+     * `SharedThing::query()->insertGetId(['ORG_ID' => $orgB, 'org_id' => $orgA, …])` passed the scope-key check on
+     * `org_id` and planted the row in org B — with #127's case fold already in place.
      *
      * ⚠️ JSON PATHS ALONE NEVER COUNT. Each writes part of a column, and several into one column is an ordinary
      * thing to ask for. A whole-column write beside anything else reaching the same column is the ambiguity.
