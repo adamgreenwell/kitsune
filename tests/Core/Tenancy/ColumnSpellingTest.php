@@ -21,6 +21,7 @@ use Kitsune\Core\Models\Role;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Concerns\ResolvesWrittenColumns;
 use Kitsune\Core\Tenancy\Context;
+use Kitsune\Core\Tenancy\ScopedBuilder;
 
 /*
  * A guarded column written under another spelling, on the two builders that kept their own copy of the comparison.
@@ -92,6 +93,20 @@ describe('the one comparison every guarded builder shares', function (): void {
         // Two keys to PHP, one column to MySQL — and whichever value it keeps, no guard compared it.
         expect(fn () => $this->columns->refuseAmbiguousColumns(['org_id' => 1, "ORG_\u{0130}D" => 2]))
             ->toThrow(RuntimeException::class, 'outside ASCII');
+    });
+
+    it('adds no inherited name to the builder every scoped model gets', function (): void {
+        /*
+         * A plugin subclasses `ScopedBuilder` to give a scoped model a builder of its own, so a protected method here
+         * is a name that subclass inherits and collides with. `bareColumn()` was protected before the trait and is
+         * still; the two refusals were private and are still — measured, a plugin subclass declaring a private
+         * `refuseMisnamedGuardedColumn()` failed to load while the refusal was protected.
+         */
+        $method = fn (string $name): ReflectionMethod => new ReflectionMethod(ScopedBuilder::class, $name);
+
+        expect($method('bareColumn')->isProtected())->toBeTrue()
+            ->and($method('refuseMisnamedGuardedColumn')->isPrivate())->toBeTrue()
+            ->and($method('refuseAmbiguousColumns')->isPrivate())->toBeTrue();
     });
 
     it('refuses a column named twice, and allows several paths into one', function (): void {

@@ -11,6 +11,7 @@ declare(strict_types=1);
 namespace Kitsune\Core\Auth;
 
 use Kitsune\Core\Models\Role;
+use Kitsune\Core\Tenancy\Concerns\ResolvesWrittenColumns;
 use Kitsune\Core\Tenancy\ScopedBuilder;
 use RuntimeException;
 
@@ -53,6 +54,15 @@ use RuntimeException;
  */
 class GuardedRoleBuilder extends ScopedBuilder
 {
+    /*
+     * Its own private copy of the refusals, because `ScopedBuilder` keeps its copy private rather than hand every
+     * plugin subclass a protected name. `bareColumn()` comes in protected, exactly as the parent declares it.
+     */
+    use ResolvesWrittenColumns {
+        refuseAmbiguousColumns as private;
+        refuseMisnamedGuardedColumn as private;
+    }
+
     /**
      * Columns whose guarantees are PER ROW, so a bulk write cannot honour them.
      *

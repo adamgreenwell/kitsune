@@ -52,13 +52,16 @@ use RuntimeException;
 class ScopedBuilder extends Builder
 {
     /*
-     * Protected as the trait declares them, because `AuditedBuilder` compares through `bareColumn()` and
-     * `GuardedRoleBuilder` refuses a misnamed owner flag with `refuseMisnamedGuardedColumn()`. The ambiguity refusal
-     * runs on every write this class takes that carries values, so no subclass needs to call it.
+     * ⚠️ `bareColumn()` STAYS PROTECTED, because `AuditedBuilder` compares through it, as it did before the trait.
+     * The two refusals are this class's own business and stay private, as `refuseMisnamedGuardedColumn()` was: this
+     * is the builder every scoped model gets, plugin models included, so a protected method here is a name every
+     * subclass inherits — and a plugin subclass declaring a private method of that name stops loading. A subclass
+     * that needs a refusal takes its own private copy of the trait, as `GuardedRoleBuilder` does.
      */
     use ReadsWrittenKeys;
     use ResolvesWrittenColumns {
         refuseAmbiguousColumns as private;
+        refuseMisnamedGuardedColumn as private;
     }
 
     /**
