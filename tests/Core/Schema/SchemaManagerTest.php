@@ -8,6 +8,7 @@
 
 declare(strict_types=1);
 
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Kitsune\Core\Fields\Control;
@@ -428,6 +429,136 @@ describe('the guards hold on the bulk path, which had none', function (): void {
         expect(fn () => FieldStorage::query()->insert([[
             'org_id' => $this->orgA->id, 'handle' => 'bulk', 'type' => 'text', 'cardinality' => 1,
         ]]))->toThrow(RuntimeException::class, 'cannot be created in bulk');
+    });
+
+    it('takes no proof of a guarded save from outside the save', function (): void {
+        /*
+         * ⚠️ THE BUILDER TOLD A SAVE FROM A BULK WRITE BY A PUBLIC BOOLEAN. `$shapeGuarded` was public, and
+         * `guardShape()` — public too — set it after passing on the instance as it stood. So `$storage->shapeGuarded
+         * = true` or `$storage->guardShape()`, then `$storage->newQuery()->whereKey($id)->update([…])`, wrote any
+         * shape change to a LOCKED field: the builder asked the model it was built on, and the model said its guards
+         * had run. Measured on all four engines. `ScopedBuilder` retired this pattern for the same attack; the
+         * proof is private now, and names the builder the model is actually saving through.
+         */
+        $forged = FieldStorage::query()->findOrFail($this->guarded->id);
+        $forged->shapeGuarded = true;
+
+        $armed = FieldStorage::query()->findOrFail($this->guarded->id);
+        $armed->guardShape();
+
+        foreach (['a forged flag' => $forged, 'the public guard run by hand' => $armed] as $how => $storage) {
+            expect(fn () => $storage->newQuery()->whereKey($storage->id)->update(['handle' => 'cost', 'cardinality' => 5]))
+                ->toThrow(RuntimeException::class, 'cannot be written in bulk', "{$how} armed the proof");
+        }
+
+        // And a proof armed by hand is not one a quiet save may present: it passed on the row before the change.
+        $early = FieldStorage::query()->findOrFail($this->guarded->id);
+        $early->guardShape();
+        $early->handle = 'cost';
+
+        expect(fn () => $early->saveQuietly())->toThrow(RuntimeException::class, 'cannot be written in bulk');
+
+        expect((array) DB::table('field_storage')->where('id', $this->guarded->id)->first(['handle', 'cardinality']))
+            ->toEqual(['handle' => 'price', 'cardinality' => 1]);
+    });
+
+    it('does not let a cancelled save arm the next one', function (): void {
+        /*
+         * ⚠️ THE PROOF OUTLIVED THE SAVE THAT EARNED IT. `guardShape()` arms it in `saving`, and only `saved` disarmed
+         * it — so an observer registered after the model's own that cancelled the save left it standing, and a
+         * `saveQuietly()` that followed, running no guard at all, was read as a guarded save.
+         */
+        $cancelling = true;
+
+        // Booted first, so the model's own `saving` listener runs before this one and arms the proof.
+        new FieldStorage;
+
+        FieldStorage::saving(function () use (&$cancelling): ?bool {
+            return $cancelling ? false : null;
+        });
+
+        $storage = FieldStorage::query()->findOrFail($this->guarded->id);
+        $storage->is_indexed = true;
+
+        expect($storage->save())->toBeFalse('the observer did not cancel the save');
+
+        $cancelling = false;
+        $storage->handle = 'cost';
+
+        expect(fn () => $storage->saveQuietly())->toThrow(RuntimeException::class, 'cannot be written in bulk')
+            ->and(DB::table('field_storage')->where('id', $this->guarded->id)->value('handle'))->toBe('price');
+    });
+
+    it('asks the database whether a field is locked, not the instance it was loaded into', function (): void {
+        /*
+         * ⚠️ `guardShape()` READ THE LOCK FROM THE INSTANCE'S ORIGINAL ATTRIBUTES. The lock is armed in bulk —
+         * `lockStorageHoldingData()` and `armLock()` write it past every loaded instance — so an instance loaded
+         * while the field was open went on believing it, and saved a rename and a retype onto a row the database
+         * held locked. Measured on all four engines.
+         */
+        $open = storageFor('amount', 'number', ['org_id' => $this->orgA->id, 'settings' => ['format' => 'decimal']]);
+
+        $renamed = FieldStorage::query()->findOrFail($open->id);
+        $retyped = FieldStorage::query()->findOrFail($open->id);
+
+        // What the arming paths do once an entry holds data for the field.
+        FieldStorage::query()->whereKey($open->id)->update(['is_locked' => true]);
+
+        $renamed->handle = 'total';
+        $retyped->type = 'text';
+
+        expect(fn () => $renamed->save())->toThrow(RuntimeException::class, 'is locked')
+            ->and(fn () => $retyped->save())->toThrow(RuntimeException::class, 'is locked');
+
+        expect((array) DB::table('field_storage')->where('id', $open->id)->first(['handle', 'type', 'is_locked']))
+            ->toEqual(['handle' => 'amount', 'type' => 'number', 'is_locked' => 1]);
+
+        // And the lock is still only as strict as it was: a stale instance may change what a locked field may.
+        $relabelled = FieldStorage::query()->findOrFail($open->id);
+        $relabelled->is_indexed = true;
+        $relabelled->save();
+
+        expect((bool) DB::table('field_storage')->where('id', $open->id)->value('is_indexed'))->toBeTrue();
+    });
+
+    it('refuses a truncate, which takes every org\'s fields with it', function (): void {
+        /*
+         * ⚠️ THIS BUILDER WAS SAID TO NEED NO `truncate()` BECAUSE IT GUARDS CREATION, AND TRUNCATING CREATES NOTHING.
+         * What a truncate REMOVES was the question. `field_storage` is unscoped and referenced by `fields` with
+         * `ON DELETE CASCADE`, so from one org's context `FieldStorage::query()->truncate()` emptied every org's
+         * storage and fields on SQLite. On PostgreSQL Laravel compiles it as `TRUNCATE … CASCADE`, which follows
+         * every foreign key into the table rather than only the cascading ones. MySQL and MariaDB refuse it
+         * themselves (error 1701), after committing the caller's open transaction — luck, not a guard.
+         */
+        Field::create(['entry_type_id' => $this->type->id, 'field_storage_id' => $this->guarded->id, 'label' => 'Price']);
+        Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Priced', 'values' => ['price' => 10]]);
+
+        app(Context::class)->forget()->setOrg($this->orgB);
+        $theirs = storageFor('stock', 'number', ['org_id' => $this->orgB->id]);
+        $theirType = EntryType::create(['org_id' => $this->orgB->id, 'handle' => 'part', 'name' => 'Part', 'plural_name' => 'Parts']);
+        Field::create(['entry_type_id' => $theirType->id, 'field_storage_id' => $theirs->id, 'label' => 'Stock']);
+        app(Context::class)->forget()->setOrg($this->orgA)->setSite($this->site);
+
+        $counts = fn (): array => collect(['field_storage', 'fields', 'entry_types', 'entries', 'entry_revisions'])
+            ->mapWithKeys(fn (string $table): array => [$table => DB::table($table)->count()])
+            ->all();
+        $before = $counts();
+        $thrown = null;
+
+        try {
+            FieldStorage::query()->truncate();
+        } catch (Throwable $e) {
+            $thrown = $e;
+        }
+
+        expect($thrown)->toBeInstanceOf(RuntimeException::class, 'the truncate was allowed: '.json_encode($counts()))
+            ->and($thrown)->not->toBeInstanceOf(QueryException::class, 'the database refused it, not a guard: '.$thrown?->getMessage())
+            ->and($counts())->toBe($before);
+
+        // A storage row still goes the way it always could: by a predicate, which names the rows it removes.
+        FieldStorage::query()->whereKey(storageFor('spare', 'text', ['org_id' => $this->orgA->id])->id)->delete();
+
+        expect(DB::table('field_storage')->where('handle', 'spare')->exists())->toBeFalse();
     });
 });
 

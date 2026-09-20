@@ -1019,6 +1019,68 @@ it('refuses a publication smuggled through the arithmetic family', function (): 
     Auth::logout();
 });
 
+it('refuses the owner flag under another spelling, which the engine writes into the same column', function (): void {
+    /*
+     * ⚠️ THE BUILDER COMPARED `last(explode('.', $column))` EXACTLY, while SQLite, MySQL and MariaDB match column
+     * names without regard to case. Measured before it compared through `ResolvesWrittenColumns`:
+     * `Role::query()->update(['IS_OWNER' => true])` promoted every role it matched, with no per-holder audit — the
+     * idiom review named for `is_owner`, one shift key away. A SAVE did the same: the lifecycle hooks ask about
+     * `is_owner` by name, `IS_OWNER` left it clean, and the proof let the write through.
+     */
+    app(Context::class)->setOrg($this->alpha);
+
+    $mark = (int) AuditLog::query()->max('id');
+
+    $attempts = [
+        'a bulk write' => fn () => Role::query()->update(['IS_OWNER' => true]),
+        'a qualified bulk write' => fn () => Role::query()->update(['roles.Is_Owner' => true]),
+        'arithmetic extras' => fn () => Role::query()->increment('id', 0, ['IS_OWNER' => true]),
+        'a save' => fn () => $this->alphaRole->fresh()?->update(['IS_OWNER' => true]),
+        // `fill()` drops a dotted key; `forceFill()` keeps it, and the hooks ask about `is_owner` by that name alone.
+        'a qualified save' => fn () => $this->alphaRole->fresh()?->forceFill(['roles.is_owner' => true])->save(),
+        'a quiet save' => fn () => $this->alphaRole->fresh()?->forceFill(['Is_Owner' => true])->saveQuietly(),
+    ];
+
+    /*
+     * ⚠️ REFUSED BY A GUARD, NOT MERELY THROWN. A database error is a RuntimeException too: PostgreSQL rejects a quoted
+     * `"IS_OWNER"` it does not have, and `Role::save()` runs in a transaction whose savepoint absorbs the failure — so
+     * with the proven-save refusal removed, a bare `toThrow(RuntimeException::class)` still passed on that engine.
+     * Measured. The database's refusal is luck; the assertion is about the builder's.
+     */
+    foreach ($attempts as $path => $attempt) {
+        $thrown = null;
+
+        try {
+            $attempt();
+        } catch (Throwable $e) {
+            $thrown = $e;
+        }
+
+        expect($thrown)->toBeInstanceOf(RuntimeException::class, "{$path} was allowed")
+            ->and($thrown)->not->toBeInstanceOf(QueryException::class, "{$path} was refused by the database, not a guard");
+    }
+
+    expect(DB::table('roles')->where('is_owner', true)->count())->toBe(0)
+        ->and(AuditLog::query()->where('id', '>', $mark)->count())->toBe(0);
+});
+
+it('refuses touch() on the owner flag, which Eloquent writes past update()', function (): void {
+    /*
+     * ⚠️ `touch($column)` IS AN UPDATE THAT NEVER REACHES `update()`: Eloquent writes it through `toBase()`. So every
+     * refusal on this builder stood aside for `Role::query()->touch('is_owner')`, which wrote a timestamp into the
+     * flag of every role it matched. The value is never the caller's, and it is refused all the same.
+     */
+    app(Context::class)->setOrg($this->alpha);
+
+    $mark = (int) AuditLog::query()->max('id');
+    $before = DB::table('roles')->orderBy('id')->pluck('is_owner', 'id')->all();
+
+    expect(fn () => Role::query()->touch('is_owner'))->toThrow(RuntimeException::class, 'on roles');
+
+    expect(DB::table('roles')->orderBy('id')->pluck('is_owner', 'id')->all())->toBe($before)
+        ->and(AuditLog::query()->where('id', '>', $mark)->count())->toBe(0);
+});
+
 it('takes the org row before any role row, so two demotions queue rather than deadlock', function (): void {
     /*
      * ⚠️ THE OWNER SWEEP LOCKS A SET AND EVERY CALLER ALREADY HOLDS ONE OF ITS MEMBERS — review found the

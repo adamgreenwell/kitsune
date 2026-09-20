@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Models;
 
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Relations\Pivot;
 use Illuminate\Database\Query\Builder as QueryBuilder;
 use Kitsune\Core\Relations\GuardedRelationBuilder;
@@ -71,11 +72,6 @@ class EntryRelation extends Pivot
     {
         static::creating(fn (self $relation) => $relation->guardCreate());
 
-        // Cleared once the write lands, so the next one has to earn it again.
-        static::saved(function (self $relation): void {
-            $relation->guardsRan = false;
-        });
-
         // ⚠️ The lock arms HERE for a relation, not from `Entry::saved`.
         //
         // `$entry->related()->attach(...)` writes the pivot AFTER the entry
@@ -103,7 +99,7 @@ class EntryRelation extends Pivot
         // recreating the two-subject disclosure through the ordinary
         // relationship API, with no row ever being created.
         static::updating(function (self $relation): void {
-            $relation->guardsRan = true;
+            $relation->refuseKeysThatAreNotWholeIds();
 
             // ⚠️ source_entry_id too, not only the field. Cardinality is
             // counted per (source, field), so moving a row from source B onto
@@ -126,17 +122,63 @@ class EntryRelation extends Pivot
             if ($relation->isDirty(['field_storage_id', 'target_entry_id'])) {
                 $relation->guardTargetType();
             }
+
+            // ⚠️ LAST, AFTER EVERY GUARD HAS PASSED. It was the first line of this listener, so a save a guard refused
+            // left it armed — and `saved`, the only thing that disarmed it, never fires for a refused save or for an
+            // instance `increment()`, which dispatches `updating` and not `saved`. A `saveQuietly()` that ran no guard
+            // then presented the proof: measured, a move onto another org's storage was refused and the quiet retry
+            // landed it.
+            $relation->guardsRan = true;
         });
     }
 
     /**
-     * True only while THIS row's guards have run for the write in flight.
+     * True only while THIS row's guards have passed for the save in flight.
      *
      * ⚠️ How the guarded builder tells a model save from a bulk one. Both
      * reach the builder's methods, so refusing every bulk-shaped write would
      * refuse `attach()` as well.
+     *
+     * ⚠️ PRIVATE, AND IT WAS A PUBLIC BOOLEAN that the builder read off whatever model it was built on — so
+     * `$row->guardsRan = true`, or a hand call to the public `guardCreate()` that armed it, then
+     * `$row->newQuery()->update([…])` was read as a guarded save. `Role` and `DerivesGuardedColumns` had been
+     * through this already: the proof is two private facts now — the guards passed, set by the `updating` listener
+     * and cleared as each `performUpdate()` begins, and the builder this instance is being saved through, which only
+     * that method sets.
      */
-    public bool $guardsRan = false;
+    private bool $guardsRan = false;
+
+    /** The builder this instance is being saved through, or null when no save is in flight. */
+    private ?object $writingThrough = null;
+
+    /**
+     * Whether this write's guards passed — for THIS builder, inside this instance's own save.
+     *
+     * Asked by `GuardedRelationBuilder`, which has no other way to tell a move from a bulk write.
+     */
+    public function guardsRanFor(object $through): bool
+    {
+        return $this->guardsRan && $this->writingThrough === $through;
+    }
+
+    /**
+     * The one place the write identity is set. `updating` — which arms the proof — fires inside this method, so
+     * clearing the proof on entry costs a legitimate save nothing and a stale one everything: a refused save, or an
+     * instance `increment()`, which dispatches `updating` and never reaches here.
+     *
+     * @param  Builder<static>  $query
+     */
+    protected function performUpdate(Builder $query)
+    {
+        $this->guardsRan = false;
+        $this->writingThrough = $query;
+
+        try {
+            return parent::performUpdate($query);
+        } finally {
+            $this->writingThrough = null;
+        }
+    }
 
     /**
      * Every check a new relation row must pass.
@@ -156,12 +198,11 @@ class EntryRelation extends Pivot
      */
     public function guardCreate(): void
     {
+        $this->refuseKeysThatAreNotWholeIds();
         $this->guardStorageOwnership();
         $this->guardEndpointsVisible();
         $this->guardCardinality();
         $this->guardTargetType();
-
-        $this->guardsRan = true;
     }
 
     /**
@@ -225,6 +266,34 @@ class EntryRelation extends Pivot
     }
 
     /**
+     * Refuse a key that is not exactly a whole id — see `ReadsWrittenKeys`.
+     *
+     * ⚠️ THE GUARDS BELOW LOOK EACH KEY UP, AND THE ENGINE ROUNDS IT. MySQL and MariaDB compare `id = '5.4'` as a
+     * number and match nothing, then store `'5.4'` in an integer column as 5. So a fractional storage key found no
+     * storage, every check that needed one stood aside, and the relation landed on another org's field; a stamp of
+     * `'1.9'` compared equal to org 1 and was stored as org 2. Measured on both. SQLite and PostgreSQL refuse the
+     * fraction themselves, which is luck, not a guard — so it is refused here, before any lookup, on every engine.
+     */
+    private function refuseKeysThatAreNotWholeIds(): void
+    {
+        foreach (['source_entry_id', 'target_entry_id', 'field_storage_id', 'org_id'] as $column) {
+            $value = $this->getAttributes()[$column] ?? null;
+
+            if ($value === null || self::writtenKey($value) !== null) {
+                continue;
+            }
+
+            throw new RuntimeException(sprintf(
+                'Relation [%s] = %s is not a whole id. MySQL and MariaDB round such a key onto another row when '
+                .'they store it, after every check here has looked up the row it does not name (ADR-021). Pass '
+                .'the id itself, as an integer or its exact decimal string.',
+                $column,
+                is_scalar($value) ? var_export($value, true) : get_debug_type($value),
+            ));
+        }
+    }
+
+    /**
      * The storage has to be the source org's, or global.
      *
      * ⚠️ Nothing checked, and `field_storage` is #[Unscoped], so an org could
@@ -273,7 +342,24 @@ class EntryRelation extends Pivot
             ));
         }
 
-        $storageOrg = FieldStorage::query()->whereKey($this->field_storage_id)->value('org_id');
+        /*
+         * ⚠️ A STORAGE THAT IS NOT THERE IS NOT A GLOBAL ONE, and `value('org_id')` answered null for both. So a key
+         * naming no row passed as though it named global storage — and MySQL and MariaDB then rounded `'5.4'` onto
+         * storage 5, another org's. Keys are whole ids by now (`refuseKeysThatAreNotWholeIds()`), and a missing row
+         * is refused rather than guessed at: the foreign key would refuse it anyway, after every check had stood
+         * aside.
+         */
+        $storage = FieldStorage::query()->whereKey($this->field_storage_id)->first(['id', 'org_id']);
+
+        if ($storage === null) {
+            throw new RuntimeException(sprintf(
+                'Field storage %s does not exist, so nothing here can say whose it is, and a relation cannot be '
+                .'written against it (ADR-021).',
+                (string) $this->field_storage_id,
+            ));
+        }
+
+        $storageOrg = $storage->org_id;
 
         if ($storageOrg === null || ($sourceOrg !== null && (int) $storageOrg === (int) $sourceOrg)) {
             return;

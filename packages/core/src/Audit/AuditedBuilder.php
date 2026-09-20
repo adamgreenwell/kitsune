@@ -17,6 +17,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Schema\RevisionWrites;
+use Kitsune\Core\Tenancy\Concerns\ResolvesWrittenColumns;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tenancy\ScopedBuilder;
 use RuntimeException;
@@ -69,6 +70,27 @@ use RuntimeException;
  */
 class AuditedBuilder extends ScopedBuilder
 {
+    // Its own private copy of the refusals, as `GuardedRoleBuilder` takes one: `ScopedBuilder` keeps its copy private.
+    use ResolvesWrittenColumns {
+        refuseAmbiguousColumns as private;
+        refuseMisnamedGuardedColumn as private;
+    }
+
+    /**
+     * The columns `Entry`'s own checks read by that name alone, so the only name a write may give them.
+     *
+     * ⚠️ `entry_type_id` DECIDES WHICH TYPE EVERY CHECK ASKS ABOUT, AND EACH ASKED BY NAME. The creation guard read
+     * `$values['entry_type_id']`, `Entry::refuseUnpermittedPublication()` reads the instance's `entry_type_id`, and
+     * the `saving` restamp, the relation veto and `convertFieldValuesForWrite()` look for `entry_type_id` by name.
+     * SQLite, MySQL and MariaDB write `ENTRY_TYPE_ID` into the same column, so under that name each of them saw no type
+     * at all. Measured: somebody holding `create` and not `publish` created an article already published; somebody who
+     * may publish articles and not products retyped a draft article to a product and published it in one save, with
+     * `type_handle` left naming `article`; and a bulk retype under another name — a qualified one included — drifted
+     * `type_handle` the same way. `type_handle`, `values` and `site_id` are `columnsRequiringModelSave()`, which
+     * `ScopedBuilder` already holds to their own names; this is the one column those checks read that is not.
+     */
+    private const READ_BY_NAME = ['entry_type_id'];
+
     private const NO_BULK_CREATE =
         'Entries cannot be written in bulk, because these paths return a row count rather than '
         .'the keys they wrote — there would be nothing to record as the target, and an entry '
@@ -94,6 +116,8 @@ class AuditedBuilder extends ScopedBuilder
      */
     public function insertGetId(array $values, $sequence = null)
     {
+        $this->refuseMisnamedEntryColumns($values);
+
         $model = $this->getModel();
 
         // ⚠️ Conversion happens HERE, not in a `saving` listener, because this is the
@@ -279,39 +303,9 @@ class AuditedBuilder extends ScopedBuilder
         );
     }
 
-    /**
-     * ⚠️ Eloquent implements bulk touching as `toBase()->update(...)`, which
-     * goes straight past the override above. Every matching entry had its
-     * `updated_at` moved with no audit row.
-     *
-     * Routed through update() rather than duplicated, so it inherits the
-     * capture-then-write-by-keys behaviour and names the same action.
-     *
-     * @param  array<int, string>|string|null  $column
-     * @return bool|int
-     */
-    public function touch($column = null)
-    {
-        $time = $this->model->freshTimestamp();
-
-        if ($column !== null) {
-            $columns = [];
-
-            foreach ((array) $column as $name) {
-                $columns[$name] = $time;
-            }
-
-            return $this->update($columns);
-        }
-
-        $column = $this->model->getUpdatedAtColumn();
-
-        if (! $this->model->usesTimestamps() || $column === null) {
-            return false;
-        }
-
-        return $this->update([$column => $time]);
-    }
+    // ⚠️ `touch()` is routed through `update()` — Eloquent writes it through `toBase()`, and every matching entry had
+    // its `updated_at` moved with no audit row. The override that did it here is `TouchesThroughUpdate` now, on
+    // `ScopedBuilder`, because every guarded builder had the same hole and only this one had closed it.
 
     /**
      * ⚠️ Forwarded WHOLE to the query builder, so neither these overrides nor
@@ -342,6 +336,8 @@ class AuditedBuilder extends ScopedBuilder
     /** @param  array<string, mixed>  $values */
     public function update(array $values)
     {
+        $this->refuseMisnamedEntryColumns($values);
+
         // Same conversion as the insert path, at the same place: the write.
         $values = $this->getModel()->convertFieldValuesForWrite($values);
 
@@ -414,15 +410,13 @@ class AuditedBuilder extends ScopedBuilder
      */
     private function refuseNoncanonicalStatus(array $values): void
     {
-        $table = $this->getModel()->getTable();
-
-        foreach (['status', $table.'.status'] as $column) {
-            if (! array_key_exists($column, $values)) {
-                continue;
-            }
-
-            $status = $values[$column];
-
+        /*
+         * ⚠️ EVERY NAME THAT REACHES THE COLUMN, which was `status` and `entries.status` exactly. SQLite, MySQL and
+         * MariaDB match column names without regard to case, so `update(['STATUS' => 'publíshed'])` stored what
+         * this refuses — measured. Each spelling is judged, since which of two the database keeps depends on the
+         * engine; `ScopedBuilder` refuses the write that names the column twice as well.
+         */
+        foreach ($this->writtenStatuses($values) as $status) {
             if (is_string($status) && in_array($status, Entry::STATUSES, true)) {
                 continue;
             }
@@ -475,16 +469,21 @@ class AuditedBuilder extends ScopedBuilder
     private function refuseUnpermittedPublication(array $values): void
     {
         $model = $this->getModel();
-        $table = $model->getTable();
-        $status = $values['status'] ?? $values[$table.'.status'] ?? null;
 
         /*
          * ⚠️ CASE-INSENSITIVELY — see `Entry::isPublished()`. MySQL and MariaDB's default collations match a
          * stored `PUBLISHED` against `scopePublished()`'s `status = 'published'`, so a strict comparison here
          * let that spelling through a guard whose whole job is to catch it.
+         *
+         * ⚠️ AND THE COLUMN'S NAME THE SAME WAY, for the same reason: `$entry->update(['STATUS' => 'published'])`
+         * found no `status` here and published the article for somebody who may not — measured.
          */
-        if (! is_string($status) || mb_strtolower($status) !== 'published'
-            || ! $model->exists || $model->getKeyForAuthorization() === null) {
+        $publishing = array_filter(
+            $this->writtenStatuses($values),
+            static fn (mixed $status): bool => is_string($status) && mb_strtolower($status) === 'published',
+        );
+
+        if ($publishing === [] || ! $model->exists || $model->getKeyForAuthorization() === null) {
             return;
         }
 
@@ -503,12 +502,12 @@ class AuditedBuilder extends ScopedBuilder
     private function refuseUnpermittedCreationAsPublished(array $values): void
     {
         $model = $this->getModel();
-        $status = $values['status'] ?? $values[$model->getTable().'.status'] ?? null;
 
-        if ($status !== 'published') {
+        if (! in_array('published', $this->writtenStatuses($values), true)) {
             return;
         }
 
+        // By this name alone, which is safe only because `refuseMisnamedEntryColumns()` has refused every other one.
         $model->refuseUnpermittedCreationAsPublished($values['entry_type_id'] ?? null);
     }
 
@@ -560,6 +559,7 @@ class AuditedBuilder extends ScopedBuilder
      */
     public function increment($column, $amount = 1, array $extra = [])
     {
+        $this->refuseMisnamedEntryColumns([(string) $column => $amount, ...$extra]);
         $this->refuseScopeArithmetic([(string) $column => $amount, ...$extra]);
         $this->refusePerRowExtras($extra);
         $this->refuseNoncanonicalStatus([(string) $column => $amount, ...$extra]);
@@ -582,6 +582,7 @@ class AuditedBuilder extends ScopedBuilder
      */
     public function decrement($column, $amount = 1, array $extra = [])
     {
+        $this->refuseMisnamedEntryColumns([(string) $column => $amount, ...$extra]);
         $this->refuseScopeArithmetic([(string) $column => $amount, ...$extra]);
         $this->refusePerRowExtras($extra);
         $this->refuseNoncanonicalStatus([(string) $column => $amount, ...$extra]);
@@ -609,6 +610,7 @@ class AuditedBuilder extends ScopedBuilder
      */
     public function incrementEach(array $columns, array $extra = [])
     {
+        $this->refuseMisnamedEntryColumns([...$columns, ...$extra]);
         $this->refuseScopeArithmetic([...$columns, ...$extra]);
         $this->refusePerRowExtras($extra);
         $this->refuseNoncanonicalStatus([...$columns, ...$extra]);
@@ -631,6 +633,7 @@ class AuditedBuilder extends ScopedBuilder
      */
     public function decrementEach(array $columns, array $extra = [])
     {
+        $this->refuseMisnamedEntryColumns([...$columns, ...$extra]);
         $this->refuseScopeArithmetic([...$columns, ...$extra]);
         $this->refusePerRowExtras($extra);
         $this->refuseNoncanonicalStatus([...$columns, ...$extra]);
@@ -661,14 +664,35 @@ class AuditedBuilder extends ScopedBuilder
         $model = $this->getModel();
         $column = $model->getDeletedAtColumn();
 
-        // Bulk updates qualify their columns; instance saves do not.
-        foreach ([$column, $model->getTable().'.'.$column] as $key) {
-            if (array_key_exists($key, $values)) {
-                return $values[$key] === null ? 'restored' : 'deleted';
+        // Bulk updates qualify their columns; instance saves do not. ⚠️ And the database matches the name
+        // without regard to case, so `update(['DELETED_AT' => now()])` soft-deleted entries that this recorded
+        // as `entry.updated` — measured — until it read the name through `bareColumn()`.
+        foreach ($values as $written => $value) {
+            if ($this->bareColumn((string) $written) === strtolower($column)) {
+                return $value === null ? 'restored' : 'deleted';
             }
         }
 
         return 'updated';
+    }
+
+    /**
+     * Every value this write assigns to `status`, under whichever names reach it.
+     *
+     * @param  array<array-key, mixed>  $values
+     * @return list<mixed>
+     */
+    private function writtenStatuses(array $values): array
+    {
+        $statuses = [];
+
+        foreach ($values as $written => $value) {
+            if ($this->bareColumn((string) $written) === 'status') {
+                $statuses[] = $value;
+            }
+        }
+
+        return $statuses;
     }
 
     /**
@@ -898,6 +922,25 @@ class AuditedBuilder extends ScopedBuilder
                 $before[$entry->getKey()],
                 $after[$entry->getKey()],
             );
+        }
+    }
+
+    /**
+     * Refuse a column `Entry`'s checks read by name, written under any other name — qualified, cased or quoted.
+     *
+     * On every write that carries values, because every one reaches a check that reads the type by name: the
+     * creation guard, the publication guard (whose instance the arithmetic doors fill from `$extra`), and the restamp.
+     *
+     * @param  array<array-key, mixed>  $values
+     */
+    private function refuseMisnamedEntryColumns(array $values): void
+    {
+        foreach (array_keys($values) as $written) {
+            $column = $this->bareColumn((string) $written);
+
+            if (in_array($column, self::READ_BY_NAME, true)) {
+                $this->refuseMisnamedGuardedColumn((string) $written, $column);
+            }
         }
     }
 

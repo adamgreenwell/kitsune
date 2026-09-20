@@ -35,6 +35,8 @@ use RuntimeException;
  */
 trait EnforcesScope
 {
+    use ReadsWrittenKeys;
+
     public static function bootEnforcesScope(): void
     {
         // Throws for an undeclared model. Boot time is the right moment:
@@ -149,7 +151,8 @@ trait EnforcesScope
 
     private function guardScopeKey(string $column, ?int $current, bool $nullable = false): void
     {
-        $value = $this->getAttribute($column);
+        // The value the write will carry, uncast — a cast would read `'13.9'` the way PHP does, not the database.
+        $value = $this->getAttributes()[$column] ?? null;
 
         if ($value === null && $nullable) {
             return;
@@ -178,18 +181,19 @@ trait EnforcesScope
             ));
         }
 
-        if ($current === null || $value === null || (int) $value === $current) {
+        // ⚠️ The key the DATABASE writes — see `ReadsWrittenKeys`: `'13.9'` is 13 to `(int)` and 14 to MySQL.
+        if ($current === null || $value === null || self::writtenKey($value) === $current) {
             return;
         }
 
         throw new RuntimeException(sprintf(
             'Refusing to write %s with [%s] = %s from a context scoped to %s. A scope that only '
             .'filters SELECTs still lets a caller write a row belonging to somebody else, and '
-            .'reading and writing are separate holes (ADR-021). Use withoutScopeBecause() if this '
-            .'is deliberate.',
+            .'reading and writing are separate holes (ADR-021). A key has to be the id itself, as an '
+            .'integer or its exact decimal string. Use withoutScopeBecause() if this is deliberate.',
             static::class,
             $column,
-            (string) $value,
+            is_scalar($value) ? var_export($value, true) : get_debug_type($value),
             (string) $current,
         ));
     }

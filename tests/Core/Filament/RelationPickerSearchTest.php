@@ -354,7 +354,15 @@ it('still refuses a held relation the FIELD no longer targets', function (): voi
 
     // Linked while the field accepted any type, then narrowed to articles only.
     $source->syncFieldRelations($storage, [$note->getKey()]);
-    $storage->update(['settings' => ['targetTypes' => ['article']]]);
+
+    /*
+     * ⚠️ WRITTEN BELOW THE MODEL, BECAUSE THE MODEL NO LONGER ALLOWS IT. The link armed the field's lock, and a
+     * locked field refuses a narrowed `targetTypes` — this fixture used to reach the state through `$storage`, an
+     * instance loaded before the lock was armed, whose stale copy of `is_locked` let the narrowing through. That was
+     * the defect, and `guardShape()` asks the database now. A row narrowed before the lock existed, or by hand, is
+     * still a state this renderer has to handle, so it is written the way such a row would have been.
+     */
+    DB::table('field_storage')->where('id', $storage->id)->update(['settings' => json_encode(['targetTypes' => ['article']])]);
 
     expect($source->relatedIdsForField($storage->fresh()))->toBe([$note->getKey()]);
 

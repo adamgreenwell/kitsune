@@ -11,6 +11,7 @@ declare(strict_types=1);
 namespace Kitsune\Core\Auth;
 
 use Kitsune\Core\Models\Role;
+use Kitsune\Core\Tenancy\Concerns\ResolvesWrittenColumns;
 use Kitsune\Core\Tenancy\ScopedBuilder;
 use RuntimeException;
 
@@ -53,6 +54,15 @@ use RuntimeException;
  */
 class GuardedRoleBuilder extends ScopedBuilder
 {
+    /*
+     * Its own private copy of the refusals, because `ScopedBuilder` keeps its copy private rather than hand every
+     * plugin subclass a protected name. `bareColumn()` comes in protected, exactly as the parent declares it.
+     */
+    use ResolvesWrittenColumns {
+        refuseAmbiguousColumns as private;
+        refuseMisnamedGuardedColumn as private;
+    }
+
     /**
      * Columns whose guarantees are PER ROW, so a bulk write cannot honour them.
      *
@@ -69,6 +79,22 @@ class GuardedRoleBuilder extends ScopedBuilder
      */
     public function update(array $values)
     {
+        /*
+         * ⚠️ A PROVEN SAVE WRITES THE OWNER FLAG UNDER ITS OWN NAME OR NOT AT ALL. The lifecycle hooks that audit a
+         * change of owner ask about `is_owner` by name, so `$role->update(['IS_OWNER' => true])` left that
+         * attribute clean, passed every hook, armed the proof — and SQLite, MySQL and MariaDB wrote the second
+         * attribute into the same column. Measured: the role became an owner with no per-holder audit.
+         */
+        if ($this->getModel()->authorityProven($this)) {
+            foreach (array_keys($values) as $written) {
+                $column = $this->bareColumn((string) $written);
+
+                if (in_array($column, self::PER_ROW, true)) {
+                    $this->refuseMisnamedGuardedColumn((string) $written, $column);
+                }
+            }
+        }
+
         if (! $this->getModel()->authorityProven($this)) {
             $this->refusePerRowAuthority($values, 'a bulk write');
 
@@ -114,16 +140,23 @@ class GuardedRoleBuilder extends ScopedBuilder
      */
     private function refusePerRowAuthority(array $values, string $shape): void
     {
-        foreach (array_keys($values) as $column) {
-            // Qualified names arrive from a join, so compare the column rather than the prefix.
-            if (in_array(last(explode('.', (string) $column)), self::PER_ROW, true)) {
+        foreach (array_keys($values) as $written) {
+            /*
+             * ⚠️ AS THE DATABASE READS THE NAME, which `last(explode('.', …))` did not: qualified names arrive
+             * from a join, and SQLite, MySQL and MariaDB match column names without regard to case. Measured before
+             * this read through `ResolvesWrittenColumns`: `Role::query()->update(['IS_OWNER' => true])` promoted
+             * every role it matched, with no per-holder audit.
+             */
+            $column = $this->bareColumn((string) $written);
+
+            if (in_array($column, self::PER_ROW, true)) {
                 throw new RuntimeException(sprintf(
                     'Refusing %s to `%s` on roles: the owner flag is audited one row per HOLDER '
                     .'and the scope key is guarded per row, and these paths dispatch nothing — so the '
                     .'authority would change with no trail of who gained or lost it (ADR-020, ADR-033). '
                     .'Load the role and save it.',
                     $shape,
-                    (string) last(explode('.', (string) $column)),
+                    $column,
                 ));
             }
         }

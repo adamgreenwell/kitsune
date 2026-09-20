@@ -155,7 +155,7 @@ Dual-licensing requires owning or being licensed all rights. **The first communi
 
 ## ADR-006 — Schema storage: JSON + generated columns
 
-**Status:** Decided · direction **forced** by ADR-010 · ⚠️ **Revised by ADR-021** · ✅ **Mechanism verified 2026-09-07** — composite indexes now lead with the model's scope key (`site_id` for site-scoped, `org_id` for org-scoped), not `tenant_id`. The original text below is left as written
+**Status:** Decided · direction **forced** by ADR-010 · ⚠️ **Revised by ADR-021** · ✅ **Mechanism verified 2026-09-07** — composite indexes now lead with the model's scope key (`site_id` for site-scoped, `org_id` for org-scoped), not `tenant_id`. The original text below is left as written · **Amended 2026-09-19** — the lock held on some Eloquent write paths and not others; see *the lock, on every Eloquent path*
 
 Steal Drupal's field-storage *shape*, not its storage *strategy*. The `FieldStorage` / `FieldConfig` split: storage defined once and reusable across entity types, per-type presentation separate, **storage locked once data exists**. The lock-on-data-present guard ships in v1.
 
@@ -170,6 +170,20 @@ The mechanism this ADR rests on is proven rather than assumed. `SchemaDriver` an
 Four divergences, not the two originally noted: the JSON path operator, the cast form, **identifier quoting** — `values` is reserved on MySQL and PostgreSQL, and this document's own SQL examples were unquoted and would have failed as written — and whether the column can be materialised at all. SQLite cannot add a STORED generated column through `ALTER TABLE`; it takes a VIRTUAL one, which is still indexable, and that inverts the cost model in SQLite's favour: no write amplification, no table rewrite, paid for by evaluating per row scanned.
 
 The driver fails closed on an unknown engine, because falling back to a probably-compatible driver is how a generated column silently indexes nothing.
+
+### Amendment — the lock, on every Eloquent path, 2026-09-19
+
+**Status:** Amended
+
+"Storage locked once data exists" is enforced by `FieldStorage::guardShape()` on a save and by `GuardedStorageBuilder` on the paths a save never takes. Review of ADR-021's column-spelling amendment measured five more ways past it, each spelled correctly — every one on SQLite, and the engine-specific ones on the engines named:
+
+- **A bulk write cleared the lock with a value PHP reads as true.** The builder refused clearing it with `(bool) $value === false`; an `Expression`, `'00'`, `'0.0'`, `' 0'`, `'-0'` and `'0e0'` are true to PHP and stored as 0 by SQLite, MySQL and MariaDB, and PostgreSQL stores `'false'`, `'off'`, `'no'` and `'f'` as false. `decrement('is_locked')` cleared it with no value to judge at all. A bulk write now arms the lock with `true`, `1` or `'1'` and nothing else, and arithmetic on it is refused.
+- **`truncate()` was not refused**, on the reasoning that this builder guards creation and truncating creates nothing. It removes every org's rows from a shared table — and on PostgreSQL Laravel compiles it `TRUNCATE … CASCADE`, which emptied every org's fields, entry types, entries and revisions with no audit row. Refused now, as on every guarded builder.
+- **`touch($column)` wrote past `update()`**, because Eloquent implements it through `toBase()`: `touch('handle')` renamed a locked field and `touch('pii_class')` stored a classification ADR-020 does not have. It is routed through `update()` on every guarded builder now (`TouchesThroughUpdate`, `@internal`).
+- **The save proof was a public boolean**, read off whatever model the builder was built on, so `$storage->shapeGuarded = true` or a hand call to `guardShape()` licensed `$storage->newQuery()->update([…])` to change a locked field's shape; and a save an observer cancelled left it armed for a `saveQuietly()`. It is private now, cleared as each save begins, and names the builder the instance is saving through — the pattern `Role` and `DerivesGuardedColumns` already used. `EntryRelation`'s proof had the same two defects, plus one of its own: its listener armed the proof before any guard ran.
+- **The lock was read from the instance**, not the row. It is armed in bulk, past every loaded instance, so an instance loaded while the field was open saved a rename and a retype onto a row the database held locked. `guardShape()` asks the row now when the instance believes the field open.
+
+**What it does not claim.** The lock is not taken with a row lock. A writer that stores a field's first value and then arms the lock takes no lock on the storage row, so a shape change saved between the two still lands on a field about to hold data. Closing that needs the data writers to lock the storage row before they write, which is a change to them rather than to this guard. And below Eloquent — `toBase()`, `DB::table()` — nothing here stands, as ADR-020 already says of the audit.
 
 ---
 
@@ -745,7 +759,7 @@ at a time.
 
 ## ADR-021 — Sites: a third structural level, and Filament's tenant is the Site
 
-**Status:** Decided · 2026-09-07 · **Amended 2026-09-09** — three times while public site resolution was built (issue #38); see the amendments below
+**Status:** Decided · 2026-09-07 · **Amended 2026-09-09** — three times while public site resolution was built (issue #38); see the amendments below · **Amended 2026-09-19** — every guarded builder reads a written column the way the database does, through one comparison, and a written key as the id the database stores; see *a column is the one the database writes*
 **Revises** ADR-009 (two scoping levels, not one) and ADR-017 (locale is derived from site, not stored on the entry).
 
 ### The gap this closes
@@ -907,6 +921,28 @@ For most users this is merely awkward — route binding narrowed to their own si
 **`sites` therefore carries a `slug` column, globally unique, and it is the route key.** `handle` is unchanged and stays org-unique. The two are separate because they answer different questions: what the operator calls this site, and which URL owns it.
 
 Found by review, not by design — the original ADR reasoned about the route contract having three parameters and never asked whether the tenant segment was unambiguous.
+
+### Amendment — a column is the one the database writes, in every guarded builder, 2026-09-19
+
+**Status:** Amended
+
+The kernel enforces isolation at the write, and at the builder rather than in a model event, because a mass update dispatches nothing. That enforcement compares the columns a write names with the columns it guards — and six builders made the comparison, each its own way. After #127, `ScopedBuilder` folded case and rooted a JSON path at its column. `GuardedRelationBuilder` (`entry_relations`) and `GuardedStorageBuilder` (`field_storage`) each kept a private copy of the older, exact rule, which also read `settings->format` as a column nobody guards; `GuardedRoleBuilder`, `AppendOnlyBuilder` and `AuditedBuilder`'s status and soft-delete checks compared exactly by rules of their own. SQLite, MySQL and MariaDB match column names without regard to ASCII case, so each of those guards had a second spelling that walked past it. Measured before the fix, on SQLite and — for the two sibling builders — on MySQL and MariaDB too:
+
+- **A relation row moved across the org boundary.** `EntryRelation::query()->update(['ORG_ID' => $rival])` restamped it, `['Source_Entry_Id' => $theirs]` hung it off another org's entry, and `['FIELD_STORAGE_ID' => $single]` gave a full cardinality-one field a second target — ADR-020's two-subject disclosure, one shift key from the refusal.
+- **A locked field changed shape.** `FieldStorage::query()->update(['IS_LOCKED' => false])` cleared the lock ADR-006 calls the record that data exists, `['HANDLE' => 'cost']` renamed a locked field, `['PII_CLASS' => 'bogus']` stored a classification ADR-020 does not have — and `['settings->format' => 'integer']` moved a locked field's projection **spelled correctly**, because the path was never rooted at its column.
+- **A genuine save walked past the model's own hooks**, which read each attribute by its name. `$storage->update(['IS_LOCKED' => false])`, `$relation->update(['FIELD_STORAGE_ID' => …])` and `attach($id, ['FIELD_STORAGE_ID' => …])` each passed every check on the lowercase attribute — unchanged, or never set — while the engine wrote the other one.
+- **And beyond the two siblings:** `Role::query()->update(['IS_OWNER' => true])` promoted every role it matched with no per-holder audit (ADR-033); `AuditLog::query()->insert(['ORG_ID' => $rival, …])` appended to another org's trail; `$entry->update(['STATUS' => 'published'])` published for somebody without `publish` (ADR-033), and so did `Entry::create(['ENTRY_TYPE_ID' => …, 'status' => 'published'])`, whose type the creation guard never read; and `update(['DELETED_AT' => now()])` was audited as `entry.updated`.
+- **#127's own fix was not closed either.** `ScopedBuilder` folded every written name into one map before comparing, so of `ORG_ID` and `org_id` it judged the last — and SQLite keeps the **first** of a duplicated column in an INSERT. From org A, `insertGetId(['ORG_ID' => $orgB, 'org_id' => $orgA, …])` planted a row in org B on the default engine. MySQL and MariaDB refuse a duplicated INSERT column themselves (error 1110), PostgreSQL refuses a column named twice in either statement, and SQLite, MySQL and MariaDB keep the last in an UPDATE: luck wherever it held, not a guard.
+
+**One comparison now — the `ResolvesWrittenColumns` trait, `@internal` — and every one of those builders uses it**, with three rules:
+
+1. **A written name is the column the database writes.** The JSON path comes off first, then the table qualifier by its last dot, then quoting, then ASCII case. **A name outside ASCII is refused rather than folded**, because MySQL folds further than ASCII: MySQL 8.4 takes a dotted capital I (U+0130) to `i` and the Kelvin sign (U+212A) to `k`, so to it `ORG_İD` is `org_id` and `İS_LOCKED` is `is_locked`. Folded by `strtolower()`, those names matched no guarded column, and every guarded column with an `i` or a `k` in it could be written past its guard — `ScopedBuilder`'s scope keys since #127 included. Measured through PDO with utf8mb4, the charset Laravel connects with; MariaDB 10.6, SQLite and PostgreSQL refuse the same names as unknown. ⚠️ An earlier draft of this amendment said all three case-folding engines refused `ORG_İD`, "measured" through the container's `mysql` client — whose `character_set_client` is latin1, so the server never received the name that was typed. No list of foldable characters is kept, since that is the server version's business: every Kitsune column is ASCII, so refusing everything else refuses nothing a caller needs. A key inside a JSON path is data, not a name, and stays free.
+2. **A write that stands behind its guards writes each guarded column under the name they read, or not at all** — a save through either sibling or through `GuardedRoleBuilder`, and the siblings' `insertGetId()`, which builds the model its guards read from the written names verbatim. `ScopedBuilder` already asked this of a save for `columnsRequiringModelSave()`. And `AuditedBuilder` asks it of every write that names `entry_type_id`, bulk ones included, because `Entry`'s restamp, relation veto and publish checks each read the type by that name alone.
+3. **A write that names one column twice is refused**, on every write `ScopedBuilder` takes that carries values and in both siblings, because which value the database keeps depends on the engine and the statement. Several JSON paths into one column are partial writes rather than a duplicate, and stay allowed. `AppendOnlyBuilder` and `AuditedBuilder`'s status checks judge every spelling instead, and `AuditedBuilder`'s writes reach `ScopedBuilder`'s refusal as well.
+
+**And a key is the id the database stores, not the one `(int)` reads.** The same question, asked of a value rather than a name. `(int) '13.9'` is 13, and MySQL and MariaDB store `'13.9'` in an integer column as 14 — `'13.9e0'` and the float `13.9` too — so the scope-key comparison `(int) $value === $current`, in `ScopedBuilder`, `EnforcesScope` and `AppendOnlyBuilder` alike, passed a key the database then wrote into the next org. Measured on both, from org 1 with a key of `'1.9'`: a mass update, a save, a create, a hand-rolled insert and an audit append each stored org 2. A relation's storage key went the same way by another road: looked up as `'5.4'` it found no storage, so ownership, cardinality and target type each stood aside as though the storage were global, and the engine stored 5 — another org's. A key now counts only as an integer or its exact decimal string (`ReadsWrittenKeys`, `@internal`); a relation refuses any other shape for its four keys before it looks anything up; and a storage key that names no row is refused rather than read as global. SQLite and PostgreSQL refuse the fraction themselves, which was luck, not a guard.
+
+**What it does not claim.** A builder guards the columns it names. A model hook that reads some *other* attribute by name is covered only where a builder refuses that column under another spelling — this amendment makes the comparisons the builders make agree with the database, not every attribute read in every model. One such read is known and left: `Entry::convertFieldValuesForWrite()` finds a promoted column such as `slug` by that name, so a save of `SLUG` stores the value unslugified — measured — as a bulk write of `slug` spelled correctly already does, since a bulk write has no entry type to convert against. That conversion normalises; no guard rests on it. And below Eloquent — `toBase()`, `DB::table()`, raw SQL — nothing at this layer can stand, as every guard in the kernel already states.
 
 ### Naming rule
 
@@ -1704,7 +1740,7 @@ The raster exports were kept out of it and landed separately on `docs/brand-asse
 
 ## ADR-033 — Kitsune owns its RBAC, and a permission is a string a role holds
 
-**Status:** Decided · 2026-09-13 · **Amended 2026-09-13** — twice during the wiring: the owner bypass does not resolve in `Gate::before`, and the scope hatch does not suspend the authority guards; see the amendments below
+**Status:** Decided · 2026-09-13 · **Amended 2026-09-13** — twice during the wiring: the owner bypass does not resolve in `Gate::before`, and the scope hatch does not suspend the authority guards; see the amendments below · **Amended 2026-09-19** — the owner flag and the status vocabulary are read under every spelling the database writes, and the entry's type under its own name only; see the consequence on column names, and ADR-021's amendment of the same date
 
 Issue #81. Phase 4's last unchecked line is `EntryPolicy`, blocked rather than deferred: a policy needs roles and permissions to resolve against. `architecture.md` §4 already fixes the naming — `entry.{type_handle}.{view|create|update|delete|publish}`, resolved against `type_handle`, seeded by blueprints — and settles nothing about where any of it lives.
 
@@ -2327,6 +2363,23 @@ Filament's own opt-in for exactly that, and it is off by default.
   every assignment survived while the log said their authority was revoked, and a retry added another set of
   false rows. The holders still have to be READ first, because the database cascades `role_user` away with the
   role — so the read comes before and the write comes after, inside one transaction.
+
+- **The owner flag and the status are read under every spelling the database writes.** Two guarantees above
+  held for one spelling of a column. `GuardedRoleBuilder` compared `last(explode('.', $column))` exactly and
+  `AuditedBuilder` looked `status` up as `status` and `entries.status`, while SQLite, MySQL and MariaDB match
+  column names without regard to case. Measured before the fix: `Role::query()->update(['IS_OWNER' => true])`
+  promoted every role it matched with no per-holder audit, and so did a proven save of `IS_OWNER`, which the
+  lifecycle hooks — asking about `is_owner` by name — never saw; `update(['STATUS' =>
+  'publíshed'])` stored a value outside the closed vocabulary; and `$entry->update(['STATUS' => 'published'])`
+  published an article for somebody holding `update` and not `publish`. Both builders compare through
+  `ResolvesWrittenColumns` now, the one comparison ADR-021's amendment of 2026-09-19 describes.
+
+  The TYPE the publish guards ask about is the third such column, and it is read by one name only, so
+  `AuditedBuilder` refuses `entry_type_id` written under any other. Measured before that:
+  `Entry::create(['ENTRY_TYPE_ID' => $article, 'status' => 'published'])` created an article already published
+  for somebody holding `create` and not `publish` — the creation guard read no type and stood aside — and one
+  save of `['ENTRY_TYPE_ID' => $product, 'status' => 'published']` retyped a draft article to a product and
+  published it for somebody who may publish articles and not products, leaving `type_handle` naming `article`.
 
 - **We own the resolution cache, the wildcard semantics, and the bugs in both.**
 

@@ -15,6 +15,8 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryRelation;
+use Kitsune\Core\Tenancy\Concerns\ResolvesWrittenColumns;
+use Kitsune\Core\Tenancy\Concerns\TouchesThroughUpdate;
 use RuntimeException;
 
 /**
@@ -39,11 +41,28 @@ use RuntimeException;
  * while core itself already writes this table in bulk —
  * `Entry::redactField()` deletes through it.
  *
+ * ⚠️ A COLUMN IS WHAT THE DATABASE WRITES, NOT WHAT THE CALLER TYPED. This class compared each written name
+ * exactly against its own list, by a private copy of the rule `ScopedBuilder` had already corrected, while SQLite,
+ * MySQL and MariaDB match column names without regard to case — so every guard here had a second spelling that
+ * walked past it. Measured on all three before the fix: `update(['FIELD_STORAGE_ID' => $single])` gave a full
+ * cardinality-one field a second target, `update(['Source_Entry_Id' => $theirs])` hung a row off another org's
+ * entry, and `insertGetId()`, `create()` and `attach()` with `FIELD_STORAGE_ID` each put a second subject of a
+ * forbidden type on a nominated-shape field — the model's guards read `field_storage_id`, found nothing, and
+ * checked nothing. A loaded row's own save did the same, because the `updating` hook asks `isDirty()` by name. The
+ * comparison is `ResolvesWrittenColumns` now, shared with every guarded builder, so it cannot drift from theirs
+ * again.
+ *
  * @extends Builder<EntryRelation>
  */
 class GuardedRelationBuilder extends Builder
 {
     use RecordsRelationRevisions;
+    use ResolvesWrittenColumns {
+        bareColumn as private;
+        refuseAmbiguousColumns as private;
+        refuseMisnamedGuardedColumn as private;
+    }
+    use TouchesThroughUpdate;
 
     /**
      * Columns whose guards are PER-ROW, so a bulk write cannot evaluate them.
@@ -62,6 +81,16 @@ class GuardedRelationBuilder extends Builder
     /** @param  array<string, mixed>  $values */
     public function update(array $values)
     {
+        $this->refuseAmbiguousColumns($values);
+
+        // ⚠️ A SAVE WRITES EACH GUARDED COLUMN UNDER ITS OWN NAME, because the `updating` hook asks
+        // `isDirty('field_storage_id')` and nothing else. `FIELD_STORAGE_ID` left that attribute clean, so no
+        // guard ran, the proof was armed anyway, and the engine moved the row onto a full single-valued field.
+        // Refused before any lock is taken, because the destination below is read by the same name.
+        if ($this->getModel()->guardsRanFor($this)) {
+            $this->refuseMisnamedColumns($values);
+        }
+
         // ⚠️ Versioned, because this path CHANGES an entry's relations.
         //
         // `ordering` is explicitly permitted here, and order is part of what a
@@ -89,13 +118,15 @@ class GuardedRelationBuilder extends Builder
         // pivot, so both moves acquire {A, B} in the same order and one waits for
         // the other instead of deadlocking. Lock order is a property of the whole
         // system, not of one method.
+        // By this name alone, which is safe only because a save has refused every other spelling above and a bulk
+        // write refuses the column under any spelling in `refuseGuardedColumns()` before it writes.
         $destination = isset($values['source_entry_id']) ? [$values['source_entry_id']] : [];
 
         return $this->versioned(
             fn (): array => $this->freezingRows($destination),
             function () use ($values) {
-                // An instance save arrives here too, with its guards already run.
-                if ($this->getModel()->guardsRan) {
+                // An instance save arrives here too, with its guards already run — through THIS builder.
+                if ($this->getModel()->guardsRanFor($this)) {
                     // ⚠️ But cardinality is RE-CHECKED here, under the lock.
                     //
                     // `EntryRelation::updating` counted before `save()` reached
@@ -227,6 +258,13 @@ class GuardedRelationBuilder extends Builder
      */
     public function insertGetId(array $values, $sequence = null)
     {
+        // ⚠️ The row below is built from these names verbatim, and `guardCreate()` reads it by attribute:
+        // `FIELD_STORAGE_ID` left `field_storage_id` null, so ownership, cardinality and target type each saw no
+        // field and returned — and the lock was never armed either. Measured through a hand-rolled insert,
+        // `create()` and `attach()`.
+        $this->refuseAmbiguousColumns($values);
+        $this->refuseMisnamedColumns($values);
+
         // ⚠️ setRawAttributes, for the reason spelled out in
         // `GuardedStorageBuilder::insertGetId()`: these values are already
         // database-ready, and `fill()` would re-encode any JSON-cast attribute.
@@ -427,6 +465,8 @@ class GuardedRelationBuilder extends Builder
      */
     private function refuseGuardedColumns(array $values): void
     {
+        $this->refuseAmbiguousColumns($values);
+
         foreach (array_keys($values) as $column) {
             $bare = $this->bareColumn((string) $column);
 
@@ -442,13 +482,19 @@ class GuardedRelationBuilder extends Builder
         }
     }
 
-    /** Strip table qualification and quoting, so `er`.`org_id` is `org_id`. */
-    private function bareColumn(string $column): string
+    /**
+     * Refuse a per-row column written under any name but its own, on a write that stands behind the row's guards.
+     *
+     * @param  array<string, mixed>  $values
+     */
+    private function refuseMisnamedColumns(array $values): void
     {
-        $bare = str_contains($column, '.')
-            ? substr($column, (int) strrpos($column, '.') + 1)
-            : $column;
+        foreach (array_keys($values) as $written) {
+            $column = $this->bareColumn((string) $written);
 
-        return trim($bare, '`"[]');
+            if (in_array($column, self::PER_ROW, true)) {
+                $this->refuseMisnamedGuardedColumn((string) $written, $column);
+            }
+        }
     }
 }

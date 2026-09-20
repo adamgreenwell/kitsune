@@ -84,6 +84,9 @@ function everyGrantWrite(RolePermission $row, Role $role): array
         'decrement' => fn () => RolePermission::query()->decrement('role_id', 0, ['permission' => 'entry.article.u4']),
         'incrementEach' => fn () => RolePermission::query()->incrementEach(['role_id' => 0], ['permission' => 'entry.article.u5']),
         'decrementEach' => fn () => RolePermission::query()->decrementEach(['role_id' => 0], ['permission' => 'entry.article.u6']),
+        // ⚠️ Eloquent writes `touch($column)` through `toBase()`, past every override above — measured, it rewrote this
+        // org's grant AND a rival org's to a timestamp, revoking both with no audit.
+        'touch' => fn () => RolePermission::query()->touch('permission'),
     ];
 }
 
@@ -145,7 +148,7 @@ it('knows about every write method the builder actually has', function (): void 
     $writeish = array_values(array_filter(
         get_class_methods(RolePermission::query()),
         static fn (string $method): bool => (bool) preg_match(
-            '/^(insert|update|upsert|delete|forceDelete|truncate|increment|decrement|replace)/',
+            '/^(insert|update|upsert|delete|forceDelete|truncate|increment|decrement|replace|touch)/',
             $method,
         ),
     ));

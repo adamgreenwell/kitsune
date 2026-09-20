@@ -1244,9 +1244,10 @@ it('refuses truncate, which has no WHERE clause for a scope to narrow', function
      * context left ZERO rows. It also bypasses the cascade refusal `delete()` and `forceDelete()` route
      * through, so every referenced entry goes with it.
      *
-     * ⚠️ The sweep produced a rule rather than a list: `truncate()` belongs wherever `delete()` is
-     * guarded. Three sibling builders override it and all three guard deletion; `GuardedStorageBuilder`
-     * guards creation only and correctly has none, because truncating creates nothing.
+     * ⚠️ The sweep produced a rule, and it was too narrow: `truncate()` belongs wherever `delete()` is
+     * guarded, it said, so `GuardedStorageBuilder`, guarding creation only, "correctly has none". A
+     * truncate removes every row whatever a builder guards, and on PostgreSQL it cascades — so every
+     * guarded builder refuses it now, that one included (`SchemaManagerTest`).
      */
     $theirs = Org::create(['name' => 'Theirs', 'slug' => 'theirs-trunc']);
     app(Context::class)->setOrg($theirs);
@@ -1258,6 +1259,35 @@ it('refuses truncate, which has no WHERE clause for a scope to narrow', function
     expect(fn () => Site::query()->truncate())
         ->toThrow(RuntimeException::class, 'every row in every org')
         ->and(DB::table('sites')->count())->toBe(2);
+});
+
+it('refuses touch() on a per-row column, which Eloquent writes past update()', function (): void {
+    /*
+     * ⚠️ `touch($column)` IS AN UPDATE THAT NEVER REACHES `update()`. Eloquent implements it as `toBase()->update([$column
+     * => now])`, so every refusal this builder makes stood aside: `Site::query()->whereKey($site)->touch('canonical_host')`
+     * rewrote a claimed host with a timestamp while `update(['canonical_host' => …])` is refused, and so did
+     * `base_url` and `path_prefix` — measured on all four engines. The value is always a timestamp, never the caller's,
+     * so it is an integrity hole rather than a claim; it is closed all the same, by routing touch through `update()`.
+     */
+    $site = Site::create(siteRow($this->org->id, 'touched'));
+    $before = (array) DB::table('sites')->where('id', $site->id)->first(['canonical_host', 'base_url', 'path_prefix']);
+
+    foreach ([
+        'the claimed host' => fn () => Site::query()->whereKey($site->id)->touch('canonical_host'),
+        'the base URL' => fn () => Site::query()->whereKey($site->id)->touch('base_url'),
+        'the prefix, as a list' => fn () => Site::query()->whereKey($site->id)->touch(['path_prefix']),
+    ] as $column => $touch) {
+        expect($touch)->toThrow(RuntimeException::class, 'cannot be written in bulk', "touching {$column} was allowed");
+    }
+
+    expect((array) DB::table('sites')->where('id', $site->id)->first(['canonical_host', 'base_url', 'path_prefix']))
+        ->toBe($before);
+
+    // An ordinary touch still moves the timestamp, which is all it is for.
+    DB::table('sites')->where('id', $site->id)->update(['updated_at' => '2000-01-01 00:00:00']);
+    Site::query()->whereKey($site->id)->touch();
+
+    expect((string) DB::table('sites')->where('id', $site->id)->value('updated_at'))->not->toStartWith('2000');
 });
 
 it('guards a reserved handle on a quiet or detached entry-type write', function (): void {
