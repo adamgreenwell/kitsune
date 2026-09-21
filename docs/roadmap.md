@@ -189,14 +189,38 @@ ADR-012 removed the boot-order collision structurally — the route table no lon
 
 *4–6 weeks.*
 
-- [ ] Module registry: discovery, enable/disable, ordering — **[ADR-038](decision-log.md)**. ⚠️ **Dependency
-  resolution is struck rather than scheduled**: it is Composer's, and the kernel adds none. Ordering is registration
-  order and is explicitly *not* a contract, so nothing pins it beyond determinism
-- [ ] Module manifest with a **mandatory `scoping:` declaration**, in the package's own `composer.json`; the kernel
+- [x] Module registry: discovery, enable/disable, ordering — **[ADR-038](decision-log.md)**, landed 2026-09-21.
+  Discovery reads what Composer installed; a `modules` row is the receipt and `kitsune:module` is the switch.
+  Absent means disabled. ⚠️ **Dependency resolution is struck rather than scheduled**: it is Composer's, and the
+  kernel adds none. Ordering is registration order and is explicitly *not* a contract, so nothing pins it beyond
+  determinism
+- [x] Module manifest with a **mandatory `scoping:` declaration**, in the package's own `composer.json`; the kernel
   refuses to load without it, and refuses a declaration the module's own models contradict — **[ADR-038](decision-log.md)**
   renamed the key from `tenancy:` (AGENTS.md §1) and made its vocabulary the one the scope attributes use
-- [ ] Hook/event system with a documented naming convention
-- [ ] Install/upgrade/uninstall lifecycle with migrations and rollback
+
+  **The check asks the query, not the label.** A model must carry the attribute, `use EnforcesScope`, AND compile
+  a query that differs with its global scopes from without them — because two adversarial passes demonstrated
+  seven bypasses of the weaker forms, the second round breaking the first round's fixes. A no-op scope filed
+  under the right key, and a genuine scope stripped again in `newQuery()`, both satisfy every check that reads
+  the registry rather than the SQL.
+
+  ⚠️ **It cannot tell `unscoped:global` from `unscoped:through(M)`** by looking at a model: both are
+  `#[Unscoped]`, and the difference is whether the table carries a scope column. Declaring both at once is
+  refused rather than papered over
+- [x] Hook/event system with a documented naming convention — **[ADR-038](decision-log.md)**, landed 2026-09-21.
+  `ModuleEnabled` and `ModuleDisabled`, `final readonly`, observation only. **Two, not six**: after the v1.2
+  freeze an event may be added and may not be removed, so shipping fewer is the reversible direction.
+
+  ⚠️ **They are the only observability a host gets for a switch that changes the running application**, and that
+  is a schema fact rather than an oversight: `audit_log.org_id` is `NOT NULL` (ADR-020), an installation-level
+  act has no org, and `Auditor::record()` would record nothing. 🟡 Nothing in core listens to a kernel event
+  yet, so the convention is a rule and two dispatches rather than a demonstrated integration
+- [x] Install/upgrade/uninstall lifecycle with migrations and rollback — **[ADR-038](decision-log.md)**, landed
+  2026-09-21. One command, `kitsune:module`, on the precedent that this repo splits commands by blast radius
+  rather than by verb. Install verifies against the module's real models and leaves the switch **off**; enabling
+  is a separate act, so an interrupted install cannot leave code running. Uninstall refuses while the module is
+  enabled, then asks the **module** whether it may go — core cannot know what a module's content is, so it asks,
+  and nothing is rolled back before that refusal
 - [x] Settings store backing the org → site group → site resolution — **[ADR-022](decision-log.md), amended 2026-09-18**
 
   `SettingsResolver` is bound per request with defaults from `packages/core/config/kitsune.php`, which a host overrides with its own `config/kitsune.php`. `SettingsWriter` sets a key at an org, site group or site and reverts one by **removing** it, recording one audit row per change — the action and the level, never the key or the value (ADR-020). A change is recorded from the write's effect, so a repeat that stores nothing new records nothing. Invalidation is automatic for every write through Eloquent: `ScopedBuilder` drops exactly the level written and the sites beneath it after that model's own save, so a plain `$site->update(['settings' => …])` invalidates as the writer does, and drops everything after a bulk, relation or escape-hatch write and after any delete. `timezone` is validated on `saving` against the identifiers PHP lists (`DateTimeZone::listIdentifiers()` — the canonical IANA names, without aliases such as `US/Eastern`), and `settings` is a per-row column on all three models, so the bulk and quiet paths that would skip the check are refused under any spelling of the column — which also means a bulk `insert()` of orgs or site groups is refused now. Not refused: a write below Eloquent, or a bulk write inside `withoutScopeBecause()`; a value either stores blocks every later save of its row until it is reverted, and is refused by name rather than used to format a date.
@@ -234,7 +258,22 @@ ADR-012 removed the boot-order collision structurally — the route table no lon
   The actor is NULL when the system acts on its own; attributing a scheduled prune to whoever happened to be logged in would be a lie in the one place that must not hold one.
 
   🟡 `erasure_log` (ADR-020 primitive 5) has its table and stores the target and the **replacement**, never the original — enough to replay on a restore, disclosing nothing. Wiring it to `redactField()` waits on the erasure work in [#30](https://github.com/adamgreenwell/kitsune/pull/30)
-- [ ] One hardcoded entity type end to end as a normal module, to prove the stack
+- [x] One hardcoded entity type end to end as a normal module, to prove the stack — **`packages/person`**,
+  landed 2026-09-21. Monorepo-only: no mirror, no Packagist entry, and the split matrix is untouched, so it
+  ships to nobody until that is a decision somebody makes.
+
+  **It ships no models and no migrations**, which is the point rather than a shortcut: a person is an entry,
+  because `Permissions::ACTIONS` has one subject and a module cannot ask for its own before v1.2. The whole
+  footprint is an `entry_types` row and a `field_storage`/`fields` pair per field — so `scoping: []` is a claim
+  the verifier can check by sweeping the package and finding nothing to scope.
+
+  Crossed in a browser by `e2e/person-module.spec.js` (AGENTS.md §9), which loads the **dashboard** rather than
+  the module's own page, because ADR-024's incident was URL generation across page boundaries.
+
+  🟡 **Recorded rather than worked around:** `EntryResource` hardcodes `title`, `slug` and `status`, so a person
+  is created under a required "Title" and offered a slug. Nobody's title is their name. Fixing it means either a
+  per-type vocabulary on the platform columns or a module-supplied form, and it is the clearest argument yet
+  that people-as-entries is a starting point rather than an ending one
 
 ## Phase 4 — The schema engine
 
