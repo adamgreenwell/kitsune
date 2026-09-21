@@ -65,7 +65,7 @@ module.exports = defineConfig({
             // ⚠️ The UNION of both branches, not either one. #38 added `locale-persistence`
             // and #39 added `relation-picker`, and a merge that kept one silently stops
             // running the other's suite — green, and testing less than it did.
-            testMatch: /(admin|accessibility|dashboard|direction|locale-persistence|relation-picker|entity-type-builder|revisions|roles)\.spec\.js/,
+            testMatch: /(admin|accessibility|dashboard|direction|locale-persistence|person-module|relation-picker|entity-type-builder|revisions|roles)\.spec\.js/,
             dependencies: ['setup'],
             use: { ...devices['Desktop Chrome'], storageState: '.playwright/admin-auth.json' },
         },

@@ -10,10 +10,14 @@ declare(strict_types=1);
 
 namespace Kitsune\Person;
 
+use Filament\Navigation\NavigationItem;
+use Kitsune\Core\Auth\Permissions;
+use Kitsune\Core\Filament\Resources\Entries\EntryResource;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Field;
 use Kitsune\Core\Models\FieldStorage;
+use Kitsune\Core\Modules\AdminSurface;
 use Kitsune\Core\Modules\ModuleServiceProvider;
 use RuntimeException;
 
@@ -48,6 +52,42 @@ final class PersonServiceProvider extends ModuleServiceProvider
         'person_name' => ['type' => 'text', 'label' => 'Full name', 'pii_class' => 'personal'],
         'person_email' => ['type' => 'text', 'label' => 'Email', 'pii_class' => 'personal'],
     ];
+
+    /**
+     * A quick-create shortcut, through ADR-038's `@internal` admin seam.
+     *
+     * ⚠️ THIS EXISTS TO GIVE THE SEAM A FIRST-PARTY CONSUMER, AND THE RECORD SHOULD SAY SO RATHER THAN IMPLY
+     * THE MODULE DEMANDED IT. `person` reaches the admin without any of this: the type is global, so
+     * `EntryType::visibleFor()` lists it in every org's sidebar and core's `EntryResource` edits it at
+     * `/c/person` with no module code involved. Decision H was argued on the premise that the Phase 3 proof
+     * would otherwise stop short of the admin, and that premise turned out to be wrong. Adam chose to exercise
+     * the seam anyway rather than revert it, which is a defensible call — the seam's real consumer is
+     * `kitsune/support` (ADR-036) at v1.1, and leaving it unexercised until then means shipping it untested by
+     * anything first-party.
+     *
+     * So it is a **quick create** rather than a second link to the list core already offers: duplicating that
+     * link would be surface with no purpose at all, where "new person" is at least a thing the generic
+     * navigation does not provide. If it is ever unwanted it can go without the seam going with it.
+     *
+     * ⚠️ AND IT IS GATED, because an unauthorised link is the defect review found in core's own navigation: the
+     * content links were filtered while the builder's link was added unconditionally, so the copy-editor's
+     * sidebar advertised the one page they could not open. The module gates its own item, because core's
+     * permission vocabulary cannot name a module's subject and this one happens to be expressible as an entry
+     * action.
+     */
+    protected function registerModule(): void
+    {
+        $this->app->make(AdminSurface::class)->navigationItem(
+            NavigationItem::make('New person')
+                ->icon('heroicon-o-user-plus')
+                ->group('People')
+                ->url(fn (): string => EntryResource::getUrl('create', ['type' => self::TYPE]))
+                ->visible(fn (): bool => Permissions::allows(
+                    auth()->user(),
+                    Permissions::forEntryType(self::TYPE, 'create'),
+                )),
+        );
+    }
 
     public function install(): void
     {

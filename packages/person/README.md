@@ -27,3 +27,15 @@ in the way.
 
 `kitsune:module uninstall kitsune/person` refuses while any person entry exists. The module knows what its
 content is; core does not, so core asks.
+
+## Known limitation: a person is created under "Title"
+
+`EntryResource` hardcodes `title`, `slug` and `status` as the platform columns every entry type gets, so the
+create form asks for a **Title** (required) and offers a **Slug** before it reaches `Full name` and `Email`.
+For an article that reads correctly. For a person it does not — nobody's title is their name, and a person is
+not usually addressable at a URL.
+
+It is recorded rather than worked around because working around it means either a per-type vocabulary on the
+platform columns or a module-supplied form, and both are larger decisions than this module should make on its
+own. It is also the clearest argument yet that people-as-entries is a starting point rather than an ending
+one: the schema fits, and the vocabulary does not.

@@ -8,6 +8,9 @@
 
 declare(strict_types=1);
 
+use Filament\Facades\Filament;
+use Filament\Panel;
+use Filament\PanelRegistry;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Field;
@@ -15,6 +18,7 @@ use Kitsune\Core\Models\FieldStorage;
 use Kitsune\Core\Models\Module;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
+use Kitsune\Core\Modules\AdminSurface;
 use Kitsune\Core\Modules\ModuleDiscovery;
 use Kitsune\Core\Modules\ModuleKernel;
 use Kitsune\Core\Modules\ModuleLifecycle;
@@ -165,4 +169,50 @@ it('refuses to uninstall while a person exists in any site', function (): void {
     /* Nothing was destroyed on the way to the refusal. */
     expect(personType())->not->toBeNull()
         ->and(Module::query()->where('handle', PERSON)->exists())->toBeTrue();
+});
+
+/**
+ * ⚠️ THE SEAM'S FIRST FIRST-PARTY CONSUMER, and it is honest about why it exists: `person` reaches the admin
+ * without it. The item is a quick-create, which the generic navigation does not offer, rather than a second
+ * link to the list it does.
+ */
+it('contributes a quick-create shortcut through the admin seam', function (): void {
+    app(AdminSurface::class)->flush();
+
+    ModuleLifecycle::install(app(), PERSON);
+    ModuleLifecycle::enable(app(), PERSON);
+
+    ModuleKernel::boot(app());
+
+    $items = app(AdminSurface::class)->navigationItems();
+
+    expect($items)->toHaveCount(1)
+        ->and($items[0]->getLabel())->toBe('New person')
+        ->and($items[0]->getGroup())->toBe('People');
+});
+
+/**
+ * ⚠️ AND ITS URL CANNOT BE RESOLVED HERE, WHICH IS THE WHOLE REASON AGENTS.md §9 EXISTS. Calling `getUrl()`
+ * needs a panel whose routes are registered, and registering a panel in core's own test application throws
+ * `Target class [livewire.finder] does not exist` — measured, and the reason `PanelLessHostTest` populates
+ * `PanelRegistry::$panels` directly instead of going through the facade. A first draft of this test tried it
+ * and failed on exactly that frame.
+ *
+ * So what is asserted here is what this suite can honestly see — the item carries a URL closure rather than a
+ * literal, so nothing is baked in at register time — and the resolution itself is crossed in the browser by
+ * `e2e/person-module.spec.js`. ADR-024 records why that matters: seven of eight specs green while the
+ * dashboard returned 500, because Filament called `getUrl()` on a Resource's navigation item.
+ */
+it('carries a url closure rather than a literal, leaving resolution to the browser', function (): void {
+    app(AdminSurface::class)->flush();
+
+    ModuleLifecycle::install(app(), PERSON);
+    ModuleLifecycle::enable(app(), PERSON);
+    ModuleKernel::boot(app());
+
+    $item = app(AdminSurface::class)->navigationItems()[0];
+
+    $url = (new ReflectionProperty($item, 'url'))->getValue($item);
+
+    expect($url)->toBeInstanceOf(Closure::class);
 });
