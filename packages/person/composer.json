@@ -1,0 +1,23 @@
+{
+    "name": "kitsune/person",
+    "description": "People as content: authors, contacts and staff, as a first-party Kitsune module.",
+    "license": "MPL-2.0",
+    "type": "library",
+    "require": {
+        "php": "^8.4",
+        "kitsune/core": "@dev"
+    },
+    "autoload": {
+        "psr-4": {
+            "Kitsune\\Person\\": "src/"
+        }
+    },
+    "extra": {
+        "kitsune": {
+            "provider": "Kitsune\\Person\\PersonServiceProvider",
+            "scoping": []
+        }
+    },
+    "minimum-stability": "dev",
+    "prefer-stable": true
+}

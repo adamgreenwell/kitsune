@@ -22,10 +22,13 @@ use Kitsune\Core\Console\AuditPatternsCommand;
 use Kitsune\Core\Console\BenchmarkAdminCommand;
 use Kitsune\Core\Console\BenchmarkFloorCommand;
 use Kitsune\Core\Console\BenchmarkStorageCommand;
+use Kitsune\Core\Console\ModuleCommand;
 use Kitsune\Core\Console\SchemaSyncCommand;
 use Kitsune\Core\Fields\FieldTypeRegistry;
 use Kitsune\Core\Filament\RichText\BlockDirectionPlugin;
 use Kitsune\Core\Models\Entry;
+use Kitsune\Core\Modules\AdminSurface;
+use Kitsune\Core\Modules\ModuleKernel;
 use Kitsune\Core\Schema\RecordedRevisions;
 use Kitsune\Core\Settings\SettingsGuard;
 use Kitsune\Core\Settings\SettingsResolver;
@@ -74,6 +77,13 @@ final class KitsuneServiceProvider extends ServiceProvider
         // against it during boot, which is the extension point ADR-001
         // promises developers.
         $this->app->singleton(FieldTypeRegistry::class, static fn (): FieldTypeRegistry => new FieldTypeRegistry);
+
+        /*
+         * What enabled modules add to the admin — ADR-038's `@internal` seam. A singleton because the module
+         * that fills it and the panel that reads it must be looking at the same object, and bound in
+         * `register()` so it exists before the kernel registers anything in `booted()`.
+         */
+        $this->app->singleton(AdminSurface::class, static fn (): AdminSurface => new AdminSurface);
 
         /*
          * ⚠️ THE APPLICATION'S DEFAULT LOCALE, CAPTURED BEFORE ANYTHING CAN MOVE IT.
@@ -134,6 +144,7 @@ final class KitsuneServiceProvider extends ServiceProvider
                 BenchmarkStorageCommand::class,
                 BenchmarkFloorCommand::class,
                 BenchmarkAdminCommand::class,
+                ModuleCommand::class,
                 SchemaSyncCommand::class,
             ]);
         }
@@ -176,5 +187,23 @@ final class KitsuneServiceProvider extends ServiceProvider
             Js::make(BlockDirectionPlugin::ASSET, __DIR__.'/../resources/js/rich-editor-direction.js')
                 ->loadedOnRequest(),
         ], BlockDirectionPlugin::PACKAGE);
+
+        /*
+         * ⚠️ IN `boot()` RATHER THAN `register()`. ADR-038: core touches no database in `register()`, and a
+         * registry read there turns a transient connection failure into an admin that has quietly lost every
+         * module's features.
+         *
+         * ⚠️ AND INSIDE `booted()` RATHER THAN INLINE, WHICH IS NOT A STYLE CHOICE. `Application::boot()` walks
+         * its provider list with `array_walk`, so whether a provider APPENDED during that walk is itself booted
+         * depends on how the walk behaves while the array grows underneath it — and AGENTS.md §15 exists for
+         * exactly this kind of question. Rather than measure a framework internal and then depend on the answer,
+         * the registration is moved to where the behaviour is documented and unambiguous: `booted()` fires after
+         * the walk, `$this->booted` is true by then, and `Application::register()` boots a provider immediately
+         * when it is. A module is therefore registered AND booted, on a path that does not rest on an
+         * undocumented ordering. It also means a module's own bindings land with every core binding in place.
+         */
+        $this->app->booted(function (): void {
+            ModuleKernel::boot($this->app);
+        });
     }
 }

@@ -13,6 +13,7 @@ use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Field;
 use Kitsune\Core\Models\FieldStorage;
+use Kitsune\Core\Models\Module;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Models\SiteGroup;
@@ -218,8 +219,14 @@ it('rests on a discriminator no caller can arrange', function (): void {
      *
      * ⚠️ AND SIX NOW: `Org` and `SiteGroup` joined when ADR-022's settings store made `settings` a per-row
      * column on every level of the hierarchy. The completeness check below is what asked for them.
+     *
+     * ⚠️ AND SEVEN: `Module` joined with ADR-038's kernel receipt, and the completeness check below is what
+     * asked for it — the model was written, its own tests passed, and this assertion is what said it had not
+     * been accounted for here. Its stake is the plainest of the seven: the kernel reads `modules` at boot and
+     * registers the providers it finds, so a receipt anyone can write in bulk is a service provider anyone can
+     * register.
      */
-    $guarded = [Entry::class, EntryType::class, Field::class, Org::class, Site::class, SiteGroup::class];
+    $guarded = [Entry::class, EntryType::class, Field::class, Module::class, Org::class, Site::class, SiteGroup::class];
 
     foreach ($guarded as $class) {
         $model = new $class;

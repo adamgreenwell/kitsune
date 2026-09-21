@@ -1,0 +1,17 @@
+{
+    "name": "kitsune/fixture-module",
+    "description": "A real Composer package, so the kernel's discovery runs its production path in tests.",
+    "license": "MPL-2.0",
+    "type": "library",
+    "autoload": {
+        "psr-4": {
+            "Kitsune\\Fixture\\Module\\": "src/"
+        }
+    },
+    "extra": {
+        "kitsune": {
+            "provider": "Kitsune\\Fixture\\Module\\FixtureModuleServiceProvider",
+            "scoping": ["unscoped:global"]
+        }
+    }
+}

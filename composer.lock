@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "d7580d852caf63042fd22c333632e830",
+    "content-hash": "f6c59369dc068b9bbde48a75fdd45497",
     "packages": [],
     "packages-dev": [
         {
@@ -2663,15 +2663,15 @@
         },
         {
             "name": "kitsune/core",
-            "version": "dev-fix/core-split-readiness",
+            "version": "dev-feat/module-kernel-code",
             "dist": {
                 "type": "path",
                 "url": "packages/core",
-                "reference": "f0e79f184bc1d5d38e382a951eb7720cfcbcb933"
+                "reference": "90abfacf7daf796c4d45ffcff480435934b5dc15"
             },
             "require": {
                 "blade-ui-kit/blade-icons": "^1.6",
-                "composer-runtime-api": "^2.0",
+                "composer-runtime-api": "^2.1",
                 "filament/filament": "^5.6",
                 "laravel/framework": "^13.0",
                 "livewire/livewire": "^4.1",
@@ -2705,6 +2705,70 @@
                 "source": "https://github.com/adamgreenwell/kitsune",
                 "security": "https://github.com/adamgreenwell/kitsune/security/advisories/new"
             },
+            "transport-options": {
+                "symlink": true,
+                "relative": true
+            }
+        },
+        {
+            "name": "kitsune/fixture-module",
+            "version": "dev-feat/module-kernel-code",
+            "dist": {
+                "type": "path",
+                "url": "tests/Core/Fixtures/Packages/module-fixture",
+                "reference": "c8f1c3c05faea0b43f57f0bb723c4ca65bcebe99"
+            },
+            "type": "library",
+            "extra": {
+                "kitsune": {
+                    "provider": "Kitsune\\Fixture\\Module\\FixtureModuleServiceProvider",
+                    "scoping": [
+                        "unscoped:global"
+                    ]
+                }
+            },
+            "autoload": {
+                "psr-4": {
+                    "Kitsune\\Fixture\\Module\\": "src/"
+                }
+            },
+            "license": [
+                "MPL-2.0"
+            ],
+            "description": "A real Composer package, so the kernel's discovery runs its production path in tests.",
+            "transport-options": {
+                "symlink": true,
+                "relative": true
+            }
+        },
+        {
+            "name": "kitsune/person",
+            "version": "dev-feat/module-kernel-code",
+            "dist": {
+                "type": "path",
+                "url": "packages/person",
+                "reference": "301f170fc83cba5dc13527a83a15053b17f03d79"
+            },
+            "require": {
+                "kitsune/core": "@dev",
+                "php": "^8.4"
+            },
+            "type": "library",
+            "extra": {
+                "kitsune": {
+                    "provider": "Kitsune\\Person\\PersonServiceProvider",
+                    "scoping": []
+                }
+            },
+            "autoload": {
+                "psr-4": {
+                    "Kitsune\\Person\\": "src/"
+                }
+            },
+            "license": [
+                "MPL-2.0"
+            ],
+            "description": "People as content: authors, contacts and staff, as a first-party Kitsune module.",
             "transport-options": {
                 "symlink": true,
                 "relative": true
@@ -12654,7 +12718,9 @@
     "aliases": [],
     "minimum-stability": "stable",
     "stability-flags": {
-        "kitsune/core": 20
+        "kitsune/core": 20,
+        "kitsune/fixture-module": 20,
+        "kitsune/person": 20
     },
     "prefer-stable": true,
     "prefer-lowest": false,
