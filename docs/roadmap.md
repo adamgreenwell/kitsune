@@ -189,8 +189,12 @@ ADR-012 removed the boot-order collision structurally — the route table no lon
 
 *4–6 weeks.*
 
-- [ ] Module registry: discovery, enable/disable, dependency resolution, ordering
-- [ ] Module manifest with **mandatory `tenancy:` declaration**; kernel refuses to load without it
+- [ ] Module registry: discovery, enable/disable, ordering — **[ADR-038](decision-log.md)**. ⚠️ **Dependency
+  resolution is struck rather than scheduled**: it is Composer's, and the kernel adds none. Ordering is registration
+  order and is explicitly *not* a contract, so nothing pins it beyond determinism
+- [ ] Module manifest with a **mandatory `scoping:` declaration**, in the package's own `composer.json`; the kernel
+  refuses to load without it, and refuses a declaration the module's own models contradict — **[ADR-038](decision-log.md)**
+  renamed the key from `tenancy:` (AGENTS.md §1) and made its vocabulary the one the scope attributes use
 - [ ] Hook/event system with a documented naming convention
 - [ ] Install/upgrade/uninstall lifecycle with migrations and rollback
 - [x] Settings store backing the org → site group → site resolution — **[ADR-022](decision-log.md), amended 2026-09-18**

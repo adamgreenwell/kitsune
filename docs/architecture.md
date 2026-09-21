@@ -293,10 +293,13 @@ One table, one row per entry, real indexes on the fields that need them. This is
 ### Kernel and modules
 
 ```
-modules                                   -- global; code is code
-  id, handle, version, is_enabled, installed_at, settings json
+modules                                   -- global; code is code. ADR-038: no `settings` column — module
+                                          -- settings belong in ADR-022's store. An ABSENT row means disabled
+  id, handle, version, is_enabled, installed_at
 
-org_modules                               -- per-org enablement
+org_modules                               -- per-org enablement. DEFERRED by ADR-038 until a consumer asks for
+                                          -- it; per-install is the only switch in Phase 3, and a second
+                                          -- inheritance model beside org -> site group -> site needs a reason
   org_id, module_handle, is_enabled, settings json
 
 blueprints
@@ -373,20 +376,31 @@ Blueprints          a kernel primitive, not a module
 
 ### Module manifest
 
-```yaml
-handle: kitsune/commerce
-name: Commerce
-version: 1.0.0
-requires:
-  kitsune/core: "^1.0"
-  php: "^8.4"
-tenancy: aware          # aware | agnostic — REQUIRED, kernel refuses to load without it
-provides:
-  entry_types: [product, order]
-  blueprints: [storefront]
+⚠️ **Amended 2026-09-20 by [ADR-038](decision-log.md).** The manifest is an `extra.kitsune` block in the module's own
+`composer.json`, not a `kitsune.yaml` — a YAML parser on the boot path is a floor cost (ADR-027) and a second source of
+truth beside the file discovery must read anyway. The mandatory key is `scoping:`, not `tenancy:` (AGENTS.md §1). Four
+keys in the original sketch are **not implemented** because Composer already carries them — `handle`, `name`, `version`
+and `requires` — and `provides` is a content-provisioning DSL that Phase 5's blueprints must own rather than something
+to freeze three releases early. What ships:
+
+```json
+{
+  "name": "kitsune/person",
+  "extra": {
+    "kitsune": {
+      "provider": "Kitsune\\Person\\PersonServiceProvider",
+      "scoping": ["unscoped:global"]
+    }
+  }
+}
 ```
 
-`tenancy:` is mandatory. A module that doesn't declare it does not load. This is the one line that turns "every author must remember" into "the kernel won't let you forget."
+`scoping` is mandatory. A module that doesn't declare it does not load — and neither does one whose own models
+contradict the declaration, in either direction, because an attribute without `EnforcesScope` is a comment with syntax
+(AGENTS.md §2). This is the one line that turns "every author must remember" into "the kernel won't let you forget."
+
+The sketch this replaced read `tenancy: aware  # aware | agnostic`, with `handle`, `name`, `version`, `requires` and
+`provides` beside it.
 
 ---
 

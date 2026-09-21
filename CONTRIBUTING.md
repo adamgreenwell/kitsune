@@ -251,6 +251,8 @@ Not to be discouraging — just so nobody wastes an afternoon:
 - **A model without a tenancy declaration**
 - **The Exhibit B notice**, anywhere
 - **A new public API surface before v1.2.** The extension API is intentionally unstable; broadening it early is how ecosystems get broken later (Standing Principle #1)
+
+  ⚠️ **Amended 2026-09-20 by [ADR-038](docs/decision-log.md): the Phase 3 module kernel is a named exception, and a narrow one.** ADR-011 puts the module *system* inside v1.0 while deferring the plugin SDK and the API freeze to v1.2, so building it is authorised and making it a public contract is not. Three symbols a module can reach — a base service provider and two enable/disable events — plus one `@internal` admin seam. It is first-party only: there is no third-party validation, tenancy audit or allowlist before v1.2/v1.4, so nothing outside this repository may rely on it, and 0.x carries no stability promise (Phase 6). Anything wider than that still won't be merged. ⚠️ The "(Standing Principle #1)" citation above is also **misrouted**, here and in ten other places: the v1.2 clause lives in Standing Principle **#2**. The rule is settled project law either way; repointing the citations is an ADR amendment of its own, not an edit to make in passing
 - **Raw SQL in field types.** Postgres, MySQL and SQLite all differ; that's what the driver abstraction is for
 - **Marketplace or plugin-directory infrastructure.** Standing Principle #5 — Winter CMS still hasn't shipped one 5.5 years after forking. Composer and Packagist do this job
 
