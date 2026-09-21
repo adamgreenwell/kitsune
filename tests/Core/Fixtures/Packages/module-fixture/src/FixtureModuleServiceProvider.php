@@ -11,6 +11,7 @@ declare(strict_types=1);
 namespace Kitsune\Fixture\Module;
 
 use Kitsune\Core\Modules\ModuleServiceProvider;
+use RuntimeException;
 
 /**
  * A module provider that records being registered and booted, so a test can assert the kernel reached it
@@ -29,5 +30,28 @@ final class FixtureModuleServiceProvider extends ModuleServiceProvider
     protected function bootModule(): void
     {
         self::$calls[] = 'boot';
+    }
+
+    public function migrationPath(): ?string
+    {
+        return __DIR__.'/../database/migrations';
+    }
+
+    public function install(): void
+    {
+        self::$calls[] = 'install';
+    }
+
+    /**
+     * ⚠️ THE MODULE'S OWN REFUSAL. Core cannot know what this module's content is, so uninstall asks the
+     * module and the module throws. Nothing is rolled back before this runs.
+     */
+    public function uninstall(): void
+    {
+        self::$calls[] = 'uninstall';
+
+        if (FixtureThing::query()->exists()) {
+            throw new RuntimeException('kitsune/fixture-module still holds things. Delete them first.');
+        }
     }
 }

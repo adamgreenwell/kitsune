@@ -10,7 +10,6 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Modules;
 
-use Composer\InstalledVersions;
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
@@ -95,11 +94,11 @@ final class ModuleKernel
     /** The manifest of a module that may be registered, or null with the reason logged. */
     private static function manifestFor(string $handle, string $recorded): ?ModuleManifest
     {
-        if (! InstalledVersions::isInstalled($handle)) {
+        $installed = ModuleDiscovery::version($handle);
+
+        if ($installed === null) {
             return self::decline($handle, 'it is enabled but no longer installed by Composer');
         }
-
-        $installed = (string) InstalledVersions::getPrettyVersion($handle);
 
         /*
          * ⚠️ A STALE RECEIPT IS REFUSED RATHER THAN TRUSTED, and this is the check that makes a forgotten
@@ -114,31 +113,9 @@ final class ModuleKernel
             ));
         }
 
-        $path = InstalledVersions::getInstallPath($handle);
-        $composer = is_string($path) ? @file_get_contents($path.'/composer.json') : false;
-        $decoded = is_string($composer) ? json_decode($composer, true) : null;
+        $read = ModuleDiscovery::read($handle);
 
-        if (! is_array($decoded)) {
-            return self::decline($handle, 'its composer.json could not be read');
-        }
-
-        $refusal = ModuleManifest::refusalFor($decoded, $handle);
-
-        if ($refusal !== null) {
-            return self::decline($handle, $refusal);
-        }
-
-        $manifest = ModuleManifest::from($decoded, $handle);
-
-        /*
-         * The manifest grammar can say a provider looks like a class name; only the runtime can say it is one,
-         * and that it is a module's provider rather than an arbitrary one.
-         */
-        if (! class_exists($manifest->provider) || ! is_subclass_of($manifest->provider, ModuleServiceProvider::class)) {
-            return self::decline($handle, "its provider `{$manifest->provider}` is not a ModuleServiceProvider");
-        }
-
-        return $manifest;
+        return $read instanceof ModuleManifest ? $read : self::decline($handle, $read);
     }
 
     private static function decline(string $handle, string $reason): null

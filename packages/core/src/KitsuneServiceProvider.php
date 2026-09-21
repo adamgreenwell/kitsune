@@ -22,6 +22,7 @@ use Kitsune\Core\Console\AuditPatternsCommand;
 use Kitsune\Core\Console\BenchmarkAdminCommand;
 use Kitsune\Core\Console\BenchmarkFloorCommand;
 use Kitsune\Core\Console\BenchmarkStorageCommand;
+use Kitsune\Core\Console\ModuleCommand;
 use Kitsune\Core\Console\SchemaSyncCommand;
 use Kitsune\Core\Fields\FieldTypeRegistry;
 use Kitsune\Core\Filament\RichText\BlockDirectionPlugin;
@@ -135,6 +136,7 @@ final class KitsuneServiceProvider extends ServiceProvider
                 BenchmarkStorageCommand::class,
                 BenchmarkFloorCommand::class,
                 BenchmarkAdminCommand::class,
+                ModuleCommand::class,
                 SchemaSyncCommand::class,
             ]);
         }

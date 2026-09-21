@@ -65,4 +65,21 @@ abstract class ModuleServiceProvider extends ServiceProvider
     {
         return null;
     }
+
+    /**
+     * The non-schema half of install: entry types, seed rows, anything that is data rather than DDL.
+     *
+     * Runs after the module's migrations, inside install's transaction where the engine supports one.
+     */
+    public function install(): void {}
+
+    /**
+     * The non-schema half of uninstall, and the module's chance to REFUSE.
+     *
+     * ⚠️ THROWING HERE IS THE POINT. A module that holds content knows what "there is still content" means and
+     * core does not — so a module that would destroy an org's data by leaving throws from here, and uninstall
+     * stops before a single migration is rolled back. Core cannot ask this question on a module's behalf, and
+     * a module that stays silent gets no protection it did not ask for.
+     */
+    public function uninstall(): void {}
 }

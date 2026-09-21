@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Models;
 
+use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Model;
 use Kitsune\Core\Tenancy\Attributes\Unscoped;
 use Kitsune\Core\Tenancy\Concerns\DerivesGuardedColumns;
@@ -39,6 +40,12 @@ use Kitsune\Core\Tenancy\Contracts\RequiresModelSave;
  * No audit row accompanies a change to this table: `audit_log.org_id` is `NOT NULL` and an installation-level
  * act has no org to file under, so `Auditor::record()` would record nothing. ADR-038 states that plainly and
  * gives the two kernel events as the only observability a host gets.
+ *
+ * @property int $id
+ * @property string $handle the Composer package name, e.g. `kitsune/person`
+ * @property string $version what Composer reported when install ran
+ * @property bool $is_enabled
+ * @property CarbonInterface $installed_at
  */
 #[Unscoped]
 class Module extends Model implements RequiresModelSave
