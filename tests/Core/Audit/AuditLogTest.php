@@ -24,6 +24,7 @@ use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tests\Fixtures\TestUser;
+use Kitsune\Core\Tests\Fixtures\UuidKeyedActor;
 
 /*
  * ADR-020 primitive 4. What is ABSENT from this table is the design.
@@ -268,20 +269,24 @@ describe('what gets recorded', function (): void {
          * and since the audit row shares a transaction with the write it records, the content write rolled
          * back with it. "Cannot record who" became "cannot write at all".
          */
-        $actor = new class extends AuthUser
-        {
-            public function getAuthIdentifier(): string
-            {
-                return '018f2b7c-1d6a-7e3f-9a0b-5c8d4e2f1a33';
-            }
-        };
-
-        Auth::login($actor);
+        /*
+         * ⚠️ A NAMED FIXTURE, BECAUSE THE ANONYMOUS CLASS THIS USED MADE THE TEST DEPEND ON THE CHECKOUT PATH.
+         * PHP builds an anonymous class's name from its defining file, so `actor_type` became
+         * `…User@anonymous\0/long/path/…:271$1b8` — 262 bytes from a 179-character worktree, which MySQL and
+         * MariaDB refuse against a `varchar(255)` while CI's 33-character path fits. PostgreSQL truncated it at
+         * the NUL byte instead and stored `…@anonymous`, recording nothing about which class. Three engines,
+         * three behaviours, and a verdict that changed with where the repository sat on disk.
+         * `UuidKeyedActor`'s docblock carries the measurements.
+         */
+        Auth::login(new UuidKeyedActor);
 
         $entry = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Written by a UUID']);
 
         expect(AuditLog::for($entry)->where('action', 'entry.created')->value('actor_id'))
-            ->toBe('018f2b7c-1d6a-7e3f-9a0b-5c8d4e2f1a33');
+            ->toBe(UuidKeyedActor::IDENTIFIER)
+            /* And the type is the class, short and the same on every engine. */
+            ->and(AuditLog::for($entry)->where('action', 'entry.created')->value('actor_type'))
+            ->toBe(UuidKeyedActor::class);
     });
 
     it('leaves the actor NULL when the system acts on its own', function (): void {
