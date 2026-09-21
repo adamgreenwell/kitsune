@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "7f4e6df442377e34a9a90d6331f36f1d",
+    "content-hash": "f6c59369dc068b9bbde48a75fdd45497",
     "packages": [],
     "packages-dev": [
         {
@@ -2736,6 +2736,39 @@
                 "MPL-2.0"
             ],
             "description": "A real Composer package, so the kernel's discovery runs its production path in tests.",
+            "transport-options": {
+                "symlink": true,
+                "relative": true
+            }
+        },
+        {
+            "name": "kitsune/person",
+            "version": "dev-feat/module-kernel-code",
+            "dist": {
+                "type": "path",
+                "url": "packages/person",
+                "reference": "301f170fc83cba5dc13527a83a15053b17f03d79"
+            },
+            "require": {
+                "kitsune/core": "@dev",
+                "php": "^8.4"
+            },
+            "type": "library",
+            "extra": {
+                "kitsune": {
+                    "provider": "Kitsune\\Person\\PersonServiceProvider",
+                    "scoping": []
+                }
+            },
+            "autoload": {
+                "psr-4": {
+                    "Kitsune\\Person\\": "src/"
+                }
+            },
+            "license": [
+                "MPL-2.0"
+            ],
+            "description": "People as content: authors, contacts and staff, as a first-party Kitsune module.",
             "transport-options": {
                 "symlink": true,
                 "relative": true
@@ -12686,7 +12719,8 @@
     "minimum-stability": "stable",
     "stability-flags": {
         "kitsune/core": 20,
-        "kitsune/fixture-module": 20
+        "kitsune/fixture-module": 20,
+        "kitsune/person": 20
     },
     "prefer-stable": true,
     "prefer-lowest": false,
