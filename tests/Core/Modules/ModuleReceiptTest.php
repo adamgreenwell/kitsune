@@ -99,11 +99,19 @@ it('refuses the switch under a spelling the database would still honour', functi
 /**
  * ⚠️ The database is what refuses this, so the assertion names the database's exception rather than
  * `Throwable`. Two receipts for one handle would be two answers to "which version did we boot".
+ *
+ * ⚠️ AND THE FAILING WRITE IS WRAPPED IN ITS OWN TRANSACTION, WHICH SQLITE DOES NOT NEED AND POSTGRES DOES.
+ * After a failed statement Postgres aborts the whole transaction — every later query returns
+ * `SQLSTATE[25P02] … current transaction is aborted` — so the count below died on pgsql and mariadb while
+ * passing on SQLite, which is precisely the divergence the engine matrix exists to catch. `DB::transaction()`
+ * compiles to a SAVEPOINT inside `RefreshDatabase`'s own transaction and rolls back to it, leaving the
+ * connection usable for the assertion that gives this test its point.
  */
 it('refuses two receipts for one package', function (): void {
     receipt();
 
-    expect(fn () => receipt())->toThrow(UniqueConstraintViolationException::class);
+    expect(fn () => DB::transaction(fn () => receipt()))
+        ->toThrow(UniqueConstraintViolationException::class);
 
     expect(Module::query()->where('handle', 'kitsune/person')->count())->toBe(1);
 });
