@@ -10,6 +10,8 @@ declare(strict_types=1);
 
 namespace Kitsune\Fixture\Module;
 
+use Filament\Navigation\NavigationItem;
+use Kitsune\Core\Modules\AdminSurface;
 use Kitsune\Core\Modules\ModuleServiceProvider;
 use RuntimeException;
 
@@ -25,6 +27,18 @@ final class FixtureModuleServiceProvider extends ModuleServiceProvider
     protected function registerModule(): void
     {
         self::$calls[] = 'register';
+
+        /*
+         * The seam, filled in registerModule() — in time because the kernel runs inside $app->booted(), and
+         * KitsunePanel::apply() does not run until PanelRegistry is first resolved.
+         */
+        $this->app->make(AdminSurface::class)
+            ->resource(FixtureThingResource::class)
+            ->navigationItem(
+                NavigationItem::make('Fixture things')
+                    ->group('Structure')
+                    ->url(fn (): string => '/admin/fixture-things'),
+            );
     }
 
     protected function bootModule(): void

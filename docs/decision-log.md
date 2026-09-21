@@ -2893,7 +2893,7 @@ declines one; and erasing a reader removes the profile and calls the support fan
 
 ## ADR-038 — A module is a Composer package core keeps a receipt for, and the kernel is a record and a refusal
 
-**Status:** Decided · 2026-09-20 · **Phase 3 (ADR-011, v1.0). The plugin SDK and the API freeze stay at v1.2**
+**Status:** Decided · 2026-09-20 · **Phase 3 (ADR-011, v1.0). The plugin SDK and the API freeze stay at v1.2** · **Amended 2026-09-21** — the admin seam shipped with feature coverage and not the browser test this entry promised; see *Enforced by*
 
 Phase 3's remaining items are a module registry, a manifest whose scoping declaration the kernel refuses to load
 without, a hook system, an install/upgrade/uninstall lifecycle, and one entity type end to end as a module to prove
@@ -3035,6 +3035,19 @@ contributes nothing to the panel, asserted from the panel's side; the seam works
 (ADR-002); the proving module's uninstall refuses while its content exists, counted past the scope rather than
 through it; a module Resource's URL generation is crossed in a browser, because AGENTS.md §9 exists for the case a
 feature test structurally cannot see; and the event-shape sweep fails if core ever assigns from a dispatch.
+
+⚠️ **Amended 2026-09-21 — the browser test is NOT delivered with the seam, and this paragraph promised it would
+be.** The `@internal` admin surface landed with feature tests only: a module's resource reaches the panel, a
+disabled module's does not, the seam works with no panel configured (ADR-002), and `Panel::resources()` appends
+rather than replaces. What is missing is exactly the case AGENTS.md §9 exists for — URL generation across page
+boundaries, which ADR-024 records as seven-of-eight green while the dashboard returned 500, caused by Filament
+calling `getUrl()` on a Resource's navigation item.
+
+It is missing for a reason rather than by omission, and the reason is ADR-038's own deferral: a browser test
+needs a module installed in the **skeleton**, and no first-party module can be a separate Composer package until
+issue #8 closes. The verification fixture is a path repository in the monorepo's `require-dev`, which Playwright
+never sees. So the seam's §9 coverage arrives with the `person` module, and until then this entry claims feature
+coverage and not browser coverage. The distinction is the whole of §9.
 
 ---
 

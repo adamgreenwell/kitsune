@@ -27,6 +27,7 @@ use Kitsune\Core\Console\SchemaSyncCommand;
 use Kitsune\Core\Fields\FieldTypeRegistry;
 use Kitsune\Core\Filament\RichText\BlockDirectionPlugin;
 use Kitsune\Core\Models\Entry;
+use Kitsune\Core\Modules\AdminSurface;
 use Kitsune\Core\Modules\ModuleKernel;
 use Kitsune\Core\Schema\RecordedRevisions;
 use Kitsune\Core\Settings\SettingsGuard;
@@ -76,6 +77,13 @@ final class KitsuneServiceProvider extends ServiceProvider
         // against it during boot, which is the extension point ADR-001
         // promises developers.
         $this->app->singleton(FieldTypeRegistry::class, static fn (): FieldTypeRegistry => new FieldTypeRegistry);
+
+        /*
+         * What enabled modules add to the admin — ADR-038's `@internal` seam. A singleton because the module
+         * that fills it and the panel that reads it must be looking at the same object, and bound in
+         * `register()` so it exists before the kernel registers anything in `booted()`.
+         */
+        $this->app->singleton(AdminSurface::class, static fn (): AdminSurface => new AdminSurface);
 
         /*
          * ⚠️ THE APPLICATION'S DEFAULT LOCALE, CAPTURED BEFORE ANYTHING CAN MOVE IT.

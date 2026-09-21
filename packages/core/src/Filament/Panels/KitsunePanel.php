@@ -30,6 +30,7 @@ use Kitsune\Core\Http\Middleware\SetKitsuneContext;
 use Kitsune\Core\Http\Middleware\SetUiLocale;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Site;
+use Kitsune\Core\Modules\AdminSurface;
 use Kitsune\Core\Tenancy\Context;
 
 /**
@@ -84,7 +85,21 @@ final class KitsunePanel
                 SetUiLocale::class,
                 IdentifyEntryType::class,
             ], isPersistent: true)
-            ->resources([EntryResource::class, EntryTypeResource::class, RoleResource::class])
+            /*
+             * ⚠️ CORE'S THREE, THEN WHATEVER ENABLED MODULES ADDED — ADR-038 decision H. A disabled module's
+             * provider is never registered, so it never fills the surface and contributes nothing here: the
+             * switch in `modules` is what decides, and this reads the result rather than asking again.
+             *
+             * `resources()` APPENDS rather than replaces (`$this->resources[] = $resource`, with only the
+             * model lookup reset), measured on Filament v5.7.8 — so the spread is additive in the way it
+             * reads, and a module cannot displace core's own resources by registering first.
+             */
+            ->resources([
+                EntryResource::class,
+                EntryTypeResource::class,
+                RoleResource::class,
+                ...app(AdminSurface::class)->resources(),
+            ])
             ->pages([Dashboard::class])
             ->widgets([EntryCountsWidget::class, RecentEntriesWidget::class])
             ->navigation(self::navigation(...))
@@ -203,6 +218,21 @@ final class KitsunePanel
                     ->url(fn (): string => RoleResource::getUrl('index'))
                     ->isActiveWhen(fn (): bool => request()->routeIs('filament.*.resources.roles.*')),
             ] : []),
+
+            /*
+             * Whatever enabled modules added — ADR-038's `@internal` seam, and LAST on purpose: core's own
+             * navigation keeps its order whatever modules are installed, so a module cannot rearrange the
+             * sidebar by registering early.
+             *
+             * ⚠️ NO VISIBILITY FILTER HERE, AND THAT IS NOT AN OVERSIGHT. Every link above is hidden by the
+             * rule that gates its URL — `canViewAny()` — because a link advertising a refusal is the defect
+             * review found in this very method. A module's subject is not something core's permission
+             * vocabulary can name (`Permissions::ACTIONS` has one subject, `entry`; a module's own is a v1.2
+             * question), so the module gates its own item with `NavigationItem::visible()` and its own
+             * resource with `canViewAny()`. Core inventing a second authorization layer for subjects it
+             * cannot express would be guessing on the module's behalf.
+             */
+            ...app(AdminSurface::class)->navigationItems(),
         ]);
     }
 }
