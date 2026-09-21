@@ -52,13 +52,14 @@ final readonly class ModuleManifest
 
     /**
      * @param  list<string>  $scoping  every scope this module's models may declare
-     * @param  list<string>  $namespaces  the package's PSR-4 roots, which is where its models are swept from
+     * @param  array<string, list<string>>  $psr4  the package's own PSR-4 roots, namespace => directories,
+     *                                             relative to its install path — where the sweep looks
      */
     private function __construct(
         public string $package,
         public string $provider,
         public array $scoping,
-        public array $namespaces,
+        public array $psr4,
     ) {}
 
     /**
@@ -158,13 +159,26 @@ final readonly class ModuleManifest
             $scopes[] = $scope;
         }
 
-        $namespaces = [];
+        /*
+         * Derived from the package's own autoload block, never declared in the manifest: a module repeating its
+         * PSR-4 roots would be two places to drift, and the sweep must look where Composer actually loads from
+         * or it is checking a different set of classes than the one that runs.
+         */
+        $roots = [];
         $psr4 = $composerJson['autoload']['psr-4'] ?? null;
 
         if (is_array($psr4)) {
-            foreach (array_keys($psr4) as $namespace) {
-                /* Derived, never declared: a module repeating its own PSR-4 roots in the manifest is two places to drift. */
-                $namespaces[] = (string) $namespace;
+            foreach ($psr4 as $namespace => $paths) {
+                /* PSR-4 permits a string or a list of them, and a module using the list form is not exotic. */
+                $directories = [];
+
+                foreach (is_array($paths) ? $paths : [$paths] as $path) {
+                    if (is_string($path)) {
+                        $directories[] = $path;
+                    }
+                }
+
+                $roots[(string) $namespace] = $directories;
             }
         }
 
@@ -172,7 +186,7 @@ final readonly class ModuleManifest
             package: $package,
             provider: $manifest['provider'],
             scoping: $scopes,
-            namespaces: $namespaces,
+            psr4: $roots,
         );
     }
 

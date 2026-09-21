@@ -39,8 +39,9 @@ it('accepts a manifest that declares a provider and a scope', function (): void 
     expect($parsed->package)->toBe('acme/thing')
         ->and($parsed->provider)->toBe('Acme\\Provider')
         ->and($parsed->scoping)->toBe(['unscoped:global'])
-        /* Derived from the package's own autoload block rather than declared twice. */
-        ->and($parsed->namespaces)->toBe(['Acme\\']);
+        /* Derived from the package's own autoload block rather than declared twice — and it keeps the PATHS,
+         * because the sweep has to look where Composer actually loads from. */
+        ->and($parsed->psr4)->toBe(['Acme\\' => ['src/']]);
 });
 
 it('accepts an empty scoping list, because a module may ship no models at all', function (): void {
