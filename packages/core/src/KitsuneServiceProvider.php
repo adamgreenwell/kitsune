@@ -26,6 +26,7 @@ use Kitsune\Core\Console\SchemaSyncCommand;
 use Kitsune\Core\Fields\FieldTypeRegistry;
 use Kitsune\Core\Filament\RichText\BlockDirectionPlugin;
 use Kitsune\Core\Models\Entry;
+use Kitsune\Core\Modules\ModuleKernel;
 use Kitsune\Core\Schema\RecordedRevisions;
 use Kitsune\Core\Settings\SettingsGuard;
 use Kitsune\Core\Settings\SettingsResolver;
@@ -176,5 +177,23 @@ final class KitsuneServiceProvider extends ServiceProvider
             Js::make(BlockDirectionPlugin::ASSET, __DIR__.'/../resources/js/rich-editor-direction.js')
                 ->loadedOnRequest(),
         ], BlockDirectionPlugin::PACKAGE);
+
+        /*
+         * ⚠️ IN `boot()` RATHER THAN `register()`. ADR-038: core touches no database in `register()`, and a
+         * registry read there turns a transient connection failure into an admin that has quietly lost every
+         * module's features.
+         *
+         * ⚠️ AND INSIDE `booted()` RATHER THAN INLINE, WHICH IS NOT A STYLE CHOICE. `Application::boot()` walks
+         * its provider list with `array_walk`, so whether a provider APPENDED during that walk is itself booted
+         * depends on how the walk behaves while the array grows underneath it — and AGENTS.md §15 exists for
+         * exactly this kind of question. Rather than measure a framework internal and then depend on the answer,
+         * the registration is moved to where the behaviour is documented and unambiguous: `booted()` fires after
+         * the walk, `$this->booted` is true by then, and `Application::register()` boots a provider immediately
+         * when it is. A module is therefore registered AND booted, on a path that does not rest on an
+         * undocumented ordering. It also means a module's own bindings land with every core binding in place.
+         */
+        $this->app->booted(function (): void {
+            ModuleKernel::boot($this->app);
+        });
     }
 }

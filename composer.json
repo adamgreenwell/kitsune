@@ -8,9 +8,10 @@
     },
     "require-dev": {
         "kitsune/core": "@dev",
+        "kitsune/fixture-module": "@dev",
+        "larastan/larastan": "^3.11",
         "laravel/boost": "^2.7",
         "laravel/pint": "^1.31",
-        "larastan/larastan": "^3.11",
         "orchestra/testbench": "^11.2",
         "pestphp/pest": "^5.1"
     },
@@ -18,6 +19,13 @@
         {
             "type": "path",
             "url": "packages/*",
+            "options": {
+                "symlink": true
+            }
+        },
+        {
+            "type": "path",
+            "url": "tests/Core/Fixtures/Packages/module-fixture",
             "options": {
                 "symlink": true
             }
