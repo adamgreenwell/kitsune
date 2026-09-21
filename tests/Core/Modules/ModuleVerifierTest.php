@@ -16,6 +16,9 @@ use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
 use Kitsune\Core\Tenancy\Scopes\OrgScope;
 use Kitsune\Core\Tests\Fixtures\Modules\Good\GoodThing;
 use Kitsune\Core\Tests\Fixtures\Modules\InertBoot\Inert;
+use Kitsune\Core\Tests\Fixtures\Modules\KeyedNoop\Sneaky;
+use Kitsune\Core\Tests\Fixtures\Modules\LateRemoval\Escapee;
+use Kitsune\Core\Tests\Fixtures\Modules\Smuggler\stubs\Smuggled;
 
 /** The fixture modules are real directories of real classes, loaded by the real autoloader. */
 function modulePath(string $name): string
@@ -109,9 +112,14 @@ it('refuses a file that does not define the class its path promises', function (
 it('refuses a model that carries the trait and neuters its boot', function (): void {
     $result = verifyFixture('InertBoot', ['org']);
 
-    expect($result->refusal)->toContain('does not register')
-        ->and($result->refusal)->toContain('OrgScope')
-        ->and($result->refusal)->toContain('bootEnforcesScope');
+    /*
+     * Caught by the SQL comparison rather than by the registration check, because a model that registers
+     * nothing builds the same query with its scopes as without them. The registration check is the second
+     * question and fails differently — see the KeyedNoop and LateRemoval fixtures.
+     */
+    expect($result->refusal)->toContain('same with its global scopes as without them')
+        ->and($result->refusal)->toContain('OrgScoped')
+        ->and($result->refusal)->toContain(Inert::class);
 
     /* The two older questions both still answer yes, which is exactly why they were not enough. */
     $model = Inert::class;
@@ -208,4 +216,58 @@ it('refuses an empty but existing root rather than passing on nothing', function
         @rmdir($empty.'/src');
         @rmdir($empty);
     }
+});
+
+/**
+ * ⚠️ THE REGISTRY IS A LABEL. `Model::addGlobalScope($identifier, $implementation)` files the implementation
+ * under whatever string it is handed, so a no-op closure filed as `OrgScope::class` makes every key-based
+ * check answer yes. Measured before the fix: this model emitted a bare select across every org while the
+ * honest control emitted `… where 1 = 0`.
+ */
+it('refuses a no-op scope filed under the right name', function (): void {
+    $result = verifyFixture('KeyedNoop', ['org']);
+
+    expect($result->refusal)->toContain('same with its global scopes as without them');
+
+    /* The key-based check the fix replaced would have passed this. */
+    expect(array_keys((new Sneaky)->getGlobalScopes()))->toContain(OrgScope::class);
+});
+
+/**
+ * ⚠️ AND CHECKING THE VALUES IS NOT ENOUGH EITHER: registration is not application. A genuine OrgScope under
+ * its genuine key, stripped again by a `newQuery()` override, defeats an `instanceof` check.
+ */
+it('refuses a real scope that the model strips from every query it builds', function (): void {
+    $result = verifyFixture('LateRemoval', ['org']);
+
+    expect($result->refusal)->toContain('same with its global scopes as without them');
+
+    /* Both weaker checks pass: the scope is registered, under the right key, and is a real OrgScope. */
+    $registered = (new Escapee)->getGlobalScopes();
+
+    expect(array_keys($registered))->toContain(OrgScope::class)
+        ->and($registered[OrgScope::class])->toBeInstanceOf(OrgScope::class);
+});
+
+/**
+ * ⚠️ TOKENISING STOPS A FILE DECLARING A SECOND CLASS, NOT DEFINING ONE. The carrier declares exactly what
+ * PSR-4 names and `require_once`s a file inside the package but under no root, which the verifier's own
+ * `class_exists()` then executes.
+ */
+it('refuses a model smuggled in by a file the sweep never walks', function (): void {
+    $manifest = ModuleManifest::from([
+        'name' => 'fixture/smuggler',
+        'autoload' => ['psr-4' => ['Kitsune\\Core\\Tests\\Fixtures\\Modules\\Smuggler\\src\\' => 'src']],
+        'extra' => ['kitsune' => ['provider' => 'Fixture\\Provider', 'scoping' => ['unscoped:global']]],
+    ], 'fixture/smuggler');
+
+    $result = ModuleVerifier::verify($manifest, modulePath('Smuggler'));
+
+    expect($result->refusal)->toContain('while being examined')
+        ->and($result->refusal)->toContain('Smuggled')
+        ->and($result->refusal)->toContain('stubs/smuggled.php');
+
+    /* The smuggled model really is defined, really unconstrained — the refusal is not theoretical. */
+    expect(class_exists(Smuggled::class, false))->toBeTrue()
+        ->and(class_uses_recursive(Smuggled::class))->not->toContain(EnforcesScope::class);
 });

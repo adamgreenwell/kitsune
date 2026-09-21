@@ -40,13 +40,20 @@ use Throwable;
  * asked of a BOOTED INSTANCE — `getGlobalScopes()` — which is the same discipline as the rest of this
  * codebase: ask the database-facing object, not the label.
  *
- * ⚠️ AND IT READS EACH FILE BEFORE IT LOADS IT. The sweep used to resolve a class name from a path and call
- * `class_exists()`, which made four separate holes: a second class declared in the same file was never named
- * or examined (the verifier's own autoload defined it), a file that defines nothing its path promises could
- * not be told from one that defines something else, verifying twice in a process fatalled on a redeclared
- * symbol, and — worst — the module's code RAN before anything had decided to trust it. Tokenising first closes
- * all four: the symbols a file declares are read without executing it, and only a file whose declarations are
- * exactly what PSR-4 promises is loaded at all.
+ * ⚠️ AND IT READS EACH FILE BEFORE IT DECIDES TO LOAD IT. The sweep used to resolve a class name from a path
+ * and call `class_exists()`, which made four separate holes: a second class declared in the same file was
+ * never named or examined (the verifier's own autoload defined it), a file that defines nothing its path
+ * promises could not be told from one that defines something else, verifying twice in a process fatalled on a
+ * redeclared symbol, and the module's code ran before anything had decided to trust it. Tokenising narrows all
+ * four: the symbols a file DECLARES are read without executing it, and only a file whose declarations are
+ * exactly what PSR-4 promises is loaded.
+ *
+ * ⚠️ BUT THE DECISION TO LOAD IS STILL FOLLOWED BY LOADING, AND AN EARLIER VERSION OF THIS PARAGRAPH CLAIMED
+ * OTHERWISE. "Only a conforming file is loaded at all" is true of which files are loaded and says nothing
+ * about what loading them defines: a conforming carrier can `require_once` a file under no PSR-4 root, or
+ * `eval()` a class no token scan can see. Both were measured smuggling an unconstrained model past this class.
+ * `refusalForSmuggled()` is what answers it — the sweep compares what is defined afterwards against what it
+ * named — and this paragraph says so rather than asserting a property the code does not have.
  *
  * ⚠️ A SWEEP THAT EXAMINED NOTHING IS A REFUSAL. `examined` was documented as existing so that a refusal could
  * be told from a walk that never ran — and nothing consulted it, so five manifest shapes passed having looked
@@ -80,6 +87,9 @@ final class ModuleVerifier
 
         $examined = [];
         $models = [];
+
+        /* Taken before anything of this module's is loaded, so the diff afterwards is what LOADING it defined. */
+        $declaredBefore = array_flip(get_declared_classes());
 
         foreach ($manifest->psr4 as $namespace => $directories) {
             foreach ($directories as $directory) {
@@ -152,6 +162,12 @@ final class ModuleVerifier
                 $examined,
                 $models,
             );
+        }
+
+        $smuggled = self::refusalForSmuggled($manifest, $base, $declaredBefore, $examined);
+
+        if ($smuggled !== null) {
+            return new ModuleVerification($smuggled, $examined, $models);
         }
 
         return new ModuleVerification(self::refusalFor($manifest, $models), $examined, $models);
@@ -235,7 +251,25 @@ final class ModuleVerifier
     }
 
     /**
-     * The decisive question, asked of an instance rather than of the source.
+     * The decisive question — asked of the SQL the model compiles, not of the scopes it claims to register.
+     *
+     * ⚠️ THE REGISTRY IS A LABEL, AND READING IT WAS A BYPASS. `array_keys($model->getGlobalScopes())` looked
+     * like asking the database-facing object, and is not: `Model::addGlobalScope($identifier, $implementation)`
+     * files the implementation under whatever STRING it is handed, so
+     * `addGlobalScope(OrgScope::class, static fn () => null)` puts the right key in front of a no-op and every
+     * key-based check answers yes. Measured: that model emitted `select * from "sneaky_things"` with no org
+     * context, where the honest control emitted `… where 1 = 0`.
+     *
+     * ⚠️ AND CHECKING THE VALUES INSTEAD IS NOT ENOUGH EITHER, which is the finding that decided this shape. A
+     * model may register a genuine `OrgScope` under its genuine key and then strip it a layer further out:
+     * `newQuery(): Builder { return parent::newQuery()->withoutGlobalScope(OrgScope::class); }`. Registration
+     * is not application, and an `instanceof` check on the registered values passes while every org's rows are
+     * readable.
+     *
+     * So the question is put to the query the model actually builds: compile it with its scopes and again with
+     * `withoutGlobalScopes()`, and require the two to DIFFER. That is unforgeable in the sense this codebase
+     * means — a model whose SQL is the unscoped SQL is unscoped, whatever it registered and whatever it says.
+     * No database is touched: `toSql()` compiles, it does not run.
      *
      * @param  class-string  $model
      */
@@ -244,23 +278,108 @@ final class ModuleVerifier
         $expected = self::SCOPE_FOR_ATTRIBUTE[$attribute] ?? null;
 
         try {
-            $registered = array_keys((new $model)->getGlobalScopes());
+            $instance = new $model;
+            $scoped = $instance->newQuery()->toSql();
+            $unscoped = $instance->newQuery()->withoutGlobalScopes()->toSql();
+            $registered = array_values($instance->getGlobalScopes());
         } catch (Throwable $e) {
-            return "{$package}'s model `{$model}` could not be instantiated to check the scopes it registers: "
+            return "{$package}'s model `{$model}` could not be compiled to a query to check what it scopes: "
                 .$e->getMessage();
         }
 
-        if ($expected !== null && ! in_array($expected, $registered, true)) {
-            return "{$package}'s model `{$model}` declares `{$attribute}` and does not register `{$expected}` "
-                .'when it boots, so it is unconstrained whatever its attribute and trait say. Overriding '
-                .'`bootEnforcesScope()` does exactly this.';
+        if ($expected !== null) {
+            if ($scoped === $unscoped) {
+                return "{$package}'s model `{$model}` declares `{$attribute}`, and the query it builds is the "
+                    .'same with its global scopes as without them, so it is unconstrained whatever it registers. '
+                    .'A no-op scope filed under the right name, or a `newQuery()` that strips the real one, both '
+                    .'look like this.';
+            }
+
+            /*
+             * Both questions, because they fail differently: the SQL comparison catches a scope that does
+             * nothing, and this catches a model that constrains itself in some way of its own while never
+             * registering the scope its declaration promises.
+             */
+            $matches = array_filter($registered, static fn (object $scope): bool => $scope instanceof $expected);
+
+            if ($matches === []) {
+                return "{$package}'s model `{$model}` declares `{$attribute}` and registers no `{$expected}`, so "
+                    .'whatever narrows its query is not the scope its declaration promises.';
+            }
+
+            return null;
         }
 
-        /* An unscoped model that enforces a scope is a different lie, and the same question catches it. */
-        $kitsuneScopes = array_filter(array_values(self::SCOPE_FOR_ATTRIBUTE));
+        /*
+         * An unscoped model that enforces one of Kitsune's scopes is a different lie. Judged by value rather
+         * than by key for the reason above, and deliberately NOT by comparing SQL: a module's model may carry a
+         * global scope of its own — an `active` filter, say — and that is its business, not a scoping claim.
+         */
+        foreach ($registered as $scope) {
+            foreach (array_filter(array_values(self::SCOPE_FOR_ATTRIBUTE)) as $kitsuneScope) {
+                if ($scope instanceof $kitsuneScope) {
+                    return "{$package}'s model `{$model}` declares `{$attribute}` and applies `{$kitsuneScope}` anyway.";
+                }
+            }
+        }
 
-        if ($expected === null && array_intersect($kitsuneScopes, $registered) !== []) {
-            return "{$package}'s model `{$model}` declares `{$attribute}` and registers a scope anyway.";
+        return null;
+    }
+
+    /**
+     * Any model the module DEFINED while being swept but never declared in a file PSR-4 names.
+     *
+     * ⚠️ TOKENISING STOPS A FILE DECLARING A SECOND CLASS; IT DOES NOT STOP IT DEFINING ONE. Deciding whether
+     * to load a file without executing it is what the tokeniser buys, and the decision to load is still
+     * followed by loading — `isConcreteModel()` calls `class_exists()`, which runs the autoloader, which
+     * executes the file. A conforming carrier can then `require_once` a file under no PSR-4 root, or `eval()`
+     * a class the token scan never sees, and the smuggled model is defined in the process without ever being
+     * named. Both were measured: each emitted a bare `select *` across every org.
+     *
+     * So the sweep compares what is defined afterwards against what it named. A model whose file is inside
+     * this package, or which has no file at all because it was `eval`'d, and which the sweep never examined,
+     * is a refusal. Classes from elsewhere that the autoloader happened to pull in on the way — a parent class
+     * in vendor, a trait's dependencies — are outside the install path and are not this module's to answer for.
+     *
+     * @param  array<string, int>  $declaredBefore
+     * @param  list<class-string>  $examined
+     */
+    private static function refusalForSmuggled(ModuleManifest $manifest, string $base, array $declaredBefore, array $examined): ?string
+    {
+        $named = array_flip($examined);
+
+        foreach (get_declared_classes() as $class) {
+            if (isset($declaredBefore[$class]) || isset($named[$class])) {
+                continue;
+            }
+
+            if (! is_subclass_of($class, Model::class)) {
+                continue;
+            }
+
+            $reflection = new ReflectionClass($class);
+
+            if ($reflection->isAbstract()) {
+                continue;
+            }
+
+            $file = $reflection->getFileName();
+
+            /* `eval`'d code reports either no file or `<path>(<line>) : eval()'d code`. */
+            $evaluated = $file === false || str_contains($file, "eval()'d code");
+            $inside = is_string($file) && str_starts_with($file, $base.DIRECTORY_SEPARATOR);
+
+            if (! $evaluated && ! $inside) {
+                continue;
+            }
+
+            return sprintf(
+                '%s defined the model `%s` while being examined, and no file PSR-4 names declares it (%s). A '
+                .'class the sweep cannot name is a class it cannot check.',
+                $manifest->package,
+                $class,
+                $evaluated ? 'it was eval\'d' : 'it came from '.substr((string) $file, strlen($base) + 1),
+            );
         }
 
         return null;
