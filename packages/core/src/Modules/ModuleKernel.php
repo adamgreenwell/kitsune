@@ -14,6 +14,7 @@ use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use Kitsune\Core\Models\Module;
+use Throwable;
 
 /**
  * Registers the modules this installation has a receipt for — ADR-038.
@@ -27,10 +28,13 @@ use Kitsune\Core\Models\Module;
  * — while telling that apart from a fresh install with no table breaks the install path. ADR-038 records the
  * decision; this is where it is kept.
  *
- * ⚠️ AND THE TWO ABSENCES ARE DIFFERENT. A missing `modules` table means "nothing installed yet" — a fresh
- * checkout, a bare clone, the moment before the first migrate — and is a silent skip. A connection that fails
- * is NOT caught: it is a real failure, and swallowing it would turn a broken database into an application that
- * merely behaves as though no module were enabled, which is the fail-open reading of a fail-closed house.
+ * ⚠️ AND A DATABASE THAT CANNOT ANSWER IS A DECLINE, NOT A CRASH — corrected by running it. A missing `modules`
+ * table means "nothing installed yet" and is a silent skip. An unreachable database was originally NOT caught,
+ * on the argument that swallowing it would be the fail-open reading of a fail-closed house; that argument is
+ * right about a web request and wrong about the moment that decides whether Kitsune can be installed at all.
+ * `composer skeleton:install` runs `artisan package:discover` before it writes `.env`, so the application
+ * boots with no database and the uncaught throw made a fresh install fail at the step that discovers Kitsune.
+ * It is logged and declined now, and ADR-038 is amended rather than quietly contradicted (AGENTS.md §12).
  *
  * ⚠️ AND A RECEIPT IS NOT A LICENCE TO RUN ANYTHING. Each enabled receipt is re-checked against what is on disk
  * before its provider is registered: the package must still be installed, its manifest must still parse, its
@@ -80,15 +84,34 @@ final class ModuleKernel
      */
     private static function receipts(): array
     {
-        /* Not a try/catch: a missing table is this question's answer, and a broken connection is not. */
-        if (! Schema::hasTable('modules')) {
+        try {
+            if (! Schema::hasTable('modules')) {
+                return [];
+            }
+
+            return Module::query()
+                ->where('is_enabled', true)
+                ->pluck('version', 'handle')
+                ->all();
+        } catch (Throwable $e) {
+            /*
+             * ⚠️ THIS WAS "NOT A TRY/CATCH" UNTIL RUNNING IT PROVED OTHERWISE, and ADR-038 is amended rather
+             * than routed around. The reasoning was that a missing table is an answer and a broken connection
+             * is a failure that must not be swallowed. It holds for a web request and is wrong about the
+             * moment that matters most: `composer skeleton:install` runs `artisan package:discover` BEFORE it
+             * writes `.env`, so the application boots with no database at all, `Schema::hasTable()` throws, and
+             * a fresh install of Kitsune fails at the step that discovers Kitsune. Measured — the install
+             * aborted with this exact frame on the stack.
+             *
+             * Declining loudly is the right failure here, and costs less than it looks: an installation whose
+             * database is genuinely unreachable fails on its first query whatever this method does, so the
+             * kernel is not the component that should decide the application is dead. What it must not do is
+             * be the reason a working installation cannot be created.
+             */
+            Log::warning('Kitsune could not read the modules table, so no module was registered: '.$e->getMessage());
+
             return [];
         }
-
-        return Module::query()
-            ->where('is_enabled', true)
-            ->pluck('version', 'handle')
-            ->all();
     }
 
     /** The manifest of a module that may be registered, or null with the reason logged. */

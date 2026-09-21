@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 use Composer\InstalledVersions;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 use Kitsune\Core\Models\Module;
 use Kitsune\Core\Modules\ModuleKernel;
 use Kitsune\Fixture\Module\FixtureModuleServiceProvider;
@@ -129,4 +130,37 @@ it('closes the door behind a legitimate registration', function (): void {
 it('reports no registration in flight when nothing is being registered', function (): void {
     expect(ModuleKernel::isRegistering(FixtureModuleServiceProvider::class))->toBeFalse()
         ->and(ModuleKernel::isRegistering('Anything\\At\\All'))->toBeFalse();
+});
+
+/**
+ * ⚠️ REGRESSION. The kernel originally let a database failure propagate, on the argument that swallowing one
+ * is the fail-open reading of a fail-closed house. Running `composer skeleton:install` disproved it: that
+ * script runs `artisan package:discover` BEFORE it writes `.env`, so the application boots with no database,
+ * `Schema::hasTable()` threw, and a fresh install of Kitsune failed at the step that discovers Kitsune.
+ *
+ * The assertion is deliberately about the install path rather than about a web request: an installation whose
+ * database is genuinely unreachable fails on its first query anyway, so what matters is that the kernel is
+ * never the reason a working installation cannot be created.
+ */
+it('declines rather than throws when the database cannot answer', function (): void {
+    Log::spy();
+
+    /*
+     * The failure is forced at the read rather than by repointing `database.default`, which was the first
+     * attempt: changing the default connection also breaks RefreshDatabase's rollback, so the test failed in
+     * teardown with the same exception class and looked like the kernel had let it escape. The contract under
+     * test is "whatever the read throws, the kernel declines", and this states exactly that.
+     */
+    Schema::shouldReceive('hasTable')
+        ->with('modules')
+        ->andThrow(new InvalidArgumentException('Database connection [pgsql] not configured.'));
+
+    ModuleKernel::boot(app());
+
+    expect(FixtureModuleServiceProvider::$calls)->toBe([]);
+
+    Log::shouldHaveReceived('warning')
+        ->withArgs(fn (string $message): bool => str_contains($message, 'could not read the modules table')
+            && str_contains($message, 'not configured'))
+        ->once();
 });

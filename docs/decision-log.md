@@ -3012,6 +3012,20 @@ turns a transient connection failure into an admin that silently loses every mod
 distinguishing that from a fresh install with no table breaks the install path. The read happens in `boot()`, and a
 missing table is a silent skip only there.
 
+⚠️ **Amended 2026-09-21 — an unreachable database is a decline, not a crash, and the first version of this got it
+wrong.** The rule was that a missing table is an answer and a failing connection is a failure that must not be
+swallowed: catching it would be the fail-open reading of a fail-closed house. That is right about a web request and
+wrong about the moment that decides whether Kitsune can be installed at all. `composer skeleton:install` runs
+`artisan package:discover` **before** it writes `.env`, so the application boots with no database configured,
+`Schema::hasTable('modules')` throws, and a fresh install fails at the step that discovers Kitsune. Measured, by
+running it: the install aborted with `ModuleKernel::receipts()` on the stack.
+
+The read is wrapped and the failure is logged. The cost is smaller than the rule it replaces implies — an
+installation whose database is genuinely unreachable fails on its first query whatever this method does, so the
+kernel is not the component that should declare the application dead. What it must not be is the reason a working
+installation cannot be created. This is also why the ADR's `Enforced by` list is written the way it is: every line
+there is a claim somebody has to be able to run.
+
 ⚠️ **`composer-runtime-api: ^2.0` is too low for the mechanism this ADR depends on.** `InstalledVersions::
 getInstalledPackagesByType()` and `getInstallPath()` arrived in Composer **2.1**; both are present on the 2.10.3
 runtime here, which is why the gap is invisible locally. The constraint is raised to `^2.1`.
@@ -3043,11 +3057,20 @@ rather than replaces. What is missing is exactly the case AGENTS.md §9 exists f
 boundaries, which ADR-024 records as seven-of-eight green while the dashboard returned 500, caused by Filament
 calling `getUrl()` on a Resource's navigation item.
 
-It is missing for a reason rather than by omission, and the reason is ADR-038's own deferral: a browser test
-needs a module installed in the **skeleton**, and no first-party module can be a separate Composer package until
-issue #8 closes. The verification fixture is a path repository in the monorepo's `require-dev`, which Playwright
+It is missing for a reason rather than by omission: a browser test needs a module installed in the **skeleton**,
+and the skeleton can only resolve one first-party package. `composer skeleton:install` writes a single path
+repository for `packages/core`, `deploy/release.sh` writes the same one, and `split-packages.yml`'s matrix has
+a single entry. The verification fixture is a path repository in the monorepo's `require-dev`, which Playwright
 never sees. So the seam's §9 coverage arrives with the `person` module, and until then this entry claims feature
 coverage and not browser coverage. The distinction is the whole of §9.
+
+⚠️ **Corrected 2026-09-21 — an earlier version of this amendment blamed issue #8, which is closed.** `kitsune/core`
+reached Packagist with v0.1.0 and the `kitsune-cms/core` mirror exists; #8's scope was the split tooling, the
+registration and a standalone install, and all three shipped. What actually stops a second first-party package is
+the three hardcoded `packages/core` paths above, and — for an EXTERNAL consumer rather than this repository's own
+tests — a mirror repository and Packagist entry per package, which the split workflow's own setup notes say must
+be created empty before its matrix can name them. Neither is #8, and the distinction matters: one is a few lines
+in two scripts, the other is a decision about how many packages this project publishes.
 
 ---
 

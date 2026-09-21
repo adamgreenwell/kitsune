@@ -26,9 +26,10 @@
 #   4. Links skeleton/.env and skeleton/storage to the shared ones. The app's base path is skeleton/, so the release
 #      root's own paths, which Forge's shared paths link, are never read.
 #   5. Resolves dependencies fresh. No composer.lock is restored or saved outside the release.
-#   6. Points the skeleton at this checkout's packages/core, mirrored rather than symlinked. NOT because the package is
-#      unpublished — it is, since #8 — but because a release pinned to DEPLOY_SHA must install THAT commit's core
-#      rather than whatever Packagist resolves at deploy time (ADR-035, amended 2026-09-17).
+#   6. Points the skeleton at this checkout's packages/*, mirrored rather than symlinked. NOT because the packages are
+#      unpublished — core is, since #8 — but because a release pinned to DEPLOY_SHA must install THAT commit's code
+#      rather than whatever Packagist resolves at deploy time (ADR-035, amended 2026-09-17). A glob rather than
+#      packages/core so a first-party MODULE resolves the same way, on the same reasoning (ADR-038).
 #   7. Installs runtime dependencies with --no-scripts, then proves core was copied. ⚠️ Composer's scripts would run
 #      package:discover, which boots Laravel before anything has proved the .env parses, and Laravel prints
 #      phpdotenv's message for a malformed line to stderr. That message quotes the value: a password, into the log.
@@ -368,12 +369,19 @@ ln -s "$site_root/storage" skeleton/storage
 # 6. kitsune/core from this checkout, as real files, the way a Packagist install will put them. The edit exists only in
 # this release's working tree, after step 1 proved it clean. The package is on Packagist since #8; this stays a path
 # repository so the release installs the core of the commit it is pinned to, which step 7 then proves.
-"$PHP_BIN" "$composer_bin" config -d skeleton repositories.kitsune-core '{"type":"path","url":"../packages/core","options":{"symlink":false}}'
+"$PHP_BIN" "$composer_bin" config -d skeleton repositories.kitsune-packages '{"type":"path","url":"../packages/*","options":{"symlink":false}}'
 
 # 7. Runtime dependencies, with Forge's documented flags plus --no-scripts (see the header).
 "$PHP_BIN" "$composer_bin" install -d skeleton --no-dev --no-interaction --prefer-dist --optimize-autoloader --no-scripts
 [[ -f skeleton/vendor/kitsune/core/composer.json && ! -L skeleton/vendor/kitsune/core ]] \
   || refuse "kitsune/core was not installed as a copy of packages/core"
+# ⚠️ AND EVERY OTHER FIRST-PARTY PACKAGE THE SKELETON PULLED IN, because the repository is now a glob over
+# packages/* and a module resolved through it must be pinned to this commit exactly as core is. A symlink here
+# would make the release read files outside itself, which step 6 exists to prevent.
+for kitsune_package in skeleton/vendor/kitsune/*; do
+  [[ -e "$kitsune_package" ]] || continue
+  [[ ! -L "$kitsune_package" ]] || refuse "$kitsune_package was symlinked rather than copied into the release"
+done
 
 # 8. Known advisories block the release. --abandoned is explicit, so the policy does not depend on Composer's version.
 "$PHP_BIN" "$composer_bin" audit -d skeleton --no-dev --abandoned=report

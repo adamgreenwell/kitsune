@@ -374,7 +374,8 @@ it('runs every step in order, and nothing else', function (): void {
             'php version',
             'composer --version --no-interaction',
             'php extensions',
-            'composer config -d skeleton repositories.kitsune-core {"type":"path","url":"../packages/core","options":{"symlink":false}}',
+            /* ADR-038: a glob, so a first-party MODULE resolves from this checkout exactly as core does. */
+            'composer config -d skeleton repositories.kitsune-packages {"type":"path","url":"../packages/*","options":{"symlink":false}}',
             'composer install -d skeleton --no-dev --no-interaction --prefer-dist --optimize-autoloader --no-scripts',
             'composer audit -d skeleton --no-dev --abandoned=report',
             'php check syntax',
