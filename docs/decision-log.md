@@ -234,7 +234,7 @@ Kitsune's admin is a Filament v5 panel — full panel builder, not a fork, not j
 
 ## ADR-009 — Multi-tenancy in core, enforced fail-closed by the kernel
 
-**Status:** Decided · 2026-09-07 · **Boot-order collision resolved by ADR-012** · ⚠️ **Substantially revised by ADR-021** — there are now *two* scoping levels (Org and Site), the attribute set is three-valued, and Filament's automatic scoping protects site isolation but **not** org isolation
+**Status:** Decided · 2026-09-07 · **Boot-order collision resolved by ADR-012** · ⚠️ **Substantially revised by ADR-021** — there are now *two* scoping levels (Org and Site), the attribute set is three-valued, and Filament's automatic scoping protects site isolation but **not** org isolation · **Amended 2026-09-20 by ADR-038** — the module manifest's mandatory key is spelled `scoping:` rather than `tenancy:`, and its values are the ones the scope attributes use, so a declaration can be checked against them; see required mitigation 4
 
 Tenancy is a kernel primitive from day one, in core. **Enforcement lives in the kernel, not in plugin authors' discipline.**
 
@@ -253,6 +253,13 @@ Tenancy is a kernel primitive from day one, in core. **Enforcement lives in the 
 2. Schema-engine entities tenant-scoped **by construction**
 3. `scopedUnique()` / `scopedExists()` as form-layer **defaults**
 4. Module manifest requires a `tenancy:` declaration; the kernel refuses to load without it
+
+   ⚠️ **Amended 2026-09-20 by ADR-038: the key is spelled `scoping:`, and its values are the ones the model
+   attributes already use.** AGENTS.md §1 reserves "tenant" for the Filament API boundary, and a key core's own
+   reader parses is not that boundary. `aware | agnostic` was also too coarse to check anything: the vocabulary is
+   `site`, `org`, `org-through-pivot`, `unscoped:global` and `unscoped:through(M)`, so a declaration can be compared
+   against the attribute on every model the module ships — in both directions. Nothing was installed against the old
+   spelling, because no kernel ever existed to read it.
 5. Plugin SDK ships a two-tenant fixture; the validation CLI fails the build on any cross-tenant read
 6. **`{type}` is user-controlled URL input** — middleware must 404 unknown or cross-tenant types (see ADR-012)
 7. Every composite index leads with `tenant_id`
@@ -2884,8 +2891,167 @@ declines one; and erasing a reader removes the profile and calls the support fan
 
 ---
 
+## ADR-038 — A module is a Composer package core keeps a receipt for, and the kernel is a record and a refusal
+
+**Status:** Decided · 2026-09-20 · **Phase 3 (ADR-011, v1.0). The plugin SDK and the API freeze stay at v1.2**
+
+Phase 3's remaining items are a module registry, a manifest whose scoping declaration the kernel refuses to load
+without, a hook system, an install/upgrade/uninstall lifecycle, and one entity type end to end as a module to prove
+the stack. Nothing of the kind exists: the only registry in core is `FieldTypeRegistry`, and it is for field types.
+
+⚠️ **`v0.1.0`'s tag message lists "the module kernel" among what the release contains. That was untrue when it was
+written and is untrue now.** The tag is annotated, published, mirrored to `kitsune-cms/core` and on Packagist, so it
+cannot be corrected in place. It is recorded here because this log is the place the claim can be answered, and because
+it is the same failure the log keeps catching: a consequence written before the code, which then reads as done.
+
+The pull is toward a plugin system. The constraint is Standing Principle #2: the extension API freezes at v1.2 and
+may afterwards be deprecated but never removed. **Everything still standing at v1.2 is a permanent obligation**, so
+the goal for Phase 3 is not a good contract — it is the smallest surface that still proves the stack.
+
+| Rejected | Why it lost |
+|---|---|
+| A conventional plugin system — registry service, hook facade, module base class, provisioning DSL | Measured against this decision's own shape: roughly 34 new classes in core for the same five roadmap items, including a declarative content-provisioning DSL that Phase 5's blueprints must own. Composer already does discovery and dependency resolution, Laravel's migrator already does install and rollback, and the dispatcher is already the hook system. What was genuinely missing is a record and a refusal. |
+| A `kitsune.yaml` manifest, as `architecture.md` publishes | Adds a YAML parser to the boot path of a product whose floor is 1 vCPU / 1024 MB (ADR-027), and a second source of truth beside the `composer.json` that discovery must read anyway. |
+| Loading third-party packages | The validation CLI, the tenancy audit and per-org allowlisting are v1.2 and v1.4 items. A registry that could load a third-party package today would load unvalidated, un-audited code with no gate. First-party by elimination, not by preference. |
+| Return-value filters, WordPress style | A filter makes listener ordering load-bearing and creates precisely the contract v1.2 must freeze. |
+| Per-org enablement now, via the published `org_modules` table | A second inheritance model beside ADR-022's org → site group → site resolution, built before any consumer asks for it. |
+
+### Decision
+
+**A module is a Composer package carrying an `extra.kitsune` block, and the kernel is a record and a refusal.**
+Discovery reads what Composer installed; there is no catalogue, index or install-from-URL path (Standing Principle
+#5). The record is a `modules` table row — a receipt — and the refusal is the manifest gate below.
+
+**The mandatory key is `scoping:`, not `tenancy:`.** AGENTS.md §1 forbids the word "tenant" in Kitsune's own code and
+reserves it for the Filament API boundary; a manifest key core's own reader parses is not that boundary. This
+**amends ADR-009 and `architecture.md`**, which publish a two-valued `tenancy: aware | agnostic`. Nothing is installed
+against the published spelling, because no kernel exists to read it.
+
+**The vocabulary is the one the model attributes already use**, so a declaration and an attribute can be compared:
+`site`, `org`, `org-through-pivot`, `unscoped:global`, `unscoped:through(M)`.
+
+**The declaration is verified rather than trusted, and the verification asks two questions.** A module's models are
+swept from its own PSR-4 roots, and each must satisfy **both** `ScopeResolver::for()` and carrying `EnforcesScope` —
+with set equality in both directions, so a model the sweep never reached is a refusal rather than a pass, and an
+unloadable class is a refusal rather than a skip.
+
+⚠️ **One question is not enough, and the repo has already paid for that.** AGENTS.md §2 records `User` carrying
+`#[Unscoped]` with no trait for two phases: "labelled correctly and completely unconstrained". An attribute alone is
+a comment with syntax. A gate that reads only the attribute reproduces the defect it exists to prevent, and a gate
+that runs inside `EnforcesScope`'s own boot cannot see the model that omits the trait — which is the whole case.
+
+⚠️ **`unscoped` may not be a word a module simply says, because the table shape cannot contradict it.** `entry_types`
+and `field_storage` both carry a **nullable** `org_id` and are both `#[Unscoped]`, and the tenancy migration records
+why that is safe for core. So a scope derived from a table's columns — `site_id` ⇒ site, else `org_id` ⇒ org, else
+unscoped — reads "org" from that shape while the model truthfully declares `#[Unscoped]`; the module lists both, and
+once `unscoped` is in the list the table check is satisfied by construction. Splitting it into `unscoped:global` and
+`unscoped:through(M)` makes the claim machine-checkable: a global table must have no scope column at all, and a
+through-pivot claim names the model it scopes through. The nullable-`org_id` shape is **refused for a module**, and
+core's own asymmetry is stated rather than smoothed over.
+
+**Enablement is per-install, and absent means disabled.** One switch: the module is on or off for the installation.
+Per-org and per-site are deferred until a consumer asks, which **defers `architecture.md`'s `org_modules` table**
+rather than implementing it. Absent is disabled because this is a fail-closed house — the opposite of
+`entry_type_availability`, where absent means available, and the difference is that an absent availability row means
+an org has not narrowed a type, while an absent module row means the kernel has no receipt for the code.
+
+**Hooks are events, and the rule is enforced against the caller rather than the event.** `event()` returns an array
+of listener return values whatever the event class is, so a `final readonly` event with no return channel does not
+make filters impossible — `$html = event(new Rendering($html))[0]` still compiles. A source sweep asserts core never
+assigns from `event(` or `Event::dispatch(`. The sweep's own floor is asserted too: it must find at least one
+dispatch, or it is passing because it looked at nothing.
+
+**A narrow `@internal` admin seam is opened, and the ordering it was feared to depend on does not exist.** Core has
+twice declined to open this door — `RoleResource` was pulled into core specifically to avoid it — on the argument
+that it means an extension point before the extension API. What changes is not that argument but the version: 0.x
+carries no stability promise, and the v1.2 freeze is three releases away, so the seam can be reshaped or removed
+before anything depends on it. It is `@internal`, first-party only, and holds no permission logic; visibility stays
+in `KitsunePanel::navigation()` beside core's own checks, because two copies of that rule are two places to drift.
+
+⚠️ **Measured 2026-09-20, because three independent designs reasoned about this and all three were wrong.**
+`Filament\PanelProvider::register()` does not build the panel. It calls
+`Filament::registerPanel(fn (): Panel => $this->panel(Panel::make()))`, and the facade defers that closure through
+`$app->resolving(PanelRegistry::class, …)`. Instrumenting a provider's `register()`, `boot()` and `panel()` on
+Filament v5.7.8:
+
+| Moment | Marks recorded | `panel()` had run? |
+|---|---|---|
+| after `app()->register()` and the provider's `boot()` | `register entered`, `register returned`, `boot` | **no** |
+| after `app(PanelRegistry::class)` | … plus `panel() BODY RAN` | **yes** |
+
+So `KitsunePanel::apply()` runs when the registry is first **resolved**, strictly after every provider has registered
+and booted, and a module may fill the seam in either. Measured beside it: a second `->resources([…])` call **appends**
+rather than replaces — `$this->resources[] = $resource`, with only the `modelResources` lookup reset. AGENTS.md §15
+is the reason this is a table and not a paragraph of reasoning.
+
+**What it does not claim.** Dependency resolution is Composer's, and the kernel adds none — the roadmap line asking
+for it is **amended** rather than satisfied. Load order is registration order and is explicitly **not** a contract, so
+no test pins it beyond determinism. Nothing in core listens to a kernel event in Phase 3, so the hook system is a
+convention and two dispatches rather than a demonstrated integration. An install-level lifecycle action is **not
+audited**, because ADR-020's `audit_log.org_id` is `NOT NULL` and `Auditor::record()` returns null with no org — the
+two enable/disable events are the only observability a host gets for a switch that changes the running application.
+And below Eloquent — `DB::table()`, raw SQL — a module's declaration constrains nothing, as every guard in the kernel
+already states.
+
+⚠️ **A module's global field handles share one install-wide namespace, so they are prefixed.** `field_storage` carries
+`unique(['org_id', 'handle'])` and NULLs compare distinct on every engine, so a global row's handle is claimed
+install-wide. A module taking `name` or `email` unprefixed blocks every later module and every org that wanted them.
+
+⚠️ **`is_system` is published as "undeletable" and is enforced nowhere** — it exists as a cast and a column in the
+admin, and `guardCascade()` counts entries and revisions without consulting it. The proving module's type does not
+rely on it; protection comes from `org_id IS NULL`, which `EntryTypeResource::ownsRecord()` already refuses to edit.
+Closing the published claim is its own change, and is listed under open questions rather than smuggled in here.
+
+⚠️ **The proving module cannot be a separate Composer package yet, and that is issue #8, not a design choice.**
+`skeleton/composer.json` carries no `repositories` block; `composer skeleton:install` and `deploy/release.sh` each
+write exactly one path repository, for `kitsune/core`. Adding a second package to the skeleton's `require` breaks
+`skeleton:install`, `create-project` and the release build until the mirror and Packagist entry exist.
+
+⚠️ **The kernel reads no database in `register()`.** Core touches none there today, and a registry read in `register()`
+turns a transient connection failure into an admin that silently loses every module's features — while
+distinguishing that from a fresh install with no table breaks the install path. The read happens in `boot()`, and a
+missing table is a silent skip only there.
+
+⚠️ **`composer-runtime-api: ^2.0` is too low for the mechanism this ADR depends on.** `InstalledVersions::
+getInstalledPackagesByType()` and `getInstallPath()` arrived in Composer **2.1**; both are present on the 2.10.3
+runtime here, which is why the gap is invisible locally. The constraint is raised to `^2.1`.
+
+⚠️ **Panel registration cannot be exercised in core's own test application.** Going through
+`Filament::registerPanel()` reaches `$panel->register()` and throws `Target class [livewire.finder] does not exist` —
+which is why `PanelLessHostTest` populates `PanelRegistry::$panels` directly. A seam test must therefore install
+Livewire's provider or assert below the registry, and must say which; that file's own docblock records the cost of a
+suite that cannot reach the case it claims to cover.
+
+### Enforced by
+
+**Nothing yet.** No kernel code exists at the time this ADR is written; this entry is the decision, not a report of
+work done.
+
+When it lands: a package with no `scoping` key is refused, and so is one whose declaration its own models contradict
+in either direction; a module discovered by Laravel instead of recorded by the kernel fails the boot loudly rather
+than running unrecorded; a model omitting `EnforcesScope` is refused by a check that does not live inside
+`EnforcesScope`; a `unscoped:global` claim over a table carrying a scope column is refused; a disabled module
+contributes nothing to the panel, asserted from the panel's side; the seam works with no panel configured at all
+(ADR-002); the proving module's uninstall refuses while its content exists, counted past the scope rather than
+through it; a module Resource's URL generation is crossed in a browser, because AGENTS.md §9 exists for the case a
+feature test structurally cannot see; and the event-shape sweep fails if core ever assigns from a dispatch.
+
+---
+
 ## Open questions
 
+- **`is_system` is published as "undeletable" and enforced nowhere** (`architecture.md`). It exists as a cast and an
+  admin column; `guardCascade()` counts entries and revisions without consulting it. Raised by ADR-038, which declines
+  to rely on it and leans on `org_id IS NULL` instead. Either enforce the published claim or withdraw it
+- **ADR-001 and the README call the runtime schema engine "the flagship first-party module", and it is not one** — it
+  lives inside `kitsune/core`, booted unconditionally. ADR-038 did not resolve this. Either it is extracted once the
+  kernel can carry it, or ADR-001 is amended to say it stayed in core and why
+- **Standing Principle #1 is cited as the v1.2 extension-API gate in eleven places** across code and docs; the v1.2
+  clause is in Standing Principle #2. The rule is enforced consistently, so nothing is broken — but the citation is
+  wrong everywhere it appears, and repointing it is an amendment rather than a sweep
+- **When does module enablement need an axis beyond per-install?** ADR-038 ships one switch and defers
+  `org_modules`. The first consumer to want a module on for one org and off for another decides the shape, and
+  whether it reuses ADR-022's org → site group → site resolution rather than inventing a second one
 - Storage benchmark at 10k / 100k / 1M entries
 - Blueprint rollback semantics when content already exists
 - Revision storage growth — full-JSON snapshots get expensive; consider diffs
