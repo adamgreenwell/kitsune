@@ -158,3 +158,63 @@ it('throws from `from()` with the same reason `refusalFor()` gives', function ()
     expect(fn () => ModuleManifest::from($composer, 'acme/thing'))
         ->toThrow(RuntimeException::class, (string) $reason);
 });
+
+/**
+ * ⚠️ MEASURED BYPASS. The sweep walks `psr-4`; a model reached by `classmap` was never examined and its
+ * module was accepted. The same unconstrained class, with only the autoload key changed, flipped from
+ * refused to accepted. `files` is worse — Composer includes those before any Kitsune code runs.
+ */
+it('refuses an autoload key the sweep cannot enumerate', function (string $key): void {
+    $composer = manifest();
+    $composer['autoload'][$key] = ['Hidden'];
+
+    expect(ModuleManifest::refusalFor($composer, 'acme/thing'))
+        ->toContain("autoloads through `{$key}`");
+})->with(['classmap', 'files', 'psr-0']);
+
+it('refuses a package with no psr-4 at all, rather than sweeping nothing', function (): void {
+    expect(ModuleManifest::refusalFor(['name' => 'a/b', 'extra' => ['kitsune' => ['provider' => 'P', 'scoping' => []]]], 'a/b'))
+        ->toContain('declares no `autoload.psr-4`');
+});
+
+/**
+ * ⚠️ Each of these was silently DROPPED before, leaving an empty root list that swept nothing and passed.
+ * Absence of a finding is not a finding.
+ */
+it('refuses a malformed psr-4 entry rather than dropping it', function (array $psr4, string $expected): void {
+    $composer = manifest();
+    $composer['autoload']['psr-4'] = $psr4;
+
+    expect(ModuleManifest::refusalFor($composer, 'acme/thing'))->toContain($expected);
+})->with([
+    'path is not a string' => [['Acme\\' => 123], 'a path that is not a string'],
+    'no paths at all' => [['Acme\\' => []], 'no directory at all'],
+    'traversal' => [['Acme\\' => '../../other'], 'which leaves the package'],
+    'absolute' => [['Acme\\' => '/etc'], 'which leaves the package'],
+    'numeric namespace key' => [[0 => 'src'], 'not a namespace'],
+]);
+
+/** ⚠️ `$` also matches before a trailing newline, so `unscoped:through(M)\n` was a valid scope. */
+it('pins the through-grammar in both directions', function (string $scope, bool $valid): void {
+    expect(ModuleManifest::isScope($scope))->toBe($valid);
+})->with([
+    'plain' => ['unscoped:through(Acme\\Owner)', true],
+    'leading backslash' => ['unscoped:through(\\Acme\\Owner)', true],
+    'trailing newline' => ["unscoped:through(Acme\\Owner)\n", false],
+    'empty parens' => ['unscoped:through()', false],
+    'whitespace only' => ['unscoped:through( )', false],
+    'nested parens' => ['unscoped:through((A))', false],
+    'two groups' => ['unscoped:through(A)(B)', false],
+    'unbalanced' => ['unscoped:through(A))', false],
+    'trailing tab' => ["unscoped:through(A)\t", false],
+]);
+
+it('refuses a provider that is not a class name', function (string $provider): void {
+    expect(ModuleManifest::refusalFor(manifest(['provider' => $provider, 'scoping' => []]), 'acme/thing'))
+        ->toContain('is not a class name');
+})->with([
+    'a space' => [' '],
+    'markup' => ['<script>alert(1)</script>'],
+    'a path' => ['/etc/passwd'],
+    'digits first' => ['9Lives'],
+]);

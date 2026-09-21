@@ -11,7 +11,11 @@ declare(strict_types=1);
 use Kitsune\Core\Modules\ModuleManifest;
 use Kitsune\Core\Modules\ModuleVerification;
 use Kitsune\Core\Modules\ModuleVerifier;
+use Kitsune\Core\Tenancy\Attributes\OrgScoped;
+use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
+use Kitsune\Core\Tenancy\Scopes\OrgScope;
 use Kitsune\Core\Tests\Fixtures\Modules\Good\GoodThing;
+use Kitsune\Core\Tests\Fixtures\Modules\InertBoot\Inert;
 
 /** The fixture modules are real directories of real classes, loaded by the real autoloader. */
 function modulePath(string $name): string
@@ -91,8 +95,41 @@ it('refuses a declared scope that no model uses', function (): void {
 it('refuses a file that does not define the class its path promises', function (): void {
     $result = verifyFixture('Mismatched', []);
 
-    expect($result->refusal)->toContain('which does not define it')
-        ->and($result->examined)->not->toBeEmpty();
+    expect($result->refusal)->toContain('PSR-4 says that file defines')
+        ->and($result->refusal)->toContain('NotThePromisedName');
+});
+
+/**
+ * ⚠️ THE BYPASS AN ATTACK PASS FOUND, AND THE REASON THE THIRD QUESTION EXISTS. A class-body method beats a
+ * trait method, so a model may `use EnforcesScope` and override `bootEnforcesScope()` with an empty body: the
+ * attribute is present, `class_uses_recursive()` reports the trait, and no global scope is ever registered.
+ * Measured at the SQL level before the fix — the honest control emitted `… 1 = 0` with no org context, this
+ * one emitted a bare select across every org's rows.
+ */
+it('refuses a model that carries the trait and neuters its boot', function (): void {
+    $result = verifyFixture('InertBoot', ['org']);
+
+    expect($result->refusal)->toContain('does not register')
+        ->and($result->refusal)->toContain('OrgScope')
+        ->and($result->refusal)->toContain('bootEnforcesScope');
+
+    /* The two older questions both still answer yes, which is exactly why they were not enough. */
+    $model = Inert::class;
+
+    expect(class_uses_recursive($model))->toContain(EnforcesScope::class)
+        ->and((new ReflectionClass($model))->getAttributes(OrgScoped::class))->not->toBeEmpty()
+        ->and(array_keys((new $model)->getGlobalScopes()))->not->toContain(OrgScope::class);
+});
+
+/**
+ * ⚠️ A SECOND CLASS IN ONE FILE WAS NEVER NAMED, EXAMINED OR REFUSED — and the sweep's own `class_exists()`
+ * on the promised class is what defined it. Reading the file rather than loading it is what closes this.
+ */
+it('refuses a file that smuggles a second class past PSR-4', function (): void {
+    $result = verifyFixture('TwoInOne', ['unscoped:global']);
+
+    expect($result->refusal)->toContain('Stowaway')
+        ->and($result->refusal)->toContain('and nothing else');
 });
 
 it('refuses a PSR-4 root that is not a directory, rather than examining nothing', function (): void {
@@ -128,4 +165,47 @@ it('accepts a through-scope naming a real model', function (): void {
     $result = verifyFixture('Good', ['unscoped:through('.GoodThing::class.')']);
 
     expect($result->refusal)->toBeNull();
+});
+
+/**
+ * ⚠️ THE FLOOR, ASSERTED AS A PROPERTY RATHER THAN PER FIXTURE. `examined` was documented as existing so a
+ * refusal could be told from a walk that never ran, and nothing consulted it — five different manifest shapes
+ * passed having looked at zero classes. A pass must now mean something was looked at, whatever the shape.
+ */
+it('never passes having examined nothing', function (string $name, array $scoping): void {
+    $result = verifyFixture($name, $scoping);
+
+    /*
+     * Asserted as an implication rather than behind an `if`, so the test always performs an assertion. A
+     * conditional expectation passes silently for every fixture that takes the other branch, which is the
+     * vacuity this file exists to avoid — Pest flags it as risky, and it is right to.
+     */
+    expect($result->passed() === false || $result->examined !== [])
+        ->toBeTrue("{$name} passed with an empty sweep");
+})->with([
+    'good' => ['Good', ['unscoped:global']],
+    'no models' => ['NoModels', []],
+    'attribute only' => ['AttributeOnly', ['unscoped:global']],
+    'two in one' => ['TwoInOne', ['unscoped:global']],
+]);
+
+it('refuses an empty but existing root rather than passing on nothing', function (): void {
+    $empty = sys_get_temp_dir().'/kitsune-empty-module-'.bin2hex(random_bytes(6));
+    mkdir($empty.'/src', 0o777, true);
+
+    try {
+        $manifest = ModuleManifest::from([
+            'name' => 'fixture/empty',
+            'autoload' => ['psr-4' => ['Fixture\\Empty\\' => 'src']],
+            'extra' => ['kitsune' => ['provider' => 'Fixture\\Provider', 'scoping' => []]],
+        ], 'fixture/empty');
+
+        $result = ModuleVerifier::verify($manifest, $empty);
+
+        expect($result->passed())->toBeFalse()
+            ->and($result->refusal)->toContain('examined no classes at all');
+    } finally {
+        @rmdir($empty.'/src');
+        @rmdir($empty);
+    }
 });

@@ -47,8 +47,33 @@ final readonly class ModuleManifest
      */
     public const SCOPES = ['site', 'org', 'org-through-pivot', 'unscoped:global'];
 
-    /** `unscoped:through(App\Models\Thing)` — the parenthesised part is a class name, checked when it is used. */
-    public const THROUGH_PATTERN = '/^unscoped:through\(([^()]+)\)$/';
+    /**
+     * `unscoped:through(App\Models\Thing)`.
+     *
+     * ⚠️ `\A` AND `\z`, NOT `^` AND `$`. PHP's `$` also matches before a trailing newline, so an earlier
+     * version accepted `"unscoped:through(M)\n"` as a scope while every other value in `SCOPES` was compared
+     * with `in_array()` and tolerated nothing of the kind. A grammar that accepts one spelling of a value and
+     * not another is the same class of defect as a guard that compares a column name the database does not.
+     *
+     * ⚠️ AND THE CAPTURE IS A CLASS NAME, NOT `[^()]+`. That older form accepted `unscoped:through( )` —
+     * a scope naming no model — which then satisfied the reverse-direction check by naming nothing at all.
+     */
+    public const THROUGH_PATTERN = '/\Aunscoped:through\((\\\\?[A-Za-z_\x80-\xff][A-Za-z0-9_\x80-\xff]*(?:\\\\[A-Za-z_\x80-\xff][A-Za-z0-9_\x80-\xff]*)*)\)\z/';
+
+    /** The same grammar, for a bare class name such as a `provider`. */
+    public const CLASS_NAME_PATTERN = '/\A\\\\?[A-Za-z_\x80-\xff][A-Za-z0-9_\x80-\xff]*(?:\\\\[A-Za-z_\x80-\xff][A-Za-z0-9_\x80-\xff]*)*\z/';
+
+    /**
+     * Autoload keys a module may not use.
+     *
+     * ⚠️ THE SWEEP WALKS `psr-4`, SO ANYTHING ELSE IS A HOLE, AND THIS WAS MEASURED AS ONE. A model reached by
+     * `classmap` was never examined and its module was accepted — the same unconstrained class, with only the
+     * autoload key changed, flipped from refused to accepted. `files` is worse still: Composer includes those
+     * eagerly at boot, before any Kitsune code runs, which is the argument this class already makes for
+     * refusing `extra.laravel.providers`. Refusing is narrower than teaching the sweep four more layouts, and
+     * a first-party module has no reason to want them.
+     */
+    public const REFUSED_AUTOLOAD_KEYS = ['classmap', 'files', 'psr-0'];
 
     /**
      * @param  list<string>  $scoping  every scope this module's models may declare
@@ -127,6 +152,19 @@ final readonly class ModuleManifest
             return "{$package}'s manifest names no `provider`.";
         }
 
+        /* A non-empty string is not a class name: `' '`, `'<script>'` and a string holding a NUL all passed. */
+        if (preg_match(self::CLASS_NAME_PATTERN, $manifest['provider']) !== 1) {
+            return "{$package}'s `provider` is not a class name.";
+        }
+
+        foreach (self::REFUSED_AUTOLOAD_KEYS as $key) {
+            if (($composerJson['autoload'][$key] ?? null) !== null) {
+                return "{$package} autoloads through `{$key}`, which the scoping sweep cannot enumerate. A "
+                    .'module exposes its classes through `autoload.psr-4` so that every one of them can be '
+                    .'checked; a class reached another way is one the kernel cannot account for.';
+            }
+        }
+
         /* array_key_exists, never `?? []`: an EMPTY list is a declaration ("this module ships no scoped models"), absence is not. */
         if (! array_key_exists('scoping', $manifest)) {
             return "{$package}'s manifest declares no `scoping`. ADR-038: the kernel refuses to load a module "
@@ -164,22 +202,52 @@ final readonly class ModuleManifest
          * PSR-4 roots would be two places to drift, and the sweep must look where Composer actually loads from
          * or it is checking a different set of classes than the one that runs.
          */
+        /*
+         * ⚠️ EVERY MALFORMED PSR-4 ENTRY IS A REFUSAL, BECAUSE DROPPING ONE IS A PASS. An earlier version
+         * skipped a path that was not a string and kept walking — and a manifest whose only root was, say,
+         * `['Acme\\' => 123]` therefore produced an empty root list, swept nothing, and was accepted. Five
+         * different manifest shapes reached that outcome. Absence of a finding is not a finding.
+         */
         $roots = [];
         $psr4 = $composerJson['autoload']['psr-4'] ?? null;
 
-        if (is_array($psr4)) {
-            foreach ($psr4 as $namespace => $paths) {
-                /* PSR-4 permits a string or a list of them, and a module using the list form is not exotic. */
-                $directories = [];
+        if (! is_array($psr4) || $psr4 === []) {
+            return "{$package} declares no `autoload.psr-4`, so there is nothing for the scoping sweep to "
+                .'walk and nothing it could report. A module exposes its classes through PSR-4.';
+        }
 
-                foreach (is_array($paths) ? $paths : [$paths] as $path) {
-                    if (is_string($path)) {
-                        $directories[] = $path;
-                    }
+        foreach ($psr4 as $namespace => $paths) {
+            if (! is_string($namespace) || $namespace === '') {
+                return "{$package} has a PSR-4 namespace key that is not a namespace.";
+            }
+
+            /* PSR-4 permits a string or a list of them, and a module using the list form is not exotic. */
+            $directories = [];
+
+            foreach (is_array($paths) ? $paths : [$paths] as $path) {
+                if (! is_string($path)) {
+                    return "{$package} maps `{$namespace}` to a path that is not a string.";
                 }
 
-                $roots[(string) $namespace] = $directories;
+                /*
+                 * ⚠️ `..` AND ABSOLUTE PATHS WALK OUT OF THE PACKAGE, and one measurably did: a root of
+                 * `../../` produced a non-empty `examined` made entirely of ANOTHER package's classes, so the
+                 * sweep reported having checked things while checking nothing of this module's. The verifier
+                 * confines roots to the install path as well; this refuses the spelling outright so the two
+                 * do not have to agree about what a traversal means.
+                 */
+                if (str_starts_with($path, '/') || in_array('..', explode('/', trim($path, '/')), true)) {
+                    return "{$package} maps `{$namespace}` to `{$path}`, which leaves the package.";
+                }
+
+                $directories[] = $path;
             }
+
+            if ($directories === []) {
+                return "{$package} maps `{$namespace}` to no directory at all.";
+            }
+
+            $roots[$namespace] = $directories;
         }
 
         return new self(
