@@ -24,6 +24,7 @@ use Kitsune\Core\Console\BenchmarkAdminCommand;
 use Kitsune\Core\Console\BenchmarkFloorCommand;
 use Kitsune\Core\Console\BenchmarkStorageCommand;
 use Kitsune\Core\Console\BlueprintCommand;
+use Kitsune\Core\Console\MediaPruneCommand;
 use Kitsune\Core\Console\ModuleCommand;
 use Kitsune\Core\Console\SchemaSyncCommand;
 use Kitsune\Core\Fields\FieldTypeRegistry;
@@ -152,6 +153,7 @@ final class KitsuneServiceProvider extends ServiceProvider
             $this->commands([
                 AuditPatternsCommand::class,
                 BlueprintCommand::class,
+                MediaPruneCommand::class,
                 BenchmarkStorageCommand::class,
                 BenchmarkFloorCommand::class,
                 BenchmarkAdminCommand::class,
