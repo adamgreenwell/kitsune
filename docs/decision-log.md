@@ -3091,8 +3091,7 @@ This is the third time this ADR has been amended in two days, and all three are 
 
 ## ADR-039 — A blueprint is an org-scoped apply with a receipt, and reverse is a refusal
 
-**Status:** Decided · 2026-09-22 · **Phase 5 (ADR-011, v1.0). The declarative format, export and third-party
-blueprints stay at v1.1 or later** · **Amends ADR-030** (the idempotency condition), **`roadmap.md`** (the
+**Status:** Decided · 2026-09-22 · **Amended 2026-09-22** — the format's public surface is four symbols rather than "one interface", and the first slice has landed; see *Enforced by* · **Phase 5 (ADR-011, v1.0). The declarative format, export and third-party blueprints stay at v1.1 or later** · **Amends ADR-030** (the idempotency condition), **`roadmap.md`** (the
 Phase 5 item list, the *kernel primitive* line and the *done when*) and **the pillar table at the top of this
 log** (which cites ADR-001 for a phrase ADR-001 does not contain), **`architecture.md`** (the *kernel
 primitive, not a module* line, and the open item on blueprint rollback) and **this log's own Open questions**
@@ -3257,6 +3256,12 @@ first row is written, asserted by killing an apply between the two; every declar
 exercised in both directions on all four engines, because the tables disagree about what a second write does;
 and the apply flow has at least one browser test loading a page outside `/c/{type}` per AGENTS.md §9, which is
 the coverage ADR-038 promised for the admin seam and did not deliver.
+
+⚠️ **Amended 2026-09-22 — "one core interface" is one interface and the three value types it returns, and the first slice has landed.** `BlueprintDefinition` is the interface an author implements, and it returns `EntryTypeDeclaration`, `FieldDeclaration` and `OnCollision` — so those three are part of the contract as surely as the method signatures are, and calling the surface "one interface" understated it. Four symbols, named here so the v1.2 freeze inherits a list rather than a phrase. Everything else the subsystem needs is `@internal` on ADR-038's precedent: `BlueprintApplier`, `BlueprintRegistry`, and the `StorageAdoption` rule extracted out of the admin so that both callers share one encoding rather than two.
+
+**What the first slice enforces, and what it does not.** The `Enforced by` section above said "Nothing yet", which was true when it was written and is no longer. Now enforced, each with a test that fails when the rule is removed: an apply with no org in context is refused rather than defaulted, because the rows would otherwise be written global; no row it writes is global, asserted from the other side by counting `org_id IS NULL` after an apply; the receipt is committed before the work and outside its transaction, asserted by refusing a declaration part-way and finding no rows and a receipt with `applied_at` null; a second apply at the same version is a no-op; an entry type the blueprint did not create is refused under the default policy and skipped only when the declaration says so; compatible storage is adopted rather than duplicated and a divergent definition is refused naming what differs; and the receipt refuses a bulk write.
+
+**Still not enforced, and the honest list is shorter than the one above rather than absent.** Only the first of the four keys exists — roles with their grants, entry type availability and content arrive as further methods on the same interface. `--org` is required, so the *done when*'s one command on a fresh install is not yet true: creating the first org and site is what makes ADR-030's "no manual step outside the apply flow" satisfiable, and it is the next slice rather than this one. Nothing reads the `manifest` column yet, so "re-applying upgrades rather than clobbers" is still only additive-by-refusal and not yet a merge. And the §9 browser test this ADR's `Enforced by` asks for is not delivered, because there is no admin route to a blueprint at all — which is the same gap ADR-038 recorded for the module seam, and it closes when the apply flow reaches the admin rather than when somebody remembers.
 
 ---
 

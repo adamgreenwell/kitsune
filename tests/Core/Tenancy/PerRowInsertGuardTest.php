@@ -9,6 +9,7 @@
 declare(strict_types=1);
 
 use Illuminate\Support\Facades\DB;
+use Kitsune\Core\Models\Blueprint;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Field;
@@ -225,8 +226,17 @@ it('rests on a discriminator no caller can arrange', function (): void {
      * been accounted for here. Its stake is the plainest of the seven: the kernel reads `modules` at boot and
      * registers the providers it finds, so a receipt anyone can write in bulk is a service provider anyone can
      * register.
+     *
+     * ⚠️ AND EIGHT: `Blueprint` joined with ADR-039's apply receipt, and the completeness check asked for it
+     * again — the model and its thirteen tests were written and green, and this line is what said it had not
+     * been accounted for here. Its stake: the receipt records that an org's schema was installed and checked,
+     * so a plantable row is a claim about work nobody did, and a re-pointable `handle` moves the manifest of
+     * what one blueprint wrote onto another's name.
      */
-    $guarded = [Entry::class, EntryType::class, Field::class, Module::class, Org::class, Site::class, SiteGroup::class];
+    $guarded = [
+        Blueprint::class, Entry::class, EntryType::class, Field::class,
+        Module::class, Org::class, Site::class, SiteGroup::class,
+    ];
 
     foreach ($guarded as $class) {
         $model = new $class;

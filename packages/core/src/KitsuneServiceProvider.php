@@ -18,10 +18,12 @@ use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\ServiceProvider;
 use Kitsune\Core\Auth\EntryPolicy;
 use Kitsune\Core\Auth\Permissions;
+use Kitsune\Core\Blueprints\BlueprintRegistry;
 use Kitsune\Core\Console\AuditPatternsCommand;
 use Kitsune\Core\Console\BenchmarkAdminCommand;
 use Kitsune\Core\Console\BenchmarkFloorCommand;
 use Kitsune\Core\Console\BenchmarkStorageCommand;
+use Kitsune\Core\Console\BlueprintCommand;
 use Kitsune\Core\Console\ModuleCommand;
 use Kitsune\Core\Console\SchemaSyncCommand;
 use Kitsune\Core\Fields\FieldTypeRegistry;
@@ -86,6 +88,14 @@ final class KitsuneServiceProvider extends ServiceProvider
         $this->app->singleton(AdminSurface::class, static fn (): AdminSurface => new AdminSurface);
 
         /*
+         * Where blueprint definitions are collected — ADR-039's `@internal` seam, and the same shape as the
+         * one above for the same reason: whoever registers a definition and the command that applies it must
+         * be looking at the same object, and it has to exist before the kernel registers a module in
+         * `booted()`, because `registerModule()` is where a module's blueprints are declared.
+         */
+        $this->app->singleton(BlueprintRegistry::class, static fn (): BlueprintRegistry => new BlueprintRegistry);
+
+        /*
          * ⚠️ THE APPLICATION'S DEFAULT LOCALE, CAPTURED BEFORE ANYTHING CAN MOVE IT.
          *
          * `Application::setLocale()` does `config->set('app.locale', ...)`, so `config('app.locale')`
@@ -141,6 +151,7 @@ final class KitsuneServiceProvider extends ServiceProvider
         if ($this->app->runningInConsole()) {
             $this->commands([
                 AuditPatternsCommand::class,
+                BlueprintCommand::class,
                 BenchmarkStorageCommand::class,
                 BenchmarkFloorCommand::class,
                 BenchmarkAdminCommand::class,
