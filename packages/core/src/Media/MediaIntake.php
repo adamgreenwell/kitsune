@@ -1,0 +1,158 @@
+<?php
+
+/*
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/.
+ */
+
+declare(strict_types=1);
+
+namespace Kitsune\Core\Media;
+
+use RuntimeException;
+
+/**
+ * What core will accept as an uploaded file, and what it refuses — ADR-041.
+ *
+ * @internal
+ *
+ * ⚠️ THIS CLASS TRUSTS NOTHING THE CLIENT SENDS. The three things a caller controls — the filename, the
+ * declared content type, and the bytes — are each handled on the assumption that they are hostile, because
+ * `field-types.md` §6 names the two field types that need security review and an uploaded file is neither.
+ * Nothing in this repository covered upload safety before ADR-041.
+ *
+ * ⚠️ AN ALLOWLIST, NEVER A DENYLIST, which is the rule `rich_text` already follows: *"Allowlist tags and
+ * attributes; never a denylist."* A denylist is a list of the attacks somebody thought of.
+ *
+ * ⚠️ SVG IS NOT ON THE LIST YET, AND THAT IS THE SEQUENCE RATHER THAN THE DECISION. ADR-041 accepts SVG and
+ * requires it sanitised on upload by a maintained library. The sanitiser is a separate change; accepting SVG
+ * before it exists would mean an intermediate state that stores unsanitised SVG, which is the one outcome the
+ * decision was taken to avoid. It joins this list in the same change that adds the sanitiser.
+ */
+final class MediaIntake
+{
+    /**
+     * Extension → the MIME types the file's own bytes are allowed to say it is.
+     *
+     * ⚠️ BOTH SIDES ARE CHECKED, and checking only one is the classic hole. An extension allowlist alone
+     * accepts a PHP script named `.jpg`; a MIME check alone accepts a genuine JPEG named `.php`, which some
+     * server configurations will happily execute. The pair must agree.
+     */
+    public const ACCEPTED = [
+        'jpg' => ['image/jpeg'],
+        'jpeg' => ['image/jpeg'],
+        'png' => ['image/png'],
+        'gif' => ['image/gif'],
+        'webp' => ['image/webp'],
+        'avif' => ['image/avif'],
+        'pdf' => ['application/pdf'],
+        'mp4' => ['video/mp4'],
+        'webm' => ['video/webm'],
+        'mp3' => ['audio/mpeg'],
+        'txt' => ['text/plain'],
+        'csv' => ['text/plain', 'text/csv'],
+    ];
+
+    /** 64 MiB. A ceiling core owns, checked before anything is written rather than after. */
+    public const MAX_BYTES = 67_108_864;
+
+    /**
+     * Refuse the upload, or return the extension and sniffed MIME type it may be stored as.
+     *
+     * @return array{extension: string, mime: string}
+     *
+     * @throws RuntimeException naming which rule refused it
+     */
+    public static function accept(string $originalName, string $absolutePath, int $sizeBytes): array
+    {
+        if ($sizeBytes > self::MAX_BYTES) {
+            throw new RuntimeException(sprintf(
+                'Refusing this upload: it is %d bytes and the ceiling is %d. The limit is checked before '
+                .'anything is written, so nothing was stored.',
+                $sizeBytes,
+                self::MAX_BYTES,
+            ));
+        }
+
+        $extension = self::extensionOf($originalName);
+
+        if (! array_key_exists($extension, self::ACCEPTED)) {
+            throw new RuntimeException(sprintf(
+                'Refusing [%s]: [%s] is not an accepted file type. The list is an allowlist core owns — a '
+                .'denylist is a list of the attacks somebody thought of — and an org cannot widen it.',
+                $originalName,
+                $extension === '' ? 'no extension' : $extension,
+            ));
+        }
+
+        $sniffed = self::sniff($absolutePath);
+
+        if (! in_array($sniffed, self::ACCEPTED[$extension], true)) {
+            throw new RuntimeException(sprintf(
+                'Refusing [%s]: it is named .%s but its contents are [%s]. The type is read from the file\'s '
+                .'own bytes and never from what the upload claimed, because a claimed type is a claim by '
+                .'whoever is uploading — and this value decides the Content-Type a browser is later handed.',
+                $originalName,
+                $extension,
+                $sniffed,
+            ));
+        }
+
+        return ['extension' => $extension, 'mime' => $sniffed];
+    }
+
+    /**
+     * The lowercased extension, taken from the name and nothing else.
+     *
+     * ⚠️ `pathinfo()` on the BASENAME, so a name carrying directories cannot reach past it. This function
+     * never returns a path and the caller never uses the original name for storage — see `storedName()`.
+     */
+    public static function extensionOf(string $originalName): string
+    {
+        $base = basename(str_replace('\\', '/', $originalName));
+
+        return mb_strtolower((string) pathinfo($base, PATHINFO_EXTENSION));
+    }
+
+    /**
+     * The name bytes are stored under — generated by core, never derived from what the caller sent.
+     *
+     * ⚠️ A CALLER'S FILENAME NEVER BECOMES A PATH. `../../.env`, a name with a null byte, a 4,000-character
+     * name and a name that differs only by case on a case-insensitive disk are all the same problem: the
+     * caller choosing where bytes land or what they overwrite. Core chooses instead, and the original name
+     * belongs in a field on the entry where it is data rather than a location.
+     */
+    public static function storedName(string $extension): string
+    {
+        return bin2hex(random_bytes(16)).'.'.$extension;
+    }
+
+    /**
+     * The file's type according to its own bytes.
+     *
+     * ⚠️ `finfo` is `ext-fileinfo` — bundled with PHP but able to be compiled out, so it is not guaranteed the
+     * way `ext/standard` is. It holds at the ADR-027 floor for a reason core does not otherwise state:
+     * `laravel/framework` requires `league/flysystem-local`, which requires `ext-fileinfo`, so an installation
+     * that can run Kitsune already has it. If it is somehow absent this refuses rather than falling back to
+     * the client's claim, because the fallback is the vulnerability.
+     */
+    private static function sniff(string $absolutePath): string
+    {
+        if (! class_exists(\finfo::class)) {
+            throw new RuntimeException(
+                'Refusing this upload: ext-fileinfo is not available, so the file type cannot be read from its '
+                .'own bytes. Uploads are refused rather than trusting the type the client declared.'
+            );
+        }
+
+        $info = new \finfo(FILEINFO_MIME_TYPE);
+        $mime = $info->file($absolutePath);
+
+        if (! is_string($mime) || $mime === '') {
+            throw new RuntimeException('Refusing this upload: its content type could not be determined.');
+        }
+
+        return $mime;
+    }
+}
