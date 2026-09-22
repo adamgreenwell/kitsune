@@ -103,12 +103,41 @@ function aDeliverableImage(EntryType $type, string $visibility = 'private', stri
  * ────────────────────────────────  The two paths  ────────────────────────────────
  */
 
-/** ADR-041: a public file gets a direct URL a CDN can cache, and no PHP is involved. */
-it('gives a public file a direct disk URL', function (): void {
+/**
+ * ADR-041: a public file gets a direct URL a CDN can cache, and no PHP is involved.
+ *
+ * ⚠️ NOT `->toBe(Storage::disk('public')->url($file->path))`, WHICH IS WHAT THIS ASSERTED AND WHAT REVIEW
+ * CAUGHT: both sides of that equals call the same method, so it holds however broken the URL is. It passed
+ * while a bare install served 403 there, because nothing outside `deploy/release.sh` created `public/storage`.
+ * The shape is asserted here and the URL is FETCHED in `e2e/media-delivery.spec.js`, which is the only layer
+ * that can tell whether a web server answers it.
+ */
+it('gives a public file a direct disk URL under the linked path', function (): void {
     $entry = aDeliverableImage($this->imageType, 'public', 'logo.png');
     $file = MediaFile::query()->where('entry_id', $entry->getKey())->firstOrFail();
 
-    expect(MediaDelivery::urlFor($entry))->toBe(Storage::disk('public')->url($file->path));
+    $url = MediaDelivery::urlFor($entry);
+
+    expect($url)->toContain('/storage/'.$file->path)
+        /* No panel, no tenant, no query string — the whole point is that nothing has to run to serve it. */
+        ->and($url)->not->toContain('/admin/')
+        ->and($url)->not->toContain('?')
+        ->and(Storage::disk('public')->exists($file->path))->toBeTrue();
+});
+
+/**
+ * ⚠️ AND THE INSTALLER HAS TO MAKE THE LINK, or the URL above names a path no web server can reach.
+ * AGENTS.md §14: a published constraint nothing enforces is worse than an absent one. The browser suite
+ * proves the link RESOLVES; this proves it is not removed from the two flows that create it.
+ */
+it('creates the public storage link in both documented install flows', function (): void {
+    $root = dirname(__DIR__, 3);
+
+    $skeleton = json_decode((string) file_get_contents($root.'/skeleton/composer.json'), true);
+    $package = json_decode((string) file_get_contents($root.'/composer.json'), true);
+
+    expect(implode("\n", $skeleton['scripts']['post-create-project-cmd']))->toContain('storage:link')
+        ->and(implode("\n", $package['scripts']['skeleton:install']))->toContain('storage:link');
 });
 
 /**

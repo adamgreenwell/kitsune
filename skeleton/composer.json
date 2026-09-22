@@ -37,6 +37,7 @@
             "@php artisan key:generate --ansi",
             "@php -r \"file_exists('database/database.sqlite') || touch('database/database.sqlite');\"",
             "@php artisan migrate --graceful --ansi",
+            "@php artisan storage:link --ansi",
             "@php artisan filament:assets --ansi"
         ],
         "post-autoload-dump": [

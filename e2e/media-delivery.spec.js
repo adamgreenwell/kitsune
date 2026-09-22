@@ -1,4 +1,6 @@
 // @ts-check
+const fs = require('node:fs');
+const path = require('node:path');
 const { test, expect, request: playwrightRequest } = require('@playwright/test');
 
 /*
@@ -29,6 +31,17 @@ const { test, expect, request: playwrightRequest } = require('@playwright/test')
  */
 
 const SITE = 'golfdom';
+
+/*
+ * ⚠️ READ INSIDE THE TEST, NOT `require`d AT THE TOP. Playwright loads spec files to collect their tests, and
+ * a top-level require of a file `global-setup.js` has not written yet fails collection for the whole project
+ * — which reads as "no tests found" rather than as a missing fixture.
+ */
+function publicMediaPath() {
+    const file = path.join(__dirname, '..', '.playwright', 'media-fixture.json');
+
+    return JSON.parse(fs.readFileSync(file, 'utf8')).publicPath;
+}
 const READER_STATE = '.playwright/admin-reader-auth.json';
 
 /** The id of the seeded media entry with this title, read by walking the admin to it. */
@@ -114,4 +127,42 @@ test('answers 404 for an id that names nothing', async ({ page }) => {
     const response = await page.request.get(`/admin/${SITE}/media/98765432`);
 
     expect(response.status()).toBe(404);
+});
+
+/**
+ * ⚠️ THE PUBLIC PATH IS FETCHED, NOT COMPUTED, AND REVIEW FOUND WHY THAT MATTERS. ADR-041 gives a public file
+ * "a direct URL a CDN can cache — no PHP in the path". Nothing created `public/storage` outside
+ * `deploy/release.sh`, so on a documented bare install that URL served 403 while the PHP suite reported the
+ * public path working: its assertion compared `MediaDelivery::urlFor()` with `Storage::disk('public')->url()`,
+ * which is the same method on both sides of an equals.
+ *
+ * This asserts the whole chain instead — bytes on the public disk, `storage:link` run by the installer, and
+ * the web server returning them with no framework in the way.
+ */
+test('serves a public file straight off the linked disk, with no PHP in the path', async ({ page }) => {
+    const response = await page.request.get(`/storage/${publicMediaPath()}`);
+
+    expect(response.status()).toBe(200);
+    expect(response.headers()['content-type']).toContain('image/png');
+    expect((await response.body()).length).toBeGreaterThan(0);
+
+    /*
+     * ⚠️ AND IT IS NOT THE PANEL ROUTE WEARING A DISGUISE. The private path sends these three; a file served
+     * by the web server off a symlink cannot, which is what "no PHP in the path" means in observable terms.
+     */
+    expect(response.headers()['content-security-policy']).toBeUndefined();
+    expect(response.headers()['x-content-type-options']).toBeUndefined();
+    expect(response.headers()['content-disposition']).toBeUndefined();
+});
+
+/** A public file needs no session at all — that is the entire difference from the route above. */
+test('serves a public file to an anonymous visitor', async ({ browser }) => {
+    const anonymous = await browser.newContext({ storageState: { cookies: [], origins: [] } });
+
+    const response = await anonymous.request.get(`/storage/${publicMediaPath()}`);
+
+    expect(response.status()).toBe(200);
+    expect((await response.body()).length).toBeGreaterThan(0);
+
+    await anonymous.close();
 });

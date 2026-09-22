@@ -24,8 +24,9 @@ use Kitsune\Core\Models\Site;
  * Where a media file's bytes are served from, and with what headers — ADR-041.
  *
  * ⚠️ TWO PATHS, BECAUSE VISIBILITY IS TWO DIFFERENT PROMISES. A public file lives on the linked disk and gets
- * a direct URL a CDN can cache — `deploy/release.sh` runs `storage:link` and proves it resolves, so no PHP is
- * involved and none should be. A private file lives on a disk the web server does not serve and is streamed by
+ * a direct URL a CDN can cache, with no PHP involved and none that should be. The link that makes it
+ * resolvable is created by both documented install flows and by `deploy/release.sh`; review found that only
+ * the last of those did it, so a bare install served 403 at a URL this method reported confidently. A private file lives on a disk the web server does not serve and is streamed by
  * a controller that authorises first. ADR-041 records the cost of the second one plainly: at the ADR-027 floor,
  * bytes through PHP is the expensive path, and it is the default.
  *

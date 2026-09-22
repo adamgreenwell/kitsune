@@ -3498,8 +3498,16 @@ an entry that already carries both.
 
 **Private is the default, and public is an explicit act.** Kitsune is a fail-closed house and a leaked gated
 download is worse than a slow product image. A public file lives on the public disk and gets a direct URL that
-a CDN can cache — `deploy/release.sh` already runs `storage:link` and proves the link resolves, so that path
-exists. A private file lives on a disk the web server does not serve and is streamed by a controller that
+a CDN can cache — `deploy/release.sh` runs `storage:link` and proves the link resolves, so that path exists
+on a deployment.
+
+> ⚠️ **Corrected 2026-09-22 while implementing delivery: "on a deployment" was doing unearned work.** The
+> sentence above was true and incomplete, which is the worse kind. `deploy/release.sh` was the *only* caller
+> of `storage:link` in the repository, so a documented bare install — `composer create-project`, or this
+> repo's own `composer skeleton:install` — produced public media URLs that no web server could answer, and
+> the PHP suite reported the public path working because its assertion compared `MediaDelivery::urlFor()`
+> with `Storage::disk('public')->url()`: the same method on both sides of an equals. Both install flows now
+> create the link, and `e2e/media-delivery.spec.js` **fetches** the URL rather than computing it. A private file lives on a disk the web server does not serve and is streamed by a controller that
 authorises first.
 
 ⚠️ **Authorising *what*, exactly, is deliberately left open here.** Today the only answer core can give is the
