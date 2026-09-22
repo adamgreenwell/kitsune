@@ -17,6 +17,7 @@ use Filament\Pages\Dashboard;
 use Filament\Panel;
 use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Route;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Filament\Avatars\InitialsAvatarProvider;
 use Kitsune\Core\Filament\Icons;
@@ -25,9 +26,11 @@ use Kitsune\Core\Filament\Resources\EntryTypes\EntryTypeResource;
 use Kitsune\Core\Filament\Resources\Roles\RoleResource;
 use Kitsune\Core\Filament\Widgets\EntryCountsWidget;
 use Kitsune\Core\Filament\Widgets\RecentEntriesWidget;
+use Kitsune\Core\Http\Controllers\MediaDownloadController;
 use Kitsune\Core\Http\Middleware\IdentifyEntryType;
 use Kitsune\Core\Http\Middleware\SetKitsuneContext;
 use Kitsune\Core\Http\Middleware\SetUiLocale;
+use Kitsune\Core\Media\MediaDelivery;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Modules\AdminSurface;
@@ -85,6 +88,31 @@ final class KitsunePanel
                 SetUiLocale::class,
                 IdentifyEntryType::class,
             ], isPersistent: true)
+            /*
+             * ⚠️ THE ONE ROUTE CORE REGISTERS, AND IT IS NOT AN EXCEPTION TO THE RULE — it is inside it.
+             * `skeleton/routes/web.php` records why core registers no routes: a host application's URL space
+             * is its own, and a package that claimed `/{site}` would collide with whatever it already serves.
+             * The panel is the space the host handed over by calling `KitsunePanel::apply()`, which is where
+             * `EntryResource` already puts `/{type}/{record}/edit`. Asking the skeleton to wire a media route
+             * by hand would put a security-critical path in the one file an operator is invited to edit, and
+             * make a host that forgot it serve a broken admin rather than no admin.
+             *
+             * ⚠️ `authenticatedTenantRoutes()`, AND THE THREE NEARBY METHODS ARE ALL WRONG IN WAYS THAT LOOK
+             * FINE. Filament registers `routes()` outside both groups, `authenticatedRoutes()` inside auth but
+             * outside tenancy, and `tenantRoutes()` inside tenancy but OUTSIDE auth. Only this one is inside
+             * both, which is what the controller needs: `EntryPolicy::view()` refuses without a user AND
+             * refuses without a site, so a route missing either is a route that refuses everybody.
+             *
+             * ⚠️ `tenantRoutes()` WAS THE FIRST ATTEMPT AND IT FAILED IN A WAY NO UNIT TEST COULD SEE. Without
+             * `Authenticate` ahead of it, `IdentifyTenant` is the first middleware to ask for the user — and
+             * it asks through the guard, which resolves core's ORG-SCOPED user model while `Context` is still
+             * empty. The lookup returns null, `IdentifyTenant` reaches its `abort(404)` for a caller it thinks
+             * is anonymous, and the signed-in owner gets "not found" for his own file. `e2e/media-delivery.spec.js`
+             * is what caught it, which is AGENTS.md §9 earning its place again.
+             */
+            ->authenticatedTenantRoutes(fn () => Route::get('media/{media}', MediaDownloadController::class)
+                ->where('media', '[0-9]+')
+                ->name(MediaDelivery::ROUTE))
             /*
              * ⚠️ CORE'S THREE, THEN WHATEVER ENABLED MODULES ADDED — ADR-038 decision H. A disabled module's
              * provider is never registered, so it never fills the surface and contributes nothing here: the

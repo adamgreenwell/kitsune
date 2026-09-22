@@ -14,6 +14,7 @@ use App\Models\User;
 use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\Hash;
 use Kitsune\Core\Auth\Permissions;
+use Kitsune\Core\Media\MediaLibrary;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\EntryTypeAvailability;
@@ -334,6 +335,20 @@ class DatabaseSeeder extends Seeder
         }
 
         /*
+         * ⚠️ MEDIA SEEDED THROUGH `MediaLibrary::store()`, NOT THROUGH `Entry::create()` PLUS A ROW. The bytes,
+         * the entry, the `media_files` row and the refusals are one path (ADR-041), and a fixture that
+         * assembled the rows by hand would let `e2e/media-delivery.spec.js` pass against a store path that
+         * does not work. There is no upload UI yet — that is the slice after this one — so the seeder is the
+         * only way a browser can be pointed at a real file.
+         *
+         * One of each visibility, because they are delivered by completely different mechanisms: the private
+         * one streams through the panel route that authorises first, and the public one is a direct URL off
+         * the linked disk with no PHP in the path at all.
+         */
+        $this->seedMediaFile($image, 'Course map', 'private');
+        $this->seedMediaFile($image, 'Golfdom logo', 'public');
+
+        /*
          * ⚠️ ONE ARTICLE THAT WAS PUBLISHED AND THEN DEMOTED, because a permission test needs a shape the
          * ordinary rows do not have. Restoring a version that was published PUBLISHES the entry, so the
          * copy-editor — who holds `update` and not `publish` — must be offered that restore as unavailable
@@ -482,6 +497,35 @@ class DatabaseSeeder extends Seeder
             'status' => 'published',
         ]);
 
+        /*
+         * ⚠️ AND A RIVAL MEDIA FILE WITH REAL BYTES, so the cross-org boundary can be measured at a URL rather
+         * than inferred. `e2e/media-delivery.spec.js` signs in as Golfdom's OWNER — who holds every grant in
+         * his own org — and asks for this file's id: the only thing that can refuse him is the scope.
+         */
+        $this->seedMediaFile($image, 'Rival private asset', 'private');
+
         $context->forget();
+    }
+
+    /**
+     * Store one media file through the real intake path, in whatever org and site `Context` currently holds.
+     *
+     * ⚠️ A TEMPORARY FILE, BECAUSE `MediaLibrary::store()` TAKES A PATH AND READS IT. The 1×1 PNG below is
+     * the same one the media test suites use; `getimagesize()` reads its dimensions and `finfo` sniffs it as
+     * `image/png`, so the seeded row is one the allowlist genuinely accepted rather than one written around it.
+     */
+    private function seedMediaFile(EntryType $type, string $title, string $visibility): void
+    {
+        $source = tempnam(sys_get_temp_dir(), 'kitsune-seed-');
+
+        file_put_contents($source, base64_decode(
+            'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+        ));
+
+        try {
+            MediaLibrary::store($source, $title.'.png', $type, $visibility);
+        } finally {
+            @unlink($source);
+        }
     }
 }

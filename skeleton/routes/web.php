@@ -41,10 +41,16 @@ Route::middleware([ResolveSiteFromRequest::class, SetSiteLocale::class])
  * anything (issue #38, gap G2).
  *
  * ⚠️ The middleware lives in kitsune/core and the ROUTE lives here, on purpose. Core
- * registers no routes at all — a host application's URL space is its own, and a package
- * that claimed `/{site}` would collide with whatever the application already serves
- * there. So core supplies the mechanism and the application says where it applies, which
- * is the same division the panel uses for `SetKitsuneContext`.
+ * registers nothing in the APPLICATION's URL space — that space is the host's, and a
+ * package that claimed `/{site}` would collide with whatever the application already
+ * serves there. So core supplies the mechanism and the application says where it
+ * applies, which is the same division the panel uses for `SetKitsuneContext`.
+ *
+ * ⚠️ The panel is the one space where that is reversed, and it is reversed by the HOST.
+ * Calling `KitsunePanel::apply()` hands core `/admin` to shape, which is where
+ * `EntryResource` puts `/{type}/{record}/edit` and where ADR-041's media download route
+ * lives. The rule is about whose URL space it is, not about the word "route" — a
+ * security-critical path does not belong in the file an operator is invited to edit.
  *
  * ⚠️ REGISTERED LAST, because `{site}` matches one segment of anything. Laravel resolves
  * in declaration order, so `/` above and every route Filament registers for `/admin` are

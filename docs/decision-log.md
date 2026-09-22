@@ -3463,7 +3463,7 @@ a secret that cannot be read back through any admin path; and a test-mode key re
 
 ## ADR-041 — Media bytes are private by default, sanitised on the way in, and have no derivatives yet
 
-**Status:** Decided · 2026-09-22 · **Amends ADR-016** (the published `media_files` column list gains `visibility`) and **`field-types.md` §5** · **Phase 5a (ADR-040) stays blocked on media until the code lands**; this entry decides its shape, not its existence
+**Status:** Decided · 2026-09-22 · **Amends ADR-016** (the published `media_files` column list gains `visibility`) and **`field-types.md` §5** · **Amended 2026-09-22** — "sent as an attachment" narrows to "not rendered as a document", so a private image can be displayed and everything that could carry script still cannot; see the amendment under *the read side is not left hollow* · **Phase 5a (ADR-040) stays blocked on media until the code lands**; this entry decides its shape, not its existence
 
 ADR-016 decided the shape of this in September and nothing was built: *"There is no separate media subsystem.
 An uploaded file is an **entry** of a system entry type … The bytes live in a companion `media_files` table."*
@@ -3557,6 +3557,32 @@ has no escaping step — so its counterpart here is that delivery never infers a
 `mime` is what is sent, an SVG is served with a restrictive `Content-Security-Policy`, and a private file is
 sent as an attachment. Naming this is the point; an entry that claimed "escape on read" for a byte stream
 without saying what that means would be adopting a rule in name only.
+
+> ⚠️ **Amended 2026-09-22 while implementing delivery — "sent as an attachment" narrows to "not rendered as a
+> document", and the difference is a whole feature.** Read literally, the sentence above makes a private image
+> impossible to display: every response forces a download, so the admin can never show a preview or a
+> thumbnail, now or later. That is not what the rule was for. Its purpose is to stop a browser being talked
+> into executing a file *as a document*, and that risk lives in the formats that can carry script — SVG, HTML,
+> anything a sniffer might promote — not in a PNG.
+>
+> So delivery serves **inline** for a short allowlist of raster image types that core owns
+> (`MediaDelivery::INLINE`: png, jpeg, gif, webp, avif) and **attachment** for everything else, including
+> every type not on the list. Three things hold the narrowing in place: the `Content-Type` is the stored
+> `mime` rather than anything inferred, `X-Content-Type-Options: nosniff` stops the browser re-deciding, and
+> the allowlist is a `public const` on a core class, so an operator cannot widen it — the same reason
+> `rich_text`'s allowlists are not settings. SVG stays off the list when it arrives, which keeps the
+> paragraph above true for the one format it was actually written about.
+>
+> **Video and audio are off the list too, for an unrelated reason that should not be mistaken for this one.**
+> `MediaIntake` accepts mp4, webm and mp3, and inline playback needs range requests, which v1.0's delivery
+> does not implement; without them a browser re-fetches a whole file to seek. They join the list in the change
+> that implements ranges.
+>
+> **What this costs, stated rather than buried:** a private image is now embeddable, so a page that renders a
+> grid of them makes one authorised PHP-streamed request per thumbnail at the ADR-027 floor — the cost this
+> entry already names under *What this costs*, multiplied by the number of tiles. Responses are
+> `Cache-Control: private, no-store`, so the browser does not soften it. Whoever builds the media UI should
+> arrive with a measurement (Standing Principle #9) rather than an assumption about which way to trade.
 
 ⚠️ **This is the least comfortable decision in the entry, and the discomfort is recorded rather than argued
 away.** Core owns this surface for as long as the feature exists. It was chosen over refusing SVG because
