@@ -14,6 +14,24 @@ declare(strict_types=1);
  */
 return [
     /*
+     * Where uploaded bytes live — ADR-041.
+     *
+     * Two disks, because visibility decides delivery: a public file gets a direct URL a CDN can cache, and a
+     * private one is streamed by a controller that authorises first. `public` is Laravel's own published disk,
+     * which `deploy/release.sh` already links and proves resolves; `local` is not web-served.
+     *
+     * ⚠️ `mergeConfigFrom()` MERGES THE TOP LEVEL ONLY, as the note on `settings` below records. A host that
+     * declares `media` in its own `config/kitsune.php` replaces this whole map rather than the keys it names,
+     * so a host overriding one disk restates the other.
+     */
+    'media' => [
+        'disks' => [
+            'public' => 'public',
+            'private' => 'local',
+        ],
+    ],
+
+    /*
      * The platform defaults: the level beneath org, site group and site (ADR-022).
      *
      * A key here is what a site resolves when no level above it stores one, and it resolves with the
