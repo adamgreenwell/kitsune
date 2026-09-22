@@ -87,6 +87,20 @@ module.exports = defineConfig({
          * records: signing in per test against one dev server and one SQLite file was intermittently timing
          * out, and it read as a broken selector rather than as contention.
          */
+        /*
+         * Media delivery, which needs TWO sessions and therefore two setups — AGENTS.md §9.
+         *
+         * ⚠️ A PROJECT RATHER THAN A SIGN-IN, for the reason recorded just below: signing in inside a spec
+         * against one dev server and one SQLite file timed out intermittently. The owner's state is the
+         * project's own; the copy-editor's is read from `setup-reader`'s output file, which is why that
+         * setup is a dependency here even though no test in this project signs in as her.
+         */
+        {
+            name: 'media-delivery',
+            testMatch: /media-delivery\.spec\.js/,
+            dependencies: ['setup', 'setup-reader'],
+            use: { ...devices['Desktop Chrome'], storageState: '.playwright/admin-auth.json' },
+        },
         {
             name: 'admin-reader',
             testMatch: /permissions\.spec\.js/,

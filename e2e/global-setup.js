@@ -1,5 +1,6 @@
 // @ts-check
 const { execFileSync } = require('node:child_process');
+const fs = require('node:fs');
 const path = require('node:path');
 
 /*
@@ -25,4 +26,31 @@ module.exports = async () => {
     run(['kitsune:module', 'enable', 'kitsune/person', '--no-interaction']);
 
     run(['filament:assets']);
+
+    /*
+     * ⚠️ THE PUBLIC MEDIA PATH, WRITTEN OUT SO A BROWSER CAN FETCH IT — ADR-041, and review found why it has
+     * to be fetched rather than computed. `MediaIntake::storedName()` generates the filename from
+     * `random_bytes`, on purpose, so a spec cannot know it; and a PHP assertion that
+     * `MediaDelivery::urlFor()` equals `Storage::disk('public')->url(...)` calls the same method on both
+     * sides and cannot fail. It passed happily while a bare install served 403 at that URL, because nothing
+     * created `public/storage`.
+     *
+     * So the seeded path is emitted here and `media-delivery.spec.js` requests it over HTTP. That asserts the
+     * whole chain a public file depends on: the bytes reached the public disk, `storage:link` ran during
+     * installation, and the web server serves the result without PHP in the path.
+     */
+    const seeded = execFileSync('php', [
+        'artisan', 'tinker', '--execute',
+        "echo optional(DB::table('media_files')->where('visibility','public')->first())->path;",
+    ], { cwd: skeleton, encoding: 'utf8' }).trim();
+
+    if (! seeded) {
+        throw new Error('global-setup: the seeder produced no public media file for media-delivery.spec.js');
+    }
+
+    fs.mkdirSync(path.join(__dirname, '..', '.playwright'), { recursive: true });
+    fs.writeFileSync(
+        path.join(__dirname, '..', '.playwright', 'media-fixture.json'),
+        JSON.stringify({ publicPath: seeded }, null, 4) + '\n',
+    );
 };

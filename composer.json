@@ -57,7 +57,8 @@
             "@php -r \"rename('skeleton/composer.json.orig','skeleton/composer.json');\"",
             "@php -r \"file_exists('skeleton/.env') || copy('skeleton/.env.example','skeleton/.env');\"",
             "@php skeleton/artisan key:generate --ansi",
-            "@php -r \"file_exists('skeleton/database/database.sqlite') || touch('skeleton/database/database.sqlite');\""
+            "@php -r \"file_exists('skeleton/database/database.sqlite') || touch('skeleton/database/database.sqlite');\"",
+            "@php skeleton/artisan storage:link --ansi"
         ],
         "test:e2e": "playwright test"
     },
