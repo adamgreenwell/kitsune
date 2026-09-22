@@ -13,6 +13,7 @@ namespace Kitsune\Core\Console;
 use Illuminate\Console\Command;
 use Kitsune\Core\Blueprints\BlueprintApplier;
 use Kitsune\Core\Blueprints\BlueprintRegistry;
+use Kitsune\Core\Blueprints\FirstOrg;
 use Kitsune\Core\Models\Blueprint;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Tenancy\Context;
@@ -25,17 +26,21 @@ use Throwable;
  * rather than by verb, and three names is three things frozen at v1.2 for one subject. The work lives in
  * `BlueprintApplier`, so it is testable without a console and this class is argument handling.
  *
- * ⚠️ `--org` IS REQUIRED FOR `apply`, AND THAT IS THIS SLICE'S HONEST LIMIT. ADR-039's *done when* is one
- * command on a fresh install, which means this command eventually creates the first org and site when none
- * exists — the thing that makes ADR-030's "no manual step outside the apply flow" satisfiable. It does not do
- * that yet. Until it does, an operator names an org that already exists, and a fresh install is not yet a
- * single command. Said here rather than left to be discovered.
+ * ⚠️ `--org` IS REQUIRED FOR `apply`, AND ON AN EMPTY INSTALLATION IT IS CREATED. ADR-039's *done when* is
+ * one command on a fresh install, and ADR-030 will not move `kitsunecms.org` onto Kitsune until a blueprint
+ * applies "with no manual step outside the apply flow — no hand-edited config, no SQL, no *and then you also
+ * need to*". A fresh install has no org, so requiring one to exist put a step outside the flow: two `create()`
+ * calls in a console. Naming the org in the apply command is inside the flow; writing it by hand first was not.
+ *
+ * The creation happens only when the installation has NO org at all — see `FirstOrg` for why that condition
+ * is the one that makes it safe to do without asking. No user is created: ADR-026 says onboarding creates the
+ * first one interactively, and an account is a credential rather than a tenancy row.
  */
 final class BlueprintCommand extends Command
 {
     private const ACTIONS = ['list', 'status', 'apply'];
 
-    protected $signature = 'kitsune:blueprint {action=list : list, status or apply} {handle? : the blueprint, e.g. blog} {--org= : the org slug to apply into}';
+    protected $signature = 'kitsune:blueprint {action=list : list, status or apply} {handle? : the blueprint, e.g. blog} {--org= : the org slug to apply into, created with a first site when the installation has none} {--org-name= : the name for an org this creates, defaulting to a humanised slug} {--site= : the slug for the first site, defaulting to the org slug} {--locale=en : the first site\'s locale}';
 
     protected $description = 'List, apply and report on Kitsune blueprints (ADR-039)';
 
@@ -54,6 +59,14 @@ final class BlueprintCommand extends Command
             'status' => $this->status(),
             default => $this->apply(),
         };
+    }
+
+    /** An option as a string, or null when it was not given — the narrowing PHPStan wants, written once. */
+    private function optionAsString(string $name): ?string
+    {
+        $value = $this->option($name);
+
+        return is_string($value) && $value !== '' ? $value : null;
     }
 
     /** What this installation knows about, which is what some PHP has registered — never a remote index. */
@@ -136,9 +149,23 @@ final class BlueprintCommand extends Command
         $org = Org::query()->where('slug', $slug)->first();
 
         if ($org === null) {
-            $this->error("No organisation has the slug [{$slug}].");
+            try {
+                $org = FirstOrg::create(
+                    $slug,
+                    $this->optionAsString('org-name'),
+                    $this->optionAsString('site'),
+                    $this->optionAsString('locale') ?? 'en',
+                );
+            } catch (Throwable $e) {
+                $this->error($e->getMessage());
 
-            return self::FAILURE;
+                return self::FAILURE;
+            }
+
+            $this->info(sprintf(
+                'Created organisation %s and its first site. No user was created — onboarding does that (ADR-026).',
+                $slug,
+            ));
         }
 
         $context = app(Context::class);
