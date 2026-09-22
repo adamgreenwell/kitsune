@@ -675,8 +675,9 @@ media_files
   mime            string
   size_bytes      bigint
   checksum        string              -- dedupe + integrity
+  visibility      string              -- private | public; private is the default (ADR-041)
   width, height   int nullable
-  duration_ms     int nullable
+  duration_ms     int nullable        -- null in v1.0: probing video needs a binary the floor cannot assume
   created_at
 ```
 
@@ -689,6 +690,17 @@ Three things fall out of this for free, and they're the reason it's worth doing:
 3. **"What uses this image?" is a query on `entry_relations`**, not a full-text search for the filename across every JSON blob.
 
 The trade-off, stated honestly: an `entries` row per asset makes the table bigger than a dedicated media table would, and bulk upload of 10,000 assets writes 10,000 entries plus 10,000 relations. Acceptable — but it's a real number to watch in the Phase 1 storage benchmark.
+
+> ⚠️ **Amended 2026-09-22 by [ADR-041](decision-log.md): `visibility` is added above, and upload safety is
+> decided.** This section published a media table and said nothing about what makes an upload safe — §6 below
+> names `rich_text` and `json` as "the two types that need security review", and an uploaded file is neither.
+> ADR-041 decides it: the extension is checked against an allowlist core owns, the MIME type is read from the
+> file's own bytes with `finfo` and never taken from the request, the stored path and filename are generated
+> by core so a caller's filename can never become a path, and a size ceiling is enforced before anything is
+> written. **SVG is accepted and sanitised on upload by a maintained library** — taking §6's *sanitise on
+> write* and *config lives in core* rules, and departing from its keep-the-original rule, because a file on
+> disk has no equivalent to `entry_revisions.unsanitized_values`. Derivatives are **not** modelled: one path
+> per entry, originals served, recorded as a known limitation rather than an omission.
 
 ---
 

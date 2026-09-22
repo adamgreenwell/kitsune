@@ -441,7 +441,7 @@ Field values do not all live in the `values` JSON column. Every field type decla
 
 ## ADR-016 — Media are entries
 
-**Status:** Decided · 2026-09-07
+**Status:** Decided · 2026-09-07 · **Amended 2026-09-22 by ADR-041** — the published `media_files` column list gains `visibility`, and how bytes are delivered, made safe and disposed of is decided there
 
 There is no separate media subsystem. An uploaded file is an **entry** of a system entry type (`image`, `document`, `video`) carrying its own fields — alt text, caption, credit, rights, expiry. The bytes live in a companion `media_files` table joined 1:1 to that entry (disk, path, mime, size, checksum, dimensions, duration).
 
@@ -459,6 +459,15 @@ A "media picker" field is therefore just `relation` constrained to media entry t
 | Files as a field type storing paths inline | No metadata, no reverse lookup, no dedupe, no rights tracking. Fine for a blog, useless for a DAM. |
 
 **Accepted trade-off:** one `entries` row per asset makes the table larger than a dedicated media table would, and bulk-importing 10,000 assets writes 10,000 entries plus their relations. Acceptable, but it is a real number to watch in the Phase 1 storage benchmark.
+
+⚠️ **Amended 2026-09-22 by ADR-041 — the column list gains `visibility`, and three things this entry left open
+are now decided.** This decision stands unchanged: media are entries, the bytes live in a companion table, and
+a picker is `relation` constrained to media types — which `RelationType`'s *Allowed entry types* setting
+already expresses, so no new field type was ever needed. What it did not decide is how the bytes reach a
+reader, what stops a hostile upload, and what happens to a file when its entry goes. ADR-041 decides those:
+private by default with public an explicit act, no derivatives in v1.0, upload in the admin only, and SVG
+accepted but sanitised in core by a maintained library. The `visibility` column is the one addition to the
+shape published here.
 
 **Users are explicitly not entries** and never will be — different lifecycle, different privacy obligations, and a different deletion story (erasing a user must not cascade-delete their articles). Use `relation` to a `person` entry type for editorial bylines.
 
@@ -3449,6 +3458,143 @@ deliberately unchecked; a money column that no code path can write a float into;
 grants one entitlement, asserted by count; a signature check that refuses an unsigned POST; stock that cannot
 go negative under two concurrent confirmations, measured with two real connections rather than reasoned about;
 a secret that cannot be read back through any admin path; and a test-mode key refused against a live-mode org.
+
+---
+
+## ADR-041 — Media bytes are private by default, sanitised on the way in, and have no derivatives yet
+
+**Status:** Decided · 2026-09-22 · **Amends ADR-016** (the published `media_files` column list gains `visibility`) and **`field-types.md` §5** · **Phase 5a (ADR-040) stays blocked on media until the code lands**; this entry decides its shape, not its existence
+
+ADR-016 decided the shape of this in September and nothing was built: *"There is no separate media subsystem.
+An uploaded file is an **entry** of a system entry type … The bytes live in a companion `media_files` table."*
+That decision stands unchanged and is the reason this entry is small — revisions, permissions, audit and
+tenancy already apply to media because media are entries, and a picker is already expressible, because
+`RelationType` carries an **Allowed entry types** setting. What ADR-016 did not decide is how the bytes are
+delivered, how they are made safe, and what happens to them when the entry goes.
+
+⚠️ **Three gaps, found by looking rather than assumed.** `media_files` is published in two documents and no
+migration creates it. Nothing anywhere in the repository covers upload security — `field-types.md` §6 names
+`rich_text` and `json` as "the two types that need security review", and an uploaded file is neither. And the
+published column list models **one path per entry**, so thumbnails and renditions are not designed.
+
+| Rejected | Why it lost |
+|---|---|
+| **A dedicated media subsystem** | Already rejected by ADR-016, and re-rejected here only because building an upload path is the moment it would be easy to grow one. Duplicating permissions, revisions, audit and tenancy for a second entity shape is four systems to keep in sync forever. |
+| **Public delivery for everything** | ADR-037 and ADR-040 both name gated downloads as a driving scenario. Shipping the substrate for a thing it cannot do is the shape this log keeps catching. |
+| **Visibility per entry type** | `image` public, `document` private is one configuration and no per-file thinking — and then a gated PDF and a public brochure cannot both be a `document`, so operators create parallel types to express a flag. |
+| **Renditions generated at upload** | Every size must be chosen before anyone needs it, the processing happens inside the upload request because ADR-027 forbids assuming a queue, and it amends ADR-016's schema for a feature v1.0 has no measured need of. |
+| **On-demand resizing with a disk cache** | Better bandwidth, no schema change — and the first request for each size does image work inside a request at 1 vCPU, so a crawler enumerating sizes is a denial of service against the operator's own floor. |
+| **Refusing SVG** | Fail-closed and cheap, and it tells an operator with a legitimate logo to convert it to PNG. The maintainer chose the harder option deliberately; the cost is recorded below rather than hidden. |
+| **Serving SVG unsanitised behind headers** | A Content-Security-Policy and `Content-Disposition: attachment` hold only while every delivery path remembers them, and a public CDN URL is exactly where one would not. |
+| **An upload API endpoint in v1.0** | ADR-002's headless goal wants one and the REST API is v1.1. A public upload endpoint is the highest-risk surface in the product; it should arrive with the API that gives it a shape, not before it. |
+| **Per-org disk configuration** | A disk is infrastructure — credentials, mount points, a bucket somebody pays for. ADR-038 chose per-install for module enablement on the deferral ground — a per-org axis is a second inheritance model beside ADR-022's org → site group → site resolution, built before a consumer asks. Per-org disks are deferred until a consumer asks. |
+
+### Decision
+
+**`media_files` gains a `visibility` column, and this amends ADR-016's published list.** The shape is otherwise
+exactly as published: `entry_id` unique and 1:1, `disk`, `path`, `mime`, `size_bytes`, `checksum`, nullable
+`width`/`height`, nullable `duration_ms`, `created_at`. No `org_id` or `site_id`, because the row is 1:1 with
+an entry that already carries both.
+
+**Private is the default, and public is an explicit act.** Kitsune is a fail-closed house and a leaked gated
+download is worse than a slow product image. A public file lives on the public disk and gets a direct URL that
+a CDN can cache — `deploy/release.sh` already runs `storage:link` and proves the link resolves, so that path
+exists. A private file lives on a disk the web server does not serve and is streamed by a controller that
+authorises first.
+
+⚠️ **Authorising *what*, exactly, is deliberately left open here.** Today the only answer core can give is the
+entry's own permissions. ADR-040's entitlements are what will make "this reader paid for this download"
+expressible, and they do not exist yet. So the first media slice authorises a **staff** question, and the
+reader question becomes expressible when Phase 5a's entitlements land — **inside v1.0, not after it**, because
+ADR-040 amended ADR-011 to put them there. Gated delivery is therefore unfinished *within* this release rather
+than deferred beyond it, and this entry ships the half that does not depend on the other.
+
+**No derivatives in v1.0.** Originals are served and sized in CSS. This is an honest floor decision rather than
+an oversight: ADR-027 forbids assuming external services, the skeleton's queue
+defaults to `sync` so there is no worker to defer to unless an operator runs one, and a 4MB camera JPEG
+reaching every visitor is a real cost an operator will notice. It is recorded as a known limitation with
+a named trigger — the first operator whose bandwidth bill or page weight makes it a problem — rather than as
+something already solved.
+
+**Upload happens in the admin and nowhere else.** One path to secure, one path to test. Bulk ingestion for a
+migration is a console command when the migration track needs it, and an API endpoint arrives with the API.
+
+**The upload path trusts nothing the client sends.** The extension is checked against an allowlist core owns;
+the MIME type is read from the file's own bytes with `finfo` and never taken from the request; the stored path
+and filename are generated by core, so a caller's filename can never become a path; and a size ceiling is
+enforced before anything is written. `getimagesize()` is in `ext/standard`, always compiled in and — worth
+saying, because it is widely assumed otherwise — **it does not need GD**. `finfo` is *not* core: it is
+`ext-fileinfo`, bundled but able to be compiled out. It holds at the floor for a reason core does not state
+and should: `laravel/framework` requires `league/flysystem-local`, which requires `ext-fileinfo`, so any
+installation that can run Kitsune already has it. An installation that somehow does not must fail loudly at
+upload rather than fall back to trusting the client's MIME type. `duration_ms` stays **null in v1.0**: probing a
+video needs a binary ADR-027 does not let us assume, and a column that is sometimes populated depending on
+what happens to be installed is worse than one that is honestly empty.
+
+**SVG is accepted and sanitised on upload.** It takes two of `field-types.md` §6's rules for `rich_text`, the
+one field type that document names as an XSS vector, and departs from two more — deliberately, and each
+departure is named rather than left for a reader to notice.
+
+**Adopted unchanged.** *Sanitise on write*, because it is canonical and paid once. And **the sanitiser's
+configuration lives in core, not in settings — an org must not be able to widen its own allowlist**, which is
+§6's rule verbatim and the reason `rich_text`'s allowlists are `public const` on the class rather than
+anything an operator can reach.
+
+⚠️ **Departure 1 — a maintained library, where `rich_text` is hand-rolled.** `RichTextType::sanitize()` is a
+`DOMDocument` parse-and-rebuild walk in core, checked against four constants on the class. That is right for
+HTML constrained to six forbidden tags and a short attribute allowlist. SVG is not that: it is XML with
+namespaces, `xlink`, `foreignObject`, entity expansion and embedded CSS, and its sanitising has a documented
+history of bypasses. A hand-rolled walk here would be core inventing a security parser for a format whose
+bypasses are discovered by other people, continuously. So this one departure buys the thing §6's rule is for.
+
+⚠️ **Departure 2 — no original is kept, where §6 keeps one.** §6 stores the pre-sanitisation original in
+`entry_revisions.unsanitized_values`, *"a column `snapshot()` does not expose, so a restore cannot reach it"*,
+swept by erasure like any other value. A file on disk has no equivalent hiding place: a stored original is a
+file waiting for a delivery path that forgets which one is which. Only sanitised bytes are written.
+
+**And the read side is not left hollow.** §6's second rule is *escape on read, defence in depth*, and a file
+has no escaping step — so its counterpart here is that delivery never infers a type from the path: the stored
+`mime` is what is sent, an SVG is served with a restrictive `Content-Security-Policy`, and a private file is
+sent as an attachment. Naming this is the point; an entry that claimed "escape on read" for a byte stream
+without saying what that means would be adopting a rule in name only.
+
+⚠️ **This is the least comfortable decision in the entry, and the discomfort is recorded rather than argued
+away.** Core owns this surface for as long as the feature exists. It was chosen over refusing SVG because
+operators have legitimate logos and being told to convert them is a real cost too. The escape, if it ever
+stops being defensible, is refusing SVG — and that stays available because the allowlist is core's.
+
+**Bytes follow the entry, and erasure reaches them.** A soft-deleted media entry keeps its bytes, because a
+restore must work; a force-delete removes them.
+
+⚠️ **ADR-020 requires erasure to reach *revision history*; it says nothing about bytes on disk.** This entry
+**extends** it — a redaction that leaves the JPEG on disk has not erased the photograph — and owns the
+extension rather than citing ADR-020 for it. ADR-040 caught this exact overreach one entry ago and it was made
+again here, which is why the correction is written into the text rather than quietly applied.
+
+### What this costs
+
+**Private delivery puts bytes through PHP.** At the ADR-027 floor that is the expensive path, and it is the
+default. An operator serving large private files will feel it, and the mitigation — signed temporary URLs that
+let the web server or object store deliver directly — is deliberately not in this entry, because it differs per
+disk driver and wants measuring rather than assuming.
+
+**A new runtime dependency in core, for the first time since Tiptap.** Core's `require` block is php,
+blade-icons, composer-runtime-api, filament, laravel, livewire and tiptap-php. An SVG sanitiser makes eight,
+and it is a library rather than a daemon, so ADR-027's floor is unchanged.
+
+### Enforced by
+
+**Nothing yet.** No media code exists at the time this ADR is written; this entry is the decision, not a report
+of work done — the fourth entry in a row to say so — ADR-037, ADR-038, ADR-039 and ADR-040 each open with it, for the reason ADR-038's `Enforced by` had to be amended
+three times in two days.
+
+When it lands: an upload whose extension is not on the allowlist is refused; an upload whose sniffed MIME
+disagrees with its extension is refused; a filename containing a path separator or traversal cannot influence
+where bytes land, asserted by attempting it; an SVG carrying a script element, an event-handler attribute and
+an external reference is stored with none of the three, asserted by reading the stored bytes rather than the
+upload response; a private file is refused to an unauthorised request and served to an authorised one; a
+force-deleted media entry leaves no file on disk, asserted against the disk; and `duration_ms` is null for
+every row, asserted so that a later change to populate it is a visible decision rather than a drift.
 
 ---
 

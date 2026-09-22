@@ -410,8 +410,10 @@ this date.* Deferring it to v1.1 would ship a v1.0 whose four named use cases ar
 workstream of comparable size, and one-time payment already serves all four consumers' first cut.
 
 ⚠️ **Blocked on media.** A product without an image is not a product, and `media_files` is published in ADR-016
-and `field-types.md` §5 and does not exist. ADR-016 already designed it — media are entries, a picker is a
-`relation` — so what is missing is the bytes. The same work releases the **DAM** starter.
+and `field-types.md` §5 and does not exist. ADR-016 designed the shape — media are entries, a picker is a
+`relation` — and [ADR-041](decision-log.md) decides delivery, upload safety and disposal: private by default,
+no derivatives in v1.0, admin-only upload, SVG sanitised in core. What is still missing is the bytes. The same
+work releases the **DAM** starter.
 
 ## Phase 6 — v1.0 hardening
 
