@@ -1,0 +1,26 @@
+{
+    "name": "kitsune/svg-sanitizer",
+    "description": "Accept SVG uploads safely: the sanitiser Kitsune core declares and deliberately does not ship.",
+    "license": "MPL-2.0",
+    "type": "library",
+    "require": {
+        "php": "^8.4",
+        "enshrined/svg-sanitize": "^1.0",
+        "ext-dom": "*",
+        "ext-libxml": "*",
+        "kitsune/core": "@dev"
+    },
+    "autoload": {
+        "psr-4": {
+            "Kitsune\\SvgSanitizer\\": "src/"
+        }
+    },
+    "extra": {
+        "kitsune": {
+            "provider": "Kitsune\\SvgSanitizer\\SvgSanitizerServiceProvider",
+            "scoping": []
+        }
+    },
+    "minimum-stability": "dev",
+    "prefer-stable": true
+}

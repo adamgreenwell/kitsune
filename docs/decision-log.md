@@ -466,8 +466,13 @@ a picker is `relation` constrained to media types — which `RelationType`'s *Al
 already expresses, so no new field type was ever needed. What it did not decide is how the bytes reach a
 reader, what stops a hostile upload, and what happens to a file when its entry goes. ADR-041 decides those:
 private by default with public an explicit act, no derivatives in v1.0, upload in the admin only, and SVG
-accepted but sanitised in core by a maintained library. The `visibility` column is the one addition to the
+accepted but sanitised on upload by a maintained library. The `visibility` column is the one addition to the
 shape published here.
+
+> ⚠️ **Corrected 2026-09-22 (same day): "in core" was written before the library was chosen.** The sanitiser
+> ships in `kitsune/svg-sanitizer`, not in core, because the only library with the maintainer population
+> ADR-041 was buying is GPL-2.0-or-later — see ADR-041's own amendment under *What this costs*. Core declares
+> the seam and refuses SVG until something implements it.
 
 **Users are explicitly not entries** and never will be — different lifecycle, different privacy obligations, and a different deletion story (erasing a user must not cascade-delete their articles). Use `relation` to a `person` entry type for editorial bylines.
 
@@ -3543,6 +3548,42 @@ what happens to be installed is worse than one that is honestly empty.
 one field type that document names as an XSS vector, and departs from two more — deliberately, and each
 departure is named rather than left for a reader to notice.
 
+> ⚠️ **Amended 2026-09-22 — "accepted" now means "accepted once a sanitiser is installed", and the default
+> install refuses SVG.** The sanitiser ships as `kitsune/svg-sanitizer` for the licence reason recorded under
+> *What this costs*. Core declares `Kitsune\Core\Media\SanitisesSvg` and implements nothing;
+> `MediaIntake::acceptedTypes()` adds `svg` only when something is bound to it, and the refusal names the
+> module and the command rather than saying "not an accepted file type". Nothing an org can set widens that,
+> which is what this entry asked for — the gate is a container binding an operator makes install-wide.
+>
+> This also keeps the escape recorded below literally available: *"the escape, if it ever stops being
+> defensible, is refusing SVG."* It is now simply the module not being installed.
+>
+> ⚠️ **And the allowlist is narrowed by one tag, which was measured rather than assumed.** With the library
+> at 1.0.0 and `removeRemoteReferences(true)`, `javascript:` inside a CSS `url()` **survives** — quoted,
+> unquoted, upper-cased and HTML-entity-encoded — while `@import url('https://…')` is stripped. So `<style>`
+> is removed from the library's tag allowlist **through its own `setAllowedTags()` seam**, which is
+> configuring the library rather than writing the hand-rolled parser this entry forbids. The cost: an SVG
+> that styled itself through a `<style>` block renders from its presentation attributes instead.
+>
+> ⚠️ **That closes one of two doors, and review caught this paragraph claiming it closed the problem.** The
+> `style` **attribute** carries the identical CSS, is still on the library's attribute allowlist, and still
+> passes `javascript:` through — measured: `<rect style="background:url(javascript:alert(1))"/>` survives
+> quoted and unquoted. It is left open deliberately. An adversarial pass served the sanitiser's real output
+> to a browser as `image/svg+xml` with **no** security headers — the exact public-path threat model — with a
+> positive control that did fire on an unsanitised script and on a raw remote `url()`: the surviving CSS
+> executed nothing and fetched nothing, because no current browser honours `javascript:` in CSS `url()`.
+> Removing the inline `style` attribute would break the presentation of ordinary exported artwork to close a
+> vector that is inert, so the measurement is recorded and the door is left where it is.
+>
+> ⚠️ **Which makes this a THIRD departure from `field-types.md` §6, and it is named here rather than left for
+> a reader to find.** §6 says `<script>`, `<style>`, `<iframe>`, event-handler attributes and `javascript:`
+> URLs are *"never permitted, regardless of settings"*. On the SVG path a `javascript:` URL inside a CSS
+> `url()` **is** permitted. The entry above promises that each departure is named; this one was not, because
+> it was not known until the sanitiser was attacked.
+>
+> A blunter rule — refusing any output containing `javascript:` — was measured and rejected, because it also
+> refuses a `<text>` label that legitimately says "use javascript: carefully".
+
 **Adopted unchanged.** *Sanitise on write*, because it is canonical and paid once. And **the sanitiser's
 configuration lives in core, not in settings — an org must not be able to widen its own allowlist**, which is
 §6's rule verbatim and the reason `rich_text`'s allowlists are `public const` on the class rather than
@@ -3615,6 +3656,40 @@ disk driver and wants measuring rather than assuming.
 **A new runtime dependency in core, for the first time since Tiptap.** Core's `require` block is php,
 blade-icons, composer-runtime-api, filament, laravel, livewire and tiptap-php. An SVG sanitiser makes eight,
 and it is a library rather than a daemon, so ADR-027's floor is unchanged.
+
+> ⚠️ **Amended 2026-09-22 while implementing the sanitiser: this paragraph is wrong, and the reason it is
+> wrong is a licence this entry never looked at.** Core's `require` block still has seven packages. The
+> sanitiser is not in it.
+>
+> The only library that satisfies what this entry actually asked for — a *maintained* library, bought for its
+> population of people who find SVG bypasses continuously — is
+> [`enshrined/svg-sanitize`](https://github.com/darylldoyle/svg-sanitizer): 50.9M downloads, 114 dependents,
+> contributors from TYPO3, Automattic and Craft, and a 1.0.0 release on 2026-09-01 that closed four
+> researcher-reported advisories at once. **It is GPL-2.0-or-later.** The MIT alternative,
+> `rhukster/dom-sanitizer`, had **eight** advisories between 2026-04-10 and 2026-09-17 including one
+> high-severity and one with no patched version, from one author with no CI — which is a hand-rolled walk with someone else's name on it,
+> and fails this entry's own test.
+>
+> ADR-005 records that plain MPL-2.0 **is** GPL/LGPL/AGPL-compatible via §3.3 and that *"Exhibit B is the
+> opt-out — never add it"*; AGENTS.md rule 7 is where the purpose is stated outright, and it is enforced by a
+> test rather than by review (`LicenceHeaderTest`: *"it carries Exhibit B nowhere"*). Between them, GPL code
+> can lawfully be combined with Kitsune. It separately rejected GPL as **core's own licence**,
+> because that conflicts with ADR-004's paid modules and with proprietary third-party ones. Both hold at
+> once, and the resolution is Standing Principle #11: **a feature outside core's own job starts as a
+> first-party module.** So `kitsune/svg-sanitizer` carries the dependency, its own code is MPL-2.0, and an
+> operator who never installs it never distributes GPL code with Kitsune.
+>
+> Core gains `ext-dom`, `ext-libxml` and `ext-fileinfo` in `require` — **extensions, not packages, and it
+> should have declared them already**: `RichTextType::sanitize()` and `Entry` call `DOMDocument`, and
+> `MediaIntake::sniff()` calls `finfo`. That is a pre-existing gap this work surfaced rather than created,
+> and it mattered most in `rich_text`'s sanitiser, where a missing `ext-dom` is a fatal rather than a
+> refusal.
+>
+> `ext-fileinfo` is in that list because review found core stating one rule and following another:
+> `MediaIntake`'s own docblock argued that a transitively guaranteed extension need not be declared, and the
+> first two above are guaranteed by exactly the same shape. The rule is now the other one — a package that
+> calls a function declares the extension providing it, because the transitive guarantee lives in somebody
+> else's dependency graph and can change without anyone here noticing.
 
 ### Enforced by
 

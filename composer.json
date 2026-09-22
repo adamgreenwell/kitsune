@@ -10,6 +10,7 @@
         "kitsune/core": "@dev",
         "kitsune/fixture-module": "@dev",
         "kitsune/person": "@dev",
+        "kitsune/svg-sanitizer": "@dev",
         "larastan/larastan": "^3.11",
         "laravel/boost": "^2.7",
         "laravel/pint": "^1.31",

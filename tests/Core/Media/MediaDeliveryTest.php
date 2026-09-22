@@ -190,8 +190,19 @@ it('serves a listed image inline and everything else as an attachment', function
 
 /** A type nobody has considered is downloaded, never rendered — the direction a mistake has to fall in. */
 it('treats an unrecognised type as an attachment', function (): void {
+    expect(MediaDelivery::dispositionFor(new MediaFile(['mime' => 'application/x-newfangled'])))->toBe('attachment');
+});
+
+/**
+ * ⚠️ SVG IS NOW A TYPE THE INSTALLATION CAN ACCEPT, AND IT IS STILL AN ATTACHMENT — which is the case this
+ * used to cover as "unrecognised" and no longer can. `kitsune/svg-sanitizer` opens the INTAKE gate; it does
+ * not open this one, and the two are deliberately separate. An `image/svg+xml` that reached the disk was
+ * sanitised on the way in, and it is still the one accepted type that can carry script if anything ever slips
+ * through, so it never renders as a document from the private path.
+ */
+it('never serves svg inline, sanitised or not', function (): void {
     expect(MediaDelivery::dispositionFor(new MediaFile(['mime' => 'image/svg+xml'])))->toBe('attachment')
-        ->and(MediaDelivery::dispositionFor(new MediaFile(['mime' => 'application/x-newfangled'])))->toBe('attachment');
+        ->and(MediaDelivery::INLINE)->not->toContain('image/svg+xml');
 });
 
 /*
