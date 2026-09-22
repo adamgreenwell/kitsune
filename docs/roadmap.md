@@ -385,6 +385,34 @@ Drupal spent ~a decade proving a runtime schema engine *without* opinionated sta
 
 ⚠️ **Amended from "one click" by [ADR-039](decision-log.md).** On a fresh install there is nowhere to click: Filament's tenant *is* the Site, the panel registers three resources and none of them creates an org, a site group or a site. The click arrives with ADR-026's installer in Phase 6, where the first-user flow already lives; `kitsune:blueprint apply` creates the first org and site so that ADR-030's *"no manual step outside the apply flow"* is satisfiable at all. "Working blog" means admin-editable — public rendering is theming, which ADR-011 moved to v1.1.
 
+## Phase 5a — Commerce and entitlements
+
+*Sizeable. Added 2026-09-22 by [ADR-040](decision-log.md), which amends [ADR-011](decision-log.md)'s v1.0 scope cut.*
+
+Four scenarios — a shop, a subscription site, gated content, a paid course — are one substrate rather than four
+features, and what they share is an **entitlement**: *this reader may reach this thing, because they paid, until
+this date.* Deferring it to v1.1 would ship a v1.0 whose four named use cases are the ones it cannot serve.
+
+- [ ] **Entitlements in core.** One row per `(reader, site, entitlement)` with `expires_at` and `revoked_at`; the
+      string is validated for shape and not existence, as a permission is. Per site because [ADR-037](decision-log.md)
+      already decided it — one identity per org, everything else per site. The reader is a loose id with no foreign
+      key, as `audit_log` references an actor
+- [ ] **An encrypted per-org credential store in core**, write-only: a key can be replaced and never read back.
+      ADR-036's chat service is the second consumer
+- [ ] **`kitsune/commerce`** — catalogue, cart, checkout, orders, inventory. A product is a content entry plus a
+      sellable record referencing it; money is integer minor units, one currency per org
+- [ ] **Stripe, concretely, with no provider abstraction.** Operator-supplied keys; Kitsune is never the merchant
+      of record. The seam is extracted when a second provider exists, not before (Standing Principle #11)
+- [ ] **Webhooks persisted before they are processed**, verified, idempotent, processed inline with a replay
+      command — no queue is assumed (ADR-027)
+
+**Not in it:** subscriptions. Recurring billing — renewals, proration, dunning, involuntary churn — is a second
+workstream of comparable size, and one-time payment already serves all four consumers' first cut.
+
+⚠️ **Blocked on media.** A product without an image is not a product, and `media_files` is published in ADR-016
+and `field-types.md` §5 and does not exist. ADR-016 already designed it — media are entries, a picker is a
+`relation` — so what is missing is the bytes. The same work releases the **DAM** starter.
+
 ## Phase 6 — v1.0 hardening
 
 *6–8 weeks.*

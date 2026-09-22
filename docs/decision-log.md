@@ -295,7 +295,7 @@ All user-defined entity types share **one Eloquent model** (`Entry`) with a type
 
 ## ADR-011 — v1.0 scope cut
 
-**Status:** Decided · 2026-09-07 · **Corrects an earlier bad estimate**
+**Status:** Decided · 2026-09-07 · **Corrects an earlier bad estimate** · **Amended 2026-09-22 by ADR-040** — v1.0 now contains a transactions substrate; the estimate moves with it
 
 The original roadmap claimed 12–18 months part-time for tenancy kernel + module system + schema engine + blueprints + REST API + theming + importer + plugin SDK. **That was wrong by roughly 3–4x.**
 
@@ -306,6 +306,20 @@ Verified comparables: Statamic v2 ~2 years with a team of domain experts who alr
 Deferred: REST API and theming → v1.1. Plugin SDK and API freeze → v1.2. Migration adapter framework → v1.3. KaaS control plane → v1.4+.
 
 **Also budgeted:** support load is roughly a **3x multiplier**, arriving exactly when you get users. Statamic's founder on their v2 beta: it *"would have probably taken 6 weeks of focused work [but] took nearly 4 months while handling support, managing expectations, communicating changes, and replying to repetitive bug reports."*
+
+⚠️ **Amended 2026-09-22 by ADR-040 — v1.0 now contains a transactions substrate, and the estimate moves with
+it.** This entry cut v1.0 to a tenancy kernel, a schema engine, a module system, blueprints and an admin, and
+deferred everything else on the ground that the original scope was wrong by 3–4x. ADR-040 enlarges it again,
+deliberately and with the same arithmetic applying: entitlements in core, a `kitsune/commerce` module carrying
+catalogue, cart, checkout, orders and inventory, Stripe with operator-supplied keys, and an encrypted
+credential store core does not have today. Subscriptions are explicitly **not** in it — recurring billing is a
+second workstream of comparable size.
+
+The reason it is not deferred to v1.1 like the REST API and theming: the four scenarios that need it —
+a shop, a subscription site, gated content and a paid course — are one substrate rather than four features,
+and the thing they share is an entitlement. Deferring it would mean shipping a v1.0 whose four named use cases
+are the ones it cannot serve. This is a scope increase with a cost, recorded here rather than absorbed
+quietly, and the estimate this entry exists to correct is now wrong again in the other direction.
 
 ---
 
@@ -1383,7 +1397,7 @@ Two consequences followed and are worth recording, because both were wrong in th
 
 ## Standing principles
 
-From prior-art analysis of Drupal, October, Winter, Statamic, Directus, Strapi, Payload, Backdrop and ClassicPress.
+From prior-art analysis of Drupal, October, Winter, Statamic, Directus, Strapi, Payload, Backdrop and ClassicPress — and, where the entry says so, from this project's own practice.
 
 1. **Never do the big rewrite that breaks the extension ecosystem.** Most damaging failure mode observed, by an order of magnitude. Drupal 8 cost the project its momentum by Dries's own account; usage went from ~1M sites to 474,292 reporting installs as of Aug 2026. Strapi v3→v4 forced `patch-package` workarounds and silently skipped rows during migration.
 2. **Freeze a deliberately narrow extension API — but not until v1.2.** Then deprecate, never remove within a major. *"Drupal 9.0 should be almost identical to the last Drupal 8 release, minus the deprecated code."*
@@ -1395,6 +1409,7 @@ From prior-art analysis of Drupal, October, Winter, Statamic, Directus, Strapi, 
 8. **Always ship a data export path.** Never trap users. Ethical requirement, not a feature.
 9. **Measure, don't reason, about framework internals.** ADR-012 was settled by an instrumented spike that disproved the design reasoning had produced. Two hours of measurement beat six months of assumption.
 10. **Keep the resource floor low, deliberately.** WordPress's reach is inseparable from running on the cheapest hosting available; Drupal 8 raised the contributor floor and the hosting floor together and was forked over *"expensive upkeep."* Requirements creep the way the third pillar erodes — one locally defensible addition at a time. The floor is a number, it is measured every phase, and it is in ADR-027.
+11. **A feature outside core's own job starts as a first-party module, and is promoted into core only on evidence.** Core carries what every installation needs; everything else earns its way in by being used rather than by being anticipated. The prior art cuts both ways: Drupal's contrib is where its long tail lives, and each premature promotion into core became a permanent obligation nobody could then remove (#2). ADR-038's module kernel exists to make this cheap — a module is a Composer package core keeps a receipt for, so shipping one costs a package rather than a decision. ⚠️ **Written down 2026-09-22, after ADR-040 relied on it.** It had been the maintainer's operating rule for months and lived nowhere a contributor could read it, which is the failure AGENTS.md invariant 14 names for code and which applies unchanged to a rule about where code goes.
 
 ---
 
@@ -3262,6 +3277,178 @@ the coverage ADR-038 promised for the admin seam and did not deliver.
 **What the first slice enforces, and what it does not.** The `Enforced by` section above said "Nothing yet", which was true when it was written and is no longer. Now enforced, each with a test that fails when the rule is removed: an apply with no org in context is refused rather than defaulted, because the rows would otherwise be written global; no row it writes is global, asserted from the other side by counting `org_id IS NULL` after an apply; the receipt is committed before the work and outside its transaction, asserted by refusing a declaration part-way and finding no rows and a receipt with `applied_at` null; a second apply at the same version is a no-op; an entry type the blueprint did not create is refused under the default policy and skipped only when the declaration says so; compatible storage is adopted rather than duplicated and a divergent definition is refused naming what differs; and the receipt refuses a bulk write.
 
 **Still not enforced, and the honest list is shorter than the one above rather than absent.** Only the first of the four keys exists — roles with their grants, entry type availability and content arrive as further methods on the same interface. `--org` names an organisation, and on an installation with no org at all `kitsune:blueprint apply` now creates the first one and its first site before applying — which is what makes ADR-030's "no manual step outside the apply flow" satisfiable, because naming the org in the apply command is inside the flow and writing it by hand first was not. Only on an empty installation: an unknown slug where an org already exists stays an error, because creating one there would invent a customer from a typo. No user is created, per ADR-026. The *done when* is still not met, for a different reason — there is no Blog blueprint yet, so there is no working blog to reach in sixty seconds. Nothing reads the `manifest` column yet, so "re-applying upgrades rather than clobbers" is still only additive-by-refusal and not yet a merge. And the §9 browser test this ADR's `Enforced by` asks for is not delivered, because there is no admin route to a blueprint at all — which is the same gap ADR-038 recorded for the module seam, and it closes when the apply flow reaches the admin rather than when somebody remembers.
+
+---
+
+## ADR-040 — Commerce is a module, entitlements are a kernel guard, and v1.0 waits for both
+
+**Status:** Decided · 2026-09-22 · **Amends ADR-011** (the v1.0 scope cut: v1.0 now contains a transactions substrate) and **`roadmap.md`** · **Builds on ADR-037** (readers), **ADR-016** (media are entries) and **ADR-039** (the blueprint/module line)
+
+Four things the platform's scenarios need look like four features and are one: an ecommerce catalogue, a
+subscription site, gated content, and a paid course. Three of the four never need a cart. What every one of
+them needs is the same sentence — *this person may reach this thing, because they paid for it, until this
+date* — and nothing in Kitsune can express it.
+
+⚠️ **Half of this is already decided, and the log names three of the four cases.** ADR-037 gives readers
+their own guard, provider and model, host-owned, because *"the scenarios driving the platform need one:
+readers who register for gated downloads and manage subscriptions in one place, buyers and sellers"* — gated
+content, subscriptions, and buyers and sellers. A **paid course** appears nowhere in the log, the roadmap or
+`architecture.md`; it arrives with this entry, and the LMS starter it implies is new scope rather than
+something already agreed.
+That settles customer identity, which is usually the hardest architectural question in commerce. What is
+missing is the money half.
+
+**v1.0 waits for it.** That is the substance of this entry and it amends ADR-011, which cut v1.0 to a
+tenancy kernel, a schema engine, a module system, blueprints and an admin. The estimate moves with the scope,
+as it did when ADR-037 enlarged v1.1, and this project has no deadline to trade against correctness.
+
+The pull is toward treating this as one more blueprint, because a shop looks like content. The constraint is
+the line ADR-039 drew one entry ago: **a blueprint is configuration for an org; a module is code for an
+installation.** Orders have state machines, outbound calls and money. They are unambiguously code.
+
+| Rejected | Why it lost |
+|---|---|
+| **Ecommerce as a blueprint** | ADR-039's line is configuration versus code: *"a module ships code for the installation … a blueprint ships configuration for an org"*. A blueprint declares rows an operator then owns; an order is a state machine that calls a third party and moves money. ⚠️ Not because a blueprint cannot contain code — ADR-039's v1.0 format **is** a PHP class — but because what it may *declare* is rows, and a running checkout is not one. |
+| **All of commerce in core** | Every installation would carry order tables and a payment dependency whether it sells anything or not, This is **Standing Principle #11**, which this entry is the first to rely on and which was written down *because* it did — it had been an unwritten operating rule until 2026-09-22. |
+| **Entitlements in the commerce module too** | The access check is a *guard* — "may this reader reach this?" — and ADR-009 defines a kernel primitive as exactly that: in core, enforced by the kernel rather than by extension authors' discipline. It would also mean gating a single download required installing a shop. |
+| **A `PaymentProvider` interface now** | Standing Principle #2 freezes the extension API at v1.2, after which it may be deprecated but never removed *within a major*. An abstraction derived from one vendor is a guess about the others: Paddle is a merchant of record, so tax and refunds differ; Adyen and Braintree model customers and intents differently again. An interface from one implementation is a guess; from two it is a design. |
+| **Stripe Connect, or Kitsune as merchant of record** | Onboarding, KYC, payouts and tax reporting are a compliance product, not a CMS. The operator's account means the operator's money and the operator's obligations, and Kitsune never holds funds. |
+| **Subscriptions in the first release** | Renewals, proration, plan changes, dunning and involuntary churn are a second workstream roughly the size of the first, and every renewal is a webhook that must be idempotent at a floor that assumes no worker. One-time payment serves all four consumers' first cut, because gated content and a paid course are each a single purchase of access. |
+| **Money as a schema-engine field** | A decimal in a JSON `values` column, converted through a field type, guarded per row, on the hot purchase path. `NumberType`'s decimal is for content; a ledger amount is not content. |
+| **API keys in ADR-022's settings store** | `orgs.settings`, `site_groups.settings` and `sites.settings` are plain JSON columns, readable by anything that can read the row. Right for a timezone, catastrophic for a secret key. (They are not admin-editable *today* — core registers no Org, SiteGroup or Site resource — but that gap is a roadmap item, not a protection.) |
+| **API keys in `.env` only** | One Stripe account per installation, so a host could not let two orgs sell under their own accounts. ⚠️ Not because per-org is this log's universal axis — ADR-038 chose per-**install** for module enablement on purpose, and deferred `org_modules` — but because selling is where the axis is forced: the money lands in an account, and an account belongs to somebody. |
+| **An append-only entitlement log as the only record** | Perfect provenance, and it makes every gated page view an aggregate over a reader's history at the 1 vCPU floor. The audit trail already records how a grant came about. |
+
+### Decision
+
+**Entitlements are core; commerce is a module.** Core owns an `entitlements` table and the question *may this
+reader reach this?* — a fail-closed kernel guard beside scoping and RBAC. `kitsune/commerce` owns catalogue,
+cart, checkout, orders, inventory and Stripe. Gated content and paid courses therefore work with **no commerce
+module installed**, because an entitlement can be granted by a purchase, an import, a migration or an operator
+handing out a comp. Commerce becomes one producer of entitlements rather than the thing the others depend on.
+
+**An entitlement names a validated string, not a row.** `course.advanced-php`, `download.whitepaper-2026`.
+Core stores it, checks its shape and answers whether a reader holds it; what it *means* belongs to whoever
+asks. This is `Permissions::validated()`'s design reused for a second population: shape checked, existence
+deliberately not, so an entitlement can be granted before the thing it names exists — which is what lets a
+blueprint seed offers and a course arrive in either order.
+
+**One row per (reader, site, entitlement), carrying `expires_at` and `revoked_at`.** Granting upserts; revoking
+stamps; lapsing is a timestamp in the past. The check is one indexed lookup because it runs on every gated
+request, and ADR-027's floor is least forgiving on a hot path. How an entitlement came about is the audit
+trail's job, not this table's.
+
+⚠️ **PER SITE, BECAUSE ADR-037 ALREADY DECIDED IT** — *"One identity per org, and everything else per site. A
+reader is one row that belongs to exactly one org … while consent, subscriptions, entitlements and profiles
+hang off it per site."* One identity, many site-scoped attachments: a reader may hold a different profile on
+each site of their org, and an entitlement sits beside that profile rather than beside the identity. A
+subscriber to one brand is therefore not a subscriber to its sibling, which is how a multi-brand publisher
+actually sells. An earlier draft of this entry keyed the row `(reader, entitlement)` and would have
+contradicted an ADR it claims to build on; nothing amends ADR-037 here.
+
+**The reader is referenced by a loose id with no foreign key, as `audit_log` already references an actor.**
+`audit_log.actor_type` and `actor_id` are nullable strings carrying no constraint, because core cannot
+constrain a table it did not create and whose key type it does not control — a host whose users carry UUIDs, or
+an SSO subject, would otherwise be unrepresentable. ADR-037 settles that core owns no user model and must not
+guess one, so the same shape applies here and lets this table live in core without core knowing what a reader
+is.
+
+⚠️ **`role_user` is NOT the precedent, and an earlier draft of this entry said it was.** That table *does*
+declare a foreign key — `constrained()->restrictOnDelete()`, RESTRICT chosen over CASCADE deliberately so an
+assignment cannot vanish unaudited — and it lives in the **skeleton** rather than core, precisely because it
+joins a core thing to a host thing. The cost of the loose reference is stated rather than hidden: nothing at
+the database level removes a reader's entitlements when the host deletes the reader, and whose job that is
+belongs with the reader guard the host declares.
+
+**Money is an integer in minor units, and an org has one currency.** No floats anywhere, ever; the currency
+code lives on the org. An org selling in two currencies uses two orgs until multi-currency is earned. Every
+amount that matters — what was charged — is captured on the order line at purchase time and never re-derived
+from a catalogue that may since have changed.
+
+**A product is a content entry plus a sellable record that references it.** Title, description and images are
+an entry type the Storefront blueprint provisions, edited by the people who edit everything else and carrying
+revisions, relations and permissions for free. Price, SKU and stock are a commerce row pointing at that entry.
+⚠️ **Product images need no new concept**: ADR-016 already decided media are entries with a companion
+`media_files` table, and a picker is a `relation` constrained to media types — so an image on a product is a
+relation field, and the only thing missing is the bytes.
+
+**Stripe credentials live in a new encrypted per-org store in core, and are write-only.** A key can be
+replaced through the admin and never read back. It is in core rather than the module because a second consumer
+already exists on the roadmap — ADR-036's chat service — and this project has watched one rule drift across
+three copies when each caller kept its own. Test and live mode are per-org, and a mismatch between the mode a
+key belongs to and the mode an org is operating in is **refused**, because money appearing to move without
+moving is the worst failure available here.
+
+**No provider abstraction until a second provider exists.** Stripe is built concretely, with no seam. The
+interface is extracted when there is a second implementation to derive it from — the same promote-on-evidence
+reasoning the boundary above rests on, applied to a contract rather than to a feature.
+
+**Webhooks are persisted before they are processed.** The endpoint verifies the signature, writes the raw
+event, returns 200, and then processes inline. An unprocessed row is a visible, retryable state and a replay
+command clears a backlog; Stripe's own retries become a safety net rather than the mechanism. No queue is
+assumed, because ADR-027 forbids assuming one. ⚠️ This is the first route in Kitsune a stranger can POST to,
+and the first outbound call core's ecosystem makes at all.
+
+**Inventory decrements when payment is confirmed, under a row lock.** No reservation, no sweeper, no cron. Two
+buyers can both reach checkout for the last item and one is refunded; at the volumes a 1 vCPU floor implies
+that is the honest trade, and the refusal says so when it happens. A reservation model needs an expiry sweep,
+and a sweeper that fails silently locks real stock away.
+
+**An order keeps a bounded snapshot of what an invoice legally requires, and erasure removes everything
+else.** Name, billing address and amount are captured at purchase and retained under the legal-obligation
+carve-out; the reader record and everything not required goes.
+
+⚠️ **The exemption is stated rather than assumed, and the retention period is deliberately not set here.**
+ADR-020's claim is narrower than "erasure reaches everything" — it is that *erasure must reach revision
+history* — and that ADR already records two things erasure does not reach: an audit row, payload-free by design
+so that *"User 47 updated entry 1203"* survives it, and a backup, answered by a documented retention window
+plus erasure re-applied on restore. This is the third such carve-out and the first driven by a retention
+**obligation** rather than a technical limit. The period itself is jurisdictional and the operator is the data
+controller, so picking a number here would be this log inventing a legal opinion. What core must ship is the
+ability to state and enforce one — "the CMS would not let me" is not an answer to a regulator, and neither is
+"the CMS chose seven years".
+
+**A cart is a database row**, keyed by session while anonymous and adopted by the reader on sign-in.
+
+**Orders and customer records ship with an export path from the first release**, because Standing Principle #8
+is an ethical requirement rather than a feature: *"Always ship a data export path. Never trap users."* A
+platform that can take a buyer's money and cannot hand back their order history has trapped the operator as
+well as the buyer, and commerce is the one place where being unable to leave has a bill attached.
+
+### What this costs, stated rather than discovered
+
+**Media stops being optional.** A product without an image is not a product. ADR-016 designed this already —
+media are entries, bytes in `media_files` — but nothing is built, and `media_files` is published in two
+documents and does not exist. The upside is that the same work releases the **DAM** starter, which ADR-016
+says is a blueprint rather than a subsystem.
+
+**Two things core has never done, and one that is not the first of its kind.** Measured on this branch: there
+is no encryption, `Crypt::`, cipher or `sodium_` anywhere in `packages/core/src`, and no first-party code in
+`packages/`, `skeleton/` or `bin/` makes an outbound HTTP call. Those two are genuine firsts, and firsts are
+where the unmeasured risk sits.
+
+⚠️ **The webhook endpoint is not the first thing a stranger can POST to** — the admin login already is — and a
+third-party call is not unprecedented in the *product*: ADR-027's amendment records Filament's default avatar
+provider fetching `ui-avatars.com` on every page view, sending personal data off the install, which is part of
+why `KitsunePanel` replaces it. What is new is core initiating such a call deliberately, inside a request that
+is holding a customer's money.
+
+**ADR-027's floor is tested hardest here.** A checkout makes a synchronous call to a third party inside a
+request, on 1 vCPU, with no queue. What a checkout does when Stripe is slow or unreachable is a product
+decision this entry does not settle, and it should be settled before the first payment path is written.
+
+### Enforced by
+
+**Nothing yet.** No commerce code exists at the time this ADR is written; this entry is the decision, not a
+report of work done. The sentence is copied from ADR-038 and ADR-039 deliberately, and so is the reason:
+ADR-038 was amended three times in two days by its own count, each time for the same shape — a consequence written before the code, which then reads as done.
+
+When it lands: an entitlement check that fails closed with no reader guard declared, asserted from the side
+where nothing is declared; an entitlement string refused for shape exactly as a permission is, with existence
+deliberately unchecked; a money column that no code path can write a float into; a webhook replayed twice that
+grants one entitlement, asserted by count; a signature check that refuses an unsigned POST; stock that cannot
+go negative under two concurrent confirmations, measured with two real connections rather than reasoned about;
+a secret that cannot be read back through any admin path; and a test-mode key refused against a live-mode org.
 
 ---
 
