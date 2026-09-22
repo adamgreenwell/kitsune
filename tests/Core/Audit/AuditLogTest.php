@@ -341,9 +341,22 @@ describe('an entry write that cannot be audited is refused', function (): void {
     it('refuses a quiet create carrying another org\'s scope keys', function (): void {
         $rival = Org::create(['name' => 'Q', 'slug' => 'quiet-rival']);
 
+        /*
+         * ⚠️ THE RIVAL'S OWN TYPE, so the row is internally CONSISTENT and the audit refusal is the only
+         * thing left standing in its way — which is what this test is for.
+         *
+         * It used to name this org's type, and `Entry::refuseForeignEntryType()` now refuses that pairing
+         * first, with a different message. Two guards refusing is defence in depth and the assertion below
+         * names which one fired, so the weaker attempt would have quietly stopped exercising the audit path.
+         * A caller supplying every scope column by hand can supply a matching type too.
+         */
+        $rivalType = EntryType::create([
+            'org_id' => $rival->id, 'handle' => 'page', 'name' => 'Page', 'plural_name' => 'Pages',
+        ]);
+
         expect(fn () => Entry::createQuietly([
             'org_id' => $rival->id, 'site_id' => $this->site->id,
-            'entry_type_id' => $this->type->id, 'type_handle' => 'page', 'title' => 'Smuggled',
+            'entry_type_id' => $rivalType->id, 'type_handle' => 'page', 'title' => 'Smuggled',
         ]))->toThrow(RuntimeException::class, 'Refusing to write');
 
         expect(Entry::withoutGlobalScopes()->where('title', 'Smuggled')->exists())->toBeFalse();

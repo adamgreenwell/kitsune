@@ -22,10 +22,10 @@ use Kitsune\Core\Settings\Concerns\HoldsSettings;
 use Kitsune\Core\Settings\SettingsGuard;
 use Kitsune\Core\Settings\SettingsResolver;
 use Kitsune\Core\Tenancy\Attributes\Unscoped;
+use Kitsune\Core\Tenancy\Concerns\GuardsCascadingDeletes;
 use Kitsune\Core\Tenancy\Concerns\ReadsWrittenKeys;
 use Kitsune\Core\Tenancy\Concerns\ResolvesWrittenColumns;
 use Kitsune\Core\Tenancy\Concerns\TouchesThroughUpdate;
-use Kitsune\Core\Tenancy\Contracts\RefusesCascadingDeletes;
 use Kitsune\Core\Tenancy\Contracts\RequiresModelSave;
 use RuntimeException;
 
@@ -59,6 +59,16 @@ class ScopedBuilder extends Builder
      * subclass inherits — and a plugin subclass declaring a private method of that name stops loading. A subclass
      * that needs a refusal takes its own private copy of the trait, as `GuardedRoleBuilder` does.
      */
+    /*
+     * ⚠️ ALIASED PRIVATE, for the reason the comment above gives. The trait declares `guardingCascade()`
+     * protected so `GuardedStorageBuilder` can use it too; inherited protected here it would be a name every
+     * scoped-model builder subclass carries, and a plugin subclass declaring a private method of that name
+     * stops loading with "Access level must be protected (as in class ScopedBuilder) or weaker". It was
+     * private on this class before the extraction, and the alias keeps that true.
+     */
+    use GuardsCascadingDeletes {
+        guardingCascade as private;
+    }
     use ReadsWrittenKeys;
     use ResolvesWrittenColumns {
         refuseAmbiguousColumns as private;
@@ -830,51 +840,6 @@ class ScopedBuilder extends Builder
     public function forceDelete()
     {
         return $this->forgettingResolvedSettings($this->guardingCascade(fn () => parent::forceDelete()));
-    }
-
-    /**
-     * Run a deletion with the cascade refusal, atomically.
-     *
-     * ⚠️ In a TRANSACTION, with the referencing rows locked. The check counted
-     * references and the DELETE ran as separate statements, so a child inserted
-     * between them was cascaded away permanently despite the refusal — the
-     * refusal was advisory under concurrent load, which is the state it exists
-     * to prevent.
-     */
-    private function guardingCascade(callable $delete): mixed
-    {
-        $model = $this->getModel();
-
-        if (ScopeWrites::suspended() || ! $model instanceof RefusesCascadingDeletes) {
-            return $delete();
-        }
-
-        return DB::transaction(function () use ($model, $delete) {
-            // ⚠️ The ROWS, not their keys — and keys was a silent hole.
-            //
-            // A guard was handed `newInstance([], true)` carrying nothing but the
-            // primary key, which worked for `EntryType::guardCascade()` only
-            // because it counts entries BY that key. `Field::guardCascade()` has
-            // to read `field_storage_id` and `entry_type_id` to know what data to
-            // look for, found both null on a key-only instance, and returned
-            // early — so the bulk and quiet delete paths passed a guard that
-            // never ran. A guard cannot judge a row it has not been given.
-            // ⚠️ The COMPLETE row, because `get()` inherits the caller's
-            // projection. `Field::query()->select('id')->delete()` handed the
-            // guard a model with no `field_storage_id` again — and the DELETE
-            // ignores a SELECT list, so the row went and its data stranded. The
-            // projection is reset rather than trusted.
-            foreach ((clone $this)->select($model->getTable().'.*')->lockForUpdate()->get() as $row) {
-                // Narrowed per row: this builder is generic over its model, so
-                // the contract check above constrains the prototype rather than
-                // what the query returns.
-                if ($row instanceof RefusesCascadingDeletes) {
-                    $row->guardCascade();
-                }
-            }
-
-            return $delete();
-        });
     }
 
     /**

@@ -166,12 +166,23 @@ describe('relation, where the rule has to reach each id', function (): void {
         $this->type = EntryType::create(['org_id' => $this->orgA->id, 'handle' => 'article', 'name' => 'A', 'plural_name' => 'As']);
         $this->mine = Entry::create(['entry_type_id' => $this->type->id, 'title' => 'Mine']);
 
+        /*
+         * ⚠️ ORG B'S OWN TYPE, and this used to reuse org A's.
+         *
+         * The fixture is about org isolation in the relation RULE, so the type was incidental and reusing
+         * `$this->type` looked harmless. It was not a state the product can reach: `Entry::guardEntryTypeOwnership()`
+         * refuses an entry typed by another org's type, so building the attacker's row that way tested the rule
+         * against something that cannot exist. Org B gets its own `article`, which the unique index permits
+         * because it is scoped `(org_id, handle)`.
+         */
+        $this->foreignType = EntryType::create(['org_id' => $this->orgB->id, 'handle' => 'article', 'name' => 'A', 'plural_name' => 'As']);
+
         // Another org's entry, created outside this scope.
         $this->foreign = Entry::withoutScopeBecause('fixture: the attacker\'s own row', function () {
             return Entry::create([
                 'org_id' => $this->orgB->id,
                 'site_id' => null,
-                'entry_type_id' => $this->type->id,
+                'entry_type_id' => $this->foreignType->id,
                 'title' => 'Theirs',
             ]);
         });

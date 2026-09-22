@@ -117,7 +117,7 @@ class DatabaseSeeder extends Seeder
         $rivalUser->orgs()->attach($orgB->id);
 
         // A global system type, available to every org (org_id NULL).
-        EntryType::create(['org_id' => null, 'handle' => 'image', 'name' => 'Image', 'plural_name' => 'Images', 'is_system' => true, 'icon' => 'heroicon-o-photo']);
+        $image = EntryType::create(['org_id' => null, 'handle' => 'image', 'name' => 'Image', 'plural_name' => 'Images', 'is_system' => true, 'icon' => 'heroicon-o-photo']);
 
         $article = EntryType::create(['org_id' => $orgA->id, 'handle' => 'article', 'name' => 'Article', 'plural_name' => 'Articles', 'icon' => 'heroicon-o-document-text']);
         $product = EntryType::create(['org_id' => $orgA->id, 'handle' => 'product', 'name' => 'Product', 'plural_name' => 'Products', 'icon' => 'heroicon-o-shopping-bag']);
@@ -220,7 +220,7 @@ class DatabaseSeeder extends Seeder
         }
 
         // Belongs to the other org — must be unreachable from Golfdom's admin.
-        EntryType::create(['org_id' => $orgB->id, 'handle' => 'confidential', 'name' => 'Confidential', 'plural_name' => 'Confidential']);
+        $confidential = EntryType::create(['org_id' => $orgB->id, 'handle' => 'confidential', 'name' => 'Confidential', 'plural_name' => 'Confidential']);
 
         // Owned by this org but DISABLED for this site (ADR-022): a section
         // the French edition drops. It must 404 at the route, and it must not
@@ -447,11 +447,38 @@ class DatabaseSeeder extends Seeder
             $linked->syncFieldRelations($productRelation, [$mower->id]);
         }
 
+        /*
+         * ⚠️ THE OTHER ORG'S OWN TYPE, and this used to be `$article` — which org A owns.
+         *
+         * The fixture is about SITE isolation, so the type was incidental and nobody looked. But nothing tied
+         * `entries.org_id` to the org owning `entries.entry_type_id`, so the seeder planted an entry in org
+         * B's site carrying org A's `article` type and every guard passed — the seeder demonstrating the gap
+         * it was not testing for. `Entry::guardEntryTypeOwnership()` now refuses it, so this names
+         * `confidential`, which org B actually owns.
+         */
         $context->setSite($rival);
         Entry::create([
-            'entry_type_id' => $article->id,
+            'entry_type_id' => $confidential->id,
             'title' => 'Should never be visible from Golfdom',
             'slug' => 'rival-secret',
+            'status' => 'published',
+        ]);
+
+        /*
+         * ⚠️ AND ONE ON THE GLOBAL TYPE, which is the only fixture here that actually tests the SCOPE.
+         *
+         * The row above carries the other org's own type now, so `/c/article` excludes it on the type
+         * predicate alone — `EntryResource::getEloquentQuery()` filters by the resolved type's id, and under
+         * the cross-org invariant no org-B row can ever carry org A's id. Delete every scope from `Entry` and
+         * that assertion still passes, which makes it a test of the invariant rather than of isolation.
+         *
+         * A GLOBAL type is the one case where two orgs legitimately share an `entry_type_id`, so the type
+         * predicate cannot help and only `SiteScope`/`OrgScope` keep this row out of Golfdom's list.
+         */
+        Entry::create([
+            'entry_type_id' => $image->id,
+            'title' => 'Rival image, shared type',
+            'slug' => 'rival-shared-type',
             'status' => 'published',
         ]);
 

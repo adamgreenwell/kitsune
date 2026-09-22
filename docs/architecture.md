@@ -184,6 +184,8 @@ Absent at every level = enabled. `IdentifyEntryType` middleware 404s on a type d
 
 `org_id NULL` = a global system type available to every org. Non-null = org-owned. This is what resolves the boot-order problem cleanly: **the route table never depends on org or site state.**
 
+⚠️ **An entry may only be typed by a global type or by its own org's — enforced since 2026-09-21, and independent before that.** Every scope guard asks about a row's own scope keys; none asked whether `entries.entry_type_id` named a type belonging to `entries.org_id`, so an entry could be created in one org's site carrying another org's type and pass. The skeleton seeder did it to itself, which is why nothing caught it: the row is a dead letter rather than a leak — `IdentifyEntryType` 404s it and `EntryType::visibleFor()` hides the type from the other org — so it broke no test while its values landed under another org's field definitions in a shared storage row. `Entry::guardEntryTypeOwnership()` refuses it on create and on retype (ADR-009).
+
 ```
 entry_types
   id
@@ -221,6 +223,8 @@ fields                                    -- Drupal's FieldConfig: per-type pres
 ```
 
 The storage/config split is stolen deliberately from Drupal: storage is defined once and reusable across entity types, presentation is per-type, and **`is_locked` flips true the moment data exists.** That guard ships in v1, not later.
+
+⚠️ **Deleting a `field_storage` row is refused while any `fields` row OR any relation pivot points at it — enforced since 2026-09-21.** `fields.field_storage_id` is `ON DELETE CASCADE`, so the delete took those rows away **in the database**, where `Field::guardCascade()` never runs: a foreign-key cascade dispatches nothing. Measured before the fix — one field row before, zero after, no refusal. What it costs is strategy-dependent: `redactField()` resolves storage by handle within the org, not through `fields`, so **inline** values stay erasable; **relational** values do not, because `entry_relations.field_storage_id` is `nullOnDelete()` and the pivots keep the data while losing every way of being matched to a field; **promoted** values do not either, since `promoted_by` can no longer be matched to a storage row (ADR-020). The refusal is on the **reference**, not on whether data is held. The order that completes is erase with `redactField()` — audited, and it reaches history — then the fields, then the storage; "remove the fields first" alone dead-ends for a field whose values appear in any revision, because `Field::guardCascade()` counts history on its own terms. A database-level cascade from `orgs` is untouched: it happens inside the database, without a builder.
 
 ### Content
 

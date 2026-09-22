@@ -1241,8 +1241,19 @@ describe('the restore does not fail over schema that has since gone', function (
 
         $entry->update(['title' => 'After']);
 
-        // Removing the storage nulls the pivot and orphans the snapshot's id.
-        RevisionWrites::suspend(fn () => $storage->delete());
+        /*
+         * ⚠️ REMOVED AT THE DATABASE, because the Eloquent path is now refused — and that refusal is the
+         * point rather than an obstacle. `FieldStorage::guardCascade()` will not let a storage row go while a
+         * `fields` row points at it, and removing the field first is refused too, because a revision still
+         * records this relation (`Field::guardCascade()` counts history on its own terms). So the state this
+         * test describes can no longer be reached by deleting anything through a model.
+         *
+         * It is still reachable, which is why the test stays: `field_storage.org_id` is `cascadeOnDelete()`,
+         * so force-deleting an org removes its storage rows inside the database, where no guard and no model
+         * event runs. That is what this line models. The restore path has to survive a snapshot naming
+         * storage that is simply gone, however it went.
+         */
+        DB::table('field_storage')->where('id', $storage->getKey())->delete();
 
         $entry->restoreRevision($recorded->fresh());
 
