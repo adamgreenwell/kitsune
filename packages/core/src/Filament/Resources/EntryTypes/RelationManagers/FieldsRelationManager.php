@@ -34,7 +34,9 @@ use Kitsune\Core\Filament\Schemas\SettingsSchemaRenderer;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Field;
 use Kitsune\Core\Models\FieldStorage;
+use Kitsune\Core\Schema\DesiredStorage;
 use Kitsune\Core\Schema\SchemaManager;
+use Kitsune\Core\Schema\StorageAdoption;
 use Kitsune\Core\Tenancy\Context;
 use RuntimeException;
 use Throwable;
@@ -369,36 +371,25 @@ class FieldsRelationManager extends RelationManager
     {
         $orgId = app(Context::class)->orgId();
 
-        $existing = FieldStorage::query()
-            ->where('org_id', $orgId)
-            ->where('handle', $data['storage_handle'])
-            ->first();
-
-        // ⚠️ Reuse ADOPTS the existing definition; it does not rewrite it.
-        //
-        // Keeping the old type and cardinality while overwriting `pii_class`,
-        // `settings` and `is_indexed` from the new form was the worst of both:
-        // every other field sharing that storage changed behaviour, and the
-        // field just created was not even the type its author selected. The
-        // shared row is shared — one form cannot speak for all of it.
-        if ($existing !== null) {
-            $this->refuseIncompatibleReuse($existing, $data);
-            $this->refuseDivergentReuse($existing, $data);
-            $this->refuseSecondFieldOnThisType($existing);
-
-            $this->pendingStorage = $existing;
-
-            return $this->presentation($data, $existing);
-        }
-
-        $storage = new FieldStorage(['org_id' => $orgId, 'handle' => $data['storage_handle']]);
-
-        $storage->type = $data['storage_type'];
-        $storage->cardinality = self::resolveCardinality($data);
-        $storage->pii_class = $data['storage_pii_class'];
-        $storage->is_indexed = (bool) ($data['storage_is_indexed'] ?? false);
-        $storage->setAttribute('settings', $data['storage_settings'] ?? []);
-        $storage->save();
+        /*
+         * ⚠️ THE RULE LIVES IN `StorageAdoption` NOW, AND THIS IS ONE OF ITS TWO CALLERS. Reuse ADOPTS the
+         * existing definition rather than rewriting it, and a divergent request is refused rather than
+         * silently taken — the reasoning is recorded there in full, along with what each version of it got
+         * wrong. It moved because the blueprint applier needs the same decision (ADR-039), and this rule had
+         * already been found drifting in three other places when it had one home; two encodings of it would
+         * have been the fourth.
+         *
+         * What stays here is this form's own business: mapping its state onto the shape, holding the row for
+         * the `fields` write that follows, and turning a refusal into a notification rather than a 500.
+         */
+        $storage = StorageAdoption::resolve($orgId, new DesiredStorage(
+            handle: (string) $data['storage_handle'],
+            type: (string) $data['storage_type'],
+            piiClass: (string) $data['storage_pii_class'],
+            cardinality: self::resolveCardinality($data),
+            isIndexed: (bool) ($data['storage_is_indexed'] ?? false),
+            settings: $data['storage_settings'] ?? [],
+        ), $this->ownerTypeIfMounted());
 
         $this->pendingStorage = $storage;
 
@@ -632,43 +623,6 @@ class FieldsRelationManager extends RelationManager
     }
 
     /**
-     * Refuse an adoption that would silently discard what the author submitted.
-     *
-     * ⚠️ Adoption keeps the existing definition — that was the previous round's
-     * fix and it is right — but it did so SILENTLY for the classification and the
-     * settings as well as the shape. Selecting `personal` for a handle whose
-     * stored row says `none` reported success and attached `none`, so an erasure
-     * would never reach that field; choosing `decimal` for a handle stored as
-     * `integer` gave the author a field that truncates.
-     *
-     * The shape check already refuses a mismatched `type` or `cardinality` for
-     * exactly this reason. Classification and settings define observable
-     * behaviour just as much, so they get the same treatment rather than being
-     * quietly overruled.
-     *
-     * @param  array<string, mixed>  $data
-     */
-    private function refuseDivergentReuse(FieldStorage $storage, array $data): void
-    {
-        $differences = $this->storageDifferences($storage, $data);
-
-        if ($differences === []) {
-            return;
-        }
-
-        throw new RuntimeException(sprintf(
-            'Handle [%s] already describes a field in this organisation, and storage is shared '
-            .'across entity types (ADR-006) — so adding it here ADOPTS that definition rather than '
-            .'creating a second one. Its %s %s from what you submitted, and adopting it would give '
-            .'you the stored behaviour without saying so. Match the existing definition, or choose '
-            .'a different handle.',
-            $storage->handle,
-            implode(' and ', $differences),
-            count($differences) === 1 ? 'differs' : 'differ',
-        ));
-    }
-
-    /**
      * Turn a refusal into something the author can read.
      *
      * ⚠️ Every guard in this form threw a RuntimeException out of
@@ -705,77 +659,18 @@ class FieldsRelationManager extends RelationManager
     }
 
     /**
-     * Refuse a second field on THIS type backed by the same storage.
+     * The entry type this manager is mounted on, when there is one.
      *
-     * ⚠️ `fields` is `UNIQUE (entry_type_id, field_storage_id)`, and adoption
-     * happily returned the existing storage id for a handle already used on this
-     * very type — so the insert violated the constraint. Reuse across DIFFERENT
-     * types is the whole point of ADR-006's split; reuse twice on one type is an
-     * author repeating themselves, and it has a name they can act on.
+     * ⚠️ `isset` FIRST. `getOwnerRecord()` returns a typed property with no default, so reading it before
+     * Livewire has mounted the component raises "must not be accessed before initialization" — which is what a
+     * unit test constructing the manager directly does. The `instanceof` narrows what the relation manager
+     * types loosely as a `Model`, and is the same check the refusal this replaced opened with.
      */
-    private function refuseSecondFieldOnThisType(FieldStorage $storage): void
+    private function ownerTypeIfMounted(): ?EntryType
     {
-        // ⚠️ `isset` first. `getOwnerRecord()` returns a typed property with no
-        // default, so calling it before Livewire has mounted the component
-        // raises "must not be accessed before initialization" — which is what a
-        // unit test constructing the manager directly does.
         $type = isset($this->ownerRecord) ? $this->getOwnerRecord() : null;
 
-        if (! $type instanceof EntryType) {
-            return;
-        }
-
-        $existing = Field::query()
-            ->where('entry_type_id', $type->getKey())
-            ->where('field_storage_id', $storage->getKey())
-            ->first();
-
-        if ($existing === null) {
-            return;
-        }
-
-        throw new RuntimeException(sprintf(
-            'This entry type already has a field using storage [%s] — it is labelled "%s". Storage '
-            .'is shared across entity types by design (ADR-006), but a type can only use a given '
-            .'definition once. Edit that field, or choose a different handle.',
-            $storage->handle,
-            $existing->label,
-        ));
-    }
-
-    /**
-     * Refuse a reuse the author almost certainly did not mean.
-     *
-     * A handle already defined in this org is adopted (ADR-006), and adoption
-     * only makes sense when the SHAPE matches. Submitting a different type or
-     * cardinality means the author was describing a different field and
-     * happened to pick a taken handle — silently giving them the old shape
-     * creates a field that is not what they selected.
-     *
-     * @param  array<string, mixed>  $data
-     */
-    private function refuseIncompatibleReuse(FieldStorage $existing, array $data): void
-    {
-        $type = $data['storage_type'] ?? null;
-        // ⚠️ Through the same resolution the write uses. Casting the raw value
-        // would read the `max` sentinel as 0, so adopting a storage row with a
-        // finite bound would look like a shape mismatch and be refused.
-        $cardinality = self::resolveCardinality($data);
-
-        if ($existing->type === $type && (int) $existing->cardinality === $cardinality) {
-            return;
-        }
-
-        throw new RuntimeException(sprintf(
-            'Handle [%s] already describes a %s field holding %s in this organisation, and storage '
-            .'is shared across entity types (ADR-006) — so reusing it here would give you that '
-            .'field, not the %s you selected. Choose a different handle, or add the existing field '
-            .'as it is.',
-            $existing->handle,
-            $existing->type,
-            (int) $existing->cardinality === 1 ? 'one value' : 'many values',
-            is_string($type) ? $type : 'field',
-        ));
+        return $type instanceof EntryType ? $type : null;
     }
 
     /**
