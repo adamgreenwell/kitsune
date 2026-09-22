@@ -16,6 +16,9 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Kitsune\Core\Media\MediaDelivery;
 use Kitsune\Core\Models\Entry;
+use Kitsune\Core\Models\EntryType;
+use Kitsune\Core\Models\EntryTypeAvailability;
+use Kitsune\Core\Tenancy\Context;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
 /**
@@ -61,6 +64,20 @@ final class MediaDownloadController
         $media = (string) $request->route('media');
 
         /*
+         * ⚠️ DIGITS ARE NOT ENOUGH, AND THE ENGINES DISAGREE ABOUT WHAT HAPPENS NEXT — AGENTS.md invariant 5.
+         * `/media/999999999999999999999999` satisfies `[0-9]+` and reaches `whereKey()`, where PostgreSQL
+         * refuses to coerce it to the `bigint` key and raises SQLSTATE 22003, which surfaces as a 500 rather
+         * than the 404 every other unknown id gets. MySQL and MariaDB return no rows and say nothing, and
+         * SQLite agrees with them — so a suite that skipped PostgreSQL would call this fixed.
+         *
+         * The bound is the COLUMN's, not PHP's: `PHP_INT_MAX` happens to match on a 64-bit build and would
+         * silently narrow this on a 32-bit one, which is the kind of agreement that holds until it does not.
+         */
+        if (! self::namesARepresentableKey($media)) {
+            abort(404);
+        }
+
+        /*
          * ⚠️ THE SCOPED QUERY IS THE FIRST GATE AND IT RUNS BEFORE THE POLICY. `SiteScope` is populated by now,
          * so an entry belonging to another site — or to another org — is simply not found. The policy asks the
          * same question again on the instance (`EntryPolicy::storedTypeInScope()`), which is not redundant:
@@ -71,6 +88,25 @@ final class MediaDownloadController
         if ($entry === null) {
             abort(404);
         }
+
+        /*
+         * ⚠️ ADR-022: A TYPE MAY BELONG TO THIS ORG AND STILL BE DISABLED FOR THIS SITE, and nothing above has
+         * asked. `SiteScope` answers "is the row in this site", which is a different question, and
+         * `EntryPolicy` resolves `entry.{handle}.view` against grants that are keyed per ORG — so neither
+         * notices. The check normally arrives with `IdentifyEntryType`, which this route cannot invoke because
+         * it has no `{type}` segment to identify anything from.
+         *
+         * Without it a granted user fetches a shared media entry's bytes from a site that has switched the
+         * `image` type off, while `/c/image` correctly returns 404 there — the same boundary answering two
+         * ways depending on which URL you ask. 404 rather than 403, matching `IdentifyEntryType`: a site that
+         * does not carry this type has nothing to say about the row.
+         */
+        $type = $entry->entryType;
+
+        abort_unless(
+            $type instanceof EntryType && EntryTypeAvailability::isEnabledFor($type, app(Context::class)->site()),
+            404,
+        );
 
         /* Throws `AuthorizationException` → 403. The entry is in this scope; the grant is what is missing. */
         Gate::authorize('view', $entry);
@@ -111,5 +147,24 @@ final class MediaDownloadController
             MediaDelivery::headersFor($file),
             MediaDelivery::dispositionFor($file),
         );
+    }
+
+    /**
+     * Could the primary key column hold this, as a string of digits?
+     *
+     * Compared as text against the signed 64-bit maximum every engine Kitsune supports uses for a `bigint`
+     * key, so the answer does not depend on PHP's own word size. Leading zeros are refused rather than
+     * trimmed: `007` and `7` would otherwise be two URLs for one file.
+     */
+    private static function namesARepresentableKey(string $media): bool
+    {
+        $max = '9223372036854775807';
+
+        if ($media === '' || ($media !== '0' && $media[0] === '0')) {
+            return false;
+        }
+
+        return strlen($media) < strlen($max)
+            || (strlen($media) === strlen($max) && strcmp($media, $max) <= 0);
     }
 }

@@ -17,6 +17,7 @@ use Kitsune\Core\Media\MediaDelivery;
 use Kitsune\Core\Media\MediaLibrary;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
+use Kitsune\Core\Models\EntryTypeAvailability;
 use Kitsune\Core\Models\MediaFile;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Role;
@@ -354,4 +355,66 @@ it('never reaches the database with an id the column cannot hold', function (): 
 
     $this->actingAs($this->user)->get('/test-media/t/'.$entry->getKey().'abc')->assertNotFound();
     $this->actingAs($this->user)->get('/test-media/t/abc')->assertNotFound();
+});
+
+/*
+ * ────────────────────────────────  Two boundaries review found  ────────────────────────────────
+ */
+
+/**
+ * ⚠️ ADR-022 — A TYPE MAY BELONG TO THIS ORG AND STILL BE DISABLED FOR THIS SITE, and no guard above asks.
+ * `SiteScope` answers "is the row in this site"; `EntryPolicy` resolves a grant that is keyed per ORG. The
+ * check normally arrives with `IdentifyEntryType`, which this route cannot invoke — it has no `{type}`
+ * segment. Without it the same boundary answers two ways depending on which URL you ask.
+ *
+ * ⚠️ THE GRANT IS HELD SO THAT ONLY AVAILABILITY CAN DECIDE. Withholding it would produce a 403 and the
+ * assertion below would pass against a controller that never consulted availability at all.
+ */
+it('refuses a file whose type is switched off for this site', function (): void {
+    $this->role->grant('entry.image.view');
+
+    $entry = aDeliverableImage($this->imageType);
+
+    /* It works first, so the refusal below is the availability change and not the fixture. */
+    $this->actingAs($this->user)->get('/test-media/t/'.$entry->getKey())->assertOk();
+
+    EntryTypeAvailability::create([
+        'entry_type_id' => $this->imageType->getKey(),
+        'scope_type' => 'site',
+        'scope_id' => $this->site->getKey(),
+        'is_enabled' => false,
+    ]);
+
+    /* 404 rather than 403, matching `IdentifyEntryType`: a site without this type has nothing to say. */
+    $this->actingAs($this->user)->get('/test-media/t/'.$entry->getKey())->assertNotFound();
+});
+
+/**
+ * ⚠️ A 404, NOT A 500, AND ONLY POSTGRESQL EVER SAID OTHERWISE — AGENTS.md invariant 5. `[0-9]+` accepts
+ * `999999999999999999999999`, which reaches `whereKey()`; PostgreSQL refuses to coerce it to the `bigint`
+ * key and raises SQLSTATE 22003, while MySQL, MariaDB and SQLite return no rows and say nothing. Measured on
+ * all four before the guard was written, which is why the guard is in PHP rather than left to the engine.
+ */
+it('answers 404 for an id larger than the key column can hold', function (): void {
+    $this->role->grant('entry.image.view');
+
+    $entry = aDeliverableImage($this->imageType);
+
+    $this->actingAs($this->user)->get('/test-media/t/'.$entry->getKey())->assertOk();
+
+    foreach (['999999999999999999999999', '9223372036854775808'] as $tooBig) {
+        $this->actingAs($this->user)->get('/test-media/t/'.$tooBig)->assertNotFound();
+    }
+
+    /* The largest key the column CAN hold is a lookup rather than a refusal — the bound is not off by one. */
+    $this->actingAs($this->user)->get('/test-media/t/9223372036854775807')->assertNotFound();
+});
+
+/** `007` and `7` must not be two URLs for one file. */
+it('refuses a padded id rather than resolving it to the same file', function (): void {
+    $this->role->grant('entry.image.view');
+
+    $entry = aDeliverableImage($this->imageType);
+
+    $this->actingAs($this->user)->get('/test-media/t/0'.$entry->getKey())->assertNotFound();
 });
