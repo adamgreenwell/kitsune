@@ -432,6 +432,45 @@ class EntryType extends Model implements RefusesCascadingDeletes, RequiresModelS
                 $foreign->fieldStorage->handle,
             ));
         }
+
+        /*
+         * ⚠️ AND THE ENTRIES THAT WOULD BE LEFT BEHIND, which this guard did not ask about.
+         *
+         * An entry may only be typed by a global type or by its own org's — `Entry::refuseForeignEntryType()`
+         * enforces that on every entry write. Nothing enforced the other direction: moving the TYPE reaches
+         * the same forbidden pairing without a single entry being written, and the guard above only asks
+         * about field storage.
+         *
+         * The live case is `kitsune/person`. Its `person` type is global and its storage is global too, so
+         * the check above finds nothing — while every org's people are typed by it. Giving that type an owner
+         * strands every other org's person entries on a type they do not own: 404 at the URL, invisible in
+         * the admin, values under another org's field definitions.
+         *
+         * Counted past every scope, because the rows at risk are by definition in other orgs, and counted
+         * with `withTrashed()` for the reason the cascade guards do it — a trashed entry is still a row that
+         * would be stranded, and restoring it later would restore it into the forbidden state.
+         */
+        $stranded = Entry::query()
+            ->withoutGlobalScopes()
+            ->withTrashed()
+            ->where('entry_type_id', $this->getKey())
+            ->when(
+                $this->org_id !== null,
+                fn (Builder $query): Builder => $query->where('org_id', '!=', $this->org_id),
+            )
+            ->count();
+
+        if ($stranded > 0) {
+            throw new RuntimeException(sprintf(
+                'Entry type [%s] cannot move to another organisation while %d entr%s outside it still '
+                .'carry it. Those rows would be typed by a type their org does not own — unreachable from '
+                .'either admin, with their values under another org\'s field definitions, which is the '
+                .'pairing every entry write refuses (ADR-009). Move or delete them first.',
+                $this->handle,
+                $stranded,
+                $stranded === 1 ? 'y' : 'ies',
+            ));
+        }
     }
 
     /**

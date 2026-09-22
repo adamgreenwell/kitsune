@@ -199,6 +199,18 @@ test.describe('isolation, from the attacker side', () => {
         await expect(page.getByText('Should never be visible from Golfdom')).toHaveCount(0);
     });
 
+    /*
+     * The one that actually exercises the SCOPE. The row above carries the other org's own type, so the list
+     * excludes it on the type predicate alone and the assertion would survive deleting every scope from
+     * Entry. A global type is the only case where two orgs legitimately share an entry_type_id, so here the
+     * type predicate cannot help and SiteScope/OrgScope are the whole defence.
+     */
+    test('does not show another org\'s content under a type both orgs share', async ({ page }) => {
+        await page.goto(`/admin/${SITE}/c/image`);
+
+        await expect(page.getByText('Rival image, shared type')).toHaveCount(0);
+    });
+
     test('does not offer another org\'s type in navigation', async ({ page }) => {
         await page.goto(`/admin/${SITE}`);
 

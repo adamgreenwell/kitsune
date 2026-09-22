@@ -21,6 +21,7 @@ use Kitsune\Core\Fields\StorageStrategy;
 use Kitsune\Core\Schema\GuardedStorageBuilder;
 use Kitsune\Core\Tenancy\Attributes\Unscoped;
 use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
+use Kitsune\Core\Tenancy\Contracts\RefusesCascadingDeletes;
 use RuntimeException;
 
 /**
@@ -36,7 +37,7 @@ use RuntimeException;
  * @property string|null $pii_class
  */
 #[Unscoped]
-class FieldStorage extends Model
+class FieldStorage extends Model implements RefusesCascadingDeletes
 {
     use EnforcesScope;
 
@@ -776,5 +777,92 @@ class FieldStorage extends Model
     public function fields(): HasMany
     {
         return $this->hasMany(Field::class);
+    }
+
+    /**
+     * Refuse while any field — or any relation pivot — still points at this storage row.
+     *
+     * ⚠️ `fields.field_storage_id` is `cascadeOnDelete()`, so deleting a storage row took its `fields` rows
+     * with it IN THE DATABASE, where `Field::guardCascade()` never runs: a foreign-key cascade dispatches
+     * nothing. Measured before the fix: one field row before, zero after, no refusal.
+     *
+     * ⚠️ WHAT THAT COSTS, STATED ACCURATELY — an earlier version of this docblock, the refusal message, the
+     * test header and `architecture.md` all said the values become "unreachable to `redactField()`, so an
+     * erasure request reports success having found nothing". That is not true as written, and it was copied
+     * from `Field::guardCascade()`, whose own claim is stale: `Entry::redactField()` does NOT resolve storage
+     * through `fields`. It selects `field_storage` by handle within the org, deliberately unfiltered by entry
+     * type, for reasons its docblock sets out at length.
+     *
+     * The real harm is narrower and strategy-dependent, which is worth knowing precisely:
+     *
+     * - INLINE values stay erasable. With no storage row at all, `redactStorage()` falls through to the
+     *   inline path and rewrites `values->{handle}` and every revision copy by handle alone.
+     * - RELATIONAL values do not. `entry_relations.field_storage_id` is `nullOnDelete()`, so the pivots
+     *   survive with a NULL storage id and nothing can match them to a field again — personal data held in a
+     *   relation, past every erasure path (ADR-020).
+     * - PROMOTED values do not either. `promoted_by` still records which storage wrote the column, but with
+     *   the row gone `ownsPromotedColumn()` can never match it, so the branch that would clear it is skipped.
+     *
+     * ⚠️ AND IT COUNTS THE PIVOTS, not only the fields. Refusing on `fields` alone left the second foreign
+     * key open: once the last `fields` row is gone — which is the remediation this refusal itself prints —
+     * deleting the storage silently NULLs every surviving pivot. Reachable without any raw SQL, because
+     * `Field::guardCascade()` counts live rows by the entry's CURRENT type and revisions by the type they
+     * were recorded against, so an entry retyped after its relations were written satisfies both counts at
+     * zero while its pivots are still there.
+     *
+     * ⚠️ IT REFUSES ON THE REFERENCE, not on whether data is held, and that is deliberate. Asking each field
+     * its own data question here would permit removing a storage row and several field rows in one statement
+     * whenever every one of them happened to be empty — a multi-row removal nobody asked for, past the guards
+     * that own those rows. Refusing outright makes the ordering explicit.
+     *
+     * ⚠️ THE ORDERING THIS PRINTS IS NOT ALWAYS TRAVERSABLE, and saying so is better than publishing a remedy
+     * that dead-ends. `Field::guardCascade()` refuses while any revision records the field, and revisions are
+     * not deleted — so for a field whose values appear in history, "remove the fields first" cannot be
+     * completed. The path that does complete is `Entry::redactField()`, which is audited, clears the live
+     * value and rewrites the snapshots, after which the field and then the storage can go. A storage row
+     * whose data has never been erased and whose history still records it is, correctly, not removable.
+     *
+     * ⚠️ A DATABASE-LEVEL cascade from `orgs` is untouched by this. `field_storage.org_id` is
+     * `cascadeOnDelete()` too, and that cascade happens inside the database without an Eloquent builder, so
+     * force-deleting an org still removes its storage rows. This guards the explicit delete, which is the
+     * path that strands data.
+     */
+    public function guardCascade(): void
+    {
+        $fields = $this->fields()->count();
+
+        /*
+         * The pivots are counted past every scope on purpose: a relation in another org's site is still a
+         * row this delete would orphan, and the question is what the FOREIGN KEY will do, not what this
+         * caller can see.
+         */
+        $relations = EntryRelation::query()
+            ->withoutGlobalScopes()
+            ->where('field_storage_id', $this->getKey())
+            ->count();
+
+        if ($fields === 0 && $relations === 0) {
+            return;
+        }
+
+        $types = EntryType::query()
+            ->whereIn('id', $this->fields()->select('entry_type_id'))
+            ->orderBy('handle')
+            ->pluck('handle')
+            ->implode(', ');
+
+        throw new RuntimeException(sprintf(
+            'Field storage [%s] cannot be deleted while %d field%s (%s) and %d relation row%s still point '
+            .'at it. The delete would cascade the fields away in the database, past `Field::guardCascade()`, '
+            .'and NULL the relation rows\' storage id — after which nothing can match them to a field again, '
+            .'so relational personal data would sit past every erasure path (ADR-020). Erase the field with '
+            .'`redactField()`, which is audited and reaches history, then remove the fields, then this row.',
+            $this->handle,
+            $fields,
+            $fields === 1 ? '' : 's',
+            $types === '' ? 'no surviving type' : $types,
+            $relations,
+            $relations === 1 ? '' : 's',
+        ));
     }
 }

@@ -310,6 +310,27 @@ class Entry extends Model implements RequiresModelSave
     {
         return [
             'type_handle' => 'it is derived from entry_type_id, and a bulk write skips the restamp that keeps them agreeing.',
+
+            /*
+             * ⚠️ `entry_type_id` BECAUSE THE ARITHMETIC DOORS SKIP VALUE CONVERSION ENTIRELY, which review
+             * found. The ownership refusal and the `type_handle` restamp both live in
+             * `convertFieldValuesForWrite()`, which `update()` and `insertGetId()` call and which
+             * `increment()`, `decrement()`, `incrementEach()` and `decrementEach()` do not — their `$extra`
+             * map is a set of ordinary assignments that reaches the row unconverted.
+             *
+             * So `Entry::query()->whereKey($id)->increment('id', 0, ['entry_type_id' => $otherOrgType])`
+             * wrote a cross-org pairing AND left `type_handle` naming the old type, breaking both invariants
+             * in one statement. `increment('id', 0, [...])` is this project's own demonstrated attack shape —
+             * `ScopedBuilder` records it twice, for `values` and for a scope key — because `entries` has no
+             * ordinary numeric column, which makes the arithmetic a no-op and the `$extra` the whole point.
+             *
+             * A plain bulk `update(['entry_type_id' => ...])` was already refused, but only INCIDENTALLY:
+             * conversion injects `type_handle`, and the refusal then named that column instead. Listing this
+             * one makes the refusal say what is actually wrong.
+             */
+            'entry_type_id' => 'retyping has to check that the type belongs to this entry\'s org and restamp '
+                .'type_handle, and the arithmetic paths convert nothing — so a bulk write would land a '
+                .'cross-org pairing with a stale handle.',
             // ⚠️ `values` because the value-conversion pipeline runs in `saving`.
             //
             // `FieldType::toStorage()` is what sanitises rich text, and a bulk write
@@ -2241,6 +2262,75 @@ class Entry extends Model implements RequiresModelSave
         return false;
     }
 
+    /**
+     * Refuse an entry typed by an entry type another org owns.
+     *
+     * A GLOBAL type — `org_id` NULL — is offered to every org and belongs to none, which is the whole point
+     * of the pattern `kitsune/person` and the seeded `image` type use, so it passes. An org-owned type
+     * passes only for its own org. A type that does not exist is left to the foreign key, which refuses it
+     * with a better message than anything this could say.
+     *
+     * ⚠️ CALLED FROM `convertFieldValuesForWrite()`, NOT FROM A MODEL EVENT — and it was a pair of model
+     * events for one round, which is this codebase's single most repeated defect.
+     *
+     * Registered on `creating`/`updating` it covered ordinary saves and nothing else. `saveQuietly()`,
+     * `createQuietly()` and anything inside `withoutEvents()` install a NullDispatcher, so neither listener
+     * ran while the write still reached the database through `AuditedBuilder::insertGetId()` and
+     * `::update()` — and on that path `type_handle` is restamped from the FOREIGN type, so the planted row
+     * answers this org's `ofType()` reads while pointing at another org's schema. That is strictly worse
+     * than the dead letter the first version of this docblock described. The restamp three lines up carries
+     * the identical warning for the identical reason ("a quiet write suppresses that listener while still
+     * arriving here"), which is why the check now sits beside it rather than above it.
+     *
+     * The arithmetic doors — `increment()`/`decrement()` and their `Each` forms — never reach this method at
+     * all, because `$extra` bypasses value conversion. They are closed by listing `entry_type_id` in
+     * `columnsRequiringModelSave()`, which is the mechanism this model already uses for `type_handle`.
+     *
+     * ⚠️ UNCONDITIONAL, including inside `withoutScopeBecause()`. Every scope-key refusal in this layer
+     * stands down for the reviewable hatch; this one does not, on the rule `ResolvesWrittenColumns` states
+     * for the same reason — "this is not a scope question". Which org owns a type is an integrity question
+     * about two columns of one row, and suspending scope writes says nothing about it. The cost is real and
+     * accepted: a fixture building a cross-org row has to give the other org its own type, which is what
+     * `FieldValidationTest` and the skeleton seeder now do.
+     *
+     * @param  array<string, mixed>  $values
+     */
+    private function refuseForeignEntryType(array $values, mixed $typeKey, ?EntryType $type): void
+    {
+        if ($typeKey === null || $type === null) {
+            return;
+        }
+
+        $owner = $type->getAttribute('org_id');
+
+        if ($owner === null) {
+            return;
+        }
+
+        /*
+         * ⚠️ THE PAYLOAD FIRST, THEN THE INSTANCE. A quiet insert names `org_id` in `$values` and never
+         * stamps the model, because `EnforcesScope` stamps in a `creating` listener the quiet path
+         * suppresses; an update names only what it changes and the org lives on the instance. Reading one
+         * and not the other left a whole write path comparing against null and returning early.
+         */
+        $org = $values['org_id'] ?? $this->getAttribute('org_id');
+
+        if ($org === null || (int) $owner === (int) $org) {
+            return;
+        }
+
+        throw new RuntimeException(sprintf(
+            'Entry cannot be typed by entry type %s: that type belongs to org %d and this entry is in org '
+            .'%d. A global type (org_id NULL) is available to every org; an org-owned one is not. Its '
+            .'values would land under another org\'s field definitions in a shared storage row, where the '
+            .'field\'s owner cannot see them and erasure resolves storage through a type this entry\'s org '
+            .'does not own (ADR-009, ADR-020).',
+            $typeKey,
+            (int) $owner,
+            (int) $org,
+        ));
+    }
+
     private function recordPromotedProvenance(): void
     {
         $registry = app(FieldTypeRegistry::class);
@@ -2678,7 +2768,19 @@ class Entry extends Model implements RequiresModelSave
              */
             $typeId = $values['entry_type_id'] ?? $this->getAttribute('entry_type_id');
 
-            $handle = $typeId === null ? null : EntryType::query()->whereKey($typeId)->value('handle');
+            /*
+             * ⚠️ THE OWNER COMES BACK IN THE SAME QUERY AS THE HANDLE, because the ownership refusal below
+             * belongs on exactly the writes this restamp belongs on, and asking twice would be a second
+             * primary-key read on the hot write path (ADR-027's floor, and §15 has no instrument for it —
+             * `BenchmarkStorageCommand` seeds through `DB::table()`, below every guard here).
+             */
+            $type = $typeId === null
+                ? null
+                : EntryType::query()->whereKey($typeId)->first(['handle', 'org_id']);
+
+            $handle = $type?->getAttribute('handle');
+
+            $this->refuseForeignEntryType($values, $typeId, $type);
 
             if ($handle !== null) {
                 $values['type_handle'] = $handle;

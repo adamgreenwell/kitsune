@@ -44,6 +44,23 @@ return new class extends Migration
             $table->index(['org_id']);
         });
 
+        /*
+         * A row a module's `install()` hook can write WITHOUT its own migration.
+         *
+         * ⚠️ It lives here for the reason this file exists. Proving that install's transaction rolls the
+         * hook's writes back means throwing inside that transaction — and if the module migrates first, the
+         * CREATE TABLE implicitly commits RefreshDatabase's wrapping transaction on MySQL and MariaDB while
+         * Laravel's counter keeps counting it, so `DB::transaction()` emits a SAVEPOINT against a connection
+         * holding no transaction and the rollback dies with SQLSTATE 1305 instead of surfacing the module's
+         * refusal. Measured: the two tests passed on SQLite and PostgreSQL and failed on both MySQL engines.
+         * With the table already here, the fixture module can turn its migrations off and the rollback is
+         * observable on all four.
+         */
+        Schema::create('fixture_module_seeds', function (Blueprint $table): void {
+            $table->id();
+            $table->string('name');
+        });
+
         // Stands in for the skeleton's `User`: org membership through a
         // pivot, which is the one shape OrgScope cannot express.
         Schema::create('pivot_scoped_things', function (Blueprint $table): void {
@@ -101,6 +118,7 @@ return new class extends Migration
         Schema::dropIfExists('role_user');
         Schema::dropIfExists('org_user');
         Schema::dropIfExists('users');
+        Schema::dropIfExists('fixture_module_seeds');
         Schema::dropIfExists('pivot_scoped_thing_org');
         Schema::dropIfExists('pivot_scoped_things');
         Schema::dropIfExists('shared_things');

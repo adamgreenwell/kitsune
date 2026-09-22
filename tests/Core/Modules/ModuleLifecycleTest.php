@@ -24,6 +24,10 @@ const PKG = 'kitsune/fixture-module';
 
 beforeEach(function (): void {
     FixtureModuleServiceProvider::$calls = [];
+    FixtureModuleServiceProvider::$installFailsAfterWriting = false;
+    /* Reset here too: leaked, it would silently switch a later test's migrations off. */
+    FixtureModuleServiceProvider::$withoutMigrations = false;
+    FixtureModuleServiceProvider::$installIssuesDdl = false;
     ModuleKernel::flush();
 });
 
@@ -49,6 +53,109 @@ it('installs a module without enabling it', function (): void {
     expect(FixtureModuleServiceProvider::$calls)->toBe(['install'])
         ->and(FixtureModuleServiceProvider::$calls)->not->toContain('register')
         ->and(FixtureModuleServiceProvider::$calls)->not->toContain('boot');
+});
+
+/**
+ * ⚠️ THE HALF-DONE INSTALL, which was reachable in v0.2.0 and unrecoverable without hand SQL.
+ *
+ * `ModuleServiceProvider::install()`'s docblock promised "install's transaction" and `ModuleLifecycle` opened
+ * none, so a hook that threw partway left its rows behind with no receipt — after which `install` refused
+ * (the module's own idempotency check finds its rows) and `uninstall` refused (no receipt to read), with no
+ * way out through the CLI. This asserts the state AFTER the failure, not merely that it threw: a test that
+ * stops at the exception passes just as happily without the transaction.
+ */
+it('leaves nothing behind when a module install hook throws partway', function (): void {
+    FixtureModuleServiceProvider::$installFailsAfterWriting = true;
+
+    /*
+     * ⚠️ NO DDL IN THIS TEST, and that is what makes the assertion possible on all four engines rather than
+     * two. With the module's migrations on, `CREATE TABLE` implicitly commits RefreshDatabase's wrapping
+     * transaction on MySQL and MariaDB while Laravel's counter keeps counting it — so `DB::transaction()`
+     * emitted `SAVEPOINT trans2` against a connection holding no transaction and the rollback raised
+     * SQLSTATE 1305 instead of the module's refusal. Measured: passed on sqlite and pgsql, failed on both.
+     *
+     * The property under test is engine-independent; only the instrument was broken. That migrations run
+     * outside the transaction and survive it is asserted separately, by the migrate/rollback test below,
+     * which does not depend on a rollback.
+     */
+    FixtureModuleServiceProvider::$withoutMigrations = true;
+
+    expect(fn () => ModuleLifecycle::install(app(), PKG))
+        ->toThrow(RuntimeException::class, 'could not finish installing');
+
+    expect(DB::table('fixture_module_seeds')->count())->toBe(0)
+        ->and(Module::query()->where('handle', PKG)->exists())->toBeFalse();
+});
+
+/** The point of rolling the hook back: install is recoverable by running it again, with no hand cleanup. */
+it('installs cleanly on a second attempt after a failed one', function (): void {
+    FixtureModuleServiceProvider::$installFailsAfterWriting = true;
+    FixtureModuleServiceProvider::$withoutMigrations = true;
+
+    /*
+     * ⚠️ THE FIRST FAILURE IS ASSERTED, not swallowed — and it was swallowed by a bare
+     * `catch (RuntimeException)` for a round.
+     *
+     * Every early exit in `install()` is a bare `RuntimeException`: the manifest read, the Composer version
+     * lookup, the verifier, the migrator. So a catch with no message check made this test green whenever the
+     * first install failed for a reason that never reached the hook — the second install would then succeed
+     * on a clean database and the test would report that recovery works on a run where no half-done install
+     * was ever created. It also swallowed nothing on MySQL, where the real failure arrived as a PDOException
+     * and escaped the catch entirely.
+     */
+    expect(fn () => ModuleLifecycle::install(app(), PKG))
+        ->toThrow(RuntimeException::class, 'could not finish installing');
+
+    /* The starting state this test needs: the hook ran, wrote, threw, and left nothing. */
+    expect(DB::table('fixture_module_seeds')->count())->toBe(0)
+        ->and(Module::query()->where('handle', PKG)->exists())->toBeFalse();
+
+    FixtureModuleServiceProvider::$installFailsAfterWriting = false;
+
+    expect(ModuleLifecycle::install(app(), PKG))->toContain('not enabled yet')
+        ->and(Module::query()->where('handle', PKG)->exists())->toBeTrue();
+});
+
+/**
+ * ⚠️ THE "NO DDL IN install()" RULE IS ASKED OF THE ENGINE, not asserted in a docblock.
+ *
+ * That rule was published as "a requirement on this hook and not a preference" and enforced by nothing —
+ * which is the invariant-14 defect this whole change set exists to fix, committed again one docblock along.
+ * A hook issuing DDL implicitly commits install's transaction on MySQL and MariaDB, so the receipt lands and
+ * Laravel's `commit()` then throws on a connection holding no transaction: install reports failure for a
+ * module that is fully installed, and the retry refuses with "already installed".
+ *
+ * This runs on every engine and asserts only what is true everywhere — that the refusal names DDL when the
+ * transaction did not survive the hook. On SQLite and PostgreSQL DDL is transactional, so the transaction
+ * DOES survive and there is nothing to refuse; the check is deliberately silent there, and this test says so
+ * rather than pretending the guard is engine-independent.
+ */
+it('refuses an install whose hook issued DDL, where the engine cannot roll it back', function (): void {
+    FixtureModuleServiceProvider::$withoutMigrations = true;
+    FixtureModuleServiceProvider::$installIssuesDdl = true;
+
+    $transactionalDdl = in_array(DB::connection()->getDriverName(), ['sqlite', 'pgsql'], true);
+
+    if ($transactionalDdl) {
+        /* The hook's DDL is inside the transaction here, so install completes and the receipt is written. */
+        expect(ModuleLifecycle::install(app(), PKG))->toContain('not enabled yet');
+
+        return;
+    }
+
+    expect(fn () => ModuleLifecycle::install(app(), PKG))
+        ->toThrow(RuntimeException::class, 'issued DDL');
+
+    /* And it says so rather than leaving the operator with a commit error from inside the framework. */
+    expect(Module::query()->where('handle', PKG)->exists())->toBeTrue();
+
+    /*
+     * ⚠️ DROPPED HERE, NOT IN `beforeEach`. A `dropIfExists` in the shared setup is itself DDL, so it
+     * committed RefreshDatabase's transaction before EVERY test in this file and took the two rollback
+     * assertions down with it on both MySQL engines — the same trap this test is about, one level up.
+     * The hook drops before it creates, so a lingering table from a failed run cannot poison the next one.
+     */
+    Schema::dropIfExists('fixture_module_ddl');
 });
 
 it('refuses to install the same module twice', function (): void {

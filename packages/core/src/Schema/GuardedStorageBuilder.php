@@ -13,6 +13,7 @@ namespace Kitsune\Core\Schema;
 use Illuminate\Contracts\Database\Query\Expression;
 use Illuminate\Database\Eloquent\Builder;
 use Kitsune\Core\Models\FieldStorage;
+use Kitsune\Core\Tenancy\Concerns\GuardsCascadingDeletes;
 use Kitsune\Core\Tenancy\Concerns\ResolvesWrittenColumns;
 use Kitsune\Core\Tenancy\Concerns\TouchesThroughUpdate;
 use RuntimeException;
@@ -53,6 +54,7 @@ use RuntimeException;
  */
 class GuardedStorageBuilder extends Builder
 {
+    use GuardsCascadingDeletes;
     use ResolvesWrittenColumns {
         bareColumn as private;
         refuseAmbiguousColumns as private;
@@ -79,6 +81,29 @@ class GuardedStorageBuilder extends Builder
         'Field storage cannot be created in bulk: `pii_class` fails closed per row and these paths '
         .'dispatch nothing, so an unclassified field would persist — which ADR-020 says cannot '
         .'exist. Use create().';
+
+    /**
+     * ⚠️ Deletion is guarded HERE, and this class had no override at all.
+     *
+     * `RefusesCascadingDeletes` promises the model "states the rule once and both paths enforce it" — which
+     * was true only for models on `ScopedBuilder`. `FieldStorage` uses this builder, so a `guardCascade()` on
+     * that model would never have run from any bulk, quiet or query-builder delete. Measured before the fix:
+     * `FieldStorage::query()->whereKey($id)->delete()` removed the referencing `fields` row through the
+     * foreign key with no refusal, past the guard that exists to prevent exactly that.
+     */
+    public function delete()
+    {
+        return $this->guardingCascade(fn () => parent::delete());
+    }
+
+    /**
+     * ⚠️ `forceDelete()` too. Eloquent sends it straight to the query builder rather than through `delete()`,
+     * so a refusal written on one does not cover the other — the same hole `ScopedBuilder` records.
+     */
+    public function forceDelete()
+    {
+        return $this->guardingCascade(fn () => parent::forceDelete());
+    }
 
     /** @param  array<string, mixed>  $values */
     public function update(array $values)

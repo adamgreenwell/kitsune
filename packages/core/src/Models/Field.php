@@ -115,12 +115,17 @@ class Field extends Model implements RefusesCascadingDeletes, RequiresModelSave
         // anywhere: inline JSON keys and `entry_relations` rows survive against
         // the FieldStorage row, which is shared and stays.
         //
-        // And they become UNREACHABLE. `Entry::redactField()` resolves storage
-        // through `whereHas('fields')` on this entry type, so once the field row
-        // is gone the lookup finds nothing, falls through to the inline path, and
-        // reports 0 while a relation — possibly holding personal data — survives.
-        // An erasure request would be answered successfully and truthfully
-        // report that it reached nothing (ADR-020).
+        // ⚠️ AND WHAT SURVIVES DEPENDS ON THE STRATEGY, which this comment used to
+        // get wrong: it said `Entry::redactField()` resolves storage "through
+        // `whereHas('fields')` on this entry type", and it does not. That was true
+        // of an earlier implementation; the current one selects `field_storage` by
+        // handle within the org, deliberately unfiltered by entry type, for the
+        // reasons its own docblock sets out. The stale sentence was copied into
+        // four new places before anyone checked it against the code (§15).
+        //
+        // INLINE values therefore stay erasable by handle. RELATIONAL ones do not:
+        // the pivots carry the storage id, and nothing can match them once the
+        // field is gone — personal data past every erasure path (ADR-020).
         // ⚠️ Kept alongside the CONTRACT, not instead of it.
         //
         // A `deleting` event is one path. `Field::query()->delete()`,

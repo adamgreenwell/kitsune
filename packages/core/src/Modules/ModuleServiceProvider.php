@@ -69,7 +69,19 @@ abstract class ModuleServiceProvider extends ServiceProvider
     /**
      * The non-schema half of install: entry types, seed rows, anything that is data rather than DDL.
      *
-     * Runs after the module's migrations, inside install's transaction where the engine supports one.
+     * Runs after the module's migrations, inside a transaction with the receipt write — so a throw from
+     * here leaves neither the rows nor a receipt, and install can simply be run again.
+     *
+     * ⚠️ NO DDL HERE. That is a requirement on this hook and not a preference: a `CREATE TABLE` or an
+     * `ALTER TABLE` commits the surrounding transaction implicitly on MySQL and MariaDB, which silently
+     * converts the guarantee above into a half-applied install on two of the three supported engines.
+     * Schema belongs in `migrationPath()`, which runs before this and outside the transaction.
+     *
+     * ⚠️ This sentence used to read "inside install's transaction where the engine supports one" while
+     * `ModuleLifecycle::install()` opened no transaction at all — a consequence written before the code,
+     * which then reads as done (AGENTS.md invariant 14). The transaction now exists; the hedge is gone
+     * because row writes are transactional on all three engines, and the DDL rule above is what the
+     * hedge was actually gesturing at.
      */
     public function install(): void {}
 
