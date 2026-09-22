@@ -15,6 +15,7 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use Kitsune\Core\Media\MediaDisposal;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Schema\RevisionWrites;
 use Kitsune\Core\Tenancy\Concerns\ResolvesWrittenColumns;
@@ -374,13 +375,36 @@ class AuditedBuilder extends ScopedBuilder
 
     public function forceDelete()
     {
-        return $this->auditing('force_deleted', function () {
+        /*
+         * ⚠️ READ BEFORE THE DELETE, REMOVED AFTER IT — ADR-041's byte disposal, asked of the builder rather
+         * than of a model event.
+         *
+         * A `deleting` hook on `Entry` would miss `Entry::query()->forceDelete()`, which dispatches nothing,
+         * and a hook on `MediaFile` never fires at all: `media_files.entry_id` cascades, so the row goes
+         * inside the database where no PHP runs. This is the one place both the instance path and the bulk
+         * path arrive, because `SoftDeletes::forceDelete()` routes an instance through the builder too.
+         *
+         * Rows first, then bytes — the mirror of how `MediaLibrary` writes them, for the same reason: if the
+         * files went first and the delete then failed, a surviving entry would point at nothing.
+         */
+        $files = MediaDisposal::filesFor(
+            (clone $this)->select($this->getModel()->getTable().'.id')->pluck('id')->map(
+                static fn (mixed $id): int => (int) $id,
+            )->all(),
+        );
+
+        $result = $this->auditing('force_deleted', function () {
             // ⚠️ The destructive half, and the reason that guard exists at all: an update is a field somebody
             // may not have been allowed to touch, and this is a row that is gone.
             $this->refuseIfTheRowMoved('force-delete');
 
             return parent::forceDelete();
         });
+
+        /* Reports rather than throws: a disk that refuses must not keep a force-delete from completing. */
+        MediaDisposal::remove($files);
+
+        return $result;
     }
 
     /**
