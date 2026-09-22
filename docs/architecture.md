@@ -375,8 +375,16 @@ Hooks               Laravel events, documented naming convention
 Settings            scoped config store, resolved org → site group → site (ADR-022)
 RBAC                roles, permissions, per-org assignment
 Audit               who changed what, when, in which org and site
-Blueprints          a kernel primitive, not a module
+Blueprints          a kernel primitive, not a module (ADR-039)
 ```
+
+⚠️ **"A kernel primitive, not a module" is narrowed by ADR-039, and until then it was asserted here and in the
+roadmap and argued nowhere.** The only definition the log carries is ADR-009's, about tenancy: in core, enforced
+by the kernel rather than by extension authors' discipline. Applied to blueprints that means the *mechanism* —
+the format, the apply flow, the receipt and the refusal — is core code nothing can replace, while a blueprint's
+*payload* may ship inside `kitsune/core`, inside a module, or be handed to the apply command by an operator.
+Read as "a blueprint may never arrive inside a package", the line would contradict Standing Principle #5's own
+answer that Composer and Packagist do that job.
 
 ### Module manifest
 
@@ -447,7 +455,7 @@ Honest list. None of these blocks starting; all of them should be settled before
 | Item | Risk | Why |
 |---|---|---|
 | Storage benchmark at 10k / 100k / 1M entries | High | Find the ceiling now, not in year two |
-| Blueprint rollback semantics | Medium | What happens when a blueprint is removed after content exists? |
+| Blueprint rollback semantics | **Settled** | ADR-039: removal is refused while any entry or revision holds data. There is no rollback — `is_locked` never clears, so the reachable states are applied, and gone with the data destroyed. |
 | Revision storage growth | Medium | Full-JSON snapshots per revision get expensive; consider diffs |
 | Relation targets under translation | Medium | Do relations point at a translation group or one locale row (ADR-017)? It decides what `entry_relations.target_entry_id` holds |
 

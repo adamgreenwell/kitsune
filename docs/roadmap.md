@@ -374,14 +374,16 @@ The recent entries were the other half. They cross types, so `(site_id, entry_ty
 
 Drupal spent ~a decade proving a runtime schema engine *without* opinionated starting configurations is harder to use than a fixed-schema CMS, then shipped "Recipes." Skip their decade.
 
-- [ ] Blueprint format: portable bundle of entity types, fields, roles, permissions, settings, seed content
-- [ ] Apply/install flow, idempotent and reversible
-- [ ] First-party: **Blog**, **Marketing Site**, **DAM Starter**
+- [ ] Blueprint format: a bundle of entry types with their fields, roles with their grants, entry type availability, and content — **four keys, not six, and amended from "portable bundle of entity types, fields, roles, permissions, settings, seed content" by [ADR-039](decision-log.md)**. `permissions` is not separable from roles and `settings` is `entry_type_availability` wearing another name; "portable" means applies to any installation, not language-neutral, because the v1.0 format is a PHP class
+- [ ] Apply flow, **idempotent in the additive sense and reversible only as a refusal** — amended by [ADR-039](decision-log.md), which records why the engine cannot offer more: `is_locked` never clears, so a re-apply may add but may never reshape a field holding data, and a reverse with content present is refused rather than rolled back
+- [ ] First-party: **Blog**, **Marketing Site**. ⚠️ **DAM Starter is deferred by [ADR-039](decision-log.md)**: `media_files` is published in ADR-016 and `field-types.md` §5 and does not exist, and core has no upload path, so a DAM Starter today is an `image` type with nothing to attach bytes to
 
   The **Marketing Site** blueprint has a named first user: `kitsunecms.org` itself, per [ADR-030](decision-log.md). The project's site waits for that blueprint rather than being stood up on a static generator, so its gaps land on the maintainer before they land on anyone else. **This line is the trigger, not a tag:** ADR-030 moves the site when the blueprint applies cleanly and idempotently to a fresh install at the floor, and the result is editable through the admin. The site is also the first thing to stand on ADR-027's resource floor for real, and it runs the **self-host** path rather than KaaS deliberately.
-- [ ] Blueprints are a **kernel primitive**, not a module
+- [ ] Blueprints are a **kernel primitive**, not a module — narrowed by [ADR-039](decision-log.md) to the only sense the log defines: the mechanism is core and unreplaceable, the payload may live anywhere
 
-**Done when:** fresh install to working blog is one click, under 60 seconds.
+**Done when:** fresh install to working blog is **one command**, under 60 seconds, measured in the ADR-027 floor container with content already in the table.
+
+⚠️ **Amended from "one click" by [ADR-039](decision-log.md).** On a fresh install there is nowhere to click: Filament's tenant *is* the Site, the panel registers three resources and none of them creates an org, a site group or a site. The click arrives with ADR-026's installer in Phase 6, where the first-user flow already lives; `kitsune:blueprint apply` creates the first org and site so that ADR-030's *"no manual step outside the apply flow"* is satisfiable at all. "Working blog" means admin-editable — public rendering is theming, which ADR-011 moved to v1.1.
 
 ## Phase 6 — v1.0 hardening
 

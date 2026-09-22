@@ -45,7 +45,7 @@ If you're evaluating whether to build on Kitsune later, the decision log is the 
 - **A thin module kernel** — registry, hooks, lifecycle, RBAC, audit
 - **A runtime schema engine** as the flagship first-party module: define entity types and fields in the admin, no PHP required
 - **Multi-tenant from the kernel up**, enforced fail-closed rather than left to plugin authors
-- **Blueprints** — portable, installable bundles of entity types, fields, roles and seed content, so a fresh install isn't a blank canvas
+- **Blueprints** — installable bundles of entry types with their fields, roles with their grants, and entry type availability, applied into an org so a fresh install isn't a blank canvas. Seed content is a separate, opt-in phase, because seeding a value locks that field's shape ([ADR-039](docs/decision-log.md))
 - **Headless-capable core** with an optional Blade theming layer
 - **Source-agnostic migration adapters**, so moving in from an existing CMS is a plugin rather than a rewrite
 
