@@ -8,10 +8,12 @@
 
 declare(strict_types=1);
 
+use Illuminate\Support\Facades\DB;
 use Kitsune\Core\Blueprints\BlueprintRegistry;
 use Kitsune\Core\Models\Blueprint;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\Org;
+use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tests\Fixtures\FixtureBlueprint;
 
@@ -76,10 +78,17 @@ it('refuses an apply with no org named', function (): void {
         ->assertFailed();
 });
 
-it('refuses an org slug that does not exist', function (): void {
+/**
+ * ⚠️ AN UNKNOWN SLUG ON AN ESTABLISHED INSTALLATION IS STILL AN ERROR. The bootstrap below creates the first
+ * org, and only the first: creating one here would be inventing a customer because somebody mistyped, and the
+ * receipt would then record a blueprint applied into it.
+ */
+it('refuses an unknown org slug when the installation already has one', function (): void {
     $this->artisan('kitsune:blueprint apply fixture --org=ghost')
-        ->expectsOutputToContain('No organisation has the slug [ghost]')
+        ->expectsOutputToContain('already has 1')
         ->assertFailed();
+
+    expect(Org::query()->where('slug', 'ghost')->exists())->toBeFalse();
 });
 
 /** The refusal's own reason, not a bare failure — it is the only thing that says which step stopped. */
@@ -119,4 +128,87 @@ it('reports an interrupted apply as interrupted', function (): void {
     $this->artisan('kitsune:blueprint status')
         ->expectsOutputToContain('INTERRUPTED')
         ->assertSuccessful();
+});
+
+/*
+ * ⚠️ THE BOOTSTRAP, WHICH IS WHAT MAKES ADR-030's CONDITION SATISFIABLE.
+ *
+ * That ADR will not move kitsunecms.org onto Kitsune until a blueprint applies to a fresh install "with no
+ * manual step outside the apply flow — no hand-edited config, no SQL, no *and then you also need to*". A fresh
+ * install has no org, so requiring one to exist put exactly such a step in front of every apply.
+ *
+ * These run in their own describe with NO org created first, because the whole condition under test is that
+ * the installation is empty.
+ */
+describe('on an installation with no organisation at all', function (): void {
+    beforeEach(function (): void {
+        Site::query()->withoutGlobalScopes()->forceDelete();
+        Org::query()->withoutGlobalScopes()->forceDelete();
+    });
+
+    it('creates the first org and site, then applies into it', function (): void {
+        $this->artisan('kitsune:blueprint apply fixture --org=acme')
+            ->expectsOutputToContain('Created organisation acme')
+            ->assertSuccessful();
+
+        $org = Org::query()->where('slug', 'acme')->first();
+
+        expect($org)->not->toBeNull()
+            ->and($org->name)->toBe('Acme')
+            ->and(Site::query()->withoutGlobalScopes()->where('org_id', $org->getKey())->count())->toBe(1)
+            ->and(EntryType::query()->where('org_id', $org->getKey())->where('handle', 'dispatch')->exists())->toBeTrue();
+    });
+
+    /** ADR-026: onboarding creates the first user interactively, so a bootstrap that made one would pre-empt it. */
+    it('creates no user', function (): void {
+        $this->artisan('kitsune:blueprint apply fixture --org=acme')->assertSuccessful();
+
+        expect(DB::table('users')->count())->toBe(0);
+    });
+
+    /** A fresh install does not know its own public URL, and guessing one takes a claim the operator has not made. */
+    it('claims no host for the site it creates', function (): void {
+        $this->artisan('kitsune:blueprint apply fixture --org=acme')->assertSuccessful();
+
+        $site = Site::query()->withoutGlobalScopes()->firstOrFail();
+
+        expect($site->base_url)->toBeNull()
+            ->and($site->locale)->toBe('en');
+    });
+
+    it('takes the name, site slug and locale when they are given', function (): void {
+        $this->artisan('kitsune:blueprint apply fixture --org=acme --org-name="Acme Incorporated" --site=main --locale=fr')
+            ->assertSuccessful();
+
+        $site = Site::query()->withoutGlobalScopes()->firstOrFail();
+
+        expect(Org::query()->where('slug', 'acme')->value('name'))->toBe('Acme Incorporated')
+            ->and($site->slug)->toBe('main')
+            ->and($site->locale)->toBe('fr');
+    });
+
+    /**
+     * ⚠️ ONE TRANSACTION, AND THE FAILURE IS INJECTED BECAUSE NO INPUT CAN REACH IT.
+     *
+     * The hazard is real and `BenchmarkStorageCommand::fixture()` records paying for it: a site slug is
+     * globally unique and can fail AFTER the org is written, leaving the org behind. Here that would be worse
+     * than untidy — the next run would find one org, refuse to bootstrap, and tell the operator to name an
+     * organisation that exists but has no site.
+     *
+     * It is not reachable through this command, though, and saying so is better than dressing up a test that
+     * pretends otherwise: a taken site slug implies a site, which implies an org, which is the one thing
+     * `FirstOrg` refuses to bootstrap past. So the transaction is defence in depth against a write failing for
+     * some other reason, and this makes a write fail for some other reason.
+     */
+    it('leaves no org behind when the site cannot be created', function (): void {
+        Site::creating(function (): void {
+            throw new RuntimeException('site write failed, for the sake of argument');
+        });
+
+        $this->artisan('kitsune:blueprint apply fixture --org=acme')->assertFailed();
+
+        expect(Org::query()->withTrashed()->count())->toBe(0)
+            ->and(DB::table('sites')->count())->toBe(0)
+            ->and(DB::table('blueprints')->count())->toBe(0);
+    });
 });
