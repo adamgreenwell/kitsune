@@ -24,7 +24,7 @@ The pillars earn their place by making hard decisions decidable. Nearly every di
 
 | Tension | Resolved by |
 |---|---|
-| **Moldable vs. accessible to small orgs.** Maximum flexibility means a blank entity builder — which Drupal spent a decade proving is *harder* to use than a fixed-schema CMS | **Blueprints** as a kernel primitive in v1.0 (ADR-001) |
+| **Moldable vs. accessible to small orgs.** Maximum flexibility means a blank entity builder — which Drupal spent a decade proving is *harder* to use than a fixed-schema CMS | **Blueprints** as a kernel primitive in v1.0 (ADR-039) |
 | **Moldable vs. privacy first.** A runtime schema engine genuinely cannot know whether a tenant's "Customer Notes" field holds personal data | **`pii_class`, fail-closed** — the tenant declares it, and an unclassified field does not save (ADR-020) |
 | **Privacy first vs. accessible to large orgs.** Enterprises need audit trails; privacy needs erasure. Both are non-negotiable and they pull opposite ways | **Payload-free audit logs** — actor, action and target, never content (ADR-020) |
 | **Accessible to small vs. accessible to large.** Kernel-level tenancy, SSO and workflow serve enterprises and tax a one-site install | Partially unresolved. Sensible single-tenant defaults, and SQLite support so a small install needs no database server |
@@ -1478,7 +1478,8 @@ So the ADR is **not** amended to constrain what a `Control::RichText` type may e
 
 ## ADR-030 — kitsunecms.org runs on Kitsune, so the site waits for the blueprint
 
-**Status:** Decided · 2026-09-10
+**Status:** Decided · 2026-09-10 · **Amended 2026-09-22 by ADR-039** — the idempotency condition is met by an
+additive re-apply and cannot be met for a field that already holds data; see the trigger conditions below
 
 Raised while starting work on the site and stopped before anything was built. The question asked was *what do we build it with*; the answer settles *when* instead.
 
@@ -1506,6 +1507,8 @@ Concretely — all four, and each one answerable by somebody who is not the main
 
 - Phase 5's **Marketing Site blueprint exists and applies to a fresh install** with no manual step outside the apply flow. No hand-edited config, no SQL, no *"and then you also need to."*
 - It applies **idempotently**, which Phase 5 already requires of every blueprint: re-applying upgrades rather than clobbers.
+
+  ⚠️ **Amended 2026-09-22 by ADR-039 — "upgrades rather than clobbers" is true of everything a blueprint adds and impossible for anything it has already locked.** Writing one entry arms `is_locked` on every storage row that entry wrote a value to, in bulk and past every loaded instance, and no code path clears it: `type`, `cardinality` and `handle` are frozen from that moment. So a re-apply may add types, fields, roles, grants and availability rows, and may never change the shape of a field holding data — a shape change is a refusal naming the field. The condition is met by an additive upgrade; it is not met by a blueprint that needs to correct a field it already seeded. The original wording stays above because this log amends rather than rewrites (AGENTS.md §12).
 - It does so **at the ADR-027 floor** — SQLite, 1 vCPU, 1 GB, no container runtime, no external services. The site is the first thing to stand on that floor for real, so meeting the bar on a developer laptop does not count.
 - The result is **editable by its operator through the admin**: content changes without a deploy. That is the entire claim a CMS makes, and a marketing site that needs a commit to fix a typo has not demonstrated it.
 
@@ -3086,6 +3089,177 @@ This is the third time this ADR has been amended in two days, and all three are 
 
 ---
 
+## ADR-039 — A blueprint is an org-scoped apply with a receipt, and reverse is a refusal
+
+**Status:** Decided · 2026-09-22 · **Phase 5 (ADR-011, v1.0). The declarative format, export and third-party
+blueprints stay at v1.1 or later** · **Amends ADR-030** (the idempotency condition), **`roadmap.md`** (the
+Phase 5 item list, the *kernel primitive* line and the *done when*) and **the pillar table at the top of this
+log** (which cites ADR-001 for a phrase ADR-001 does not contain), **`architecture.md`** (the *kernel
+primitive, not a module* line, and the open item on blueprint rollback) and **this log's own Open questions**
+(the same rollback question, which this entry answers)
+
+Phase 5's four items are a blueprint format, an apply flow that is idempotent and reversible, three
+first-party blueprints, and blueprints as a kernel primitive rather than a module. Nothing of the kind
+exists. The closest thing in the tree is `PersonServiceProvider::install()` — thirty-six lines that create
+one global entry type and a field per entry in a `const FIELDS` array, with a hand-written existence check, no
+transaction, no adoption of existing storage and no re-apply path.
+
+⚠️ **Three of those four items describe behaviour the schema engine cannot produce, and they were written
+before the engine could say so.** "Reversible" and "idempotent" were published when field storage did not yet
+lock, and "kernel primitive" has never been argued anywhere. This is the same failure ADR-038 opens by
+confessing about a release tag: a consequence written before the code, which then reads as settled. The
+difference is that these three are still correctable, and correcting them is most of this entry.
+
+The pull is toward Drupal's Recipes, which the roadmap explicitly invokes — *"Skip their decade."* The
+constraint is that Recipes deferred precisely the two things the Kitsune roadmap line promises. Drupal's own
+initiative documentation still asks *"How can a Drupal recipe be reverted?"* and *"What happens when you
+re-apply a Drupal recipe that has been applied before?"*, and applies recipes by CLI only, with no UI. What
+Recipes genuinely contributes is smaller and worth taking: composition through a `recipes:` key, author-supplied
+`input` tokens, and an explicit per-declaration collision policy — `create` errors if the thing exists,
+`createIfNotExists` skips.
+
+| Rejected | Why it lost |
+|---|---|
+| **A YAML blueprint format** | Adds a runtime dependency to a product whose floor is 1 vCPU / 1024 MB (ADR-027); `symfony/yaml` is in `packages-dev` only, pulled by Testbench. ⚠️ ADR-038's *reasons* for refusing `kitsune.yaml` do **not** transfer and must not be cited as if they did: a blueprint is parsed once per apply rather than on the boot path, and it has no `composer.json` counterpart to be a second source of truth beside — `architecture.md` says the provisioning DSL is blueprints' to own. The dependency is the whole argument here, and it is enough. |
+| **A JSON blueprint format** | No new dependency, and machine-writable — but it needs its own validation layer to say anything about a malformed bundle, and it is hostile to hand-author at the size the Marketing Site needs. Both costs buy a portability no v1.0 consumer has. |
+| **A Composer package per blueprint** | Consistent with ADR-038, and it walks straight into ADR-038's own unresolved question about how many packages this project publishes — which the split matrix currently answers with "one". `skeleton:install` and `deploy/release.sh` resolve `packages/*` as a glob already, and `release.sh`'s own comment cites ADR-038 for it; `.github/workflows/split-packages.yml` is the one place still naming `core` alone. |
+| **Rolling a blueprint back** | Not a policy choice. `is_locked` arms automatically on the first entry save, is cleared by no code path in the repository, and `guardShape()` re-reads the row rather than trusting the instance; removal instead is refused while any entry **or revision** holds data, and both cascade guards count `withTrashed()`. The reachable states are *applied* and *gone, with its data destroyed*. There is no third state, and the roadmap line promises one. |
+| **Erasing content to complete a reverse** | Makes the blueprint engine a caller of `Entry::redactField()` and puts it inside ADR-020's erasure surface, where every operation is audited into the customer's own log. ADR-027's amendment already records what that costs once: removing benchmark rows through `Entry` filled an org's audit log with deletions of content nobody wrote. |
+| **Two verbs, `retract` for configuration and `purge` for everything** | The destructive one has no consumer, and a second public verb before v1.2 is a permanent obligation (Standing Principle #2). One verb that refuses is smaller and can grow the other later; the reverse is not true. |
+| **A blueprint that creates global (`org_id` NULL) rows** | A global entry type is visible to every org and its **shape is editable by none** — `EntryTypeResource::ownsRecord()` returns false for a null org, so Edit, Delete and the fields relation manager are withheld and refused at the URL. Its *content* stays editable everywhere, because core's `EntryResource` carries no ownership gate at all. The cost is therefore not ADR-030's fourth condition outright — that condition is about content changes without a deploy, and those work — but the operator's ability to adapt what the blueprint installed, which is the half a blueprint exists to hand over. It also claims the handle install-wide, because NULLs compare distinct on every engine, so `UNIQUE (org_id, handle)` constrains nothing among global rows — the reason `kitsune/person` prefixes `person_name` and hand-writes its own existence check. |
+| **Per-install blueprints, like the module receipt** | Matches how `person` and the seeded `image` type actually work, and contradicts the `blueprints` table this log's companion already publishes. Worse, it is **unauditable by construction**: `audit_log.org_id` is NOT NULL, so an install-level apply writes no audit row at all — the reason ADR-038 ships module enable and disable as events instead. |
+| **Pulling onboarding forward so the *done when* can say "one click"** | A fresh install has no org, no site, and no admin route that reaches a blueprint: Filament's tenant **is** the Site, and the panel registers three resources, none of which creates an org, a site group or a site. Delivering the click means delivering ADR-026's first-user flow, which is Phase 6. Widening Phase 5 by a whole onboarding surface to satisfy a sentence is the wrong direction; the sentence is what should change. |
+
+### Decision
+
+**A blueprint is applied into an org, and the receipt is org-scoped.** This is what `architecture.md` already
+publishes — `blueprints(id, org_id, handle, version, applied_at, manifest json)` — and the three consequences
+are the argument. The apply is **auditable**, because an org is in scope. `UNIQUE (org_id, handle)` on the
+handle-bearing rows it creates — the entry type, its field storage and its roles — is **real**, because no row
+it writes is global. The rows underneath key on their parent and inherit the scope transitively: `fields` is
+`(entry_type_id, field_storage_id)`, `role_permissions` is `(role_id, permission)` and carries no `org_id` by
+design, `entry_type_availability` is `(entry_type_id, scope_type, scope_id)`. And what it installs is **adaptable through
+the admin**, which a global type cannot offer: a global type's content is editable in every org, and its shape
+in none. The cost is accepted and stated: the
+same entry types are duplicated per org, and two orgs applying Blog get two `article` types. That is the
+honest price of rows an operator owns.
+
+**A blueprint may not create global rows.** It follows from the above rather than being a separate rule.
+`kitsune/person` creates a global type and is right to — a module ships code for the installation — but a
+blueprint ships *configuration for an org*, and the two are not the same act. This is the line between
+ADR-038's subject and this one.
+
+**Reverse is a refusal that names what is in the way, not a rollback.** `blueprint:reverse` removes what
+nothing holds data for and refuses otherwise, reporting the count, in exactly the shape
+`ModuleLifecycle::uninstall()` and `PersonServiceProvider::uninstall()` already take. It counts past the scope
+with `withoutGlobalScopes()` and not with `withoutScopeBecause()`, which suspends write scoping and leaves the
+global read scope in place — measured in `person`'s own docblock: plain count 0, `withoutScopeBecause` 0,
+`withoutGlobalScopes()` 1, raw row 1. **This amends the roadmap's word "reversible"**, which as published
+promises a state the engine cannot reach.
+
+**"Idempotent" means additive, and re-apply cannot correct a field that holds data.** Writing one entry arms
+`is_locked` on every storage row the entry wrote a value to, in bulk, past every loaded instance — so `type`,
+`cardinality` and `handle` are frozen from the first seeded row onward and the lock is permanent by design
+("it is not a preference — it is the record that data exists"). A second version of a blueprint may therefore
+add types, fields, roles, grants and availability rows, and may **never** change the shape of a field already
+holding data. A shape change is a refusal naming the field and pointing at the path the lock's own message
+prescribes: create the new field, migrate, verify, remove the old one. **This amends ADR-030's second
+condition**, which reads *"re-applying upgrades rather than clobbers"* — true of everything a blueprint adds,
+and impossible for anything it has already locked. The old wording stays visible above the amendment, per
+AGENTS.md §12.
+
+**The receipt is written first, as an intent record, and apply is resumable.** `applied_at` and `manifest` are
+what the published table already has room for. Apply is not one transaction: a blueprint that indexes a field
+issues DDL through `SchemaManager::sync()`, which commits implicitly on MySQL and MariaDB — the stated reason
+that class is not an observer — so a single transaction would be a guarantee on two engines and a fiction on
+two. Row writes go in a transaction, generated columns are applied after it, and `kitsune:schema-sync` is the
+documented repair, which is what the admin's own field flow already does. Idempotence does not rest on
+catching a constraint violation: every declaration carries an explicit collision policy, Recipes' `create`
+versus `createIfNotExists` distinction, because the tables disagree about what a second write does —
+`Role::grant()` is a `firstOrCreate` and a no-op, while `EntryType::create()`, `FieldStorage::create()` and
+`Field::create()` each collide on a unique index and `ModuleLifecycle::install()` throws outright.
+
+**The format is a PHP class implementing one core interface, for v1.0.** Zero new dependencies, analysable by
+the PHPStan run CI already gates on, and it is what `PersonServiceProvider::install()` demonstrably already
+is. Who authors a blueprint in v1.0 decides this: three first-party bundles written by the maintainer, because
+third-party extension is unsupported until the v1.2 freeze — first-party by elimination rather than by a gate
+(ADR-038), since nothing in discovery checks who wrote a package. A declarative format readable by a site-builder — and the
+**export** direction that would let an operator turn a configured site into one — are deferred to v1.1, where
+they arrive with the API rather than ahead of it. ⚠️ **The roadmap's word "portable" is amended to mean
+"applies to any installation", not "language-neutral"**, because a PHP class is the first and not the second,
+and leaving the stronger reading in place would be a promise the format does not keep.
+
+**Four keys, not the roadmap's six.** Entry types with their fields; roles with their grants; entry type
+availability; and content. `permissions` is not separable from roles — `role_permissions` has no independent
+existence and there is one subject, `entry` — and `settings` has exactly one meaningful key today
+(`timezone`), while the thing a blueprint actually wants is `entry_type_availability`, which ADR-022 puts on the
+same sparse inheritance as settings, and whose amendment records that it resolves through
+`EntryTypeAvailability::enabledMapFor()` rather than through the settings resolver — so what the two share is
+the inheritance rule, not the code. Writing all six into the format would
+freeze v1.2 surface for two things that are one feature wearing another's name. **This amends the roadmap's
+item list and `README.md`.** A blueprint's grant strings are **derived** from the handles it creates in the
+same document and never restated: `Permissions::validated()` checks the type segment for shape and not for
+existence — deliberately, so a grant and its type can arrive together — so a typo'd handle stores a grant
+nobody can ever hold, failing closed and invisibly.
+
+**Seed content is a separate, separately-receipted phase, and it is off by default.** Not a preference: the
+first entry a blueprint seeds arms `is_locked` on every field of that entry's own type it writes a non-empty
+value to, which forecloses the shape half of the idempotency this entry just defined — permanently, for those
+fields, and on every installation that took the default. `lockStorageHoldingData()` narrows twice, to storage
+attached to this entry's type and then to the rows it actually holds data for, and `hasValueFor()` counts
+null, `''` and `[]` as no data; that is narrower than "every field the blueprint created" and still enough to
+decide this. An operator who wants the demo asks for it. Content also cannot be applied where schema can — an
+entry write needs an **org in context**, because `AuditedBuilder` calls `recordOrFail()` and an unauditable
+entry write is refused rather than merely unaudited. A site is not required: `site_id` NULL is an org-shared
+entry (ADR-021).
+
+**Blueprints are a kernel primitive in the only sense the log has ever defined: the mechanism is core code
+nothing can replace, and the payload may live anywhere.** The phrase is asserted in three places and argued in
+none, and its single citation — this log's own pillar table — points at ADR-001, which never uses it. The only
+definition on record is ADR-009's, about tenancy: *in core, enforced by the kernel rather than by extension
+authors' discipline*. Applied here, the format, the apply flow, the receipt and the refusal are core and not
+replaceable; a blueprint's payload may ship inside `kitsune/core`, inside a module, or be handed to the apply
+command by an operator. **This amends the roadmap line and the kernel-responsibilities block in
+`architecture.md`, and corrects the pillar table's citation to point here.** It also keeps Standing Principle #5 intact: there is no catalogue, no index and no install-from-URL
+path, because Composer and Packagist do that job.
+
+**The *done when* is one command, and the sixty seconds names its host.** `kitsune:blueprint apply` creates
+the first org and site when none exists, which is what makes ADR-030's *"no manual step outside the apply
+flow"* satisfiable at all; the **click** arrives with ADR-026's installer in Phase 6, where the fresh-install
+experience already lives. **This amends the roadmap's "fresh install to working blog is one click, under 60
+seconds"** to *one command*. The sixty seconds is measured in the ADR-027 floor container that
+`bin/benchmark-floor.sh` builds, with existing content in the table rather than on an empty one — ADR-027's own
+rule, and the reason `kitsune:benchmark-admin` exists at all. "Working blog" means admin-editable for v1.0:
+public rendering is theming, which ADR-011 moved to v1.1, and ADR-030's four conditions ask for editability
+and never for a rendered page.
+
+⚠️ **The DAM Starter blueprint cannot be delivered as the roadmap describes it, and this entry says so rather
+than shipping something hollow.** `media_files` is published with a full column list in ADR-016 and
+`field-types.md` §5 and **does not exist**; neither does any upload path in core — no `Storage::disk`, no
+file-upload component. A DAM Starter today is an `image` type with rights and licence fields and nothing to
+attach bytes to. It is **deferred** until media storage exists, and the roadmap's first-party list is amended
+to Blog and Marketing Site, which are the two ADR-030 actually depends on.
+
+### Enforced by
+
+**Nothing yet.** No blueprint code exists at the time this ADR is written; this entry is the decision, not a
+report of work done. That sentence is copied from ADR-038 deliberately, and so is the reason for it: ADR-038's
+`Enforced by` section had to be amended twice within a day for claiming a browser test it had not delivered
+and a database failure it had mis-described, and the amendments were cheaper because the section had not
+claimed the work was done.
+
+When it lands: a blueprint declaring a global row is refused by the manifest reader rather than by review; an
+apply with no org in scope is refused; a re-apply that would change a locked field's shape is refused with the
+field named, asserted from the locked side rather than by inspecting the blueprint; a reverse with content
+present is refused and reports a count taken past the scope, with a test that drops context before asking,
+because a count taken through the scope returns zero whatever is in the table; the receipt exists before the
+first row is written, asserted by killing an apply between the two; every declaration's collision policy is
+exercised in both directions on all four engines, because the tables disagree about what a second write does;
+and the apply flow has at least one browser test loading a page outside `/c/{type}` per AGENTS.md §9, which is
+the coverage ADR-038 promised for the admin seam and did not deliver.
+
+---
+
 ## Open questions
 
 - **`is_system` is published as "undeletable" and enforced nowhere** (`architecture.md`). It exists as a cast and an
@@ -3101,7 +3275,7 @@ This is the third time this ADR has been amended in two days, and all three are 
   `org_modules`. The first consumer to want a module on for one org and off for another decides the shape, and
   whether it reuses ADR-022's org → site group → site resolution rather than inventing a second one
 - Storage benchmark at 10k / 100k / 1M entries
-- Blueprint rollback semantics when content already exists
+- ~~Blueprint rollback semantics when content already exists~~ — **settled by ADR-039.** Removal is refused while any entry or revision holds data, and there is no rollback: `is_locked` is permanent and both cascade guards count `withTrashed()`, so the reachable states are applied, and gone with the data destroyed.
 - Revision storage growth — full-JSON snapshots get expensive; consider diffs
 - Do relations target the translation group or a specific locale row (ADR-017)? Group-targeting with an optional locale override is the leading candidate
 - **Name/trademark clearance** — no PHP/CMS collision, but Mozilla's support platform and a Rust ActivityPub project both use "Kitsune." Confirm availability in software/SaaS classes **before** spending on a logo.
