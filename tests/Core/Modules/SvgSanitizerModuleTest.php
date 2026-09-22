@@ -139,7 +139,7 @@ it('refuses an entity attack rather than expanding it', function (string $payloa
  */
 it('refuses a document that sanitised down to nothing', function (): void {
     expect(fn () => (new EnshrinedSvgSanitiser)->sanitise('<svg '.SVG_NS.'><script>alert(1)</script></svg>'))
-        ->toThrow(RuntimeException::class, 'left an empty document');
+        ->toThrow(RuntimeException::class, 'left nothing that draws');
 });
 
 it('refuses an empty file and input that is not XML at all', function (): void {
@@ -262,4 +262,63 @@ it('leaves an ordinary reused symbol alone', function (): void {
     $clean = (new EnshrinedSvgSanitiser)->sanitise($logo);
 
     expect(substr_count($clean, '<use'))->toBe(3)->and($clean)->toContain('#c00');
+});
+
+/*
+ * ────────────────────────────────  Two more, found by review on #148  ────────────────────────────────
+ */
+
+/**
+ * ⚠️ THE REFERENCE CAP COUNTS LOCAL NAMES, BECAUSE A PREFIX IS FREE. An uploader may bind a second prefix to
+ * the SVG namespace and write every reference as `<s:use>`; the literal `substr_count($svg, '<use')` the cap
+ * used to be counts that as zero.
+ *
+ * ⚠️ AND THE PAYLOAD IS CURRENTLY HARMLESS ANYWAY, WHICH IS WHY THIS ASSERTS THE COUNT AND NOT THE CLOCK.
+ * Measured: this library matches its allowlist on the PREFIXED name, so it strips `<s:use>` outright and
+ * never walks it — 0.00s against a shape that costs 25s unprefixed. The guard must not depend on that,
+ * because what it would be depending on is a third-party allowlist this package re-derives at call time.
+ */
+it('counts use references whatever namespace prefix they wear', function (): void {
+    $prefixed = str_replace('<use ', '<s:use ', useGraph(40, 5));
+    $prefixed = str_replace('<svg '.SVG_NS, '<svg '.SVG_NS.' xmlns:s="http://www.w3.org/2000/svg"', $prefixed);
+
+    /* The literal the cap used to use sees none of them. */
+    expect(substr_count($prefixed, '<use'))->toBe(0);
+
+    expect(fn () => (new EnshrinedSvgSanitiser)->sanitise($prefixed))
+        ->toThrow(RuntimeException::class, '`<use>` references and the ceiling is');
+});
+
+/** `<used>` is not `<use>` — the pattern matches an element, not a substring. */
+it('does not count a word that merely starts with use', function (): void {
+    $logo = '<svg '.SVG_NS.'><desc>'.str_repeat('we use used usefully ', 500).'</desc>'
+        .'<rect width="1" height="1"/></svg>';
+
+    expect((new EnshrinedSvgSanitiser)->sanitise($logo))->toContain('<rect');
+});
+
+/**
+ * ⚠️ AN EMPTY WRAPPER IS NOT CONTENT, and the check that only asked "is there a child element" said it was.
+ * `<svg><g><script>…</script></g></svg>` sanitises to `<svg><g></g></svg>`: the dangerous element is gone, a
+ * wrapper survives, and the document stores as a successful upload that renders nothing.
+ */
+it('refuses a document whose only survivor is an empty wrapper', function (string $fragment): void {
+    expect(fn () => (new EnshrinedSvgSanitiser)->sanitise('<svg '.SVG_NS.'>'.$fragment.'</svg>'))
+        ->toThrow(RuntimeException::class, 'left nothing that draws');
+})->with([
+    'script inside a group' => ['<g><script>alert(1)</script></g>'],
+    'empty group' => ['<g></g>'],
+    'empty defs' => ['<defs></defs>'],
+    'wrappers all the way down' => ['<g><g><g></g></g></g>'],
+    /* A title is a tooltip, not a picture — an SVG carrying only one renders blank. */
+    'title alone' => ['<title>a logo, allegedly</title>'],
+]);
+
+/** And a wrapper that does contain something is left alone. */
+it('accepts content nested inside wrappers', function (): void {
+    $clean = (new EnshrinedSvgSanitiser)->sanitise(
+        '<svg '.SVG_NS.'><g><g><circle cx="5" cy="5" r="4" fill="#c00"/></g></g></svg>'
+    );
+
+    expect($clean)->toContain('<circle')->toContain('#c00');
 });

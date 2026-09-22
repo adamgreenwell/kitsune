@@ -11,6 +11,8 @@ declare(strict_types=1);
 namespace Kitsune\SvgSanitizer;
 
 use DOMDocument;
+use DOMElement;
+use DOMText;
 use enshrined\svgSanitize\Sanitizer;
 use Kitsune\Core\Media\SanitisesSvg;
 use RuntimeException;
@@ -58,6 +60,25 @@ final class EnshrinedSvgSanitiser implements SanitisesSvg
     public const MAX_USE_ELEMENTS = 200;
 
     public const USE_NESTING_LIMIT = 6;
+
+    /** `<use`, with or without a namespace prefix — `<use>`, `<s:use>`, `<svg:use />`. */
+    private const USE_ELEMENT = '/<(?:[A-Za-z_][\w.-]*:)?use[\s\/>]/i';
+
+    /**
+     * Elements that draw nothing themselves and only carry other elements.
+     *
+     * ⚠️ USED TO DECIDE WHETHER A SANITISED DOCUMENT STILL SHOWS ANYTHING, and review found the earlier
+     * version accepting an empty one. `<svg><g><script>…</script></g></svg>` sanitises to
+     * `<svg><g></g></svg>`: the dangerous element is gone, a wrapper survives, and a check that asked only
+     * "is there a child element" said yes to a blank image.
+     */
+    private const CONTAINERS = ['g', 'defs', 'symbol', 'a', 'switch'];
+
+    /**
+     * Elements that describe a picture rather than being one. Skipped WITHOUT descending, because their text
+     * is a tooltip or an accessible name — an SVG carrying nothing but `<title>hi</title>` renders blank.
+     */
+    private const DESCRIBES_ONLY = ['title', 'desc', 'metadata', 'style', 'script'];
 
     /**
      * ⚠️ A FRESH `Sanitizer` PER CALL, NOT A SHARED ONE. It carries parser state — the `<use>` nesting graph
@@ -134,15 +155,24 @@ final class EnshrinedSvgSanitiser implements SanitisesSvg
      * claim about what the document means — it is a resource guard, and it is deliberately cruder than
      * anything that tries to understand the markup.
      *
-     * ⚠️ IT OVER-COUNTS ON PURPOSE. `<use` also matches inside a comment or a text node, so a document that
-     * merely talks about `<use>` can be refused. That direction is the safe one: the alternative is parsing
-     * to find out, which is the work being bounded.
+     * ⚠️ IT MATCHES THE LOCAL NAME, SO A NAMESPACE PREFIX DOES NOT SLIP PAST IT — review found the literal
+     * `substr_count($svg, '<use')` it used to be. An uploader may bind a second prefix to the SVG namespace
+     * and write every reference as `<s:use>`, which counts zero against the literal. Measured, that file is
+     * currently harmless: this library matches its allowlist on the PREFIXED name, so it strips `<s:use>`
+     * outright and never walks it — 0.00s against a payload that costs 25s unprefixed. But the guard should
+     * not depend on that, because the thing it depends on is a third-party allowlist this package
+     * deliberately re-derives at call time; a release that matched on local name instead would restore the
+     * denial of service with no change here.
+     *
+     * ⚠️ IT OVER-COUNTS ON PURPOSE. The pattern also matches inside a comment or a text node, so a document
+     * that merely talks about `<use>` can be refused. That direction is the safe one: the alternative is
+     * parsing to find out, which is the work being bounded.
      *
      * @throws RuntimeException
      */
     private static function refuseIfTooManyReferences(string $svg): void
     {
-        $references = substr_count($svg, '<use');
+        $references = preg_match_all(self::USE_ELEMENT, $svg);
 
         if ($references <= self::MAX_USE_ELEMENTS) {
             return;
@@ -184,26 +214,58 @@ final class EnshrinedSvgSanitiser implements SanitisesSvg
          */
         $loaded = @$document->loadXML($clean, LIBXML_NONET);
 
-        if ($loaded === false || ! $document->documentElement instanceof \DOMElement) {
+        if ($loaded === false || ! $document->documentElement instanceof DOMElement) {
             throw new RuntimeException(
                 'Refusing this SVG: the sanitised result is not a document. Nothing was stored.'
             );
         }
 
-        foreach ($document->documentElement->childNodes as $child) {
-            if ($child instanceof \DOMElement) {
-                return;
-            }
-
-            if ($child instanceof \DOMText && trim($child->textContent) !== '') {
-                return;
-            }
+        if (self::drawsSomething($document->documentElement)) {
+            return;
         }
 
         throw new RuntimeException(
-            'Refusing this SVG: sanitising left an empty document, so everything it carried was something the '
-            .'sanitiser removes. That is a blank image rather than the one that was uploaded, so it is '
-            .'refused rather than stored as a success.'
+            'Refusing this SVG: sanitising left nothing that draws, so everything it carried was either '
+            .'removed or an empty wrapper. That is a blank image rather than the one that was uploaded, so '
+            .'it is refused rather than stored as a success.'
         );
+    }
+
+    /**
+     * Does anything under this element actually render?
+     *
+     * ⚠️ RECURSIVE, AND IT ASKS ABOUT CONTENT RATHER THAN ABOUT CHILDREN. A wrapper counts for nothing
+     * however deeply it nests — `<g><g><g></g></g></g>` is as blank as `<svg/>` — so containers are
+     * descended into rather than counted, and anything that is neither a container nor a description
+     * settles it. `<title>` and `<desc>` are skipped without descending: their text is a tooltip or an
+     * accessible name, so an SVG carrying nothing else still renders blank.
+     */
+    private static function drawsSomething(DOMElement $element): bool
+    {
+        foreach ($element->childNodes as $child) {
+            if ($child instanceof DOMElement) {
+                $name = strtolower($child->localName ?? '');
+
+                if (in_array($name, self::DESCRIBES_ONLY, true)) {
+                    continue;
+                }
+
+                if (! in_array($name, self::CONTAINERS, true)) {
+                    return true;
+                }
+
+                if (self::drawsSomething($child)) {
+                    return true;
+                }
+
+                continue;
+            }
+
+            if ($child instanceof DOMText && trim($child->textContent) !== '') {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

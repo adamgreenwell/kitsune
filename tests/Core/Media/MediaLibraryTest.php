@@ -330,7 +330,7 @@ it('writes nothing when the sanitiser refuses the file', function (): void {
     file_put_contents($path, '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>');
 
     expect(fn () => MediaLibrary::store($path, 'empty.svg', $this->imageType))
-        ->toThrow(RuntimeException::class, 'left an empty document');
+        ->toThrow(RuntimeException::class, 'left nothing that draws');
 
     expect(DB::table('entries')->count())->toBe(0)
         ->and(DB::table('media_files')->count())->toBe(0)
