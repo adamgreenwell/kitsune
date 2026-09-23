@@ -42,9 +42,14 @@ trait SyncsFieldRelations
     /**
      * Fills the form's relation state from the entry's existing relations.
      *
-     * ⚠️ Ordered by `relatedIdsForField()`, because an author's arrangement is content. A
-     * picker hydrated from an unordered read reshuffles on every page load, and the author
-     * cannot tell whether their last save took.
+     * ⚠️ Ordered, because an author's arrangement is content. A picker hydrated from an
+     * unordered read reshuffles on every page load, and the author cannot tell whether their
+     * last save took.
+     *
+     * ⚠️ AND FROM THE LINKS THEMSELVES, `linkedIdsForField()`, not the scoped join — so a link to
+     * an entry this site cannot see is kept in the form, shown withheld, and survives the save.
+     * A shared entry is edited from every site of its org (ADR-042 decision 2), and hydrating
+     * through the join detached such a link from any site that could not see its target.
      *
      * @param  array<string, mixed>  $data
      * @return array<string, mixed>
@@ -58,7 +63,7 @@ trait SyncsFieldRelations
         }
 
         foreach ($this->relationFields() as $field) {
-            $ids = $record->relatedIdsForField($field->fieldStorage);
+            $ids = $record->linkedIdsForField($field->fieldStorage);
 
             // ⚠️ A single-value picker wants a scalar, not a one-element array — Filament
             // renders an array into a `multiple()` control and nothing into a single one,

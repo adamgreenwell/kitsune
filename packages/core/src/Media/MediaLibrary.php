@@ -45,6 +45,11 @@ final class MediaLibrary
     /**
      * Store a file as a new media entry, and return the entry.
      *
+     * ⚠️ SHARED ACROSS THE ORG UNLESS ASKED OTHERWISE — ADR-042 decision 2, delivering ADR-021's "the media library
+     * defaults to shared". A shared file has no site and no slug, because an org-shared entry is not publicly
+     * addressable (ADR-021) and `Entry` refuses a slug on one. `$siteOnly` is the uploader's "this site only": the
+     * current site and a slug, as every upload was before, and refused outright when there is no site to stamp.
+     *
      * @param  string  $absolutePath  a readable file on local disk — an upload's temporary path, or a file a
      *                                console command is importing
      * @param  string  $originalName  what the caller called it. Used for the title, never for the location.
@@ -57,6 +62,7 @@ final class MediaLibrary
         EntryType $type,
         string $visibility = 'private',
         ?string $title = null,
+        bool $siteOnly = false,
     ): Entry {
         if (! in_array($visibility, MediaFile::VISIBILITIES, true)) {
             throw new RuntimeException(sprintf(
@@ -92,6 +98,16 @@ final class MediaLibrary
                 'Cannot store media with no organisation in context: a media file is an entry, and an entry '
                 .'write with no org is refused rather than merely unaudited (ADR-020). Set the context first.'
             );
+        }
+
+        $siteId = $siteOnly ? app(Context::class)->siteId() : null;
+
+        if ($siteOnly && $siteId === null) {
+            throw new RuntimeException(sprintf(
+                'Refusing [%s] as "this site only" with no site in context: there is no site to keep it to. Nothing '
+                .'was stored.',
+                $originalName,
+            ));
         }
 
         if (! is_readable($absolutePath)) {
@@ -136,7 +152,7 @@ final class MediaLibrary
                 MediaIntake::refuseIfTooLarge($size, $originalName, MediaIntake::GUARDED_MAX_BYTES);
             }
 
-            return self::write($source, $originalName, $extension, $mime, $size, $orgId, $type, $visibility, $title);
+            return self::write($source, $originalName, $extension, $mime, $size, $orgId, $type, $visibility, $title, $siteId);
         } finally {
             /*
              * ⚠️ `finally`, SO THE TEMPORARY GOES ON BOTH PATHS. A sanitised copy left in the system temp
@@ -164,6 +180,7 @@ final class MediaLibrary
         EntryType $type,
         string $visibility,
         ?string $title,
+        ?int $siteId,
     ): Entry {
         $disk = self::diskFor($visibility);
         $path = self::pathFor($orgId, MediaIntake::storedName($extension));
@@ -187,7 +204,7 @@ final class MediaLibrary
 
         try {
             return Entry::query()->getConnection()->transaction(
-                static function () use ($type, $title, $originalName, $extension, $disk, $path, $mime, $size, $source, $visibility): Entry {
+                static function () use ($type, $title, $originalName, $extension, $disk, $path, $mime, $size, $source, $visibility, $siteId): Entry {
                     /*
                      * ⚠️ THE FLAG AGAIN, UNDER A SHARED LOCK, INSIDE THE WRITE. The check in `store()` refuses before
                      * a byte is written; this one is the one that holds. `kitsune:media-types --force` is the single
@@ -207,11 +224,19 @@ final class MediaLibrary
                         'entry_type_id' => $type->getKey(),
                         'title' => $title ?? pathinfo(basename($originalName), PATHINFO_FILENAME),
                         /*
-                         * The slug carries the stored name's randomness, so two uploads of `logo.png` into one
-                         * site cannot collide on `UNIQUE (site_id, entry_type_id, slug)` — and a retry after a
-                         * failure is a new file rather than a conflict with the one that failed.
+                         * ⚠️ EXPLICIT, AND NULL FOR A SHARED FILE. `EnforcesScope` stamps the current site only when
+                         * the key is absent, and the panel's creation hook leaves an explicit null alone for a media
+                         * type — so absent would have meant "this site", the thing sharing is not.
                          */
-                        'slug' => Str::slug(pathinfo(basename($originalName), PATHINFO_FILENAME) ?: 'file')
+                        'site_id' => $siteId,
+                        /*
+                         * None for a shared file: it is not publicly addressable, and `Entry` refuses a slug on a
+                         * row with no site. A site-only file's slug carries the stored name's randomness, so two
+                         * uploads of `logo.png` into one site cannot collide on `UNIQUE (site_id, entry_type_id,
+                         * slug)` — and a retry after a failure is a new file rather than a conflict with the one
+                         * that failed.
+                         */
+                        'slug' => $siteId === null ? null : Str::slug(pathinfo(basename($originalName), PATHINFO_FILENAME) ?: 'file')
                             .'-'.substr(basename($path, '.'.$extension), 0, 8),
                         /*
                          * ⚠️ PUBLISHED, and the consequence is real rather than hidden: an uploader who lacks

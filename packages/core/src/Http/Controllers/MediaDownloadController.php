@@ -79,9 +79,11 @@ final class MediaDownloadController
 
         /*
          * ⚠️ THE SCOPED QUERY IS THE FIRST GATE AND IT RUNS BEFORE THE POLICY. `SiteScope` is populated by now,
-         * so an entry belonging to another site — or to another org — is simply not found. The policy asks the
-         * same question again on the instance (`EntryPolicy::storedTypeInScope()`), which is not redundant:
-         * the scope constrains the query and says nothing about the object afterwards.
+         * and the panel's tenant scope with it, so an entry kept to another site — or belonging to another org — is
+         * simply not found. An org-shared file IS found, from every site of its org where its type is enabled: that
+         * is ADR-042 decision 2, and `EntryResource::scopeEloquentQueryToTenant()` is where it is decided. The policy
+         * asks the scope's question again on the instance (`EntryPolicy::storedTypeInScope()`), which is not
+         * redundant: the scope constrains the query and says nothing about the object afterwards.
          */
         $entry = Entry::query()->whereKey($media)->first();
 
@@ -96,10 +98,11 @@ final class MediaDownloadController
          * notices. The check normally arrives with `IdentifyEntryType`, which this route cannot invoke because
          * it has no `{type}` segment to identify anything from.
          *
-         * Without it a granted user fetches a shared media entry's bytes from a site that has switched the
-         * `image` type off, while `/c/image` correctly returns 404 there — the same boundary answering two
-         * ways depending on which URL you ask. 404 rather than 403, matching `IdentifyEntryType`: a site that
-         * does not carry this type has nothing to say about the row.
+         * Without it a granted user fetches an entry's bytes from a site that has switched its type off, while
+         * `/c/image` correctly returns 404 there — the same boundary answering two ways depending on which URL you
+         * ask. The panel's widened scope already leaves out a SHARED file of a type switched off here; this is what
+         * still refuses a file kept to this site whose type the site has since switched off. 404 rather than 403,
+         * matching `IdentifyEntryType`: a site that does not carry this type has nothing to say about the row.
          */
         $type = $entry->entryType;
 

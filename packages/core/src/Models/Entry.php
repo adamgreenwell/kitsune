@@ -1897,6 +1897,25 @@ class Entry extends Model implements RequiresModelSave
     }
 
     /**
+     * Whether the STORED row is org-shared — asked of the database, by the key this instance writes to.
+     *
+     * ⚠️ NOT `isShared()`, WHICH READS AN ATTRIBUTE ANYBODY CAN SET. The edit page withholds every control that writes
+     * `slug` from a shared entry (ADR-042 decision 2), and deciding that from the loaded instance would let a form
+     * built on a tampered instance offer the control. `getKeyForAuthorization()` is the original key, the one
+     * `EntryPolicy` asks about; a row that no longer exists is not shared, it is gone.
+     */
+    public function isStoredAsShared(): bool
+    {
+        if (! $this->exists || $this->getKeyForAuthorization() === null) {
+            return false;
+        }
+
+        $row = static::withTrashed()->withoutGlobalScopes()->whereKey($this->getKeyForAuthorization())->first(['site_id']);
+
+        return $row !== null && $row->getAttribute('site_id') === null;
+    }
+
+    /**
      * Refuse an instance write over a row that has moved or been retyped since it was loaded.
      *
      * ⚠️ THE AUTHORIZATION READ AND THE WRITE ARE IN DIFFERENT TRANSACTIONS, which review pointed out and
@@ -2651,6 +2670,39 @@ class Entry extends Model implements RequiresModelSave
             // rather than a corner of it.
             ->orderBy('entry_relations.id')
             ->pluck('entries.id')
+            ->map(fn (int|string $id): int => (int) $id)
+            ->all();
+    }
+
+    /**
+     * Every entry this one links to through one field, in the author's order — including links to entries this site
+     * cannot see.
+     *
+     * ⚠️ READ FROM THE LINKS, NOT THROUGH THE SCOPED JOIN, and that is the whole difference from
+     * `relatedIdsForField()`. ADR-042 decision 2 makes a shared media entry editable from every site of its org, and
+     * it can link to an entry only one of those sites sees. A form hydrated through the join left that link out, and
+     * the save that followed detached it — silently, from a site where the author could not even see what they had
+     * removed. Hydrated from here, the link stays in the form, is shown withheld (`FieldValueRenderer::relationLabels()`)
+     * and survives the save: `sync()` keeps a row it is handed, and only its `ordering` moves, which no endpoint check
+     * re-asks. Cardinality counts it, as it counts every row.
+     *
+     * The rows are this entry's own — it is their source — so reading them unscoped discloses the ids of what it links
+     * to and nothing more; their titles stay behind the scope.
+     *
+     * @return list<int>
+     */
+    public function linkedIdsForField(FieldStorage $storage): array
+    {
+        if (! $this->exists) {
+            return [];
+        }
+
+        return EntryRelation::query()
+            ->where('source_entry_id', $this->getKey())
+            ->where('field_storage_id', $storage->getKey())
+            ->orderBy('ordering')
+            ->orderBy('id')
+            ->pluck('target_entry_id')
             ->map(fn (int|string $id): int => (int) $id)
             ->all();
     }
@@ -3584,44 +3636,78 @@ class Entry extends Model implements RequiresModelSave
             array_keys(array_filter($state, fn (mixed $ids): bool => $ids === null)),
         );
 
-        // Everything field-backed goes, except the fields marked unknown.
-        EntryRelation::query()
+        $live = self::withLiveStorageOnly($state);
+
+        /*
+         * ⚠️ RECONCILED, NOT DELETED AND REBUILT — ADR-042 decision 2. A shared entry is restored from any site of its
+         * org, and may link to an entry only another site sees. Rebuilding recreated that link, and creating a link
+         * asks whether both ends are visible from here — so the restore was refused at every site but the one, over a
+         * link it was not even changing. A link the snapshot keeps is now kept, and only its `ordering` moves, which no
+         * endpoint check re-asks; a link the snapshot does not have is removed; one it has that is missing is created,
+         * with every guard — which still refuses a link to an entry this site cannot see.
+         */
+        $existing = EntryRelation::query()
             ->where('source_entry_id', $this->getKey())
             ->whereNotNull('field_storage_id')
             ->when($unknown !== [], fn ($query) => $query->whereNotIn('field_storage_id', $unknown))
-            ->delete();
+            ->orderBy('id')
+            ->get();
 
-        // ⚠️ A snapshot can name storage that no longer exists, and the insert
-        // below would hit the `entry_relations.field_storage_id` foreign key —
-        // failing the whole restore because an unrelated field was removed.
-        //
-        // DISCARDED rather than refused, unlike a missing target entry. Deleting
-        // the storage row already nulled those pivots (`nullOnDelete`), so the
-        // relation is gone as a concept: there is no field left to restore it
-        // into, and no version of this entry that could have it back. Refusing
-        // would make every revision written before that field was removed
-        // permanently unrestorable. It is the same rule `relationState()` applies
-        // when it skips a null `field_storage_id`.
-        foreach (self::withLiveStorageOnly($state) as $storageId => $ids) {
-            // Unknown: nothing was deleted above and nothing is rebuilt here.
+        /* First, which rows the snapshot keeps and at what position, and what it names that is not there. */
+        $kept = [];
+        $missing = [];
+
+        foreach ($live as $storageId => $ids) {
+            // Unknown: nothing is removed and nothing is rebuilt.
             if ($ids === null) {
                 continue;
             }
 
-            foreach ($ids as $ordering => $targetId) {
-                EntryRelation::create([
-                    // ⚠️ `org_id` explicitly. The `related()` relation supplies
-                    // it through `withPivotValue()`, and writing `EntryRelation`
-                    // directly does not — it defaulted to 0 and the model's own
-                    // guard refused the row, rolling the whole restore back. A
-                    // relation belongs to the org of the entry it hangs off.
-                    'org_id' => $this->org_id,
-                    'source_entry_id' => $this->getKey(),
-                    'target_entry_id' => (int) $targetId,
-                    'field_storage_id' => (int) $storageId,
-                    'ordering' => $ordering,
-                ]);
+            foreach (array_values($ids) as $ordering => $targetId) {
+                $row = $existing->first(fn (EntryRelation $relation): bool => ! isset($kept[$relation->getKey()])
+                    && (int) $relation->field_storage_id === (int) $storageId
+                    && (int) $relation->target_entry_id === (int) $targetId);
+
+                if ($row !== null) {
+                    $kept[$row->getKey()] = $ordering;
+                } else {
+                    $missing[] = [(int) $storageId, (int) $targetId, $ordering];
+                }
             }
+        }
+
+        /*
+         * ⚠️ THEN REMOVED BEFORE ANYTHING IS CREATED, because cardinality counts the rows that are there: a one-link
+         * field restored from X back to Y would otherwise hold both for a moment, and its guard would refuse Y.
+         * Everything field-backed the snapshot does not keep goes, except the fields marked unknown — every row of a
+         * field the snapshot does not name included, and of one whose storage no longer exists.
+         */
+        $removed = $existing->reject(fn (EntryRelation $relation): bool => isset($kept[$relation->getKey()]))->modelKeys();
+
+        if ($removed !== []) {
+            EntryRelation::query()->whereKey($removed)->delete();
+        }
+
+        foreach ($existing as $relation) {
+            if (isset($kept[$relation->getKey()]) && (int) $relation->ordering !== $kept[$relation->getKey()]) {
+                $relation->ordering = $kept[$relation->getKey()];
+                $relation->save();
+            }
+        }
+
+        foreach ($missing as [$storageId, $targetId, $ordering]) {
+            EntryRelation::create([
+                // ⚠️ `org_id` explicitly. The `related()` relation supplies
+                // it through `withPivotValue()`, and writing `EntryRelation`
+                // directly does not — it defaulted to 0 and the model's own
+                // guard refused the row, rolling the whole restore back. A
+                // relation belongs to the org of the entry it hangs off.
+                'org_id' => $this->org_id,
+                'source_entry_id' => $this->getKey(),
+                'target_entry_id' => $targetId,
+                'field_storage_id' => $storageId,
+                'ordering' => $ordering,
+            ]);
         }
     }
 
@@ -3679,8 +3765,8 @@ class Entry extends Model implements RequiresModelSave
      *
      * A relation always belongs to the org of the entry it hangs off, so
      * there is no case where these could legitimately differ. org_id is
-     * non-nullable and EnforcesScope stamps it on create, so it is always
-     * available here.
+     * non-nullable and EnforcesScope stamps it on create, so a stored entry
+     * always has one — but see the blank model below, which is not stored.
      *
      * @return GuardedBelongsToMany<Entry, $this>
      */
@@ -3711,8 +3797,19 @@ class Entry extends Model implements RequiresModelSave
             ->using(EntryRelation::class)
             ->withPivot(['org_id', 'field_storage_id', 'ordering']);
 
-        // org_id is declared non-nullable, and EnforcesScope stamps it on
-        // create, so by the time a relation is reached it is always set.
+        /*
+         * ⚠️ EXCEPT ON THE BLANK MODEL ELOQUENT BUILDS A QUERY FROM. `whereHas()`, `whereDoesntHave()` and eager loading
+         * ask for the relation on an empty `Entry` — no key, no org — and withPivotValue() refuses a null, so every one
+         * of them threw; the admin's Attach dialog, which excludes entries already attached that way, answered no search
+         * until ADR-042's browser test made one. Such a relation writes nothing, and every row it reads is fenced by the
+         * keys of a parent query that was scoped already. A stored entry still stamps and constrains, and one loaded
+         * without its org still throws. Read as an attribute, because `@property int $org_id` describes a stored entry,
+         * and this is the one that is not.
+         */
+        if (! $this->exists && $this->getAttribute('org_id') === null) {
+            return $relation;
+        }
+
         return $relation->withPivotValue('org_id', $this->org_id);
     }
 }

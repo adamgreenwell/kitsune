@@ -18,6 +18,7 @@ use Filament\Actions\ViewAction;
 use Filament\Facades\Filament;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
+use Filament\Panel;
 use Filament\Resources\Resource;
 use Filament\Schemas\Components\Component;
 use Filament\Schemas\Schema;
@@ -27,10 +28,12 @@ use function Filament\Support\original_request;
 
 use Filament\Tables\Columns\Column;
 use Filament\Tables\Columns\TextColumn;
+use Filament\Tables\Enums\PaginationMode;
 use Filament\Tables\Table;
 use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Filament\Resources\Entries\Pages\CreateEntry;
@@ -42,7 +45,9 @@ use Kitsune\Core\Filament\Schemas\FieldValueRenderer;
 use Kitsune\Core\Filament\Schemas\SiteTime;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
+use Kitsune\Core\Models\EntryTypeAvailability;
 use Kitsune\Core\Models\Field;
+use Kitsune\Core\Models\Site;
 use Kitsune\Core\Validation\Rule;
 
 /**
@@ -140,7 +145,14 @@ class EntryResource extends Resource
                 ->maxLength(255)
                 // A slug is generated from the title and carries its script.
                 ->extraInputAttributes(['dir' => 'auto'])
-                ->helperText('Left empty for org-shared entries, which are not publicly addressable.')
+                /*
+                 * ⚠️ WITHHELD FROM AN ORG-SHARED ENTRY — ADR-042 decision 2, making ADR-021's rule a guard. A shared
+                 * entry is not publicly addressable, so it has no slug, and `AuditedBuilder` refuses one; offering the
+                 * control would put a refusal behind every edit. Asked of the stored row, and a hidden control is not
+                 * sent, so an ordinary save of a shared entry never names the column.
+                 */
+                ->hidden(fn (?Entry $record): bool => $record?->isStoredAsShared() ?? false)
+                ->helperText('The entry\'s address on this site. Entries shared across the organisation have none.')
                 // scopedUnique, never Laravel's unique: that rule does not go
                 // through Eloquent, so it ignores global scopes and would tell
                 // one org that another org holds the slug.
@@ -362,7 +374,33 @@ class EntryResource extends Resource
             // Record links are exactly what 500s without isPersistent: true.
             ->recordActions([ViewAction::make(), EditAction::make()])
             ->toolbarActions([BulkActionGroup::make([DeleteBulkAction::make()])])
-            ->defaultSort(self::DEFAULT_SORT, 'desc');
+            ->defaultSort(self::DEFAULT_SORT, 'desc')
+            ->paginationMode(static fn (): PaginationMode => self::paginationModeFor(
+                app()->bound(EntryType::class) ? app(EntryType::class) : null,
+            ))
+            /*
+             * ⚠️ AND "SELECT ALL" MEANS THIS PAGE, or the count comes straight back — review found it. With bulk actions
+             * on, Filament counts every selectable record on each render, and it can read that number off the paginator
+             * only when the paginator has one: a simple paginator does not, so it ran the very `count(*)` the pagination
+             * mode exists to avoid, for every user who may delete. A media list's bulk actions act on the page in view.
+             */
+            ->selectCurrentPageOnly(static fn (): bool => self::paginationModeFor(
+                app()->bound(EntryType::class) ? app(EntryType::class) : null,
+            ) === PaginationMode::Simple);
+    }
+
+    /**
+     * How a type's list pages — decided by Adam on the measurements, ADR-042 decision 2.
+     *
+     * ⚠️ A MEDIA TYPE'S LIST PAGES WITHOUT A TOTAL. Its rows are this site's and the org's shared ones, read through the
+     * org-leading index, and that index also holds every other site's files of the type — which a `count(*)` and a deep
+     * `OFFSET` have to walk and throw away. Measured at 290,000 entries (ADR-042's *Measured*), the count took 178 ms on
+     * SQLite and 123 ms on MySQL, on every request to the list, and the last page 178 ms and 165 ms. Previous and Next
+     * need neither; page 1 is one ordered read on all four engines. Every other type keeps its total.
+     */
+    public static function paginationModeFor(?EntryType $type): PaginationMode
+    {
+        return $type?->is_media === true ? PaginationMode::Simple : PaginationMode::Default;
     }
 
     /**
@@ -393,6 +431,163 @@ class EntryResource extends Resource
         return $columns;
     }
 
+    /**
+     * Filament's tenant scope for entries: this site's rows, and — for media types only — the org's shared ones.
+     *
+     * ⚠️ ADR-042 DECISION 2, AND THE ONE PLACE FILAMENT'S SITE BOUNDARY IS WIDENED. Filament registers one global
+     * scope per model per panel and calls this through `static::`, so every `Entry` query in the panel passes here:
+     * the list, record binding, the relation picker's search and labels, the related page and Attach, the private
+     * download route and the checks a new link's two ends must pass. Admitting shared media in one place is what keeps
+     * those from disagreeing — a picker that offers a file the save then cannot see. (Relation hydration reads the
+     * links themselves, `Entry::linkedIdsForField()`, so a link this site cannot see is kept rather than dropped.)
+     *
+     * ⚠️ `SiteScope`'S OWN RULE, NARROWED, AND NEVER WIDER. `SiteScope` admits `site_id = S OR (site_id IS NULL AND
+     * org_id = O)` for every type. This admits the second half only for the media types enabled at this site —
+     * ADR-022's availability applied together with the widening, so a shared file whose type is switched off here is
+     * neither listed, offered nor served — and the kernel's `SiteScope` stays ANDed on every query regardless.
+     * `MediaTenantScopeTest` pins the two row for row.
+     *
+     * ⚠️ `org_id` INSIDE THE SHARED ARM, NOT AT THE TOP — measured, on all four engines (ADR-042's *Measured*). At the
+     * top it looked free, since `SiteScope` implies it for every row it admits, and it steered every query onto the
+     * org-leading index: a query across types then walked every row of the org, on every site, and at 290k rows the
+     * picker's search took 287 ms on SQLite and 251 ms on MariaDB against 26 and 162 as built. The media LIST adds the
+     * conjunct itself,
+     * in `getEloquentQuery()`, because that is the one read the org-leading index serves in order.
+     */
+    public static function scopeEloquentQueryToTenant(Builder $query, ?Model $tenant): Builder
+    {
+        $tenant ??= Filament::getTenant();
+
+        if (! $query->getModel() instanceof Entry || ! $tenant instanceof Site) {
+            return parent::scopeEloquentQueryToTenant($query, $tenant);
+        }
+
+        $media = self::sharedMediaTypeIds($tenant);
+
+        if ($media === []) {
+            return parent::scopeEloquentQueryToTenant($query, $tenant);
+        }
+
+        $model = $query->getModel();
+
+        return $query->where(static function (Builder $rows) use ($model, $tenant, $media): void {
+            $rows->where($model->qualifyColumn('site_id'), $tenant->getKey())
+                ->orWhere(static fn (Builder $shared): Builder => $shared
+                    ->whereNull($model->qualifyColumn('site_id'))
+                    ->where($model->qualifyColumn('org_id'), $tenant->org_id)
+                    ->whereIn($model->qualifyColumn('entry_type_id'), $media));
+        });
+    }
+
+    /**
+     * The media types enabled at this site, whose org-shared rows the panel admits.
+     *
+     * Global and org-owned alike, and NOT collapsed by handle: an org that defines its own `image` shadows the global
+     * one in navigation, and the global type's shared files stay reachable where they are linked and served rather
+     * than vanishing from every site at once.
+     *
+     * @return list<int>
+     */
+    public static function sharedMediaTypeIds(Site $site): array
+    {
+        // Scalars only, for `once()`'s key — AGENTS.md §13.
+        $siteId = (int) $site->getKey();
+        $siteGroupId = $site->site_group_id === null ? null : (int) $site->site_group_id;
+        $orgId = (int) $site->org_id;
+
+        return once(static function () use ($siteId, $siteGroupId, $orgId): array {
+            $ids = EntryType::query()
+                ->where('is_media', true)
+                ->where(static fn (Builder $query): Builder => $query->whereNull('org_id')->orWhere('org_id', $orgId))
+                ->pluck('id')
+                ->map(static fn (mixed $id): int => (int) $id)
+                ->all();
+
+            $enabled = EntryTypeAvailability::enabledMapFor($ids, $siteId, $siteGroupId, $orgId);
+
+            return array_values(array_filter($ids, static fn (int $id): bool => $enabled[$id] ?? true));
+        });
+    }
+
+    /**
+     * Narrow a panel query back to this site's own rows: Filament's unwidened rule.
+     *
+     * For a non-media type's list and a picker with no media target, which can hold no shared row, and for the
+     * dashboard's recent entries and counts, which keep this site's own rows by Adam's decision on ADR-042's
+     * measurement. The OR the widened rule adds would cost each of them its site-leading read.
+     *
+     * @template TModel of Model
+     *
+     * @param  Builder<TModel>  $query
+     * @return Builder<TModel>
+     */
+    public static function onlyThisSitesRows(Builder $query): Builder
+    {
+        // No panel at all — a host without Filament's provider, or a test that boots none — leaves nothing to narrow.
+        if (! app()->bound('filament')) {
+            return $query;
+        }
+
+        $panel = Filament::getCurrentPanel();
+        $tenant = Filament::getTenant();
+
+        if ($panel === null || ! $panel->hasTenancy() || ! $tenant instanceof Site) {
+            return $query;
+        }
+
+        /*
+         * Filament's own rule for a `BelongsTo` ownership — `scopeEloquentQueryToTenant()` is exactly this `whereBelongsTo()`
+         * for one — applied directly rather than through `parent::`, whose signature is not generic.
+         */
+        return $query
+            ->withoutGlobalScope($panel->getTenancyScopeName())
+            ->whereBelongsTo($tenant, static::getTenantOwnershipRelationshipName());
+    }
+
+    /**
+     * Filament's creation hook, which stamps the tenant on every new entry — except an explicitly shared media one.
+     *
+     * ⚠️ THE OTHER THING FILAMENT'S TENANCY DOES TO ENTRIES. Its `creating` listener associates the current site
+     * with every record created in the panel, so `MediaLibrary::store()`'s explicit `site_id = null` was overwritten
+     * and no panel upload could be shared. This leaves that one case alone: the attribute present and null, on a
+     * type whose STORED flag says media. Everything else is stamped as before — `Entry::create(['site_id' => null])`
+     * on an article included, which the slug guard and `SiteScope` would otherwise have to reason about.
+     *
+     * Filament's `created` listener is not repeated: for a `BelongsTo` ownership it returns without doing anything.
+     */
+    public static function observeTenancyModelCreation(Panel $panel): void
+    {
+        if (! static::isScopedToTenant()) {
+            return;
+        }
+
+        Entry::creating(static function (Entry $entry) use ($panel): void {
+            if (Filament::getCurrentPanel() !== $panel) {
+                return;
+            }
+
+            $tenant = Filament::getTenant();
+
+            if (! $tenant) {
+                return;
+            }
+
+            $attributes = $entry->getAttributes();
+
+            if (array_key_exists('site_id', $attributes)
+                && $attributes['site_id'] === null
+                && (bool) EntryType::query()->whereKey($entry->getAttribute('entry_type_id'))->value('is_media')) {
+                return;
+            }
+
+            $relationship = static::getTenantOwnershipRelationship($entry);
+
+            if ($relationship instanceof BelongsTo) {
+                $relationship->associate($tenant);
+            }
+        });
+    }
+
     /** @return Builder<Entry|Model> */
     public static function getEloquentQuery(): Builder
     {
@@ -405,7 +600,26 @@ class EntryResource extends Resource
         // URL. IdentifyEntryType has already resolved exactly which type this
         // URL means, including precedence, so use its answer.
         if (app()->bound(EntryType::class)) {
-            return $query->where('entry_type_id', app(EntryType::class)->getKey());
+            $type = app(EntryType::class);
+            $query->where('entry_type_id', $type->getKey());
+
+            /*
+             * ⚠️ A MEDIA TYPE'S LIST ADMITS SHARED ROWS; ANY OTHER TYPE'S IS THIS SITE'S, AS IT ALWAYS WAS. The
+             * widened rule could admit no row of a non-media type here, and would cost its list the ordered read
+             * of `(site_id, entry_type_id, updated_at)`.
+             */
+            if (! $type->is_media) {
+                return self::onlyThisSitesRows($query);
+            }
+
+            /*
+             * ⚠️ AND THE MEDIA LIST SAYS `org_id`, which every row it admits already has: it is the prefix that lets
+             * `(org_id, entry_type_id, updated_at)` deliver the page in order — one ordered index read on all four
+             * engines, where `SiteScope`'s OR alone is a multi-index OR and a sort of every matching row.
+             */
+            $tenant = Filament::getTenant();
+
+            return $tenant instanceof Site ? $query->where($query->qualifyColumn('org_id'), $tenant->org_id) : $query;
         }
 
         $type = request()->route()?->parameter('type')

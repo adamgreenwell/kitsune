@@ -913,7 +913,8 @@ UNIQUE (translation_group, site_id)        -- one entry per group per site
 > ⚠️ **Amended 2026-09-23 by ADR-042 — the rule becomes a guard.** It has been stated here, in `architecture.md`, in
 > the slug field's helper text and on `Entry::isShared()`, and enforced by nothing, because nothing in the admin wrote
 > an org-shared row until ADR-042 made media shared by default. ADR-042 decides that `Entry` refuses a non-null
-> `slug` where `site_id` is null, through the instance and in bulk. Not yet built.
+> `slug` where `site_id` is null, through the instance and in bulk — and it does: `AuditedBuilder` refuses it on every
+> write that reaches the column, inside `withoutScopeBecause()` as well (`SharedSlugGuardTest`).
 
 ### ⚠️ The security consequence of mapping Filament's tenant to Site
 
@@ -926,9 +927,9 @@ Filament's tenancy segment is now the **Site**. This keeps the route contract at
 > request can list or serve an org-shared entry, and Filament's `creating` listener stamps the site on every new one.
 > ADR-042 decides that, **for media types**, the scope admits this site's rows and the org's `site_id IS NULL` rows —
 > exactly `SiteScope`'s rule, pinned to agree with it — and that the creation hook leaves an explicit NULL alone.
-> Every other type keeps `site_id = {site}`. Org isolation is still Kitsune's to enforce, as below. Not yet built:
-> until ADR-042 lands, the admin's scope for every entry is still `site_id = {site}`, and nothing pins it to
-> `SiteScope`.
+> Every other type keeps `site_id = {site}`. Org isolation is still Kitsune's to enforce, as below. Built as ADR-042
+> records: the widening is applied row by row, to the shared rows of the media types enabled at the site, and
+> `MediaTenantScopeTest` pins it to `SiteScope` under Filament's own scope.
 
 **Kitsune's kernel must therefore enforce org isolation itself.** ADR-009's mitigation is revised from one attribute pair to three, still fail-closed:
 
@@ -3765,7 +3766,7 @@ every row, asserted so that a later change to populate it is a visible decision 
 
 ## ADR-042 — The media admin: shared by default, uploaded through one path, and withdrawn from the web when deleted
 
-**Status:** Decided · 2026-09-23 · **Amended 2026-09-23** — *Enforced by* reports the slice declaring media types, which landed · **Delivers ADR-021's "the media library defaults to shared"**, which the store path shipped in #145 contradicts, and **amends ADR-021** — for media types, the admin's tenant scope admits the org's shared rows, and the org-shared slug rule becomes a guard · **Amends ADR-016 and `field-types.md` §5** — a media type is any type declared as one, not a system type · **Amends ADR-041** — moves private files to a disk that is never served, decides that a soft-deleted public file's bytes leave the public disk and that a force-delete withdraws a public file before its rows go and then disposes of the path on both media disks, records that Livewire's staging was never under the upload rules as shipped, and brings its *Enforced by* up to date · **Amends `architecture.md`'s published `entry_types` shape** (gains `is_media`, with its migration) · **Phase 5 (ADR-011, v1.0)** — the admin half ADR-041 left, and the half the DAM starter waits on
+**Status:** Decided · 2026-09-23 · **Amended 2026-09-23** — *Enforced by* reports the slice declaring media types, which landed, and the slice making media shared by default; decision 2 records how the widening was built, the three changes its measurement led Adam to make and the three costs Adam accepted, and AGENTS.md §4 is amended for an org-leading index · **Delivers ADR-021's "the media library defaults to shared"**, which the store path shipped in #145 contradicts, and **amends ADR-021** — for media types, the admin's tenant scope admits the org's shared rows, and the org-shared slug rule becomes a guard · **Amends ADR-016 and `field-types.md` §5** — a media type is any type declared as one, not a system type · **Amends ADR-041** — moves private files to a disk that is never served, decides that a soft-deleted public file's bytes leave the public disk and that a force-delete withdraws a public file before its rows go and then disposes of the path on both media disks, records that Livewire's staging was never under the upload rules as shipped, and brings its *Enforced by* up to date · **Amends `architecture.md`'s published `entry_types` shape** (gains `is_media`, with its migration) · **Phase 5 (ADR-011, v1.0)** — the admin half ADR-041 left, and the half the DAM starter waits on
 
 ADR-041 decided how media bytes are stored, delivered, sanitised and disposed of, and #145–#148 built all of it:
 `MediaLibrary::store()`, `MediaIntake`, the panel route that authorises private files, disposal, prune, and SVG
@@ -3917,6 +3918,32 @@ together with the site's type availability — review found an earlier draft let
 linkability reach such a site, which contradicted ADR-022 without amending it. Deleting a shared public file
 withdraws it for every site at once. *This site only* is the way to keep a file out of every other site: unseen,
 unlinked and unchangeable from there.
+
+> ⚠️ **Amended 2026-09-23 — built, and the measurement changed three things; the decisions are Adam's.** *How it is
+> applied:* not per call site but row by row, in the one method Filament calls for every `Entry` query in the panel —
+> `EntryResource::scopeEloquentQueryToTenant()` admits this site's rows and the org's `site_id IS NULL` rows of the
+> media types enabled at this site, so the list, record binding, the download route, the picker's search and labels,
+> the related page and Attach, and the checks a new link's two ends must pass agree without each being taught. Opting
+> in call by call was rejected because a missed read disagrees silently with the others. Relation hydration is the
+> exception, deliberately: it reads the links themselves, so a link this site cannot see is kept (below). The list of surfaces above named
+> `scopedExists`, which the admin never reaches. `MediaTenantScopeTest` pins the rule to `SiteScope` row for row,
+> under Filament's own scope, which the PHP suite could not see until `PanelTenancy` registered it. The media types are
+> every one enabled here, global and org-owned, not collapsed by handle: an org that shadows the global `image` keeps
+> the global type's shared files reachable where they are linked and served.
+>
+> *What the measurement changed (see Measured, below):* the media list says `org_id = {org}` itself and reads a new
+> `(org_id, entry_type_id, updated_at)` index in order — AGENTS.md §4 amended, by Adam, for a row that has no site to
+> lead with. That index also holds every other site's files of the type, so a `count(*)` and a deep `OFFSET` walk and
+> discard them, and at 290k rows the widened count took 178 ms on SQLite and 123 ms on MySQL. So a media type's list
+> pages with Previous and Next and no total, and the dashboard's counts join Recent in keeping this site's own rows, the
+> media stat saying so — both decided by Adam on those numbers. Every other type's list keeps its total and `site_id =
+> {site}`, SQL and all.
+>
+> *Links a site cannot see* (decided by Adam): a shared entry is edited from every site of its org and may link to an
+> entry only one of them sees. The form hydrates from the links themselves, shows such a link withheld — "not visible
+> from this site", as a link to a type the editor may not view already was — and a save keeps it; a restore keeps it
+> too, reconciling links rather than rebuilding them, which asked every endpoint again. Creating a link to an entry this
+> site cannot see is still refused.
 
 **3. Upload lives inside `EntryResource`, and adds no route shape.** On `/c/{type}` for a media type, the list
 carries an **Upload** header action whose modal holds a Filament `FileUpload`. It accepts several files, each
@@ -4158,11 +4185,63 @@ rows on all four engines, under decision 2's widened scope, with the shape that 
 by its plan rather than by an index's existence; and the time a soft delete holds its rows locked while public
 files move (decision 5).
 
-⚠️ **Expect a 4 MB upload to fail on stage until a runbook change raises the ceiling.** The runbook's NGX-2 admits
-only directives it has reviewed and `client_max_body_size` is not among them, so a stage configuration that passes
-NGX-2 runs nginx's 1 MiB default; and stage's PHP upload limits are recorded nowhere in the repository. That change
-has its own review, and it comes before the upload half of the measurement. The tile half can be taken now, with
-files stored from the console.
+### Measured — decision 2, 2026-09-23
+
+`php bin/benchmark-shared-media.php`, pointed at a database named `*bench*` on each engine — SQLite 3.53.4, PostgreSQL
+17.11, MySQL 8.4.11 and MariaDB 10.6.28, the three servers in the repository's `compose.yaml` containers on an Apple
+silicon laptop. A skewed corpus of 290,000 entries: for the measured site, 50,000 images shared across its org and
+10,000 of its own; 100,000 images on a sibling site of the same org, which no statement may return and the org-leading
+index holds; 50,000 articles on each site; 30,000 images another org shares on the same global type; one row in twenty
+soft-deleted. Unforced plans after `ANALYZE`, and without statistics on SQLite; median of seven warm runs, in ms.
+
+| statement | SQLite | PostgreSQL | MySQL | MariaDB |
+|---|---|---|---|---|
+| **As built** | | | | |
+| media list, page 1 (11 rows, simple pagination) | 0.10 | 1.62 | 0.90 | 1.04 |
+| media list, page 50 by Next | 1.62 | 2.20 | 2.79 | 2.99 |
+| media list, title search matching one file | 180.47 | 19.69 | 193.05 | 160.06 |
+| media list, sorted by title | 175.56 | 11.85 | 169.95 | 140.54 |
+| media list, sorted by status | 174.66 | 11.66 | 167.26 | 142.01 |
+| relation picker for images, search | 25.71 | 28.53 | 151.01 | 160.70 |
+| relation picker for articles, search (no media target: this site's own) | 13.74 | 27.36 | 49.25 | 59.69 |
+| relation picker, labels | 0.06 | 1.65 | 1.11 | 0.96 |
+| dashboard counts, this site's own | 14.94 | 12.42 | 52.45 | 43.94 |
+| recent entries, this site's own | 0.07 | 1.51 | 1.37 | 0.93 |
+| article list, page 1 (control) | 0.07 | 1.50 | 1.32 | 0.97 |
+| **Before this slice**, the unwidened rule | | | | |
+| media list, page 1 | 0.07 | 1.64 | 1.32 | 1.00 |
+| media list count | 0.82 | 2.54 | 7.44 | 7.11 |
+| media list, title search matching one file | 3.44 | 5.81 | 10.59 | 10.00 |
+| media list, sorted by title | 1.22 | 3.55 | 12.31 | 8.49 |
+| relation picker for images, search | 21.33 | 27.30 | 43.45 | 51.16 |
+| **Rejected** | | | | |
+| media list count, which full pagination runs on every request | 178.49 | 9.29 | 123.15 | 38.53 |
+| media list, last page by offset | 178.06 | 19.18 | 165.14 | 150.19 |
+| media list, page 1 with no org conjunct | 180.16 | 10.58 | 155.58 | 139.97 |
+| dashboard counts, widened | 221.67 | 15.98 | 159.61 | 76.57 |
+| relation picker for articles, search, widened | 14.19 | 25.65 | 80.91 | 90.11 |
+| relation picker for images, search, `org_id` at the top of the rule | 283.54 | 27.74 | 147.16 | 248.28 |
+
+What it decided, with Adam: the media list names `org_id` and reads `(org_id, entry_type_id, updated_at)` in order;
+it pages without a total and its "select all" means the page in view, since a count and a deep offset walk every site's
+files of the type — review found Filament's bulk selection running the count on every render until the second was
+set; the dashboard's counts keep this site's own rows; `org_id` sits inside the rule's shared arm, not at its top; and a
+relation picker whose targets include no media type reads this site's rows alone, which the widened rule could not add
+to. A covering count index was measured too, and rejected: it took SQLite's counts to 11–47 ms but moved MySQL's and
+MariaDB's page 1 from about 1 ms to 44–60 ms by drawing the planner off the ordered index, and fixed no deep page.
+`MediaListPlanTest` keeps the page's ordered read true by its plan on every engine, with the control that the page sorts
+without the conjunct.
+
+⚠️ **Three costs are carried rather than removed, all under the 200 ms bar at this corpus and all growing with the
+org's — or, for the picker, the installation's — files of the type.** A media list's **title search** and its **sort by
+title or status** walk the org-wide range the count did, because neither can stop early: 160–193 ms on SQLite, MySQL and
+MariaDB against 1–12 ms before. The **image picker's search** on MySQL and MariaDB is 151–161 ms against 43–51 ms
+before: the old rule's `site_id = ?` let them read this site's rows alone, and the widened rule's OR leaves no single
+site to narrow by, so both read through `type_handle`'s index, which holds every file of the type in the installation.
+SQLite and PostgreSQL barely move for the picker, and PostgreSQL's list stays under 20 ms for all three. **Adam
+accepted all three as carried costs, 2026-09-23**, rather than pursue indexes for them before merge; they are the first
+things here to revisit. The soft-delete lock time is decision 5's measurement and lands with its code — decided by
+Adam, 2026-09-23.
 
 ### What this costs
 
@@ -4224,6 +4303,39 @@ installation is scheduled.
 > definition under the name is replaced. `MediaDeliveryTest` and `MediaDisposalTest` serve and dispose of a row still
 > naming `local` from `local`, and `kitsune:media-prune` sweeps every disk a row names. **Not yet:**
 > `kitsune:media-reconcile`, which is to move those rows, lands with the deletion protocol.
+
+> ⚠️ **Amended 2026-09-23 — the slice making media shared by default landed**, and each guard it adds was removed in
+> turn and its test watched fail. **Sharing:** `MediaLibraryTest` — `store()` writes no site and no slug by default and
+> the site and a slug for *this site only*, which it refuses with no site in context. `MediaTenantScopeTest`, under
+> Filament's own scope — the widened rule and `SiteScope` agree row for row, differing exactly on a shared entry that is
+> not media and a shared file whose type is off here; a sibling site sees the shared file and not this site's; a site
+> with every media type off admits no shared row and asks nothing; switching a type off here stops admitting its shared
+> files; another org's shared file on a type both orgs share is never admitted; a shared upload stays shared through
+> the creation hook, and anything else created with no site is stamped; a link to a shared file is accepted from a
+> sibling site and refused where its type is off and from another org's site; a non-media list and Recent keep `site_id
+> = {site}`, and so do the dashboard's counts; a media list pages without a total, its "select all" means the page in
+> view, and it names `org_id` itself; a relation picker with no media target reads this site's rows alone, by its
+> statement, while one with a media target keeps the widened rule. `MediaListPlanTest` pins the page's ordered read by
+> its plan on all four engines, with the control that the same page sorts without the conjunct.
+> `SharedSlugGuardTest` — a slug on a shared entry is refused on create, quiet create, save, quiet save, sharing a
+> slugged row, bulk writes and every arithmetic write's extra columns, raw expressions, a JSON path into either column
+> and every spelling the engine folds, inside `withoutScopeBecause()` too; `SharedSlugControlTest` — a slug-typed field's control is withheld from a stored-shared
+> entry, asked of the row. `HiddenLinksTest` — a link this site cannot see is hydrated, labelled withheld, kept by a
+> save and by a restore, and a one-link field restores in the order cardinality needs. `MediaDeliveryTest` — a site-only
+> file is refused at a sibling site and its shared twin served. In the browser, `media-sharing.spec.js`: the shared
+> file is listed, opened, served and offered at `golfdom-fr`, where the site-only map is not; its edit page offers no
+> slug; a product saved there keeps it; a link it holds to an article only `golfdom` sees survives a save at
+> `golfdom-fr`; at `golfdom-nested`, where `image` is off, it is neither listed nor served, and neither the picker nor
+> the Attach dialog offers it, with `golfdom-fr`'s dialog as the control; on the rival's site it is refused and not
+> offered, beside the rival's own. The image list states no total and the article list does. **Found on the way:**
+> the Related page's Attach dialog had never answered a search. Filament guessed its inverse relationship as `entries`,
+> which `Entry` does not have, and `Entry::relationsThrough()` refused the blank model Eloquent builds for `whereHas()`,
+> `whereDoesntHave()` and eager loading, since it has no org; `admin.spec.js` only ever opened the dialog. Both are
+> fixed, `EntrySchemaTest` asks all three of a query and still refuses a stored entry loaded without its org, and
+> the Attach test above answers with a match in each dialog, so an empty one proves nothing. **Not yet:** a file uploaded
+> *through the panel* — the Upload action waits for decision 4's staging, so the browser half uses seeded shared files;
+> the soft-delete lock time, which measures decision 5's code and lands with it; and the *this site only* control in
+> the upload modal.
 
 When it lands:
 
@@ -4311,6 +4423,10 @@ When it lands:
 - **A file's visibility cannot change after upload.** Nothing decides whether flipping private to public is allowed,
   which action gates it, or how it is audited. (`disk` becomes mutable under ADR-042's decision 5; `visibility` does
   not.)
+- **A file's sharing is decided at upload, and nothing decides whether it may change.** An instance save can move a
+  shared file onto a site or share a site-only one today — `EnforcesScope` guards the move, and the slug rule refuses a
+  shared row with a slug — but nothing in the admin does it, and nothing decides who may, how it is audited, or what
+  happens to links from sites that lose sight of it. ADR-042 records it beside visibility rather than locking it.
 - **Edited migrations never reach a deployed database.** `0001_01_01_000001_create_kitsune_schema_tables.php` has been
   edited in place six times since #19 created it (#30, #35, #43, #45, #82, #102), and `deploy/release.sh` runs
   `migrate --force`, which skips a

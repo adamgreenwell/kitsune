@@ -20,4 +20,7 @@ return [
         'holds_media_help' => 'Entries of this type are uploaded files rather than written in a form. Decide now: it cannot be changed once the type exists.',
         'holds_media_locked' => 'Decided when this type was created, and fixed from then on.',
     ],
+    'dashboard' => [
+        'site_own' => 'this site\'s own, not the files shared across the organisation',
+    ],
 ];

@@ -130,6 +130,7 @@ class AuditedBuilder extends ScopedBuilder
         $this->guardScopeKeys($values);
         $this->refuseNoncanonicalStatus($values);
         $this->refuseUnpermittedCreationAsPublished($values);
+        $this->refuseSlugOnSharedInsert($values);
 
         return DB::transaction(function () use ($values, $sequence, $model) {
             $id = parent::insertGetId($values, $sequence);
@@ -366,6 +367,7 @@ class AuditedBuilder extends ScopedBuilder
         return $this->auditing($this->actionFor($values), function () use ($values) {
             $this->refuseIfTheRowMoved('update');
             $this->refuseRetypeAcrossMediaBoundary($values);
+            $this->refuseSlugOnSharedRows($values);
             $this->refuseUnpermittedPublication($values);
 
             return parent::update($values);
@@ -509,6 +511,126 @@ class AuditedBuilder extends ScopedBuilder
                 );
             }
         }
+    }
+
+    /**
+     * Refuse an org-shared entry with a slug — ADR-021's rule, which ADR-042 decision 2 makes a guard.
+     *
+     * ⚠️ PUBLISHED SINCE SEPTEMBER AND ENFORCED BY NOTHING. ADR-021, `architecture.md`, the slug field's helper text and
+     * `Entry::isShared()` all say an org-shared entry is not publicly addressable, so its `slug` is NULL — and nothing
+     * wrote a shared row until `MediaLibrary::store()` began to. Asked at the builder, where the instance, quiet and
+     * bulk writes all arrive, and inside `withoutScopeBecause()` too: the escape hatch decides which path may write a
+     * column, not what it may hold.
+     *
+     * ⚠️ ABSENT IS NULL. A quiet create skips the site stamp and the column's default is NULL, so a row that names no
+     * site is a shared row. `''` is a slug — a NOT NULL value — and a raw expression is refused on either column,
+     * because what it writes cannot be read until the database has run it.
+     *
+     * @param  array<string, mixed>  $values
+     */
+    private function refuseSlugOnSharedInsert(array $values): void
+    {
+        $this->refuseJsonPathIntoSiteOrSlug($values);
+
+        [$writesSite, $site] = $this->writtenColumn($values, 'site_id');
+        [$writesSlug, $slug] = $this->writtenColumn($values, 'slug');
+
+        if ($site instanceof Expression || $slug instanceof Expression) {
+            throw self::sharedSlugRefusal(null);
+        }
+
+        if ($writesSlug && $slug !== null && (! $writesSite || $site === null)) {
+            throw self::sharedSlugRefusal(is_scalar($slug) ? (string) $slug : null);
+        }
+    }
+
+    /**
+     * The same rule for a write to rows that exist, asked of the rows `auditing()` has locked when the write names only
+     * one of the two columns — and of nothing at all when it names neither, so a soft delete or a restore costs no query.
+     *
+     * @param  array<string, mixed>  $values
+     */
+    private function refuseSlugOnSharedRows(array $values): void
+    {
+        $this->refuseJsonPathIntoSiteOrSlug($values);
+
+        [$writesSite, $site] = $this->writtenColumn($values, 'site_id');
+        [$writesSlug, $slug] = $this->writtenColumn($values, 'slug');
+
+        if (! $writesSite && ! $writesSlug) {
+            return;
+        }
+
+        if ($site instanceof Expression || $slug instanceof Expression) {
+            throw self::sharedSlugRefusal(null);
+        }
+
+        $model = $this->getModel();
+
+        $leavesShared = match (true) {
+            // Both written: the values decide.
+            $writesSite && $writesSlug => $site === null && $slug !== null,
+            // A slug onto rows that may be shared.
+            $writesSlug => $slug !== null
+                && $this->clone()->whereNull($model->qualifyColumn('site_id'))->toBase()->exists(),
+            // Rows made shared that may carry a slug.
+            default => $site === null
+                && $this->clone()->whereNotNull($model->qualifyColumn('slug'))->toBase()->exists(),
+        };
+
+        if ($leavesShared) {
+            throw self::sharedSlugRefusal($writesSlug && is_scalar($slug) ? (string) $slug : null);
+        }
+    }
+
+    /**
+     * ⚠️ A JSON PATH INTO `site_id` OR `slug` IS REFUSED, AND REVIEW FOUND WHY IT HAS TO BE. The rule is judged on the
+     * value a write stores, and a path write does not store its value: SQLite compiles `update(['slug->x' => null])` to
+     * `json_patch(ifnull(slug, json('{}')), …)`, which leaves the text `'{}'` in the column — a non-null slug on a shared
+     * row, while the value this guard would have read was null. Neither column holds JSON, so no legitimate write takes
+     * this shape; like a raw expression, it is refused because what it stores cannot be read here.
+     *
+     * @param  array<string, mixed>  $values
+     */
+    private function refuseJsonPathIntoSiteOrSlug(array $values): void
+    {
+        foreach (array_keys($values) as $written) {
+            if (str_contains((string) $written, '->') && in_array($this->bareColumn((string) $written), ['site_id', 'slug'], true)) {
+                throw new RuntimeException(sprintf(
+                    'Refusing to write [%s]: `site_id` and `slug` hold no JSON, and what a path write stores in them cannot '
+                    .'be read from its value — on SQLite it leaves a non-null slug on a shared entry (ADR-021, ADR-042). '
+                    .'Write the column itself.',
+                    $written,
+                ));
+            }
+        }
+    }
+
+    /**
+     * Whether a write names this column under any spelling the database stores into it, and the value it writes.
+     *
+     * @param  array<string, mixed>  $values
+     * @return array{0: bool, 1: mixed}
+     */
+    private function writtenColumn(array $values, string $column): array
+    {
+        foreach ($values as $written => $value) {
+            if ($this->bareColumn((string) $written) === $column) {
+                return [true, $value];
+            }
+        }
+
+        return [false, null];
+    }
+
+    private static function sharedSlugRefusal(?string $slug): RuntimeException
+    {
+        return new RuntimeException(sprintf(
+            'Refusing to give an org-shared entry a slug%s: an entry with no site is shared across the org and is not '
+            .'publicly addressable, so its slug is empty (ADR-021, ADR-042). Keep the entry to one site to give it an '
+            .'address, or leave the slug out.',
+            $slug === null ? '' : " [{$slug}]",
+        ));
     }
 
     /**
@@ -703,6 +825,7 @@ class AuditedBuilder extends ScopedBuilder
             function () use ($column, $amount, $extra) {
                 $this->refuseIfTheRowMoved('increment');
                 $this->refuseRetypeAcrossMediaBoundary($extra);
+                $this->refuseSlugOnSharedRows($extra);
                 $this->refuseUnpermittedPublication($extra);
 
                 return parent::increment($column, $amount, $extra);
@@ -729,6 +852,7 @@ class AuditedBuilder extends ScopedBuilder
             function () use ($column, $amount, $extra) {
                 $this->refuseIfTheRowMoved('decrement');
                 $this->refuseRetypeAcrossMediaBoundary($extra);
+                $this->refuseSlugOnSharedRows($extra);
                 $this->refuseUnpermittedPublication($extra);
 
                 return parent::decrement($column, $amount, $extra);
@@ -760,6 +884,7 @@ class AuditedBuilder extends ScopedBuilder
             function () use ($columns, $extra) {
                 $this->refuseIfTheRowMoved('increment');
                 $this->refuseRetypeAcrossMediaBoundary($extra);
+                $this->refuseSlugOnSharedRows($extra);
                 $this->refuseUnpermittedPublication([...$columns, ...$extra]);
 
                 return parent::incrementEach($columns, $extra);
@@ -786,6 +911,7 @@ class AuditedBuilder extends ScopedBuilder
             function () use ($columns, $extra) {
                 $this->refuseIfTheRowMoved('decrement');
                 $this->refuseRetypeAcrossMediaBoundary($extra);
+                $this->refuseSlugOnSharedRows($extra);
                 $this->refuseUnpermittedPublication([...$columns, ...$extra]);
 
                 return parent::decrementEach($columns, $extra);

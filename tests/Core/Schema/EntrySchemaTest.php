@@ -91,6 +91,32 @@ describe('relations are a real table (ADR-015)', function (): void {
         expect($asset->referencedBy()->pluck('title')->sort()->values()->all())
             ->toBe(['Article A', 'Article B']);
     });
+
+    /*
+     * ⚠️ ASKED OF A QUERY, NOT ONLY OF AN ENTRY. Eloquent builds these on a blank model with no org, and the relation
+     * refused one, so each of the three threw — the admin's Attach dialog excludes entries already attached through
+     * `whereDoesntHave()`, and answered no search at all.
+     */
+    it('answers whereHas, whereDoesntHave and eager loading, which a blank model builds', function (): void {
+        $asset = Entry::create(['entry_type_id' => $this->article->id, 'title' => 'Photo']);
+        $a = Entry::create(['entry_type_id' => $this->article->id, 'title' => 'Article A']);
+        Entry::create(['entry_type_id' => $this->article->id, 'title' => 'Article B']);
+        $a->related()->attach($asset->id);
+
+        $titles = fn ($query): array => $query->pluck('title')->sort()->values()->all();
+
+        expect($titles(Entry::query()->whereHas('referencedBy', fn ($query) => $query->whereKey($a->id))))->toBe(['Photo'])
+            ->and($titles(Entry::query()->whereDoesntHave('referencedBy', fn ($query) => $query->whereKey($a->id))))
+            ->toBe(['Article A', 'Article B'])
+            ->and(Entry::with('related')->findOrFail($a->id)->related->pluck('title')->all())->toBe(['Photo']);
+    });
+
+    it('still refuses a stored entry loaded without its org', function (): void {
+        $a = Entry::create(['entry_type_id' => $this->article->id, 'title' => 'A']);
+
+        expect(fn () => Entry::query()->select('id')->findOrFail($a->id)->related())
+            ->toThrow(InvalidArgumentException::class);
+    });
 });
 
 describe('attaching a relation', function (): void {

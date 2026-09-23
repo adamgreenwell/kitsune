@@ -58,6 +58,12 @@ The carve-out is exactly this narrow, and all three must hold:
 
 Anything merely convenient to look up unscoped is not this, and still leads with the scope key. If you are reaching for this carve-out to make a read faster, you want a second index, not an exemption.
 
+⚠️ **Amended 2026-09-23 — an org-shared row has no site to lead with (ADR-042 decision 2, decided by Adam).** A `#[SiteScoped]` table whose rows may be org-shared — `entries`, where `site_id IS NULL` means shared across the org (ADR-021) — may carry a lookup index that leads with `org_id` instead, for the reads that admit those rows. `SiteScope`'s rule is `site_id = ? OR (site_id IS NULL AND org_id = ?)`, and no index leading with `site_id` serves that in order: measured at 290,000 entries (ADR-042's *Measured*), a media list's page 1 is a multi-index OR and a sort of every matching row, 180 ms on SQLite and 156 ms on MySQL. With `(org_id, entry_type_id, updated_at)` and an `org_id = ?` conjunct in the query, it is one ordered read — 0.10 ms and 0.90 ms. This is not the carve-out above — the read is scoped, and it is fenced by the org, which is the isolation this rule exists to make cheap. It holds only while three things do:
+
+- the rows the index serves can genuinely have no site — an org-shared row, not merely an unscoped lookup;
+- every query it serves says `org_id = ?` for the current org, so it can never read across orgs cheaply;
+- the site-leading indexes stay for the reads that admit no shared rows, and the migration states all of this beside the index.
+
 ## 5. Never raw SQL in a field type — and there are three drivers
 
 Postgres, MySQL **and SQLite**. All three differ on generated columns, and SQLite differs structurally: it cannot `ALTER TABLE ADD COLUMN` a STORED generated column at all, taking a VIRTUAL one indexed as an expression index. Go through the driver abstraction; `generatedColumnType()` takes the driver for exactly this reason.

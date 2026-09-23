@@ -32,8 +32,11 @@ use Kitsune\Core\Fields\Cell;
 use Kitsune\Core\Fields\Control;
 use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Fields\FieldTypeRegistry;
+use Kitsune\Core\Filament\Resources\Entries\EntryResource;
 use Kitsune\Core\Filament\RichText\BlockDirectionPlugin;
 use Kitsune\Core\Models\Entry;
+use Kitsune\Core\Models\EntryType;
+use Kitsune\Core\Tenancy\Context;
 
 /**
  * Builds the control that edits a field value, and the cell that lists it.
@@ -93,7 +96,7 @@ final class FieldValueRenderer
          * it, because the defect is in what the SAVE does with the component tree.
          */
         if ($control === Control::EntryPicker || ! $config->isMultiValue()) {
-            return self::describe($inner, $config);
+            return self::withheldFromShared(self::describe($inner, $config), $config);
         }
 
         /*
@@ -338,7 +341,7 @@ final class FieldValueRenderer
      * application code that is eventually wrong.
      *
      * So the state lives under `relations.{handle}` and is `dehydrated(false)`. The pages
-     * hydrate it from `Entry::relatedIdsForField()` and write it with
+     * hydrate it from `Entry::linkedIdsForField()` and write it with
      * `syncFieldRelations()` after the entry itself is saved — a relation needs the source
      * entry to exist, so it cannot be part of the same attribute write.
      *
@@ -496,7 +499,7 @@ final class FieldValueRenderer
      *
      * ⚠️ ONLY FOR A LINK THE RECORD ALREADY HOLDS, THROUGH THIS FIELD. That is what separates this from the
      * hole the previous round closed: a FORGED id, or one whose type changed while the form was open, is
-     * still refused, because it is not among `relatedIdsForField()`. The set is asked of the entry rather
+     * still refused, because it is not among `linkedIdsForField()`. The set is asked of the entry rather
      * than of the request.
      *
      * ⚠️ AND THE TARGET-TYPE CONSTRAINT STILL APPLIES TO IT. The permission is the only thing relaxed: a
@@ -540,7 +543,7 @@ final class FieldValueRenderer
             return $labels;
         }
 
-        $already = array_intersect($withheld, $record->relatedIdsForField($config->storage));
+        $already = array_values(array_intersect($withheld, $record->linkedIdsForField($config->storage)));
 
         if ($already === []) {
             return $labels;
@@ -548,6 +551,21 @@ final class FieldValueRenderer
 
         foreach (self::relationScope($targets)->whereKey($already)->pluck('id') as $id) {
             $labels[(int) $id] = sprintf('Entry #%d — you may not view this entry type', (int) $id);
+        }
+
+        /*
+         * ⚠️ AND A LINK TO AN ENTRY THIS SITE CANNOT SEE — ADR-042 decision 2. A shared entry is edited from every site
+         * of its org, and may link to an entry only one of them sees; `linkedIdsForField()` keeps that link in the form,
+         * so it needs a label, or Filament reads it as an invalid option and the editor cannot save. Only ids the scope
+         * does not return at all: one it returns with a type the field no longer accepts stays unlabelled, as before,
+         * so the author meets a validation message rather than an exception after saving.
+         */
+        $unseen = array_diff($already, array_keys($labels), Entry::query()->whereKey($already)->pluck('id')->map(
+            static fn (mixed $id): int => (int) $id,
+        )->all());
+
+        foreach ($unseen as $id) {
+            $labels[(int) $id] = sprintf('Entry #%d — not visible from this site', (int) $id);
         }
 
         return $labels;
@@ -567,7 +585,42 @@ final class FieldValueRenderer
     {
         $query = Entry::query();
 
-        return $targets === [] ? $query : $query->whereIn('type_handle', $targets);
+        if ($targets === []) {
+            return $query;
+        }
+
+        $query->whereIn('type_handle', $targets);
+
+        /*
+         * ⚠️ BACK TO THIS SITE'S ROWS WHEN NO TARGET IS A MEDIA TYPE — review measured why. The panel's scope admits the
+         * org's shared rows of media types only (ADR-042 decision 2), so for a field pointing at articles the widened
+         * rule can add no row; it only takes away the single `site_id = ?` that let MySQL and MariaDB read this site's
+         * rows alone, and their search went from about 45 ms to about 150 ms at 290k rows for nothing. A field that may
+         * point at a media type keeps the widened rule, because that is where shared files are offered.
+         */
+        return self::anyTargetIsMedia($targets) ? $query : EntryResource::onlyThisSitesRows($query);
+    }
+
+    /**
+     * Whether any of these handles names a media type this org can use — global or its own.
+     *
+     * @param  list<string>  $targets
+     */
+    private static function anyTargetIsMedia(array $targets): bool
+    {
+        $orgId = app(Context::class)->orgId();
+
+        return EntryType::query()
+            ->whereIn('handle', $targets)
+            ->where('is_media', true)
+            ->where(static function (Builder $query) use ($orgId): void {
+                $query->whereNull('org_id');
+
+                if ($orgId !== null) {
+                    $query->orWhere('org_id', $orgId);
+                }
+            })
+            ->exists();
     }
 
     /**
@@ -619,6 +672,22 @@ final class FieldValueRenderer
         }
 
         return $config->storage->promotedColumn() ?? 'values.'.$config->handle();
+    }
+
+    /**
+     * Withhold a control that writes `entries.slug` from an org-shared entry — ADR-042 decision 2.
+     *
+     * An org-defined slug-typed field is promoted to that column, so its control is the built-in slug input under
+     * another label, and `EntryResource` withholds that one for the same reason: a shared entry is not publicly
+     * addressable, and `AuditedBuilder` refuses it a slug. Asked of the stored row, never of the instance.
+     */
+    private static function withheldFromShared(Component $component, FieldConfig $config): Component
+    {
+        if (self::statePath($config) !== 'slug') {
+            return $component;
+        }
+
+        return $component->hidden(static fn (?Model $record): bool => $record instanceof Entry && $record->isStoredAsShared());
     }
 
     /** Label, requiredness and help text, which are the field's rather than the type's. */

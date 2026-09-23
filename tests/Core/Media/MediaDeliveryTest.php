@@ -90,14 +90,14 @@ afterEach(function (): void {
     }
 });
 
-function aDeliverableImage(EntryType $type, string $visibility = 'private', string $name = 'photo.png'): Entry
+function aDeliverableImage(EntryType $type, string $visibility = 'private', string $name = 'photo.png', bool $siteOnly = false): Entry
 {
     $path = tempnam(sys_get_temp_dir(), 'kitsune-del-');
     file_put_contents($path, base64_decode(
         'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
     ));
 
-    return MediaLibrary::store($path, $name, $type, $visibility);
+    return MediaLibrary::store($path, $name, $type, $visibility, siteOnly: $siteOnly);
 }
 
 /*
@@ -313,15 +313,22 @@ it('refuses a user who holds no grant on the type', function (): void {
  * ⚠️ WRITTEN FROM THE ATTACKER'S SIDE, AND THE GRANT IS HELD SO THAT ONLY THE SCOPE CAN DECIDE — AGENTS.md
  * §9. A test that withheld the permission too would pass against a controller with no scope check at all.
  */
+/**
+ * ⚠️ A FILE KEPT TO ONE SITE, which since ADR-042 decision 2 is the uploader's choice rather than every upload's
+ * fate. Its shared twin is served at the same sibling site — the difference between the two is the sharing, and
+ * nothing else. This measures `SiteScope`; the panel's own tenant rule is `MediaTenantScopeTest`'s.
+ */
 it('does not confirm that another site\'s file exists, even to a granted user', function (): void {
     $this->role->grant('entry.image.view');
 
-    $entry = aDeliverableImage($this->imageType);
+    $kept = aDeliverableImage($this->imageType, siteOnly: true);
+    $shared = aDeliverableImage($this->imageType, name: 'shared.png');
 
     $other = Site::create(['handle' => 'other', 'slug' => 'other', 'name' => 'Other', 'locale' => 'en']);
     app(Context::class)->setSite($other);
 
-    $this->actingAs($this->user)->get('/test-media/t/'.$entry->getKey())->assertNotFound();
+    $this->actingAs($this->user)->get('/test-media/t/'.$kept->getKey())->assertNotFound();
+    $this->actingAs($this->user)->get('/test-media/t/'.$shared->getKey())->assertOk();
 });
 
 /** The cross-ORG boundary, which has no framework safety net and is the more important of the two. */
