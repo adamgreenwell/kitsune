@@ -166,9 +166,14 @@ final class MediaDelivery
      * exists to prevent.
      *
      * ⚠️ THE CSP IS SENT ON EVERY PRIVATE RESPONSE, not only on the types that need it. ADR-041 requires an
-     * SVG to be served with a restrictive policy; `MediaIntake` refuses SVG until the sanitiser ships, so
-     * applying it narrowly would mean a header nothing exercises and a rule the SVG slice has to remember.
-     * `default-src 'none'; sandbox` costs a listed image nothing and is already correct when SVG arrives.
+     * SVG to be served with a restrictive policy, and applying it narrowly would make every future type
+     * somebody's job to remember. `default-src 'none'; sandbox` costs a listed image nothing.
+     *
+     * ⚠️ AND IT IS DEFENCE IN DEPTH RATHER THAN THE DEFENCE, WHICH ADR-041 SAYS IN SO MANY WORDS. A PUBLIC
+     * SVG never passes through here: it is served off the linked disk by the web server with no PHP in the
+     * path, so none of these headers reach it. That is exactly why the entry rejected "serving SVG
+     * unsanitised behind headers" — *"a public CDN URL is exactly where one would not"* remember them — and
+     * why `kitsune/svg-sanitizer` narrows the library's allowlist rather than leaning on this.
      *
      * ⚠️ `no-store`, AND THE COST IS REAL. `private` alone would let the viewer's own browser reuse the
      * bytes, which is exactly what an admin grid of thumbnails wants — and it would also keep a file readable

@@ -9,6 +9,7 @@
 declare(strict_types=1);
 
 use Kitsune\Core\Media\MediaIntake;
+use Kitsune\Core\Media\SanitisesSvg;
 
 /*
  * What core accepts as an upload, and what it refuses — ADR-041.
@@ -75,12 +76,92 @@ it('refuses a file with no extension at all', function (): void {
         ->toThrow(RuntimeException::class, 'no extension');
 });
 
-/** ADR-041 accepts SVG — sanitised. Until the sanitiser exists it is refused rather than stored unsanitised. */
-it('refuses svg until the sanitiser ships with it', function (): void {
+/**
+ * ⚠️ THE SUCCESSOR TO `refuses svg until the sanitiser ships with it`, REPLACED RATHER THAN DELETED. That
+ * test was the only assertion in the suite that a script-bearing SVG is handled at all; removing it when SVG
+ * became acceptable would have retired the question along with the answer.
+ *
+ * What changed is the REASON for the refusal, not the refusal. ADR-041 accepts SVG sanitised, and the
+ * sanitiser lives in `kitsune/svg-sanitizer` because the only library with the population ADR-041 was buying
+ * is GPL-2.0-or-later (Standing Principle #11). With nothing bound, core refuses — and says so in terms an
+ * operator can act on, which is what this asserts.
+ */
+it('refuses svg while nothing can make it safe, and names the fix', function (): void {
+    expect(app()->bound(SanitisesSvg::class))->toBeFalse('the core suite must not bind a sanitiser by default');
+
     $path = fileHolding('<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>');
 
     expect(fn () => MediaIntake::accept('logo.svg', $path, filesize($path)))
-        ->toThrow(RuntimeException::class, 'not an accepted file type');
+        ->toThrow(RuntimeException::class, 'accepted only when a sanitiser is installed');
+
+    /*
+     * ⚠️ AND IT NAMES BOTH COMMANDS, because installing is not enabling — `ModuleLifecycle::install()` writes
+     * `is_enabled = false` on purpose (*"Install is not 'run this code'; `kitsune:module enable` is"*). Review
+     * found this message advertising the install alone, so an operator could follow the stated fix exactly
+     * and still have every SVG refused.
+     */
+    expect(fn () => MediaIntake::accept('logo.svg', $path, filesize($path)))
+        ->toThrow(RuntimeException::class, 'kitsune:module install kitsune/svg-sanitizer')
+        ->and(fn () => MediaIntake::accept('logo.svg', $path, filesize($path)))
+        ->toThrow(RuntimeException::class, 'kitsune:module enable kitsune/svg-sanitizer');
+
+    /* Not the generic message — an operator with an ordinary logo needs an install step, not a different file. */
+    expect(fn () => MediaIntake::accept('logo.svg', $path, filesize($path)))
+        ->not->toThrow(RuntimeException::class, 'is not an accepted file type');
+});
+
+/** And it is genuinely absent from the list, rather than present and refused later. */
+it('leaves svg out of the accepted types while nothing is bound', function (): void {
+    expect(MediaIntake::acceptedTypes())->not->toHaveKey('svg')
+        ->and(MediaIntake::isGuarded('svg'))->toBeTrue()
+        ->and(MediaIntake::isGuarded('png'))->toBeFalse();
+});
+
+/**
+ * ⚠️ BOUND, AND NOW IT IS ACCEPTED — the other half, which a refusal-only test cannot see. A gate that
+ * refuses everything passes every refusal test ever written.
+ */
+it('accepts svg once something implements the sanitiser', function (): void {
+    app()->instance(SanitisesSvg::class, new class implements SanitisesSvg
+    {
+        public function sanitise(string $svg): string
+        {
+            return $svg;
+        }
+    });
+
+    $path = fileHolding('<svg xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1"/></svg>');
+
+    expect(MediaIntake::accept('logo.svg', $path, filesize($path)))
+        ->toBe(['extension' => 'svg', 'mime' => 'image/svg+xml'])
+        ->and(MediaIntake::acceptedTypes())->toHaveKey('svg');
+
+    app()->forgetInstance(SanitisesSvg::class);
+});
+
+/**
+ * ⚠️ THE SNIFF STILL DECIDES, AND IT IS THE ONLY THING STANDING BETWEEN `.svg` AND AN ARBITRARY FILE. Binding
+ * a sanitiser opens the extension, not the gate: HTML and PHP named `.svg` are what `GUARDED` listing exactly
+ * one MIME buys, measured with libmagic rather than assumed.
+ */
+it('still refuses html and php wearing an svg extension, even with a sanitiser bound', function (): void {
+    app()->instance(SanitisesSvg::class, new class implements SanitisesSvg
+    {
+        public function sanitise(string $svg): string
+        {
+            return $svg;
+        }
+    });
+
+    $html = fileHolding('<html><body><script>alert(1)</script></body></html>');
+    $php = fileHolding("<?php echo 'pwned';");
+
+    expect(fn () => MediaIntake::accept('logo.svg', $html, filesize($html)))
+        ->toThrow(RuntimeException::class, 'its contents are')
+        ->and(fn () => MediaIntake::accept('logo.svg', $php, filesize($php)))
+        ->toThrow(RuntimeException::class, 'its contents are');
+
+    app()->forgetInstance(SanitisesSvg::class);
 });
 
 it('refuses a file over the ceiling before anything is written', function (): void {
@@ -136,7 +217,15 @@ it('publishes an allowlist whose every entry pins its accepted content types', f
         }
     }
 
-    /* The executable extensions that must never appear, asserted by name rather than by reading the list. */
+    /*
+     * The executable extensions that must never appear, asserted by name rather than by reading the list.
+     *
+     * ⚠️ `svg` IS STILL HERE, AND IT IS STILL IN THIS LIST FOR THE SAME REASON IT ALWAYS WAS. It did not stop
+     * being executable when ADR-041's sanitiser arrived — a sanitiser now stands in front of it, which is a
+     * different claim. `ACCEPTED` is the unconditional list and SVG is conditional, so this assertion keeps
+     * asking exactly the question it was written to ask; `acceptedTypes()` is where the conditional answer
+     * lives, and its own tests are above.
+     */
     foreach (['php', 'phtml', 'phar', 'svg', 'html', 'htm', 'js', 'sh', 'exe'] as $forbidden) {
         expect(MediaIntake::ACCEPTED)->not->toHaveKey($forbidden);
     }

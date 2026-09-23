@@ -16,6 +16,12 @@ parameters:
     # Revisit if a Pest-aware PHPStan extension covers expectation chaining.
     paths:
         - packages/core/src
+        # First-party modules. `kitsune/svg-sanitizer` is the reason this line exists: it is the
+        # narrowest package in the repository and the only one calling into a third-party library
+        # across a security boundary, where `sanitize()` returns `string|false` and the false is the
+        # interesting half. Analysing core alone left it uncovered.
+        - packages/person/src
+        - packages/svg-sanitizer/src
         # The runbook's outside checks (issue #111). They are shipped code in the sense that matters
         # here: they run against a live server and decide whether it holds ADR-034's conditions, so a
         # null reaching a comparison is the difference between a verdict and a wrong verdict. They are

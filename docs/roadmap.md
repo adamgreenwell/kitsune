@@ -412,7 +412,9 @@ workstream of comparable size, and one-time payment already serves all four cons
 ⚠️ **Blocked on media.** A product without an image is not a product, and `media_files` is published in ADR-016
 and `field-types.md` §5 and does not exist. ADR-016 designed the shape — media are entries, a picker is a
 `relation` — and [ADR-041](decision-log.md) decides delivery, upload safety and disposal: private by default,
-no derivatives in v1.0, admin-only upload, SVG sanitised in core. What is still missing is the bytes. The same
+no derivatives in v1.0, admin-only upload, and SVG sanitised on upload — by `kitsune/svg-sanitizer` rather
+than by core, because the only library with the maintainer population ADR-041 was buying is
+GPL-2.0-or-later (Standing Principle #11). What is still missing is the bytes. The same
 work releases the **DAM** starter.
 
 ## Phase 6 — v1.0 hardening

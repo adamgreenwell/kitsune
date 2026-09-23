@@ -85,13 +85,75 @@ final class MediaLibrary
         /* The refusals, before a single byte is written anywhere. */
         ['extension' => $extension, 'mime' => $mime] = MediaIntake::accept($originalName, $absolutePath, $size);
 
+        /*
+         * ⚠️ SANITISED BEFORE ANY BYTE IS WRITTEN, AND THE ORIGINAL IS NEVER STORED — ADR-041's departure 2.
+         * `rich_text` keeps its pre-sanitisation original in `entry_revisions.unsanitized_values`, a column
+         * `snapshot()` does not expose; a file has no equivalent hiding place, because a stored original is a
+         * file waiting for a delivery path that forgets which one is which. So this rebinds `$source` and
+         * everything downstream reads the sanitised file: the stream, the checksum, the size and the
+         * dimensions. Leaving any one of them on `$absolutePath` writes a row that describes bytes nobody
+         * stored — and `size_bytes` in particular is sent verbatim as `Content-Length`, so a stale one is a
+         * truncated or hanging response for every SVG.
+         */
+        $source = $absolutePath;
+        $sanitised = null;
+
+        /*
+         * ⚠️ THE `try` OPENS BEFORE THE TEMPORARY EXISTS, AND REVIEW FOUND WHY THAT MATTERS. It used to open
+         * after the block below, so the ceiling re-check inside it could throw with the sanitised copy
+         * already written and nothing arranged to remove it — a leaked file per refused upload, on the one
+         * refusal path an attacker chooses the size of.
+         */
+        try {
+            if (MediaIntake::isGuarded($extension)) {
+                $sanitised = self::sanitisedCopy($absolutePath, $originalName);
+                $source = $sanitised;
+                $size = (int) filesize($source);
+
+                /*
+                 * ⚠️ THE CEILING IS CHECKED AGAIN, because sanitising can GROW a file: the document is
+                 * re-serialised through the library's own writer. `GUARDED_MAX_BYTES` promises what gets
+                 * stored, and the first check only knew what arrived.
+                 */
+                MediaIntake::refuseIfTooLarge($size, $originalName, MediaIntake::GUARDED_MAX_BYTES);
+            }
+
+            return self::write($source, $originalName, $extension, $mime, $size, $orgId, $type, $visibility, $title);
+        } finally {
+            /*
+             * ⚠️ `finally`, SO THE TEMPORARY GOES ON BOTH PATHS. A sanitised copy left in the system temp
+             * directory on every upload is an accumulating artifact of a security boundary, which is the last
+             * place to leak files.
+             */
+            if ($sanitised !== null) {
+                @unlink($sanitised);
+            }
+        }
+    }
+
+    /**
+     * Write the bytes, then the rows — everything after the refusals.
+     *
+     * @throws RuntimeException
+     */
+    private static function write(
+        string $source,
+        string $originalName,
+        string $extension,
+        string $mime,
+        int $size,
+        int $orgId,
+        EntryType $type,
+        string $visibility,
+        ?string $title,
+    ): Entry {
         $disk = self::diskFor($visibility);
         $path = self::pathFor($orgId, MediaIntake::storedName($extension));
 
-        $stream = fopen($absolutePath, 'rb');
+        $stream = fopen($source, 'rb');
 
         if ($stream === false) {
-            throw new RuntimeException("Cannot store media: [{$absolutePath}] could not be opened.");
+            throw new RuntimeException("Cannot store media: [{$source}] could not be opened.");
         }
 
         /* Streamed rather than read into memory: the ceiling is 64 MiB and the floor is 1 GB of RAM. */
@@ -107,7 +169,7 @@ final class MediaLibrary
 
         try {
             return Entry::query()->getConnection()->transaction(
-                static function () use ($type, $title, $originalName, $extension, $disk, $path, $mime, $size, $absolutePath, $visibility): Entry {
+                static function () use ($type, $title, $originalName, $extension, $disk, $path, $mime, $size, $source, $visibility): Entry {
                     $entry = Entry::create([
                         'entry_type_id' => $type->getKey(),
                         'title' => $title ?? pathinfo(basename($originalName), PATHINFO_FILENAME),
@@ -134,9 +196,9 @@ final class MediaLibrary
                         'path' => $path,
                         'mime' => $mime,
                         'size_bytes' => $size,
-                        'checksum' => hash_file('sha256', $absolutePath),
+                        'checksum' => hash_file('sha256', $source),
                         'visibility' => $visibility,
-                        ...self::dimensionsOf($absolutePath),
+                        ...self::dimensionsOf($source),
                         'created_at' => now(),
                     ]);
 
@@ -149,6 +211,53 @@ final class MediaLibrary
 
             throw $e;
         }
+    }
+
+    /**
+     * Sanitise a guarded file into a temporary copy this class owns, and return its path.
+     *
+     * ⚠️ THE SANITISER IS RESOLVED HERE RATHER THAN CHECKED, and the refusal is not a repeat of `accept()`'s.
+     * `MediaIntake::accept()` already declined this extension if nothing was bound, so reaching this with an
+     * unbound container means the binding disappeared between the two calls — a module disabled mid-request,
+     * or a caller reaching past `accept()`. Either way it fails closed and says which.
+     *
+     * ⚠️ `tempnam()` IN THE SYSTEM TEMP DIRECTORY, NEVER ON A DISK. Sanitised bytes are not the stored
+     * artifact yet — the row write can still fail — and writing them to `local` or `public` first would put a
+     * file under `media/` that no row claims and that `kitsune:media-prune` would report as an orphan on every
+     * upload.
+     *
+     * @throws RuntimeException
+     */
+    private static function sanitisedCopy(string $absolutePath, string $originalName): string
+    {
+        if (! app()->bound(SanitisesSvg::class)) {
+            throw new RuntimeException(sprintf(
+                'Refusing [%s]: nothing implements [%s] any more, so these bytes cannot be made safe. Nothing '
+                .'was written.',
+                $originalName,
+                SanitisesSvg::class,
+            ));
+        }
+
+        $original = file_get_contents($absolutePath);
+
+        if ($original === false) {
+            throw new RuntimeException("Cannot store media: [{$absolutePath}] could not be read.");
+        }
+
+        $clean = app(SanitisesSvg::class)->sanitise($original);
+
+        $temporary = tempnam(sys_get_temp_dir(), 'kitsune-svg-');
+
+        if ($temporary === false || file_put_contents($temporary, $clean) === false) {
+            if ($temporary !== false) {
+                @unlink($temporary);
+            }
+
+            throw new RuntimeException("Cannot store media: the sanitised copy of [{$originalName}] could not be written.");
+        }
+
+        return $temporary;
     }
 
     /** ADR-041: visibility decides the disk, and therefore which delivery path can reach the bytes. */
