@@ -76,6 +76,17 @@ final class EnshrinedSvgSanitiser implements SanitisesSvg
     private const CONTAINERS = ['g', 'a', 'switch'];
 
     /**
+     * The only elements whose character data SVG paints.
+     *
+     * ⚠️ TEXT OUTSIDE THESE IS NOT DRAWN, and review found the check counting it. `<svg>hello</svg>` and
+     * `<svg><g>hello</g></svg>` are well-formed, sniff as `image/svg+xml`, and paint nothing: measured by
+     * rasterising each in Chromium, 0 pixels against 315 for the same word inside `<text>`. The same
+     * measurement found the mirror case nobody had raised — an EMPTY `<text>` paints 0 pixels as well — so
+     * a text element counts only when it actually carries characters.
+     */
+    private const TEXT_CONTENT = ['text', 'tspan', 'textpath'];
+
+    /**
      * Elements whose content does not render where it sits — skipped WITHOUT descending.
      *
      * ⚠️ TWO DIFFERENT REASONS, AND BOTH WERE FOUND BY REVIEW RATHER THAN REASONED OUT. `title`, `desc` and
@@ -214,6 +225,21 @@ final class EnshrinedSvgSanitiser implements SanitisesSvg
      * upload is a broken asset an operator cannot explain, and the upload it came from was almost certainly
      * hostile.
      *
+     * ⚠️ THE QUESTION IS STRUCTURAL — "DID AN ELEMENT THAT PAINTS SURVIVE?" — AND IT STOPS THERE ON PURPOSE.
+     * It is not "will this render pixels?", which only a renderer can answer. Four review rounds each found
+     * one more blank shape the structural check accepted: an empty wrapper, a lone `<title>`, content inside
+     * `<defs>`, bare character data. Each was a structural gap and each is closed. But rasterising in
+     * Chromium also shows `<circle r="0"/>` and `<rect display="none"/>` painting 0 pixels, and behind those
+     * sit `visibility`, `opacity`, `fill="none"` with no stroke, geometry placed off the canvas, and every
+     * CSS rule that can reach any of them. Refusing those means building a style cascade and a geometry
+     * engine into a refusal check, which is a renderer with fewer tests. So they are ACCEPTED, and a test
+     * pins that, so the next review measures the contract against what it says rather than against pixels.
+     *
+     * The limit costs little, because of what this refusal is for. The failure it catches is a hostile
+     * upload whose executable content was stripped, leaving a shell that stores as a success, and that is
+     * always a structural shape: the parts that were removed are gone from the tree, not hidden in it. A file
+     * built to be blank through its geometry was never going to execute anything.
+     *
      * @throws RuntimeException
      */
     private static function refuseIfNothingIsLeft(string $clean): void
@@ -245,37 +271,69 @@ final class EnshrinedSvgSanitiser implements SanitisesSvg
     }
 
     /**
-     * Does anything under this element actually render?
+     * Does an element that paints survive anywhere under this one?
      *
      * ⚠️ RECURSIVE, AND IT ASKS ABOUT CONTENT RATHER THAN ABOUT CHILDREN. A wrapper counts for nothing
      * however deeply it nests — `<g><g><g></g></g></g>` is as blank as `<svg/>` — so containers are
-     * descended into rather than counted, and anything that is neither a container nor a description
-     * settles it. Descriptions and definitions are skipped WITHOUT descending — a `<title>`'s text is a
-     * tooltip, and a `<defs>`' content draws only where something references it, so an SVG carrying nothing
-     * but either of them renders blank.
+     * descended into rather than counted. Descriptions and definitions are skipped WITHOUT descending: a
+     * `<title>`'s text is a tooltip, and a `<defs>`' content draws only where something references it. A
+     * text element counts only if it carries characters. Anything else settles it.
+     *
+     * ⚠️ AND CHARACTER DATA THAT IS NOT INSIDE A TEXT ELEMENT COUNTS FOR NOTHING. There used to be a branch
+     * here returning true for any non-whitespace text node. SVG does not paint text that sits directly in
+     * the root or a container, so that branch called `<svg>hello</svg>` drawable. It is not replaced: the
+     * only text worth counting is inside `TEXT_CONTENT`, and `carriesText()` looks for it there.
      */
     private static function drawsSomething(DOMElement $element): bool
     {
         foreach ($element->childNodes as $child) {
-            if ($child instanceof DOMElement) {
-                $name = strtolower($child->localName ?? '');
+            if (! $child instanceof DOMElement) {
+                continue;
+            }
 
-                if (in_array($name, self::NOT_RENDERED_HERE, true)) {
-                    continue;
-                }
+            $name = strtolower($child->localName ?? '');
 
-                if (! in_array($name, self::CONTAINERS, true)) {
-                    return true;
-                }
+            if (in_array($name, self::NOT_RENDERED_HERE, true)) {
+                continue;
+            }
 
-                if (self::drawsSomething($child)) {
+            if (in_array($name, self::TEXT_CONTENT, true)) {
+                if (self::carriesText($child)) {
                     return true;
                 }
 
                 continue;
             }
 
+            if (! in_array($name, self::CONTAINERS, true)) {
+                return true;
+            }
+
+            if (self::drawsSomething($child)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Does this text element hold any character data that would be painted?
+     *
+     * ⚠️ IT SKIPS THE SAME SUBTREES `drawsSomething()` SKIPS, so `<text><title>hi</title></text>` does not
+     * count: a title inside a text element is still a tooltip. `DOMCdataSection` extends `DOMText`, so
+     * `<text><![CDATA[hi]]></text>` counts, and a comment is neither, so it does not.
+     */
+    private static function carriesText(DOMElement $element): bool
+    {
+        foreach ($element->childNodes as $child) {
             if ($child instanceof DOMText && trim($child->textContent) !== '') {
+                return true;
+            }
+
+            if ($child instanceof DOMElement
+                && ! in_array(strtolower($child->localName ?? ''), self::NOT_RENDERED_HERE, true)
+                && self::carriesText($child)) {
                 return true;
             }
         }

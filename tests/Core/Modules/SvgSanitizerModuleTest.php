@@ -321,6 +321,18 @@ it('refuses a document whose only survivor is an empty wrapper', function (strin
     'a defs with real content' => ['<defs><rect width="1" height="1"/></defs>'],
     'a symbol with real content' => ['<symbol id="a"><rect width="1" height="1"/></symbol>'],
     'a gradient and nothing painted with it' => ['<defs><linearGradient id="g"/></defs>'],
+    /*
+     * ⚠️ CHARACTER DATA OUTSIDE A TEXT ELEMENT IS NOT PAINTED. Found by a fourth review round and measured by
+     * rasterising in Chromium: `hello` directly in `<svg>` or `<g>` paints 0 pixels, the same word in
+     * `<text>` paints 315. The check used to count any non-whitespace text node, so these stored as a
+     * successful upload.
+     */
+    'bare text in the root' => ['hello'],
+    'bare text in a group' => ['<g>hello</g>'],
+    'bare text in a link' => ['<a>hello</a>'],
+    /* The mirror case the same measurement turned up: a text element with nothing in it paints 0 pixels too. */
+    'an empty text element' => ['<text x="0" y="15"></text>'],
+    'a text element holding only a title' => ['<text><title>hi</title></text>'],
 ]);
 
 /**
@@ -334,6 +346,34 @@ it('accepts a definition that something actually references', function (string $
 })->with([
     'use of a defs shape' => ['<defs><rect id="a" width="1" height="1"/></defs><use xlink:href="#a"/>'],
     'a rect painted with a gradient' => ['<defs><linearGradient id="g"/></defs><rect width="1" height="1" fill="url(#g)"/>'],
+]);
+
+/** Text is content when it sits where SVG paints it. */
+it('accepts text that is inside a text element', function (string $fragment): void {
+    expect((new EnshrinedSvgSanitiser)->sanitise('<svg '.SVG_NS.'>'.$fragment.'</svg>'))->toContain('hello');
+})->with([
+    'text' => ['<text x="0" y="15">hello</text>'],
+    'tspan' => ['<text><tspan>hello</tspan></text>'],
+    /* `DOMCdataSection` extends `DOMText`, and a browser paints CDATA inside `<text>` like any other text. */
+    'CDATA' => ['<text><![CDATA[hello]]></text>'],
+]);
+
+/**
+ * ⚠️ THE LIMIT, PINNED SO IT IS A DECISION RATHER THAN A GAP. Four review rounds each found one more blank
+ * shape the structural check accepted, and each of those was structural, so each was closed. These two are
+ * not. Rasterised in Chromium, both paint 0 pixels, and both are ACCEPTED on purpose: whether a shape is
+ * visible depends on geometry, `display`, `visibility`, `opacity`, paint and the CSS cascade over all of
+ * them, which only a renderer can decide. Refusing them here means putting a renderer into a refusal check.
+ *
+ * The refusal exists for the shell a stripped hostile upload leaves behind, and that shell is always
+ * structural: removed parts are gone from the tree, not hidden in it. If this test ever fails because
+ * someone taught the check about pixels, the contract in `SanitisesSvg` has changed and should say so.
+ */
+it('stops at structure, and does not try to predict pixels', function (string $fragment): void {
+    expect((new EnshrinedSvgSanitiser)->sanitise('<svg '.SVG_NS.'>'.$fragment.'</svg>'))->toContain('<svg');
+})->with([
+    'a zero-radius circle' => ['<circle cx="10" cy="10" r="0"/>'],
+    'a rect with display none' => ['<rect width="20" height="20" display="none"/>'],
 ]);
 
 /** And a wrapper that does contain something is left alone. */

@@ -47,8 +47,13 @@ interface SanitisesSvg
      * writes to a temporary file it owns and removes.
      *
      * ⚠️ REFUSING IS A VALID ANSWER AND IS NOT THE SAME AS RETURNING NOTHING. Input that does not parse as
-     * XML, or that sanitises down to no drawable content, must throw — a zero-byte `.svg` stored as a
+     * XML, or that sanitises down to no element that paints, must throw — a zero-byte `.svg` stored as a
      * successful upload is a broken asset that looks like a working one.
+     *
+     * ⚠️ "AN ELEMENT THAT PAINTS" IS A STRUCTURAL TEST, NOT A PROMISE ABOUT PIXELS. An implementation is not
+     * asked to decide whether a document renders anything, because only a renderer can: `<circle r="0"/>`
+     * and `<rect display="none"/>` are well-formed, contain a shape and paint nothing. The contract covers
+     * the shell a stripped hostile upload leaves behind, and it stops there.
      *
      * @param  string  $svg  the file's own bytes, unmodified
      * @return string markup safe to store and to serve

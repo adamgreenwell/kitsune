@@ -54,9 +54,15 @@ types only.
 ## What this module does
 
 Implements `SanitisesSvg` over the library, with `removeRemoteReferences` and `minify` both switched on —
-neither is the default. It refuses input that cannot be parsed as XML, and input that sanitises down to no
-SVG document at all, because a zero-value asset stored as a successful upload is a broken image nobody can
-explain.
+neither is the default. It refuses input that cannot be parsed as XML, and input where nothing that paints
+survives sanitising: an empty wrapper, a lone `<title>`, content left only inside `<defs>`, or character
+data outside a `<text>` element. A zero-value asset stored as a successful upload is a broken image nobody
+can explain, and the upload behind it was almost certainly hostile.
+
+That check is **structural**. It asks whether an element that paints survived. It does not ask whether the
+document renders pixels, because only a renderer can answer that. `<circle r="0"/>` and
+`<rect display="none"/>` paint nothing and are accepted, and a test pins that, so the limit is a decision
+someone made rather than a gap someone missed.
 
 Sanitising happens **on write**, and no original is kept (ADR-041's departure 2). Disabling this module stops
 new SVG uploads and changes nothing about SVGs already stored.
