@@ -441,9 +441,15 @@ Field values do not all live in the `values` JSON column. Every field type decla
 
 ## ADR-016 — Media are entries
 
-**Status:** Decided · 2026-09-07 · **Amended 2026-09-22 by ADR-041** — the published `media_files` column list gains `visibility`, and how bytes are delivered, made safe and disposed of is decided there
+**Status:** Decided · 2026-09-07 · **Amended 2026-09-22 by ADR-041** — the published `media_files` column list gains `visibility`, and how bytes are delivered, made safe and disposed of is decided there · **Amended 2026-09-23 by ADR-042** — a media type is any type declared as one, not a system type
 
 There is no separate media subsystem. An uploaded file is an **entry** of a system entry type (`image`, `document`, `video`) carrying its own fields — alt text, caption, credit, rights, expiry. The bytes live in a companion `media_files` table joined 1:1 to that entry (disk, path, mime, size, checksum, dimensions, duration).
+
+> ⚠️ **Amended 2026-09-23 by ADR-042 — "a system entry type" becomes "a type declared as a media type".** Any type
+> with `entry_types.is_media` set, org-owned or global, holds media, and core ships none of `image`, `document` or
+> `video`. An org can add fields only to a type it owns — a global type's shape is editable by none — so the DAM
+> case below needs an org-owned media type, which a system type could never be. Not yet built: `is_media` lands with
+> ADR-042's migration, and until then `store()` accepts bytes for any type.
 
 A "media picker" field is therefore just `relation` constrained to media entry types. No new storage strategy, no second permission model, no parallel search index.
 
@@ -794,7 +800,7 @@ at a time.
 
 ## ADR-021 — Sites: a third structural level, and Filament's tenant is the Site
 
-**Status:** Decided · 2026-09-07 · **Amended 2026-09-09** — three times while public site resolution was built (issue #38); see the amendments below · **Amended 2026-09-19** — every guarded builder reads a written column the way the database does, through one comparison, and a written key as the id the database stores; see *a column is the one the database writes*
+**Status:** Decided · 2026-09-07 · **Amended 2026-09-09** — three times while public site resolution was built (issue #38); see the amendments below · **Amended 2026-09-19** — every guarded builder reads a written column the way the database does, through one comparison, and a written key as the id the database stores; see *a column is the one the database writes* · **Amended 2026-09-23 by ADR-042** — for media types, the admin's tenant scope admits the org's shared rows, and the org-shared slug rule becomes a guard
 **Revises** ADR-009 (two scoping levels, not one) and ADR-017 (locale is derived from site, not stored on the entry).
 
 ### The gap this closes
@@ -904,11 +910,25 @@ UNIQUE (translation_group, site_id)        -- one entry per group per site
 
 **Rule that makes the nullable column safe: org-shared entries are not publicly addressable, so their `slug` is NULL.** Shared content is media, taxonomy terms, reusable blocks — things referenced by sites, not published at their own URL. Content that gets published needs a site. This also sidesteps a portability trap: NULLs are distinct in unique indexes across Postgres, MySQL and SQLite, so shared rows can neither collide nor be constrained, and no partial unique index is required (MySQL does not have them).
 
+> ⚠️ **Amended 2026-09-23 by ADR-042 — the rule becomes a guard.** It has been stated here, in `architecture.md`, in
+> the slug field's helper text and on `Entry::isShared()`, and enforced by nothing, because nothing in the admin wrote
+> an org-shared row until ADR-042 made media shared by default. ADR-042 decides that `Entry` refuses a non-null
+> `slug` where `site_id` is null, through the instance and in bulk. Not yet built.
+
 ### ⚠️ The security consequence of mapping Filament's tenant to Site
 
 Filament's tenancy segment is now the **Site**. This keeps the route contract at three parameters — `/admin/{site}/c/{type}/{record}/edit` — and turns Filament's built-in tenant switcher into a site switcher, which is the UX editors actually want.
 
 **But it changes what Filament protects.** Filament's automatic global scope now enforces **site isolation**. It does **not** enforce **org isolation**, because org is a level Filament does not model at all. For any org-scoped model, there is no Filament scope whatsoever — a cross-org leak in `users`, `media` or org settings would not be caught by anything Filament does.
+
+> ⚠️ **Amended 2026-09-23 by ADR-042 — for entries, "site isolation" as written also shuts out the shared rows the
+> media library defaults to.** `EntryResource` keeps Filament's tenant scope, which is `site_id = {site}`, so no panel
+> request can list or serve an org-shared entry, and Filament's `creating` listener stamps the site on every new one.
+> ADR-042 decides that, **for media types**, the scope admits this site's rows and the org's `site_id IS NULL` rows —
+> exactly `SiteScope`'s rule, pinned to agree with it — and that the creation hook leaves an explicit NULL alone.
+> Every other type keeps `site_id = {site}`. Org isolation is still Kitsune's to enforce, as below. Not yet built:
+> until ADR-042 lands, the admin's scope for every entry is still `site_id = {site}`, and nothing pins it to
+> `SiteScope`.
 
 **Kitsune's kernel must therefore enforce org isolation itself.** ADR-009's mitigation is revised from one attribute pair to three, still fail-closed:
 
@@ -3468,7 +3488,7 @@ a secret that cannot be read back through any admin path; and a test-mode key re
 
 ## ADR-041 — Media bytes are private by default, sanitised on the way in, and have no derivatives yet
 
-**Status:** Decided · 2026-09-22 · **Amends ADR-016** (the published `media_files` column list gains `visibility`) and **`field-types.md` §5** · **Amended 2026-09-22** — "sent as an attachment" narrows to "not rendered as a document", so a private image can be displayed and everything that could carry script still cannot; see the amendment under *the read side is not left hollow* · **Phase 5a (ADR-040) stays blocked on media until the code lands**; this entry decides its shape, not its existence
+**Status:** Decided · 2026-09-22 · **Amends ADR-016** (the published `media_files` column list gains `visibility`) and **`field-types.md` §5** · **Amended 2026-09-23 by ADR-042** — moves private files to a disk that is never served, decides that a soft-deleted public file's bytes leave the public disk, records that Livewire's staging was never under the upload rules as shipped, and *Enforced by* reports what landed · **Amended 2026-09-22** — "sent as an attachment" narrows to "not rendered as a document", so a private image can be displayed and everything that could carry script still cannot; see the amendment under *the read side is not left hollow* · **Phase 5a (ADR-040) stays blocked on media until the code lands**; this entry decides its shape, not its existence
 
 ADR-016 decided the shape of this in September and nothing was built: *"There is no separate media subsystem.
 An uploaded file is an **entry** of a system entry type … The bytes live in a companion `media_files` table."*
@@ -3515,6 +3535,11 @@ on a deployment.
 > create the link, and `e2e/media-delivery.spec.js` **fetches** the URL rather than computing it. A private file lives on a disk the web server does not serve and is streamed by a controller that
 authorises first.
 
+> ⚠️ **Amended 2026-09-23 by ADR-042 — as shipped, the private disk was `local`, and `local` is served.** Laravel's
+> `local` disk has `serve => true`, which answers any signed `temporaryUrl()` for it without asking `EntryPolicy`. No
+> Kitsune code mints one, so nothing leaked, but "does not serve" described the intent rather than the disk. ADR-042
+> gives private media a disk of core's own with `serve` off. Not yet built.
+
 ⚠️ **Authorising *what*, exactly, is deliberately left open here.** Today the only answer core can give is the
 entry's own permissions. ADR-040's entitlements are what will make "this reader paid for this download"
 expressible, and they do not exist yet. So the first media slice authorises a **staff** question, and the
@@ -3543,6 +3568,16 @@ installation that can run Kitsune already has it. An installation that somehow d
 upload rather than fall back to trusting the client's MIME type. `duration_ms` stays **null in v1.0**: probing a
 video needs a binary ADR-027 does not let us assume, and a column that is sometimes populated depending on
 what happens to be installed is worse than one that is honestly empty.
+
+> ⚠️ **Amended 2026-09-23 by ADR-042 — as shipped in #145–#148, Livewire's staging sits outside all of this.**
+> Livewire's upload endpoint, which every page and several components of the panel expose to a signed-in user,
+> stages files that no Kitsune rule checks: any type up to its own 12 MiB, an SVG unsanitised and above its 2 MiB
+> ceiling, to `storage/app/private/livewire-tmp/`. No shipped code hands a staged file to `MediaIntake`, so such a
+> file is never seen by the allowlist or the sniff and stays until a later upload's sweep; an admin upload built on
+> it, as this entry assumed one would be, would have staged before `MediaIntake` ran. `RichEditor` is also a second
+> path to disk, past `MediaIntake`, the org prefix and pruning, though Filament limits it to sniffed raster images up
+> to 12 MiB. The paragraph above is left as written. ADR-042's decision 4 moves the allowlist and the ceilings ahead
+> of Livewire's write and closes the second path. Not yet built.
 
 **SVG is accepted and sanitised on upload.** It takes two of `field-types.md` §6's rules for `rich_text`, the
 one field type that document names as an XSS vector, and departs from two more — deliberately, and each
@@ -3641,6 +3676,17 @@ stops being defensible, is refusing SVG — and that stays available because the
 **Bytes follow the entry, and erasure reaches them.** A soft-deleted media entry keeps its bytes, because a
 restore must work; a force-delete removes them.
 
+> ⚠️ **Amended 2026-09-23 by ADR-042 — "keeps its bytes" did not say where, and for a public file that was the
+> whole question.** A public file's bytes are served by the web server with no PHP in the path, so a soft-deleted
+> public entry keeps its file live at its URL, and the admin has no way to take it down. ADR-042 decides that they
+> move to the private disk on soft delete and back on restore, and that a failed move refuses the delete — which
+> keeps "a restore must work" and stops "deleted" meaning "still at the origin". A copy a CDN or a browser has
+> already cached is not reached. ADR-042 also changes this entry's force-delete order for public files: rows first
+> and bytes second left a public file live at its URL whenever disposal failed or the process stopped after the
+> commit, so a force-delete now withdraws a public file to the private disk before its rows go, refuses if it cannot,
+> and disposes of the path on both disks afterwards. Not yet built: until it lands, a soft-deleted public file is
+> still served, and a force-delete whose disposal fails can leave a public one.
+
 ⚠️ **ADR-020 requires erasure to reach *revision history*; it says nothing about bytes on disk.** This entry
 **extends** it — a redaction that leaves the JPEG on disk has not erased the photograph — and owns the
 extension rather than citing ADR-020 for it. ADR-040 caught this exact overreach one entry ago and it was made
@@ -3697,6 +3743,14 @@ and it is a library rather than a daemon, so ADR-027's floor is unchanged.
 of work done — the fourth entry in a row to say so — ADR-037, ADR-038, ADR-039 and ADR-040 each open with it, for the reason ADR-038's `Enforced by` had to be amended
 three times in two days.
 
+> ⚠️ **Amended 2026-09-23 — it landed in #145–#148, and "Nothing yet" stayed behind.** Each claim below now has a
+> test that fails without it: `MediaIntakeTest` refuses a PHP script wearing an image extension and a genuine PNG
+> wearing a PHP one; `MediaLibraryTest` asserts the original name never reaches the stored path, that an SVG is
+> stored with its script, handler and remote reference gone by reading the stored bytes, and that `duration_ms`
+> is null for an image — "null for every row" needs an audio or video fixture before a test guards it; `MediaDeliveryTest` streams a private file to a user who may view it and refuses one who holds no
+> grant; `MediaDisposalTest` removes the bytes on a force-delete through the instance and in bulk. The sentence
+> above is left as it was written, because it was true on the day.
+
 When it lands: an upload whose extension is not on the allowlist is refused; an upload whose sniffed MIME
 disagrees with its extension is refused; a filename containing a path separator or traversal cannot influence
 where bytes land, asserted by attempting it; an SVG carrying a script element, an event-handler attribute and
@@ -3704,6 +3758,479 @@ an external reference is stored with none of the three, asserted by reading the 
 upload response; a private file is refused to an unauthorised request and served to an authorised one; a
 force-deleted media entry leaves no file on disk, asserted against the disk; and `duration_ms` is null for
 every row, asserted so that a later change to populate it is a visible decision rather than a drift.
+
+---
+
+## ADR-042 — The media admin: shared by default, uploaded through one path, and withdrawn from the web when deleted
+
+**Status:** Decided · 2026-09-23 · **Delivers ADR-021's "the media library defaults to shared"**, which the store path shipped in #145 contradicts, and **amends ADR-021** — for media types, the admin's tenant scope admits the org's shared rows, and the org-shared slug rule becomes a guard · **Amends ADR-016 and `field-types.md` §5** — a media type is any type declared as one, not a system type · **Amends ADR-041** — moves private files to a disk that is never served, decides that a soft-deleted public file's bytes leave the public disk and that a force-delete withdraws a public file before its rows go and then disposes of the path on both media disks, records that Livewire's staging was never under the upload rules as shipped, and brings its *Enforced by* up to date · **Amends `architecture.md`'s published `entry_types` shape** (gains `is_media`, with its migration) · **Phase 5 (ADR-011, v1.0)** — the admin half ADR-041 left, and the half the DAM starter waits on
+
+ADR-041 decided how media bytes are stored, delivered, sanitised and disposed of, and #145–#148 built all of it:
+`MediaLibrary::store()`, `MediaIntake`, the panel route that authorises private files, disposal, prune, and SVG
+through `kitsune/svg-sanitizer`. What does not exist is any way for an editor to put a file in. This entry decides
+the admin half.
+
+⚠️ **Five things were found by looking, before any UI code, and three of them are defects in code that already
+shipped.** They are why this entry is longer than a UI decision should be.
+
+1. **Shared media cannot exist, and the store path is only the first reason.** ADR-021 says *"the media library
+   (ADR-016) defaults to shared, which is what a multi-brand publisher needs"*, and rejected strictly site-scoped
+   content by name: *"a publisher with eight brands maintains eight media libraries and re-uploads the same photo
+   eight times."* `store()` never sets `site_id`, so `EnforcesScope` stamps the current site, and it always sets
+   a slug, which ADR-021 forbids for an org-shared row. No seeded media row is shared; each carries the site it
+   was stored under, and `MediaDeliveryTest` pins that behaviour as correct. Fixing `store()` alone would change
+   nothing in the admin: `EntryResource` is tenant-scoped, so Filament adds `site_id = {site}` to every scoped
+   entry query in the panel — every query that lists or serves an entry, the private download route included —
+   and its `creating` listener associates the site with every new entry. The admin can neither write a shared row
+   nor show one. It was built from ADR-041 and ADR-016 without re-reading ADR-021.
+2. **Livewire stages uploads that no Kitsune rule checks.** Its temporary disk resolves to `local`. Its upload
+   endpoint carries `web` and a throttle, and otherwise asks only for a URL signature, which any Livewire component
+   using `WithFileUploads` mints for a signed-in user unless the component restricts it — and in the panel that is
+   every page, plus Filament's topbar, sidebar, widgets and relation managers. Filament's own auth pages restrict
+   it; nothing in Kitsune's panel does. Its own rule is `max:12288`. So a file of any type up to 12 MiB is written
+   to `storage/app/private/livewire-tmp/` and no allowlist or sniff ever sees it — against ADR-041's *"The upload
+   path trusts nothing the client sends"* — and an SVG lands there unsanitised and above its 2 MiB ceiling. An
+   admin upload built on this, as ADR-041 assumed one would be, would stage before `MediaIntake` ran. Livewire's
+   preview route, also signed, serves a staged file as an attachment with `Cache-Control: public,
+   max-age=31536000`, and its `preview_mimes` include `svg`. Kitsune's own code mints no preview URL; the
+   `RichEditor` it builds does, for every image an editor attaches (item 3).
+3. **A second upload path already exists.** `FieldValueRenderer` builds `RichEditor` without turning off
+   Filament's file attachments, which are on by default and store to the `public` disk with no entry, no org
+   prefix, no `MediaIntake` and no pruning. Its risk is bounded — Filament limits it to sniffed png, jpeg, gif and
+   webp up to 12 MiB — but it is a path to disk that ADR-041's *"one path to secure"* does not know about.
+4. **The private media disk is served.** `local` has `serve => true`, which registers signed `GET` and `PUT`
+   routes at `storage/{path}`. Any `temporaryUrl()` minted on it — by a Filament `ImageColumn` or `FileUpload`
+   handed a disk path, for instance — is a bearer URL that skips `EntryPolicy` entirely, and stays valid until it
+   expires whether or not the file's row still exists. Core's own config comment says *"`local` is not
+   web-served"*; it is served to anyone holding a signature.
+5. **Nothing identifies a media type.** There is no `'image'` literal in core, `is_system` is enforced nowhere,
+   and `store()` accepts any `EntryType` — it would attach bytes to an `article` today. Only the demo seeder
+   creates a media type, so a fresh install has none.
+
+| Rejected | Why it lost |
+|---|---|
+| **A dedicated media page or Resource** | Re-implements the type resolution, site availability, scoping and per-type authorisation `EntryResource` already does, and adds a route shape the `{site}` fallback and `RESERVED_HANDLES` must be taught about. ADR-041 re-rejected a media subsystem precisely because building the upload path is when one grows. |
+| **Keep media site-scoped and amend ADR-021** | ADR-021 already weighed this and rejected it, and `EntryRelation`, `EntryPolicy` and the roadmap were written assuming shared media. Amending a decision because the code drifted from it is the order this log exists to prevent. |
+| **Take `EntryResource` out of Filament's tenancy, as `EntryTypeResource` and `RoleResource` are** | Shared rows would then show, but `SiteScope` would become the only site boundary for every entry of every type, where today there are two. Widening Filament's scope by exactly `SiteScope`'s rule, and only where shared rows can exist, keeps both. |
+| **Widen the scope for every entry type** | Measured: on SQLite the entry list reads `(site_id, entry_type_id, updated_at)` in order today, and under `SiteScope`'s `site_id = ? OR (site_id IS NULL AND org_id = ?)` alone it becomes a multi-index OR over the slug index followed by a temporary B-tree sort of every matching row — the shape the roadmap already measured as costly at 100k rows. In v1.0 nothing but `store()` writes a shared row, so every other type would pay it for nothing. |
+| **The uploader chooses sharing every time, with no default** | Puts a sharing decision in front of every editor on every upload. A default with an override does the same job. |
+| **Mark media types by a reserved handle (`image`)** | An org's own `image` shadows the global one by design, and a naming convention is a guess about intent rather than a declaration of it. |
+| **Infer a media type from the presence of `media_files` rows** | That answers per entry, not per type — and the admin needs the answer before the first row exists, to decide which control to show. |
+| **Let `is_media` be changed after creation** | A type with media entries that stops being media leaves bytes the admin can no longer reach; one that becomes media has entries with no bytes. Neither has a sensible reading. |
+| **Leave Livewire's staging alone** | Leaves every staged byte unchecked, when the allowlist and the ceilings can be moved ahead of Livewire's write for the price of one validation rule and one disk. |
+| **Filament `FileUpload`'s own storage (`saveUploadedFile`)** | A second path to disk that creates no entry and runs no `MediaIntake` — the thing ADR-041's "one path to secure" rules out. |
+| **Delete public media permanently** | No undo, and a force-delete cascades `entry_relations`, so every reference to the file is cut without anyone being told. |
+| **Soft delete as today, bytes left live** | A "deleted" public logo stays on the web at its URL, served with no PHP in the path, and the admin has no way to take it down. |
+| **Load private thumbnails automatically now** | ADR-041 asked whoever builds this to arrive with a measurement. Each private tile is a full framework boot, a session read and write, the scoped and policy queries — about 15 for an owner and 19 for anyone else holding the grant, by a reading of the code that has not been run — and a stream of the *original* file. None of it has been measured. |
+
+### Decision
+
+**1. A media type is declared, once.** `entry_types` gains `is_media`, boolean, not null, default false — by a
+migration of its own rather than an edit to the one that creates the table, because `deploy/release.sh` runs
+`migrate --force` against a live database and an edited migration never re-runs there. That migration backfills:
+it marks every type that `media_files` rows already reference, which the #145–#148 store path allowed for any type,
+and it refuses — failing loudly and naming each — a type holding both entries with bytes and entries without, which
+it cannot classify and which the model's own guard would then lock in the wrong state. It is set
+in the entry-type builder when a type is created — schema editing is owner-only already — and locked afterwards
+by a model guard, not only by a disabled form field: the builder's `handle` is locked in the form alone, and a
+guard only the panel enforces is the shape this log keeps finding. It joins `columnsRequiringModelSave()`, so a
+bulk write cannot change it either. `MediaLibrary::store()` refuses a type where it is false.
+
+⚠️ **Locking the flag is half of it; the entry's side is the other half, and review found it missing.** `Entry`
+supports a legitimate instance retype, so an uploaded entry could be moved to a non-media type with its
+`media_files` row, or an ordinary entry to a media type with no bytes — the two states that make the flag worth
+locking. `Entry` therefore refuses a retype whose source and destination types disagree on `is_media`. A retype
+within the boundary, such as moving an image to an org's own image type, is untouched. Bulk retypes need no second
+guard: `entry_type_id` is already in `columnsRequiringModelSave()`, so they reach the instance path or are refused. Blueprints do not
+gain it yet: `EntryTypeDeclaration` is one of the four symbols ADR-039 names as the blueprint format's public
+surface, and the DAM starter is the first consumer that needs a blueprint to declare a media type — it widens that
+surface when it has a reason to.
+
+⚠️ **This amends ADR-016 and `field-types.md` §5,** which make an uploaded file an entry of a system entry type —
+`image`, `document` or `video`. A media type is now any type declared with `is_media`, org-owned or global, and core
+ships none of the three. That is what makes the DAM starter possible: an org can add rights-holder and
+licence-expiry fields only to a type it owns, because a global type's shape is editable by no org. The demo
+seeder's global `image` type is marked. Its byte-less rival-org `image` entry — a cross-org scope fixture — is
+replaced by the rival's file stored shared through `store()`, since a media entry without bytes is the state
+decision 3 calls broken; `admin.spec.js`'s cross-org assertion moves to that file's title, with a positive control
+that the same title is listed on a rival site.
+
+⚠️ **The flag is not a byte-safety boundary, and nothing should treat it as one.** The allowlist, the MIME sniff,
+private-by-default, sanitising and authorised delivery all hold whatever a type is called or marked. `is_media`
+governs which control the admin shows, which lists admit shared rows (decision 2), and stops bytes being attached
+to a type that has no way to display them.
+
+**2. Media is shared by default, as ADR-021 decided.** `store()` writes `site_id` NULL and `slug` NULL unless the
+uploader chooses *this site only* for that upload, which writes the current site and a slug as it does today.
+Shared is the default in the control every time it opens.
+
+For the admin to hold a shared row at all, `EntryResource` overrides the two things Filament's tenancy does to it,
+**for media types only**. Where the query is over a media type — its list, its relation picker's search and label
+resolution, relation validation's `scopedExists`, the Attach dialog — the tenant scope admits this site's rows and
+the org's `site_id IS NULL` rows, which is exactly `SiteScope`'s rule, pinned to agree with it the way
+`EntryPolicyTest` pins the policy's own copy of that rule, shape by shape. Everywhere else it stays `site_id =
+{site}`, because nothing else can hold a shared row in v1.0 and the unrestricted rule costs every list its ordered
+index read (see *Rejected*). Filament's creation hook leaves an explicit NULL `site_id` alone. The kernel's
+`SiteScope` and Filament's tenant scope both bound entries by site today; both still do, and the second is widened
+by the first one's rule, in the one place shared rows can appear, rather than removed.
+
+⚠️ **This amends ADR-021,** which assigned entries' site isolation to Filament's tenancy: *"Filament's automatic
+global scope now enforces **site isolation**"*. For media types it enforces site isolation plus the org's shared
+rows, and nothing wider.
+
+⚠️ **ADR-021's slug rule becomes a guard.** *"Org-shared entries are not publicly addressable, so their `slug` is
+NULL"* has been published since September — in ADR-021, `architecture.md`, the slug field's helper text and the
+docblock on `Entry::isShared()` — and enforced by nothing, because nothing in the admin wrote an org-shared row.
+`Entry` now refuses a non-null slug where `site_id` is null, through the instance and in bulk, and for a shared
+entry the edit page withholds every control whose state path is `slug`, including an org-defined slug-typed field.
+
+⚠️ **This widens who sees a private file, and who can change one.** ADR-021 accepted that sharing is harder to
+secure than strict site scoping, but it predates private files, so this entry is the one accepting what follows.
+`SiteScope` admits an org's `site_id IS NULL` rows in every one of that org's sites — `EntryPolicy` says so in as
+many words, *"One media library serves eight brands"* — so a shared entry is listed and editable from every site of
+the org, by anyone who can open that site's panel and holds the org-wide `entry.{type}` grant (ADR-033: roles are
+per org). Where its type is switched off (ADR-022) it is hidden as ADR-022 decides: its bytes are not served there, and
+the relation picker and the Attach dialog on that site do not offer it, because the widened scope is applied only
+together with the site's type availability — review found an earlier draft letting a shared entry's title and
+linkability reach such a site, which contradicted ADR-022 without amending it. Deleting a shared public file
+withdraws it for every site at once. *This site only* is the way to keep a file out of every other site: unseen,
+unlinked and unchangeable from there.
+
+**3. Upload lives inside `EntryResource`, and adds no route shape.** On `/c/{type}` for a media type, the list
+carries an **Upload** header action whose modal holds a Filament `FileUpload`. It accepts several files, each
+stored through `MediaLibrary::store()`, each reporting its own result. `/c/{type}/create` answers 404 for a media
+type, because a media entry without bytes is the broken state this whole design avoids. The edit page gains a
+File section showing what is stored. The status control is withheld for media types: `store()` creates them
+published, delivery never reads status, and a media file's gate is its visibility.
+
+Upload needs `entry.{type}.create` **and** `entry.{type}.publish`, because `store()` creates entries published and
+`refuseUnpermittedCreationAsPublished()` would otherwise refuse it after the bytes were written. This was a code
+comment in `MediaLibrary`; this entry makes it a decision. The action follows ADR-033's line: hidden from a user
+without `create`, for whom nothing on the page is theirs to do, and shown disabled — naming the missing
+permission — to one who holds `create` but not `publish`.
+
+Visibility starts at *private* every time the modal opens, with no carried-over last choice: ADR-041 makes public
+an explicit act. Choosing *public* asks for confirmation, and the confirmation says two things plainly — that a
+public file is served to anyone with its URL, and that a photo may carry the location it was taken in (see *What
+this costs*).
+
+The media UI's words go through translation keys in a `kitsune` namespace that core begins shipping with this
+work, rather than bare strings, so that this work does not add to the gap ADR-018's rule 1 leaves across the rest
+of the admin (see *Open questions*).
+
+**4. Core owns the upload staging, for the whole installation.** Every Livewire upload in the host application,
+not only Kitsune's, passes through what follows.
+
+- A dedicated intake disk, local and **never served**, is pinned as Livewire's temporary-upload disk, rather than
+  inherited from whatever `filesystems.default` happens to be.
+- **The endpoint's rule is the gate.** It becomes `MediaIntake`'s refusals with `MediaIntake`'s ceilings — 64 MiB,
+  and 2 MiB for a guarded type — replacing Livewire's `max:12288`, and it is registered by name with
+  `Validator::extend`, because `deploy/release.sh` runs `config:cache` and a closure or object in config fails
+  the deploy. It is the gate because it is the only rule every staged byte meets: the signature that reaches the
+  endpoint can be minted by any component using `WithFileUploads`, and the panel has many.
+- `preview_mimes` is empty. Once `RichEditor`'s attachments are off (below), nothing in Kitsune previews a staged
+  file, and a staged file is exactly the one that has not been checked.
+- **Only a user who may upload media may stage a file.** A middleware on the endpoint admits a signed-in user only
+  if they hold what the Upload action requires — `create` and `publish` on some media type — in an org they
+  belong to; anyone else is refused before a byte is written. Review found the gap it closes: the endpoint is
+  reachable through Filament components Kitsune does not control, so without it any signed-in user — a reader
+  role, a viewer — could stage 64 MiB files the handler would later refuse, abandon them, and fill the disk.
+  Staging is thereby bounded by the same trust as uploading: a user it admits could fill the disk with real
+  uploads just as well.
+- Kitsune's panel pages use Filament's `RestrictsFileUploadsToSchemaComponents`, which refuses an upload to any
+  property path that is not a schema upload field. That is **defence in depth, not the gate**: Filament's topbar,
+  sidebar, widgets, relation managers and its own `Dashboard` are Livewire components that mint the same
+  signature and are not Kitsune's to restrict, so a signed-in user can still reach the endpoint — where the rule
+  above refuses anything `MediaIntake` would.
+- The `FileUpload` is built with `storeFiles(false)`, `getUploadedFileUsing(fn () => null)` and
+  `preventFilePathTampering()`, so it never writes to a disk and never mints a URL for a string the browser sends
+  back. The handler takes only `TemporaryUploadedFile` values, authorises first, and removes the staged file
+  **and** its `.json` sidecar — which holds the client's original filename — in a `finally`.
+- `RichEditor` is built with file attachments off. An image belongs in a relation field to a media entry, which
+  is what ADR-016 designed; an inline `<img>` in rich text stays allowed by the sanitiser but gains no upload path.
+- Table columns are never handed a disk path. Filament's `ImageColumn` treats a state that is not a URL or a
+  `data:` URI as a path on its disk and, on any disk but `public` unless told otherwise, mints a `temporaryUrl()`
+  for it — which on `local` skips `EntryPolicy`. Tiles are Kitsune's own column, built from the URLs in decision
+  6. Nothing in core mints a `temporaryUrl()` for media, and a test is to enforce it.
+- The intake directory is swept by age, by a command of its own. A staged file never has a row, so
+  `kitsune:media-prune`'s rule — *"it asks the database, never the filename"* — cannot apply to it, and folding an
+  age heuristic into that command would break the rule it states. The same sweep also runs
+  opportunistically on every accepted upload, so no scheduler is needed to bound it: staged files and sidecars
+  older than 24 hours go, the window Livewire's own sweep uses — which cannot be relied on alone, because it misses
+  a sidecar whose file was removed before submit. The command exists for an operator, and core registers it with
+  Laravel's scheduler for an installation that runs one; nothing here does today.
+
+⚠️ **ADR-033 refused `Gate::before` because its reach was every ability in the application, including the host's.**
+This reaches as far, into the host's uploads, and does three things there: it **narrows** the file types every host
+component may upload to what `MediaIntake` accepts, it **admits only users who may upload media**, and it
+**widens** their size ceiling from 12 MiB to 64 MiB. Both
+are accepted because Kitsune's own uploads need them and Livewire offers no per-component seam — the endpoint, its
+staging disk and its preview route are shared infrastructure, and there is nowhere narrower to put the rule.
+
+⚠️ **What it keeps, exactly.** Nothing reaches a Kitsune- or Livewire-managed disk unless `MediaIntake` has
+accepted it, and nothing over the applicable ceiling is written. What stays unsanitised, and where: an accepted SVG
+sits on the never-served intake disk until `store()` sanitises it and the handler removes the staged file; and an
+**abandoned** upload — staged, never submitted — leaves its bytes, SVG included, and its sidecar there until the
+sweep runs. PHP's own upload temporary file precedes every rule, and is PHP's rather than this entry's to govern.
+
+**4a. Private media lives on a disk that is never served.** Core defines its own private media disk — local, `serve`
+off, like the intake disk — and points `kitsune.media.disks.private` at it, so a private file has no web route at
+all, signed or not, and the only way to its bytes is the panel route that authorises first. That removes finding 4
+at its root rather than policing it: the rule that core mints no `temporaryUrl()` for media stays, as defence in
+depth. Rows already naming `local` stay valid, because delivery and disposal read the row's own `disk`, and
+`kitsune:media-reconcile` moves them. This amends ADR-041, which sent private files to `local`.
+
+**5. Soft-deleting a public file withdraws it from the origin.** Its bytes move from the public disk to the
+private one and the row's `disk` follows; restoring moves them back. Visibility is unchanged — it records what the
+file is when it is live. A copy a CDN, a proxy or a browser has already cached survives until it expires, and
+Kitsune does not purge it. A private file's soft delete is as before, because `Entry` soft-deletes and the scoped
+query the delivery route runs never finds a trashed entry. The move requires the configured public and private
+disks to differ; where they coincide, the first move refuses, naming the configuration key.
+
+⚠️ **This ends `MediaFile`'s "written once and never updated in place" for `disk`**, and the model's comment changes
+with it. The entry's soft delete and restore are audited already, by `AuditedBuilder`; the move itself is recorded
+only by `disk`, and `media_files` does not gain `updated_at`.
+
+⚠️ **One rule governs both directions: withdrawal precedes the commit, publication follows the outermost commit.**
+Review found the first version of restore breaking it. Bytes made public before the row that makes them public is
+durably committed can outlive a rollback — a process that stops mid-way runs no compensation, and a restore nested
+in a transaction commits only a savepoint that an enclosing rollback later undoes — and either way a trashed
+entry's file is live on the web. Ordered by this rule, no crash and no rollback in either direction exposes a
+file; the worst each can leave is a live public file served privately, which is degraded rather than exposed, and
+which `kitsune:media-reconcile` (below) repairs.
+
+⚠️ **And a second rule, for loss rather than exposure: no step deletes a copy of a file without first establishing,
+under the row lock, that another copy exists — and a copy counts only if its SHA-256 matches the row's `checksum`.**
+Existence is not integrity: a copy interrupted part-way leaves a truncated file that exists, and a retry that trusted
+it would delete the intact source and commit a corrupt file as the only one. `store()` already records the checksum,
+so every step that asks "is there another copy?" — withdrawal, publication's cleanup, reconcile, prune — asks it of
+the bytes. Review found two places that broke it. A publication's trailing
+cleanup ran unlocked, so a delete landing just after the publication committed could copy the public bytes back to
+the private path, have that fresh copy deleted by the cleanup, and then delete the public copy — leaving the file on
+neither disk. And an earlier draft of withdrawal removed an unnamed public copy outright, which destroys the file
+whenever that copy happens to be the only one.
+
+⚠️ **Soft delete: the order, and the residue it accepts.** The moves run inside the write, after the rows are
+locked, so the set moved is the set deleted: copy each public file to the private disk, delete the public copy,
+then mark the rows deleted. Any exception after a move and before the commit — a row guard, the revision write,
+the audit write, the commit itself — is compensated by moving the bytes back, and the delete is refused. A failed
+copy or a failed public delete refuses it too, and leaves at most a private copy no row names, which
+`kitsune:media-prune` may remove because the public copy is still claimed. **One window remains:** a compensation
+that itself fails leaves a *live* row naming `public` whose only copy sits on the private disk. The direct public
+URL answers the web server's own 404, with no Kitsune log line; the panel route answers 404 and logs, and its
+message is corrected, because this file was not "removed outside Kitsune". That residue is accepted, because every
+other order risks a deleted entry's file live on the web — but it must never be destroyed, so `kitsune:media-prune`
+changes: a file no row claims whose path a row names on the *other* media disk, where that row's own disk does not
+hold it, is the live copy in the wrong place. Prune reports it and never deletes it; `kitsune:media-reconcile` moves
+it to where its row says it belongs.
+
+⚠️ **Restore publishes after the outermost commit, because mirroring the delete would reopen the exposure.** The
+row is restored first, still naming the private disk, so the file is live and delivered privately. Publication is
+then registered with the connection's `afterCommit()`, which runs only once the outermost transaction has
+committed and is discarded if it rolls back. Publication is its own write: it locks the row, rechecks that the
+entry is still live, still public-visibility and still names the private disk, and stops if not; then it copies
+the private file to the public disk, updates the row to name `public`, and commits. Deleting the private copy is a
+third write, locked like the others: it rechecks that the entry is still live and still names `public`, and only
+then deletes. If a delete got there first, the recheck fails and the private copy — now the one the delete claims —
+is left alone. A cleanup that never runs leaves a private copy no row names, which prune may remove because the
+public copy is claimed.
+
+⚠️ **The lock is not optional, and review found the gap it closes.** Between the restore's commit and the
+publication, the row is unlocked, and a delete in that gap sees a file naming the private disk, withdraws nothing,
+and commits — after which an unlocked publication would put a deleted entry's file on the web. Locking the same
+row the delete locks serialises them: a delete that wins leaves publication a trashed row, and it publishes
+nothing; a publication that wins leaves the delete a row naming `public`, which it withdraws. A restore inside a transaction that later rolls back therefore publishes
+nothing. A publication that fails at any step — a failed copy, a failed update, a process that stops — leaves a
+live row naming the private disk with its bytes there, served privately until `kitsune:media-reconcile` moves them;
+a partial public copy that no row names is an orphan prune may remove, because the row's own disk holds the file.
+A failed private delete after the update leaves a private copy no row names, which prune may remove because the
+public copy is claimed. Nothing in this order leaves a trashed entry's file on the web.
+
+⚠️ **Withdrawal trusts the file's path, not the row's `disk`.** A publication that stops after its copy and before
+its commit leaves a public copy no row names — and a later delete, reading `disk`, would see a private file and
+withdraw nothing, leaving the leftover live under a deleted entry. So a soft delete withdraws any copy at the file's
+path on the public disk whether or not the row names it — and *withdraws* means moves: it copies the public file to
+the private path unless a copy matching the row's checksum is already there, and only then deletes the public one, so a leftover that turns out
+to be the only copy is kept rather than destroyed. Paths are generated per upload from random bytes, so the path
+belongs to this file and nothing else.
+
+⚠️ **Force-delete withdraws before it commits, as soft delete does — and review found ADR-041's order exposing
+files.** ADR-041 put rows first and bytes second, reporting rather than throwing when the bytes will not go, on the
+ground that the residue is an orphan nobody can reach. For a *public* file that is false: a disk that refuses, or a
+process that stops after the rows are deleted, leaves the bytes live at their URL with no row to find them by — so a
+force-delete, or an erasure, reports success while the file is still on the web. So a force-delete now reads each
+file under the row lock, withdraws any copy at its path on the public disk to the private one before the rows go,
+refuses if that withdrawal fails, deletes the rows, commits, and only then disposes of the bytes — from the path on
+both media disks, reporting rather than throwing as ADR-041 decided, because what a refused disposal leaves is now
+a copy on a disk that nothing serves (decision 4a). Reading under the lock also removes the race with a publication:
+the earlier draft read `disk` and `path` before the rows were taken, exactly as `AuditedBuilder::forceDelete()`
+does today, so a publication committing in between left disposal holding the wrong location.
+
+⚠️ **Delivery trusts the disk, not the visibility, for this.** A file is public — a direct URL, no PHP in the path —
+only when its row names the public disk; a public-visibility row naming the private disk is delivered as private
+until it is reconciled. `urlFor()` today builds a public file's URL from the row's own disk, and for `local` that
+yields `/storage/{path}`, the public symlink's path, where the file is not — or where a stale copy could be.
+
+⚠️ **The repair is a command, and the database is the durable half.** `kitsune:media-reconcile` compares every live
+media row's `disk` with where its visibility says its bytes belong, and where the bytes actually are, and reports
+every disagreement; with `--force` it moves the bytes to where the row's visibility says and updates `disk` to
+match — under the same row lock the delete and the publication take, with the same recheck, so it cannot race
+either of them. It is read-only by default for `kitsune:media-prune`'s reason — it moves files — and it never deletes the
+only copy of anything. It repairs both residues this decision accepts: a live row naming `public` whose bytes the
+delete left on the private disk, and a restored row whose publication did not finish.
+
+⚠️ **The builder's bulk path is all or nothing; the admin's bulk action is per file.** A builder-level
+`Entry::query()->delete()` over public media compensates every move made so far when any one fails, and refuses the
+whole delete. The admin's `DeleteBulkAction` deletes record by record, so there each file is withdrawn or refused on
+its own, and the result names which were withdrawn and which were refused, rather than Filament's generic
+partial-failure text. A single delete's refusal is a notification naming the file, never a 500.
+
+⚠️ **The cost of doing it inside the write.** The rows stay locked while their bytes move and are checksummed. For two local disks on
+one filesystem a move can be a rename; across filesystems or drivers it is a copy of up to 64 MiB, and on SQLite
+every writer waits for it. The implementation measures that before merge.
+
+⚠️ **A withdrawal that fails refuses the delete; a disposal that fails does not — and the line between them is
+reachability.** A failed withdrawal would leave a file live on the web under an entry the admin calls deleted, the
+one outcome the operator asked to prevent, so it refuses, for a soft delete and a force-delete alike. A failed
+disposal, which now only ever runs after withdrawal, leaves a copy on a disk nothing serves, so it reports and lets
+the force-delete finish, as ADR-041 decided.
+
+⚠️ **Both paths, again.** A `deleting` hook on `Entry` would miss `Entry::query()->delete()`, which dispatches
+nothing — the shape `MediaDisposal` exists because of. Withdrawal is asked of the builder, where the instance and
+bulk paths both arrive, and restore likewise.
+
+**6. Tiles: public ones are same-origin; private ones load on click until measured.** A public tile's URL is a path
+on the host serving the admin, from a helper beside `MediaDelivery::urlFor()`. `urlFor()` itself stays absolute,
+because it answers for consumers that are not the admin — ADR-041's direct URL a CDN can cache — and its absolute
+form is built from `APP_URL`, which names another host whenever the admin is served on a site's own host, and in
+the browser suite, where `APP_URL` is `http://localhost` while the admin is served at `127.0.0.1:8125`. A private
+tile shows a placeholder and fetches through the authorised route when clicked. Loading private tiles
+automatically waits for the measurement below.
+
+**7. A refusal Kitsune makes is shown as Kitsune wrote it, escaped as text, and nothing else is.** `MediaIntake`'s
+refusals — they name the rule and, for SVG, the commands that enable it — and `MediaLibrary`'s refusals of a
+visibility and of a file over the ceiling after sanitising are shown verbatim, thrown as a dedicated exception
+type; the refusal of a type that is not a media type is to be written to the same standard with decision 1. Two of
+`MediaIntake`'s texts — the SVG one and the missing-`fileinfo` one — are written for an operator rather than an
+editor, and are shown anyway, because they name the fix. `MediaLibrary`'s other failures carry server paths, class
+names or developer wording, including its refusal when the sanitiser binding vanished mid-request, and become a
+generic failure, as does anything else — `MediaLibrary` rethrows whatever interrupted the row write, and a
+`QueryException` is a `RuntimeException`, so catching that type and showing its message would put SQL and its
+bindings in a notification. A refusal by the web server or by PHP's upload limits never reaches Kitsune's code and
+arrives as Livewire's own "failed to upload".
+
+### The measurement this entry still owes
+
+ADR-041 said the media UI *"should arrive with a measurement"* of what a grid of private tiles costs at the ADR-027
+floor. This entry defers the automatic loading instead, so that the measurement can be taken where it means
+something: on the stage server, with PHP-FPM and nginx limited to ADR-027's floor as `bin/benchmark-floor.sh`
+limits its container, from `Kitsune::FLOOR_*`, and the limits recorded with the numbers. Before private tiles load
+automatically, record here: the cost of one private tile at p50 and p95 for an owner and for a non-owner holding
+the grant, with a small PNG, a 200 KB JPEG and a 4 MB JPEG; how many tile requests a sort, a page change and an
+upload each trigger under `no-store`; and whether the list's query count is constant rather than one per row.
+Then, for the upload half: the effective upload ceiling on stage, confirmed with a real 4 MB upload, and submit
+time and peak memory for several files at that ceiling, against PHP-FPM's `max_execution_time`.
+
+**Before the code merges**, not later: the media list's and the relation picker's query plans and timings at 100k
+rows on all four engines, under decision 2's widened scope, with the shape that keeps an ordered index read pinned
+by its plan rather than by an index's existence; and the time a soft delete holds its rows locked while public
+files move (decision 5).
+
+⚠️ **Expect a 4 MB upload to fail on stage until a runbook change raises the ceiling.** The runbook's NGX-2 admits
+only directives it has reviewed and `client_max_body_size` is not among them, so a stage configuration that passes
+NGX-2 runs nginx's 1 MiB default; and stage's PHP upload limits are recorded nowhere in the repository. That change
+has its own review, and it comes before the upload half of the measurement. The tile half can be taken now, with
+files stored from the console.
+
+### What this costs
+
+**Core now reaches into the host's Livewire configuration.** Every Livewire upload in the application, the host's
+own components included, passes `MediaIntake`'s rule and lands on the intake disk — narrowed to the types
+`MediaIntake` accepts, refused outright for a user who may not upload media, and widened from Livewire's 12 MiB to
+64 MiB, still under Livewire's throttle. A host component that lets other users upload stops working for them. A host that
+needs a different upload policy for its own components has to take it up with core rather than configure around it.
+
+**The admin's tenant scope is widened for media.** Decision 2 changes a framework scope ADR-021 relies on, for media
+types, by exactly the rule `SiteScope` already applies. The agreement between the two encodings becomes a test
+rather than an assumption, and the cost to the media list's query plan is measured before merge.
+
+**A shared file travels, and can be changed from anywhere in the org.** See decision 2. *This site only* exists for
+the file that should not.
+
+**A public photo can carry its location.** A camera JPEG's EXIF block often holds GPS coordinates, and a public
+file is served exactly as uploaded. Nothing in this design strips it. The confirmation an editor sees on choosing
+*public* (decision 3) names it, and removing it is an open question.
+
+**Private thumbnails are worse to use until they are measured.** A grid of placeholders that load on click is a
+real cost to an editor, and it is paid until the number exists.
+
+**A soft delete can fail, and holds its rows while it moves bytes.** Decision 5 makes a public file's delete
+depend on a disk move, refuses the delete when the move fails, and keeps the rows locked while the bytes move.
+
+**Some failures leave a live file served privately until someone reconciles it.** That is the price of never
+leaving one exposed: the database is committed first for a restore and last for a delete, and the bytes that
+disagree with it afterwards are repaired by a command rather than by an automatic retry, because nothing in this
+installation is scheduled.
+
+### Enforced by
+
+**Nothing yet.** This entry is the decision, not a report of work done.
+
+When it lands:
+
+- **Sharing.** `store()` writes `site_id` and `slug` NULL for a shared upload and the current site and a slug for
+  *this site only*. Through the panel, in the browser suite — because neither core's PHP tests nor a middleware-less
+  test route can see Filament's scope — a file uploaded as shared at one site is listed at a second site of the
+  same org, served from its `/media/{id}`, and offered by and accepted through a relation field there; it is
+  refused, and not offered, on another org's site, and not offered by the picker or the Attach dialog of a site
+  where its type is switched off. A *this site only* private file is refused (404) from the second
+  site to a user holding the grant — `MediaDeliveryTest`'s existing cross-site case, moved to a site-only upload,
+  beside a shared counterpart that is served. The widened scope and `SiteScope` agree row for row, and a non-media
+  type's list keeps `site_id = {site}`. `Entry` refuses a non-null slug where `site_id` is null, through the
+  instance and in bulk, and a shared entry's edit page offers no control that writes `slug`.
+- **Media types.** `is_media` arrives by its own migration, which marks a type `media_files` rows already reference
+  and refuses a type that mixes entries with and without bytes. `is_media` cannot change after creation through the
+  instance or in bulk; `store()` refuses a
+  type without it; an entry cannot be retyped across the media boundary, in either direction, and can within it. The seeded rival file replaces the byte-less fixture, and `admin.spec.js`'s cross-org assertion
+  holds with its positive control.
+- **Private disk.** New private uploads land on core's private media disk, and no `storage.{disk}` route serves it;
+  a row still naming `local` is delivered and disposed of by its own `disk`, and reconcile moves it.
+- **Staging.** A signed-in user without `create` and `publish` on any media type is refused at the upload endpoint
+  before anything is staged; a stale staged file is swept by the next accepted upload with no scheduler running.
+  Livewire's configured temporary disk is the intake disk and no `storage.{disk}` route serves it,
+  asserted in core's PHP suite from config and the route table. The endpoint refuses a file `MediaIntake` refuses
+  before anything is staged, asserted where Livewire actually runs — the browser suite, which also asserts that the
+  intake directory is unchanged after a refused upload. `preview_mimes` is empty. No staged file or sidecar
+  survives a submitted upload, on success or refusal, and the intake sweep removes staged files and sidecars older
+  than its threshold and leaves younger ones. `RichEditor` offers no attachments. An upload to a non-schema
+  property is refused on each of Kitsune's panel pages. Core calls no `temporaryUrl()` for media.
+- **Visibility.** The control opens at *private* every time; choosing *public* requires the confirmation, and a
+  file uploaded without it is stored private.
+- **Authorisation.** A user without `create` sees no Upload; one with `create` but not `publish` sees it disabled
+  with the reason; a forged call from either stores nothing on any disk.
+- **Deletion.** A soft-deleted public file is absent from the public disk and restored to it, through the instance
+  and in bulk. A builder-level bulk soft delete whose move fails part-way leaves every row and every byte where it
+  was; a restore inside a transaction that rolls back leaves nothing on the public disk; a restore whose publication
+  fails leaves a live entry naming the private disk and delivered privately; the interleaving is covered
+  deterministically — a restore commits, the entry is soft-deleted before its publication runs, and the
+  publication then publishes nothing; a publication commits, the entry is soft-deleted before the publication's cleanup runs, and the
+  cleanup then deletes nothing, leaving the file on the private disk; a soft delete withdraws a public copy at the
+  file's path that the row does not name, and when that copy is the only one it is moved rather than deleted; a
+  truncated private copy at the path does not count as a copy — withdrawal re-copies, and the public source
+  survives; the admin's bulk delete names which
+  files were withdrawn and which refused, and the admin shows a refused delete as a
+  notification naming the file rather than a 500. `kitsune:media-prune --force` leaves a file whose path a live row
+  names on the other media disk, and `kitsune:media-reconcile` reports it read-only and moves it with `--force`,
+  never deleting a sole copy. A force-delete of a public file withdraws it before the rows go — a force-delete whose
+  withdrawal fails is refused and leaves the entry and its public file in place — and disposes of the path on both
+  media disks afterwards; a disposal that fails after the commit leaves nothing on the public disk. A public-visibility row naming the private disk is delivered as private. Coinciding
+  public and private disks make the first move refuse.
+- **Tiles.** A public tile's URL carries no scheme or host. The media list makes no request to the private media
+  route until a tile is clicked.
+- **Refusals.** A refusal shown to an editor is `MediaIntake`'s own text, escaped; a database error shows none of
+  its SQL.
+- **The upload itself is exercised in a browser**, because under the PHP suite Livewire stages to a faked disk,
+  with no panel tenant and no HTTP request, and those are where this design's failures live.
 
 ---
 
@@ -3721,6 +4248,31 @@ every row, asserted so that a later change to populate it is a visible decision 
 - **When does module enablement need an axis beyond per-install?** ADR-038 ships one switch and defers
   `org_modules`. The first consumer to want a module on for one org and off for another decides the shape, and
   whether it reuses ADR-022's org → site group → site resolution rather than inventing a second one
+- **Location data in public photos.** A camera JPEG's EXIF block often holds GPS coordinates, and a public file is
+  served as uploaded. ADR-042 records the exposure, and the confirmation it decides will name it where an editor
+  chooses *public*; nothing removes it. Stripping it without re-encoding is a byte-level segment removal that core has not written, and has to deal
+  with EXIF orientation; re-encoding instead needs an image extension core does not require
+- **ADR-018's rule 1 is enforced nowhere in core's admin.** *"No bare user-facing strings in UI code. A CI check,
+  build-failing"* — and core's Filament layer carries bare English throughout. ADR-042's media UI is to go through a
+  `kitsune` translation namespace so as not to add to it. Either the check is built and the rest extracted, or
+  ADR-018 is amended to say when
+- **The admin has no trash view and no restore.** Soft delete is reversible in the model and in nothing an editor
+  can reach. ADR-042 decided that restoring a public file moves its bytes back, which is only useful once something
+  can call it
+- **A file's visibility cannot change after upload.** Nothing decides whether flipping private to public is allowed,
+  which action gates it, or how it is audited. (`disk` becomes mutable under ADR-042's decision 5; `visibility` does
+  not.)
+- **Edited migrations never reach a deployed database.** `0001_01_01_000001_create_kitsune_schema_tables.php` has been
+  edited in place at least three times (#45, #82, #102), and `deploy/release.sh` runs `migrate --force`, which skips a
+  migration it has already recorded. Each of those changes is therefore absent from any database migrated before it.
+  ADR-042 adds `is_media` by a new migration for this reason; whether earlier changes need the same, and whether
+  in-place edits stop before v1.0, is undecided
+- **Which files a media type accepts.** A media type accepts anything `MediaIntake` accepts: an mp3 uploaded to
+  `image` becomes an image entry. Whether a type constrains its accepted MIME types is undecided
+- **Stage is expected to refuse a 4 MB upload, and runs no scheduler.** NGX-2 admits only reviewed directives and
+  `client_max_body_size` is not one, and stage's PHP upload limits are recorded nowhere; a real 4 MB upload settles
+  it. Nothing runs `schedule:run` either, which ADR-042's intake sweep needs. Both are runbook changes with their own
+  review, and the upload half of ADR-042's measurement waits on the first
 - Storage benchmark at 10k / 100k / 1M entries
 - ~~Blueprint rollback semantics when content already exists~~ — **settled by ADR-039.** Removal is refused while any entry or revision holds data, and there is no rollback: `is_locked` is permanent and both cascade guards count `withTrashed()`, so the reachable states are applied, and gone with the data destroyed.
 - Revision storage growth — full-JSON snapshots get expensive; consider diffs
