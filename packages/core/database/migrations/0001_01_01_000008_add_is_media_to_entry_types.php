@@ -34,6 +34,10 @@ use Illuminate\Support\Facades\Schema;
  * MariaDB a DDL statement commits on its own: a refusal thrown after it would leave the column in place and make
  * every retry fail on "duplicate column" rather than on the problem it is reporting. Trashed entries count — a
  * soft-deleted media entry still has its bytes.
+ *
+ * ⚠️ THE CLASSIFICATION IS A SNAPSHOT. `deploy/release.sh` migrates while the previous release still serves, so its
+ * writes can land between this read and activation (Codex, #150). `kitsune:media-types` finds a type whose flag then
+ * disagrees with its entries, and repairs one by this rule.
  */
 return new class extends Migration
 {

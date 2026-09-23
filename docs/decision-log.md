@@ -3848,6 +3848,18 @@ gain it yet: `EntryTypeDeclaration` is one of the four symbols ADR-039 names as 
 surface, and the DAM starter is the first consumer that needs a blueprint to declare a media type — it widens that
 surface when it has a reason to.
 
+> ⚠️ **Amended 2026-09-23 — the migration's classification is a snapshot, and a deploy can leave it stale.** Codex
+> found it on #150: `deploy/release.sh` migrates while the previous release still serves, so before the new release
+> goes live an editor can create a file-less entry on a type the migration has just marked, and an import can store a
+> file on a type it left unmarked — and with the flag locked, that state had no way back. `kitsune:media-types` is the
+> way back. Read-only, it reports every type whose flag disagrees with its entries and fails, so it is the check to run
+> after activation; with `--force` and one type, it applies the migration's own rule under that type's row lock —
+> mark a type whose every entry carries a file, unmark one none of whose entries does, leave an empty one alone, and
+> refuse one holding both. It and the migration are the only writes that change the flag after creation, and
+> `store()` and the retype boundary read the flag under a shared lock, so neither acts on a value it is changing. It
+> also finds the same state made the other way: the create page still makes a file-less entry of a media type until
+> decision 3 closes it.
+
 > ⚠️ **Amended 2026-09-23 — "bulk retypes need no second guard" was wrong inside `withoutScopeBecause()`.** The escape
 > hatch stands every per-row refusal down, `entry_type_id`'s with them, so a bulk or arithmetic write there retyped
 > uploaded files onto `article` untouched. The boundary is now asked of the builder, on the rows a write has locked,
@@ -4191,8 +4203,14 @@ installation is scheduled.
 > entries included; refuses a type mixing the two, naming it by handle and id with its count of entries without a
 > file, and counting a trashed one; and refuses before it alters the table — the refusal arrives rather than the
 > engine's duplicate-column error, and the statement log holds only reads. `is_media` cannot change after creation
-> through the instance, a quiet save, in bulk, or when a `saving` listener registered later changes it. `store()`
-> refuses a type without it, reading the stored flag rather than the instance's. A retype across the boundary is
+> through the instance, a quiet save, in bulk, or when a `saving` listener registered later changes it — nor inside
+> `withoutScopeBecause()`, through an update, a quiet save, an arithmetic write's extra columns or an upsert, because
+> it is a column fixed at creation and `ScopedBuilder` refuses those on every update (Codex, #150). `store()`
+> refuses a type without it, reading the stored flag rather than the instance's — and again inside its row
+> transaction, so a type that stops being one while its file is written is refused. `kitsune:media-types` reports a
+> type whose flag disagrees with its entries and fails; forced, it marks, unmarks or refuses one type by the
+> migration's rule, trashed entries counting, leaves an empty type alone, and refuses a handle two orgs share. A
+> retype across the boundary is
 > refused in both directions — through the instance, a quiet save, in bulk, an arithmetic write's extra columns, and
 > inside `withoutScopeBecause()` — while one within it moves the file with the entry, and the hatch can still do so
 > in bulk; arithmetic on the type id and a type id that is not a positive whole number are refused. The seeder's

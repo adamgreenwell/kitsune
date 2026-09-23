@@ -24,6 +24,7 @@ use Kitsune\Core\Tenancy\Attributes\Unscoped;
 use Kitsune\Core\Tenancy\Concerns\DerivesGuardedColumns;
 use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
 use Kitsune\Core\Tenancy\Context;
+use Kitsune\Core\Tenancy\Contracts\FixesColumnsAtCreation;
 use Kitsune\Core\Tenancy\Contracts\RefusesCascadingDeletes;
 use Kitsune\Core\Tenancy\Contracts\RequiresModelSave;
 use Kitsune\Core\Tenancy\ScopedBuilder;
@@ -42,7 +43,7 @@ use RuntimeException;
  * @property array<string, mixed>|null $settings
  */
 #[Unscoped]
-class EntryType extends Model implements RefusesCascadingDeletes, RequiresModelSave
+class EntryType extends Model implements FixesColumnsAtCreation, RefusesCascadingDeletes, RequiresModelSave
 {
     use DerivesGuardedColumns;
     use EnforcesScope;
@@ -612,6 +613,20 @@ class EntryType extends Model implements RefusesCascadingDeletes, RequiresModelS
                 .'collides with a registered route makes the admin unreachable.',
             'is_media' => 'it is locked once the type exists, because its entries were made either from '
                 .'uploaded files or without them, and flipping it strands one kind or the other (ADR-042).',
+        ];
+    }
+
+    /**
+     * `is_media` is decided when a type is created — ADR-042 decision 1. `guardMediaFlag()` refuses the change with
+     * the type's own words on an evented save; this refuses it on every other update, inside the escape hatch too.
+     *
+     * @return array<string, string>
+     */
+    public static function columnsFixedAtCreation(): array
+    {
+        return [
+            'is_media' => 'its entries were made either from uploaded files or without them, and flipping it strands '
+                .'one kind or the other (ADR-042).',
         ];
     }
 

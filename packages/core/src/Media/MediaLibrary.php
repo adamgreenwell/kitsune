@@ -188,6 +188,21 @@ final class MediaLibrary
         try {
             return Entry::query()->getConnection()->transaction(
                 static function () use ($type, $title, $originalName, $extension, $disk, $path, $mime, $size, $source, $visibility): Entry {
+                    /*
+                     * ⚠️ THE FLAG AGAIN, UNDER A SHARED LOCK, INSIDE THE WRITE. The check in `store()` refuses before
+                     * a byte is written; this one is the one that holds. `kitsune:media-types --force` is the single
+                     * write that changes a flag after creation, and it locks the type's row for update — so a type it
+                     * is taking out of media cannot receive a file in between.
+                     */
+                    if (! (bool) EntryType::query()->whereKey($type->getKey())->sharedLock()->value('is_media')) {
+                        throw new RuntimeException(sprintf(
+                            'Refusing [%s]: [%s] stopped being a media type while it was being stored (ADR-042). '
+                            .'Nothing was stored.',
+                            $originalName,
+                            $type->handle,
+                        ));
+                    }
+
                     $entry = Entry::create([
                         'entry_type_id' => $type->getKey(),
                         'title' => $title ?? pathinfo(basename($originalName), PATHINFO_FILENAME),

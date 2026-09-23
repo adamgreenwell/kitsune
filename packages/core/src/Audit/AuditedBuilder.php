@@ -526,8 +526,9 @@ class AuditedBuilder extends ScopedBuilder
      * $image)->update(['entry_type_id' => $article]))` moved every uploaded file onto `article`. The escape hatch
      * decides which path may write a column, not what the column may hold (ADR-022's amendment says the same of
      * `settings`). `auditing()` has already locked and narrowed this builder to the keys it will write, so this
-     * asks about exactly those rows, and the flag is locked on every type, so neither side can move before the
-     * write commits.
+     * asks about exactly those rows. A type's flag changes after creation only through `kitsune:media-types
+     * --force`, which locks the type's row for update: the destination's flag is read here under a shared lock, and
+     * the source's entries are the rows `auditing()` has locked, which that command locks too before it counts.
      *
      * ⚠️ ONE QUERY ON A WRITE THAT NAMES `entry_type_id`, AND NONE ON ANY OTHER. A retype is rare; the query is a
      * key-bounded read of the rows already locked.
@@ -549,7 +550,8 @@ class AuditedBuilder extends ScopedBuilder
         }
 
         $model = $this->getModel();
-        $toMedia = (bool) EntryType::query()->whereKey($destination)->value('is_media');
+        /* Under a shared lock: `kitsune:media-types --force` changes a flag with the type's row locked for update. */
+        $toMedia = (bool) EntryType::query()->whereKey($destination)->sharedLock()->value('is_media');
 
         $crossing = $this->clone()
             ->whereIn($model->qualifyColumn('entry_type_id'), EntryType::query()->where('is_media', ! $toMedia)->select('id'))

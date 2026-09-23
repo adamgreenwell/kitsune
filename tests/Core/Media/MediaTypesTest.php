@@ -9,6 +9,7 @@
 declare(strict_types=1);
 
 use Illuminate\Database\QueryException;
+use Illuminate\Filesystem\FilesystemAdapter;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Kitsune\Core\Media\MediaDisks;
@@ -156,9 +157,51 @@ describe('the flag on the type', function (): void {
 
     it('refuses the change in bulk', function (): void {
         expect(fn () => EntryType::query()->whereKey($this->articleType->getKey())->update(['is_media' => true]))
-            ->toThrow(RuntimeException::class, '[is_media] cannot be written in bulk');
+            ->toThrow(RuntimeException::class, '[is_media] is fixed when EntryType is created');
 
         expect(storedIsMedia($this->articleType))->toBeFalse();
+    });
+
+    /**
+     * ⚠️ INSIDE THE ESCAPE HATCH, where the per-row column list stands down and a bulk write dispatches no listener
+     * for the model's own lock to run in. Codex found the bulk update on #150; the other three doors are the ones a
+     * fix for that one alone would have left.
+     */
+    it('refuses the change inside withoutScopeBecause(), at every door that updates', function (): void {
+        $id = $this->imageType->getKey();
+
+        $doors = [
+            'a bulk update' => fn () => EntryType::withoutScopeBecause('a test of the media lock', fn ($query) => $query
+                ->whereKey($id)->update(['is_media' => false])),
+            'a spelling the engine folds' => fn () => EntryType::withoutScopeBecause('a test of the media lock', fn ($query) => $query
+                ->whereKey($id)->update(['entry_types.IS_MEDIA' => false])),
+            'a quiet save' => fn () => EntryType::withoutScopeBecause('a test of the media lock', function () use ($id): void {
+                $type = EntryType::query()->findOrFail($id);
+                $type->is_media = false;
+                $type->saveQuietly();
+            }),
+            'an arithmetic write\'s extra columns' => fn () => EntryType::withoutScopeBecause('a test of the media lock', fn ($query) => $query
+                ->whereKey($id)->increment('ordering', 0, ['is_media' => false])),
+            'an upsert\'s update half' => fn () => EntryType::withoutScopeBecause('a test of the media lock', fn ($query) => $query
+                ->upsert([['id' => $id, 'handle' => 'image', 'name' => 'Image', 'plural_name' => 'Images', 'is_media' => false]], ['id'])),
+            'an upsert naming it to update' => fn () => EntryType::withoutScopeBecause('a test of the media lock', fn ($query) => $query
+                ->upsert([['id' => $id, 'handle' => 'image', 'name' => 'Image', 'plural_name' => 'Images']], ['id'], ['is_media'])),
+        ];
+
+        foreach ($doors as $door => $write) {
+            expect($write)->toThrow(RuntimeException::class, 'is fixed when EntryType is created');
+
+            expect(storedIsMedia($this->imageType))->toBeTrue("the flag moved through {$door}");
+        }
+    });
+
+    /** The control: the hatch still writes every other column of a type, which is what it is for. */
+    it('still lets withoutScopeBecause() write a type\'s other columns', function (): void {
+        EntryType::withoutScopeBecause('a test of the media lock', fn ($query) => $query
+            ->whereKey($this->imageType->getKey())->update(['name' => 'Picture']));
+
+        expect(EntryType::query()->whereKey($this->imageType->getKey())->value('name'))->toBe('Picture')
+            ->and(storedIsMedia($this->imageType))->toBeTrue();
     });
 
     /** The builder's switch is labelled through core's own namespace, which starts here — ADR-042 decision 3. */
@@ -379,6 +422,32 @@ describe('storing into a type', function (): void {
             ->and(Storage::disk('public')->allFiles())->toBe([]);
     });
 
+    /**
+     * ⚠️ THE FLAG CAN CHANGE BETWEEN THE CHECK AND THE WRITE — `kitsune:media-types --force` is the one write that
+     * changes it after creation. The bytes are written between the two, so a disk whose write clears the flag puts
+     * that change exactly in the window, deterministically; the check inside the row transaction has to catch it.
+     */
+    it('refuses a type that stops being a media type while its file is written', function (): void {
+        $fake = Storage::disk(MediaDisks::PRIVATE);
+
+        Storage::set(MediaDisks::PRIVATE, new class($fake->getDriver(), $fake->getAdapter(), $fake->getConfig()) extends FilesystemAdapter
+        {
+            public function writeStream($path, $resource, array $options = [])
+            {
+                DB::table('entry_types')->where('handle', 'image')->update(['is_media' => false]);
+
+                return parent::writeStream($path, $resource, $options);
+            }
+        });
+
+        expect(fn () => MediaLibrary::store(aPngForTypes(), 'logo.png', $this->imageType))
+            ->toThrow(RuntimeException::class, 'Refusing [logo.png]: [image] stopped being a media type while it was being stored');
+
+        expect(DB::table('entries')->count())->toBe(0)
+            ->and(DB::table('media_files')->count())->toBe(0)
+            ->and(Storage::disk(MediaDisks::PRIVATE)->allFiles())->toBe([]);
+    });
+
     /** The flag is read from the row, so an attribute set on the instance is not a way in. */
     it('refuses a type whose flag was set on the instance and never stored', function (): void {
         $this->articleType->is_media = true;
@@ -484,5 +553,99 @@ describe('the migration that adds the flag', function (): void {
             ->and($thrown?->getMessage())->toStartWith('Cannot mark media types')
             ->and($statements)->not->toBeEmpty()
             ->and(array_filter($statements, static fn (string $sql): bool => ! str_starts_with($sql, 'select')))->toBe([]);
+    });
+});
+
+/*
+ * The repair command — the one door past the lock besides the migration, for the state a deploy window can leave
+ * (Codex, #150). Read-only unless forced; forced, one type at a time, by the migration's own rule.
+ */
+describe('kitsune:media-types', function (): void {
+    it('reports nothing, and succeeds, when every type agrees with its entries', function (): void {
+        MediaLibrary::store(aPngForTypes(), 'logo.png', $this->imageType);
+        Entry::create(['entry_type_id' => $this->articleType->getKey(), 'title' => 'Plain', 'slug' => 'plain']);
+
+        /* `photo` is a media type with no entries at all, which agrees with either value. */
+        $this->artisan('kitsune:media-types')
+            ->expectsOutputToContain('Every entry type agrees with its entries')
+            ->assertSuccessful();
+    });
+
+    it('reports a media type holding an entry without a file, and fails, changing nothing', function (): void {
+        MediaLibrary::store(aPngForTypes(), 'logo.png', $this->imageType);
+        Entry::create(['entry_type_id' => $this->imageType->getKey(), 'title' => 'Byte-less', 'slug' => 'byte-less']);
+
+        $this->artisan('kitsune:media-types')
+            ->expectsOutputToContain('a media type with entries that carry no file')
+            ->expectsOutputToContain('Nothing was changed')
+            ->assertFailed();
+
+        expect(storedIsMedia($this->imageType))->toBeTrue();
+    });
+
+    it('reports an ordinary type whose entries carry files', function (): void {
+        legacyFileFor(Entry::create(['entry_type_id' => $this->articleType->getKey(), 'title' => 'Legacy', 'slug' => 'legacy']));
+
+        $this->artisan('kitsune:media-types')
+            ->expectsOutputToContain('not a media type, and entries carry files')
+            ->assertFailed();
+
+        expect(storedIsMedia($this->articleType))->toBeFalse();
+    });
+
+    it('marks, when forced, a type whose every entry carries a file — trashed ones included', function (): void {
+        $live = Entry::create(['entry_type_id' => $this->articleType->getKey(), 'title' => 'Live', 'slug' => 'live']);
+        $trashed = Entry::create(['entry_type_id' => $this->articleType->getKey(), 'title' => 'Trashed', 'slug' => 'trashed']);
+        legacyFileFor($live);
+        legacyFileFor($trashed);
+        $trashed->delete();
+
+        $this->artisan('kitsune:media-types article --force')
+            ->expectsOutputToContain('[article] is a media type now')
+            ->assertSuccessful();
+
+        expect(storedIsMedia($this->articleType))->toBeTrue();
+    });
+
+    it('unmarks, when forced, a media type none of whose entries carries a file', function (): void {
+        Entry::create(['entry_type_id' => $this->photoType->getKey(), 'title' => 'Byte-less', 'slug' => 'byte-less']);
+
+        $this->artisan('kitsune:media-types photo --force')
+            ->expectsOutputToContain('[photo] is no longer a media type now')
+            ->assertSuccessful();
+
+        expect(storedIsMedia($this->photoType))->toBeFalse();
+    });
+
+    it('refuses, when forced, a type holding both — counting a trashed entry', function (): void {
+        MediaLibrary::store(aPngForTypes(), 'logo.png', $this->imageType);
+        Entry::create(['entry_type_id' => $this->imageType->getKey(), 'title' => 'Byte-less', 'slug' => 'byte-less'])->delete();
+
+        $this->artisan('kitsune:media-types image --force')
+            ->expectsOutputToContain('Refusing to repair [image]: 1 of its entries carry a file and 1 do not')
+            ->assertFailed();
+
+        expect(storedIsMedia($this->imageType))->toBeTrue();
+    });
+
+    /** The control for the two above: a fresh media type is empty, and forcing it must not unmark it. */
+    it('leaves an empty media type alone when forced', function (): void {
+        $this->artisan('kitsune:media-types photo --force')
+            ->expectsOutputToContain('[photo] has no entries')
+            ->assertSuccessful();
+
+        expect(storedIsMedia($this->photoType))->toBeTrue();
+    });
+
+    it('repairs one named type only, and refuses a name that is missing, unknown or shared by two orgs', function (): void {
+        $this->artisan('kitsune:media-types --force')->expectsOutputToContain('name it by handle or id')->assertFailed();
+        $this->artisan('kitsune:media-types nothing --force')->expectsOutputToContain('No entry type is [nothing]')->assertFailed();
+
+        $rival = Org::create(['slug' => 'rival', 'name' => 'Rival']);
+        EntryType::create(['org_id' => $rival->getKey(), 'handle' => 'article', 'name' => 'Article', 'plural_name' => 'Articles']);
+
+        $this->artisan('kitsune:media-types article --force')
+            ->expectsOutputToContain('[article] names 2 entry types')
+            ->assertFailed();
     });
 });
