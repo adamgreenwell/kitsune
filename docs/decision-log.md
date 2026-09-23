@@ -3952,6 +3952,14 @@ disks to differ; where they coincide, the first move refuses, naming the configu
 with it. The entry's soft delete and restore are audited already, by `AuditedBuilder`; the move itself is recorded
 only by `disk`, and `media_files` does not gain `updated_at`.
 
+⚠️ **One rule governs both directions: withdrawal precedes the commit, publication follows the outermost commit.**
+Review found the first version of restore breaking it. Bytes made public before the row that makes them public is
+durably committed can outlive a rollback — a process that stops mid-way runs no compensation, and a restore nested
+in a transaction commits only a savepoint that an enclosing rollback later undoes — and either way a trashed
+entry's file is live on the web. Ordered by this rule, no crash and no rollback in either direction exposes a
+file; the worst each can leave is a live public file served privately, which is degraded rather than exposed, and
+which `kitsune:media-reconcile` (below) repairs.
+
 ⚠️ **Soft delete: the order, and the residue it accepts.** The moves run inside the write, after the rows are
 locked, so the set moved is the set deleted: copy each public file to the private disk, delete the public copy,
 then mark the rows deleted. Any exception after a move and before the commit — a row guard, the revision write,
@@ -3963,16 +3971,31 @@ URL answers the web server's own 404, with no Kitsune log line; the panel route 
 message is corrected, because this file was not "removed outside Kitsune". That residue is accepted, because every
 other order risks a deleted entry's file live on the web — but it must never be destroyed, so `kitsune:media-prune`
 changes: a file no row claims whose path a row names on the *other* media disk, where that row's own disk does not
-hold it, is the live copy in the wrong place. Prune reports it and never deletes it.
+hold it, is the live copy in the wrong place. Prune reports it and never deletes it; `kitsune:media-reconcile` moves
+it to where its row says it belongs.
 
-⚠️ **Restore has its own order, because mirroring the delete would reopen the exposure.** Copy the private file to
-the public disk; commit the row restored, naming `public`; then delete the private copy. A failed copy refuses the
-restore and removes any partial public copy. A failed commit is compensated by deleting the public copy, which
-leaves the entry trashed with its bytes on the private disk. A failed private delete after the commit leaves a
-private copy no row names, which prune may remove because the public copy is claimed. **One window remains:** a
-failed commit whose compensating delete also fails leaves a trashed entry's file on the public web. It is
-accepted as the narrower of the two restore orders' residues, it is logged, and a repeated restore or delete
-settles it.
+⚠️ **Restore publishes after the outermost commit, because mirroring the delete would reopen the exposure.** The
+row is restored first, still naming the private disk, so the file is live and delivered privately. Publication is
+then registered with the connection's `afterCommit()`, which runs only once the outermost transaction has
+committed and is discarded if it rolls back: copy the private file to the public disk, update the row to name
+`public`, delete the private copy. A restore inside a transaction that later rolls back therefore publishes
+nothing. A publication that fails at any step — a failed copy, a failed update, a process that stops — leaves a
+live row naming the private disk with its bytes there, served privately until `kitsune:media-reconcile` moves them;
+a partial public copy that no row names is an orphan prune may remove, because the row's own disk holds the file.
+A failed private delete after the update leaves a private copy no row names, which prune may remove because the
+public copy is claimed. Nothing in this order leaves a trashed entry's file on the web.
+
+⚠️ **Delivery trusts the disk, not the visibility, for this.** A file is public — a direct URL, no PHP in the path —
+only when its row names the public disk; a public-visibility row naming the private disk is delivered as private
+until it is reconciled. `urlFor()` today builds a public file's URL from the row's own disk, and for `local` that
+yields `/storage/{path}`, the public symlink's path, where the file is not — or where a stale copy could be.
+
+⚠️ **The repair is a command, and the database is the durable half.** `kitsune:media-reconcile` compares every live
+media row's `disk` with where its visibility says its bytes belong, and where the bytes actually are, and reports
+every disagreement; with `--force` it moves the bytes to where the row's visibility says and updates `disk` to
+match. It is read-only by default for `kitsune:media-prune`'s reason — it moves files — and it never deletes the
+only copy of anything. It repairs both residues this decision accepts: a live row naming `public` whose bytes the
+delete left on the private disk, and a restored row whose publication did not finish.
 
 ⚠️ **The builder's bulk path is all or nothing; the admin's bulk action is per file.** A builder-level
 `Entry::query()->delete()` over public media compensates every move made so far when any one fails, and refuses the
@@ -4060,6 +4083,11 @@ real cost to an editor, and it is paid until the number exists.
 **A soft delete can fail, and holds its rows while it moves bytes.** Decision 5 makes a public file's delete
 depend on a disk move, refuses the delete when the move fails, and keeps the rows locked while the bytes move.
 
+**Some failures leave a live file served privately until someone reconciles it.** That is the price of never
+leaving one exposed: the database is committed first for a restore and last for a delete, and the bytes that
+disagree with it afterwards are repaired by a command rather than by an automatic retry, because nothing in this
+installation is scheduled.
+
 ### Enforced by
 
 **Nothing yet.** This entry is the decision, not a report of work done.
@@ -4091,10 +4119,13 @@ When it lands:
   with the reason; a forged call from either stores nothing on any disk.
 - **Deletion.** A soft-deleted public file is absent from the public disk and restored to it, through the instance
   and in bulk. A builder-level bulk soft delete whose move fails part-way leaves every row and every byte where it
-  was; a restore whose move fails is refused and leaves the entry trashed with its bytes on the private disk; the
-  admin's bulk delete names which files were withdrawn and which refused, and the admin shows a refused delete as a
+  was; a restore inside a transaction that rolls back leaves nothing on the public disk; a restore whose publication
+  fails leaves a live entry naming the private disk and delivered privately; the admin's bulk delete names which
+  files were withdrawn and which refused, and the admin shows a refused delete as a
   notification naming the file rather than a 500. `kitsune:media-prune --force` leaves a file whose path a live row
-  names on the other media disk. Coinciding public and private disks make the first move refuse.
+  names on the other media disk, and `kitsune:media-reconcile` reports it read-only and moves it with `--force`,
+  never deleting a sole copy. A public-visibility row naming the private disk is delivered as private. Coinciding
+  public and private disks make the first move refuse.
 - **Tiles.** A public tile's URL carries no scheme or host. The media list makes no request to the private media
   route until a tile is clicked.
 - **Refusals.** A refusal shown to an editor is `MediaIntake`'s own text, escaped; a database error shows none of
