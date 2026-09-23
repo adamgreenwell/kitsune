@@ -3676,9 +3676,11 @@ restore must work; a force-delete removes them.
 > public entry keeps its file live at its URL, and the admin has no way to take it down. ADR-042 decides that they
 > move to the private disk on soft delete and back on restore, and that a failed move refuses the delete — which
 > keeps "a restore must work" and stops "deleted" meaning "still at the origin". A copy a CDN or a browser has
-> already cached is not reached. ADR-042 also decides that a force-delete removes the file's path from both media
-> disks rather than only the one its row names, because the row can be read before a concurrent publication moves
-> the file. Not yet built: until it lands, a soft-deleted public file is still served.
+> already cached is not reached. ADR-042 also changes this entry's force-delete order for public files: rows first
+> and bytes second left a public file live at its URL whenever disposal failed or the process stopped after the
+> commit, so a force-delete now withdraws a public file to the private disk before its rows go, refuses if it cannot,
+> and disposes of the path on both disks afterwards. Not yet built: until it lands, a soft-deleted public file is
+> still served, and a force-delete whose disposal fails can leave a public one.
 
 ⚠️ **ADR-020 requires erasure to reach *revision history*; it says nothing about bytes on disk.** This entry
 **extends** it — a redaction that leaves the JPEG on disk has not erased the photograph — and owns the
@@ -3756,7 +3758,7 @@ every row, asserted so that a later change to populate it is a visible decision 
 
 ## ADR-042 — The media admin: shared by default, uploaded through one path, and withdrawn from the web when deleted
 
-**Status:** Decided · 2026-09-23 · **Delivers ADR-021's "the media library defaults to shared"**, which the store path shipped in #145 contradicts, and **amends ADR-021** — for media types, the admin's tenant scope admits the org's shared rows, and the org-shared slug rule becomes a guard · **Amends ADR-016 and `field-types.md` §5** — a media type is any type declared as one, not a system type · **Amends ADR-041** — decides that a soft-deleted public file's bytes leave the public disk and that a force-delete removes the file's path from both media disks, records that Livewire's staging was never under the upload rules as shipped, and brings its *Enforced by* up to date · **Amends `architecture.md`'s published `entry_types` shape** (gains `is_media`, with its migration) · **Phase 5 (ADR-011, v1.0)** — the admin half ADR-041 left, and the half the DAM starter waits on
+**Status:** Decided · 2026-09-23 · **Delivers ADR-021's "the media library defaults to shared"**, which the store path shipped in #145 contradicts, and **amends ADR-021** — for media types, the admin's tenant scope admits the org's shared rows, and the org-shared slug rule becomes a guard · **Amends ADR-016 and `field-types.md` §5** — a media type is any type declared as one, not a system type · **Amends ADR-041** — decides that a soft-deleted public file's bytes leave the public disk and that a force-delete withdraws a public file before its rows go and then disposes of the path on both media disks, records that Livewire's staging was never under the upload rules as shipped, and brings its *Enforced by* up to date · **Amends `architecture.md`'s published `entry_types` shape** (gains `is_media`, with its migration) · **Phase 5 (ADR-011, v1.0)** — the admin half ADR-041 left, and the half the DAM starter waits on
 
 ADR-041 decided how media bytes are stored, delivered, sanitised and disposed of, and #145–#148 built all of it:
 `MediaLibrary::store()`, `MediaIntake`, the panel route that authorises private files, disposal, prune, and SVG
@@ -3817,7 +3819,12 @@ shipped.** They are why this entry is longer than a UI decision should be.
 
 ### Decision
 
-**1. A media type is declared, once.** `entry_types` gains `is_media`, boolean, not null, default false. It is set
+**1. A media type is declared, once.** `entry_types` gains `is_media`, boolean, not null, default false — by a
+migration of its own rather than an edit to the one that creates the table, because `deploy/release.sh` runs
+`migrate --force` against a live database and an edited migration never re-runs there. That migration backfills:
+it marks every type that `media_files` rows already reference, which the #145–#148 store path allowed for any type,
+and it refuses — failing loudly and naming each — a type holding both entries with bytes and entries without, which
+it cannot classify and which the model's own guard would then lock in the wrong state. It is set
 in the entry-type builder when a type is created — schema editing is owner-only already — and locked afterwards
 by a model guard, not only by a disabled form field: the builder's `handle` is locked in the form alone, and a
 guard only the panel enforces is the shape this log keeps finding. It joins `columnsRequiringModelSave()`, so a
@@ -4020,12 +4027,17 @@ the private path unless a copy is already there, and only then deletes the publi
 to be the only copy is kept rather than destroyed. Paths are generated per upload from random bytes, so the path
 belongs to this file and nothing else.
 
-⚠️ **Force-delete removes the file's path from both media disks, for the same reason.** `AuditedBuilder::forceDelete()`
-reads each file's `disk` and `path` before it takes the rows, so a publication that commits in between leaves it
-holding the private copy's location while the public copy is the live one — and disposal, removing only what it
-read, would leave a force-deleted entry's file on the web. Disposal therefore removes the path from the public and
-the private disk alike. That is deliberate loss, which the no-loss rule does not govern: the operator asked for the
-file to be gone, and the path, being random per upload, names nothing else.
+⚠️ **Force-delete withdraws before it commits, as soft delete does — and review found ADR-041's order exposing
+files.** ADR-041 put rows first and bytes second, reporting rather than throwing when the bytes will not go, on the
+ground that the residue is an orphan nobody can reach. For a *public* file that is false: a disk that refuses, or a
+process that stops after the rows are deleted, leaves the bytes live at their URL with no row to find them by — so a
+force-delete, or an erasure, reports success while the file is still on the web. So a force-delete now reads each
+file under the row lock, withdraws any copy at its path on the public disk to the private one before the rows go,
+refuses if that withdrawal fails, deletes the rows, commits, and only then disposes of the bytes — from the path on
+both media disks, reporting rather than throwing as ADR-041 decided, because what a refused disposal leaves is now
+a private copy that genuinely nobody can reach. Reading under the lock also removes the race with a publication:
+the earlier draft read `disk` and `path` before the rows were taken, exactly as `AuditedBuilder::forceDelete()`
+does today, so a publication committing in between left disposal holding the wrong location.
 
 ⚠️ **Delivery trusts the disk, not the visibility, for this.** A file is public — a direct URL, no PHP in the path —
 only when its row names the public disk; a public-visibility row naming the private disk is delivered as private
@@ -4050,10 +4062,11 @@ partial-failure text. A single delete's refusal is a notification naming the fil
 one filesystem a move can be a rename; across filesystems or drivers it is a copy of up to 64 MiB, and on SQLite
 every writer waits for it. The implementation measures that before merge.
 
-⚠️ **A move that fails refuses the delete, which is the opposite of disposal, on purpose.** `MediaDisposal` reports
-a disk that will not delete and lets the force-delete finish, because the residue there is an orphan nobody can
-reach. The residue here would be a file still live on the web under an entry the admin calls deleted — the one
-outcome the operator was asking to prevent.
+⚠️ **A withdrawal that fails refuses the delete; a disposal that fails does not — and the line between them is
+reachability.** A failed withdrawal would leave a file live on the web under an entry the admin calls deleted, the
+one outcome the operator asked to prevent, so it refuses, for a soft delete and a force-delete alike. A failed
+disposal, which now only ever runs after withdrawal, leaves a private copy nobody can reach, so it reports and lets
+the force-delete finish, as ADR-041 decided.
 
 ⚠️ **Both paths, again.** A `deleting` hook on `Entry` would miss `Entry::query()->delete()`, which dispatches
 nothing — the shape `MediaDisposal` exists because of. Withdrawal is asked of the builder, where the instance and
@@ -4146,7 +4159,9 @@ When it lands:
   beside a shared counterpart that is served. The widened scope and `SiteScope` agree row for row, and a non-media
   type's list keeps `site_id = {site}`. `Entry` refuses a non-null slug where `site_id` is null, through the
   instance and in bulk, and a shared entry's edit page offers no control that writes `slug`.
-- **Media types.** `is_media` cannot change after creation through the instance or in bulk; `store()` refuses a
+- **Media types.** `is_media` arrives by its own migration, which marks a type `media_files` rows already reference
+  and refuses a type that mixes entries with and without bytes. `is_media` cannot change after creation through the
+  instance or in bulk; `store()` refuses a
   type without it; an entry cannot be retyped across the media boundary, in either direction, and can within it. The seeded rival file replaces the byte-less fixture, and `admin.spec.js`'s cross-org assertion
   holds with its positive control.
 - **Staging.** Livewire's configured temporary disk is the intake disk and no `storage.{disk}` route serves it,
@@ -4171,8 +4186,9 @@ When it lands:
   files were withdrawn and which refused, and the admin shows a refused delete as a
   notification naming the file rather than a 500. `kitsune:media-prune --force` leaves a file whose path a live row
   names on the other media disk, and `kitsune:media-reconcile` reports it read-only and moves it with `--force`,
-  never deleting a sole copy. A force-delete removes the file's path from both media disks, including a public copy
-  a publication committed after disposal read the row. A public-visibility row naming the private disk is delivered as private. Coinciding
+  never deleting a sole copy. A force-delete of a public file withdraws it before the rows go — a force-delete whose
+  withdrawal fails is refused and leaves the entry and its public file in place — and disposes of the path on both
+  media disks afterwards; a disposal that fails after the commit leaves nothing on the public disk. A public-visibility row naming the private disk is delivered as private. Coinciding
   public and private disks make the first move refuse.
 - **Tiles.** A public tile's URL carries no scheme or host. The media list makes no request to the private media
   route until a tile is clicked.
@@ -4214,6 +4230,11 @@ When it lands:
 - **Private media lives on a disk that is served to signed URLs.** `local` has `serve => true`. ADR-042 forbids core
   minting a `temporaryUrl()` for media and a test is to enforce it, but moving private bytes to a disk that is never
   served would remove the question rather than police it
+- **Edited migrations never reach a deployed database.** `0001_01_01_000001_create_kitsune_schema_tables.php` has been
+  edited in place at least three times (#45, #82, #102), and `deploy/release.sh` runs `migrate --force`, which skips a
+  migration it has already recorded. Each of those changes is therefore absent from any database migrated before it.
+  ADR-042 adds `is_media` by a new migration for this reason; whether earlier changes need the same, and whether
+  in-place edits stop before v1.0, is undecided
 - **Which files a media type accepts.** A media type accepts anything `MediaIntake` accepts: an mp3 uploaded to
   `image` becomes an image entry. Whether a type constrains its accepted MIME types is undecided
 - **Stage is expected to refuse a 4 MB upload, and runs no scheduler.** NGX-2 admits only reviewed directives and
