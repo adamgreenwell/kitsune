@@ -3676,7 +3676,9 @@ restore must work; a force-delete removes them.
 > public entry keeps its file live at its URL, and the admin has no way to take it down. ADR-042 decides that they
 > move to the private disk on soft delete and back on restore, and that a failed move refuses the delete — which
 > keeps "a restore must work" and stops "deleted" meaning "still at the origin". A copy a CDN or a browser has
-> already cached is not reached. Not yet built: until it lands, a soft-deleted public file is still served.
+> already cached is not reached. ADR-042 also decides that a force-delete removes the file's path from both media
+> disks rather than only the one its row names, because the row can be read before a concurrent publication moves
+> the file. Not yet built: until it lands, a soft-deleted public file is still served.
 
 ⚠️ **ADR-020 requires erasure to reach *revision history*; it says nothing about bytes on disk.** This entry
 **extends** it — a redaction that leaves the JPEG on disk has not erased the photograph — and owns the
@@ -3754,7 +3756,7 @@ every row, asserted so that a later change to populate it is a visible decision 
 
 ## ADR-042 — The media admin: shared by default, uploaded through one path, and withdrawn from the web when deleted
 
-**Status:** Decided · 2026-09-23 · **Delivers ADR-021's "the media library defaults to shared"**, which the store path shipped in #145 contradicts, and **amends ADR-021** — for media types, the admin's tenant scope admits the org's shared rows, and the org-shared slug rule becomes a guard · **Amends ADR-016 and `field-types.md` §5** — a media type is any type declared as one, not a system type · **Amends ADR-041** — decides that a soft-deleted public file's bytes leave the public disk, records that Livewire's staging was never under the upload rules as shipped, and brings its *Enforced by* up to date · **Amends `architecture.md`'s published `entry_types` shape** (gains `is_media`, with its migration) · **Phase 5 (ADR-011, v1.0)** — the admin half ADR-041 left, and the half the DAM starter waits on
+**Status:** Decided · 2026-09-23 · **Delivers ADR-021's "the media library defaults to shared"**, which the store path shipped in #145 contradicts, and **amends ADR-021** — for media types, the admin's tenant scope admits the org's shared rows, and the org-shared slug rule becomes a guard · **Amends ADR-016 and `field-types.md` §5** — a media type is any type declared as one, not a system type · **Amends ADR-041** — decides that a soft-deleted public file's bytes leave the public disk and that a force-delete removes the file's path from both media disks, records that Livewire's staging was never under the upload rules as shipped, and brings its *Enforced by* up to date · **Amends `architecture.md`'s published `entry_types` shape** (gains `is_media`, with its migration) · **Phase 5 (ADR-011, v1.0)** — the admin half ADR-041 left, and the half the DAM starter waits on
 
 ADR-041 decided how media bytes are stored, delivered, sanitised and disposed of, and #145–#148 built all of it:
 `MediaLibrary::store()`, `MediaIntake`, the panel route that authorises private files, disposal, prune, and SVG
@@ -3967,6 +3969,13 @@ entry's file is live on the web. Ordered by this rule, no crash and no rollback 
 file; the worst each can leave is a live public file served privately, which is degraded rather than exposed, and
 which `kitsune:media-reconcile` (below) repairs.
 
+⚠️ **And a second rule, for loss rather than exposure: no step deletes a copy of a file without first establishing,
+under the row lock, that another copy exists.** Review found two places that broke it. A publication's trailing
+cleanup ran unlocked, so a delete landing just after the publication committed could copy the public bytes back to
+the private path, have that fresh copy deleted by the cleanup, and then delete the public copy — leaving the file on
+neither disk. And an earlier draft of withdrawal removed an unnamed public copy outright, which destroys the file
+whenever that copy happens to be the only one.
+
 ⚠️ **Soft delete: the order, and the residue it accepts.** The moves run inside the write, after the rows are
 locked, so the set moved is the set deleted: copy each public file to the private disk, delete the public copy,
 then mark the rows deleted. Any exception after a move and before the commit — a row guard, the revision write,
@@ -3986,7 +3995,11 @@ row is restored first, still naming the private disk, so the file is live and de
 then registered with the connection's `afterCommit()`, which runs only once the outermost transaction has
 committed and is discarded if it rolls back. Publication is its own write: it locks the row, rechecks that the
 entry is still live, still public-visibility and still names the private disk, and stops if not; then it copies
-the private file to the public disk, updates the row to name `public`, commits, and deletes the private copy.
+the private file to the public disk, updates the row to name `public`, and commits. Deleting the private copy is a
+third write, locked like the others: it rechecks that the entry is still live and still names `public`, and only
+then deletes. If a delete got there first, the recheck fails and the private copy — now the one the delete claims —
+is left alone. A cleanup that never runs leaves a private copy no row names, which prune may remove because the
+public copy is claimed.
 
 ⚠️ **The lock is not optional, and review found the gap it closes.** Between the restore's commit and the
 publication, the row is unlocked, and a delete in that gap sees a file naming the private disk, withdraws nothing,
@@ -4001,9 +4014,18 @@ public copy is claimed. Nothing in this order leaves a trashed entry's file on t
 
 ⚠️ **Withdrawal trusts the file's path, not the row's `disk`.** A publication that stops after its copy and before
 its commit leaves a public copy no row names — and a later delete, reading `disk`, would see a private file and
-withdraw nothing, leaving the leftover live under a deleted entry. So a soft delete removes any copy at the file's
-path on the public disk whether or not the row names it. Paths are generated per upload from random bytes, so the
-path belongs to this file and nothing else.
+withdraw nothing, leaving the leftover live under a deleted entry. So a soft delete withdraws any copy at the file's
+path on the public disk whether or not the row names it — and *withdraws* means moves: it copies the public file to
+the private path unless a copy is already there, and only then deletes the public one, so a leftover that turns out
+to be the only copy is kept rather than destroyed. Paths are generated per upload from random bytes, so the path
+belongs to this file and nothing else.
+
+⚠️ **Force-delete removes the file's path from both media disks, for the same reason.** `AuditedBuilder::forceDelete()`
+reads each file's `disk` and `path` before it takes the rows, so a publication that commits in between leaves it
+holding the private copy's location while the public copy is the live one — and disposal, removing only what it
+read, would leave a force-deleted entry's file on the web. Disposal therefore removes the path from the public and
+the private disk alike. That is deliberate loss, which the no-loss rule does not govern: the operator asked for the
+file to be gone, and the path, being random per upload, names nothing else.
 
 ⚠️ **Delivery trusts the disk, not the visibility, for this.** A file is public — a direct URL, no PHP in the path —
 only when its row names the public disk; a public-visibility row naming the private disk is delivered as private
@@ -4013,7 +4035,8 @@ yields `/storage/{path}`, the public symlink's path, where the file is not — o
 ⚠️ **The repair is a command, and the database is the durable half.** `kitsune:media-reconcile` compares every live
 media row's `disk` with where its visibility says its bytes belong, and where the bytes actually are, and reports
 every disagreement; with `--force` it moves the bytes to where the row's visibility says and updates `disk` to
-match. It is read-only by default for `kitsune:media-prune`'s reason — it moves files — and it never deletes the
+match — under the same row lock the delete and the publication take, with the same recheck, so it cannot race
+either of them. It is read-only by default for `kitsune:media-prune`'s reason — it moves files — and it never deletes the
 only copy of anything. It repairs both residues this decision accepts: a live row naming `public` whose bytes the
 delete left on the private disk, and a restored row whose publication did not finish.
 
@@ -4142,12 +4165,14 @@ When it lands:
   was; a restore inside a transaction that rolls back leaves nothing on the public disk; a restore whose publication
   fails leaves a live entry naming the private disk and delivered privately; the interleaving is covered
   deterministically — a restore commits, the entry is soft-deleted before its publication runs, and the
-  publication then publishes nothing; a soft delete removes a public copy at the file's path that the row does not
-  name; the admin's bulk delete names which
+  publication then publishes nothing; a publication commits, the entry is soft-deleted before the publication's cleanup runs, and the
+  cleanup then deletes nothing, leaving the file on the private disk; a soft delete withdraws a public copy at the
+  file's path that the row does not name, and when that copy is the only one it is moved rather than deleted; the admin's bulk delete names which
   files were withdrawn and which refused, and the admin shows a refused delete as a
   notification naming the file rather than a 500. `kitsune:media-prune --force` leaves a file whose path a live row
   names on the other media disk, and `kitsune:media-reconcile` reports it read-only and moves it with `--force`,
-  never deleting a sole copy. A public-visibility row naming the private disk is delivered as private. Coinciding
+  never deleting a sole copy. A force-delete removes the file's path from both media disks, including a public copy
+  a publication committed after disposal read the row. A public-visibility row naming the private disk is delivered as private. Coinciding
   public and private disks make the first move refuse.
 - **Tiles.** A public tile's URL carries no scheme or host. The media list makes no request to the private media
   route until a tile is clicked.
