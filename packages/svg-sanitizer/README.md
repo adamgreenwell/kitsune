@@ -8,6 +8,9 @@ php artisan kitsune:module install kitsune/svg-sanitizer
 php artisan kitsune:module enable kitsune/svg-sanitizer
 ```
 
+**Both commands.** `kitsune:module install` deliberately writes `is_enabled = false` — *"Install is not 'run
+this code'; `kitsune:module enable` is"* — so installing alone leaves every SVG refused.
+
 Until it is enabled, core refuses `.svg` uploads and says so.
 
 > **Monorepo-only, like `kitsune/person`**: no mirror, no Packagist entry, and

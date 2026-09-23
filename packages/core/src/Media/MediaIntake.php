@@ -158,8 +158,9 @@ final class MediaIntake
                 throw new RuntimeException(sprintf(
                     'Refusing [%s]: .%s is accepted only when a sanitiser is installed to make it safe first '
                     .'(ADR-041), and nothing in this installation implements [%s]. The first-party module '
-                    .'`kitsune/svg-sanitizer` provides one — install and enable it with `php artisan '
-                    .'kitsune:module install kitsune/svg-sanitizer` — or convert the file to PNG. Storing it '
+                    .'`kitsune/svg-sanitizer` provides one. Installing is not enabling, so it takes both: '
+                    .'`php artisan kitsune:module install kitsune/svg-sanitizer` then `php artisan '
+                    .'kitsune:module enable kitsune/svg-sanitizer`. Or convert the file to PNG. Storing it '
                     .'unsanitised is the one outcome that decision was taken to avoid.',
                     $originalName,
                     $extension,

@@ -72,13 +72,26 @@ final class EnshrinedSvgSanitiser implements SanitisesSvg
      * `<svg><g></g></svg>`: the dangerous element is gone, a wrapper survives, and a check that asked only
      * "is there a child element" said yes to a blank image.
      */
-    private const CONTAINERS = ['g', 'defs', 'symbol', 'a', 'switch'];
+    /** Elements that draw nothing themselves but whose children are drawn where they sit. */
+    private const CONTAINERS = ['g', 'a', 'switch'];
 
     /**
-     * Elements that describe a picture rather than being one. Skipped WITHOUT descending, because their text
-     * is a tooltip or an accessible name — an SVG carrying nothing but `<title>hi</title>` renders blank.
+     * Elements whose content does not render where it sits — skipped WITHOUT descending.
+     *
+     * ⚠️ TWO DIFFERENT REASONS, AND BOTH WERE FOUND BY REVIEW RATHER THAN REASONED OUT. `title`, `desc` and
+     * `metadata` describe a picture instead of being one, so their text is a tooltip or an accessible name:
+     * an SVG carrying nothing but `<title>hi</title>` renders blank. `defs`, `symbol` and the paint servers
+     * are DEFINITIONS — they draw only where something references them, so `<svg><defs><rect/></defs></svg>`
+     * is every bit as blank as `<svg><g></g></svg>` despite having a `<rect>` in it.
+     *
+     * A reference to one of these is itself a `<use>`, `<rect fill="url(#g)">` or similar, which is outside
+     * both lists and settles the question on its own. So skipping them loses nothing real.
      */
-    private const DESCRIBES_ONLY = ['title', 'desc', 'metadata', 'style', 'script'];
+    private const NOT_RENDERED_HERE = [
+        'title', 'desc', 'metadata', 'style', 'script',
+        'defs', 'symbol', 'marker', 'pattern', 'clippath', 'mask',
+        'lineargradient', 'radialgradient', 'filter',
+    ];
 
     /**
      * ⚠️ A FRESH `Sanitizer` PER CALL, NOT A SHARED ONE. It carries parser state — the `<use>` nesting graph
@@ -237,8 +250,9 @@ final class EnshrinedSvgSanitiser implements SanitisesSvg
      * ⚠️ RECURSIVE, AND IT ASKS ABOUT CONTENT RATHER THAN ABOUT CHILDREN. A wrapper counts for nothing
      * however deeply it nests — `<g><g><g></g></g></g>` is as blank as `<svg/>` — so containers are
      * descended into rather than counted, and anything that is neither a container nor a description
-     * settles it. `<title>` and `<desc>` are skipped without descending: their text is a tooltip or an
-     * accessible name, so an SVG carrying nothing else still renders blank.
+     * settles it. Descriptions and definitions are skipped WITHOUT descending — a `<title>`'s text is a
+     * tooltip, and a `<defs>`' content draws only where something references it, so an SVG carrying nothing
+     * but either of them renders blank.
      */
     private static function drawsSomething(DOMElement $element): bool
     {
@@ -246,7 +260,7 @@ final class EnshrinedSvgSanitiser implements SanitisesSvg
             if ($child instanceof DOMElement) {
                 $name = strtolower($child->localName ?? '');
 
-                if (in_array($name, self::DESCRIBES_ONLY, true)) {
+                if (in_array($name, self::NOT_RENDERED_HERE, true)) {
                     continue;
                 }
 

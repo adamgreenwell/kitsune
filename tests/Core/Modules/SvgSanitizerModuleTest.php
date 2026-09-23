@@ -312,6 +312,28 @@ it('refuses a document whose only survivor is an empty wrapper', function (strin
     'wrappers all the way down' => ['<g><g><g></g></g></g>'],
     /* A title is a tooltip, not a picture — an SVG carrying only one renders blank. */
     'title alone' => ['<title>a logo, allegedly</title>'],
+    /*
+     * ⚠️ DEFINITIONS DRAW NOTHING WHERE THEY SIT, which the recursive fix got wrong on its first pass and a
+     * second review round caught: it descended into `<defs>`, found a real `<rect>`, and called the document
+     * drawable. `<defs>` content renders only where something references it, so this is as blank as an empty
+     * group despite having a shape in it.
+     */
+    'a defs with real content' => ['<defs><rect width="1" height="1"/></defs>'],
+    'a symbol with real content' => ['<symbol id="a"><rect width="1" height="1"/></symbol>'],
+    'a gradient and nothing painted with it' => ['<defs><linearGradient id="g"/></defs>'],
+]);
+
+/**
+ * ⚠️ AND THE REFERENCE IS WHAT MAKES A DEFINITION COUNT, which is why skipping `<defs>` loses nothing. The
+ * thing that draws is the `<use>` or the painted shape, and both are outside every skip list.
+ */
+it('accepts a definition that something actually references', function (string $fragment): void {
+    expect((new EnshrinedSvgSanitiser)->sanitise(
+        '<svg '.SVG_NS.' xmlns:xlink="http://www.w3.org/1999/xlink">'.$fragment.'</svg>'
+    ))->toContain('<svg');
+})->with([
+    'use of a defs shape' => ['<defs><rect id="a" width="1" height="1"/></defs><use xlink:href="#a"/>'],
+    'a rect painted with a gradient' => ['<defs><linearGradient id="g"/></defs><rect width="1" height="1" fill="url(#g)"/>'],
 ]);
 
 /** And a wrapper that does contain something is left alone. */

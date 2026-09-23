@@ -94,6 +94,17 @@ it('refuses svg while nothing can make it safe, and names the fix', function ():
     expect(fn () => MediaIntake::accept('logo.svg', $path, filesize($path)))
         ->toThrow(RuntimeException::class, 'accepted only when a sanitiser is installed');
 
+    /*
+     * ⚠️ AND IT NAMES BOTH COMMANDS, because installing is not enabling — `ModuleLifecycle::install()` writes
+     * `is_enabled = false` on purpose (*"Install is not 'run this code'; `kitsune:module enable` is"*). Review
+     * found this message advertising the install alone, so an operator could follow the stated fix exactly
+     * and still have every SVG refused.
+     */
+    expect(fn () => MediaIntake::accept('logo.svg', $path, filesize($path)))
+        ->toThrow(RuntimeException::class, 'kitsune:module install kitsune/svg-sanitizer')
+        ->and(fn () => MediaIntake::accept('logo.svg', $path, filesize($path)))
+        ->toThrow(RuntimeException::class, 'kitsune:module enable kitsune/svg-sanitizer');
+
     /* Not the generic message — an operator with an ordinary logo needs an install step, not a different file. */
     expect(fn () => MediaIntake::accept('logo.svg', $path, filesize($path)))
         ->not->toThrow(RuntimeException::class, 'is not an accepted file type');
