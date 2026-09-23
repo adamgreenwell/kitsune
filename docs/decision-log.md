@@ -3819,7 +3819,14 @@ shipped.** They are why this entry is longer than a UI decision should be.
 in the entry-type builder when a type is created — schema editing is owner-only already — and locked afterwards
 by a model guard, not only by a disabled form field: the builder's `handle` is locked in the form alone, and a
 guard only the panel enforces is the shape this log keeps finding. It joins `columnsRequiringModelSave()`, so a
-bulk write cannot change it either. `MediaLibrary::store()` refuses a type where it is false. Blueprints do not
+bulk write cannot change it either. `MediaLibrary::store()` refuses a type where it is false.
+
+⚠️ **Locking the flag is half of it; the entry's side is the other half, and review found it missing.** `Entry`
+supports a legitimate instance retype, so an uploaded entry could be moved to a non-media type with its
+`media_files` row, or an ordinary entry to a media type with no bytes — the two states that make the flag worth
+locking. `Entry` therefore refuses a retype whose source and destination types disagree on `is_media`. A retype
+within the boundary, such as moving an image to an org's own image type, is untouched. Bulk retypes need no second
+guard: `entry_type_id` is already in `columnsRequiringModelSave()`, so they reach the instance path or are refused. Blueprints do not
 gain it yet: `EntryTypeDeclaration` is one of the four symbols ADR-039 names as the blueprint format's public
 surface, and the DAM starter is the first consumer that needs a blueprint to declare a media type — it widens that
 surface when it has a reason to.
@@ -3977,13 +3984,26 @@ it to where its row says it belongs.
 ⚠️ **Restore publishes after the outermost commit, because mirroring the delete would reopen the exposure.** The
 row is restored first, still naming the private disk, so the file is live and delivered privately. Publication is
 then registered with the connection's `afterCommit()`, which runs only once the outermost transaction has
-committed and is discarded if it rolls back: copy the private file to the public disk, update the row to name
-`public`, delete the private copy. A restore inside a transaction that later rolls back therefore publishes
+committed and is discarded if it rolls back. Publication is its own write: it locks the row, rechecks that the
+entry is still live, still public-visibility and still names the private disk, and stops if not; then it copies
+the private file to the public disk, updates the row to name `public`, commits, and deletes the private copy.
+
+⚠️ **The lock is not optional, and review found the gap it closes.** Between the restore's commit and the
+publication, the row is unlocked, and a delete in that gap sees a file naming the private disk, withdraws nothing,
+and commits — after which an unlocked publication would put a deleted entry's file on the web. Locking the same
+row the delete locks serialises them: a delete that wins leaves publication a trashed row, and it publishes
+nothing; a publication that wins leaves the delete a row naming `public`, which it withdraws. A restore inside a transaction that later rolls back therefore publishes
 nothing. A publication that fails at any step — a failed copy, a failed update, a process that stops — leaves a
 live row naming the private disk with its bytes there, served privately until `kitsune:media-reconcile` moves them;
 a partial public copy that no row names is an orphan prune may remove, because the row's own disk holds the file.
 A failed private delete after the update leaves a private copy no row names, which prune may remove because the
 public copy is claimed. Nothing in this order leaves a trashed entry's file on the web.
+
+⚠️ **Withdrawal trusts the file's path, not the row's `disk`.** A publication that stops after its copy and before
+its commit leaves a public copy no row names — and a later delete, reading `disk`, would see a private file and
+withdraw nothing, leaving the leftover live under a deleted entry. So a soft delete removes any copy at the file's
+path on the public disk whether or not the row names it. Paths are generated per upload from random bytes, so the
+path belongs to this file and nothing else.
 
 ⚠️ **Delivery trusts the disk, not the visibility, for this.** A file is public — a direct URL, no PHP in the path —
 only when its row names the public disk; a public-visibility row naming the private disk is delivered as private
@@ -4104,7 +4124,7 @@ When it lands:
   type's list keeps `site_id = {site}`. `Entry` refuses a non-null slug where `site_id` is null, through the
   instance and in bulk, and a shared entry's edit page offers no control that writes `slug`.
 - **Media types.** `is_media` cannot change after creation through the instance or in bulk; `store()` refuses a
-  type without it. The seeded rival file replaces the byte-less fixture, and `admin.spec.js`'s cross-org assertion
+  type without it; an entry cannot be retyped across the media boundary, in either direction, and can within it. The seeded rival file replaces the byte-less fixture, and `admin.spec.js`'s cross-org assertion
   holds with its positive control.
 - **Staging.** Livewire's configured temporary disk is the intake disk and no `storage.{disk}` route serves it,
   asserted in core's PHP suite from config and the route table. The endpoint refuses a file `MediaIntake` refuses
@@ -4120,7 +4140,10 @@ When it lands:
 - **Deletion.** A soft-deleted public file is absent from the public disk and restored to it, through the instance
   and in bulk. A builder-level bulk soft delete whose move fails part-way leaves every row and every byte where it
   was; a restore inside a transaction that rolls back leaves nothing on the public disk; a restore whose publication
-  fails leaves a live entry naming the private disk and delivered privately; the admin's bulk delete names which
+  fails leaves a live entry naming the private disk and delivered privately; the interleaving is covered
+  deterministically — a restore commits, the entry is soft-deleted before its publication runs, and the
+  publication then publishes nothing; a soft delete removes a public copy at the file's path that the row does not
+  name; the admin's bulk delete names which
   files were withdrawn and which refused, and the admin shows a refused delete as a
   notification naming the file rather than a 500. `kitsune:media-prune --force` leaves a file whose path a live row
   names on the other media disk, and `kitsune:media-reconcile` reports it read-only and moves it with `--force`,
