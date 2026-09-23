@@ -18,6 +18,7 @@ use Filament\Facades\Filament;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
+use Filament\Forms\Components\Toggle;
 use Filament\Resources\Resource;
 use Filament\Schemas\Components\Section;
 use Filament\Schemas\Schema;
@@ -139,6 +140,19 @@ class EntryTypeResource extends Resource
                         ->native(false)
                         ->helperText('Shown in the sidebar. Leave empty for the default.'),
                     Textarea::make('description')->rows(2)->columnSpanFull(),
+                    /*
+                     * ⚠️ OFFERED ON CREATE ONLY, AND THE FORM IS NOT THE LOCK. `EntryType::guardMediaFlag()` refuses
+                     * the change on every evented save, and `columnsRequiringModelSave()` refuses it in bulk and
+                     * through a quiet save — this is disabled so an owner is not offered a control the model would
+                     * refuse (ADR-042 decision 1). Disabled fields are not dehydrated, so an edit never sends it.
+                     */
+                    Toggle::make('is_media')
+                        ->label(__('kitsune::media.type.holds_media'))
+                        ->helperText(fn (?EntryType $record): string => $record?->exists === true
+                            ? __('kitsune::media.type.holds_media_locked')
+                            : __('kitsune::media.type.holds_media_help'))
+                        ->disabled(fn (?EntryType $record): bool => $record?->exists === true)
+                        ->columnSpanFull(),
                 ])
                 ->columns(2),
 

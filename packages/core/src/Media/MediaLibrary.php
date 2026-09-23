@@ -67,6 +67,24 @@ final class MediaLibrary
             ));
         }
 
+        /*
+         * ⚠️ ASKED OF THE DATABASE, NOT OF THE INSTANCE HANDED IN — ADR-042 decision 1. `$type->is_media = true`
+         * on an `article` loaded a moment ago is an attribute anybody can set, and the flag is only a promise once
+         * it is the stored one, which the type's own guard then locks. One primary-key read, before any byte.
+         */
+        $isMedia = $type->exists
+            && (bool) EntryType::query()->whereKey($type->getKey())->value('is_media');
+
+        if (! $isMedia) {
+            throw new RuntimeException(sprintf(
+                'Refusing [%s]: [%s] is not a media type, so it has no way to show a file. Files are uploaded '
+                .'into a type that was created to hold them, and an existing type cannot be switched to one '
+                .'(ADR-042). Nothing was stored.',
+                $originalName,
+                $type->handle,
+            ));
+        }
+
         $orgId = app(Context::class)->orgId();
 
         if ($orgId === null) {
@@ -266,7 +284,7 @@ final class MediaLibrary
         $key = $visibility === 'public' ? 'public' : 'private';
         $disk = config("kitsune.media.disks.{$key}");
 
-        return is_string($disk) && $disk !== '' ? $disk : ($key === 'public' ? 'public' : 'local');
+        return is_string($disk) && $disk !== '' ? $disk : ($key === 'public' ? 'public' : MediaDisks::PRIVATE);
     }
 
     /**

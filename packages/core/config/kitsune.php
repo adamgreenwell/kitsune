@@ -8,6 +8,8 @@
 
 declare(strict_types=1);
 
+use Kitsune\Core\Media\MediaDisks;
+
 /*
  * Kitsune's own configuration. `KitsuneServiceProvider` merges it BENEATH a host's `config/kitsune.php`, so a
  * host overrides any key here by declaring it there.
@@ -18,7 +20,9 @@ return [
      *
      * Two disks, because visibility decides delivery: a public file gets a direct URL a CDN can cache, and a
      * private one is streamed by a controller that authorises first. `public` is Laravel's own published disk,
-     * which `deploy/release.sh` already links and proves resolves; `local` is not web-served.
+     * which `deploy/release.sh` already links and proves resolves. The private disk is core's own and is never
+     * served (ADR-042 decision 4a, `MediaDisks`) — not Laravel's `local`, which is served to anyone holding a
+     * signed URL. Rows already naming `local` stay valid: delivery and disposal read each row's own `disk`.
      *
      * ⚠️ `mergeConfigFrom()` MERGES THE TOP LEVEL ONLY, as the note on `settings` below records. A host that
      * declares `media` in its own `config/kitsune.php` replaces this whole map rather than the keys it names,
@@ -27,7 +31,7 @@ return [
     'media' => [
         'disks' => [
             'public' => 'public',
-            'private' => 'local',
+            'private' => MediaDisks::PRIVATE,
         ],
     ],
 

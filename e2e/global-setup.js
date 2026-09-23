@@ -48,9 +48,24 @@ module.exports = async () => {
         throw new Error('global-setup: the seeder produced no public media file for media-delivery.spec.js');
     }
 
+    /*
+     * ⚠️ AND THE RIVAL ORG'S FILE, BY ID, because nobody in Golfdom can walk the admin to it — that is the
+     * point of it. Joined through `media_files` so the id is a media entry with bytes behind it, not merely a
+     * row carrying the title.
+     */
+    const rivalFileId = execFileSync('php', [
+        'artisan', 'tinker', '--execute',
+        "echo DB::table('media_files')->join('entries', 'entries.id', '=', 'media_files.entry_id')"
+            + "->where('entries.title', 'Rival private asset')->value('entries.id');",
+    ], { cwd: skeleton, encoding: 'utf8' }).trim();
+
+    if (! /^\d+$/.test(rivalFileId)) {
+        throw new Error('global-setup: the seeder produced no rival media file for media-delivery.spec.js');
+    }
+
     fs.mkdirSync(path.join(__dirname, '..', '.playwright'), { recursive: true });
     fs.writeFileSync(
         path.join(__dirname, '..', '.playwright', 'media-fixture.json'),
-        JSON.stringify({ publicPath: seeded }, null, 4) + '\n',
+        JSON.stringify({ publicPath: seeded, rivalFileId }, null, 4) + '\n',
     );
 };

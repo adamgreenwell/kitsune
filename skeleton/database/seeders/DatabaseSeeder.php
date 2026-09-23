@@ -117,8 +117,9 @@ class DatabaseSeeder extends Seeder
         $rivalUser->sites()->attach($rival->id);
         $rivalUser->orgs()->attach($orgB->id);
 
-        // A global system type, available to every org (org_id NULL).
-        $image = EntryType::create(['org_id' => null, 'handle' => 'image', 'name' => 'Image', 'plural_name' => 'Images', 'is_system' => true, 'icon' => 'heroicon-o-photo']);
+        // A global system type, available to every org (org_id NULL), and a media type: its entries come from
+        // uploaded files, and `MediaLibrary::store()` refuses any type not declared as one (ADR-042).
+        $image = EntryType::create(['org_id' => null, 'handle' => 'image', 'name' => 'Image', 'plural_name' => 'Images', 'is_system' => true, 'is_media' => true, 'icon' => 'heroicon-o-photo']);
 
         $article = EntryType::create(['org_id' => $orgA->id, 'handle' => 'article', 'name' => 'Article', 'plural_name' => 'Articles', 'icon' => 'heroicon-o-document-text']);
         $product = EntryType::create(['org_id' => $orgA->id, 'handle' => 'product', 'name' => 'Product', 'plural_name' => 'Products', 'icon' => 'heroicon-o-shopping-bag']);
@@ -480,27 +481,23 @@ class DatabaseSeeder extends Seeder
         ]);
 
         /*
-         * ⚠️ AND ONE ON THE GLOBAL TYPE, which is the only fixture here that actually tests the SCOPE.
+         * ⚠️ AND A RIVAL MEDIA FILE WITH REAL BYTES, ON THE GLOBAL TYPE — the only fixture here that actually tests
+         * the SCOPE, and it does two jobs.
          *
-         * The row above carries the other org's own type now, so `/c/article` excludes it on the type
-         * predicate alone — `EntryResource::getEloquentQuery()` filters by the resolved type's id, and under
-         * the cross-org invariant no org-B row can ever carry org A's id. Delete every scope from `Entry` and
-         * that assertion still passes, which makes it a test of the invariant rather than of isolation.
+         * The row above carries the other org's own type, so `/c/article` excludes it on the type predicate alone
+         * — `EntryResource::getEloquentQuery()` filters by the resolved type's id, and under the cross-org
+         * invariant no org-B row can ever carry org A's id. Delete every scope from `Entry` and that assertion
+         * still passes, which makes it a test of the invariant rather than of isolation. A GLOBAL type is the one
+         * case where two orgs legitimately share an `entry_type_id`, so the type predicate cannot help and only
+         * the scopes keep this row out of Golfdom's `/c/image` — `SiteScope`, since `store()` stamps the rival's
+         * site, and Filament's tenant scope with it. `admin.spec.js` asserts that, with the rival's own list
+         * showing the file as the control.
          *
-         * A GLOBAL type is the one case where two orgs legitimately share an `entry_type_id`, so the type
-         * predicate cannot help and only `SiteScope`/`OrgScope` keep this row out of Golfdom's list.
-         */
-        Entry::create([
-            'entry_type_id' => $image->id,
-            'title' => 'Rival image, shared type',
-            'slug' => 'rival-shared-type',
-            'status' => 'published',
-        ]);
-
-        /*
-         * ⚠️ AND A RIVAL MEDIA FILE WITH REAL BYTES, so the cross-org boundary can be measured at a URL rather
-         * than inferred. `e2e/media-delivery.spec.js` signs in as Golfdom's OWNER — who holds every grant in
-         * his own org — and asks for this file's id: the only thing that can refuse him is the scope.
+         * ⚠️ A STORED FILE, NOT `Entry::create()`. This used to be a byte-less `image` entry, and a media entry
+         * with no file behind it is the state ADR-042 arranges never to exist. The bytes also let
+         * `e2e/media-delivery.spec.js` measure the boundary at a URL rather than infer it: it signs in as
+         * Golfdom's OWNER — who holds every grant in their own org — and asks for this file's id, so neither those
+         * grants nor the type can refuse the request, and only the site boundary does.
          */
         $this->seedMediaFile($image, 'Rival private asset', 'private');
 

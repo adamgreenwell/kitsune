@@ -114,6 +114,19 @@ class Entry extends Model implements RequiresModelSave
 
     protected static function booted(): void
     {
+        /*
+         * ⚠️ FIRST, BEFORE ANY LISTENER LOOKS THE TYPE UP BY THIS VALUE — see `refuseNoncanonicalTypeKey()`. The
+         * builder asks the same question for the writes that skip listeners; this copy exists because the restamp
+         * below queries `entry_types` with the raw value, and PostgreSQL answers `'13.9'` with its own SQL error
+         * where the other engines answer nothing, so the refusal has to come before that query to read the same
+         * on all four.
+         */
+        static::saving(function (self $entry): void {
+            if ($entry->isDirty('entry_type_id')) {
+                self::refuseNoncanonicalTypeKey($entry->getAttribute('entry_type_id'));
+            }
+        });
+
         // ⚠️ Recorded BEFORE any guard reads a promoted column, and recorded rather
         // than derived. See `recordPromotedProvenance()`.
         static::saving(fn (self $entry) => $entry->recordPromotedProvenance());
@@ -2328,6 +2341,33 @@ class Entry extends Model implements RequiresModelSave
             $typeKey,
             (int) $owner,
             (int) $org,
+        ));
+    }
+
+    /**
+     * Refuse an `entry_type_id` that is not a type's key, written the one way a key is written — ADR-042.
+     *
+     * ⚠️ THE ENGINE ROUNDS WHAT PHP COMPARES. MySQL and MariaDB store `'13.9'` in an integer column as 14, while
+     * every check before the write asks about `'13.9'`: `whereKey('13.9')` finds no type, so the ownership refusal
+     * and the media boundary had nothing to judge, and `(int) '13.9'` read as the type the entry already had. An
+     * ordinary entry became an `image` with no file behind it, and kept `type_handle = 'article'`. So nothing but
+     * a positive whole number reaches the column — and not a raw expression either, which is SQL no check here can
+     * read until the database has run it.
+     *
+     * One predicate, asked twice: by the first `saving` listener, and by `AuditedBuilder` at every door that
+     * writes the column, for the writes that dispatch no listener.
+     */
+    public static function refuseNoncanonicalTypeKey(mixed $value): void
+    {
+        if ((is_int($value) && $value > 0) || (is_string($value) && preg_match('/^[1-9][0-9]*$/', $value) === 1)) {
+            return;
+        }
+
+        throw new RuntimeException(sprintf(
+            'Refusing to write [%s] as an entry type: the column holds a type\'s id, as a positive whole number and '
+            .'nothing else. MySQL and MariaDB round a value like 13.9 to a type no check here was asked about, '
+            .'which can move an entry across the media boundary unseen (ADR-042).',
+            is_scalar($value) ? var_export($value, true) : get_debug_type($value),
         ));
     }
 

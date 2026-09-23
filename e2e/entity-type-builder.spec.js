@@ -217,6 +217,58 @@ test.describe('entity type builder', () => {
         }
     });
 
+    /*
+     * ⚠️ DECIDED AT CREATION AND LOCKED AFTER — ADR-042 decision 1. The model refuses the change whatever the form
+     * does (`MediaTypesTest`), so what this pins is the form's half: offered on create, stored as chosen, and shown
+     * disabled afterwards rather than offered and then refused. Article is the control — an ordinary type's switch
+     * is disabled too, and off.
+     */
+    test('declares a media type when it is created, and not afterwards', async ({ page }) => {
+        const tinker = (code) => execFileSync('php', ['artisan', 'tinker', '--execute', code], {
+            cwd: path.join(__dirname, '..', 'skeleton'),
+            encoding: 'utf8',
+        }).trim();
+
+        try {
+            await page.goto(`${SITE}/entry-types/create`);
+
+            const create = page.locator('form');
+
+            await create.locator('[id$=".handle"]').fill('press_photo');
+            await create.locator('[id$=".name"]').fill('Press photo');
+            await create.locator('[id$=".plural_name"]').fill('Press photos');
+
+            const toggle = page.getByRole('switch', { name: 'Holds media' });
+
+            await expect(toggle).toBeEnabled();
+            await toggle.click();
+            await expect(toggle).toHaveAttribute('aria-checked', 'true');
+
+            await page.getByRole('button', { name: 'Create', exact: true }).click();
+            await page.waitForURL(/\/entry-types\/\d+\/edit/);
+
+            const locked = page.getByRole('switch', { name: 'Holds media' });
+
+            await expect(locked).toBeDisabled();
+            await expect(locked).toHaveAttribute('aria-checked', 'true');
+            await expect(page.getByText('Decided when this type was created')).toBeVisible();
+
+            expect(tinker(
+                "echo (int) \\Kitsune\\Core\\Models\\EntryType::query()->where('handle', 'press_photo')->value('is_media');",
+            )).toBe('1');
+
+            await editType(page, 'Article');
+
+            const ordinary = page.getByRole('switch', { name: 'Holds media' });
+
+            await expect(ordinary).toBeDisabled();
+            await expect(ordinary).toHaveAttribute('aria-checked', 'false');
+        } finally {
+            // The suite is serial and shares one database, and a new type adds a sidebar item every spec sees.
+            tinker("\\Kitsune\\Core\\Models\\EntryType::query()->where('handle', 'press_photo')->first()?->delete();");
+        }
+    });
+
     test('creates a field and reports it as indexed', async ({ page }) => {
         await editType(page, 'Article');
         await page.getByRole('button', { name: 'New field' }).click();

@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
+use Kitsune\Core\Media\MediaDisks;
 use Kitsune\Core\Media\MediaLibrary;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
@@ -29,7 +30,7 @@ use Kitsune\Core\Tenancy\Context;
  */
 
 beforeEach(function (): void {
-    Storage::fake('local');
+    Storage::fake(MediaDisks::PRIVATE);
     Storage::fake('public');
 
     $this->org = Org::create(['slug' => 'acme', 'name' => 'Acme']);
@@ -38,7 +39,7 @@ beforeEach(function (): void {
     app(Context::class)->setSite($this->site);
 
     $this->imageType = EntryType::create([
-        'org_id' => $this->org->getKey(), 'handle' => 'image', 'name' => 'Image', 'plural_name' => 'Images',
+        'org_id' => $this->org->getKey(), 'handle' => 'image', 'name' => 'Image', 'plural_name' => 'Images', 'is_media' => true,
     ]);
 });
 
@@ -159,4 +160,21 @@ it('leaves another entry\'s bytes alone', function (): void {
 
     Storage::disk($keeperFile->disk)->assertExists($keeperFile->path);
     expect(MediaFile::query()->count())->toBe(1);
+});
+
+/** ⚠️ AND A ROW STILL NAMING `local` IS DISPOSED OF THERE, for the reason delivery serves it there. */
+it('removes the bytes of a row that still names local from local', function (): void {
+    Storage::fake('local');
+
+    $entry = aStoredImage($this->imageType);
+    $media = MediaFile::query()->where('entry_id', $entry->getKey())->firstOrFail();
+
+    Storage::disk('local')->put($media->path, Storage::disk(MediaDisks::PRIVATE)->get($media->path));
+    Storage::disk(MediaDisks::PRIVATE)->delete($media->path);
+    DB::table('media_files')->where('id', $media->getKey())->update(['disk' => 'local']);
+
+    $entry->forceDelete();
+
+    Storage::disk('local')->assertMissing($media->path);
+    expect(DB::table('media_files')->count())->toBe(0);
 });

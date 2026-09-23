@@ -666,7 +666,8 @@ Twelve types. Deliberately small — every one added before the API freeze is a 
 
 > ⚠️ **Amended 2026-09-23 by ADR-042:** "a system entry type" is now "a type declared as a media type" — any type
 > with `entry_types.is_media` set, org-owned or global. Core ships none of `image`, `document` or `video`, and an
-> org adds fields only to a media type it owns. Not yet built: `is_media` lands with ADR-042's migration.
+> org adds fields only to a media type it owns. `is_media` arrived by a migration of its own, which marked every
+> type whose entries already carried stored files.
 
 The bytes live in a companion table:
 

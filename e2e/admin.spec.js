@@ -203,12 +203,28 @@ test.describe('isolation, from the attacker side', () => {
      * The one that actually exercises the SCOPE. The row above carries the other org's own type, so the list
      * excludes it on the type predicate alone and the assertion would survive deleting every scope from
      * Entry. A global type is the only case where two orgs legitimately share an entry_type_id, so here the
-     * type predicate cannot help and SiteScope/OrgScope are the whole defence.
+     * type predicate cannot help and the scopes are the whole defence — Kitsune's SiteScope and OrgScope, and
+     * Filament's tenant scope on this list.
+     *
+     * ⚠️ WITH TWO CONTROLS, because "not on the page" is also what a page that failed to render says, and what
+     * a fixture that was never seeded says. Golfdom's own file shows the list rendered; the rival's owner
+     * seeing the rival's file in their own site shows it exists. The fixture is a stored file rather than a
+     * byte-less entry: a media entry with no file behind it is the state ADR-042 arranges never to exist.
      */
-    test('does not show another org\'s content under a type both orgs share', async ({ page }) => {
+    test('does not show another org\'s content under a type both orgs share', async ({ page, browser }) => {
         await page.goto(`/admin/${SITE}/c/image`);
 
-        await expect(page.getByText('Rival image, shared type')).toHaveCount(0);
+        await expect(page.locator('.fi-ta-row').filter({ hasText: 'Course map' })).toBeVisible();
+        await expect(page.getByText('Rival private asset')).toHaveCount(0);
+
+        const rival = await browser.newContext({ storageState: '.playwright/admin-rival-auth.json' });
+        const rivalPage = await rival.newPage();
+
+        await rivalPage.goto('/admin/rival-golfdom/c/image');
+
+        await expect(rivalPage.locator('.fi-ta-row').filter({ hasText: 'Rival private asset' })).toBeVisible();
+
+        await rival.close();
     });
 
     test('does not offer another org\'s type in navigation', async ({ page }) => {
