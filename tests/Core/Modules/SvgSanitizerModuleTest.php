@@ -303,7 +303,9 @@ it('does not count a word that merely starts with use', function (): void {
  * wrapper survives, and the document stores as a successful upload that renders nothing.
  */
 it('refuses a document whose only survivor is an empty wrapper', function (string $fragment): void {
-    expect(fn () => (new EnshrinedSvgSanitiser)->sanitise('<svg '.SVG_NS.'>'.$fragment.'</svg>'))
+    expect(fn () => (new EnshrinedSvgSanitiser)->sanitise(
+        '<svg '.SVG_NS.' xmlns:xlink="http://www.w3.org/1999/xlink">'.$fragment.'</svg>'
+    ))
         ->toThrow(RuntimeException::class, 'left nothing that draws');
 })->with([
     'script inside a group' => ['<g><script>alert(1)</script></g>'],
@@ -333,6 +335,26 @@ it('refuses a document whose only survivor is an empty wrapper', function (strin
     /* The mirror case the same measurement turned up: a text element with nothing in it paints 0 pixels too. */
     'an empty text element' => ['<text x="0" y="15"></text>'],
     'a text element holding only a title' => ['<text><title>hi</title></text>'],
+    /*
+     * ⚠️ THE FIFTH ROUND, AND THE ONE THAT SHOWED THE COMMON CAUSE. `view` is allowed by the library and
+     * paints nothing, and it was in neither of the lists the check used to consult — so it fell through to a
+     * default of DRAWABLE. The default is now inverted, and `view` being refused is what proves the
+     * fall-through path: the code never looks `view` up anywhere, it simply is not on a list that paints.
+     */
+    'a view whose script was stripped' => ['<view><script>alert(1)</script></view>'],
+    /* Measured at 0 pixels: an unclassified element's children are not painted either, so it is not descended. */
+    'a shape inside a view' => ['<view><rect width="1" height="1"/></view>'],
+    /*
+     * ⚠️ THE SHELL THE CONTRACT EXISTS FOR, which would have been the next round. The library removes a
+     * hostile `href` and keeps the element, so these arrive here as a bare `<use></use>` / `<image></image>`.
+     */
+    'a use whose javascript href was stripped' => ['<use href="javascript:alert(1)"/>'],
+    'a use whose remote xlink href was stripped' => ['<use xlink:href="https://evil.test/a.svg#x"/>'],
+    'an image whose remote href was stripped' => ['<image href="https://evil.test/x.png"/>'],
+    'an animation with nothing to animate' => ['<animateTransform attributeName="transform" type="rotate" from="0" to="9" dur="1s"/>'],
+    'a gradient stop on its own' => ['<stop offset="0"/>'],
+    /* Gone from SVG 2; Chromium paints 0 even with characters inside it. */
+    'text inside an altGlyph' => ['<text><altGlyph>hello</altGlyph></text>'],
 ]);
 
 /**
@@ -346,6 +368,12 @@ it('accepts a definition that something actually references', function (string $
 })->with([
     'use of a defs shape' => ['<defs><rect id="a" width="1" height="1"/></defs><use xlink:href="#a"/>'],
     'a rect painted with a gradient' => ['<defs><linearGradient id="g"/></defs><rect width="1" height="1" fill="url(#g)"/>'],
+    /* The SVG 1.1 spelling, read by namespace rather than by prefix. */
+    'use of a defs shape through xlink:href' => ['<defs><rect id="a" width="1" height="1"/></defs><use xlink:href="#a"/>'],
+    /* Measured at 400 pixels. The earlier container list left a nested viewport out. */
+    'a shape inside a nested svg' => ['<svg><rect width="1" height="1"/></svg>'],
+    'an image holding a data uri' => ['<image width="1" height="1" href="data:image/png;base64,'
+        .'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="/>'],
 ]);
 
 /** Text is content when it sits where SVG paints it. */
@@ -356,6 +384,9 @@ it('accepts text that is inside a text element', function (string $fragment): vo
     'tspan' => ['<text><tspan>hello</tspan></text>'],
     /* `DOMCdataSection` extends `DOMText`, and a browser paints CDATA inside `<text>` like any other text. */
     'CDATA' => ['<text><![CDATA[hello]]></text>'],
+    /* Measured at 315 pixels, the same as plain `<text>`: a link inside text is still painted text. */
+    'a link inside text' => ['<text><a>hello</a></text>'],
+    'textPath' => ['<defs><path id="p" d="M0 0 L9 0"/></defs><text><textPath href="#p">hello</textPath></text>'],
 ]);
 
 /**
@@ -383,4 +414,36 @@ it('accepts content nested inside wrappers', function (): void {
     );
 
     expect($clean)->toContain('<circle')->toContain('#c00');
+});
+
+/**
+ * ⚠️ EVERY TAG THE LIBRARY ALLOWS IS CLASSIFIED, ONCE — which is what makes the allowlist hold over time.
+ *
+ * `TagsWithoutStyle::getTags()` re-derives the library's allowlist at call time, on purpose, so a release
+ * that adds a tag reaches this module with no change here. At runtime that tag paints nothing, because only
+ * the four painting lists are consulted, so the failure cannot be a blank upload accepted. But a new
+ * PAINTING element would then be refused, and nobody would know why. This test is where that is noticed: it
+ * fails until someone decides which list the new tag belongs on.
+ */
+it('classifies every tag the library allows, each exactly once', function (): void {
+    $allowed = array_values(array_unique(array_map(
+        'strtolower',
+        array_diff(TagsWithoutStyle::getTags(), ['#text']),
+    )));
+
+    $lists = [
+        'PAINTS' => EnshrinedSvgSanitiser::PAINTS,
+        'PAINTS_A_REFERENCE' => EnshrinedSvgSanitiser::PAINTS_A_REFERENCE,
+        'TEXT_CONTENT' => EnshrinedSvgSanitiser::TEXT_CONTENT,
+        'CONTAINERS' => EnshrinedSvgSanitiser::CONTAINERS,
+        'DRAWS_NOTHING' => EnshrinedSvgSanitiser::DRAWS_NOTHING,
+    ];
+
+    $classified = array_merge(...array_values($lists));
+
+    expect(array_values(array_diff($allowed, $classified)))
+        ->toBe([], 'the library allows a tag no list classifies')
+        ->and(count($classified))->toBe(count(array_unique($classified)), 'a tag sits on two lists')
+        /* The lists are compared against lowercased local names at runtime, so a capital would never match. */
+        ->and(array_filter($classified, static fn (string $tag): bool => $tag !== strtolower($tag)))->toBe([]);
 });

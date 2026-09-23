@@ -55,9 +55,15 @@ types only.
 
 Implements `SanitisesSvg` over the library, with `removeRemoteReferences` and `minify` both switched on —
 neither is the default. It refuses input that cannot be parsed as XML, and input where nothing that paints
-survives sanitising: an empty wrapper, a lone `<title>`, content left only inside `<defs>`, or character
-data outside a `<text>` element. A zero-value asset stored as a successful upload is a broken image nobody
-can explain, and the upload behind it was almost certainly hostile.
+survives sanitising: an empty wrapper, a lone `<title>`, content left only inside `<defs>`, character data
+outside a `<text>` element, an element that paints nothing such as `<view>`, or a `<use>` or `<image>`
+whose hostile reference the library stripped. A zero-value asset stored as a successful upload is a broken
+image nobody can explain, and the upload behind it was almost certainly hostile.
+
+What counts as painting is an **allowlist** — shapes, `<use>` and `<image>` that still point somewhere,
+text elements that carry characters, and the containers that hold them — and anything else counts for
+nothing, including a tag nobody has classified. Every tag the library allows is classified, and a test
+fails if a future release adds one that is not.
 
 That check is **structural**. It asks whether an element that paints survived. It does not ask whether the
 document renders pixels, because only a renderer can answer that. `<circle r="0"/>` and

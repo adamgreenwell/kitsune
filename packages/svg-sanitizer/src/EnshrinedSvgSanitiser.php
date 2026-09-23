@@ -64,45 +64,96 @@ final class EnshrinedSvgSanitiser implements SanitisesSvg
     /** `<use`, with or without a namespace prefix — `<use>`, `<s:use>`, `<svg:use />`. */
     private const USE_ELEMENT = '/<(?:[A-Za-z_][\w.-]*:)?use[\s\/>]/i';
 
-    /**
-     * Elements that draw nothing themselves and only carry other elements.
+    /*
+     * ────────────────  What counts as painting, for the emptiness check  ────────────────
      *
-     * ⚠️ USED TO DECIDE WHETHER A SANITISED DOCUMENT STILL SHOWS ANYTHING, and review found the earlier
-     * version accepting an empty one. `<svg><g><script>…</script></g></svg>` sanitises to
-     * `<svg><g></g></svg>`: the dangerous element is gone, a wrapper survives, and a check that asked only
-     * "is there a child element" said yes to a blank image.
+     * ⚠️ AN ALLOWLIST OF WHAT PAINTS, NOT A LIST OF WHAT DOES NOT, and five review rounds are why. The check
+     * began as "is there a child element?", then grew a denylist of wrappers, then of descriptions, then of
+     * definitions, and each round found one more element that painted nothing and fell through to the
+     * default — which was DRAWABLE. The fifth was `<view>`: allowed by the library, non-rendering, in neither
+     * list, so `<view><script>…</script></view>` lost its script and stored as a blank success. That is the
+     * denylist failure `MediaIntake` names in its own docblock — *"a denylist is a list of the attacks
+     * somebody thought of"* — reproduced one layer down, in the method that exists to catch a stripped upload.
+     *
+     * So the default is inverted. An element counts only if it is on one of the four lists below; anything
+     * else, including a tag nobody has classified, paints nothing. A mistake now makes a blank upload
+     * REFUSED, which is visible and explicable, instead of ACCEPTED, which is silent.
+     *
+     * ⚠️ EVERY ENTRY WAS MEASURED, by rasterising in Chromium and counting painted pixels against a control
+     * rect at 400: shapes, an `<image>` holding a data URI, a `<use>` of a defs rect and a nested `<svg>`
+     * holding a rect all paint 400; `view`, a bare `<use>`, a bare `<image>`, `tref`, `altGlyph`, a lone
+     * animation element, a lone `stop`, and a rect INSIDE a `view` all paint 0. The last one is why an
+     * unclassified element is not descended into either.
      */
-    /** Elements that draw nothing themselves but whose children are drawn where they sit. */
-    private const CONTAINERS = ['g', 'a', 'switch'];
+
+    /** Graphics elements that paint where they sit. Their geometry is the renderer's business, not this one's. */
+    public const PAINTS = ['rect', 'circle', 'ellipse', 'line', 'polyline', 'polygon', 'path'];
+
+    /**
+     * Graphics elements that paint something they point at, so they count only while they still point.
+     *
+     * ⚠️ THIS IS THE SHELL THE CONTRACT EXISTS FOR, and it was the next finding waiting. The library does not
+     * remove a `<use>` or `<image>` whose `href` is hostile — it removes the `href`. Measured:
+     * `javascript:`, a remote URL and an off-document fragment all leave a bare `<use></use>` or
+     * `<image></image>`, which paints nothing. So the element counts only while a reference survives.
+     *
+     * ⚠️ AND THE REFERENCE IS NOT FOLLOWED, deliberately. Asking whether `#a` exists and whether IT draws
+     * anything means walking the reference graph, and that walk is the denial of service `MAX_USE_ELEMENTS`
+     * exists to bound. A refusal check must not reopen the attack a resource guard just closed.
+     */
+    public const PAINTS_A_REFERENCE = ['use', 'image'];
 
     /**
      * The only elements whose character data SVG paints.
      *
-     * ⚠️ TEXT OUTSIDE THESE IS NOT DRAWN, and review found the check counting it. `<svg>hello</svg>` and
-     * `<svg><g>hello</g></svg>` are well-formed, sniff as `image/svg+xml`, and paint nothing: measured by
-     * rasterising each in Chromium, 0 pixels against 315 for the same word inside `<text>`. The same
-     * measurement found the mirror case nobody had raised — an EMPTY `<text>` paints 0 pixels as well — so
-     * a text element counts only when it actually carries characters.
+     * ⚠️ TEXT OUTSIDE THESE IS NOT DRAWN. `<svg>hello</svg>` and `<svg><g>hello</g></svg>` paint 0 pixels
+     * against 315 for the same word inside `<text>`, and an EMPTY `<text>` paints 0 too, so a text element
+     * counts only when it carries characters. `tref` and `altGlyph` are NOT here: both are gone from SVG 2
+     * and Chromium paints 0 for each, even with text inside `altGlyph`.
      */
-    private const TEXT_CONTENT = ['text', 'tspan', 'textpath'];
+    public const TEXT_CONTENT = ['text', 'tspan', 'textpath'];
 
     /**
-     * Elements whose content does not render where it sits — skipped WITHOUT descending.
+     * Elements that paint nothing themselves but whose children are painted where they sit.
      *
-     * ⚠️ TWO DIFFERENT REASONS, AND BOTH WERE FOUND BY REVIEW RATHER THAN REASONED OUT. `title`, `desc` and
-     * `metadata` describe a picture instead of being one, so their text is a tooltip or an accessible name:
-     * an SVG carrying nothing but `<title>hi</title>` renders blank. `defs`, `symbol` and the paint servers
-     * are DEFINITIONS — they draw only where something references them, so `<svg><defs><rect/></defs></svg>`
-     * is every bit as blank as `<svg><g></g></svg>` despite having a `<rect>` in it.
-     *
-     * A reference to one of these is itself a `<use>`, `<rect fill="url(#g)">` or similar, which is outside
-     * both lists and settles the question on its own. So skipping them loses nothing real.
+     * A nested `<svg>` is one — measured at 400 with a rect inside it — which the earlier version of this
+     * list left out, so a logo wrapped in an inner viewport would have been refused.
      */
-    private const NOT_RENDERED_HERE = [
+    public const CONTAINERS = ['g', 'a', 'switch', 'svg'];
+
+    /**
+     * Every other tag the library allows, each considered and found to paint nothing where it sits.
+     *
+     * ⚠️ THE CODE NEVER CONSULTS THIS LIST. An element outside the four lists above paints nothing, whether it
+     * is here or not, so a mistake here cannot make a blank document pass. The list exists so that
+     * `SvgSanitizerModuleTest` can prove every tag the library allows was LOOKED AT by a person: if a future
+     * release adds a tag, that test fails until someone decides which list it belongs on, rather than the
+     * tag quietly defaulting to anything. `TagsWithoutStyle::getTags()` re-derives the allowlist at call time
+     * on purpose, so this is the one place a library change is noticed.
+     *
+     * The families and why each paints nothing here: descriptions (`title`, `desc`, `metadata`) are
+     * tooltips and accessible names; definitions (`defs`, `symbol`, `marker`, `pattern`, `clipPath`, `mask`,
+     * gradients and their `stop`s, `filter` and every `fe*` primitive) draw only where something references
+     * them; animation (`animate*`, `mpath`) changes other elements and draws nothing itself; `view` sets a
+     * viewport; and the SVG 1.1 font and glyph elements, `tref` and `altGlyph` are gone from SVG 2 and
+     * Chromium paints none of them. `style` and `script` are listed for completeness, though neither
+     * survives sanitising.
+     */
+    public const DRAWS_NOTHING = [
         'title', 'desc', 'metadata', 'style', 'script',
         'defs', 'symbol', 'marker', 'pattern', 'clippath', 'mask',
-        'lineargradient', 'radialgradient', 'filter',
+        'lineargradient', 'radialgradient', 'stop', 'filter',
+        'feblend', 'fecolormatrix', 'fecomponenttransfer', 'fecomposite', 'feconvolvematrix',
+        'fediffuselighting', 'fedisplacementmap', 'fedistantlight', 'feflood', 'fefunca', 'fefuncb',
+        'fefuncg', 'fefuncr', 'fegaussianblur', 'femerge', 'femergenode', 'femorphology', 'feoffset',
+        'fepointlight', 'fespecularlighting', 'fespotlight', 'fetile', 'feturbulence',
+        'animatecolor', 'animatemotion', 'animatetransform', 'mpath',
+        'view',
+        'font', 'glyph', 'glyphref', 'hkern', 'vkern', 'altglyph', 'altglyphdef', 'altglyphitem', 'tref',
     ];
+
+    /** Where text inside a text element is still painted: nested runs, paths, and links within the text. */
+    private const TEXT_DESCENDS_INTO = ['tspan', 'textpath', 'a'];
 
     /**
      * ⚠️ A FRESH `Sanitizer` PER CALL, NOT A SHARED ONE. It carries parser state — the `<use>` nesting graph
@@ -226,9 +277,11 @@ final class EnshrinedSvgSanitiser implements SanitisesSvg
      * hostile.
      *
      * ⚠️ THE QUESTION IS STRUCTURAL — "DID AN ELEMENT THAT PAINTS SURVIVE?" — AND IT STOPS THERE ON PURPOSE.
-     * It is not "will this render pixels?", which only a renderer can answer. Four review rounds each found
+     * It is not "will this render pixels?", which only a renderer can answer. Five review rounds each found
      * one more blank shape the structural check accepted: an empty wrapper, a lone `<title>`, content inside
-     * `<defs>`, bare character data. Each was a structural gap and each is closed. But rasterising in
+     * `<defs>`, bare character data, a surviving `<view>`. Each was a structural gap, and the fifth showed
+     * they had a common cause — the check defaulted to "drawable" — so the default is now inverted and the
+     * painting elements are an allowlist (see `PAINTS`). But rasterising in
      * Chromium also shows `<circle r="0"/>` and `<rect display="none"/>` painting 0 pixels, and behind those
      * sit `visibility`, `opacity`, `fill="none"` with no stroke, geometry placed off the canvas, and every
      * CSS rule that can reach any of them. Refusing those means building a style cascade and a geometry
@@ -273,16 +326,14 @@ final class EnshrinedSvgSanitiser implements SanitisesSvg
     /**
      * Does an element that paints survive anywhere under this one?
      *
-     * ⚠️ RECURSIVE, AND IT ASKS ABOUT CONTENT RATHER THAN ABOUT CHILDREN. A wrapper counts for nothing
-     * however deeply it nests — `<g><g><g></g></g></g>` is as blank as `<svg/>` — so containers are
-     * descended into rather than counted. Descriptions and definitions are skipped WITHOUT descending: a
-     * `<title>`'s text is a tooltip, and a `<defs>`' content draws only where something references it. A
-     * text element counts only if it carries characters. Anything else settles it.
+     * ⚠️ EACH BRANCH IS AN ALLOWLIST, AND FALLING THROUGH ALL OF THEM MEANS "NOTHING HERE". A shape settles it;
+     * a reference element settles it while it still points somewhere; a text element settles it while it
+     * carries characters; a container is descended into. Anything else — a description, a definition, an
+     * animation, a `view`, or a tag no list names — is skipped WITHOUT descending, because its children are
+     * not painted where they sit either (measured: a rect inside a `view` paints 0 pixels).
      *
-     * ⚠️ AND CHARACTER DATA THAT IS NOT INSIDE A TEXT ELEMENT COUNTS FOR NOTHING. There used to be a branch
-     * here returning true for any non-whitespace text node. SVG does not paint text that sits directly in
-     * the root or a container, so that branch called `<svg>hello</svg>` drawable. It is not replaced: the
-     * only text worth counting is inside `TEXT_CONTENT`, and `carriesText()` looks for it there.
+     * Character data sitting directly in the root or a container is not counted at all: SVG paints text only
+     * inside `TEXT_CONTENT`.
      */
     private static function drawsSomething(DOMElement $element): bool
     {
@@ -293,23 +344,19 @@ final class EnshrinedSvgSanitiser implements SanitisesSvg
 
             $name = strtolower($child->localName ?? '');
 
-            if (in_array($name, self::NOT_RENDERED_HERE, true)) {
-                continue;
-            }
-
-            if (in_array($name, self::TEXT_CONTENT, true)) {
-                if (self::carriesText($child)) {
-                    return true;
-                }
-
-                continue;
-            }
-
-            if (! in_array($name, self::CONTAINERS, true)) {
+            if (in_array($name, self::PAINTS, true)) {
                 return true;
             }
 
-            if (self::drawsSomething($child)) {
+            if (in_array($name, self::PAINTS_A_REFERENCE, true) && self::carriesReference($child)) {
+                return true;
+            }
+
+            if (in_array($name, self::TEXT_CONTENT, true) && self::carriesText($child)) {
+                return true;
+            }
+
+            if (in_array($name, self::CONTAINERS, true) && self::drawsSomething($child)) {
                 return true;
             }
         }
@@ -318,11 +365,30 @@ final class EnshrinedSvgSanitiser implements SanitisesSvg
     }
 
     /**
+     * Does this `<use>` or `<image>` still point at something?
+     *
+     * Both spellings are read: SVG 2's plain `href` and SVG 1.1's `xlink:href`. The xlink one is read by
+     * namespace rather than by prefix, because the prefix is whatever the document bound it to.
+     */
+    private static function carriesReference(DOMElement $element): bool
+    {
+        $href = $element->getAttribute('href');
+
+        if (trim($href) === '') {
+            $href = $element->getAttributeNS('http://www.w3.org/1999/xlink', 'href');
+        }
+
+        return trim($href) !== '';
+    }
+
+    /**
      * Does this text element hold any character data that would be painted?
      *
-     * ⚠️ IT SKIPS THE SAME SUBTREES `drawsSomething()` SKIPS, so `<text><title>hi</title></text>` does not
-     * count: a title inside a text element is still a tooltip. `DOMCdataSection` extends `DOMText`, so
-     * `<text><![CDATA[hi]]></text>` counts, and a comment is neither, so it does not.
+     * ⚠️ IT DESCENDS ONLY WHERE TEXT IS STILL PAINTED — `TEXT_DESCENDS_INTO` — and skips everything else, the
+     * same allowlist shape as `drawsSomething()`. So `<text><title>hi</title></text>` does not count (a title
+     * inside a text element is still a tooltip) and neither does text inside `altGlyph` (Chromium paints 0).
+     * `DOMCdataSection` extends `DOMText`, so `<text><![CDATA[hi]]></text>` counts, and a comment is
+     * neither, so it does not.
      */
     private static function carriesText(DOMElement $element): bool
     {
@@ -332,7 +398,7 @@ final class EnshrinedSvgSanitiser implements SanitisesSvg
             }
 
             if ($child instanceof DOMElement
-                && ! in_array(strtolower($child->localName ?? ''), self::NOT_RENDERED_HERE, true)
+                && in_array(strtolower($child->localName ?? ''), self::TEXT_DESCENDS_INTO, true)
                 && self::carriesText($child)) {
                 return true;
             }
