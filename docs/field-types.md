@@ -664,6 +664,10 @@ Twelve types. Deliberately small — every one added before the API freeze is a 
 
 **There is no separate media subsystem.** An uploaded file is an entry of a system entry type — `image`, `document`, `video` — carrying its own fields for alt text, caption, credit, rights, expiry, and anything else an org adds.
 
+> ⚠️ **Amended 2026-09-23 by ADR-042:** "a system entry type" is now "a type declared as a media type" — any type
+> with `entry_types.is_media` set, org-owned or global. Core ships none of `image`, `document` or `video`, and an
+> org adds fields only to a media type it owns. Not yet built: `is_media` lands with ADR-042's migration.
+
 The bytes live in a companion table:
 
 ```

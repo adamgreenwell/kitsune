@@ -193,6 +193,7 @@ entry_types
   handle             string               -- machine name, "product"
   name, plural_name, icon, description
   is_system          bool                 -- undeletable
+  is_media           bool                 -- media type: entries come from upload, not the create form; set at creation, locked (ADR-042, lands with its migration)
   ordering
   settings           json                 -- revisions on/off, sluggable, publishable
   timestamps
