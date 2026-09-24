@@ -4056,7 +4056,10 @@ sweep runs. PHP's own upload temporary file precedes every rule, and is PHP's ra
 >   two overlaps: core's root inside a disk that is served or a directory a public link exposes, and any disk's or
 >   link's root inside core's, which the intake sweep would empty by age. Core's root inside a disk that is neither
 >   served nor linked is allowed — Laravel 10 and earlier rooted `local` at `storage/app` — and roots are compared
->   through symlinks, as deployments share storage. `config:cache` boots first, so a deploy stops on it.
+>   through symlinks, as deployments share storage. `config:cache` boots first, so a deploy stops on it. Codex then
+>   found the names themselves could be taken back: a host's providers run after core's, so one could redefine either
+>   disk after `define()` wrote it — as `s3`, which sends Livewire past the gate and the rule, or served. Boot also
+>   refuses that: each name must still be local, unserved and rooted where core put it.
 > - **What Livewire staged before core pinned its disk stays where it was**, and nothing sweeps it any more: on an
 >   installation that ran the earlier code, `local`'s `livewire-tmp`. It is removed once, by hand, where it exists —
 >   stage and development machines; no production installation ran that code. A sweep of it was built and taken out
@@ -4298,9 +4301,11 @@ only the development seeder does — and the endpoint admits only a user who cou
 components and the org's owner are refused alike until one exists. An installation declares a media type before it
 expects any upload to work, the alpha deploy included.
 
-**A host whose disks overlap core's does not boot.** A served disk or a public link that reaches core's private or
-intake disk, or any disk rooted inside either, is refused when the application boots, naming both sides; the host
-moves its disk. Laravel's shipped configuration and the skeleton's do not overlap.
+**A host whose disks overlap core's, or that redefines core's disk names, does not boot.** A served disk or a public
+link that reaches core's private or intake disk, or any disk rooted inside either, is refused when the application
+boots, naming both sides; the host moves its disk. So is a provider that redefines `kitsune-private` or
+`kitsune-intake` after core wrote them — private media goes elsewhere through `kitsune.media.disks.private`, and the
+intake has no alternative. Laravel's shipped configuration and the skeleton's do neither.
 
 **A host's previews of staged files stop.** With `preview_mimes` empty, host code that calls `temporaryUrl()` on a
 staged file throws `FileNotPreviewableException`.
@@ -4399,11 +4404,12 @@ installation is scheduled.
 > the upload modal.
 
 > ⚠️ **Amended 2026-09-23 — the slice owning the upload staging landed**, and each guard it adds was removed in turn
-> and its test watched fail, beside a run of the same tests passing unmutated: 55 mutations, nine of them in the
+> and its test watched fail, beside a run of the same tests passing unmutated: 60 mutations, nine of them in the
 > browser. `MediaDisksTest` — the intake disk is local and never served, a host's definition under its name is
 > replaced when the provider registers, and its root is apart from every other local disk's in both directions; boot
 > refuses a served disk or a public link holding core's disks and any disk inside them, allows a disk nothing serves
-> to hold them, and sees through a symlinked storage directory. `MediaStagingTest` — Livewire stages on it, previews
+> to hold them, and sees through a symlinked storage directory; and refuses either name redefined after core — on
+> `s3`, on another driver, served, or moved — beside a control that boots. `MediaStagingTest` — Livewire stages on it, previews
 > nothing, keeps its throttle with the gate after it, and its rules are `MediaIntake`'s, by name, with nothing
 > `config:cache` cannot export; the pin overrides a host's own keys and leaves the rest; the rule refuses what
 > `MediaIntake` refuses in `MediaIntake`'s own words whatever the filename holds, and a part that is incomplete or not
@@ -4413,8 +4419,8 @@ installation is scheduled.
 > scheduled hourly. `UploadStagingGateTest`, with Kitsune's context empty as on the endpoint, each refusal beside an
 > admitted control — refuses a guest; a user holding less than `view`, `create` and `publish` on a media type, each
 > missing on its own; one the panel gives no site, or refuses at a site's door; one whose media types are off
-> everywhere they reach; one the panel turns away; a session the panel's `AuthenticateSession` would end, and only
-> when the panel runs it; a grant on a handle the org shadows with a type that holds no media; a site whose org is
+> everywhere they reach; one the panel turns away; a session the panel's `AuthenticateSession` would end —
+> Laravel's or Filament's, which the skeleton runs — and only when the panel runs it; a grant on a handle the org shadows with a type that holds no media; a site whose org is
 > gone; another org's grant without membership — asks the panel's own guard, puts the context back exactly, an org
 > without a site included, and refuses anything but a flat list of files; it sweeps after an accepted upload and never
 > after a refused one, and reports a failed sweep without failing the upload; with no panel, it asks `create` and

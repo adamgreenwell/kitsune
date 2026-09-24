@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Media;
 
+use Illuminate\Config\Repository as ConfigRepository;
 use Illuminate\Contracts\Config\Repository;
 use RuntimeException;
 
@@ -79,6 +80,46 @@ final class MediaDisks
             'throw' => false,
             'report' => false,
         ]);
+    }
+
+    /**
+     * Refuse a boot in which either of core's disk names no longer holds core's definition — Codex, #152.
+     *
+     * ⚠️ `define()` WRITES THE NAMES, AND A LATER PROVIDER CAN WRITE THEM AGAIN. Core registers before the host's own
+     * providers, so a host's `register()` or `boot()` can replace either definition after core has written it — and
+     * every promise made about these disks is about the definition. Redefined as `s3`, Livewire presigns a PUT to the
+     * bucket past the endpoint's gate and rule; redefined as a served local disk, Laravel routes it at `storage/{path}`.
+     * So once every provider has booted, each name must still be local, unserved and rooted where core put it.
+     *
+     * @throws RuntimeException naming the disk and what it has become
+     */
+    public static function refuseRedefinition(Repository $config): void
+    {
+        $core = new ConfigRepository;
+        self::define($core);
+
+        foreach ([self::PRIVATE, self::INTAKE] as $name) {
+            $root = (string) $core->get("filesystems.disks.{$name}.root");
+            $disk = $config->get("filesystems.disks.{$name}");
+
+            $intact = is_array($disk)
+                && ($disk['driver'] ?? null) === 'local'
+                && ! ($disk['serve'] ?? false)
+                && is_string($disk['root'] ?? null)
+                && self::normalised($disk['root']) === self::normalised($root);
+
+            if (! $intact) {
+                throw new RuntimeException(sprintf(
+                    'Refusing to boot: the [%s] disk is core\'s — local, never served, rooted at [%s] (ADR-042 decisions 4 '
+                    .'and 4a) — and something after core\'s provider redefined it as %s. Leave the name to core: private '
+                    .'media goes elsewhere by pointing `kitsune.media.disks.private` at a disk of your own, and the '
+                    .'intake has no alternative.',
+                    $name,
+                    $root,
+                    json_encode(is_array($disk) ? array_intersect_key($disk, array_flip(['driver', 'root', 'serve'])) : $disk),
+                ));
+            }
+        }
     }
 
     /**

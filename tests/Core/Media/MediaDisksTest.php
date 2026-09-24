@@ -247,3 +247,45 @@ describe('a host disk that overlaps core\'s', function (): void {
         expect(fn () => (new KitsuneServiceProvider(app()))->boot())->toThrow(RuntimeException::class, 'Refusing to boot');
     });
 });
+
+/*
+ * Core's names redefined after core wrote them — Codex, #152. A host's own provider registers and boots after
+ * core's, so the definition `define()` wrote is checked again once every provider has booted.
+ */
+describe('a core disk redefined after core', function (): void {
+    /**
+     * ⚠️ EACH DEFINITION BUILT IN THE TEST AND CHECKED BEFORE BOOT. A first version built them in nested dataset
+     * closures that handed the test an empty array, so every case was refused for being blank and none for what it
+     * named — the mutation run found it.
+     */
+    it('is refused when the provider boots', function (string $name, string $redefinition): void {
+        $root = storage_path($name === MediaDisks::INTAKE ? 'app/kitsune/intake' : 'app/kitsune/private');
+
+        $definition = match ($redefinition) {
+            // Livewire presigns straight to the bucket, past the endpoint's gate and rule.
+            's3' => ['driver' => 's3', 'bucket' => 'anywhere'],
+            // Another driver at core's own root: only the driver differs.
+            'sftp at its own root' => ['driver' => 'sftp', 'root' => $root],
+            'served' => ['driver' => 'local', 'root' => $root, 'serve' => true],
+            'moved' => ['driver' => 'local', 'root' => storage_path('app/elsewhere')],
+        };
+
+        // As a host provider running after core's `register()` would leave it.
+        config(['filesystems.disks.'.$name => $definition]);
+        expect(config('filesystems.disks.'.$name))->toBe($definition);
+
+        expect(fn () => (new KitsuneServiceProvider(app()))->boot())
+            ->toThrow(RuntimeException::class, "Refusing to boot: the [{$name}] disk is core's");
+    })->with([
+        'the intake, on s3' => [MediaDisks::INTAKE, 's3'],
+        'the intake, on another driver at its own root' => [MediaDisks::INTAKE, 'sftp at its own root'],
+        'the intake, served' => [MediaDisks::INTAKE, 'served'],
+        'the private disk, served' => [MediaDisks::PRIVATE, 'served'],
+        'the private disk, moved' => [MediaDisks::PRIVATE, 'moved'],
+    ]);
+
+    /** The control: core's own definitions, as `register()` left them, boot. */
+    it('boots with the definitions core wrote', function (): void {
+        expect(fn () => (new KitsuneServiceProvider(app()))->boot())->not->toThrow(RuntimeException::class);
+    });
+});
