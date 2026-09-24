@@ -12,10 +12,13 @@ namespace Kitsune\Core;
 
 use Filament\Support\Assets\Js;
 use Filament\Support\Facades\FilamentAsset;
+use Illuminate\Console\Scheduling\Schedule;
+use Illuminate\Contracts\Validation\Factory as ValidationFactory;
 use Illuminate\Database\Events\TransactionRolledBack;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\ServiceProvider;
+use Illuminate\Validation\Validator;
 use Kitsune\Core\Auth\EntryPolicy;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Blueprints\BlueprintRegistry;
@@ -24,6 +27,7 @@ use Kitsune\Core\Console\BenchmarkAdminCommand;
 use Kitsune\Core\Console\BenchmarkFloorCommand;
 use Kitsune\Core\Console\BenchmarkStorageCommand;
 use Kitsune\Core\Console\BlueprintCommand;
+use Kitsune\Core\Console\MediaIntakeSweepCommand;
 use Kitsune\Core\Console\MediaPruneCommand;
 use Kitsune\Core\Console\MediaTypesCommand;
 use Kitsune\Core\Console\ModuleCommand;
@@ -31,6 +35,7 @@ use Kitsune\Core\Console\SchemaSyncCommand;
 use Kitsune\Core\Fields\FieldTypeRegistry;
 use Kitsune\Core\Filament\RichText\BlockDirectionPlugin;
 use Kitsune\Core\Media\MediaDisks;
+use Kitsune\Core\Media\MediaStaging;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Modules\AdminSurface;
 use Kitsune\Core\Modules\ModuleKernel;
@@ -46,9 +51,9 @@ final class KitsuneServiceProvider extends ServiceProvider
         // Beneath the host's own `config/kitsune.php`, so a host overrides a key by declaring it there.
         $this->mergeConfigFrom(__DIR__.'/../config/kitsune.php', 'kitsune');
 
-        // Core's never-served private media disk (ADR-042 decision 4a). Here, before any provider boots, because
-        // `FilesystemServiceProvider::boot()` reads each disk's `serve` flag to decide which get a route, and a
-        // definition written after that read would not be the one it acted on.
+        // Core's never-served disks, for private media and the upload intake (ADR-042 decisions 4 and 4a). Here,
+        // before any provider boots, because `FilesystemServiceProvider::boot()` reads each disk's `serve` flag to
+        // decide which get a route, and a definition written after that read would not be the one it acted on.
         MediaDisks::define($this->app->make('config'));
 
         $this->app->singleton(Kitsune::class, static fn (): Kitsune => new Kitsune);
@@ -159,10 +164,41 @@ final class KitsuneServiceProvider extends ServiceProvider
             SettingsResolver::forgetEverywhere();
         });
 
+        /*
+         * The upload endpoint's rule — ADR-042 decision 4. By NAME, because `deploy/release.sh` runs `config:cache` and
+         * a closure or rule object in Livewire's config fails the deploy; registered when the validator is first
+         * built rather than resolving it here. For every request, because the endpoint serves the whole installation.
+         */
+        $this->callAfterResolving('validator', static function (ValidationFactory $validator): void {
+            $validator->extend(
+                MediaStaging::RULE,
+                static fn (string $attribute, mixed $value): bool => MediaStaging::passes($value),
+            );
+            $validator->replacer(
+                MediaStaging::RULE,
+                static fn (string $message, string $attribute, string $rule, array $parameters, Validator $validation): string => MediaStaging::refusal($validation->getValue($attribute)),
+            );
+        });
+
+        // Livewire's staging keys, once every provider has booted — `MediaStaging::pin()` says why not sooner.
+        $this->app->booted(function (): void {
+            MediaStaging::pin($this->app->make('config'));
+        });
+
         if ($this->app->runningInConsole()) {
+            /*
+             * For an installation that runs a scheduler; none needs one, because the same sweep follows every
+             * accepted upload. Hourly bounds a staged file's life at a day and an hour. No lock: the sweep deletes
+             * by age and two running at once remove the same files.
+             */
+            $this->callAfterResolving(Schedule::class, static function (Schedule $schedule): void {
+                $schedule->command('kitsune:media-intake-sweep --force')->hourly();
+            });
+
             $this->commands([
                 AuditPatternsCommand::class,
                 BlueprintCommand::class,
+                MediaIntakeSweepCommand::class,
                 MediaPruneCommand::class,
                 MediaTypesCommand::class,
                 BenchmarkStorageCommand::class,

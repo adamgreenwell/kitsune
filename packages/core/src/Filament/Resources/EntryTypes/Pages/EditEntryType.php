@@ -12,11 +12,14 @@ namespace Kitsune\Core\Filament\Resources\EntryTypes\Pages;
 
 use Filament\Actions\DeleteAction;
 use Filament\Resources\Pages\EditRecord;
+use Filament\Schemas\Concerns\RestrictsFileUploadsToSchemaComponents;
 use Kitsune\Core\Filament\Resources\EntryTypes\EntryTypeResource;
 use Kitsune\Core\Models\EntryType;
 
 class EditEntryType extends EditRecord
 {
+    use RestrictsFileUploadsToSchemaComponents;
+
     protected static string $resource = EntryTypeResource::class;
 
     protected function getHeaderActions(): array

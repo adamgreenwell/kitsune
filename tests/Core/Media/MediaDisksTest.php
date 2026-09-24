@@ -108,3 +108,69 @@ it('writes the definition when the provider registers, before anything boots', f
 
     expect(config('filesystems.disks.'.MediaDisks::PRIVATE.'.serve'))->toBeFalse();
 });
+
+/*
+ * The upload intake — ADR-042 decision 4. Livewire stages every upload here before anything has accepted it.
+ */
+describe('the intake disk', function (): void {
+    it('is local and never served', function (): void {
+        $disk = config('filesystems.disks.'.MediaDisks::INTAKE);
+
+        /* Local is the security property: on an `s3` disk Livewire presigns a PUT that no middleware or rule sees. */
+        expect($disk['driver'] ?? null)->toBe('local')
+            ->and($disk['serve'] ?? null)->toBeFalse();
+    });
+
+    /** With `local` marked served as the control, for the reason the private disk's test gives. */
+    it('registers no route that serves it', function (): void {
+        config(['filesystems.disks.local.serve' => true]);
+
+        (new FilesystemServiceProvider(app()))->boot();
+        Route::getRoutes()->refreshNameLookups();
+
+        expect(Route::has('storage.local'))->toBeTrue()
+            ->and(Route::has('storage.'.MediaDisks::INTAKE))->toBeFalse();
+    });
+
+    /**
+     * ⚠️ APART IN BOTH DIRECTIONS, AND THE SECOND ONE IS NEW. Nested under a served disk it would be served; and
+     * holding another disk, the sweep — which deletes everything on this disk by age — would delete that disk's
+     * files. Rooted at `storage/app/kitsune`, it would hold the private disk.
+     */
+    it('keeps its root apart from every other local disk\'s, in both directions', function (): void {
+        $root = rtrim((string) config('filesystems.disks.'.MediaDisks::INTAKE.'.root'), '/').'/';
+
+        $others = array_filter(
+            (array) config('filesystems.disks'),
+            static fn (mixed $disk, string $name): bool => $name !== MediaDisks::INTAKE
+                && is_array($disk) && ($disk['driver'] ?? null) === 'local',
+            ARRAY_FILTER_USE_BOTH,
+        );
+
+        expect(array_keys($others))->toContain('local', 'public', MediaDisks::PRIVATE);
+
+        foreach ($others as $name => $disk) {
+            $otherRoot = rtrim((string) ($disk['root'] ?? ''), '/').'/';
+
+            expect(str_starts_with($root, $otherRoot))->toBeFalse("[{$name}] is rooted at {$otherRoot}, which holds {$root}")
+                ->and(str_starts_with($otherRoot, $root))->toBeFalse("the intake at {$root} holds [{$name}] at {$otherRoot}");
+        }
+    });
+
+    it('replaces a definition a host gave the same name, when the provider registers', function (): void {
+        $config = new Repository(['filesystems' => ['disks' => [
+            MediaDisks::INTAKE => ['driver' => 's3', 'bucket' => 'anywhere', 'serve' => true],
+        ]]]);
+
+        MediaDisks::define($config);
+
+        expect($config->get('filesystems.disks.'.MediaDisks::INTAKE.'.driver'))->toBe('local')
+            ->and($config->get('filesystems.disks.'.MediaDisks::INTAKE.'.serve'))->toBeFalse();
+
+        config(['filesystems.disks.'.MediaDisks::INTAKE => ['driver' => 's3', 'bucket' => 'anywhere']]);
+
+        (new KitsuneServiceProvider(app()))->register();
+
+        expect(config('filesystems.disks.'.MediaDisks::INTAKE.'.driver'))->toBe('local');
+    });
+});

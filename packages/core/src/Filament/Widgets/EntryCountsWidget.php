@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Filament\Widgets;
 
+use Filament\Schemas\Concerns\RestrictsFileUploadsToSchemaComponents;
 use Filament\Widgets\StatsOverviewWidget;
 use Filament\Widgets\StatsOverviewWidget\Stat;
 use Illuminate\Support\Collection;
@@ -29,6 +30,8 @@ use Kitsune\Core\Models\EntryType;
  */
 final class EntryCountsWidget extends StatsOverviewWidget
 {
+    use RestrictsFileUploadsToSchemaComponents;
+
     protected static ?int $sort = 1;
 
     /*

@@ -12,6 +12,8 @@ namespace Kitsune\Core\Auth;
 
 use Filament\Exceptions\NoDefaultPanelSetException;
 use Filament\Facades\Filament;
+use Filament\Models\Contracts\FilamentUser;
+use Filament\Models\Contracts\HasTenants;
 use Filament\Panel;
 use Filament\PanelRegistry;
 use Illuminate\Contracts\Auth\Authenticatable;
@@ -23,7 +25,10 @@ use Illuminate\Support\Once;
 use InvalidArgumentException;
 use Kitsune\Core\Filament\Panels\KitsunePanel;
 use Kitsune\Core\Models\Entry;
+use Kitsune\Core\Models\EntryType;
+use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Role;
+use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tenancy\Scopes\OrgMembershipScope;
 
@@ -205,6 +210,146 @@ final class Permissions
         [, , $action] = explode('.', $permission);
 
         return in_array(self::forEntryType(self::ANY_TYPE, $action), $held, true);
+    }
+
+    /**
+     * May this user upload a file as an entry of this type, in the current org?
+     *
+     * @internal
+     *
+     * `create` AND `publish` — ADR-042 decision 3. `MediaLibrary::store()` creates media entries published, and
+     * `Entry::refuseUnpermittedCreationAsPublished()` would otherwise refuse one after its bytes were written. Asked
+     * through `allows()`, so the owner bypass and the `entry.*.{action}` wildcard answer here exactly as they do
+     * everywhere else.
+     */
+    public static function mayUpload(?Authenticatable $user, string $typeHandle): bool
+    {
+        return self::allows($user, self::forEntryType($typeHandle, 'create'))
+            && self::allows($user, self::forEntryType($typeHandle, 'publish'));
+    }
+
+    /**
+     * May this user stage a file at Livewire's upload endpoint — ADR-042 decision 4?
+     *
+     * @internal
+     *
+     * ⚠️ THE SAME TRUST AS UPLOADING, WHICH IS THE WHOLE POINT OF ASKING. The endpoint is reachable through Livewire
+     * components Kitsune does not control, and it carries no org: its route has no site segment and its signature
+     * names nothing but an expiry. So this asks whether the user could reach a real Upload action anywhere — the
+     * ADR's words are that *"a user it admits could fill the disk with real uploads just as well"* — and a user who
+     * holds the permissions but could never use them is refused like anybody else. With Kitsune's panel configured,
+     * that means everything a request to `/c/{type}` passes and the Upload action asks: the panel's own admission, a
+     * site the panel would let them enter, a media type available at that site (ADR-022) that they may `view` — the
+     * list page itself requires it — and `create` and `publish` on it in that site's org, membership included.
+     * Answered under each candidate site's own context, and the caller's context is put back exactly, whatever the
+     * answer.
+     *
+     * ⚠️ WITHOUT A PANEL, THE PERMISSIONS ALONE, because there is no Upload action to reach and a host storing media
+     * through `MediaLibrary` answers for its own screens: the user must hold both on some media type in an org they
+     * belong to, which is the ADR's letter. Candidate orgs come from the user's own role assignments, and each is
+     * answered under its own context, so a `role_user` row naming another org's role confers nothing without
+     * membership there.
+     *
+     * No memo: it is asked once per upload request, and every answer it builds on — `held()`, `isOwner()`, the
+     * visible types — is memoised on the scalars its body uses (AGENTS.md §13).
+     */
+    public static function mayStageUploads(?Authenticatable $user): bool
+    {
+        if (! $user instanceof Model) {
+            return false;
+        }
+
+        $context = app(Context::class);
+        $restoreOrg = $context->org();
+        $restoreSite = $context->site();
+
+        try {
+            $panel = self::kitsunePanel();
+
+            return $panel === null
+                ? self::mayUploadInSomeOrg($user, $context)
+                : self::mayUploadAtSomeSite($user, $panel, $context);
+        } finally {
+            /*
+             * Cleared first, because neither setter undoes the other: `setOrg()` keeps a candidate site of the same org,
+             * and a caller that had an org and no site would be handed one.
+             */
+            $context->forget();
+
+            if ($restoreSite !== null) {
+                $context->setSite($restoreSite);
+            } elseif ($restoreOrg !== null) {
+                $context->setOrg($restoreOrg);
+            }
+        }
+    }
+
+    /**
+     * Through Kitsune's panel: could this user open `/c/{type}` for a media type at some site, and upload there?
+     */
+    private static function mayUploadAtSomeSite(Model&Authenticatable $user, Panel $panel, Context $context): bool
+    {
+        /*
+         * ⚠️ THE PANEL'S OWN ADMISSION, AS FILAMENT'S `Authenticate` MIDDLEWARE DECIDES IT — `canAccessPanel()` for a
+         * `FilamentUser`, and for any other model the local environment only. A user the panel turns away at its
+         * door reaches no Upload action, whatever their roles say.
+         */
+        $admitted = $user instanceof FilamentUser
+            ? $user->canAccessPanel($panel)
+            : config('app.env') === 'local';
+
+        // Kitsune's panel always works within a site (`KitsunePanel::apply()`), so a user it can give none reaches nothing.
+        if (! $admitted || ! $panel->hasTenancy() || ! $user instanceof HasTenants) {
+            return false;
+        }
+
+        foreach ($user->getTenants($panel) as $site) {
+            if (! $site instanceof Site || ! $user->canAccessTenant($site)) {
+                continue;
+            }
+
+            $context->setSite($site);
+
+            // The panel's own list for this site — available here and viewable by them — so the two cannot drift.
+            foreach (KitsunePanel::viewableTypes($site, (int) $site->org_id, $user) as $type) {
+                if ($type->is_media === true && self::mayUpload($user, (string) $type->handle)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * With no panel: does this user hold `create` and `publish` on a media type in some org they belong to?
+     */
+    private static function mayUploadInSomeOrg(Model&Authenticatable $user, Context $context): bool
+    {
+        $userId = self::userKey($user->getAuthIdentifier(), $user::class);
+        $roleIds = $userId === null ? [] : self::roleIdsFor($userId, $user::class);
+
+        if ($roleIds === []) {
+            return false;
+        }
+
+        $orgIds = Role::withoutScopeBecause(
+            'the orgs a user holds roles in, before each is answered under its own context',
+            static fn (Builder $query): array => $query->whereKey($roleIds)->distinct()->pluck('org_id')->all(),
+        );
+
+        // A trashed org is no org to upload into: `SoftDeletes` leaves it out.
+        foreach (Org::query()->whereKey($orgIds)->get() as $org) {
+            $context->setOrg($org);
+
+            foreach (EntryType::visibleFor(null, (int) $org->getKey()) as $type) {
+                if ($type->is_media === true && self::mayUpload($user, (string) $type->handle)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     /**

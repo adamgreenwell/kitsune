@@ -12,6 +12,7 @@ namespace Kitsune\Core\Filament\Resources\Entries\Pages;
 
 use Filament\Actions\DeleteAction;
 use Filament\Resources\Pages\EditRecord;
+use Filament\Schemas\Concerns\RestrictsFileUploadsToSchemaComponents;
 use Kitsune\Core\Filament\Concerns\InteractsWithEntryType;
 use Kitsune\Core\Filament\Concerns\SyncsFieldRelations;
 use Kitsune\Core\Filament\Resources\Entries\EntryResource;
@@ -19,6 +20,7 @@ use Kitsune\Core\Filament\Resources\Entries\EntryResource;
 class EditEntry extends EditRecord
 {
     use InteractsWithEntryType;
+    use RestrictsFileUploadsToSchemaComponents;
 
     // Relation fields are rows in entry_relations, not attributes, so they are
     // carried separately and written after the entry exists (ADR-015).

@@ -13,6 +13,7 @@ namespace Kitsune\Core\Filament\Resources\Entries\Pages;
 use Filament\Actions\AttachAction;
 use Filament\Actions\DetachAction;
 use Filament\Resources\Pages\ManageRelatedRecords;
+use Filament\Schemas\Concerns\RestrictsFileUploadsToSchemaComponents;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
@@ -31,6 +32,7 @@ use Kitsune\Core\Filament\Resources\Entries\EntryResource;
 class ManageEntryRelations extends ManageRelatedRecords
 {
     use InteractsWithEntryType;
+    use RestrictsFileUploadsToSchemaComponents;
 
     protected static string $resource = EntryResource::class;
 

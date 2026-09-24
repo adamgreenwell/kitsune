@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Filament\Widgets;
 
+use Filament\Schemas\Concerns\RestrictsFileUploadsToSchemaComponents;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Table;
 use Filament\Widgets\TableWidget;
@@ -29,6 +30,8 @@ use Kitsune\Core\Models\EntryType;
  */
 final class RecentEntriesWidget extends TableWidget
 {
+    use RestrictsFileUploadsToSchemaComponents;
+
     /** A glance, not a second entry list: the full list is one click away from every row's type. */
     public const ROWS = 10;
 

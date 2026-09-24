@@ -11,11 +11,14 @@ declare(strict_types=1);
 namespace Kitsune\Core\Filament\Resources\EntryTypes\Pages;
 
 use Filament\Resources\Pages\CreateRecord;
+use Filament\Schemas\Concerns\RestrictsFileUploadsToSchemaComponents;
 use Kitsune\Core\Filament\Resources\EntryTypes\EntryTypeResource;
 use Kitsune\Core\Tenancy\Context;
 
 class CreateEntryType extends CreateRecord
 {
+    use RestrictsFileUploadsToSchemaComponents;
+
     protected static string $resource = EntryTypeResource::class;
 
     /**

@@ -21,6 +21,7 @@ use Filament\Resources\RelationManagers\RelationManager;
 use Filament\Schemas\Components\Section;
 use Filament\Schemas\Components\Utilities\Get;
 use Filament\Schemas\Components\Utilities\Set;
+use Filament\Schemas\Concerns\RestrictsFileUploadsToSchemaComponents;
 use Filament\Schemas\Schema;
 use Filament\Support\Exceptions\Halt;
 use Filament\Tables\Columns\IconColumn;
@@ -53,6 +54,8 @@ use Throwable;
  */
 class FieldsRelationManager extends RelationManager
 {
+    use RestrictsFileUploadsToSchemaComponents;
+
     protected static string $relationship = 'fields';
 
     protected static ?string $title = 'Fields';

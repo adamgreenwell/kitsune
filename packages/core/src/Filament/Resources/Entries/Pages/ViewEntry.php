@@ -12,12 +12,14 @@ namespace Kitsune\Core\Filament\Resources\Entries\Pages;
 
 use Filament\Actions\EditAction;
 use Filament\Resources\Pages\ViewRecord;
+use Filament\Schemas\Concerns\RestrictsFileUploadsToSchemaComponents;
 use Kitsune\Core\Filament\Concerns\InteractsWithEntryType;
 use Kitsune\Core\Filament\Resources\Entries\EntryResource;
 
 class ViewEntry extends ViewRecord
 {
     use InteractsWithEntryType;
+    use RestrictsFileUploadsToSchemaComponents;
 
     protected static string $resource = EntryResource::class;
 

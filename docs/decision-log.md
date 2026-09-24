@@ -3580,7 +3580,8 @@ what happens to be installed is worse than one that is honestly empty.
 > it, as this entry assumed one would be, would have staged before `MediaIntake` ran. `RichEditor` is also a second
 > path to disk, past `MediaIntake`, the org prefix and pruning, though Filament limits it to sniffed raster images up
 > to 12 MiB. The paragraph above is left as written. ADR-042's decision 4 moves the allowlist and the ceilings ahead
-> of Livewire's write and closes the second path. Not yet built.
+> of Livewire's write and closes the second path. ~~Not yet built.~~ Built — ADR-042's *Enforced by* lists it; the
+> Upload action that hands a staged file to `MediaLibrary` is decision 3's.
 
 **SVG is accepted and sanitised on upload.** It takes two of `field-types.md` §6's rules for `rich_text`, the
 one field type that document names as an XSS vector, and departs from two more — deliberately, and each
@@ -3766,7 +3767,7 @@ every row, asserted so that a later change to populate it is a visible decision 
 
 ## ADR-042 — The media admin: shared by default, uploaded through one path, and withdrawn from the web when deleted
 
-**Status:** Decided · 2026-09-23 · **Amended 2026-09-23** — *Enforced by* reports the slice declaring media types, which landed, and the slice making media shared by default; decision 2 records how the widening was built, the three changes its measurement led Adam to make and the three costs Adam accepted, and AGENTS.md §4 is amended for an org-leading index · **Delivers ADR-021's "the media library defaults to shared"**, which the store path shipped in #145 contradicts, and **amends ADR-021** — for media types, the admin's tenant scope admits the org's shared rows, and the org-shared slug rule becomes a guard · **Amends ADR-016 and `field-types.md` §5** — a media type is any type declared as one, not a system type · **Amends ADR-041** — moves private files to a disk that is never served, decides that a soft-deleted public file's bytes leave the public disk and that a force-delete withdraws a public file before its rows go and then disposes of the path on both media disks, records that Livewire's staging was never under the upload rules as shipped, and brings its *Enforced by* up to date · **Amends `architecture.md`'s published `entry_types` shape** (gains `is_media`, with its migration) · **Phase 5 (ADR-011, v1.0)** — the admin half ADR-041 left, and the half the DAM starter waits on
+**Status:** Decided · 2026-09-23 · **Amended 2026-09-23** — *Enforced by* reports the slice declaring media types, which landed, the slice making media shared by default, and the slice owning the upload staging, whose decision 4 records what was built and corrects its reason for not relying on Livewire's own sweep; decision 2 records how the widening was built, the three changes its measurement led Adam to make and the three costs Adam accepted, and AGENTS.md §4 is amended for an org-leading index · **Delivers ADR-021's "the media library defaults to shared"**, which the store path shipped in #145 contradicts, and **amends ADR-021** — for media types, the admin's tenant scope admits the org's shared rows, and the org-shared slug rule becomes a guard · **Amends ADR-016 and `field-types.md` §5** — a media type is any type declared as one, not a system type · **Amends ADR-041** — moves private files to a disk that is never served, decides that a soft-deleted public file's bytes leave the public disk and that a force-delete withdraws a public file before its rows go and then disposes of the path on both media disks, records that Livewire's staging was never under the upload rules as shipped, and brings its *Enforced by* up to date · **Amends `architecture.md`'s published `entry_types` shape** (gains `is_media`, with its migration) · **Phase 5 (ADR-011, v1.0)** — the admin half ADR-041 left, and the half the DAM starter waits on
 
 ADR-041 decided how media bytes are stored, delivered, sanitised and disposed of, and #145–#148 built all of it:
 `MediaLibrary::store()`, `MediaIntake`, the panel route that authorises private files, disposal, prune, and SVG
@@ -4022,6 +4023,41 @@ sits on the never-served intake disk until `store()` sanitises it and the handle
 **abandoned** upload — staged, never submitted — leaves its bytes, SVG included, and its sidecar there until the
 sweep runs. PHP's own upload temporary file precedes every rule, and is PHP's rather than this entry's to govern.
 
+> ⚠️ **Amended 2026-09-23 — decision 4 as built, and one reason above corrected.**
+>
+> - **Livewire's own sweep does not miss orphaned sidecars.** The installed `cleanupOldUploads()` deletes every file
+>   in its directory older than 24 hours, sidecars included, each by its own age — so *"it misses a sidecar whose
+>   file was removed before submit"*, above, is wrong and is left as written. It still cannot be relied on alone, for
+>   three reasons the code shows: it runs only inside `_finishUpload`, which a client posting straight to the
+>   endpoint never calls; only while `cleanup` is on; and never on S3.
+> - **"Only a user who may upload media" means what the bullet's last sentence says it must.** The gate asks whether
+>   the user could reach a real Upload action: Kitsune's panel admits them — its door, and the session check it runs
+>   if it runs one — lets them enter a site, and offers them a media type there, available at that site (ADR-022) and
+>   one they may `view`, because the list page that holds the action requires it; and they hold `create` and
+>   `publish` on it in that site's org, membership included. The first design asked only for the permissions in some
+>   org, and the critique found users it admitted who could upload nowhere — no site in the org, or the media type
+>   off everywhere they reach — which would have made *"bounded by the same trust as uploading"* false. Review then
+>   found three more: a role holding `create` and `publish` without `view`, which `/c/{type}` answers with 403; a
+>   session the panel's `AuthenticateSession` would end, kept off the panel's pages; and a caller's context handed a
+>   candidate site on the way out. With no Kitsune panel configured there is no Upload action, and the gate asks the
+>   letter: `create` and `publish` on a media type in an org the user belongs to.
+> - **The staging keys are set after every provider has booted, one at a time.** Earlier, Livewire's own
+>   `register()` would replace a partial array, and a host provider booting after core could overwrite them without a
+>   sound. The throttle is restated, because a configured middleware list replaces Livewire's `throttle:60,1` rather
+>   than adding to it.
+> - **Turning `RichEditor`'s attachments off does not remove its attach action.** Filament keeps `attachFiles`
+>   registered, with a `FileUpload` in its modal that the schema restriction admits once the action is mounted — and
+>   a hand-built request mounts it by writing `mountedActions`, which nothing locks, without anyone asking whether it
+>   is hidden. Core replaces it with a hidden action holding no schema, and it must stay without one.
+> - **The restriction covers every Livewire class the packages ship**: Kitsune's relation managers and widgets as
+>   well as its pages.
+> - **What Livewire staged before core pinned its disk stays where it was**, and nothing sweeps it any more: on an
+>   installation that ran the earlier code, `local`'s `livewire-tmp`. It is removed once, by hand, where it exists —
+>   stage and development machines; no production installation ran that code. A sweep of it was built and taken out
+>   again: its location can only be guessed after the pin, and review found a host whose Livewire `directory` was empty
+>   would have had its whole default disk swept. The opportunistic sweep runs in the gate, after the endpoint has
+>   accepted and staged a file.
+
 **4a. Private media lives on a disk that is never served.** Core defines its own private media disk — local, `serve`
 off, like the intake disk — and points `kitsune.media.disks.private` at it, so a private file has no web route at
 all, signed or not, and the only way to its bytes is the panel route that authorises first. That removes finding 4
@@ -4251,6 +4287,18 @@ own components included, passes `MediaIntake`'s rule and lands on the intake dis
 64 MiB, still under Livewire's throttle. A host component that lets other users upload stops working for them. A host that
 needs a different upload policy for its own components has to take it up with core rather than configure around it.
 
+**Until a media type is declared, nobody can upload anything through Livewire.** A fresh install declares none —
+only the development seeder does — and the endpoint admits only a user who could upload media, so the host's own
+components and the org's owner are refused alike until one exists. An installation declares a media type before it
+expects any upload to work, the alpha deploy included.
+
+**A host's previews of staged files stop.** With `preview_mimes` empty, host code that calls `temporaryUrl()` on a
+staged file throws `FileNotPreviewableException`.
+
+**A staging write that fails answers 200.** Livewire does not check its own writes, so on a full disk the endpoint
+returns a signed path to a file that is not there, and the sweep runs as though the upload had succeeded. Decision 3's
+handler must refuse a staged file that is missing.
+
 **The admin's tenant scope is widened for media.** Decision 2 changes a framework scope ADR-021 relies on, for media
 types, by exactly the rule `SiteScope` already applies. The agreement between the two encodings becomes a test
 rather than an assumption, and the cost to the media list's query plan is measured before merge.
@@ -4339,6 +4387,37 @@ installation is scheduled.
 > *through the panel* — the Upload action waits for decision 4's staging, so the browser half uses seeded shared files;
 > the soft-delete lock time, which measures decision 5's code and lands with it; and the *this site only* control in
 > the upload modal.
+
+> ⚠️ **Amended 2026-09-23 — the slice owning the upload staging landed**, and each guard it adds was removed in turn
+> and its test watched fail, beside a run of the same tests passing unmutated: 49 mutations, nine of them in the
+> browser. `MediaDisksTest` — the intake disk is local
+> and never served, a host's definition under its name is replaced when the provider registers, and its root is
+> apart from every other local disk's in both directions. `MediaStagingTest` — Livewire stages on it, previews
+> nothing, keeps its throttle with the gate after it, and its rules are `MediaIntake`'s, by name, with nothing
+> `config:cache` cannot export; the pin overrides a host's own keys and leaves the rest; the rule refuses what
+> `MediaIntake` refuses in `MediaIntake`'s own words whatever the filename holds, and a part that is incomplete or not
+> a file; Livewire's own validate-then-write step stages nothing when it refuses, beside a control that stages; the
+> sweep removes staged files and sidecars older than a day across the whole disk, a stale file's sidecar whatever its
+> age, and leaves younger ones; `kitsune:media-intake-sweep` lists without `--force`, deletes with it, and is
+> scheduled hourly. `UploadStagingGateTest`, with Kitsune's context empty as on the endpoint, each refusal beside an
+> admitted control — refuses a guest; a user holding less than `view`, `create` and `publish` on a media type, each
+> missing on its own; one the panel gives no site, or refuses at a site's door; one whose media types are off
+> everywhere they reach; one the panel turns away; a session the panel's `AuthenticateSession` would end, and only
+> when the panel runs it; a grant on a handle the org shadows with a type that holds no media; a site whose org is
+> gone; another org's grant without membership — asks the panel's own guard, puts the context back exactly, an org
+> without a site included, and refuses anything but a flat list of files; it sweeps after an accepted upload and never
+> after a refused one, and reports a failed sweep without failing the upload; with no panel, it asks `create` and
+> `publish` alone. `UploadSurfaceTest` — rich
+> text offers no attachments and its attach action is a hidden one holding no schema; every Livewire class the
+> packages ship carries the schema restriction; nothing in the packages mints a temporary URL or builds an image
+> column or entry. In the browser, `media-staging.spec.js`: a reader is refused at the endpoint with nothing staged,
+> beside the owner staging the same file; a guest holding a valid URL, a session and a CSRF token is refused;
+> `MediaIntake`'s refusals arrive in its words with the intake unchanged; a stale staged file is swept by the next
+> accepted upload and not by a refused one; an upload to anything but a schema field is refused by every Kitsune
+> component on every Kitsune page, beside Filament's topbar minting; rich text shows no attach control, and its
+> attach action, mounted by writing `mountedActions`, has no field to upload to. **Not yet:** everything the Upload
+> action itself carries (decision 3), among it that no staged file or sidecar survives a submitted upload and that the
+> handler refuses a staged file that is missing; and the upload half of the stage measurement.
 
 When it lands:
 
@@ -4440,7 +4519,9 @@ When it lands:
   `image` becomes an image entry. Whether a type constrains its accepted MIME types is undecided
 - **Stage is expected to refuse a 4 MB upload, and runs no scheduler.** NGX-2 admits only reviewed directives and
   `client_max_body_size` is not one, and stage's PHP upload limits are recorded nowhere; a real 4 MB upload settles
-  it. Nothing runs `schedule:run` either, which ADR-042's intake sweep needs. Both are runbook changes with their own
+  it. ~~Nothing runs `schedule:run` either, which ADR-042's intake sweep needs.~~ Nothing runs `schedule:run` either,
+  and ADR-042's intake sweep does not need it — corrected 2026-09-23: every accepted upload sweeps, and the scheduled
+  command is for an installation that runs one, as decision 4 says. Both are runbook changes with their own
   review, and the upload half of ADR-042's measurement waits on the first
 - Storage benchmark at 10k / 100k / 1M entries
 - ~~Blueprint rollback semantics when content already exists~~ — **settled by ADR-039.** Removal is refused while any entry or revision holds data, and there is no rollback: `is_locked` is permanent and both cascade guards count `withTrashed()`, so the reachable states are applied, and gone with the data destroyed.

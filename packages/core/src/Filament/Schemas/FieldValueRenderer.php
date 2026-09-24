@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Filament\Schemas;
 
+use Filament\Actions\Action;
 use Filament\Facades\Filament;
 use Filament\Forms\Components\DatePicker;
 use Filament\Forms\Components\DateTimePicker;
@@ -310,7 +311,22 @@ final class FieldValueRenderer
              * `dir` every stored block carries (issue #67).
              */
             Control::RichText => RichEditor::make($path ?? 'value')
-                ->plugins([new BlockDirectionPlugin]),
+                ->plugins([new BlockDirectionPlugin])
+                /*
+                 * ⚠️ NO FILE ATTACHMENTS — ADR-042 decision 4. Filament's are on by default and store to the
+                 * `public` disk with no entry, no `MediaIntake` and no pruning: a second path to disk that "one path
+                 * to secure" does not know about. An image belongs in a relation field to a media entry; an inline
+                 * `<img>` stays allowed by the sanitiser and gains no upload path.
+                 */
+                ->fileAttachments(false)
+                /*
+                 * ⚠️ AND ITS ACTION REPLACED, because turning attachments off does not unregister it. Filament's
+                 * `attachFiles` stays a default action whose modal holds a `FileUpload` — an upload field the schema
+                 * restriction admits once the action is mounted, and whose handler mints a `temporaryUrl()`. Mounted
+                 * by a hand-built request, an action's schema is cached without asking whether it is hidden, so this
+                 * one is hidden AND has no schema: there is nothing in it to upload to.
+                 */
+                ->registerActions([Action::make('attachFiles')->hidden()]),
             Control::Number => TextInput::make($path ?? 'value')->numeric(),
             Control::Toggle => Toggle::make($path ?? 'value'),
             // ⚠️ No timezone for a date — see `SiteTime`. An instant is entered in the site's.

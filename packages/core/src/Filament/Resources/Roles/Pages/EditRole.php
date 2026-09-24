@@ -12,11 +12,13 @@ namespace Kitsune\Core\Filament\Resources\Roles\Pages;
 
 use Filament\Actions\DeleteAction;
 use Filament\Resources\Pages\EditRecord;
+use Filament\Schemas\Concerns\RestrictsFileUploadsToSchemaComponents;
 use Kitsune\Core\Filament\Resources\Roles\Concerns\SyncsRolePermissions;
 use Kitsune\Core\Filament\Resources\Roles\RoleResource;
 
 class EditRole extends EditRecord
 {
+    use RestrictsFileUploadsToSchemaComponents;
     use SyncsRolePermissions;
 
     protected static string $resource = RoleResource::class;
