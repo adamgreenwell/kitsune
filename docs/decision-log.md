@@ -4032,7 +4032,7 @@ sweep runs. PHP's own upload temporary file precedes every rule, and is PHP's ra
 >   endpoint never calls; only while `cleanup` is on; and never on S3.
 > - **"Only a user who may upload media" means what the bullet's last sentence says it must.** The gate asks whether
 >   the user could reach a real Upload action: Kitsune's panel admits them — its door, and the session check it runs
->   if it runs one — lets them enter a site, and offers them a media type there, available at that site (ADR-022) and
+>   if it runs one, in its middleware or its auth middleware — lets them enter a site, and offers them a media type there, available at that site (ADR-022) and
 >   one they may `view`, because the list page that holds the action requires it; and they hold `create` and
 >   `publish` on it in that site's org, membership included. The first design asked only for the permissions in some
 >   org, and the critique found users it admitted who could upload nowhere — no site in the org, or the media type
@@ -4056,7 +4056,9 @@ sweep runs. PHP's own upload temporary file precedes every rule, and is PHP's ra
 >   two overlaps: core's root inside a disk that is served or a directory a public link exposes, and any disk's or
 >   link's root inside core's, which the intake sweep would empty by age. Core's root inside a disk that is neither
 >   served nor linked is allowed — Laravel 10 and earlier rooted `local` at `storage/app` — and roots are compared
->   through symlinks, as deployments share storage. `config:cache` boots first, so a deploy stops on it. Codex then
+>   as the filesystem resolves them, one component at a time: through symlinks, as deployments share storage, and with
+>   `..` stepping back from what has been resolved, as `mkdir` does — Codex found `<base>/missing/../public/intake`
+>   landing in a served `<base>/public` unnoticed when the missing part was kept as text. `config:cache` boots first, so a deploy stops on it. Codex then
 >   found the names themselves could be taken back: a host's providers run after core's, so one could redefine either
 >   disk after `define()` wrote it — as `s3`, which sends Livewire past the gate and the rule, or served. Boot also
 >   refuses that: each name must still be local, unserved and rooted where core put it.
@@ -4404,11 +4406,12 @@ installation is scheduled.
 > the upload modal.
 
 > ⚠️ **Amended 2026-09-23 — the slice owning the upload staging landed**, and each guard it adds was removed in turn
-> and its test watched fail, beside a run of the same tests passing unmutated: 60 mutations, nine of them in the
+> and its test watched fail, beside a run of the same tests passing unmutated: 64 mutations, nine of them in the
 > browser. `MediaDisksTest` — the intake disk is local and never served, a host's definition under its name is
 > replaced when the provider registers, and its root is apart from every other local disk's in both directions; boot
 > refuses a served disk or a public link holding core's disks and any disk inside them, allows a disk nothing serves
-> to hold them, and sees through a symlinked storage directory; and refuses either name redefined after core — on
+> to hold them, sees through a symlinked storage directory, and resolves `..` as the filesystem does — back from a
+> missing directory, and from a symlink's target rather than the link; and refuses either name redefined after core — on
 > `s3`, on another driver, served, or moved — beside a control that boots. `MediaStagingTest` — Livewire stages on it, previews
 > nothing, keeps its throttle with the gate after it, and its rules are `MediaIntake`'s, by name, with nothing
 > `config:cache` cannot export; the pin overrides a host's own keys and leaves the rest; the rule refuses what
@@ -4420,7 +4423,8 @@ installation is scheduled.
 > admitted control — refuses a guest; a user holding less than `view`, `create` and `publish` on a media type, each
 > missing on its own; one the panel gives no site, or refuses at a site's door; one whose media types are off
 > everywhere they reach; one the panel turns away; a session the panel's `AuthenticateSession` would end —
-> Laravel's or Filament's, which the skeleton runs — and only when the panel runs it; a grant on a handle the org shadows with a type that holds no media; a site whose org is
+> Laravel's or Filament's, which the skeleton runs, in the panel's middleware or its auth middleware — and only when
+> the panel runs it; a grant on a handle the org shadows with a type that holds no media; a site whose org is
 > gone; another org's grant without membership — asks the panel's own guard, puts the context back exactly, an org
 > without a site included, and refuses anything but a flat list of files; it sweeps after an accepted upload and never
 > after a refused one, and reports a failed sweep without failing the upload; with no panel, it asks `create` and

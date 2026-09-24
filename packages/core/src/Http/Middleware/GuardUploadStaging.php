@@ -118,8 +118,9 @@ final class GuardUploadStaging
      */
     private static function sessionStillHolds(Request $request, Panel $panel, Authenticatable $user): bool
     {
+        // Both lists: Filament runs its auth middleware on every signed-in page too, and a host may put the check there.
         $checksSessions = array_filter(
-            $panel->getMiddleware(),
+            [...$panel->getMiddleware(), ...$panel->getAuthMiddleware()],
             static fn (string $middleware): bool => is_a(explode(':', $middleware)[0], AuthenticateSession::class, true),
         ) !== [];
 

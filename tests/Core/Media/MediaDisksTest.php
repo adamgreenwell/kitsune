@@ -239,6 +239,59 @@ describe('a host disk that overlaps core\'s', function (): void {
         }
     });
 
+    /**
+     * ⚠️ `..` WHERE THE FILESYSTEM PUTS IT — Codex, #152. `mkdir` creates a missing directory and then steps back out
+     * of it, so a root of `<base>/missing/../public/intake` lands inside `<base>/public`. With its control: a root that
+     * uses `..` to leave the served disk is apart from it, so `..` is resolved rather than refused on sight.
+     */
+    it('resolves `..` in a root as the filesystem will', function (): void {
+        $base = realpath(sys_get_temp_dir()).'/kitsune-dots-'.bin2hex(random_bytes(4));
+        mkdir($base.'/public', 0777, true);
+
+        $disks = fn (string $intake): Repository => new Repository(['filesystems' => ['disks' => [
+            'public' => ['driver' => 'local', 'root' => $base.'/public', 'serve' => true],
+            MediaDisks::INTAKE => ['driver' => 'local', 'root' => $intake],
+        ]]]);
+
+        try {
+            expect(fn () => MediaDisks::refuseOverlaps($disks($base.'/missing/../public/intake')))
+                ->toThrow(RuntimeException::class, 'kitsune-intake')
+                ->and(fn () => MediaDisks::refuseOverlaps($disks($base.'/public/../kitsune/intake')))
+                ->not->toThrow(RuntimeException::class);
+        } finally {
+            rmdir($base.'/public');
+            rmdir($base);
+        }
+    });
+
+    /**
+     * And `..` after a symlink is its target's parent, not the link's: a root reached through `<b>/link/..` lands in
+     * the directory holding the link's target. Collapsed as text, it would land beside the link and miss the overlap.
+     */
+    it('steps back from a symlink\'s target, not from the link', function (): void {
+        $a = realpath(sys_get_temp_dir()).'/kitsune-target-'.bin2hex(random_bytes(4));
+        $b = realpath(sys_get_temp_dir()).'/kitsune-linker-'.bin2hex(random_bytes(4));
+        mkdir($a.'/real', 0777, true);
+        mkdir($a.'/exposed', 0777, true);
+        mkdir($b, 0777, true);
+        symlink($a.'/real', $b.'/link');
+
+        try {
+            $config = new Repository(['filesystems' => ['disks' => [
+                'public' => ['driver' => 'local', 'root' => $a.'/exposed', 'serve' => true],
+                MediaDisks::INTAKE => ['driver' => 'local', 'root' => $b.'/link/../exposed/intake'],
+            ]]]);
+
+            expect(fn () => MediaDisks::refuseOverlaps($config))->toThrow(RuntimeException::class, 'kitsune-intake');
+        } finally {
+            unlink($b.'/link');
+            rmdir($b);
+            rmdir($a.'/real');
+            rmdir($a.'/exposed');
+            rmdir($a);
+        }
+    });
+
     /** Wired where the configuration is final: after every provider has booted, which `config:cache` runs too. */
     it('is refused when the provider boots', function (): void {
         config(['filesystems.disks.exports' => ['driver' => 'local', 'root' => storage_path('app/kitsune/intake/exports')]]);

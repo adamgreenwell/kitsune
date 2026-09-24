@@ -201,29 +201,44 @@ final class MediaDisks
     /**
      * A root as the filesystem resolves it, ending in a slash so a prefix is a directory rather than a name.
      *
-     * ⚠️ THROUGH THE NEAREST PART THAT EXISTS, because symlinks are how deployments share storage: a release's
-     * `storage` is commonly a link to a shared directory, and one disk named through the link and another through its
-     * target are the same place. A root that does not exist yet — the intake disk before its first upload — is
-     * resolved through its nearest existing parent, so the two still compare.
+     * ⚠️ ONE COMPONENT AT A TIME, AS THE FILESYSTEM WALKS IT. Symlinks are how deployments share storage — a release's
+     * `storage` is commonly a link to a shared directory — so each part that exists is resolved through `realpath()`.
+     * A part that does not exist yet is kept as written: the intake disk before its first upload, whose directory
+     * `mkdir` will create.
+     *
+     * ⚠️ AND `..` STEPS BACK FROM WHAT HAS BEEN RESOLVED SO FAR — Codex, #152. The first version resolved the nearest
+     * existing parent and kept the rest literally, so `<base>/missing/../public/intake` stayed as written while `mkdir`
+     * creates `missing` and writes into `<base>/public/intake`, and a served disk at `<base>/public` held the intake
+     * unnoticed. Collapsing `..` as text instead would be wrong through a symlink, whose `..` is its target's parent;
+     * stepping back from the resolved path is right in both cases.
      */
     private static function normalised(string $root): string
     {
-        $path = rtrim(str_replace('\\', '/', $root), '/');
-        $missing = '';
+        $path = str_replace('\\', '/', $root);
 
-        while ($path !== '' && realpath($path) === false) {
-            $parent = dirname($path);
-
-            if ($parent === $path) {
-                break;
-            }
-
-            $missing = '/'.basename($path).$missing;
-            $path = $parent;
+        if (! str_starts_with($path, '/')) {
+            $path = str_replace('\\', '/', (string) getcwd()).'/'.$path;
         }
 
-        $resolved = realpath($path);
+        $resolved = '';
 
-        return rtrim(str_replace('\\', '/', $resolved !== false ? $resolved : $path), '/').$missing.'/';
+        foreach (explode('/', $path) as $part) {
+            if ($part === '' || $part === '.') {
+                continue;
+            }
+
+            if ($part === '..') {
+                $resolved = dirname($resolved === '' ? '/' : $resolved);
+                $resolved = $resolved === '/' ? '' : $resolved;
+
+                continue;
+            }
+
+            $next = $resolved.'/'.$part;
+            $real = realpath($next);
+            $resolved = $real !== false ? rtrim(str_replace('\\', '/', $real), '/') : $next;
+        }
+
+        return $resolved.'/';
     }
 }

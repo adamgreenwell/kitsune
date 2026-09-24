@@ -306,7 +306,7 @@ describe('through Kitsune\'s panel', function (): void {
      * session out at its next page once the password changed elsewhere; one kept off the panel's pages went on
      * staging. Asked only of a panel that runs that middleware, as the panel itself only asks then.
      */
-    it('refuses a session the panel would end, and only when the panel would end it', function (string $sessionCheck): void {
+    it('refuses a session the panel would end, and only when the panel would end it', function (string $sessionCheck, string $list): void {
         stagingRole($this->org, $this->user, uploadGrant('image'));
         $this->actingAs($this->user);
 
@@ -318,7 +318,7 @@ describe('through Kitsune\'s panel', function (): void {
         $this->user->passwordHash = 'hash-after';
         expectAdmittedAtGate(throughGate($request));
 
-        app(KitsunePanel::PANEL_BINDING)->middleware([$sessionCheck]);
+        app(KitsunePanel::PANEL_BINDING)->{$list}([$sessionCheck]);
 
         expectRefusedAtGate(throughGate($request));
 
@@ -326,12 +326,14 @@ describe('through Kitsune\'s panel', function (): void {
         $this->user->passwordHash = 'hash-before';
         expectAdmittedAtGate(throughGate($request));
     })->with([
-        'Laravel\'s' => [AuthenticateSession::class],
+        'Laravel\'s' => [AuthenticateSession::class, 'middleware'],
         /*
          * ⚠️ AND FILAMENT'S, WHICH IS THE ONE THE SHIPPED PANEL RUNS — Codex, #152, asked whether it was recognised. It
          * is, because it extends Laravel's; this is what would say so if an upgrade stopped it.
          */
-        'Filament\'s, as the skeleton\'s panel runs it' => [FilamentAuthenticateSession::class],
+        'Filament\'s, as the skeleton\'s panel runs it' => [FilamentAuthenticateSession::class, 'middleware'],
+        // Filament runs its auth middleware on every signed-in page as well, so a host may put the check there — Codex, #152.
+        'Filament\'s, among the panel\'s auth middleware' => [FilamentAuthenticateSession::class, 'authMiddleware'],
     ]);
 
     /**
