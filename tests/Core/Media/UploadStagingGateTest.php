@@ -318,6 +318,10 @@ describe('through Kitsune\'s panel', function (): void {
         $this->user->passwordHash = 'hash-after';
         expectAdmittedAtGate(throughGate($request));
 
+        // The names the router would resolve: Laravel's own alias for the check, and a group holding it.
+        app('router')->aliasMiddleware('auth.session', AuthenticateSession::class);
+        app('router')->middlewareGroup('kitsune-signed-in', [AuthenticateSession::class]);
+
         app(KitsunePanel::PANEL_BINDING)->{$list}([$sessionCheck]);
 
         expectRefusedAtGate(throughGate($request));
@@ -334,6 +338,9 @@ describe('through Kitsune\'s panel', function (): void {
         'Filament\'s, as the skeleton\'s panel runs it' => [FilamentAuthenticateSession::class, 'middleware'],
         // Filament runs its auth middleware on every signed-in page as well, so a host may put the check there — Codex, #152.
         'Filament\'s, among the panel\'s auth middleware' => [FilamentAuthenticateSession::class, 'authMiddleware'],
+        // Named as the router names it — Codex, #152: an alias, or a group, runs the same class.
+        'Laravel\'s alias, auth.session' => ['auth.session', 'middleware'],
+        'a group holding it' => ['kitsune-signed-in', 'authMiddleware'],
     ]);
 
     /**

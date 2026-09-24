@@ -4032,7 +4032,8 @@ sweep runs. PHP's own upload temporary file precedes every rule, and is PHP's ra
 >   endpoint never calls; only while `cleanup` is on; and never on S3.
 > - **"Only a user who may upload media" means what the bullet's last sentence says it must.** The gate asks whether
 >   the user could reach a real Upload action: Kitsune's panel admits them — its door, and the session check it runs
->   if it runs one, in its middleware or its auth middleware — lets them enter a site, and offers them a media type there, available at that site (ADR-022) and
+>   if it runs one, in its middleware or its auth middleware, by class, by the `auth.session` alias or inside a
+>   group — lets them enter a site, and offers them a media type there, available at that site (ADR-022) and
 >   one they may `view`, because the list page that holds the action requires it; and they hold `create` and
 >   `publish` on it in that site's org, membership included. The first design asked only for the permissions in some
 >   org, and the critique found users it admitted who could upload nowhere — no site in the org, or the media type
@@ -4061,7 +4062,12 @@ sweep runs. PHP's own upload temporary file precedes every rule, and is PHP's ra
 >   landing in a served `<base>/public` unnoticed when the missing part was kept as text. `config:cache` boots first, so a deploy stops on it. Codex then
 >   found the names themselves could be taken back: a host's providers run after core's, so one could redefine either
 >   disk after `define()` wrote it — as `s3`, which sends Livewire past the gate and the rule, or served. Boot also
->   refuses that: each name must still be local, unserved and rooted where core put it.
+>   refuses that: each name must still be local, unserved and rooted where core put it. And no boot hook is last: a
+>   host provider's own `booted()` callback runs after core's check (Codex again). So the whole of it — the staging
+>   keys pinned, both definitions and every overlap checked — runs once more at the start of every HTTP request, in a
+>   global middleware core puts first, after every provider and callback has run and before the router reads a
+>   route's middleware. What host code changes later still, in a route's middleware or a controller, is host code,
+>   which core does not govern; a queued job or a console command has the check at boot alone.
 > - **What Livewire staged before core pinned its disk stays where it was**, and nothing sweeps it any more: on an
 >   installation that ran the earlier code, `local`'s `livewire-tmp`. It is removed once, by hand, where it exists —
 >   stage and development machines; no production installation ran that code. A sweep of it was built and taken out
@@ -4309,6 +4315,11 @@ boots, naming both sides; the host moves its disk. So is a provider that redefin
 `kitsune-intake` after core wrote them — private media goes elsewhere through `kitsune.media.disks.private`, and the
 intake has no alternative. Laravel's shipped configuration and the skeleton's do neither.
 
+**Every request pays for the check, and a late misconfiguration fails every one.** The global middleware sets four
+configuration keys and walks the roots of the configured local disks on each request — microseconds, against the
+realpath cache — and a redefinition or overlap made after boot turns every request into an error naming it, as one
+made before boot stops the deploy.
+
 **A host's previews of staged files stop.** With `preview_mimes` empty, host code that calls `temporaryUrl()` on a
 staged file throws `FileNotPreviewableException`.
 
@@ -4406,7 +4417,7 @@ installation is scheduled.
 > the upload modal.
 
 > ⚠️ **Amended 2026-09-23 — the slice owning the upload staging landed**, and each guard it adds was removed in turn
-> and its test watched fail, beside a run of the same tests passing unmutated: 64 mutations, nine of them in the
+> and its test watched fail, beside a run of the same tests passing unmutated: 71 mutations, nine of them in the
 > browser. `MediaDisksTest` — the intake disk is local and never served, a host's definition under its name is
 > replaced when the provider registers, and its root is apart from every other local disk's in both directions; boot
 > refuses a served disk or a public link holding core's disks and any disk inside them, allows a disk nothing serves
@@ -4419,12 +4430,13 @@ installation is scheduled.
 > a file; Livewire's own validate-then-write step stages nothing when it refuses, beside a control that stages; the
 > sweep removes staged files and sidecars older than a day across the whole disk, a stale file's sidecar whatever its
 > age, and leaves younger ones; `kitsune:media-intake-sweep` lists without `--force`, deletes with it, and is
-> scheduled hourly. `UploadStagingGateTest`, with Kitsune's context empty as on the endpoint, each refusal beside an
+> scheduled hourly; and on every request, from a global middleware that runs first, a staging key a later callback
+> changed is put back, and a core disk redefined or overlapped after boot is refused. `UploadStagingGateTest`, with Kitsune's context empty as on the endpoint, each refusal beside an
 > admitted control — refuses a guest; a user holding less than `view`, `create` and `publish` on a media type, each
 > missing on its own; one the panel gives no site, or refuses at a site's door; one whose media types are off
 > everywhere they reach; one the panel turns away; a session the panel's `AuthenticateSession` would end —
-> Laravel's or Filament's, which the skeleton runs, in the panel's middleware or its auth middleware — and only when
-> the panel runs it; a grant on a handle the org shadows with a type that holds no media; a site whose org is
+> Laravel's or Filament's, which the skeleton runs, in the panel's middleware or its auth middleware, named by class,
+> by alias or through a group — and only when the panel runs it; a grant on a handle the org shadows with a type that holds no media; a site whose org is
 > gone; another org's grant without membership — asks the panel's own guard, puts the context back exactly, an org
 > without a site included, and refuses anything but a flat list of files; it sweeps after an accepted upload and never
 > after a refused one, and reports a failed sweep without failing the upload; with no panel, it asks `create` and

@@ -84,6 +84,23 @@ final class MediaStaging
         $config->set('livewire.temporary_file_upload.middleware', [self::THROTTLE, GuardUploadStaging::class]);
     }
 
+    /**
+     * Pin the staging keys, and refuse a core disk redefined or overlapped — every promise this slice makes, at once.
+     *
+     * ⚠️ TWICE, BECAUSE NO BOOT HOOK IS LAST — Codex, #152. Once every provider has booted, so an ordinary
+     * misconfiguration stops `config:cache` and with it a deploy; and again at the start of every HTTP request
+     * (`HoldMediaStaging`), because a host provider may register its own `booted()` callback, which runs after core's
+     * and could restore an `s3` intake that sends Livewire past the gate. By the time a request reaches the global
+     * middleware, every provider and every booted callback has run. Host code that changes configuration later still —
+     * in a route's middleware or a controller — is host code, which core does not govern.
+     */
+    public static function enforce(Repository $config): void
+    {
+        self::pin($config);
+        MediaDisks::refuseRedefinition($config);
+        MediaDisks::refuseOverlaps($config);
+    }
+
     /** The endpoint rule: does `MediaIntake` accept this file? Reads the file; writes nothing. */
     public static function passes(mixed $value): bool
     {

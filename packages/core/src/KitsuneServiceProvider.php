@@ -13,6 +13,7 @@ namespace Kitsune\Core;
 use Filament\Support\Assets\Js;
 use Filament\Support\Facades\FilamentAsset;
 use Illuminate\Console\Scheduling\Schedule;
+use Illuminate\Contracts\Http\Kernel as HttpKernel;
 use Illuminate\Contracts\Validation\Factory as ValidationFactory;
 use Illuminate\Database\Events\TransactionRolledBack;
 use Illuminate\Support\Facades\Event;
@@ -34,6 +35,7 @@ use Kitsune\Core\Console\ModuleCommand;
 use Kitsune\Core\Console\SchemaSyncCommand;
 use Kitsune\Core\Fields\FieldTypeRegistry;
 use Kitsune\Core\Filament\RichText\BlockDirectionPlugin;
+use Kitsune\Core\Http\Middleware\HoldMediaStaging;
 use Kitsune\Core\Media\MediaDisks;
 use Kitsune\Core\Media\MediaStaging;
 use Kitsune\Core\Models\Entry;
@@ -181,13 +183,18 @@ final class KitsuneServiceProvider extends ServiceProvider
         });
 
         /*
-         * Livewire's staging keys, and the refusal of a core disk redefined after core or overlapped by a host's, once
-         * every provider has booted — `MediaStaging::pin()` and `MediaDisks` say why not sooner.
+         * Livewire's staging keys, and the refusal of a core disk redefined after core or overlapped by a host's: once
+         * every provider has booted, so a deploy stops on a misconfiguration, and again at the start of every request,
+         * which a later `booted()` callback cannot outlast — `MediaStaging::enforce()` says why both.
          */
         $this->app->booted(function (): void {
-            MediaStaging::pin($this->app->make('config'));
-            MediaDisks::refuseRedefinition($this->app->make('config'));
-            MediaDisks::refuseOverlaps($this->app->make('config'));
+            MediaStaging::enforce($this->app->make('config'));
+        });
+
+        $this->callAfterResolving(HttpKernel::class, static function (HttpKernel $kernel): void {
+            if (method_exists($kernel, 'prependMiddleware')) {
+                $kernel->prependMiddleware(HoldMediaStaging::class);
+            }
         });
 
         if ($this->app->runningInConsole()) {

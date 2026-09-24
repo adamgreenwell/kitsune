@@ -10,12 +10,15 @@ declare(strict_types=1);
 
 use Illuminate\Config\Repository;
 use Illuminate\Console\Scheduling\Schedule;
+use Illuminate\Contracts\Http\Kernel as HttpKernel;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Validation\ValidationException;
 use Kitsune\Core\Http\Middleware\GuardUploadStaging;
+use Kitsune\Core\Http\Middleware\HoldMediaStaging;
 use Kitsune\Core\Media\MediaDisks;
 use Kitsune\Core\Media\MediaIntake;
 use Kitsune\Core\Media\MediaStaging;
@@ -284,5 +287,40 @@ describe('kitsune:media-intake-sweep', function (): void {
         expect($events)->toHaveCount(1)
             ->and((string) $events[0]->command)->toContain('--force')
             ->and($events[0]->expression)->toBe('0 * * * *');
+    });
+});
+
+/*
+ * ⚠️ AND AGAIN ON EVERY REQUEST — Codex, #152. A host provider's own `booted()` callback runs after core's check at
+ * boot, so what it changes is put back, or refused, by the global middleware, which runs after every callback.
+ */
+describe('on every request', function (): void {
+    beforeEach(function (): void {
+        Route::get('/kitsune-staging-probe', static fn (): string => (string) config('livewire.temporary_file_upload.disk'));
+    });
+
+    it('runs first, before any other global middleware', function (): void {
+        expect(app(HttpKernel::class)->getGlobalMiddleware()[0] ?? null)->toBe(HoldMediaStaging::class);
+    });
+
+    it('puts back a staging key a later callback changed', function (): void {
+        // As a host's `booted()` callback, running after core's, would leave it.
+        config(['livewire.temporary_file_upload.disk' => 'local']);
+
+        $this->get('/kitsune-staging-probe')->assertOk()->assertSee(MediaDisks::INTAKE);
+    });
+
+    it('refuses a disk a later callback put inside core\'s', function (): void {
+        config(['filesystems.disks.exports' => ['driver' => 'local', 'root' => storage_path('app/kitsune/intake/exports')]]);
+
+        expect(fn () => $this->withoutExceptionHandling()->get('/kitsune-staging-probe'))
+            ->toThrow(RuntimeException::class, 'Refusing to boot: core\'s [kitsune-intake] disk');
+    });
+
+    it('refuses a core disk a later callback redefined', function (): void {
+        config(['filesystems.disks.'.MediaDisks::INTAKE => ['driver' => 's3', 'bucket' => 'anywhere']]);
+
+        expect(fn () => $this->withoutExceptionHandling()->get('/kitsune-staging-probe'))
+            ->toThrow(RuntimeException::class, 'Refusing to boot: the [kitsune-intake] disk is core\'s');
     });
 });

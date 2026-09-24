@@ -92,6 +92,46 @@ final class GuardUploadStaging
     }
 
     /**
+     * The classes a middleware list names, as the router would run them.
+     *
+     * ⚠️ ALIASES AND GROUPS RESOLVED — Codex, #152. A panel may name the session check as `auth.session`, the alias
+     * Laravel registers for it, or inside a middleware group; the router runs the class either way, and a check on the
+     * written name alone would miss it. Parameters are dropped, and a group that names itself is not followed twice.
+     *
+     * @param  array<mixed>  $middleware
+     * @param  array<string, true>  $seen
+     * @return list<string>
+     */
+    private static function middlewareClasses(array $middleware, array $seen = []): array
+    {
+        $router = app('router');
+        $aliases = $router->getMiddleware();
+        $groups = $router->getMiddlewareGroups();
+        $classes = [];
+
+        foreach ($middleware as $entry) {
+            if (! is_string($entry)) {
+                continue;
+            }
+
+            $name = explode(':', $entry)[0];
+
+            if (isset($groups[$name])) {
+                if (! isset($seen[$name])) {
+                    array_push($classes, ...self::middlewareClasses($groups[$name], [...$seen, $name => true]));
+                }
+
+                continue;
+            }
+
+            $resolved = $aliases[$name] ?? $name;
+            $classes[] = is_string($resolved) ? $resolved : $name;
+        }
+
+        return $classes;
+    }
+
+    /**
      * Who is asking, by the Kitsune panel's own guard when there is one.
      *
      * ⚠️ THE PANEL'S GUARD, NOT THE DEFAULT ONE. The endpoint runs no `auth` middleware, and a host whose Kitsune panel
@@ -120,8 +160,8 @@ final class GuardUploadStaging
     {
         // Both lists: Filament runs its auth middleware on every signed-in page too, and a host may put the check there.
         $checksSessions = array_filter(
-            [...$panel->getMiddleware(), ...$panel->getAuthMiddleware()],
-            static fn (string $middleware): bool => is_a(explode(':', $middleware)[0], AuthenticateSession::class, true),
+            self::middlewareClasses([...$panel->getMiddleware(), ...$panel->getAuthMiddleware()]),
+            static fn (string $middleware): bool => is_a($middleware, AuthenticateSession::class, true),
         ) !== [];
 
         $password = $user->getAuthPassword();
