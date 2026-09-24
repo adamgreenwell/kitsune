@@ -96,7 +96,9 @@ class RefusingDisk extends LocalFilesystemAdapter
      */
     public function onOperation(int $n, Closure $callback, string $kind = 'byte'): self
     {
-        $this->triggers[] = ['n' => $n, 'kind' => $kind, 'callback' => $callback];
+        // Counted from now: the disk has usually done work of its own — a fixture's store, a cleanup — before this.
+        $done = $kind === 'byte' ? $this->byteOperations : $this->operations;
+        $this->triggers[] = ['n' => $done + $n, 'kind' => $kind, 'callback' => $callback];
 
         return $this;
     }

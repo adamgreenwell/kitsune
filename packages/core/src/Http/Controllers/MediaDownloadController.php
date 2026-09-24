@@ -124,18 +124,19 @@ final class MediaDownloadController
         $disk = Storage::disk((string) $file->disk);
 
         /*
-         * ⚠️ A ROW WITHOUT ITS BYTES IS A 404 AND A LOG LINE, NEVER A 500. This is the residue ADR-041 accepts
-         * on purpose in the other direction: `MediaLibrary` writes bytes before rows and `MediaDisposal`
-         * removes rows before bytes, so the state this branch describes — a row pointing at nothing — is the
-         * one the project chose to make impossible rather than merely unlikely. If it happens anyway, it is an
-         * operator's problem to find, so it is named in the log rather than raised as a stack trace at a
-         * viewer.
+         * ⚠️ A ROW WITHOUT ITS BYTES IS A 404 AND A LOG LINE, NEVER A 500. `MediaLibrary` writes bytes before rows
+         * and `MediaDisposal` removes rows before bytes, so a row pointing at nothing is not a state either order
+         * leaves. ADR-042 decision 5 names the two it can: a delete that was refused and whose compensation then
+         * failed leaves the only copy on the private disk, and a restore whose publication did not finish leaves
+         * the row naming a disk the file is not yet on. Both are listed by `kitsune:media-prune`, so the log sends
+         * the operator there before concluding the file was removed outside Kitsune.
          */
         if (! $disk->exists((string) $file->path)) {
             Log::warning(sprintf(
-                'Kitsune has a media_files row whose bytes are missing: [%s:%s] for entry %s. This is the '
-                .'state the write and disposal orders were chosen to avoid, so it suggests the file was '
-                .'removed outside Kitsune. `kitsune:media-prune` reports the opposite case, files no row claims.',
+                'Kitsune has a media_files row whose bytes are missing: [%s:%s] for entry %s. If a delete of this '
+                .'entry was refused and its compensation failed, the only copy is on the private disk, where '
+                .'kitsune:media-prune lists it as kept (ADR-042 decision 5); a restore whose publication did not '
+                .'finish is listed under "awaiting publication". Otherwise the file was removed outside Kitsune.',
                 (string) $file->disk,
                 (string) $file->path,
                 (string) $entry->getKey(),

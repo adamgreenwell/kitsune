@@ -385,6 +385,27 @@ it('answers 404 and reports when the row survives but the bytes do not', functio
 });
 
 /**
+ * ⚠️ AND IT SENDS THE OPERATOR TO THE RESIDUE ADR-042 DECISION 5 CAN LEAVE (T40), before concluding the file was removed
+ * outside Kitsune: a public row whose only copy is on the private disk is what a refused delete leaves when its
+ * compensation fails.
+ */
+it('names the residue custody can leave when a row survives without its bytes', function (): void {
+    $this->role->grant('entry.image.view');
+
+    $entry = aDeliverableImage($this->imageType, 'public');
+    $file = MediaFile::query()->where('entry_id', $entry->getKey())->firstOrFail();
+    Storage::disk(MediaDisks::PRIVATE)->put($file->path, (string) Storage::disk('public')->get($file->path));
+    Storage::disk('public')->delete($file->path);
+    Log::spy();
+
+    $this->actingAs($this->user)->get('/test-media/t/'.$entry->getKey())->assertNotFound();
+
+    Log::shouldHaveReceived('warning')->once()->withArgs(fn (string $message): bool => str_contains($message, 'kitsune:media-prune')
+        && str_contains($message, 'kept')
+        && ! str_contains($message, 'the state the write and disposal orders were chosen to avoid'));
+});
+
+/**
  * ⚠️ `1abc`, NOT `abc`, AND THE DIFFERENCE IS THE ENTIRE TEST. `abc` returns 404 with or without the route's
  * digit constraint — no row has id 0 — so asserting on it would pass against a controller that has no
  * constraint at all, which is this project's most-repeated instrument trap.

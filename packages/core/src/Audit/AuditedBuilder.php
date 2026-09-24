@@ -18,6 +18,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Kitsune\Core\Database\TransactionRecovery;
 use Kitsune\Core\Media\MediaDisposal;
+use Kitsune\Core\Media\MediaWithdrawal;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Schema\RevisionWrites;
@@ -26,6 +27,7 @@ use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tenancy\ScopedBuilder;
 use LogicException;
 use RuntimeException;
+use Throwable;
 
 /**
  * The single place every write is audited from.
@@ -371,15 +373,33 @@ class AuditedBuilder extends ScopedBuilder
          *
          * A genuine bulk update arrives with a prototype that does not exist, so it is excluded by `exists`
          * and stays narrowed by the scope, which is what a bulk write has instead of a row to compare.
+         *
+         * ⚠️ AND A WRITE OF `deleted_at` CARRIES ITS FILES' CUSTODY — ADR-042 decision 5. Every door that trashes or
+         * restores an entry arrives here: an instance's delete and restore, a quiet save, a bulk delete, `touch()`,
+         * a spelling the engine folds. After the rows are written and before the transaction commits, what was
+         * trashed is taken off the web and what was restored is registered for publication; a failure refuses the
+         * write, and whatever had already moved is put back once nothing is left to commit.
          */
-        return $this->auditing($this->actionFor($values), function () use ($values) {
-            $this->refuseIfTheRowMoved('update');
-            $this->refuseRetypeAcrossMediaBoundary($values);
-            $this->refuseSlugOnSharedRows($values);
-            $this->refuseUnpermittedPublication($values);
+        $custody = $this->writesDeletedAt($values) ? new MediaWithdrawal($this->auditedConnection()) : null;
 
-            return parent::update($values);
-        }, $values);
+        try {
+            return $this->auditing($this->actionFor($values), function (array $keys) use ($values, $custody) {
+                $this->refuseIfTheRowMoved('update');
+                $this->refuseRetypeAcrossMediaBoundary($values);
+                $this->refuseSlugOnSharedRows($values);
+                $this->refuseUnpermittedPublication($values);
+
+                $result = parent::update($values);
+
+                $custody?->afterSoftWrite($keys);
+
+                return $result;
+            }, $values);
+        } catch (Throwable $failure) {
+            $custody?->compensate();
+
+            throw $failure;
+        }
     }
 
     /**
@@ -1084,6 +1104,34 @@ class AuditedBuilder extends ScopedBuilder
      */
     private function actionFor(array $values): string
     {
+        return $this->writesDeletedAt($values) ? $this->deletedAtAction($values) : 'updated';
+    }
+
+    /**
+     * Whether this write assigns `deleted_at`, under any name the database would store into it.
+     *
+     * @param  array<string, mixed>  $values
+     */
+    private function writesDeletedAt(array $values): bool
+    {
+        $column = strtolower($this->getModel()->getDeletedAtColumn());
+
+        foreach (array_keys($values) as $written) {
+            if ($this->bareColumn((string) $written) === $column) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * "restored" or "deleted", by the value this write assigns to `deleted_at`.
+     *
+     * @param  array<string, mixed>  $values
+     */
+    private function deletedAtAction(array $values): string
+    {
         $model = $this->getModel();
         $column = $model->getDeletedAtColumn();
 
@@ -1152,11 +1200,7 @@ class AuditedBuilder extends ScopedBuilder
     private function auditing(string $action, callable $write, array $written = []): mixed
     {
         $model = $this->getModel();
-        $connection = $this->getQuery()->getConnection();
-
-        if (! $connection instanceof Connection) {
-            throw new LogicException('Refusing an audited write on a connection that is not a database connection.');
-        }
+        $connection = $this->auditedConnection();
 
         return TransactionRecovery::run($connection, function () use ($action, $write, $model, $written): mixed {
             // ⚠️ DEDUPLICATED. A bulk write over a join — say `entries`
@@ -1215,6 +1259,18 @@ class AuditedBuilder extends ScopedBuilder
 
             return $result;
         });
+    }
+
+    /** The connection this write runs on — the one its transaction, its locks and its files' custody belong to. */
+    private function auditedConnection(): Connection
+    {
+        $connection = $this->getQuery()->getConnection();
+
+        if (! $connection instanceof Connection) {
+            throw new LogicException('Refusing an audited write on a connection that is not a database connection.');
+        }
+
+        return $connection;
     }
 
     /**

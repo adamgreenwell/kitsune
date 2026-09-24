@@ -339,6 +339,20 @@ final class MediaCustody
     }
 
     /**
+     * Run the callback if this connection's innermost transaction rolls back — now or with any transaction enclosing
+     * it, which Laravel runs a committed child's rollback callbacks for.
+     *
+     * ⚠️ ON THIS CONNECTION'S OWN TRANSACTION, for the reason `whenOutermost()` gives: `afterRollBack()` would attach it
+     * to the last pending transaction on any connection. With none open, nothing can roll back, and nothing is kept.
+     */
+    public static function onRollback(Connection $connection, Closure $callback): void
+    {
+        $record = $connection->transactionLevel() === 0 ? null : self::innermost($connection);
+
+        $record?->addCallbackForRollback($callback);
+    }
+
+    /**
      * Remember entries whose files a rolled-back withdrawal moved, to put them back once nothing is left to commit.
      *
      * @param  list<int>  $entryIds
@@ -457,7 +471,7 @@ final class MediaCustody
      * Log a copy about to be overwritten or removed whose bytes differ from the kept copy's: it is the only trace of a
      * change made outside Kitsune.
      */
-    private static function noteDiffering(string $disk, string $path, ?string $hash, MediaKeeper $keeper, string $doing, ?string $holder = null): void
+    public static function noteDiffering(string $disk, string $path, ?string $hash, MediaKeeper $keeper, string $doing, ?string $holder = null): void
     {
         if ($hash === null || MediaBytes::same($hash, $keeper->expected)) {
             return;
