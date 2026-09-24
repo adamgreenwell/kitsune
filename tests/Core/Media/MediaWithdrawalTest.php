@@ -163,6 +163,7 @@ it('withdraws through every spelling of deleted_at it accepts', function (string
 /*
  * T24. A bulk trash is all or nothing: the third file's copy fails, and the two already moved are put back.
  */
+/** Put back, then cleaned up: the private copies the moved files left are removed once the public ones verify. */
 it('puts back every file a refused bulk trash had already moved', function (): void {
     $files = [withdrawable(), withdrawable(), withdrawable()];
     RefusingDisk::forgetLog();
@@ -181,7 +182,7 @@ it('puts back every file a refused bulk trash had already moved', function (): v
     foreach ($files as $i => [$entry, $path]) {
         expect(isTrashed($entry))->toBeFalse()
             ->and(namedDisk($entry))->toBe('public')
-            ->and(heldAt($path))->toBe(['public' => $this->checksum, MediaDisks::PRIVATE => $i < 2 ? $this->checksum : null]);
+            ->and(heldAt($path))->toBe(['public' => $this->checksum, MediaDisks::PRIVATE => null]);
     }
 
     expect(is_file(Storage::disk(MediaDisks::PRIVATE)->path(MediaBytes::partial($files[2][1]))))->toBeFalse();
@@ -215,7 +216,7 @@ it('refuses a trash whose public copy cannot be removed', function (): void {
         ->and($refused->getMessage())->not->toContain($path)
         ->and(isTrashed($entry))->toBeFalse()
         ->and(namedDisk($entry))->toBe('public')
-        ->and(heldAt($path))->toBe(['public' => $this->checksum, MediaDisks::PRIVATE => $this->checksum]);
+        ->and(heldAt($path))->toBe(['public' => $this->checksum, MediaDisks::PRIVATE => null]);
 });
 
 /*
@@ -347,7 +348,7 @@ describe('when no copy matches the checksum', function (): void {
         $changed = hash('sha256', 'changed by hand');
 
         expect(heldAt($path))->toBe($auditFails
-            ? ['public' => $changed, MediaDisks::PRIVATE => $changed]
+            ? ['public' => $changed, MediaDisks::PRIVATE => null]
             : ['public' => null, MediaDisks::PRIVATE => $changed]);
         Log::shouldHaveReceived('warning')->withArgs(fn (string $message): bool => str_contains($message, $changed)
             && str_contains($message, $this->checksum))->atLeast()->once();
@@ -420,7 +421,7 @@ it('withdraws through every door that trashes, and publishes through every door 
 
     expect(isTrashed($entry))->toBe(! $restoring)
         ->and(heldAt($path)['public'])->toBe($restoring ? $this->checksum : null)
-        ->and(heldAt($path)[MediaDisks::PRIVATE])->toBe($this->checksum)
+        ->and(heldAt($path)[MediaDisks::PRIVATE])->toBe($restoring ? null : $this->checksum)
         ->and(namedDisk($entry))->toBe($restoring ? 'public' : MediaDisks::PRIVATE);
 })->with([
     'delete()', 'a save of deleted_at', 'a quiet save of deleted_at', 'a bulk delete', 'touch(deleted_at)',
@@ -457,7 +458,7 @@ it('touches no disk to trash a private file', function (): void {
  * where the operator will look.
  */
 describe('publication', function (): void {
-    it('publishes a restored file, and keeps its private copy', function (bool $bulk): void {
+    it('publishes a restored file, and then removes its private copy', function (bool $bulk): void {
         [$entry, $path] = withdrawable();
         $entry->delete();
 
@@ -466,7 +467,7 @@ describe('publication', function (): void {
         expect(isTrashed($entry))->toBeFalse()
             ->and(namedDisk($entry))->toBe('public')
             ->and(DB::table('media_files')->where('entry_id', $entry->id)->value('visibility'))->toBe('public')
-            ->and(heldAt($path))->toBe(['public' => $this->checksum, MediaDisks::PRIVATE => $this->checksum]);
+            ->and(heldAt($path))->toBe(['public' => $this->checksum, MediaDisks::PRIVATE => null]);
     })->with(['the instance' => false, 'in bulk' => true]);
 
     it('publishes only once the restore commits', function (): void {
@@ -510,6 +511,90 @@ describe('publication', function (): void {
         MediaCustody::publish(DB::connection(), [$entry->id]);
 
         expect(heldAt($path)['public'])->toBeNull();
+    });
+});
+
+/*
+ * The third write: a live public file's private copy goes once the public one verifiably holds the same bytes, asked
+ * again under the lock.
+ */
+describe('cleaning up after a publication', function (): void {
+    /**
+     * R21(ii), deterministically: the publication commits, a delete lands before the clean-up runs, and the clean-up
+     * then deletes nothing — the file stays on the private disk, which the delete claims.
+     */
+    it('deletes nothing when the entry was trashed between the publication and its clean-up', function (): void {
+        [$entry, $path] = withdrawable();
+        $entry->delete();
+        $trashedAgain = false;
+
+        Event::listen(TransactionCommitted::class, function () use ($entry, &$trashedAgain): void {
+            if ($trashedAgain || isTrashed($entry) || namedDisk($entry) !== 'public') {
+                return;
+            }
+
+            $trashedAgain = true;
+            Entry::query()->whereKey($entry->id)->delete();
+        });
+
+        Entry::withTrashed()->findOrFail($entry->id)->restore();
+
+        expect($trashedAgain)->toBeTrue()
+            ->and(isTrashed($entry))->toBeTrue()
+            ->and(namedDisk($entry))->toBe(MediaDisks::PRIVATE)
+            ->and(heldAt($path))->toBe(['public' => null, MediaDisks::PRIVATE => $this->checksum]);
+    });
+
+    it('leaves the private copy of an entry that is not live and public on the public disk', function (): void {
+        [$entry, $path] = withdrawable();
+        Storage::disk(MediaDisks::PRIVATE)->put($path, WITHDRAWN_PNG);
+        // Trashed, still naming public with both copies: a file trashed before withdrawal existed.
+        DB::table('entries')->where('id', $entry->id)->update(['deleted_at' => now()]);
+
+        expect(MediaCustody::cleanUp(DB::connection(), $entry->id))->toBe(MediaCustody::UNCHANGED)
+            ->and(heldAt($path))->toBe(['public' => $this->checksum, MediaDisks::PRIVATE => $this->checksum]);
+    });
+
+    it('keeps a private copy that differs from the published one, and says so', function (): void {
+        [$entry, $path] = withdrawable();
+        Storage::disk(MediaDisks::PRIVATE)->put($path, 'changed by hand');
+        Log::spy();
+
+        expect(MediaCustody::cleanUp(DB::connection(), $entry->id))->toBe(MediaCustody::UNCHANGED)
+            ->and(heldAt($path)[MediaDisks::PRIVATE])->toBe(hash('sha256', 'changed by hand'));
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $message): bool => str_contains($message, 'the private copy of')
+            && str_contains($message, hash('sha256', 'changed by hand')))->once();
+    });
+
+    it('removes a private copy that matches the published one', function (): void {
+        [$entry, $path] = withdrawable();
+        Storage::disk(MediaDisks::PRIVATE)->put($path, WITHDRAWN_PNG);
+
+        expect(MediaCustody::cleanUp(DB::connection(), $entry->id))->toBe(MediaCustody::SETTLED)
+            ->and(heldAt($path))->toBe(['public' => $this->checksum, MediaDisks::PRIVATE => null]);
+    });
+
+    it('refuses to clean up inside an open transaction', function (): void {
+        [$entry, $path] = withdrawable();
+        Storage::disk(MediaDisks::PRIVATE)->put($path, WITHDRAWN_PNG);
+
+        expect(fn () => DB::transaction(fn () => MediaCustody::cleanUp(DB::connection(), $entry->id)))
+            ->toThrow(LogicException::class, 'inside an open transaction');
+
+        expect(heldAt($path)[MediaDisks::PRIVATE])->toBe($this->checksum);
+    });
+
+    it('keeps a publication whose clean-up fails, and says the copy is kept', function (): void {
+        [$entry, $path] = withdrawable();
+        $entry->delete();
+        $this->disks[MediaDisks::PRIVATE]->failDeletes = true;
+        Log::spy();
+
+        Entry::withTrashed()->findOrFail($entry->id)->restore();
+
+        expect(namedDisk($entry))->toBe('public')
+            ->and(heldAt($path))->toBe(['public' => $this->checksum, MediaDisks::PRIVATE => $this->checksum]);
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $message): bool => str_contains($message, 'its private copy could not be removed'))->once();
     });
 });
 
@@ -590,7 +675,7 @@ it('puts the file back when an enclosing transaction rolls back', function (): v
 
     expect(isTrashed($entry))->toBeFalse()
         ->and(namedDisk($entry))->toBe('public')
-        ->and(heldAt($path))->toBe(['public' => $this->checksum, MediaDisks::PRIVATE => $this->checksum]);
+        ->and(heldAt($path))->toBe(['public' => $this->checksum, MediaDisks::PRIVATE => null]);
 });
 
 /*
@@ -623,7 +708,7 @@ it('puts the file back after a nested trash times out and the host commits', fun
     expect($caught)->toBeInstanceOf(DeadlockException::class)
         ->and(isTrashed($entry))->toBeFalse()
         ->and(namedDisk($entry))->toBe('public')
-        ->and(heldAt($path))->toBe(['public' => $this->checksum, MediaDisks::PRIVATE => $this->checksum]);
+        ->and(heldAt($path))->toBe(['public' => $this->checksum, MediaDisks::PRIVATE => null]);
 });
 
 /*

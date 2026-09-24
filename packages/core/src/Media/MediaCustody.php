@@ -283,7 +283,7 @@ final class MediaCustody
             $before = $named($entryId);
 
             try {
-                self::settle($connection, $entryId, publication: true);
+                $settled = self::settle($connection, $entryId, publication: true);
             } catch (Throwable $failure) {
                 // A COMMIT that failed may still have landed: a row that now names the public disk says it did.
                 $landed = $before !== $public && $named($entryId) === $public;
@@ -298,8 +298,88 @@ final class MediaCustody
                         : 'so it is not published, and may not be reachable at its public URL. kitsune:media-prune '
                           .'lists it under "awaiting publication"; delete and restore the entry to retry',
                 ));
+
+                continue;
+            }
+
+            if ($settled === self::SETTLED) {
+                self::cleanUpReporting($connection, $entryId);
             }
         }
+    }
+
+    /**
+     * Delete the private copy of a live public file, once the public disk verifiably holds the same bytes — the third
+     * write, after a publication or a compensation (ADR-042 decision 5).
+     *
+     * ⚠️ LOCKED, AND ASKED AGAIN: the entry still live, still public, its row still naming the public disk. A delete
+     * that got there first has made the private copy the one it claims, and it is left alone. Review found the unlocked
+     * version: a delete landing between a publication's commit and its cleanup copied the public bytes back to the
+     * private path, had that fresh copy deleted by the cleanup, then deleted the public copy — the file on neither disk.
+     *
+     * ⚠️ AND ONLY WHILE ANOTHER COPY IS KNOWN TO HOLD THE SAME BYTES (rule 2): the public copy's hash is compared with the
+     * private copy's under the lock, and a copy that differs, or cannot be read, is kept.
+     *
+     * @throws LogicException inside an open transaction
+     * @throws MediaCustodyFailure when a copy cannot be read or removed
+     */
+    public static function cleanUp(Connection $connection, int $entryId): string
+    {
+        if (! self::isOutermost($connection)) {
+            throw new LogicException(sprintf(
+                'Refusing to clean up entry %d\'s private copy inside an open transaction (ADR-042 decision 5).',
+                $entryId,
+            ));
+        }
+
+        return self::locked($connection, $entryId, static function (?stdClass $entry, ?stdClass $file): string {
+            if ($entry === null || $file === null) {
+                return self::GONE;
+            }
+
+            $config = self::config();
+            $public = MediaDisks::configured($config, 'public');
+
+            if ($entry->deleted_at !== null || $file->visibility !== 'public' || $file->disk !== $public) {
+                return self::UNCHANGED;
+            }
+
+            $path = (string) $file->path;
+            $changed = false;
+
+            foreach (array_diff(array_unique([MediaDisks::configured($config, 'private'), MediaDisks::PRIVATE]), [$public]) as $disk) {
+                if (! MediaBytes::present($disk, $path)) {
+                    continue;
+                }
+
+                MediaDisks::refuseCoincidingMediaDisks($config, $public, $disk);
+
+                if (MediaBytes::sameObject($public, $disk, $path)) {
+                    throw new MediaCustodyFailure('coinciding', $disk, $path);
+                }
+
+                $published = MediaBytes::hash($public, $path);
+                $copy = MediaBytes::hash($disk, $path);
+
+                if (! MediaBytes::same($published, $copy)) {
+                    Log::warning(sprintf(
+                        'Media custody, entry %d: the private copy of [%s] on [%s] was kept — the public copy %s '
+                        .'(ADR-042 decision 5). kitsune:media-prune lists it as kept.',
+                        (int) $file->entry_id,
+                        $path,
+                        $disk,
+                        $published === null ? 'is missing' : "differs from it ([{$published}] against [{$copy}])",
+                    ));
+
+                    continue;
+                }
+
+                MediaBytes::delete($disk, $path);
+                $changed = true;
+            }
+
+            return $changed ? self::SETTLED : self::UNCHANGED;
+        });
     }
 
     /**
@@ -399,7 +479,26 @@ final class MediaCustody
                     $entryId,
                     $failure->getMessage(),
                 ));
+
+                continue;
             }
+
+            self::cleanUpReporting($connection, $entryId);
+        }
+    }
+
+    /** Clean up, logging rather than throwing: what it follows has already happened, and the copy it keeps is safe. */
+    private static function cleanUpReporting(Connection $connection, int $entryId): void
+    {
+        try {
+            self::cleanUp($connection, $entryId);
+        } catch (Throwable $failure) {
+            Log::warning(sprintf(
+                'Media custody, entry %d: its private copy could not be removed — %s. The file is published; '
+                .'kitsune:media-prune lists the copy as kept (ADR-042 decision 5).',
+                $entryId,
+                $failure->getMessage(),
+            ));
         }
     }
 
