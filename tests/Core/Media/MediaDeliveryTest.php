@@ -287,7 +287,8 @@ it('sends the stored mime even when the path would say otherwise', function (): 
     $this->role->grant('entry.image.view');
     $entry = aDeliverableImage($this->imageType);
 
-    MediaFile::query()->where('entry_id', $entry->getKey())->update(['mime' => 'application/pdf']);
+    // Past the model, which fixes `mime` at creation: the disagreement is the fixture, not a write Kitsune makes.
+    DB::table('media_files')->where('entry_id', $entry->getKey())->update(['mime' => 'application/pdf']);
 
     $response = $this->actingAs($this->user)->get('/test-media/t/'.$entry->getKey());
 

@@ -41,8 +41,9 @@ return new class extends Migration
             /*
              * ⚠️ UNIQUE, because the relationship is 1:1 and a second row would be a second answer to "where
              * are the bytes for this entry". `cascadeOnDelete` matches the lifecycle ADR-041 decides: bytes
-             * follow the entry, so a force-deleted entry takes its row with it. The FILE is removed by the
-             * model's own hook — a foreign key cannot reach a disk.
+             * follow the entry, so a force-deleted entry takes its row with it. The FILE is removed after the delete
+             * commits, by `AuditedBuilder::forceDelete()` through `MediaDisposal` — a foreign key cannot reach a disk,
+             * and a model hook never fires for a cascade.
              */
             $table->foreignId('entry_id')->unique()->constrained()->cascadeOnDelete();
 
