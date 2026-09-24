@@ -10,13 +10,14 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Media;
 
+use Illuminate\Database\Connection;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Storage;
-use Kitsune\Core\Models\MediaFile;
+use LogicException;
+use stdClass;
 use Throwable;
 
 /**
- * Remove the bytes when the entry that owned them is force-deleted — ADR-041.
+ * Remove the bytes when the entry that owned them is force-deleted — ADR-041, ordered by ADR-042 decision 5.
  *
  * @internal
  *
@@ -27,10 +28,14 @@ use Throwable;
  * which this project has now found eight times. So disposal is asked of the BUILDER, where the instance path
  * and the bulk path both arrive.
  *
- * ⚠️ ROWS FIRST, THEN BYTES — the mirror of how `MediaLibrary` stores them, and the same argument. On the way
- * in, bytes are written before rows because an unreferenced file costs disk while a row pointing at nothing is
- * a broken asset. On the way out, rows go before bytes for exactly that reason: if the delete fails after the
- * files are gone, the surviving entry points at nothing. Both orders choose the orphaned file.
+ * ⚠️ ROWS FIRST, THEN BYTES — the mirror of how `MediaLibrary` stores them: if the delete failed after the files were
+ * gone, a surviving entry would point at nothing. ADR-042 decision 5 orders both halves around the commit. The
+ * force-delete withdraws every copy the web could serve before it commits, keeping a verified one on the private
+ * disk; this removes what is left, only once nothing on the connection is left to commit, and for each file it asks
+ * again with the entry locked — a delete that did not commit, or a path another row still names, keeps its bytes.
+ *
+ * ⚠️ EVERY DISK THAT COULD HOLD THE PATH, not only the one the row named: the private copy withdrawal kept, a stray
+ * copy on a served disk, a partial copy beside any of them.
  *
  * ⚠️ FAILING TO DELETE A FILE DOES NOT FAIL THE DELETE. A read-only mount, an object store that is briefly
  * unreachable, a file an operator already removed by hand — none of those should keep a force-delete from
@@ -40,58 +45,56 @@ use Throwable;
 final class MediaDisposal
 {
     /**
-     * What the entries matched by this query have on disk, read BEFORE they are deleted.
+     * Remove every copy of each force-deleted entry's file, reporting rather than throwing.
      *
-     * @param  list<int>  $entryIds
-     * @return list<array{disk: string, path: string}>
+     * @param  list<array{entry_id: int, disk: string, path: string}>  $files  as the force-delete locked them
+     * @param  bool  $committed  false when called from the force-delete's failure path, whose commit may or may not
+     *                           have landed: rows still there are then expected, not reported
+     * @return int how many files were removed from every disk
+     *
+     * @throws LogicException inside an open transaction
      */
-    public static function filesFor(array $entryIds): array
+    public static function remove(Connection $connection, array $files, bool $committed = true): int
     {
-        if ($entryIds === []) {
-            return [];
+        if (! MediaCustody::isOutermost($connection)) {
+            throw new LogicException(
+                'Refusing to dispose of media files inside an open transaction: the force-delete it follows could still '
+                .'roll back (ADR-042 decision 5). Run it through MediaCustody::whenOutermost().'
+            );
         }
 
-        /*
-         * Past the scopes: `MediaFile` is `#[Unscoped]` and reached through its entry, and the entries whose
-         * ids these are have already been through the scoped query that selected them. Asking again here would
-         * narrow by a context the caller may not be in — a console force-deleting on an operator's behalf.
-         */
-        return MediaFile::query()
-            ->whereIn('entry_id', $entryIds)
-            ->get(['disk', 'path'])
-            ->map(static fn (MediaFile $file): array => [
-                'disk' => (string) $file->disk,
-                'path' => (string) $file->path,
-            ])
-            ->all();
-    }
-
-    /**
-     * Remove the bytes, reporting rather than throwing.
-     *
-     * @param  list<array{disk: string, path: string}>  $files
-     * @return int how many were removed
-     */
-    public static function remove(array $files): int
-    {
         $removed = 0;
 
         foreach ($files as $file) {
             try {
-                /*
-                 * `delete()` returns true for a path that was already absent, which is the right answer here:
-                 * the operator asked for the bytes to be gone and they are. Only a disk that refuses is
-                 * interesting.
-                 */
-                if (Storage::disk($file['disk'])->delete($file['path'])) {
-                    $removed++;
+                $removed += MediaCustody::locked($connection, $file['entry_id'], static function (?stdClass $entry, ?stdClass $row) use ($connection, $file, $committed): int {
+                    if ($entry !== null || $row !== null) {
+                        if ($committed) {
+                            Log::warning(sprintf(
+                                'Kitsune kept the bytes of entry %d: its force-delete was reported as committed, but its '
+                                .'rows are still there (ADR-042 decision 5).',
+                                $file['entry_id'],
+                            ));
+                        }
 
-                    continue;
-                }
+                        return 0;
+                    }
 
-                self::report($file, 'the disk reported the delete as unsuccessful');
+                    if ($connection->table('media_files')->where('path', $file['path'])->exists()) {
+                        Log::warning(sprintf(
+                            'Kitsune kept [%s], the file of force-deleted entry %d: another media_files row names the same '
+                            .'path (ADR-042 decision 5).',
+                            $file['path'],
+                            $file['entry_id'],
+                        ));
+
+                        return 0;
+                    }
+
+                    return self::removeEverywhere($file) ? 1 : 0;
+                });
             } catch (Throwable $e) {
-                self::report($file, $e->getMessage());
+                self::report($file['disk'], $file['path'], 'disposal could not run — '.$e->getMessage());
             }
         }
 
@@ -99,17 +102,68 @@ final class MediaDisposal
     }
 
     /**
-     * @param  array{disk: string, path: string}  $file
+     * Delete the path, and a partial copy beside it, on every disk that could hold one.
+     *
+     * @param  array{entry_id: int, disk: string, path: string}  $file
+     * @return bool whether every delete succeeded
      */
-    private static function report(array $file, string $why): void
+    private static function removeEverywhere(array $file): bool
+    {
+        $config = app('config');
+        $private = [MediaDisks::configured($config, 'private'), MediaDisks::PRIVATE];
+        $served = MediaDisks::servedDisks($config);
+        $disks = array_values(array_unique([$file['disk'], MediaDisks::configured($config, 'public'), ...$private, ...$served]));
+        $clean = true;
+
+        foreach ($disks as $disk) {
+            // A served local disk nothing configures or names, whose root does not exist, holds nothing, and is not built.
+            if ($disk !== $file['disk'] && in_array($disk, $served, true) && ! self::rooted($disk)) {
+                continue;
+            }
+
+            try {
+                $paths = MediaBytes::local($disk) ? [$file['path'], MediaBytes::partial($file['path'])] : [$file['path']];
+            } catch (Throwable $e) {
+                self::report($disk, $file['path'], $e->getMessage(), in_array($disk, $private, true), in_array($disk, $served, true));
+                $clean = false;
+
+                continue;
+            }
+
+            foreach ($paths as $path) {
+                try {
+                    MediaBytes::delete($disk, $path);
+                } catch (Throwable $e) {
+                    self::report($disk, $path, $e->getMessage(), in_array($disk, $private, true), in_array($disk, $served, true));
+                    $clean = false;
+                }
+            }
+        }
+
+        return $clean;
+    }
+
+    /** Whether a disk is not local, or is local with a root that exists. Its configuration is read; nothing is built. */
+    private static function rooted(string $disk): bool
+    {
+        $root = MediaDisks::resolved(app('config'), $disk)['root'];
+
+        return $root === null || is_dir($root);
+    }
+
+    private static function report(string $disk, string $path, string $why, bool $private = false, bool $served = false): void
     {
         Log::warning(sprintf(
-            'Kitsune could not remove a media file whose entry was force-deleted: [%s:%s] — %s. The row is '
-            .'gone and the bytes are not, which is an orphan rather than a leak. `kitsune:media-prune` finds '
-            .'files no row claims.',
-            $file['disk'],
-            $file['path'],
+            'Kitsune could not remove a media file whose entry was force-deleted: [%s:%s] — %s. %s',
+            $disk,
+            $path,
             $why,
+            match (true) {
+                $served => 'It is still on the web: withdrawal removed every served copy before the delete committed, '
+                    .'so this one appeared after it. Remove it by hand.',
+                $private => 'It is a copy on a disk nothing serves; `kitsune:media-prune` removes it.',
+                default => sprintf('It is a copy on [%s], which Kitsune does not serve; `kitsune:media-prune` lists it.', $disk),
+            },
         ));
     }
 }

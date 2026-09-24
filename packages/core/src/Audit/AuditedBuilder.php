@@ -17,6 +17,7 @@ use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Kitsune\Core\Database\TransactionRecovery;
+use Kitsune\Core\Media\MediaCustody;
 use Kitsune\Core\Media\MediaDisposal;
 use Kitsune\Core\Media\MediaWithdrawal;
 use Kitsune\Core\Models\Entry;
@@ -436,33 +437,45 @@ class AuditedBuilder extends ScopedBuilder
         $this->refuseForeignFrom('force-delete');
 
         /*
-         * ⚠️ READ BEFORE THE DELETE, REMOVED AFTER IT — ADR-041's byte disposal, asked of the builder rather
-         * than of a model event.
+         * ⚠️ ADR-041's byte disposal, asked of the builder rather than of a model event, IN ADR-042 DECISION 5's ORDER.
          *
-         * A `deleting` hook on `Entry` would miss `Entry::query()->forceDelete()`, which dispatches nothing,
-         * and a hook on `MediaFile` never fires at all: `media_files.entry_id` cascades, so the row goes
-         * inside the database where no PHP runs. This is the one place both the instance path and the bulk
-         * path arrive, because `SoftDeletes::forceDelete()` routes an instance through the builder too.
+         * A `deleting` hook on `Entry` would miss `Entry::query()->forceDelete()`, which dispatches nothing, and a hook
+         * on `MediaFile` never fires at all: `media_files.entry_id` cascades, so the row goes inside the database where
+         * no PHP runs. This is the one place both the instance path and the bulk path arrive, because
+         * `SoftDeletes::forceDelete()` routes an instance through the builder too.
          *
-         * Rows first, then bytes — the mirror of how `MediaLibrary` writes them, for the same reason: if the
-         * files went first and the delete then failed, a surviving entry would point at nothing.
+         * Inside the write: the entries are locked (`auditing()`), then their files, then the rows are deleted, then
+         * every copy the web could serve is withdrawn to the private disk — so a committed erasure never leaves a file
+         * public, and a withdrawal that cannot finish refuses the erasure with its rows intact. After the outermost
+         * commit, `MediaDisposal` removes what is left, asking again under the lock; from the failure path too, because
+         * a commit that reported failure may have landed.
          */
-        $files = MediaDisposal::filesFor(
-            (clone $this)->select($this->getModel()->getTable().'.id')->pluck('id')->map(
-                static fn (mixed $id): int => (int) $id,
-            )->all(),
-        );
+        $connection = $this->auditedConnection();
+        $custody = new MediaWithdrawal($connection, 'erase');
 
-        $result = $this->auditing('force_deleted', function () {
-            // ⚠️ The destructive half, and the reason that guard exists at all: an update is a field somebody
-            // may not have been allowed to touch, and this is a row that is gone.
-            $this->refuseIfTheRowMoved('force-delete');
+        try {
+            $result = $this->auditing('force_deleted', function (array $keys) use ($custody) {
+                // ⚠️ The destructive half, and the reason that guard exists at all: an update is a field somebody
+                // may not have been allowed to touch, and this is a row that is gone.
+                $this->refuseIfTheRowMoved('force-delete');
 
-            return parent::forceDelete();
-        });
+                $custody->lockFiles($keys);
 
-        /* Reports rather than throws: a disk that refuses must not keep a force-delete from completing. */
-        MediaDisposal::remove($files);
+                $result = parent::forceDelete();
+
+                $custody->withdrawAll();
+
+                return $result;
+            });
+        } catch (Throwable $failure) {
+            $custody->compensate();
+            MediaCustody::whenOutermost($connection, static fn () => MediaDisposal::remove($connection, $custody->files(), committed: false));
+
+            throw $failure;
+        }
+
+        /* Reports rather than throws: a disk that refuses must not undo a force-delete that has committed. */
+        MediaCustody::whenOutermost($connection, static fn () => MediaDisposal::remove($connection, $custody->files()));
 
         return $result;
     }

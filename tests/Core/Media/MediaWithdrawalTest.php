@@ -9,14 +9,18 @@
 declare(strict_types=1);
 
 use Illuminate\Database\DeadlockException;
+use Illuminate\Database\Events\QueryExecuted;
+use Illuminate\Database\Events\TransactionCommitted;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Kitsune\Core\Media\MediaBytes;
 use Kitsune\Core\Media\MediaCustody;
 use Kitsune\Core\Media\MediaDisks;
+use Kitsune\Core\Media\MediaDisposal;
 use Kitsune\Core\Media\MediaLibrary;
 use Kitsune\Core\Media\MediaWithdrawalRefused;
 use Kitsune\Core\Models\Entry;
@@ -673,6 +677,17 @@ describe('a file on a disk the web serves', function (): void {
             ->and(heldAt(MediaBytes::partial($path), $this->served))->toBe(array_fill_keys($this->served, null));
     })->with(['through a scoped disk' => 'media-cdn', 'served with public visibility' => 'pub-serve']);
 
+    it('erases a trashed file left on a served disk from every disk', function (string $disk): void {
+        [$entry, $path] = ($this->leftOn)($disk, true);
+
+        Entry::withTrashed()->findOrFail($entry->id)->forceDelete();
+
+        $every = [...$this->served, MediaDisks::PRIVATE];
+
+        expect(heldAt($path, $every))->toBe(array_fill_keys($every, null))
+            ->and(heldAt(MediaBytes::partial($path), $every))->toBe(array_fill_keys($every, null));
+    })->with(['through a scoped disk' => 'media-cdn', 'served with public visibility' => 'pub-serve']);
+
     it('publishes a live and a trashed file left on a served disk, in one bulk restore', function (): void {
         [$live, $livePath] = ($this->leftOn)('media-cdn', false);
         [$trashed, $trashedPath] = ($this->leftOn)('media-cdn', true);
@@ -708,4 +723,172 @@ describe('a file on a disk the web serves', function (): void {
         expect(Artisan::output())->not->toContain('media/host.png')
             ->and(Storage::disk('public')->get('media/host.png'))->toBe('the host\'s');
     });
+});
+
+/*
+ * T41-T43. An erasure: the entries locked, then their files, then the rows deleted, then every copy the web could serve
+ * withdrawn, then the commit — and what is left removed after it, asked again under the lock.
+ */
+describe('erasure', function (): void {
+    /** The statements, the commits and the disks' byte operations, in one timeline. @return list<string> */
+    function erasureTimeline(Closure $erase): array
+    {
+        DB::listen(fn (QueryExecuted $query) => RefusingDisk::note('sql', strtolower($query->sql)));
+        Event::listen(TransactionCommitted::class, fn () => RefusingDisk::note('committed'));
+        RefusingDisk::forgetLog();
+
+        $erase();
+
+        return array_map(
+            static fn (array $entry): string => $entry['event'] === 'sql' ? 'sql '.$entry['path'] : ($entry['bytes'] ? 'bytes '.$entry['disk'] : $entry['event']),
+            array_values(array_filter(RefusingDisk::$log, static fn (array $entry): bool => in_array($entry['event'], ['sql', 'committed'], true) || $entry['bytes'])),
+        );
+    }
+
+    /** The index of the first line matching the pattern at or after $from. */
+    function firstIn(array $timeline, string $pattern, int $from = 0): int
+    {
+        foreach ($timeline as $i => $line) {
+            if ($i >= $from && preg_match($pattern, $line) === 1) {
+                return $i;
+            }
+        }
+
+        throw new RuntimeException("Nothing in the timeline matches {$pattern}.");
+    }
+
+    it('locks, deletes, withdraws and commits in that order, and disposes after', function (): void {
+        [$entry, $path] = withdrawable();
+        $locks = DB::connection()->getDriverName() === 'sqlite' ? '' : ' for update';
+
+        $timeline = erasureTimeline(fn () => $entry->forceDelete());
+
+        $entries = firstIn($timeline, '/^sql select .*from .entries.*'.$locks.'/');
+        $files = firstIn($timeline, '/^sql select .*from .media_files.*'.$locks.'/', $entries + 1);
+        $delete = firstIn($timeline, '/^sql delete from .entries./', $files + 1);
+        $withdrawn = firstIn($timeline, '/^bytes /', $delete + 1);
+        $committed = firstIn($timeline, '/^committed$/', $withdrawn + 1);
+        $disposed = firstIn($timeline, '/^bytes '.MediaDisks::PRIVATE.'$/', $committed + 1);
+
+        expect([$entries, $files, $delete, $withdrawn, $committed, $disposed])->toBe(array_values(array_unique([$entries, $files, $delete, $withdrawn, $committed, $disposed])))
+            ->and(array_filter(array_slice($timeline, 0, $delete), fn (string $line): bool => str_starts_with($line, 'bytes ')))->toBe([])
+            ->and(heldAt($path))->toBe(['public' => null, MediaDisks::PRIVATE => null])
+            ->and(DB::table('entries')->where('id', $entry->id)->exists())->toBeFalse();
+    });
+
+    it('refuses an erasure whose withdrawal cannot finish, and keeps the rows', function (): void {
+        [$entry, $path] = withdrawable();
+        $this->disks[MediaDisks::PRIVATE]->failWrites = true;
+        Log::spy();
+
+        $refused = refusedBy(fn () => $entry->forceDelete());
+
+        // Its disposal ran from the failure path, found the rows, and expected them.
+        Log::shouldNotHaveReceived('warning', [Mockery::on(fn (string $message): bool => str_contains($message, 'rows are still there'))]);
+
+        expect($refused->reason)->toBe(MediaWithdrawalRefused::COPY_FAILED)
+            ->and($refused->getMessage())->toStartWith("Refusing to erase entry {$entry->id}")
+            ->and(DB::table('entries')->where('id', $entry->id)->exists())->toBeTrue()
+            ->and(DB::table('media_files')->where('entry_id', $entry->id)->exists())->toBeTrue()
+            ->and(heldAt($path)['public'])->toBe($this->checksum);
+    });
+
+    it('completes an erasure whose private copy cannot be removed, and says where it is', function (): void {
+        [$entry, $path] = withdrawable();
+        $this->disks[MediaDisks::PRIVATE]->failDeletes = true;
+        Log::spy();
+
+        $entry->forceDelete();
+
+        expect(DB::table('entries')->where('id', $entry->id)->exists())->toBeFalse()
+            ->and(heldAt($path)['public'])->toBeNull();
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $message): bool => str_contains($message, '['.MediaDisks::PRIVATE.':'.$path.']'))->atLeast()->once();
+    });
+
+    /** A private file on `local` with a stray public copy: withdrawal takes the stray off the web before the commit. */
+    it('withdraws a stray public copy of a private file before the erasure commits', function (): void {
+        ($this->disk)('local');
+        [$entry, $path] = withdrawable('private');
+        Storage::disk('local')->put($path, WITHDRAWN_PNG);
+        Storage::disk(MediaDisks::PRIVATE)->delete($path);
+        Storage::disk('public')->put($path, WITHDRAWN_PNG);
+        DB::table('media_files')->where('entry_id', $entry->id)->update(['disk' => 'local']);
+        Event::listen(TransactionCommitted::class, fn () => $this->disks['public']->failDeletes = true);
+
+        $entry->forceDelete();
+
+        expect(heldAt($path, ['public', 'local', MediaDisks::PRIVATE]))->toBe(['public' => null, 'local' => null, MediaDisks::PRIVATE => null]);
+    });
+
+    it('disposes of every disk that could hold the path, and builds none that holds nothing', function (): void {
+        ($this->disk)('host-private');
+        config(['kitsune.media.disks.private' => 'host-private']);
+        ($this->disk)('cdn', ['url' => 'https://cdn.test']);
+        ($this->disk)('named');
+        $ghost = sys_get_temp_dir().'/kitsune-withdrawal-ghost-'.bin2hex(random_bytes(4));
+        config(['filesystems.disks.ghost' => ['driver' => 'local', 'root' => $ghost, 'url' => 'https://ghost.test']]);
+
+        $path = 'media/1/2026/09/gone.png';
+        $disks = ['public', MediaDisks::PRIVATE, 'host-private', 'cdn', 'named'];
+
+        foreach ($disks as $disk) {
+            Storage::disk($disk)->put($path, 'a copy');
+            Storage::disk($disk)->put(MediaBytes::partial($path), 'half');
+        }
+
+        expect(MediaDisposal::remove(DB::connection(), [['entry_id' => 999_999, 'disk' => 'named', 'path' => $path]]))->toBe(1)
+            ->and(heldAt($path, $disks))->toBe(array_fill_keys($disks, null))
+            ->and(heldAt(MediaBytes::partial($path), $disks))->toBe(array_fill_keys($disks, null))
+            ->and(file_exists($ghost))->toBeFalse();
+    });
+
+    it('keeps the bytes of an erasure that did not commit, and says so only when told it had', function (): void {
+        [$entry, $path] = withdrawable();
+        Log::spy();
+
+        $files = [['entry_id' => (int) $entry->id, 'disk' => 'public', 'path' => $path]];
+
+        expect(MediaDisposal::remove(DB::connection(), $files, committed: false))->toBe(0)
+            ->and(MediaDisposal::remove(DB::connection(), $files))->toBe(0)
+            ->and(heldAt($path)['public'])->toBe($this->checksum);
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $message): bool => str_contains($message, "entry {$entry->id}")
+            && str_contains($message, 'rows are still there'))->once();
+    });
+
+    it('refuses to dispose of anything inside an open transaction', function (): void {
+        $path = 'media/1/2026/09/gone.png';
+        Storage::disk('public')->put($path, 'a copy');
+
+        expect(fn () => DB::transaction(fn () => MediaDisposal::remove(DB::connection(), [['entry_id' => 999_999, 'disk' => 'public', 'path' => $path]])))
+            ->toThrow(LogicException::class, 'inside an open transaction');
+
+        expect(Storage::disk('public')->exists($path))->toBeTrue();
+    });
+
+    it('keeps a file another row still names', function (): void {
+        [, $path] = withdrawable();
+        Log::spy();
+
+        expect(MediaDisposal::remove(DB::connection(), [['entry_id' => 999_999, 'disk' => 'public', 'path' => $path]]))->toBe(0)
+            ->and(heldAt($path)['public'])->toBe($this->checksum);
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $message): bool => str_contains($message, 'another media_files row names the same path'))->once();
+    });
+
+    /** Decisions 2 and 2b keep an erasure possible when no copy matches the recorded checksum. */
+    it('erases a file whose copies match nothing it recorded', function (string $fixture): void {
+        [$entry, $path] = withdrawable();
+
+        if ($fixture === 'the checksum changed') {
+            DB::table('media_files')->where('entry_id', $entry->id)->update(['checksum' => str_repeat('0', 64)]);
+        } else {
+            DB::table('media_files')->where('entry_id', $entry->id)->update(['disk' => MediaDisks::PRIVATE]);
+            Storage::disk(MediaDisks::PRIVATE)->put($path, 'the named copy');
+            Storage::disk('public')->put($path, 'short');
+        }
+
+        $entry->forceDelete();
+
+        expect(heldAt($path))->toBe(['public' => null, MediaDisks::PRIVATE => null])
+            ->and(heldAt(MediaBytes::partial($path)))->toBe(['public' => null, MediaDisks::PRIVATE => null]);
+    })->with(['the checksum changed', 'the named copy differs from a short public one']);
 });
