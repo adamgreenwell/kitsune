@@ -4051,6 +4051,12 @@ sweep runs. PHP's own upload temporary file precedes every rule, and is PHP's ra
 >   is hidden. Core replaces it with a hidden action holding no schema, and it must stay without one.
 > - **The restriction covers every Livewire class the packages ship**: Kitsune's relation managers and widgets as
 >   well as its pages.
+> - **A host's disks may not overlap core's where it matters** (Codex, #152). `define()` owns the two names but not
+>   where the host's own disks are, so once every provider has booted the configuration is checked, and boot refuses
+>   two overlaps: core's root inside a disk that is served or a directory a public link exposes, and any disk's or
+>   link's root inside core's, which the intake sweep would empty by age. Core's root inside a disk that is neither
+>   served nor linked is allowed — Laravel 10 and earlier rooted `local` at `storage/app` — and roots are compared
+>   through symlinks, as deployments share storage. `config:cache` boots first, so a deploy stops on it.
 > - **What Livewire staged before core pinned its disk stays where it was**, and nothing sweeps it any more: on an
 >   installation that ran the earlier code, `local`'s `livewire-tmp`. It is removed once, by hand, where it exists —
 >   stage and development machines; no production installation ran that code. A sweep of it was built and taken out
@@ -4292,6 +4298,10 @@ only the development seeder does — and the endpoint admits only a user who cou
 components and the org's owner are refused alike until one exists. An installation declares a media type before it
 expects any upload to work, the alpha deploy included.
 
+**A host whose disks overlap core's does not boot.** A served disk or a public link that reaches core's private or
+intake disk, or any disk rooted inside either, is refused when the application boots, naming both sides; the host
+moves its disk. Laravel's shipped configuration and the skeleton's do not overlap.
+
 **A host's previews of staged files stop.** With `preview_mimes` empty, host code that calls `temporaryUrl()` on a
 staged file throws `FileNotPreviewableException`.
 
@@ -4389,10 +4399,11 @@ installation is scheduled.
 > the upload modal.
 
 > ⚠️ **Amended 2026-09-23 — the slice owning the upload staging landed**, and each guard it adds was removed in turn
-> and its test watched fail, beside a run of the same tests passing unmutated: 49 mutations, nine of them in the
-> browser. `MediaDisksTest` — the intake disk is local
-> and never served, a host's definition under its name is replaced when the provider registers, and its root is
-> apart from every other local disk's in both directions. `MediaStagingTest` — Livewire stages on it, previews
+> and its test watched fail, beside a run of the same tests passing unmutated: 55 mutations, nine of them in the
+> browser. `MediaDisksTest` — the intake disk is local and never served, a host's definition under its name is
+> replaced when the provider registers, and its root is apart from every other local disk's in both directions; boot
+> refuses a served disk or a public link holding core's disks and any disk inside them, allows a disk nothing serves
+> to hold them, and sees through a symlinked storage directory. `MediaStagingTest` — Livewire stages on it, previews
 > nothing, keeps its throttle with the gate after it, and its rules are `MediaIntake`'s, by name, with nothing
 > `config:cache` cannot export; the pin overrides a host's own keys and leaves the rest; the rule refuses what
 > `MediaIntake` refuses in `MediaIntake`'s own words whatever the filename holds, and a part that is incomplete or not

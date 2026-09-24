@@ -11,6 +11,7 @@ declare(strict_types=1);
 namespace Kitsune\Core\Media;
 
 use Illuminate\Contracts\Config\Repository;
+use RuntimeException;
 
 /**
  * The disks core defines for itself — ADR-042 decisions 4 and 4a.
@@ -78,5 +79,110 @@ final class MediaDisks
             'throw' => false,
             'report' => false,
         ]);
+    }
+
+    /**
+     * Refuse a configuration in which another disk or a public link reaches into core's, or core's reaches into it.
+     *
+     * ⚠️ THE NAMES ARE CORE'S, AND THE ROOTS CAN STILL COLLIDE — Codex, #152. `define()` decides what the two names mean,
+     * but not where the host's own disks are. Two overlaps break a promise made here, and both are refused:
+     *
+     * - core's root inside a disk that is served, or inside a directory a public link exposes — the "never served" disk
+     *   is then served through the other one, signed or not;
+     * - another disk's root, or a link's, inside core's — the intake sweep deletes everything on its disk by age, and a
+     *   directory the web serves inside the private disk exposes whatever lands there.
+     *
+     * Core's root inside a disk that is neither served nor linked is allowed: Laravel 10 and earlier rooted `local` at
+     * `storage/app`, and a disk nothing serves exposes nothing. That host's own code can still reach core's files
+     * through it, which is the host's to govern.
+     *
+     * ⚠️ ONCE EVERY PROVIDER HAS BOOTED, AND IT THROWS. The configuration is final then; `config:cache` boots the
+     * application before it exports, so `deploy/release.sh` stops on an overlap before a release goes live, as Laravel
+     * stops on two served disks claiming one URL.
+     *
+     * @throws RuntimeException naming both sides and the fix
+     */
+    public static function refuseOverlaps(Repository $config): void
+    {
+        $reaches = [];
+
+        foreach ((array) $config->get('filesystems.disks', []) as $name => $disk) {
+            if (is_array($disk) && ($disk['driver'] ?? null) === 'local' && is_string($disk['root'] ?? null) && $disk['root'] !== '') {
+                $reaches[] = [
+                    'what' => "the [{$name}] disk",
+                    'name' => (string) $name,
+                    'root' => self::normalised($disk['root']),
+                    'exposed' => (bool) ($disk['serve'] ?? false),
+                ];
+            }
+        }
+
+        foreach ((array) $config->get('filesystems.links', []) as $link => $target) {
+            if (is_string($target) && $target !== '') {
+                $reaches[] = ['what' => "the public link at [{$link}]", 'name' => null, 'root' => self::normalised($target), 'exposed' => true];
+            }
+        }
+
+        foreach ([self::PRIVATE, self::INTAKE] as $core) {
+            $own = array_values(array_filter($reaches, static fn (array $reach): bool => $reach['name'] === $core))[0] ?? null;
+
+            if ($own === null) {
+                continue;
+            }
+
+            foreach ($reaches as $other) {
+                if ($other['name'] === $core) {
+                    continue;
+                }
+
+                $inside = str_starts_with($own['root'], $other['root']);
+                $holds = str_starts_with($other['root'], $own['root']);
+
+                if (($inside && $other['exposed']) || $holds) {
+                    throw new RuntimeException(sprintf(
+                        'Refusing to boot: core\'s [%s] disk, rooted at [%s], %s %s at [%s]. Core\'s disks are never '
+                        .'served, and the intake disk is swept by age (ADR-042 decision 4); give %s a root outside '
+                        .'[%s], or move it so that it does not contain core\'s. If the configuration is cached, clear '
+                        .'bootstrap/cache/config.php first.',
+                        $core,
+                        rtrim($own['root'], '/'),
+                        $holds ? 'contains' : 'sits inside',
+                        $other['what'],
+                        rtrim($other['root'], '/'),
+                        $other['what'],
+                        rtrim($own['root'], '/'),
+                    ));
+                }
+            }
+        }
+    }
+
+    /**
+     * A root as the filesystem resolves it, ending in a slash so a prefix is a directory rather than a name.
+     *
+     * ⚠️ THROUGH THE NEAREST PART THAT EXISTS, because symlinks are how deployments share storage: a release's
+     * `storage` is commonly a link to a shared directory, and one disk named through the link and another through its
+     * target are the same place. A root that does not exist yet — the intake disk before its first upload — is
+     * resolved through its nearest existing parent, so the two still compare.
+     */
+    private static function normalised(string $root): string
+    {
+        $path = rtrim(str_replace('\\', '/', $root), '/');
+        $missing = '';
+
+        while ($path !== '' && realpath($path) === false) {
+            $parent = dirname($path);
+
+            if ($parent === $path) {
+                break;
+            }
+
+            $missing = '/'.basename($path).$missing;
+            $path = $parent;
+        }
+
+        $resolved = realpath($path);
+
+        return rtrim(str_replace('\\', '/', $resolved !== false ? $resolved : $path), '/').$missing.'/';
     }
 }

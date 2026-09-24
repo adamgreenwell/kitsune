@@ -174,3 +174,76 @@ describe('the intake disk', function (): void {
         expect(config('filesystems.disks.'.MediaDisks::INTAKE.'.driver'))->toBe('local');
     });
 });
+
+/*
+ * A host's own disks against core's — Codex, #152. `define()` owns the two names, not where the host's disks are, so
+ * the configuration as the host finished it is checked once every provider has booted.
+ */
+describe('a host disk that overlaps core\'s', function (): void {
+    /** Core's two disks as `define()` writes them, beside whatever the host configured. */
+    function withHostDisks(array $disks, array $links = []): Repository
+    {
+        $config = new Repository(['filesystems' => ['disks' => $disks, 'links' => $links]]);
+        MediaDisks::define($config);
+
+        return $config;
+    }
+
+    it('refuses a served disk, or a public link, that holds core\'s disks', function (array $disks, array $links): void {
+        expect(fn () => MediaDisks::refuseOverlaps(withHostDisks($disks, $links)))
+            ->toThrow(RuntimeException::class, 'Refusing to boot: core\'s [kitsune-private] disk');
+    })->with([
+        // Closures: the paths need the application, which does not exist while the file loads.
+        'a served disk at storage/app' => [fn (): array => ['local' => ['driver' => 'local', 'root' => storage_path('app'), 'serve' => true]], fn (): array => []],
+        'a public link to storage/app' => [fn (): array => [], fn (): array => [public_path('files') => storage_path('app')]],
+    ]);
+
+    /** Laravel 10 and earlier rooted `local` at `storage/app`; a disk nothing serves exposes nothing. */
+    it('allows a disk nothing serves or links to hold them', function (): void {
+        expect(fn () => MediaDisks::refuseOverlaps(withHostDisks(
+            ['local' => ['driver' => 'local', 'root' => storage_path('app')], 'public' => ['driver' => 'local', 'root' => storage_path('app/public')]],
+            [public_path('storage') => storage_path('app/public')],
+        )))->not->toThrow(RuntimeException::class);
+    });
+
+    /** The sweep deletes everything on the intake disk by age, so nothing of the host's may be inside it. */
+    it('refuses any disk inside core\'s, served or not', function (string $core, string $inside): void {
+        expect(fn () => MediaDisks::refuseOverlaps(withHostDisks(['exports' => ['driver' => 'local', 'root' => storage_path($inside)]])))
+            ->toThrow(RuntimeException::class, "core's [{$core}] disk");
+    })->with([
+        'inside the intake' => [MediaDisks::INTAKE, 'app/kitsune/intake/exports'],
+        'inside the private disk' => [MediaDisks::PRIVATE, 'app/kitsune/private/exports'],
+    ]);
+
+    /**
+     * ⚠️ THROUGH A SYMLINK, as deployments share storage: the host's disk named by the shared directory, core's through
+     * the release's link to it, and core's own directory not there yet. Compared as strings they never meet.
+     */
+    it('sees through a symlinked storage directory', function (): void {
+        $shared = sys_get_temp_dir().'/kitsune-shared-'.bin2hex(random_bytes(4));
+        $release = sys_get_temp_dir().'/kitsune-release-'.bin2hex(random_bytes(4));
+        mkdir($shared.'/app', 0777, true);
+        symlink($shared, $release);
+
+        try {
+            $config = new Repository(['filesystems' => ['disks' => [
+                'local' => ['driver' => 'local', 'root' => $shared.'/app', 'serve' => true],
+                MediaDisks::INTAKE => ['driver' => 'local', 'root' => $release.'/app/kitsune/intake'],
+            ]]]);
+
+            expect(fn () => MediaDisks::refuseOverlaps($config))->toThrow(RuntimeException::class, 'kitsune-intake');
+        } finally {
+            unlink($release);
+            rmdir($shared.'/app');
+            rmdir($shared);
+        }
+    });
+
+    /** Wired where the configuration is final: after every provider has booted, which `config:cache` runs too. */
+    it('is refused when the provider boots', function (): void {
+        config(['filesystems.disks.exports' => ['driver' => 'local', 'root' => storage_path('app/kitsune/intake/exports')]]);
+
+        // The application has booted, so `booted()` runs the check at once.
+        expect(fn () => (new KitsuneServiceProvider(app()))->boot())->toThrow(RuntimeException::class, 'Refusing to boot');
+    });
+});

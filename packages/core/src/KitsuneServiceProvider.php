@@ -180,9 +180,13 @@ final class KitsuneServiceProvider extends ServiceProvider
             );
         });
 
-        // Livewire's staging keys, once every provider has booted — `MediaStaging::pin()` says why not sooner.
+        /*
+         * Livewire's staging keys, and the refusal of a host disk that overlaps core's, once every provider has booted —
+         * `MediaStaging::pin()` and `MediaDisks::refuseOverlaps()` say why not sooner.
+         */
         $this->app->booted(function (): void {
             MediaStaging::pin($this->app->make('config'));
+            MediaDisks::refuseOverlaps($this->app->make('config'));
         });
 
         if ($this->app->runningInConsole()) {
