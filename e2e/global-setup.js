@@ -49,23 +49,71 @@ module.exports = async () => {
     }
 
     /*
-     * ⚠️ AND THE RIVAL ORG'S FILE, BY ID, because nobody in Golfdom can walk the admin to it — that is the
-     * point of it. Joined through `media_files` so the id is a media entry with bytes behind it, not merely a
-     * row carrying the title.
+     * ⚠️ AND THE MEDIA FIXTURES BY ID — the rival org's file, which nobody in Golfdom can walk the admin to, and the
+     * shared and site-only pair `media-sharing.spec.js` compares at a second site. Joined through `media_files` so each
+     * id is a media entry with bytes behind it, not merely a row carrying the title.
+     *
+     * ⚠️ AND REFUSED UNLESS THEY ARE STORED AS THE SPECS ASSUME (ADR-042 decision 2). A spec asserting that the shared
+     * photo is listed at `golfdom-fr` passes just as well against a seeder that kept it to one site and a list that
+     * admits everything; the storage is checked here, once, where a wrong fixture is a setup failure rather than a
+     * test that proves the wrong thing.
      */
-    const rivalFileId = execFileSync('php', [
+    const media = JSON.parse(execFileSync('php', [
         'artisan', 'tinker', '--execute',
-        "echo DB::table('media_files')->join('entries', 'entries.id', '=', 'media_files.entry_id')"
-            + "->where('entries.title', 'Rival private asset')->value('entries.id');",
-    ], { cwd: skeleton, encoding: 'utf8' }).trim();
+        "echo json_encode(DB::table('media_files')->join('entries', 'entries.id', '=', 'media_files.entry_id')"
+            + "->whereIn('entries.title', ['Rival private asset', 'Shared course photo', 'Course map'])"
+            + "->get(['entries.id', 'entries.title', 'entries.site_id', 'entries.slug'])->keyBy('title'));",
+    ], { cwd: skeleton, encoding: 'utf8' }).trim());
 
-    if (! /^\d+$/.test(rivalFileId)) {
-        throw new Error('global-setup: the seeder produced no rival media file for media-delivery.spec.js');
+    const rival = media['Rival private asset'];
+    const shared = media['Shared course photo'];
+    const siteOnly = media['Course map'];
+
+    if (! rival || rival.site_id !== null) {
+        throw new Error('global-setup: the rival org\'s media file is missing, or was not stored shared');
+    }
+
+    if (! shared || shared.site_id !== null || shared.slug !== null) {
+        throw new Error('global-setup: "Shared course photo" is missing, or was not stored shared with no slug');
+    }
+
+    if (! siteOnly || siteOnly.site_id === null || siteOnly.slug === null) {
+        throw new Error('global-setup: "Course map" is missing, or was not kept to one site with a slug');
+    }
+
+    const rivalFileId = String(rival.id);
+
+    /*
+     * ⚠️ AND THE HIDDEN-LINK FIXTURE, refused unless it is there: the shared photo links to an article only `golfdom`
+     * sees, which `media-sharing.spec.js` saves the photo at `golfdom-fr` to keep. Without the link that spec would pass
+     * against a save that detached nothing because there was nothing to detach.
+     */
+    const fixtures = JSON.parse(execFileSync('php', [
+        'artisan', 'tinker', '--execute',
+        "echo json_encode(['notes' => DB::table('entries')->whereIn('slug', ['note-fr', 'nested-note'])->pluck('id', 'slug'),"
+            + " 'week4' => DB::table('entries')->where('slug', 'course-maintenance-week-4')->value('id'),"
+            + ` 'links' => DB::table('entry_relations')->where('source_entry_id', ${Number(shared.id)})->pluck('target_entry_id')]);`,
+    ], { cwd: skeleton, encoding: 'utf8' }).trim());
+
+    if (! fixtures.notes['note-fr'] || ! fixtures.notes['nested-note']) {
+        throw new Error('global-setup: the articles at golfdom-fr and golfdom-nested were not seeded');
+    }
+
+    if (! fixtures.links.map(Number).includes(Number(fixtures.week4))) {
+        throw new Error('global-setup: the shared photo does not link to the golfdom-only article');
     }
 
     fs.mkdirSync(path.join(__dirname, '..', '.playwright'), { recursive: true });
     fs.writeFileSync(
         path.join(__dirname, '..', '.playwright', 'media-fixture.json'),
-        JSON.stringify({ publicPath: seeded, rivalFileId }, null, 4) + '\n',
+        JSON.stringify({
+            publicPath: seeded,
+            rivalFileId,
+            sharedPhotoId: String(shared.id),
+            courseMapId: String(siteOnly.id),
+            hiddenTargetId: String(fixtures.week4),
+            frNoteId: String(fixtures.notes['note-fr']),
+            nestedNoteId: String(fixtures.notes['nested-note']),
+        }, null, 4) + '\n',
     );
 };

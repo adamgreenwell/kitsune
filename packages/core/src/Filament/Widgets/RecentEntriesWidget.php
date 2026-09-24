@@ -80,12 +80,18 @@ final class RecentEntriesWidget extends TableWidget
      *
      * ⚠️ BY TYPE ID, NOT HANDLE, for the reason `EntryCountsWidget::countsByStatus()` records.
      *
+     * ⚠️ THIS SITE'S OWN ROWS, NOT THE ORG'S SHARED MEDIA — one of the panel reads that keep Filament's unwidened rule
+     * (ADR-042 decision 2). It crosses types, so it is served by `(site_id, updated_at)` in order, and the OR that
+     * admits shared media would turn every dashboard load into a sort of every matching row. So a shared file the org
+     * uploaded elsewhere is listed on its type's page, and is neither counted on the dashboard nor "recent here" —
+     * `EntryCountsWidget` keeps this site's own rows for the reason it gives.
+     *
      * @param  Collection<int, EntryType>  $types
      * @return Builder<Entry>
      */
     public static function recentQuery(Collection $types): Builder
     {
-        return Entry::query()
+        return EntryResource::onlyThisSitesRows(Entry::query())
             ->whereIn('entry_type_id', $types->map(fn (EntryType $type): int => (int) $type->getKey())->all())
             // The id breaks ties, so two entries saved in the same second keep one order between requests.
             ->orderByDesc(self::SORT)

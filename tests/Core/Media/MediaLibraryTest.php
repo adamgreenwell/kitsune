@@ -151,16 +151,57 @@ it('fans paths out by org and date, so no directory holds everything', function 
 });
 
 /** Two uploads of one filename must not collide on `UNIQUE (site_id, entry_type_id, slug)`. */
+/**
+ * Kept to one site, a file has a slug, and two uploads of `logo.png` must not collide on `UNIQUE (site_id,
+ * entry_type_id, slug)`. Shared, it has none — so nothing there can collide, and the paths are what must differ.
+ */
 it('stores the same filename twice without colliding', function (): void {
-    $first = MediaLibrary::store(aPng(), 'logo.png', $this->imageType);
-    $second = MediaLibrary::store(aPng(), 'logo.png', $this->imageType);
+    $first = MediaLibrary::store(aPng(), 'logo.png', $this->imageType, siteOnly: true);
+    $second = MediaLibrary::store(aPng(), 'logo.png', $this->imageType, siteOnly: true);
+    $sharedFirst = MediaLibrary::store(aPng(), 'logo.png', $this->imageType);
+    $sharedSecond = MediaLibrary::store(aPng(), 'logo.png', $this->imageType);
 
-    expect($first->slug)->not->toBe($second->slug)
-        ->and(MediaFile::query()->count())->toBe(2);
+    expect($first->slug)->not->toBeNull()
+        ->and($first->slug)->not->toBe($second->slug)
+        ->and($sharedFirst->slug)->toBeNull()
+        ->and($sharedSecond->slug)->toBeNull()
+        ->and(MediaFile::query()->count())->toBe(4);
 
     $paths = MediaFile::query()->pluck('path')->all();
 
-    expect(array_unique($paths))->toHaveCount(2);
+    expect(array_unique($paths))->toHaveCount(4);
+});
+
+/** ADR-042 decision 2: shared across the org unless the uploader keeps it to one site. */
+it('shares a file across the org by default: no site, no slug, this org', function (): void {
+    $entry = MediaLibrary::store(aPng(), 'Company Logo.png', $this->imageType);
+
+    $row = DB::table('entries')->where('id', $entry->getKey())->first(['site_id', 'slug', 'org_id']);
+
+    expect($row->site_id)->toBeNull()
+        ->and($row->slug)->toBeNull()
+        ->and((int) $row->org_id)->toBe($this->org->getKey())
+        ->and($entry->isShared())->toBeTrue();
+});
+
+it('keeps a file to this site when asked: the site, and a slug', function (): void {
+    $entry = MediaLibrary::store(aPng(), 'Company Logo.png', $this->imageType, siteOnly: true);
+
+    $row = DB::table('entries')->where('id', $entry->getKey())->first(['site_id', 'slug']);
+
+    expect((int) $row->site_id)->toBe($this->site->getKey())
+        ->and($row->slug)->toStartWith('company-logo-');
+});
+
+it('refuses "this site only" with no site to keep it to, before anything is written', function (): void {
+    // The org alone — `setSite(null)` would clear the org as well, and the org refusal would answer instead.
+    app(Context::class)->forget()->setOrg($this->org);
+
+    expect(fn () => MediaLibrary::store(aPng(), 'logo.png', $this->imageType, siteOnly: true))
+        ->toThrow(RuntimeException::class, 'as "this site only" with no site in context');
+
+    expect(DB::table('entries')->count())->toBe(0)
+        ->and(Storage::disk(MediaDisks::PRIVATE)->allFiles())->toBe([]);
 });
 
 /**

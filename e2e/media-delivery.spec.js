@@ -130,10 +130,10 @@ test('refuses a signed-in user whose grants do not cover the type', async ({ pag
 /**
  * ⚠️ ANOTHER ORG'S FILE, ASKED FOR BY AN OWNER. Golfdom's owner holds every grant in their own org, and the
  * file is on the global `image` type both orgs share — so neither the grants nor the type predicate can refuse
- * this. What refuses it is the site boundary: the file is stamped with the rival's site, so Kitsune's `SiteScope`
- * and Filament's tenant scope each keep the row out of the query, and it is never found. The rival's own owner
- * being served the same id, from their own site, is what shows the 404 is the boundary and not a file that was
- * never there.
+ * this. The file is shared across the rival's org, as uploads are by default (ADR-042 decision 2), so no site
+ * refuses it either: the ORG boundary does — `SiteScope` admits a shared row only for its own org, and the panel's
+ * widened rule asks `org_id` too — and it is never found. The rival's own owner being served the same id, from
+ * their own site, is what shows the 404 is the boundary and not a file that was never there.
  */
 test('answers 404 for another org\'s file, which that org\'s owner is served', async ({ page, browser }) => {
     const { rivalFileId } = mediaFixture();

@@ -2108,11 +2108,22 @@ describe('erasure survives the history being pruned', function (): void {
             'label' => 'Slug', 'ordering' => 0,
         ]);
 
+        /*
+         * On a site of the rival's own: an entry with no site is org-shared, and an org-shared entry has no slug
+         * (ADR-021, enforced since ADR-042) — so the slug this test needs untouched has to belong to a site.
+         */
+        $rivalSite = Site::withoutScopeBecause(
+            'creating another org\'s site for its entry to live on',
+            fn ($query) => $query->create([
+                'org_id' => $rival->id, 'handle' => 'rev-rival', 'slug' => 'rev-rival', 'name' => 'Rival', 'locale' => 'en',
+            ]),
+        );
+
         $theirs = Entry::withoutScopeBecause(
             'creating another org\'s entry to prove an erasure on ours does not touch it',
             fn ($query) => $query->create([
                 'entry_type_id' => $rivalType->id, 'org_id' => $rival->id,
-                'site_id' => null, 'type_handle' => 'article',
+                'site_id' => $rivalSite->id, 'type_handle' => 'article',
                 'title' => 'Theirs', 'slug' => 'their-slug',
             ]),
         );

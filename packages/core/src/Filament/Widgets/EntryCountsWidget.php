@@ -54,7 +54,7 @@ final class EntryCountsWidget extends StatsOverviewWidget
                 $byStatus = $counts[(int) $type->getKey()] ?? [];
 
                 return Stat::make($type->plural_name, array_sum($byStatus))
-                    ->description(self::describe($byStatus))
+                    ->description(self::describe($byStatus).($type->is_media ? ' · '.__('kitsune::media.dashboard.site_own') : ''))
                     // Through `Icons::orFallback()`, for the reason navigation gives: stored icon names are data.
                     ->icon(Icons::orFallback($type->icon))
                     ->url(EntryResource::getUrl('index', ['type' => $type->handle]));
@@ -69,15 +69,18 @@ final class EntryCountsWidget extends StatsOverviewWidget
      * to filters by the type `IdentifyEntryType` resolved — see `EntryResource::getEloquentQuery()`. Counting
      * by handle would add the shadowed type's entries to a number whose list does not show them.
      *
-     * ⚠️ THROUGH `Entry::query()`, so the site scope applies: the counts are this site's, and entries shared
-     * across the org count as the entry list shows them.
+     * ⚠️ THIS SITE'S OWN ROWS, AND NOT THE ORG'S SHARED FILES — decided by Adam on the measurements, ADR-042
+     * decision 2. With the widened rule this one grouped query read every file of every media type the org holds on
+     * every site: at 290k rows it took 216 ms on SQLite and 163 ms on MySQL, against 15 ms and 52 ms for this site's
+     * own. So it keeps Filament's unwidened rule, as `RecentEntriesWidget` does, and a media type's stat says so;
+     * its list, which does admit the shared files, pages without a total for the same reason.
      *
      * @param  Collection<int, EntryType>  $types
      * @return array<int, array<string, int>> entry type id => status => entries
      */
     public static function countsByStatus(Collection $types): array
     {
-        $rows = Entry::query()
+        $rows = EntryResource::onlyThisSitesRows(Entry::query())
             ->whereIn('entry_type_id', $types->map(fn (EntryType $type): int => (int) $type->getKey())->all())
             ->toBase()
             ->select(['entry_type_id', 'status'])

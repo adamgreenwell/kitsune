@@ -37,13 +37,16 @@ use RuntimeException;
  * for cardinality one and wrong for every multi-value relation, and no engine
  * expresses "unique when a column in another table says so".
  *
- * Unscoped because it is reached only through `Entry::related()`, which
- * constrains `org_id` through `withPivotValue()` — the same reasoning as
- * `EntryRevision`, which is reached only through its Entry.
+ * Unscoped because it is reached only through an entry the caller already
+ * holds: `Entry::related()`, which constrains `org_id` through
+ * `withPivotValue()`, and the entry's own reads and restores by
+ * `source_entry_id` — `linkedIdsForField()` and `replaceRelations()`. The same
+ * reasoning as `EntryRevision`, which is reached only through its Entry.
  *
  * @property int $source_entry_id
  * @property int $target_entry_id
  * @property int|null $field_storage_id
+ * @property int $ordering
  * @property int $org_id
  */
 #[Unscoped]

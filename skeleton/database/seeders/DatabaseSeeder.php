@@ -86,7 +86,8 @@ class DatabaseSeeder extends Seeder
         $context->setOrg($orgB);
 
         $user = User::create(['name' => 'Alpha User', 'email' => 'alpha@kitsune.test', 'password' => Hash::make('password')]);
-        $user->sites()->attach([$en->id, $fr->id, $ar->id]);
+        // And `golfdom-nested`, where the global `image` type is switched off — the site shared media must not reach.
+        $user->sites()->attach([$en->id, $fr->id, $ar->id, $nested->id]);
         $user->orgs()->attach($orgA->id);
 
         /*
@@ -221,6 +222,19 @@ class DatabaseSeeder extends Seeder
             ]);
         }
 
+        /*
+         * ⚠️ AND A PHOTO, POINTING AT IMAGES — the relation field `e2e/media-sharing.spec.js` drives, because shared media
+         * has to be offered by a picker and accepted by a save at a second site (ADR-042 decision 2). On `product` rather
+         * than `article`: every article-form spec would otherwise meet one more control, and the copy-editor, who holds
+         * nothing on `image`, a picker whose search returns nothing.
+         */
+        $photoStorage = FieldStorage::create([
+            'org_id' => $orgA->id, 'handle' => 'photo', 'type' => 'relation', 'pii_class' => 'none', 'cardinality' => 1,
+            'settings' => ['targetTypes' => ['image']],
+        ]);
+
+        Field::create(['entry_type_id' => $product->id, 'field_storage_id' => $photoStorage->id, 'label' => 'Photo', 'ordering' => 3]);
+
         // Belongs to the other org — must be unreachable from Golfdom's admin.
         $confidential = EntryType::create(['org_id' => $orgB->id, 'handle' => 'confidential', 'name' => 'Confidential', 'plural_name' => 'Confidential']);
 
@@ -233,6 +247,18 @@ class DatabaseSeeder extends Seeder
             'entry_type_id' => $podcast->id,
             'scope_type' => 'site',
             'scope_id' => $en->id,
+            'is_enabled' => false,
+        ]);
+
+        /*
+         * ⚠️ AND THE GLOBAL `image` TYPE, OFF AT `golfdom-nested` — ADR-042 decision 2 applies the widened scope only
+         * together with the site's type availability, so a shared file must be neither listed, offered nor served where
+         * its type is switched off. This is the site that shows it.
+         */
+        EntryTypeAvailability::create([
+            'entry_type_id' => $image->id,
+            'scope_type' => 'site',
+            'scope_id' => $nested->id,
             'is_enabled' => false,
         ]);
 
@@ -345,9 +371,42 @@ class DatabaseSeeder extends Seeder
          * One of each visibility, because they are delivered by completely different mechanisms: the private
          * one streams through the panel route that authorises first, and the public one is a direct URL off
          * the linked disk with no PHP in the path at all.
+         *
+         * ⚠️ AND ONE OF EACH SHARING (ADR-042 decision 2). Uploads are shared across the org by default, so the logo
+         * and the course photo are; the course map is kept to Golfdom, the uploader's "this site only". The pair is
+         * what `e2e/media-sharing.spec.js` compares at a second site: the shared photo is listed, offered and served
+         * there, and the map is not. `e2e/global-setup.js` refuses to run the suite unless they are stored that way.
          */
-        $this->seedMediaFile($image, 'Course map', 'private');
+        $this->seedMediaFile($image, 'Course map', 'private', siteOnly: true);
         $this->seedMediaFile($image, 'Golfdom logo', 'public');
+        $sharedPhoto = $this->seedMediaFile($image, 'Shared course photo', 'private');
+
+        /*
+         * ⚠️ A LINK FROM THE SHARED PHOTO TO AN ARTICLE ONLY GOLFDOM SEES — ADR-042 decision 2, decided by Adam: a link
+         * a site cannot see is shown withheld and kept. The photo is edited from every site of the org; at `golfdom-fr`
+         * this article is invisible, and a form hydrated through the scoped join dropped the link and the save that
+         * followed detached it. `media-sharing.spec.js` saves the photo there and asks whether the link survived.
+         *
+         * On the global `image` type, so the field's storage is global too — a global type's fields are no org's.
+         */
+        $subjects = FieldStorage::create([
+            'org_id' => null, 'handle' => 'subjects', 'type' => 'relation', 'pii_class' => 'none', 'cardinality' => -1,
+            'settings' => ['targetTypes' => ['article']],
+        ]);
+
+        Field::create(['entry_type_id' => $image->id, 'field_storage_id' => $subjects->id, 'label' => 'Subjects', 'ordering' => 1]);
+
+        $sharedPhoto->syncFieldRelations($subjects, [Entry::query()->where('slug', 'course-maintenance-week-4')->value('id')]);
+
+        /*
+         * ⚠️ AND AN ARTICLE ON EACH OF TWO OTHER SITES, so the Attach dialog can be opened where the global `image` type is
+         * switched off (`golfdom-nested`) and, as the control, where it is on (`golfdom-fr`).
+         */
+        $context->setSite($fr);
+        Entry::create(['entry_type_id' => $article->id, 'title' => 'Note from the French edition', 'slug' => 'note-fr', 'status' => 'published']);
+        $context->setSite($nested);
+        Entry::create(['entry_type_id' => $article->id, 'title' => 'Nested course note', 'slug' => 'nested-note', 'status' => 'published']);
+        $context->setSite($en);
 
         /*
          * ⚠️ ONE ARTICLE THAT WAS PUBLISHED AND THEN DEMOTED, because a permission test needs a shape the
@@ -481,6 +540,18 @@ class DatabaseSeeder extends Seeder
         ]);
 
         /*
+         * ⚠️ A RELATION FIELD ON THE RIVAL'S OWN TYPE, POINTING AT IMAGES, so the other org's picker can be asked for
+         * Golfdom's shared photo and shown to offer only its own (ADR-042 decision 2: refused, and not offered, on
+         * another org's site).
+         */
+        $coverStorage = FieldStorage::create([
+            'org_id' => $orgB->id, 'handle' => 'cover', 'type' => 'relation', 'pii_class' => 'none', 'cardinality' => 1,
+            'settings' => ['targetTypes' => ['image']],
+        ]);
+
+        Field::create(['entry_type_id' => $confidential->id, 'field_storage_id' => $coverStorage->id, 'label' => 'Cover', 'ordering' => 1]);
+
+        /*
          * ⚠️ AND A RIVAL MEDIA FILE WITH REAL BYTES, ON THE GLOBAL TYPE — the only fixture here that actually tests
          * the SCOPE, and it does two jobs.
          *
@@ -489,15 +560,16 @@ class DatabaseSeeder extends Seeder
          * invariant no org-B row can ever carry org A's id. Delete every scope from `Entry` and that assertion
          * still passes, which makes it a test of the invariant rather than of isolation. A GLOBAL type is the one
          * case where two orgs legitimately share an `entry_type_id`, so the type predicate cannot help and only
-         * the scopes keep this row out of Golfdom's `/c/image` — `SiteScope`, since `store()` stamps the rival's
-         * site, and Filament's tenant scope with it. `admin.spec.js` asserts that, with the rival's own list
-         * showing the file as the control.
+         * the scopes keep this row out of Golfdom's `/c/image`. The file is SHARED across the rival org, as every
+         * upload is by default (ADR-042 decision 2), so no site stands in the way — it is the ORG fence that refuses
+         * it: `SiteScope` admits a shared row only for its own org, and the panel's widened rule says `org_id` too.
+         * `admin.spec.js` asserts that, with the rival's own list showing the file as the control.
          *
          * ⚠️ A STORED FILE, NOT `Entry::create()`. This used to be a byte-less `image` entry, and a media entry
          * with no file behind it is the state ADR-042 arranges never to exist. The bytes also let
          * `e2e/media-delivery.spec.js` measure the boundary at a URL rather than infer it: it signs in as
          * Golfdom's OWNER — who holds every grant in their own org — and asks for this file's id, so neither those
-         * grants nor the type can refuse the request, and only the site boundary does.
+         * grants nor the type can refuse the request, and only the org boundary does.
          */
         $this->seedMediaFile($image, 'Rival private asset', 'private');
 
@@ -511,7 +583,7 @@ class DatabaseSeeder extends Seeder
      * the same one the media test suites use; `getimagesize()` reads its dimensions and `finfo` sniffs it as
      * `image/png`, so the seeded row is one the allowlist genuinely accepted rather than one written around it.
      */
-    private function seedMediaFile(EntryType $type, string $title, string $visibility): void
+    private function seedMediaFile(EntryType $type, string $title, string $visibility, bool $siteOnly = false): Entry
     {
         $source = tempnam(sys_get_temp_dir(), 'kitsune-seed-');
 
@@ -520,7 +592,7 @@ class DatabaseSeeder extends Seeder
         ));
 
         try {
-            MediaLibrary::store($source, $title.'.png', $type, $visibility);
+            return MediaLibrary::store($source, $title.'.png', $type, $visibility, siteOnly: $siteOnly);
         } finally {
             @unlink($source);
         }

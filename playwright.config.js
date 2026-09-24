@@ -97,7 +97,7 @@ module.exports = defineConfig({
          */
         {
             name: 'media-delivery',
-            testMatch: /media-delivery\.spec\.js/,
+            testMatch: /media-(delivery|sharing)\.spec\.js/,
             dependencies: ['setup', 'setup-reader'],
             use: { ...devices['Desktop Chrome'], storageState: '.playwright/admin-auth.json' },
         },

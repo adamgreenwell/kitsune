@@ -64,6 +64,13 @@ class ManageEntryRelations extends ManageRelatedRecords
             ->modifyQueryUsing(fn (Builder $query): Builder => Permissions::constrainToViewable(
                 $query, Permissions::currentUser(),
             ))
+            /*
+             * ⚠️ BOTH NAMED, OR THE ATTACH DIALOG OFFERS NOTHING — found by ADR-042's browser test, the first to search
+             * in it. Filament guesses the inverse as `entries`, which `Entry` does not have, so every search threw; and
+             * with no title attribute it ignores the term. `admin.spec.js` only ever opened the dialog.
+             */
+            ->recordTitleAttribute('title')
+            ->inverseRelationship('referencedBy')
             ->headerActions([
                 AttachAction::make()
                     ->authorize(fn (): bool => $this->mayEditOwner())

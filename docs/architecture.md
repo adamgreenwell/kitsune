@@ -239,12 +239,15 @@ entries
   translation_group  uuid  indexed             -- links siblings across sites in a group
   origin_id          FK nullable               -- null on the origin row
   status             enum draft|published|archived
-  slug               nullable indexed          -- NULL for org-shared entries; they are not publicly addressable
+  slug               nullable indexed          -- NULL for org-shared entries; they are not publicly addressable (enforced, ADR-042)
   title              nullable                  -- promoted out of JSON for lists and search
   values             json                      -- all field data
   author_id          FK
   published_at, timestamps, soft deletes
   INDEX  (site_id, entry_type_id, status)
+  INDEX  (site_id, entry_type_id, updated_at)   -- the entry list's order (#82)
+  INDEX  (site_id, updated_at)                  -- the dashboard's recent entries (#102)
+  INDEX  (org_id, entry_type_id, updated_at)    -- a media list, which admits the org's shared rows (ADR-042; AGENTS.md §4 as amended)
   UNIQUE (site_id, entry_type_id, slug)
   UNIQUE (translation_group, site_id)
 
