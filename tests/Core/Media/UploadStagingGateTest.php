@@ -8,6 +8,7 @@
 
 declare(strict_types=1);
 
+use Filament\Http\Middleware\AuthenticateSession as FilamentAuthenticateSession;
 use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Session\Middleware\AuthenticateSession;
@@ -305,7 +306,7 @@ describe('through Kitsune\'s panel', function (): void {
      * session out at its next page once the password changed elsewhere; one kept off the panel's pages went on
      * staging. Asked only of a panel that runs that middleware, as the panel itself only asks then.
      */
-    it('refuses a session the panel would end, and only when the panel would end it', function (): void {
+    it('refuses a session the panel would end, and only when the panel would end it', function (string $sessionCheck): void {
         stagingRole($this->org, $this->user, uploadGrant('image'));
         $this->actingAs($this->user);
 
@@ -317,14 +318,21 @@ describe('through Kitsune\'s panel', function (): void {
         $this->user->passwordHash = 'hash-after';
         expectAdmittedAtGate(throughGate($request));
 
-        app(KitsunePanel::PANEL_BINDING)->middleware([AuthenticateSession::class]);
+        app(KitsunePanel::PANEL_BINDING)->middleware([$sessionCheck]);
 
         expectRefusedAtGate(throughGate($request));
 
         // The control: the hash the session stored still matches the password.
         $this->user->passwordHash = 'hash-before';
         expectAdmittedAtGate(throughGate($request));
-    });
+    })->with([
+        'Laravel\'s' => [AuthenticateSession::class],
+        /*
+         * ⚠️ AND FILAMENT'S, WHICH IS THE ONE THE SHIPPED PANEL RUNS — Codex, #152, asked whether it was recognised. It
+         * is, because it extends Laravel's; this is what would say so if an upgrade stopped it.
+         */
+        'Filament\'s, as the skeleton\'s panel runs it' => [FilamentAuthenticateSession::class],
+    ]);
 
     /**
      * ⚠️ BY THE PANEL'S OWN GUARD. The endpoint runs no `auth` middleware, so a host whose panel signs in through a
