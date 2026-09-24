@@ -253,6 +253,8 @@ class AuditedBuilder extends ScopedBuilder
      */
     public function upsert(array $values, $uniqueBy, $update = null)
     {
+        $this->refuseForeignFrom('upsert');
+
         throw new RuntimeException(self::NO_BULK_CREATE);
     }
 
@@ -343,6 +345,7 @@ class AuditedBuilder extends ScopedBuilder
     /** @param  array<string, mixed>  $values */
     public function update(array $values)
     {
+        $this->refuseForeignFrom('update');
         $this->refuseMisnamedEntryColumns($values);
         $this->refuseNoncanonicalEntryType($values);
 
@@ -351,6 +354,8 @@ class AuditedBuilder extends ScopedBuilder
 
         $this->guardScopeKeys($values);
         $this->refuseNoncanonicalStatus($values);
+        $this->refuseDeletedAtQualifier($values);
+        $this->refuseDeletedAtJsonPath($values);
 
         /*
          * ⚠️ AN INSTANCE MAY NOT WRITE OVER A ROW THAT MOVED UNDER IT — see
@@ -377,13 +382,39 @@ class AuditedBuilder extends ScopedBuilder
         }, $values);
     }
 
-    // delete() is deliberately NOT overridden. Entry soft-deletes, so both
-    // SoftDeletingScope's onDelete callback and runSoftDelete() route a
-    // deletion back through update() — where actionFor() reads `deleted_at`
-    // and names it. Auditing it here as well would record it twice.
+    /**
+     * A delete moves entries to the trash, through `update()` — and only a query that can do that may delete.
+     *
+     * Entry soft-deletes, so `SoftDeletingScope`'s `onDelete` callback and `runSoftDelete()` route a deletion back
+     * through `update()`, where `actionFor()` reads `deleted_at` and names it; auditing it here as well would record it
+     * twice.
+     *
+     * ⚠️ A QUERY WITHOUT THAT SCOPE IS REFUSED — ADR-042 decision 5. One built by `newModelQuery()`,
+     * `newQueryWithoutScopes()` or a collection's `toQuery()` never had the scope applied, so it has no `onDelete`, and
+     * Eloquent falls through to the query builder's DELETE: the rows erased outright, with no audit row and no custody
+     * of their files. Guessing that the caller meant `forceDelete()` would be guessing at an erasure.
+     */
+    public function delete()
+    {
+        $this->refuseForeignFrom('delete');
+
+        // The scope's `extend()` sets `onDelete` and registers its macros together; the macro is the typed half.
+        if (! $this->hasMacro('withTrashed')) {
+            throw new RuntimeException(
+                'Refusing to delete entries through a query without the soft-delete scope — one built by '
+                .'newModelQuery(), newQueryWithoutScopes() or a collection\'s toQuery() — because Eloquent would erase '
+                .'the rows outright, with no audit row and no custody of their files (ADR-020, ADR-042 decision 5). Use '
+                .'Entry::query()->…->delete() to move them to the trash, or forceDelete() to erase them.'
+            );
+        }
+
+        return parent::delete();
+    }
 
     public function forceDelete()
     {
+        $this->refuseForeignFrom('force-delete');
+
         /*
          * ⚠️ READ BEFORE THE DELETE, REMOVED AFTER IT — ADR-041's byte disposal, asked of the builder rather
          * than of a model event.
@@ -414,6 +445,117 @@ class AuditedBuilder extends ScopedBuilder
         MediaDisposal::remove($files);
 
         return $result;
+    }
+
+    /**
+     * Refuse a write whose `from` is not `entries` itself — ADR-042 decision 5.
+     *
+     * ⚠️ UNCONDITIONAL, AND INSIDE `withoutScopeBecause()` TOO. The keys `auditing()` locks, the scopes that narrow
+     * them and the files custody withdraws are all read through `entries`; aliased, or replaced by a sub-query, the
+     * rows written are not the rows those read. Joining other tables to `entries` is the way to reach them.
+     */
+    private function refuseForeignFrom(string $door): void
+    {
+        $from = $this->getQuery()->from;
+
+        if (is_string($from) && $from === $this->getModel()->getTable()) {
+            return;
+        }
+
+        throw new RuntimeException(sprintf(
+            'Refusing to %s entries through [%s]: an entry write runs against `%s` itself, unaliased, because the keys '
+            .'it audits, the scopes it applies and the files it withdraws are all read through that name (ADR-020, '
+            .'ADR-042 decision 5). Join other tables to `%s` instead.',
+            $door,
+            is_string($from) ? $from : 'a sub-query',
+            $this->getModel()->getTable(),
+            $this->getModel()->getTable(),
+        ));
+    }
+
+    /**
+     * Refuse `deleted_at` qualified by any table but `entries` — ADR-042 decision 5.
+     *
+     * ⚠️ BECAUSE MYSQL AND MARIADB KEEP THE QUALIFIER. `update(['p.deleted_at' => now()])` over a join trashes the
+     * joined rows there, and the entries' own rows on PostgreSQL and SQLite, which drop it: either way the rows trashed
+     * are not the rows whose files were withdrawn.
+     *
+     * @param  array<string, mixed>  $values
+     */
+    private function refuseDeletedAtQualifier(array $values): void
+    {
+        foreach (array_keys($values) as $written) {
+            $written = (string) $written;
+
+            if ($this->bareColumn($written) !== 'deleted_at') {
+                continue;
+            }
+
+            $column = explode('->', $written, 2)[0];
+            $dot = strrpos($column, '.');
+
+            if ($dot === false) {
+                continue;
+            }
+
+            $qualifier = implode('.', array_map(
+                static fn (string $segment): string => trim($segment, '`"[] '),
+                explode('.', substr($column, 0, $dot)),
+            ));
+
+            if ($qualifier !== $this->getModel()->getTable()) {
+                throw new RuntimeException(sprintf(
+                    'Refusing to write [%s]: an entry is trashed or restored through `%s.deleted_at` alone, because the '
+                    .'rows it trashes must be the rows whose files are withdrawn (ADR-042 decision 5).',
+                    $written,
+                    $this->getModel()->getTable(),
+                ));
+            }
+        }
+    }
+
+    /**
+     * Refuse a JSON path into `deleted_at` — ADR-042 decision 5.
+     *
+     * ⚠️ ITS VALUE IS NOT WHAT IT STORES. On SQLite `update(['deleted_at->x' => null])` stores `{}` and trashes the row,
+     * while the trail, reading the null, records a restore.
+     *
+     * @param  array<string, mixed>  $values
+     */
+    private function refuseDeletedAtJsonPath(array $values): void
+    {
+        foreach (array_keys($values) as $written) {
+            if (str_contains((string) $written, '->') && $this->bareColumn((string) $written) === 'deleted_at') {
+                throw new RuntimeException(sprintf(
+                    'Refusing to write [%s]: `deleted_at` holds no JSON, and on SQLite a path write stores {} and '
+                    .'trashes the row while the trail records a restore (ADR-042 decision 5).',
+                    $written,
+                ));
+            }
+        }
+    }
+
+    /**
+     * Refuse `deleted_at` at an arithmetic door — ADR-042 decision 5.
+     *
+     * ⚠️ THE FOUR ARITHMETIC METHODS NEVER REACH `update()`, where trashing a public file withdraws it: their extra
+     * columns are written by their own statement. So `increment('id', 0, ['deleted_at' => now()])` would trash an entry
+     * with its file still on the web, and the same with a null would restore one without publishing it. Trashing and
+     * restoring go through `delete()` and `restore()`.
+     *
+     * @param  array<array-key, mixed>  $columnsAndExtra
+     */
+    private function refuseSoftDeleteArithmetic(array $columnsAndExtra): void
+    {
+        foreach (array_keys($columnsAndExtra) as $written) {
+            if ($this->bareColumn((string) $written) === 'deleted_at') {
+                throw new RuntimeException(sprintf(
+                    'Refusing to write [%s] through an arithmetic update: an entry is trashed by delete() and restored by '
+                    .'restore(), which withdraw and publish its files (ADR-042 decision 5).',
+                    $written,
+                ));
+            }
+        }
     }
 
     /**
@@ -816,6 +958,8 @@ class AuditedBuilder extends ScopedBuilder
      */
     public function increment($column, $amount = 1, array $extra = [])
     {
+        $this->refuseForeignFrom('increment');
+        $this->refuseSoftDeleteArithmetic([(string) $column => $amount, ...$extra]);
         $this->refuseMisnamedEntryColumns([(string) $column => $amount, ...$extra]);
         $this->refuseScopeArithmetic([(string) $column => $amount, ...$extra]);
         $this->refusePerRowExtras($extra);
@@ -843,6 +987,8 @@ class AuditedBuilder extends ScopedBuilder
      */
     public function decrement($column, $amount = 1, array $extra = [])
     {
+        $this->refuseForeignFrom('decrement');
+        $this->refuseSoftDeleteArithmetic([(string) $column => $amount, ...$extra]);
         $this->refuseMisnamedEntryColumns([(string) $column => $amount, ...$extra]);
         $this->refuseScopeArithmetic([(string) $column => $amount, ...$extra]);
         $this->refusePerRowExtras($extra);
@@ -875,6 +1021,8 @@ class AuditedBuilder extends ScopedBuilder
      */
     public function incrementEach(array $columns, array $extra = [])
     {
+        $this->refuseForeignFrom('increment');
+        $this->refuseSoftDeleteArithmetic([...$columns, ...$extra]);
         $this->refuseMisnamedEntryColumns([...$columns, ...$extra]);
         $this->refuseScopeArithmetic([...$columns, ...$extra]);
         $this->refusePerRowExtras($extra);
@@ -902,6 +1050,8 @@ class AuditedBuilder extends ScopedBuilder
      */
     public function decrementEach(array $columns, array $extra = [])
     {
+        $this->refuseForeignFrom('decrement');
+        $this->refuseSoftDeleteArithmetic([...$columns, ...$extra]);
         $this->refuseMisnamedEntryColumns([...$columns, ...$extra]);
         $this->refuseScopeArithmetic([...$columns, ...$extra]);
         $this->refusePerRowExtras($extra);
