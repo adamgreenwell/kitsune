@@ -11,10 +11,12 @@ declare(strict_types=1);
 namespace Kitsune\Core\Audit;
 
 use Illuminate\Contracts\Database\Query\Expression;
+use Illuminate\Database\Connection;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use Kitsune\Core\Database\TransactionRecovery;
 use Kitsune\Core\Media\MediaDisposal;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
@@ -22,6 +24,7 @@ use Kitsune\Core\Schema\RevisionWrites;
 use Kitsune\Core\Tenancy\Concerns\ResolvesWrittenColumns;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tenancy\ScopedBuilder;
+use LogicException;
 use RuntimeException;
 
 /**
@@ -988,14 +991,24 @@ class AuditedBuilder extends ScopedBuilder
      * The keys are read BEFORE the write for the original reason too: after
      * it a deleted row has no id to look up.
      *
-     * @param  callable(): mixed  $write
+     * ⚠️ ON THE WRITE'S OWN CONNECTION, AND THROUGH `TransactionRecovery` — ADR-042 decision 5. A failure here, a
+     * failed commit above all, must not leave the engine inside a transaction or the transaction manager holding work
+     * registered for a write that never landed; `TransactionRecovery` says what it repairs. The write is handed the keys
+     * it is constrained to, so what runs inside it acts on exactly the rows audited.
+     *
+     * @param  callable(list<int|string>): mixed  $write
      * @param  array<string, mixed>  $written
      */
     private function auditing(string $action, callable $write, array $written = []): mixed
     {
         $model = $this->getModel();
+        $connection = $this->getQuery()->getConnection();
 
-        return DB::transaction(function () use ($action, $write, $model, $written): mixed {
+        if (! $connection instanceof Connection) {
+            throw new LogicException('Refusing an audited write on a connection that is not a database connection.');
+        }
+
+        return TransactionRecovery::run($connection, function () use ($action, $write, $model, $written): mixed {
             // ⚠️ DEDUPLICATED. A bulk write over a join — say `entries`
             // joined to `entry_relations`, where several rows point at one
             // entry — yields that entry's key once per matching row. The
@@ -1029,7 +1042,7 @@ class AuditedBuilder extends ScopedBuilder
             // describes exactly the rows the write is about to change.
             $before = $this->versionedStateOf($keys, $written);
 
-            $result = $write();
+            $result = $write($keys);
 
             $this->recordRevisions($before);
 
