@@ -41,10 +41,18 @@ final class MediaPruneCommand extends Command
 
     public function handle(): int
     {
-        $disks = array_unique([
+        /*
+         * ⚠️ THE CONFIGURED DISKS AND EVERY DISK A ROW NAMES. ADR-042 moved private media off `local` and left the
+         * rows already naming it valid — delivered and disposed of from `local` — so a refused disposal of one of
+         * those leaves its orphan there, and `MediaDisposal` sends the operator here to find it. Asking the table
+         * which disks it uses is the command's own rule: a disk nothing names and nothing is configured to use is
+         * not this command's to sweep, because its `media/` folder may be the host's.
+         */
+        $disks = array_values(array_unique([
             MediaLibrary::diskFor('public'),
             MediaLibrary::diskFor('private'),
-        ]);
+            ...MediaFile::query()->distinct()->pluck('disk')->map(static fn (mixed $disk): string => (string) $disk)->all(),
+        ]));
 
         /*
          * Every path the table knows about, keyed "disk:path". Read once: an installation's media table is

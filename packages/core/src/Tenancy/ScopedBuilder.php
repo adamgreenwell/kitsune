@@ -26,6 +26,7 @@ use Kitsune\Core\Tenancy\Concerns\GuardsCascadingDeletes;
 use Kitsune\Core\Tenancy\Concerns\ReadsWrittenKeys;
 use Kitsune\Core\Tenancy\Concerns\ResolvesWrittenColumns;
 use Kitsune\Core\Tenancy\Concerns\TouchesThroughUpdate;
+use Kitsune\Core\Tenancy\Contracts\FixesColumnsAtCreation;
 use Kitsune\Core\Tenancy\Contracts\RequiresModelSave;
 use RuntimeException;
 
@@ -100,10 +101,50 @@ class ScopedBuilder extends Builder
     {
         $this->refuseAmbiguousColumns($values);
         $this->guardScopeKeys($values);
+        $this->refuseFixedColumns($values);
         $this->refusePerRowColumns($values);
         $this->checkWrittenSettings($values);
 
         return $this->forgettingResolvedSettings(parent::update($values));
+    }
+
+    /**
+     * Refuse an update to a column the model fixes at creation — see `FixesColumnsAtCreation`.
+     *
+     * ⚠️ UNCONDITIONAL, INCLUDING INSIDE `withoutScopeBecause()`, which is the difference from
+     * `refusePerRowColumns()` and the reason this is not that list. Codex found `is_media` changed by
+     * `EntryType::withoutScopeBecause(…, fn ($q) => $q->whereKey($id)->update(['is_media' => false]))` on #150: the
+     * per-row list stood down, and a bulk write dispatches no listener for the model's own lock to run in.
+     *
+     * Every spelling the database would store into the column is the column, as everywhere in this builder.
+     *
+     * @param  array<array-key, mixed>  $values
+     */
+    private function refuseFixedColumns(array $values): void
+    {
+        $model = $this->getModel();
+
+        if (! $model instanceof FixesColumnsAtCreation) {
+            return;
+        }
+
+        $fixed = $model::columnsFixedAtCreation();
+
+        foreach (array_keys($values) as $written) {
+            $column = $this->bareColumn((string) $written);
+
+            if (! isset($fixed[$column])) {
+                continue;
+            }
+
+            throw new RuntimeException(sprintf(
+                '[%s] is fixed when %s is created, and no update writes it — not a save, a bulk write, an '
+                .'arithmetic write\'s extra columns or an upsert, inside withoutScopeBecause() or out: %s',
+                $column,
+                class_basename($model),
+                $fixed[$column],
+            ));
+        }
     }
 
     /**
@@ -971,6 +1012,7 @@ class ScopedBuilder extends Builder
     {
         $this->refuseAmbiguousColumns($values);
         $this->refuseScopeArithmetic($values);
+        $this->refuseFixedColumns($values);
         $this->refusePerRowColumns($values);
 
         // ⚠️ AND THE SETTINGS CHECK, which the two refusals above do not replace: they stand down inside
@@ -1064,6 +1106,19 @@ class ScopedBuilder extends Builder
             $this->refuseAmbiguousColumns($update);
             $this->checkWrittenSettings($update);
         }
+
+        /*
+         * On conflict an upsert updates: every column its rows name when `$update` is null, the named ones when it
+         * is a list, the keys when it is a map. A column fixed at creation may be in the insert half and in none of
+         * those.
+         */
+        $updated = match (true) {
+            $update === null => array_fill_keys(array_keys(self::insertRows($values)[0] ?? []), null),
+            array_is_list($update) => array_fill_keys(array_map('strval', $update), null),
+            default => $update,
+        };
+
+        $this->refuseFixedColumns($updated);
 
         // And dropped after, like every other write that can change an existing row: on conflict an upsert IS an
         // update, and without this the memo kept the row as it was (Codex, #127).

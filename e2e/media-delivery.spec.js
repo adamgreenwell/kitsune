@@ -25,7 +25,7 @@ const { test, expect, request: playwrightRequest } = require('@playwright/test')
  * load-bearing risk here is URL generation across page boundaries. Walking `/c/image` → a record page → the
  * media URL crosses two of them.
  *
- * The session is Golfdom's OWNER, who holds every grant in his own org. One block reuses the copy-editor's
+ * The session is Golfdom's OWNER, who holds every grant in their own org. One block reuses the copy-editor's
  * storage state — `auth-reader.setup.js`'s output, not a sign-in — because `playwright.config.js` records
  * that signing in inside a spec against one dev server and one SQLite file timed out intermittently.
  */
@@ -37,11 +37,18 @@ const SITE = 'golfdom';
  * a top-level require of a file `global-setup.js` has not written yet fails collection for the whole project
  * — which reads as "no tests found" rather than as a missing fixture.
  */
-function publicMediaPath() {
+function mediaFixture() {
     const file = path.join(__dirname, '..', '.playwright', 'media-fixture.json');
 
-    return JSON.parse(fs.readFileSync(file, 'utf8')).publicPath;
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
 }
+
+function publicMediaPath() {
+    return mediaFixture().publicPath;
+}
+
+/** The rival org's owner — `auth.setup.js`'s second session. */
+const RIVAL_STATE = '.playwright/admin-rival-auth.json';
 const READER_STATE = '.playwright/admin-reader-auth.json';
 
 /** The id of the seeded media entry with this title, read by walking the admin to it. */
@@ -118,6 +125,33 @@ test('refuses a signed-in user whose grants do not cover the type', async ({ pag
     expect(response.status()).toBe(403);
 
     await reader.dispose();
+});
+
+/**
+ * ⚠️ ANOTHER ORG'S FILE, ASKED FOR BY AN OWNER. Golfdom's owner holds every grant in their own org, and the
+ * file is on the global `image` type both orgs share — so neither the grants nor the type predicate can refuse
+ * this. What refuses it is the site boundary: the file is stamped with the rival's site, so Kitsune's `SiteScope`
+ * and Filament's tenant scope each keep the row out of the query, and it is never found. The rival's own owner
+ * being served the same id, from their own site, is what shows the 404 is the boundary and not a file that was
+ * never there.
+ */
+test('answers 404 for another org\'s file, which that org\'s owner is served', async ({ page, browser }) => {
+    const { rivalFileId } = mediaFixture();
+
+    await page.goto(`/admin/${SITE}/c/image`);
+
+    const refused = await page.request.get(`/admin/${SITE}/media/${rivalFileId}`);
+
+    expect(refused.status()).toBe(404);
+
+    const rival = await browser.newContext({ storageState: RIVAL_STATE });
+
+    const served = await rival.request.get(`/admin/rival-golfdom/media/${rivalFileId}`);
+
+    expect(served.status()).toBe(200);
+    expect(served.headers()['content-type']).toBe('image/png');
+
+    await rival.close();
 });
 
 /** An id no row carries is a 404 rather than a 500, from the same place a real one is served. */

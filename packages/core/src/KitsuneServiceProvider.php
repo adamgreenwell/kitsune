@@ -25,10 +25,12 @@ use Kitsune\Core\Console\BenchmarkFloorCommand;
 use Kitsune\Core\Console\BenchmarkStorageCommand;
 use Kitsune\Core\Console\BlueprintCommand;
 use Kitsune\Core\Console\MediaPruneCommand;
+use Kitsune\Core\Console\MediaTypesCommand;
 use Kitsune\Core\Console\ModuleCommand;
 use Kitsune\Core\Console\SchemaSyncCommand;
 use Kitsune\Core\Fields\FieldTypeRegistry;
 use Kitsune\Core\Filament\RichText\BlockDirectionPlugin;
+use Kitsune\Core\Media\MediaDisks;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Modules\AdminSurface;
 use Kitsune\Core\Modules\ModuleKernel;
@@ -43,6 +45,11 @@ final class KitsuneServiceProvider extends ServiceProvider
     {
         // Beneath the host's own `config/kitsune.php`, so a host overrides a key by declaring it there.
         $this->mergeConfigFrom(__DIR__.'/../config/kitsune.php', 'kitsune');
+
+        // Core's never-served private media disk (ADR-042 decision 4a). Here, before any provider boots, because
+        // `FilesystemServiceProvider::boot()` reads each disk's `serve` flag to decide which get a route, and a
+        // definition written after that read would not be the one it acted on.
+        MediaDisks::define($this->app->make('config'));
 
         $this->app->singleton(Kitsune::class, static fn (): Kitsune => new Kitsune);
 
@@ -126,6 +133,9 @@ final class KitsuneServiceProvider extends ServiceProvider
     {
         $this->loadMigrationsFrom(__DIR__.'/../database/migrations');
 
+        // `__('kitsune::media.…')` — core's own strings, which begin with the media admin (ADR-042).
+        $this->loadTranslationsFrom(__DIR__.'/../lang', 'kitsune');
+
         /*
          * ⚠️ A ROLLBACK UNDOES THE GRANT AND NOT THE MEMO, which review found. `Role::grant()` flushes the
          * permission memo when its own transaction commits — but inside a CALLER's transaction that commit
@@ -154,6 +164,7 @@ final class KitsuneServiceProvider extends ServiceProvider
                 AuditPatternsCommand::class,
                 BlueprintCommand::class,
                 MediaPruneCommand::class,
+                MediaTypesCommand::class,
                 BenchmarkStorageCommand::class,
                 BenchmarkFloorCommand::class,
                 BenchmarkAdminCommand::class,

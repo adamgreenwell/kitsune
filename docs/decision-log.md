@@ -448,8 +448,8 @@ There is no separate media subsystem. An uploaded file is an **entry** of a syst
 > ⚠️ **Amended 2026-09-23 by ADR-042 — "a system entry type" becomes "a type declared as a media type".** Any type
 > with `entry_types.is_media` set, org-owned or global, holds media, and core ships none of `image`, `document` or
 > `video`. An org can add fields only to a type it owns — a global type's shape is editable by none — so the DAM
-> case below needs an org-owned media type, which a system type could never be. Not yet built: `is_media` lands with
-> ADR-042's migration, and until then `store()` accepts bytes for any type.
+> case below needs an org-owned media type, which a system type could never be. `is_media` arrived by a migration of
+> its own, and `store()` refuses a type without it.
 
 A "media picker" field is therefore just `relation` constrained to media entry types. No new storage strategy, no second permission model, no parallel search index.
 
@@ -3538,7 +3538,9 @@ authorises first.
 > ⚠️ **Amended 2026-09-23 by ADR-042 — as shipped, the private disk was `local`, and `local` is served.** Laravel's
 > `local` disk has `serve => true`, which answers any signed `temporaryUrl()` for it without asking `EntryPolicy`. No
 > Kitsune code mints one, so nothing leaked, but "does not serve" described the intent rather than the disk. ADR-042
-> gives private media a disk of core's own with `serve` off. Not yet built.
+> gives private media a disk of core's own with `serve` off, `kitsune-private`, and new private uploads land there.
+> Rows stored before it still name `local` and are delivered and disposed of from it; `kitsune:media-reconcile`,
+> which is to move them, is not yet built.
 
 ⚠️ **Authorising *what*, exactly, is deliberately left open here.** Today the only answer core can give is the
 entry's own permissions. ADR-040's entitlements are what will make "this reader paid for this download"
@@ -3763,7 +3765,7 @@ every row, asserted so that a later change to populate it is a visible decision 
 
 ## ADR-042 — The media admin: shared by default, uploaded through one path, and withdrawn from the web when deleted
 
-**Status:** Decided · 2026-09-23 · **Delivers ADR-021's "the media library defaults to shared"**, which the store path shipped in #145 contradicts, and **amends ADR-021** — for media types, the admin's tenant scope admits the org's shared rows, and the org-shared slug rule becomes a guard · **Amends ADR-016 and `field-types.md` §5** — a media type is any type declared as one, not a system type · **Amends ADR-041** — moves private files to a disk that is never served, decides that a soft-deleted public file's bytes leave the public disk and that a force-delete withdraws a public file before its rows go and then disposes of the path on both media disks, records that Livewire's staging was never under the upload rules as shipped, and brings its *Enforced by* up to date · **Amends `architecture.md`'s published `entry_types` shape** (gains `is_media`, with its migration) · **Phase 5 (ADR-011, v1.0)** — the admin half ADR-041 left, and the half the DAM starter waits on
+**Status:** Decided · 2026-09-23 · **Amended 2026-09-23** — *Enforced by* reports the slice declaring media types, which landed · **Delivers ADR-021's "the media library defaults to shared"**, which the store path shipped in #145 contradicts, and **amends ADR-021** — for media types, the admin's tenant scope admits the org's shared rows, and the org-shared slug rule becomes a guard · **Amends ADR-016 and `field-types.md` §5** — a media type is any type declared as one, not a system type · **Amends ADR-041** — moves private files to a disk that is never served, decides that a soft-deleted public file's bytes leave the public disk and that a force-delete withdraws a public file before its rows go and then disposes of the path on both media disks, records that Livewire's staging was never under the upload rules as shipped, and brings its *Enforced by* up to date · **Amends `architecture.md`'s published `entry_types` shape** (gains `is_media`, with its migration) · **Phase 5 (ADR-011, v1.0)** — the admin half ADR-041 left, and the half the DAM starter waits on
 
 ADR-041 decided how media bytes are stored, delivered, sanitised and disposed of, and #145–#148 built all of it:
 `MediaLibrary::store()`, `MediaIntake`, the panel route that authorises private files, disposal, prune, and SVG
@@ -3845,6 +3847,26 @@ guard: `entry_type_id` is already in `columnsRequiringModelSave()`, so they reac
 gain it yet: `EntryTypeDeclaration` is one of the four symbols ADR-039 names as the blueprint format's public
 surface, and the DAM starter is the first consumer that needs a blueprint to declare a media type — it widens that
 surface when it has a reason to.
+
+> ⚠️ **Amended 2026-09-23 — the migration's classification is a snapshot, and a deploy can leave it stale.** Codex
+> found it on #150: `deploy/release.sh` migrates while the previous release still serves, so before the new release
+> goes live an editor can create a file-less entry on a type the migration has just marked, and an import can store a
+> file on a type it left unmarked — and with the flag locked, that state had no way back. `kitsune:media-types` is the
+> way back. Read-only, it reports every type whose flag disagrees with its entries and fails, so it is the check to run
+> after activation; with `--force` and one type, it applies the migration's own rule under that type's row lock —
+> mark a type whose every entry carries a file, unmark one none of whose entries does, leave an empty one alone, and
+> refuse one holding both. It and the migration are the only writes that change the flag after creation, and
+> `store()` and the retype boundary read the flag under a shared lock, so neither acts on a value it is changing. It
+> also finds the same state made the other way: the create page still makes a file-less entry of a media type until
+> decision 3 closes it.
+
+> ⚠️ **Amended 2026-09-23 — "bulk retypes need no second guard" was wrong inside `withoutScopeBecause()`.** The escape
+> hatch stands every per-row refusal down, `entry_type_id`'s with them, so a bulk or arithmetic write there retyped
+> uploaded files onto `article` untouched. The boundary is now asked of the builder, on the rows a write has locked,
+> for every write that assigns `entry_type_id` — instance, quiet, bulk, the arithmetic doors' extra columns, and
+> inside the hatch — because the hatch decides which path may write a column, not what the column may hold, which is
+> what ADR-022's amendment says of `settings`. Arithmetic on `entry_type_id` itself is refused, and so is any value
+> that is not a positive whole number: MySQL and MariaDB round `13.9` to a type no check was asked about.
 
 ⚠️ **This amends ADR-016 and `field-types.md` §5,** which make an uploaded file an entry of a system entry type —
 `image`, `document` or `video`. A media type is now any type declared with `is_media`, org-owned or global, and core
@@ -4176,6 +4198,33 @@ installation is scheduled.
 
 **Nothing yet.** This entry is the decision, not a report of work done.
 
+> ⚠️ **Amended 2026-09-23 — the slice declaring media types landed**, and each guard it adds was removed in turn and
+> its test watched fail. `MediaTypesTest`: the migration marks a type whose every entry carries a file, trashed
+> entries included; refuses a type mixing the two, naming it by handle and id with its count of entries without a
+> file, and counting a trashed one; and refuses before it alters the table — the refusal arrives rather than the
+> engine's duplicate-column error, and the statement log holds only reads. `is_media` cannot change after creation
+> through the instance, a quiet save, in bulk, or when a `saving` listener registered later changes it — nor inside
+> `withoutScopeBecause()`, through an update, a quiet save, an arithmetic write's extra columns or an upsert, because
+> it is a column fixed at creation and `ScopedBuilder` refuses those on every update (Codex, #150). `store()`
+> refuses a type without it, reading the stored flag rather than the instance's — and again inside its row
+> transaction, so a type that stops being one while its file is written is refused. `kitsune:media-types` reports a
+> type whose flag disagrees with its entries and fails; forced, it marks, unmarks or refuses one type by the
+> migration's rule, trashed entries counting, leaves an empty type alone, and refuses a handle two orgs share. A
+> retype across the boundary is
+> refused in both directions — through the instance, a quiet save, in bulk, an arithmetic write's extra columns, and
+> inside `withoutScopeBecause()` — while one within it moves the file with the entry, and the hatch can still do so
+> in bulk; arithmetic on the type id and a type id that is not a positive whole number are refused. The seeder's
+> byte-less rival `image` is gone and its stored rival file carries `admin.spec.js`'s cross-org assertion, with
+> Golfdom's own file and the rival's owner seeing theirs as the two controls; `media-delivery.spec.js` asks for that
+> file's id as Golfdom's owner (404) and as the rival's (200). `entity-type-builder.spec.js` creates a media type
+> through the builder and finds the switch locked afterwards. **Private disk:** `MediaDisksTest` — private uploads go
+> to core's `kitsune-private`, local with `serve` off, defined when the provider registers; the framework's own route
+> registration, run over the disks as core leaves them, routes `local` when it is served and never this one; its root
+> sits outside every other local disk's, and the skeleton ignores it as it ignores `storage/app/private`; a host's
+> definition under the name is replaced. `MediaDeliveryTest` and `MediaDisposalTest` serve and dispose of a row still
+> naming `local` from `local`, and `kitsune:media-prune` sweeps every disk a row names. **Not yet:**
+> `kitsune:media-reconcile`, which is to move those rows, lands with the deletion protocol.
+
 When it lands:
 
 - **Sharing.** `store()` writes `site_id` and `slug` NULL for a shared upload and the current site and a slug for
@@ -4263,7 +4312,8 @@ When it lands:
   which action gates it, or how it is audited. (`disk` becomes mutable under ADR-042's decision 5; `visibility` does
   not.)
 - **Edited migrations never reach a deployed database.** `0001_01_01_000001_create_kitsune_schema_tables.php` has been
-  edited in place at least three times (#45, #82, #102), and `deploy/release.sh` runs `migrate --force`, which skips a
+  edited in place six times since #19 created it (#30, #35, #43, #45, #82, #102), and `deploy/release.sh` runs
+  `migrate --force`, which skips a
   migration it has already recorded. Each of those changes is therefore absent from any database migrated before it.
   ADR-042 adds `is_media` by a new migration for this reason; whether earlier changes need the same, and whether
   in-place edits stop before v1.0, is undecided

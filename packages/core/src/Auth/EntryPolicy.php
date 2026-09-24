@@ -168,8 +168,9 @@ class EntryPolicy
      *
      * ⚠️ THE SAME CLAUSE `SiteScope` APPLIES, in PHP, and the duplication is deliberate and pinned. The
      * scope's version is SQL inside a `WHERE`, so it cannot be asked about an object already in memory —
-     * which is exactly the question here. `EntryPolicyScopeAgreesWithTheScopeTest` asserts the two answer
-     * identically for every shape, so the copy cannot drift into a wider or a narrower rule.
+     * which is exactly the question here. `EntryPolicyTest`'s "agrees with the scope it is a copy of, shape by
+     * shape" asserts the two answer identically for every shape, so the copy cannot drift into a wider or a
+     * narrower rule.
      *
      * ⚠️ `site_id IS NULL` IS ORG-SHARED AND STILL FENCED BY ORG (ADR-021). One media library serves eight
      * brands, so a shared row is legitimately reachable from every site in its org — and a bare null check

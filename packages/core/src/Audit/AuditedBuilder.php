@@ -17,6 +17,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Kitsune\Core\Media\MediaDisposal;
 use Kitsune\Core\Models\Entry;
+use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Schema\RevisionWrites;
 use Kitsune\Core\Tenancy\Concerns\ResolvesWrittenColumns;
 use Kitsune\Core\Tenancy\Context;
@@ -118,6 +119,7 @@ class AuditedBuilder extends ScopedBuilder
     public function insertGetId(array $values, $sequence = null)
     {
         $this->refuseMisnamedEntryColumns($values);
+        $this->refuseNoncanonicalEntryType($values);
 
         $model = $this->getModel();
 
@@ -338,6 +340,7 @@ class AuditedBuilder extends ScopedBuilder
     public function update(array $values)
     {
         $this->refuseMisnamedEntryColumns($values);
+        $this->refuseNoncanonicalEntryType($values);
 
         // Same conversion as the insert path, at the same place: the write.
         $values = $this->getModel()->convertFieldValuesForWrite($values);
@@ -362,6 +365,7 @@ class AuditedBuilder extends ScopedBuilder
          */
         return $this->auditing($this->actionFor($values), function () use ($values) {
             $this->refuseIfTheRowMoved('update');
+            $this->refuseRetypeAcrossMediaBoundary($values);
             $this->refuseUnpermittedPublication($values);
 
             return parent::update($values);
@@ -469,6 +473,110 @@ class AuditedBuilder extends ScopedBuilder
                 implode(', ', Entry::STATUSES),
             ));
         }
+    }
+
+    /**
+     * `Entry::refuseNoncanonicalTypeKey()`, for every spelling of the column a write names — asked before
+     * conversion, which looks the type up by exactly this value, and at every door that writes one.
+     *
+     * @param  array<string, mixed>  $values
+     */
+    private function refuseNoncanonicalEntryType(array $values): void
+    {
+        foreach ($values as $written => $value) {
+            if ($this->bareColumn((string) $written) === 'entry_type_id') {
+                Entry::refuseNoncanonicalTypeKey($value);
+            }
+        }
+    }
+
+    /**
+     * ⚠️ NO AMOUNT ADDED TO A TYPE ID NAMES A TYPE ANYBODY CHOSE — `refuseScopeArithmetic()`'s reasoning, for the
+     * column that decides what an entry is. Outside `withoutScopeBecause()` the per-row column list refuses it as
+     * well; inside, that list stands down, and the media boundary cannot be asked about a destination that differs
+     * row by row.
+     *
+     * @param  array<string, mixed>  $columns  the columns moved by an amount — not the `$extra` assignments
+     */
+    private function refuseTypeArithmetic(array $columns): void
+    {
+        foreach (array_keys($columns) as $column) {
+            if ($this->bareColumn((string) $column) === 'entry_type_id') {
+                throw new RuntimeException(
+                    'Refusing to increment or decrement [entry_type_id]: no amount added to a type\'s id names a '
+                    .'type anybody chose, and the entries it lands on may cross the media boundary (ADR-042). '
+                    .'Retype an entry by saving it.'
+                );
+            }
+        }
+    }
+
+    /**
+     * Refuse a write that would move any entry it touches across the media boundary — ADR-042 decision 1.
+     *
+     * ⚠️ THE ENTRY'S HALF OF THE LOCK ON `is_media`. The type cannot change the flag, but an entry can change its
+     * type, and a retype reaches both states the lock exists to prevent: an uploaded file moved onto an `article`
+     * with its `media_files` row still attached, or an ordinary entry moved onto `image` with no bytes behind it.
+     * A retype WITHIN the boundary — an image moved to the org's own image type — is untouched.
+     *
+     * ⚠️ HERE, ON THE LOCKED ROWS, AND ASKED OF EVERY ROW THE STATEMENT WILL WRITE. It was first a method on
+     * `Entry` that judged the instance being saved, and review found the gap that shape leaves: a bulk write
+     * arrives on a prototype that does not exist, and the per-row column list that refuses it outside
+     * `withoutScopeBecause()` stands down inside — so `withoutScopeBecause(fn ($q) => $q->where('entry_type_id',
+     * $image)->update(['entry_type_id' => $article]))` moved every uploaded file onto `article`. The escape hatch
+     * decides which path may write a column, not what the column may hold (ADR-022's amendment says the same of
+     * `settings`). `auditing()` has already locked and narrowed this builder to the keys it will write, so this
+     * asks about exactly those rows. A type's flag changes after creation only through `kitsune:media-types
+     * --force`, which locks the type's row for update: the destination's flag is read here under a shared lock, and
+     * the source's entries are the rows `auditing()` has locked, which that command locks too before it counts.
+     *
+     * ⚠️ ONE QUERY ON A WRITE THAT NAMES `entry_type_id`, AND NONE ON ANY OTHER. A retype is rare; the query is a
+     * key-bounded read of the rows already locked.
+     *
+     * @param  array<string, mixed>  $values  the assignments the statement makes
+     */
+    private function refuseRetypeAcrossMediaBoundary(array $values): void
+    {
+        $destination = null;
+
+        foreach ($values as $written => $value) {
+            if ($this->bareColumn((string) $written) === 'entry_type_id') {
+                $destination = $value;
+            }
+        }
+
+        if ($destination === null) {
+            return;
+        }
+
+        $model = $this->getModel();
+        /* Under a shared lock: `kitsune:media-types --force` changes a flag with the type's row locked for update. */
+        $toMedia = (bool) EntryType::query()->whereKey($destination)->sharedLock()->value('is_media');
+
+        $crossing = $this->clone()
+            ->whereIn($model->qualifyColumn('entry_type_id'), EntryType::query()->where('is_media', ! $toMedia)->select('id'))
+            ->toBase()
+            ->first([$model->getQualifiedKeyName(), $model->qualifyColumn('entry_type_id')]);
+
+        if ($crossing === null) {
+            return;
+        }
+
+        $from = (string) EntryType::query()->whereKey($crossing->entry_type_id)->value('handle');
+        $to = (string) EntryType::query()->whereKey($destination)->value('handle');
+
+        throw new RuntimeException(sprintf(
+            'Entry %d cannot become a [%s]: [%s] is %s media type and [%s] is %s. %s (ADR-042).',
+            $crossing->{$model->getKeyName()},
+            $to,
+            $from,
+            $toMedia ? 'not a' : 'a',
+            $to,
+            $toMedia ? 'one' : 'not',
+            $toMedia
+                ? 'It would become a media entry with no file behind it'
+                : 'Its stored file would stay attached to an entry the admin shows no file for',
+        ));
     }
 
     /**
@@ -587,11 +695,14 @@ class AuditedBuilder extends ScopedBuilder
         $this->refuseScopeArithmetic([(string) $column => $amount, ...$extra]);
         $this->refusePerRowExtras($extra);
         $this->refuseNoncanonicalStatus([(string) $column => $amount, ...$extra]);
+        $this->refuseTypeArithmetic([(string) $column => $amount]);
+        $this->refuseNoncanonicalEntryType($extra);
 
         return $this->auditing(
             'updated',
             function () use ($column, $amount, $extra) {
                 $this->refuseIfTheRowMoved('increment');
+                $this->refuseRetypeAcrossMediaBoundary($extra);
                 $this->refuseUnpermittedPublication($extra);
 
                 return parent::increment($column, $amount, $extra);
@@ -610,11 +721,14 @@ class AuditedBuilder extends ScopedBuilder
         $this->refuseScopeArithmetic([(string) $column => $amount, ...$extra]);
         $this->refusePerRowExtras($extra);
         $this->refuseNoncanonicalStatus([(string) $column => $amount, ...$extra]);
+        $this->refuseTypeArithmetic([(string) $column => $amount]);
+        $this->refuseNoncanonicalEntryType($extra);
 
         return $this->auditing(
             'updated',
             function () use ($column, $amount, $extra) {
                 $this->refuseIfTheRowMoved('decrement');
+                $this->refuseRetypeAcrossMediaBoundary($extra);
                 $this->refuseUnpermittedPublication($extra);
 
                 return parent::decrement($column, $amount, $extra);
@@ -638,11 +752,14 @@ class AuditedBuilder extends ScopedBuilder
         $this->refuseScopeArithmetic([...$columns, ...$extra]);
         $this->refusePerRowExtras($extra);
         $this->refuseNoncanonicalStatus([...$columns, ...$extra]);
+        $this->refuseTypeArithmetic($columns);
+        $this->refuseNoncanonicalEntryType($extra);
 
         return $this->auditing(
             'updated',
             function () use ($columns, $extra) {
                 $this->refuseIfTheRowMoved('increment');
+                $this->refuseRetypeAcrossMediaBoundary($extra);
                 $this->refuseUnpermittedPublication([...$columns, ...$extra]);
 
                 return parent::incrementEach($columns, $extra);
@@ -661,11 +778,14 @@ class AuditedBuilder extends ScopedBuilder
         $this->refuseScopeArithmetic([...$columns, ...$extra]);
         $this->refusePerRowExtras($extra);
         $this->refuseNoncanonicalStatus([...$columns, ...$extra]);
+        $this->refuseTypeArithmetic($columns);
+        $this->refuseNoncanonicalEntryType($extra);
 
         return $this->auditing(
             'updated',
             function () use ($columns, $extra) {
                 $this->refuseIfTheRowMoved('decrement');
+                $this->refuseRetypeAcrossMediaBoundary($extra);
                 $this->refuseUnpermittedPublication([...$columns, ...$extra]);
 
                 return parent::decrementEach($columns, $extra);

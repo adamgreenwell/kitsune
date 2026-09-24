@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
+use Kitsune\Core\Media\MediaDisks;
 use Kitsune\Core\Media\MediaIntake;
 use Kitsune\Core\Media\MediaLibrary;
 use Kitsune\Core\Media\SanitisesSvg;
@@ -31,7 +32,7 @@ use Kitsune\SvgSanitizer\EnshrinedSvgSanitiser;
 
 beforeEach(function (): void {
     Storage::fake('public');
-    Storage::fake('local');
+    Storage::fake(MediaDisks::PRIVATE);
 
     $this->org = Org::create(['slug' => 'acme', 'name' => 'Acme']);
     app(Context::class)->setOrg($this->org);
@@ -40,7 +41,7 @@ beforeEach(function (): void {
 
     /* ADR-016's system media type. Org-owned here, because ADR-039 forbids a blueprint creating global rows. */
     $this->imageType = EntryType::create([
-        'org_id' => $this->org->getKey(), 'handle' => 'image', 'name' => 'Image', 'plural_name' => 'Images',
+        'org_id' => $this->org->getKey(), 'handle' => 'image', 'name' => 'Image', 'plural_name' => 'Images', 'is_media' => true,
     ]);
 });
 
@@ -85,7 +86,7 @@ it('stores privately by default, on the disk the web server does not serve', fun
 
     expect($media->visibility)->toBe('private')
         ->and($media->isPublic())->toBeFalse()
-        ->and($media->disk)->toBe('local');
+        ->and($media->disk)->toBe(MediaDisks::PRIVATE);
 
     Storage::disk('public')->assertDirectoryEmpty('media');
 });
@@ -179,7 +180,7 @@ it('removes the bytes it wrote when the rows cannot be committed', function (): 
         ->and(DB::table('media_files')->count())->toBe(0);
 
     /* Nothing left on either disk — the bytes this call wrote are gone. */
-    expect(Storage::disk('local')->allFiles('media'))->toBe([])
+    expect(Storage::disk(MediaDisks::PRIVATE)->allFiles('media'))->toBe([])
         ->and(Storage::disk('public')->allFiles('media'))->toBe([]);
 });
 
@@ -191,7 +192,7 @@ it('writes nothing at all when the file is refused', function (): void {
     expect(fn () => MediaLibrary::store($script, 'innocent.png', $this->imageType))
         ->toThrow(RuntimeException::class, 'its contents are');
 
-    expect(Storage::disk('local')->allFiles('media'))->toBe([])
+    expect(Storage::disk(MediaDisks::PRIVATE)->allFiles('media'))->toBe([])
         ->and(DB::table('entries')->count())->toBe(0);
 });
 
@@ -231,7 +232,7 @@ it('refuses svg outright while nothing is bound to sanitise it', function (): vo
         ->toThrow(RuntimeException::class, 'accepted only when a sanitiser is installed');
 
     expect(DB::table('entries')->count())->toBe(0)
-        ->and(Storage::disk('local')->allFiles('media'))->toBe([]);
+        ->and(Storage::disk(MediaDisks::PRIVATE)->allFiles('media'))->toBe([]);
 });
 
 /** ADR-041's enforcement line, at the disk. */
@@ -288,7 +289,7 @@ it('keeps no copy of the unsanitised original', function (): void {
 
     $entry = MediaLibrary::store(hostileSvg(), 'logo.svg', $this->imageType);
 
-    foreach (['local', 'public'] as $disk) {
+    foreach ([MediaDisks::PRIVATE, 'public'] as $disk) {
         foreach (Storage::disk($disk)->allFiles() as $file) {
             expect(strtolower(Storage::disk($disk)->get($file)))->not->toContain('<script');
         }
@@ -334,7 +335,7 @@ it('writes nothing when the sanitiser refuses the file', function (): void {
 
     expect(DB::table('entries')->count())->toBe(0)
         ->and(DB::table('media_files')->count())->toBe(0)
-        ->and(Storage::disk('local')->allFiles('media'))->toBe([]);
+        ->and(Storage::disk(MediaDisks::PRIVATE)->allFiles('media'))->toBe([]);
 
     app()->forgetInstance(SanitisesSvg::class);
 });

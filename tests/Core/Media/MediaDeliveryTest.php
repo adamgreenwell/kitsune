@@ -14,6 +14,7 @@ use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Facades\Storage;
 use Kitsune\Core\Http\Controllers\MediaDownloadController;
 use Kitsune\Core\Media\MediaDelivery;
+use Kitsune\Core\Media\MediaDisks;
 use Kitsune\Core\Media\MediaLibrary;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
@@ -38,7 +39,7 @@ use Kitsune\Core\Tests\Fixtures\TestUser;
 beforeEach(function (): void {
     config(['auth.providers.users.model' => TestUser::class]);
 
-    Storage::fake('local');
+    Storage::fake(MediaDisks::PRIVATE);
     Storage::fake('public');
 
     $this->org = Org::create(['slug' => 'acme', 'name' => 'Acme']);
@@ -47,7 +48,7 @@ beforeEach(function (): void {
     app(Context::class)->setSite($this->site);
 
     $this->imageType = EntryType::create([
-        'org_id' => $this->org->getKey(), 'handle' => 'image', 'name' => 'Image', 'plural_name' => 'Images',
+        'org_id' => $this->org->getKey(), 'handle' => 'image', 'name' => 'Image', 'plural_name' => 'Images', 'is_media' => true,
     ]);
 
     /** @var TestUser $user */
@@ -457,4 +458,26 @@ it('refuses a padded id rather than resolving it to the same file', function ():
     $entry = aDeliverableImage($this->imageType);
 
     $this->actingAs($this->user)->get('/test-media/t/0'.$entry->getKey())->assertNotFound();
+});
+
+/**
+ * ⚠️ A ROW STORED BEFORE ADR-042 STILL NAMES `local`, and is served from there. Delivery reads each row's own
+ * `disk` rather than the configured one, which is what lets the private disk move without stranding a file.
+ */
+it('streams a row that still names local from local', function (): void {
+    Storage::fake('local');
+    $this->role->grant('entry.image.view');
+
+    $entry = aDeliverableImage($this->imageType);
+    $file = MediaFile::query()->where('entry_id', $entry->getKey())->firstOrFail();
+
+    Storage::disk('local')->put($file->path, Storage::disk(MediaDisks::PRIVATE)->get($file->path));
+    Storage::disk(MediaDisks::PRIVATE)->delete($file->path);
+    DB::table('media_files')->where('id', $file->getKey())->update(['disk' => 'local']);
+
+    $response = $this->actingAs($this->user)->get('/test-media/t/'.$entry->getKey());
+
+    $response->assertOk();
+
+    expect($response->streamedContent())->toBe(Storage::disk('local')->get($file->path));
 });

@@ -24,6 +24,7 @@ use Kitsune\Core\Tenancy\Attributes\Unscoped;
 use Kitsune\Core\Tenancy\Concerns\DerivesGuardedColumns;
 use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
 use Kitsune\Core\Tenancy\Context;
+use Kitsune\Core\Tenancy\Contracts\FixesColumnsAtCreation;
 use Kitsune\Core\Tenancy\Contracts\RefusesCascadingDeletes;
 use Kitsune\Core\Tenancy\Contracts\RequiresModelSave;
 use Kitsune\Core\Tenancy\ScopedBuilder;
@@ -37,11 +38,12 @@ use RuntimeException;
  * @property string $plural_name
  * @property string|null $icon
  * @property bool $is_system
+ * @property bool $is_media
  * @property int|null $subject_field_id
  * @property array<string, mixed>|null $settings
  */
 #[Unscoped]
-class EntryType extends Model implements RefusesCascadingDeletes, RequiresModelSave
+class EntryType extends Model implements FixesColumnsAtCreation, RefusesCascadingDeletes, RequiresModelSave
 {
     use DerivesGuardedColumns;
     use EnforcesScope;
@@ -333,6 +335,18 @@ class EntryType extends Model implements RefusesCascadingDeletes, RequiresModelS
     protected $casts = [
         'settings' => 'array',
         'is_system' => 'boolean',
+        'is_media' => 'boolean',
+    ];
+
+    /**
+     * ⚠️ THE COLUMN'S DEFAULT, HELD ON THE INSTANCE AS WELL, so a type created without naming `is_media` reads
+     * `false` rather than `null` until it is reloaded — and so setting it to `false` afterwards is not a change
+     * the lock below would refuse.
+     *
+     * @var array<string, mixed>
+     */
+    protected $attributes = [
+        'is_media' => false,
     ];
 
     /**
@@ -401,6 +415,35 @@ class EntryType extends Model implements RefusesCascadingDeletes, RequiresModelS
             .'the navigation on every admin page. Use one of the names the entry type form offers, '
             .'or leave it empty for the default.',
             $icon,
+        ));
+    }
+
+    /**
+     * Whether this type holds media is decided when it is created, and never again — ADR-042 decision 1.
+     *
+     * ⚠️ A GUARD ON THE MODEL, NOT A DISABLED FORM FIELD. The builder's `handle` is locked in the form alone,
+     * and a rule only the panel enforces is one a console command, an import or a module walks straight past.
+     * `columnsRequiringModelSave()` names the column too, so a bulk write cannot reach it either.
+     *
+     * Either direction breaks something that already exists. A media type that stops being one keeps entries
+     * whose bytes the admin no longer offers a way to reach; an ordinary type that becomes one has entries with
+     * no bytes, which is the state the whole media design is arranged to avoid.
+     */
+    private function guardMediaFlag(): void
+    {
+        if (! $this->exists || ! $this->isDirty('is_media')) {
+            return;
+        }
+
+        throw new RuntimeException(sprintf(
+            'Entry type [%s] cannot %s a media type after it has been created: its entries were made %s, '
+            .'and changing the flag would leave them %s (ADR-042). Create a new type instead.',
+            $this->handle,
+            $this->is_media ? 'become' : 'stop being',
+            $this->is_media ? 'without files' : 'from uploaded files',
+            $this->is_media
+                ? 'as media entries with no file behind them'
+                : 'holding files the admin no longer offers any way to reach',
         ));
     }
 
@@ -568,6 +611,22 @@ class EntryType extends Model implements RefusesCascadingDeletes, RequiresModelS
              */
             'handle' => 'it is checked against the reserved handles ADR-012 lists, and a handle that '
                 .'collides with a registered route makes the admin unreachable.',
+            'is_media' => 'it is locked once the type exists, because its entries were made either from '
+                .'uploaded files or without them, and flipping it strands one kind or the other (ADR-042).',
+        ];
+    }
+
+    /**
+     * `is_media` is decided when a type is created — ADR-042 decision 1. `guardMediaFlag()` refuses the change with
+     * the type's own words on an evented save; this refuses it on every other update, inside the escape hatch too.
+     *
+     * @return array<string, string>
+     */
+    public static function columnsFixedAtCreation(): array
+    {
+        return [
+            'is_media' => 'its entries were made either from uploaded files or without them, and flipping it strands '
+                .'one kind or the other (ADR-042).',
         ];
     }
 
@@ -677,7 +736,20 @@ class EntryType extends Model implements RefusesCascadingDeletes, RequiresModelS
          * exist for the attempt that armed it, and an abort before the attempt starts leaves none.
          */
         static::creating(fn (self $type) => $type->noteGuardedColumnsDerived());
-        static::updating(fn (self $type) => $type->noteGuardedColumnsDerived());
+
+        /*
+         * ⚠️ THE MEDIA LOCK, AT THE POINT THE PROOF IS TAKEN — NOT IN `saving` WITH THE OTHER GUARDS, and review found
+         * why. The proof says the guarded columns still hold what they held when it was taken, and it is taken here,
+         * after every `saving` listener — including one a host registers after this model boots. The lock was a
+         * `saving` listener first, and such a later listener could set `is_media` after it had passed, with the proof
+         * then vouching for the change. Judged here, a change made by any `saving` listener is refused, and one made
+         * after this point no longer matches the proof, which the builder refuses. Only updates are judged: a type
+         * decides the flag when it is created.
+         */
+        static::updating(function (self $type): void {
+            $type->guardMediaFlag();
+            $type->noteGuardedColumnsDerived();
+        });
     }
 
     /** @return BelongsTo<Org, $this> */
