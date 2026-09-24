@@ -62,12 +62,17 @@ class RefusingDisk extends LocalFilesystemAdapter
         parent::__construct($root);
     }
 
-    /** Install it under a disk name, as custody will resolve it. */
-    public static function install(string $name, string $root): self
+    /**
+     * Install it under a disk name, as custody will resolve it.
+     *
+     * @param  array<string, mixed>  $config  added to the disk's configuration: `throw` makes Laravel rethrow what it
+     *                                        would otherwise answer `false` for
+     */
+    public static function install(string $name, string $root, array $config = []): self
     {
         $adapter = new self($root, $name);
 
-        Storage::set($name, new LaravelLocalAdapter(new Filesystem($adapter), $adapter, ['driver' => 'local', 'root' => $root]));
+        Storage::set($name, new LaravelLocalAdapter(new Filesystem($adapter), $adapter, ['driver' => 'local', 'root' => $root, ...$config]));
 
         return $adapter;
     }
