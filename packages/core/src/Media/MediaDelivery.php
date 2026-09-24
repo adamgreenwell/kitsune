@@ -102,7 +102,13 @@ final class MediaDelivery
             return null;
         }
 
-        if ($file->isPublic()) {
+        /*
+         * ⚠️ THE DISK DECIDES, NOT THE VISIBILITY — ADR-042 decision 5. A direct URL is the public disk's, and only a
+         * row naming it has its bytes there: a public file awaiting publication still names the private disk, and a
+         * row naming `local` would be handed `/storage/{path}`, the public link's path, where the file is not — or where
+         * a stale copy could be. Every other row is delivered as private, through the route that authorises first.
+         */
+        if ($file->isPublic() && $file->disk === MediaDisks::configured(app('config'), 'public')) {
             return Storage::disk($file->disk)->url($file->path);
         }
 

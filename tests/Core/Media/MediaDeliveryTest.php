@@ -127,6 +127,18 @@ it('gives a public file a direct disk URL under the linked path', function (): v
 });
 
 /**
+ * ⚠️ THE DISK DECIDES, NOT THE VISIBILITY — ADR-042 decision 5. A public file whose row names another disk — awaiting
+ * publication on the private disk, or a legacy row on `local` — is not at the public link's path, so it is delivered
+ * as private, and outside a panel that is no URL at all.
+ */
+it('gives no direct URL to a public file its row places on another disk', function (string $disk): void {
+    $entry = aDeliverableImage($this->imageType, 'public', 'logo.png');
+    DB::table('media_files')->where('entry_id', $entry->getKey())->update(['disk' => $disk]);
+
+    expect(MediaDelivery::urlFor($entry))->toBeNull();
+})->with(['awaiting publication on the private disk' => MediaDisks::PRIVATE, 'a legacy row on local' => 'local']);
+
+/**
  * ⚠️ AND THE INSTALLER HAS TO MAKE THE LINK, or the URL above names a path no web server can reach.
  * AGENTS.md §14: a published constraint nothing enforces is worse than an absent one. The browser suite
  * proves the link RESOLVES; this proves it is not removed from the two flows that create it.
