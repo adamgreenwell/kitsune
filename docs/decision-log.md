@@ -4321,7 +4321,10 @@ installation is scheduled.
 > slugged row, bulk writes and every arithmetic write's extra columns, raw expressions, a JSON path into either column
 > and every spelling the engine folds, inside `withoutScopeBecause()` too; `SharedSlugControlTest` — a slug-typed field's control is withheld from a stored-shared
 > entry, asked of the row. `HiddenLinksTest` — a link this site cannot see is hydrated, labelled withheld, kept by a
-> save and by a restore, and a one-link field restores in the order cardinality needs. `MediaDeliveryTest` — a site-only
+> save and by a restore, and a one-link field restores in the order cardinality needs; one whose target was retyped
+> outside the field's types — possible at a site where the source's type is off, which hides the link from the retype's
+> guard (Codex, #151) — or that points into another org is left unlabelled, so the form refuses it rather than keeping
+> it in silence, while one on a field of any type, or to an entry in the trash, keeps its label. `MediaDeliveryTest` — a site-only
 > file is refused at a sibling site and its shared twin served. In the browser, `media-sharing.spec.js`: the shared
 > file is listed, opened, served and offered at `golfdom-fr`, where the site-only map is not; its edit page offers no
 > slug; a product saved there keeps it; a link it holds to an article only `golfdom` sees survives a save at

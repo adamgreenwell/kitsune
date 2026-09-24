@@ -503,9 +503,9 @@ final class FieldValueRenderer
      * than of the request.
      *
      * ⚠️ AND THE TARGET-TYPE CONSTRAINT STILL APPLIES TO IT. The permission is the only thing relaxed: a
-     * stored relation whose target type is no longer one the FIELD allows would be refused later by
-     * `EntryRelation::guardTargetType()`, so accepting it here would swap a validation message for an
-     * exception after the entry had saved — exactly the trade the earlier round reversed.
+     * stored relation whose target type is no longer one the FIELD allows stays unlabelled, so the author
+     * meets a validation message. Accepting it here would keep it in silence — a save keeps an unchanged
+     * link's row (`Entry::replaceRelations()`), so `EntryRelation::guardTargetType()` never sees it again.
      *
      * @param  list<mixed>  $ids
      * @return array<int, string>
@@ -557,18 +557,51 @@ final class FieldValueRenderer
          * ⚠️ AND A LINK TO AN ENTRY THIS SITE CANNOT SEE — ADR-042 decision 2. A shared entry is edited from every site
          * of its org, and may link to an entry only one of them sees; `linkedIdsForField()` keeps that link in the form,
          * so it needs a label, or Filament reads it as an invalid option and the editor cannot save. Only ids the scope
-         * does not return at all: one it returns with a type the field no longer accepts stays unlabelled, as before,
-         * so the author meets a validation message rather than an exception after saving.
+         * does not return at all — one it returns with a type the field no longer accepts stays unlabelled, as before —
+         * and of those, only the ones whose type the field still accepts, by the same rule.
          */
-        $unseen = array_diff($already, array_keys($labels), Entry::query()->whereKey($already)->pluck('id')->map(
+        $unseen = array_values(array_diff($already, array_keys($labels), Entry::query()->whereKey($already)->pluck('id')->map(
             static fn (mixed $id): int => (int) $id,
-        )->all());
+        )->all()));
 
-        foreach ($unseen as $id) {
-            $labels[(int) $id] = sprintf('Entry #%d — not visible from this site', (int) $id);
+        foreach (self::stillAccepted($unseen, $targets) as $id) {
+            $labels[$id] = sprintf('Entry #%d — not visible from this site', $id);
         }
 
         return $labels;
+    }
+
+    /**
+     * Which of these linked entries, hidden from this site, are still of a type the field accepts.
+     *
+     * ⚠️ WITHOUT THIS A STALE TYPE WAS KEPT IN SILENCE — Codex, #151. Every hidden link was labelled, so one whose target
+     * had been retyped outside the field's `targetTypes` passed Filament's validation, and the save kept its row without
+     * `EntryRelation::guardTargetType()` asking again. Left unlabelled it fails validation, as a visible one does.
+     *
+     * ⚠️ READ PAST EVERY SCOPE, BECAUSE A SCOPE IS WHAT HIDES THEM — `SiteScope`, the panel's own, or the trash — and
+     * fenced instead by the org and by these ids, which are the record's own stored links. Only the type is read: no
+     * title leaves the query, so the label discloses nothing the form did not already hold. A trashed target counts,
+     * because its link is kept too, and a restore of the target finds it.
+     *
+     * @param  list<int>  $unseen
+     * @param  list<string>  $targets
+     * @return list<int>
+     */
+    private static function stillAccepted(array $unseen, array $targets): array
+    {
+        $orgId = app(Context::class)->orgId();
+
+        if ($unseen === [] || $orgId === null) {
+            return [];
+        }
+
+        return Entry::withoutGlobalScopes()
+            ->whereKey($unseen)
+            ->where('org_id', $orgId)
+            ->when($targets !== [], static fn (Builder $query): Builder => $query->whereIn('type_handle', $targets))
+            ->pluck('id')
+            ->map(static fn (mixed $id): int => (int) $id)
+            ->all();
     }
 
     /**
