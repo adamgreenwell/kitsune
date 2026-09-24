@@ -4080,6 +4080,14 @@ sweep runs. PHP's own upload temporary file precedes every rule, and is PHP's ra
 >   again: its location can only be guessed after the pin, and review found a host whose Livewire `directory` was empty
 >   would have had its whole default disk swept. The opportunistic sweep runs in the gate, after the endpoint has
 >   accepted and staged a file.
+> - **The sweep after an upload did not bound the directory alone**, as the decision above says it does (Codex,
+>   #152): it removes what is stale when someone next uploads, so the last files an uploader staged before stopping
+>   waited for an upload that might never come. Any request may now draw the sweep after its response, at 2 in 100 —
+>   the lottery Laravel collects its own session files by, for the same reason: a host with no scheduler still has
+>   requests. A sweep that fails is reported, never thrown. And the sweep checks its disk itself before it lists
+>   anything — the name still holding core's definition, no disk reaching into it — because the command and the
+>   scheduler never pass the request middleware, and a host's `booted()` callback runs after the check at boot
+>   (Codex again).
 
 **4a. Private media lives on a disk that is never served.** Core defines its own private media disk — local, `serve`
 off, like the intake disk — and points `kitsune.media.disks.private` at it, so a private file has no web route at
@@ -4323,7 +4331,7 @@ intake has no alternative. Laravel's shipped configuration and the skeleton's do
 
 **Every request pays for the check, and a late misconfiguration fails every one.** The global middleware sets four
 configuration keys and walks the roots of the configured local disks on each request — microseconds, against the
-realpath cache — and a redefinition or overlap made after boot turns every request into an error naming it, as one
+realpath cache — and 2 requests in 100 walk the intake disk after their response, which holds a day's staged files — and a redefinition or overlap made after boot turns every request into an error naming it, as one
 made before boot stops the deploy.
 
 **A host's previews of staged files stop.** With `preview_mimes` empty, host code that calls `temporaryUrl()` on a
@@ -4423,7 +4431,7 @@ installation is scheduled.
 > the upload modal.
 
 > ⚠️ **Amended 2026-09-23 — the slice owning the upload staging landed**, and each guard it adds was removed in turn
-> and its test watched fail, beside a run of the same tests passing unmutated: 79 mutations, nine of them in the
+> and its test watched fail, beside a run of the same tests passing unmutated: 86 mutations, nine of them in the
 > browser. `MediaDisksTest` — the intake disk is local and never served, a host's definition under its name is
 > replaced when the provider registers, and its root is apart from every other local disk's in both directions; boot
 > refuses a served disk or a public link holding core's disks and any disk inside them, allows a disk nothing serves
@@ -4436,8 +4444,10 @@ installation is scheduled.
 > `MediaIntake` refuses in `MediaIntake`'s own words whatever the filename holds, and a part that is incomplete or not
 > a file; Livewire's own validate-then-write step stages nothing when it refuses, beside a control that stages; the
 > sweep removes staged files and sidecars older than a day across the whole disk, a stale file's sidecar whatever its
-> age, and leaves younger ones; `kitsune:media-intake-sweep` lists without `--force`, deletes with it, and is
-> scheduled hourly; and on every request, from a global middleware that runs first, a staging key a later callback
+> age, and leaves younger ones; `kitsune:media-intake-sweep` lists without `--force`, deletes with it, is
+> scheduled hourly, and refuses a disk a later callback redefined or overlapped, deleting nothing; a request sweeps
+> after its response when the lottery draws it, at 2 in 100, and only then, and reports a sweep that fails without
+> failing the request; and on every request, from a global middleware that runs first, a staging key a later callback
 > changed is put back, and a core disk redefined or overlapped after boot is refused. `UploadStagingGateTest`, with Kitsune's context empty as on the endpoint, each refusal beside an
 > admitted control — refuses a guest; a user holding less than `view`, `create` and `publish` on a media type, each
 > missing on its own; one the panel gives no site, or refuses at a site's door; one whose media types are off
@@ -4562,7 +4572,8 @@ When it lands:
 - **Stage is expected to refuse a 4 MB upload, and runs no scheduler.** NGX-2 admits only reviewed directives and
   `client_max_body_size` is not one, and stage's PHP upload limits are recorded nowhere; a real 4 MB upload settles
   it. ~~Nothing runs `schedule:run` either, which ADR-042's intake sweep needs.~~ Nothing runs `schedule:run` either,
-  and ADR-042's intake sweep does not need it — corrected 2026-09-23: every accepted upload sweeps, and the scheduled
+  and ADR-042's intake sweep does not need it — corrected 2026-09-23: every accepted upload sweeps, and so, since
+  2026-09-24, does any request that draws the sweep's lottery after its response; the scheduled
   command is for an installation that runs one, as decision 4 says. Both are runbook changes with their own
   review, and the upload half of ADR-042's measurement waits on the first
 - Storage benchmark at 10k / 100k / 1M entries

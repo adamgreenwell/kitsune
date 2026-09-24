@@ -193,8 +193,8 @@ final class KitsuneServiceProvider extends ServiceProvider
         if ($this->app->runningInConsole()) {
             /*
              * For an installation that runs a scheduler; none needs one, because the same sweep follows every
-             * accepted upload. Hourly bounds a staged file's life at a day and an hour. No lock: the sweep deletes
-             * by age and two running at once remove the same files.
+             * accepted upload and, by lottery, any request's response. Hourly bounds a staged file's life at a day and
+             * an hour. No lock: the sweep deletes by age and two running at once remove the same files.
              */
             $this->callAfterResolving(Schedule::class, static function (Schedule $schedule): void {
                 $schedule->command('kitsune:media-intake-sweep --force')->hourly();

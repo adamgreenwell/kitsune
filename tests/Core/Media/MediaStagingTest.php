@@ -13,9 +13,11 @@ use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Contracts\Http\Kernel as HttpKernel;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Exceptions;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Validator;
+use Illuminate\Support\Lottery;
 use Illuminate\Validation\ValidationException;
 use Kitsune\Core\Http\Middleware\GuardUploadStaging;
 use Kitsune\Core\Http\Middleware\HoldMediaStaging;
@@ -277,7 +279,24 @@ describe('kitsune:media-intake-sweep', function (): void {
         expect(stagedFiles(MediaDisks::INTAKE))->toBe(['livewire-tmp/new.png', 'livewire-tmp/new.png.json']);
     });
 
-    /** For an installation that runs a scheduler — and none needs one, because every accepted upload sweeps too. */
+    /**
+     * ⚠️ A DISK A LATER CALLBACK CHANGED IS REFUSED, AND NOTHING ON IT DELETED — Codex, #152. The command and the
+     * scheduler never pass the request middleware, and a host's `booted()` callback runs after core's check at boot.
+     */
+    it('refuses a disk a later callback redefined or overlapped, deleting nothing', function (string $change): void {
+        config(match ($change) {
+            'redefined' => ['filesystems.disks.'.MediaDisks::INTAKE.'.throw' => true],
+            'overlapped' => ['filesystems.disks.exports' => ['driver' => 'local', 'root' => storage_path('app/kitsune/intake/exports')]],
+        });
+
+        $this->artisan('kitsune:media-intake-sweep --force')
+            ->expectsOutputToContain($change === 'redefined' ? 'the [kitsune-intake] disk is core\'s' : 'core\'s [kitsune-intake] disk')
+            ->assertFailed();
+
+        expect(stagedFiles(MediaDisks::INTAKE))->toHaveCount(4);
+    })->with(['redefined', 'overlapped']);
+
+    /** For an installation that runs a scheduler — and none needs one: every accepted upload sweeps, and so may any request. */
     it('is scheduled hourly, deleting', function (): void {
         $events = array_values(array_filter(
             app(Schedule::class)->events(),
@@ -297,6 +316,51 @@ describe('kitsune:media-intake-sweep', function (): void {
 describe('on every request', function (): void {
     beforeEach(function (): void {
         Route::get('/kitsune-staging-probe', static fn (): string => (string) config('livewire.temporary_file_upload.disk'));
+    });
+
+    afterEach(fn () => Lottery::determineResultNormally());
+
+    /**
+     * ⚠️ AND A SWEEP BY LOTTERY AFTER THE RESPONSE — Codex, #152. The sweep after an upload leaves the last batch until
+     * the next upload, which may never come; any request may draw it instead. Both draws, so a sweep that always or
+     * never runs fails one of them.
+     */
+    it('sweeps stale staged files after the response when the lottery says so, and only then', function (): void {
+        Storage::fake(MediaDisks::INTAKE);
+        stagedAt(MediaDisks::INTAKE, ['livewire-tmp/old.png' => 25, 'livewire-tmp/new.png' => 1]);
+
+        Lottery::alwaysLose();
+        $this->get('/kitsune-staging-probe')->assertOk();
+
+        expect(stagedFiles(MediaDisks::INTAKE))->toHaveCount(2);
+
+        Lottery::alwaysWin();
+        $this->get('/kitsune-staging-probe')->assertOk();
+
+        expect(stagedFiles(MediaDisks::INTAKE))->toBe(['livewire-tmp/new.png']);
+    });
+
+    it('draws at Laravel\'s session odds, 2 in 100', function (): void {
+        $drawn = [];
+        Lottery::setResultFactory(function (int $chances, ?int $outOf) use (&$drawn): bool {
+            $drawn[] = [$chances, $outOf];
+
+            return false;
+        });
+
+        $this->get('/kitsune-staging-probe')->assertOk();
+
+        expect($drawn)->toBe([[2, 100]]);
+    });
+
+    it('reports a sweep that fails, and answers the request all the same', function (): void {
+        Exceptions::fake();
+        Lottery::alwaysWin();
+        Storage::shouldReceive('disk')->with(MediaDisks::INTAKE)->andThrow(new RuntimeException('the intake disk is gone'));
+
+        $this->get('/kitsune-staging-probe')->assertOk();
+
+        Exceptions::assertReported(fn (RuntimeException $failed): bool => $failed->getMessage() === 'the intake disk is gone');
     });
 
     it('runs first, before any other global middleware', function (): void {

@@ -13,6 +13,7 @@ namespace Kitsune\Core\Console;
 use Illuminate\Console\Command;
 use Kitsune\Core\Media\MediaDisks;
 use Kitsune\Core\Media\MediaStaging;
+use RuntimeException;
 
 /**
  * Remove staged uploads nobody submitted — ADR-042 decision 4.
@@ -22,8 +23,11 @@ use Kitsune\Core\Media\MediaStaging;
  * rule it states. This one has no database to ask: everything on the intake disk is a staged upload by definition.
  *
  * ⚠️ NO SCHEDULER IS NEEDED TO BOUND THE DIRECTORY. The same sweep runs after every accepted upload
- * (`GuardUploadStaging`), so this exists for an operator — and core registers it with Laravel's scheduler for an
- * installation that runs one.
+ * (`GuardUploadStaging`) and, by lottery, after any request's response (`HoldMediaStaging`), so this exists for an
+ * operator — and core registers it with Laravel's scheduler for an installation that runs one.
+ *
+ * ⚠️ IT REFUSES A DISK REDEFINED OR OVERLAPPED AFTER BOOT (Codex, #152), which `MediaStaging::sweep()` checks before
+ * it lists anything: a command never passes the request middleware that checks again.
  *
  * ⚠️ READ-ONLY WITHOUT `--force`, as `kitsune:media-prune` is: it deletes files.
  */
@@ -36,7 +40,14 @@ final class MediaIntakeSweepCommand extends Command
     public function handle(): int
     {
         $force = (bool) $this->option('force');
-        $swept = MediaStaging::sweep($force);
+
+        try {
+            $swept = MediaStaging::sweep($force);
+        } catch (RuntimeException $refused) {
+            $this->error($refused->getMessage());
+
+            return self::FAILURE;
+        }
         $stale = count($swept['stale']);
 
         if ($stale === 0) {

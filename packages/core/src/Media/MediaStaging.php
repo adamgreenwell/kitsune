@@ -58,6 +58,14 @@ final class MediaStaging
     public const STALE_AFTER_SECONDS = 86_400;
 
     /**
+     * The odds a request sweeps after its response: 2 in 100, the lottery Laravel collects its own session files by,
+     * for the same reason — a host with no scheduler still has requests.
+     *
+     * @var array{int, int}
+     */
+    public const SWEEP_ODDS = [2, 100];
+
+    /**
      * Set Livewire's four staging keys, one at a time.
      *
      * ⚠️ AFTER EVERY PROVIDER HAS BOOTED (`booted()`), NOT IN `register()`. Livewire merges its defaults in its own
@@ -176,10 +184,21 @@ final class MediaStaging
      * bytes outside the sweep. A stale file's sidecar goes with it whatever the sidecar's own age, and an orphaned
      * sidecar goes by its own.
      *
+     * ⚠️ AND ONLY OF THE DISK CORE DEFINED — Codex, #152. The sweep deletes everything old on its disk, so it asks, before
+     * it lists anything, that the name still holds core's definition and that no other disk reaches into it. The boot
+     * check cannot promise that here: a host's `booted()` callback runs after it, and the command and the scheduler
+     * never pass the request middleware that checks again.
+     *
      * @return array{stale: list<string>, removed: int}
+     *
+     * @throws RuntimeException when the intake disk was redefined or overlapped, before anything is listed
      */
     public static function sweep(bool $delete = true): array
     {
+        $config = app('config');
+        MediaDisks::refuseRedefinition($config);
+        MediaDisks::refuseOverlaps($config);
+
         return self::sweepDisk(Storage::disk(MediaDisks::INTAKE), '', $delete);
     }
 
