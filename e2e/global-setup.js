@@ -117,6 +117,25 @@ module.exports = async () => {
         throw new Error(`global-setup: Livewire stages on [${staging.disk}], not on core's intake disk`);
     }
 
+    /*
+     * ⚠️ AND THE TWO FILES `media-deletion.spec.js` DELETES, with where each sits on the public disk: the spec fetches
+     * their URLs and, to make a delete refuse, takes write permission from the directory that holds them.
+     */
+    const scorecards = JSON.parse(execFileSync('php', [
+        'artisan', 'tinker', '--execute',
+        "echo json_encode(DB::table('media_files')->join('entries', 'entries.id', '=', 'media_files.entry_id')"
+            + "->whereIn('entries.title', ['Withdrawn scorecard', 'Pinned scorecard'])->where('media_files.visibility', 'public')"
+            + "->get(['entries.id', 'entries.title', 'media_files.path'])->keyBy('title'));",
+    ], { cwd: skeleton, encoding: 'utf8' }).trim());
+
+    if (! scorecards['Withdrawn scorecard'] || ! scorecards['Pinned scorecard']) {
+        throw new Error('global-setup: the seeder produced no public scorecards for media-deletion.spec.js');
+    }
+
+    const publicRoot = execFileSync('php', [
+        'artisan', 'tinker', '--execute', "echo Storage::disk('public')->path('');",
+    ], { cwd: skeleton, encoding: 'utf8' }).trim();
+
     fs.mkdirSync(path.join(__dirname, '..', '.playwright'), { recursive: true });
     fs.writeFileSync(
         path.join(__dirname, '..', '.playwright', 'media-fixture.json'),
@@ -129,6 +148,9 @@ module.exports = async () => {
             frNoteId: String(fixtures.notes['note-fr']),
             nestedNoteId: String(fixtures.notes['nested-note']),
             intakePath: staging.path,
+            withdrawn: { id: String(scorecards['Withdrawn scorecard'].id), path: scorecards['Withdrawn scorecard'].path },
+            pinned: { id: String(scorecards['Pinned scorecard'].id), path: scorecards['Pinned scorecard'].path },
+            publicRoot,
         }, null, 4) + '\n',
     );
 };

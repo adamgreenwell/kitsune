@@ -382,6 +382,14 @@ class DatabaseSeeder extends Seeder
         $sharedPhoto = $this->seedMediaFile($image, 'Shared course photo', 'private');
 
         /*
+         * ⚠️ TWO PUBLIC FILES `e2e/media-deletion.spec.js` DELETES, and no other spec touches (ADR-042 decision 5): one
+         * whose delete takes it off the web, and one whose delete the spec makes the public disk refuse. The logo stays
+         * where `media-delivery.spec.js` fetches it.
+         */
+        $this->seedMediaFile($image, 'Withdrawn scorecard', 'public');
+        $this->seedMediaFile($image, 'Pinned scorecard', 'public');
+
+        /*
          * ⚠️ A LINK FROM THE SHARED PHOTO TO AN ARTICLE ONLY GOLFDOM SEES — ADR-042 decision 2, decided by Adam: a link
          * a site cannot see is shown withheld and kept. The photo is edited from every site of the org; at `golfdom-fr`
          * this article is invisible, and a form hydrated through the scoped join dropped the link and the save that
