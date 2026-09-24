@@ -4033,7 +4033,7 @@ sweep runs. PHP's own upload temporary file precedes every rule, and is PHP's ra
 > - **"Only a user who may upload media" means what the bullet's last sentence says it must.** The gate asks whether
 >   the user could reach a real Upload action: Kitsune's panel admits them — its door, and the session check it runs
 >   if it runs one, in its middleware or its auth middleware, by class, by the `auth.session` alias or inside a
->   group — lets them enter a site, and offers them a media type there, available at that site (ADR-022) and
+>   group, and for a remembered login by the fingerprint its cookie carries — lets them enter a site, and offers them a media type there, available at that site (ADR-022) and
 >   one they may `view`, because the list page that holds the action requires it; and they hold `create` and
 >   `publish` on it in that site's org, membership included. The first design asked only for the permissions in some
 >   org, and the critique found users it admitted who could upload nowhere — no site in the org, or the media type
@@ -4417,7 +4417,7 @@ installation is scheduled.
 > the upload modal.
 
 > ⚠️ **Amended 2026-09-23 — the slice owning the upload staging landed**, and each guard it adds was removed in turn
-> and its test watched fail, beside a run of the same tests passing unmutated: 71 mutations, nine of them in the
+> and its test watched fail, beside a run of the same tests passing unmutated: 74 mutations, nine of them in the
 > browser. `MediaDisksTest` — the intake disk is local and never served, a host's definition under its name is
 > replaced when the provider registers, and its root is apart from every other local disk's in both directions; boot
 > refuses a served disk or a public link holding core's disks and any disk inside them, allows a disk nothing serves
@@ -4436,7 +4436,8 @@ installation is scheduled.
 > missing on its own; one the panel gives no site, or refuses at a site's door; one whose media types are off
 > everywhere they reach; one the panel turns away; a session the panel's `AuthenticateSession` would end —
 > Laravel's or Filament's, which the skeleton runs, in the panel's middleware or its auth middleware, named by class,
-> by alias or through a group — and only when the panel runs it; a grant on a handle the org shadows with a type that holds no media; a site whose org is
+> by alias or through a group, a remembered login included by its cookie's fingerprint — and only when the panel runs
+> it; a grant on a handle the org shadows with a type that holds no media; a site whose org is
 > gone; another org's grant without membership — asks the panel's own guard, puts the context back exactly, an org
 > without a site included, and refuses anything but a flat list of files; it sweeps after an accepted upload and never
 > after a refused one, and reports a failed sweep without failing the upload; with no panel, it asks `create` and

@@ -362,6 +362,38 @@ describe('through Kitsune\'s panel', function (): void {
         expectAdmittedAtGate(throughGate(stagingRequest()));
     });
 
+    /**
+     * ⚠️ AND A REMEMBERED LOGIN BY ITS COOKIE — Codex, #152. Signed in from the remember-me cookie, a session may hold
+     * no hash yet, and Laravel's `AuthenticateSession` then compares the password fingerprint the recaller cookie
+     * carries. `viaRemember` is set as `SessionGuard` sets it when the cookie signs the user in; the test table has no
+     * remember token to sign in with for real.
+     */
+    it('refuses a remembered login whose cookie carries an old password, and only a remembered one', function (): void {
+        stagingRole($this->org, $this->user, uploadGrant('image'));
+        $this->actingAs($this->user);
+        app(KitsunePanel::PANEL_BINDING)->middleware([AuthenticateSession::class]);
+
+        $guard = auth()->guard('web');
+        $request = stagingRequest();
+        $request->setLaravelSession(app('session')->driver());
+        $request->cookies->set($guard->getRecallerName(), $this->user->id.'|token|'.$guard->hashPasswordForCookie('hash-before'));
+        $this->user->passwordHash = 'hash-after';
+
+        // The cookie did not sign this request in, so it is not asked — Laravel ignores it too.
+        expectAdmittedAtGate(throughGate($request));
+
+        (fn () => $this->viaRemember = true)->call($guard);
+        expectRefusedAtGate(throughGate($request));
+
+        // The control: the fingerprint the cookie carries matches the password.
+        $this->user->passwordHash = 'hash-before';
+        expectAdmittedAtGate(throughGate($request));
+
+        // A remembered login whose cookie carries no fingerprint is refused, as Laravel refuses it.
+        $request->cookies->set($guard->getRecallerName(), $this->user->id.'|token');
+        expectRefusedAtGate(throughGate($request));
+    });
+
     /** Livewire's rules are keyed `files.*`: a single part, or none, would meet no rule at all. */
     it('refuses anything but a list of files, after asking who is asking', function (mixed $files): void {
         $request = Request::create('/livewire-x/upload-file', 'POST', [], [], $files === null ? [] : ['files' => $files]);

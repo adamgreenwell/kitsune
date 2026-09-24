@@ -14,6 +14,7 @@ use Closure;
 use Filament\Panel;
 use Illuminate\Auth\SessionGuard;
 use Illuminate\Contracts\Auth\Authenticatable;
+use Illuminate\Contracts\Auth\Guard;
 use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Session\Middleware\AuthenticateSession;
@@ -89,6 +90,13 @@ final class GuardUploadStaging
         }
 
         return true;
+    }
+
+    /** Laravel's own comparison: its HMAC of the password hash, or the raw hash an older session or cookie stored. */
+    private static function fingerprintMatches(Guard $guard, string $password, string $stored): bool
+    {
+        return ($guard instanceof SessionGuard && hash_equals($guard->hashPasswordForCookie($password), $stored))
+            || hash_equals($password, $stored);
     }
 
     /**
@@ -170,6 +178,21 @@ final class GuardUploadStaging
             return true;
         }
 
+        $guard = $panel->auth();
+
+        /*
+         * ⚠️ A REMEMBERED LOGIN IS CHECKED BY ITS COOKIE — Codex, #152. Signed in from the remember-me cookie, a session
+         * may hold no hash yet, and Laravel's `AuthenticateSession` then compares the password fingerprint the recaller
+         * cookie carries and logs out a stale one. The same comparison, from the same place in the cookie.
+         */
+        if ($guard instanceof SessionGuard && $guard->viaRemember()) {
+            $fromCookie = explode('|', (string) $request->cookies->get($guard->getRecallerName()))[2] ?? null;
+
+            if (! is_string($fromCookie) || ! self::fingerprintMatches($guard, $password, $fromCookie)) {
+                return false;
+            }
+        }
+
         $stored = $request->session()->get('password_hash_'.$panel->getAuthGuard());
 
         // None stored yet: the panel stores one at the next page it serves, and has ended nothing.
@@ -177,10 +200,6 @@ final class GuardUploadStaging
             return true;
         }
 
-        $guard = $panel->auth();
-
-        // Laravel's own comparison: its HMAC of the hash, or the raw hash an older session stored.
-        return ($guard instanceof SessionGuard && hash_equals($guard->hashPasswordForCookie($password), $stored))
-            || hash_equals($password, $stored);
+        return self::fingerprintMatches($guard, $password, $stored);
     }
 }
