@@ -12,9 +12,11 @@ namespace Kitsune\Core\Media;
 
 use Illuminate\Contracts\Config\Repository;
 use Illuminate\Contracts\Filesystem\Filesystem;
+use Illuminate\Contracts\Validation\Factory as ValidationFactory;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Validation\Validator;
 use Kitsune\Core\Http\Middleware\GuardUploadStaging;
 use RuntimeException;
 use Throwable;
@@ -99,6 +101,27 @@ final class MediaStaging
         self::pin($config);
         MediaDisks::refuseRedefinition($config);
         MediaDisks::refuseOverlaps($config);
+    }
+
+    /**
+     * Register the endpoint rule under its name, with the replacer that delivers its refusal.
+     *
+     * ⚠️ WHEN THE VALIDATOR IS BUILT, AND AGAIN AT THE GATE — Codex, #152. `pin()` holds the rule's NAME in Livewire's
+     * config, but what a name runs is whatever was registered under it last: a host provider booting after core's,
+     * or its own `booted()` callback, can `Validator::extend()` the same name and the endpoint would accept whatever
+     * that accepts. `GuardUploadStaging` registers it once more on its way to Livewire's controller, which validates
+     * next with nothing between — so no hook a provider holds runs later.
+     */
+    public static function extend(ValidationFactory $validator): void
+    {
+        $validator->extend(
+            self::RULE,
+            static fn (string $attribute, mixed $value): bool => self::passes($value),
+        );
+        $validator->replacer(
+            self::RULE,
+            static fn (string $message, string $attribute, string $rule, array $parameters, Validator $validation): string => self::refusal($validation->getValue($attribute)),
+        );
     }
 
     /** The endpoint rule: does `MediaIntake` accept this file? Reads the file; writes nothing. */

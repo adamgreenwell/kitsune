@@ -19,7 +19,6 @@ use Illuminate\Database\Events\TransactionRolledBack;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\ServiceProvider;
-use Illuminate\Validation\Validator;
 use Kitsune\Core\Auth\EntryPolicy;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Blueprints\BlueprintRegistry;
@@ -169,17 +168,11 @@ final class KitsuneServiceProvider extends ServiceProvider
         /*
          * The upload endpoint's rule — ADR-042 decision 4. By NAME, because `deploy/release.sh` runs `config:cache` and
          * a closure or rule object in Livewire's config fails the deploy; registered when the validator is first
-         * built rather than resolving it here. For every request, because the endpoint serves the whole installation.
+         * built rather than resolving it here, and again by the gate on the endpoint (`MediaStaging::extend()` says
+         * why). For every request, because the endpoint serves the whole installation.
          */
         $this->callAfterResolving('validator', static function (ValidationFactory $validator): void {
-            $validator->extend(
-                MediaStaging::RULE,
-                static fn (string $attribute, mixed $value): bool => MediaStaging::passes($value),
-            );
-            $validator->replacer(
-                MediaStaging::RULE,
-                static fn (string $message, string $attribute, string $rule, array $parameters, Validator $validation): string => MediaStaging::refusal($validation->getValue($attribute)),
-            );
+            MediaStaging::extend($validator);
         });
 
         /*

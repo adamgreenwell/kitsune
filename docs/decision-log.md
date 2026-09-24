@@ -4062,12 +4062,18 @@ sweep runs. PHP's own upload temporary file precedes every rule, and is PHP's ra
 >   landing in a served `<base>/public` unnoticed when the missing part was kept as text. `config:cache` boots first, so a deploy stops on it. Codex then
 >   found the names themselves could be taken back: a host's providers run after core's, so one could redefine either
 >   disk after `define()` wrote it — as `s3`, which sends Livewire past the gate and the rule, or served. Boot also
->   refuses that: each name must still be local, unserved and rooted where core put it. And no boot hook is last: a
+>   refuses that: each name must still be local, unserved and rooted where core put it — and, Codex found next, with
+>   every other key as core wrote it, because `throw` switched on turns a sidecar the sweep removed into an exception
+>   where Livewire expects an empty answer, and `links`, `lock` and `permissions` change behaviour as much. So the
+>   definition is compared whole, and the refusal names the keys that changed, never their values. And no boot hook is last: a
 >   host provider's own `booted()` callback runs after core's check (Codex again). So the whole of it — the staging
 >   keys pinned, both definitions and every overlap checked — runs once more at the start of every HTTP request, in a
 >   global middleware core puts first, after every provider and callback has run and before the router reads a
->   route's middleware. What host code changes later still, in a route's middleware or a controller, is host code,
->   which core does not govern; a queued job or a console command has the check at boot alone.
+>   route's middleware. The rule's name is pinned there, but what a name runs is whatever was registered under it
+>   last, and a later provider can `Validator::extend()` it (Codex once more): so the gate on the endpoint registers
+>   core's rule again on its way to Livewire's controller, which validates next. What host code changes later still,
+>   in a route's middleware or a controller, is host code, which core does not govern; a queued job or a console
+>   command has the check at boot alone.
 > - **What Livewire staged before core pinned its disk stays where it was**, and nothing sweeps it any more: on an
 >   installation that ran the earlier code, `local`'s `livewire-tmp`. It is removed once, by hand, where it exists —
 >   stage and development machines; no production installation ran that code. A sweep of it was built and taken out
@@ -4417,13 +4423,14 @@ installation is scheduled.
 > the upload modal.
 
 > ⚠️ **Amended 2026-09-23 — the slice owning the upload staging landed**, and each guard it adds was removed in turn
-> and its test watched fail, beside a run of the same tests passing unmutated: 74 mutations, nine of them in the
+> and its test watched fail, beside a run of the same tests passing unmutated: 79 mutations, nine of them in the
 > browser. `MediaDisksTest` — the intake disk is local and never served, a host's definition under its name is
 > replaced when the provider registers, and its root is apart from every other local disk's in both directions; boot
 > refuses a served disk or a public link holding core's disks and any disk inside them, allows a disk nothing serves
 > to hold them, sees through a symlinked storage directory, and resolves `..` as the filesystem does — back from a
 > missing directory, and from a symlink's target rather than the link; and refuses either name redefined after core — on
-> `s3`, on another driver, served, or moved — beside a control that boots. `MediaStagingTest` — Livewire stages on it, previews
+> `s3`, on another driver, served, moved, throwing, or with a key core did not write, naming the key — beside a control
+> that boots, its root written another way. `MediaStagingTest` — Livewire stages on it, previews
 > nothing, keeps its throttle with the gate after it, and its rules are `MediaIntake`'s, by name, with nothing
 > `config:cache` cannot export; the pin overrides a host's own keys and leaves the rest; the rule refuses what
 > `MediaIntake` refuses in `MediaIntake`'s own words whatever the filename holds, and a part that is incomplete or not
@@ -4440,8 +4447,9 @@ installation is scheduled.
 > it; a grant on a handle the org shadows with a type that holds no media; a site whose org is
 > gone; another org's grant without membership — asks the panel's own guard, puts the context back exactly, an org
 > without a site included, and refuses anything but a flat list of files; it sweeps after an accepted upload and never
-> after a refused one, and reports a failed sweep without failing the upload; with no panel, it asks `create` and
-> `publish` alone. `UploadSurfaceTest` — rich
+> after a refused one, and reports a failed sweep without failing the upload; it hands Livewire core's rule when a
+> later provider registered another under its name, beside a control that stages; with no panel, it asks `create`
+> and `publish` alone. `UploadSurfaceTest` — rich
 > text offers no attachments and its attach action is a hidden one holding no schema; every Livewire class the
 > packages ship carries the schema restriction; nothing in the packages mints a temporary URL or builds an image
 > column or entry. In the browser, `media-staging.spec.js`: a reader is refused at the endpoint with nothing staged,

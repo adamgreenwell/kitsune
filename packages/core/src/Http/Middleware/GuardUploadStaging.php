@@ -15,6 +15,7 @@ use Filament\Panel;
 use Illuminate\Auth\SessionGuard;
 use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Contracts\Auth\Guard;
+use Illuminate\Contracts\Validation\Factory as ValidationFactory;
 use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Session\Middleware\AuthenticateSession;
@@ -58,6 +59,9 @@ final class GuardUploadStaging
         if (! self::isListOfFiles($request->allFiles()['files'] ?? null)) {
             return response()->json(['message' => self::MALFORMED, 'errors' => ['files' => [self::MALFORMED]]], 422);
         }
+
+        // The rule's name runs core's rule: Livewire's controller validates next — `MediaStaging::extend()` says why.
+        MediaStaging::extend(app(ValidationFactory::class));
 
         $response = $next($request);
 

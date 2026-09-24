@@ -16,10 +16,13 @@ use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Exceptions;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Facades\Validator;
+use Illuminate\Validation\ValidationException;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Filament\Panels\KitsunePanel;
 use Kitsune\Core\Http\Middleware\GuardUploadStaging;
 use Kitsune\Core\Media\MediaDisks;
+use Kitsune\Core\Media\MediaStaging;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\EntryTypeAvailability;
 use Kitsune\Core\Models\Org;
@@ -28,6 +31,7 @@ use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tests\Fixtures\PanelTenancy;
 use Kitsune\Core\Tests\Fixtures\PanelUser;
+use Livewire\Features\SupportFileUploads\FileUploadController;
 use Symfony\Component\HttpFoundation\Response;
 
 /*
@@ -455,6 +459,63 @@ describe('the sweep after an accepted upload', function (): void {
         expectAdmittedAtGate(throughGate(stagingRequest()));
 
         Exceptions::assertReported(fn (RuntimeException $failed): bool => $failed->getMessage() === 'the intake disk is gone');
+    });
+});
+
+/*
+ * ⚠️ THE RULE'S NAME RUNS CORE'S RULE — Codex, #152. A provider booting after core's can `Validator::extend()` the
+ * name the staging config pins; the gate registers core's again on its way to Livewire's controller. Livewire's own
+ * validate-then-write step runs behind the gate here, so what the endpoint accepted is what reached the disk.
+ */
+describe('the rule the gate hands on', function (): void {
+    beforeEach(function (): void {
+        PanelTenancy::enter($this->here);
+        app(Context::class)->forget();
+
+        Storage::fake(MediaDisks::INTAKE);
+
+        // Livewire signs what it staged, and Testbench ships no key to sign with.
+        config(['app.key' => 'base64:'.base64_encode(random_bytes(32))]);
+
+        stagingRole($this->org, $this->user, uploadGrant('image'));
+        $this->actingAs($this->user);
+
+        // As a host provider booting after core's would register them.
+        Validator::extend(MediaStaging::RULE, static fn (): bool => true);
+        Validator::replacer(MediaStaging::RULE, static fn (): string => 'a host\'s words');
+    });
+
+    /** The gate, with Livewire's controller step behind it answering as the endpoint does. */
+    function throughGateToLivewire(UploadedFile $file): Response
+    {
+        return (new GuardUploadStaging)->handle(stagingRequest([$file]), static function () use ($file): Response {
+            try {
+                return response()->json(['paths' => (new FileUploadController)->validateAndStore([$file], MediaDisks::INTAKE)]);
+            } catch (ValidationException $refused) {
+                return response()->json(['errors' => $refused->errors()], 422);
+            }
+        });
+    }
+
+    it('is core\'s, whatever a later provider registered under its name', function (): void {
+        $script = UploadedFile::fake()->createWithContent('evil.php', '<?php echo 1;');
+
+        // The host's registration took: before the gate, the name accepts a script.
+        expect(Validator::make(['file' => $script], ['file' => MediaStaging::RULE])->passes())->toBeTrue();
+
+        $response = throughGateToLivewire($script);
+
+        expect($response->getStatusCode())->toBe(422)
+            ->and(json_decode((string) $response->getContent(), true)['errors']['files.0'] ?? null)->toBe([MediaStaging::refusal($script)])
+            ->and(Storage::disk(MediaDisks::INTAKE)->allFiles())->toBe([]);
+    });
+
+    /** The control: core's rule, handed on, stages a file `MediaIntake` accepts — sidecar and all. */
+    it('stages what core\'s rule accepts', function (): void {
+        $response = throughGateToLivewire(UploadedFile::fake()->image('photo.png', 2, 2));
+
+        expect($response->getStatusCode())->toBe(200)
+            ->and(Storage::disk(MediaDisks::INTAKE)->allFiles())->toHaveCount(2);
     });
 });
 

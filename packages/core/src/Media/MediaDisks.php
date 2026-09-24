@@ -91,7 +91,14 @@ final class MediaDisks
      * bucket past the endpoint's gate and rule; redefined as a served local disk, Laravel routes it at `storage/{path}`.
      * So once every provider has booted, each name must still be local, unserved and rooted where core put it.
      *
-     * @throws RuntimeException naming the disk and what it has become
+     * ⚠️ AND EVERY OTHER KEY AS CORE WROTE IT — Codex, #152. The first version checked those three, so `throw` switched on
+     * passed as intact, and Livewire's read of a sidecar the sweep removed, `MediaLibrary::write()` and `MediaDisposal`
+     * all expect a failure answered as `false`. `links`, `lock` and `permissions` change behaviour as much. Naming the
+     * keys that matter would leave the next one to be found, so the definition is compared whole: every key core wrote,
+     * and none added, the root as the filesystem resolves it.
+     *
+     * @throws RuntimeException naming the disk and the keys that changed — never their values, which on an object store
+     *                          would be its credentials
      */
     public static function refuseRedefinition(Repository $config): void
     {
@@ -99,27 +106,51 @@ final class MediaDisks
         self::define($core);
 
         foreach ([self::PRIVATE, self::INTAKE] as $name) {
-            $root = (string) $core->get("filesystems.disks.{$name}.root");
-            $disk = $config->get("filesystems.disks.{$name}");
+            /** @var array<string, mixed> $written */
+            $written = $core->get("filesystems.disks.{$name}");
+            $changed = self::changedKeys($written, $config->get("filesystems.disks.{$name}"));
 
-            $intact = is_array($disk)
-                && ($disk['driver'] ?? null) === 'local'
-                && ! ($disk['serve'] ?? false)
-                && is_string($disk['root'] ?? null)
-                && self::normalised($disk['root']) === self::normalised($root);
-
-            if (! $intact) {
+            if ($changed !== []) {
                 throw new RuntimeException(sprintf(
-                    'Refusing to boot: the [%s] disk is core\'s — local, never served, rooted at [%s] (ADR-042 decisions 4 '
-                    .'and 4a) — and something after core\'s provider redefined it as %s. Leave the name to core: private '
-                    .'media goes elsewhere by pointing `kitsune.media.disks.private` at a disk of your own, and the '
-                    .'intake has no alternative.',
+                    'Refusing to boot: the [%s] disk is core\'s — local, never served, rooted at [%s], answering a failure '
+                    .'with false (ADR-042 decisions 4 and 4a) — and something after core\'s provider changed its [%s]. '
+                    .'Leave the name to core: private media goes elsewhere by pointing `kitsune.media.disks.private` at a '
+                    .'disk of your own, and the intake has no alternative.',
                     $name,
-                    $root,
-                    json_encode(is_array($disk) ? array_intersect_key($disk, array_flip(['driver', 'root', 'serve'])) : $disk),
+                    (string) $written['root'],
+                    implode(', ', $changed),
                 ));
             }
         }
+    }
+
+    /**
+     * The keys in which a disk's definition differs from the one core wrote: each changed, missing or added — all of
+     * them, when it is no definition at all. A key set to null is one left out, as Laravel reads both; the root is
+     * compared as the filesystem resolves it.
+     *
+     * @param  array<string, mixed>  $written
+     * @return list<string>
+     */
+    private static function changedKeys(array $written, mixed $disk): array
+    {
+        if (! is_array($disk)) {
+            return array_keys($written);
+        }
+
+        $changed = [];
+
+        foreach (array_keys($written + $disk) as $key) {
+            $same = $key === 'root'
+                ? is_string($disk['root'] ?? null) && self::normalised($disk['root']) === self::normalised((string) $written['root'])
+                : ($disk[$key] ?? null) === ($written[$key] ?? null);
+
+            if (! $same) {
+                $changed[] = (string) $key;
+            }
+        }
+
+        return $changed;
     }
 
     /**
