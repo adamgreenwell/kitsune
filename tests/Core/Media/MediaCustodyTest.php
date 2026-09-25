@@ -133,6 +133,28 @@ function custodyHostPrivate(): RefusingDisk
     return $disk;
 }
 
+/** A legacy `local` disk, as ADR-041 left private files on: local, unserved, a root of its own. */
+function custodyLocal(): RefusingDisk
+{
+    $root = sys_get_temp_dir().'/kitsune-custody-local-'.bin2hex(random_bytes(4));
+    mkdir($root, 0777, true);
+    test()->roots = [...test()->roots, $root];
+    config(['filesystems.disks.local' => ['driver' => 'local', 'root' => $root]]);
+    $disk = RefusingDisk::install('local', $root);
+    test()->disks = [...test()->disks, 'local' => $disk];
+
+    return $disk;
+}
+
+/** @return list<string> every operation one disk saw, in order */
+function custodyEvents(string $disk): array
+{
+    return array_values(array_map(
+        static fn (array $entry): string => $entry['event'],
+        array_filter(RefusingDisk::$log, static fn (array $entry): bool => $entry['disk'] === $disk),
+    ));
+}
+
 function custodyRow(int $entryId): stdClass
 {
     return DB::table('media_files')->where('entry_id', $entryId)->first();
@@ -557,6 +579,21 @@ describe('settle', function (): void {
             && str_contains($message, 'cannot be read'))->once();
     })->with(['publication', 'compensation']);
 
+    /*
+     * T68. The served disks are emptied before the named disk is moved off, so a named disk that refuses its delete
+     * cannot keep a trashed file on the web; the row, moved last, still names it.
+     */
+    it('takes a trashed file off every served disk before it moves off the named disk', function (): void {
+        custodyLocal()->failDeletes = true;
+        [$id, $path] = custodyFile('local', ['local' => CUSTODY_PNG, 'public' => CUSTODY_PNG], trashed: true);
+
+        expect(fn () => MediaCustody::settle(DB::connection(), $id))->toThrow(MediaCustodyFailure::class, 'could not be deleted');
+
+        expect(Storage::disk('public')->exists($path))->toBeFalse()
+            ->and(custodyCopies($path)[MediaDisks::PRIVATE])->toBe($this->checksum)
+            ->and(custodyRow($id)->disk)->toBe('local');
+    });
+
     /** A publication that fails is logged, never thrown — and the log does not claim a commit that was never made. */
     it('logs a publication it could not make, as not published', function (): void {
         [$id, $path] = custodyFile(MediaDisks::PRIVATE, [MediaDisks::PRIVATE => CUSTODY_PNG]);
@@ -570,6 +607,168 @@ describe('settle', function (): void {
         Log::shouldHaveReceived('warning')->withArgs(fn (string $message): bool => str_contains($message, "entry {$id}: publication failed")
             && str_contains($message, 'so it is not published')
             && ! str_contains($message, 'whether the commit landed'))->once();
+    });
+});
+
+/*
+ * T66-T67. An unreadable copy and a file on the web — Adam, decision 6, 2026-09-25.
+ *
+ * ⚠️ SET ASIDE ONLY TO TAKE A FILE OFF THE WEB, AND NEVER TOUCHED. While settle withdraws to the private disk a file a
+ * served disk still holds, a copy that exists and cannot be read, on a disk neither served nor the target, is left where
+ * it is and the file is taken off the web from a readable copy. Everywhere else the rule stands: a copy that cannot be
+ * read is never taken for absent, and the step refuses. Each refusal is asserted from the byte log and the row, so a
+ * refusal after a byte moved, or one another guard made, cannot pass for it.
+ */
+describe('unreadable copies and exposure', function (): void {
+    // T66(a)
+    it('withdraws a trashed file past an unreadable copy on core\'s private disk, and never touches it', function (): void {
+        custodyHostPrivate();
+        [$id, $path] = custodyFile('public', ['public' => 'changed by hand', MediaDisks::PRIVATE => CUSTODY_PNG], trashed: true);
+        $this->disks[MediaDisks::PRIVATE]->unreadable = [$path];
+        Log::spy();
+
+        expect(MediaCustody::settle(DB::connection(), $id))->toBe(MediaCustody::SET_ASIDE)
+            ->and(Storage::disk('host-private')->get($path))->toBe('changed by hand')
+            ->and(Storage::disk('public')->exists($path))->toBeFalse()
+            ->and(custodyRow($id)->disk)->toBe('host-private')
+            ->and(file_get_contents($this->disks[MediaDisks::PRIVATE]->root().'/'.$path))->toBe(CUSTODY_PNG)
+            ->and(custodyEvents(MediaDisks::PRIVATE))->toBe(['fileExists', 'fileExists', 'checksum']);
+
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $message): bool => str_contains($message, "entry {$id}: the copy of [{$path}] on [".MediaDisks::PRIVATE.'] exists and cannot be read')
+            && str_contains($message, 'decision 6'))->once();
+    });
+
+    // T66(b): the keeper matched before it reached the named disk, so the named disk's first hash is its move-off.
+    it('leaves the row on a named disk it cannot read, having taken the file off the web', function (): void {
+        custodyLocal();
+        [$id, $path] = custodyFile('local', ['local' => 'stale', MediaDisks::PRIVATE => CUSTODY_PNG, 'public' => CUSTODY_PNG], trashed: true);
+        $this->disks['local']->unreadable = [$path];
+
+        expect(MediaCustody::settle(DB::connection(), $id))->toBe(MediaCustody::SET_ASIDE)
+            ->and(custodyCopies($path))->toBe(['public' => null, MediaDisks::PRIVATE => $this->checksum, 'old-cdn' => null])
+            ->and(custodyRow($id)->disk)->toBe('local')
+            ->and(file_get_contents($this->disks['local']->root().'/'.$path))->toBe('stale')
+            ->and(custodyEvents('local'))->toBe(['fileExists', 'fileExists', 'fileExists', 'checksum']);
+    });
+
+    // T66(c): nothing matches, and the named disk cannot be read, so the first readable copy in Adam's order is kept.
+    it('keeps the first readable copy when the named one cannot be read and nothing matches', function (): void {
+        custodyLocal();
+        [$id, $path] = custodyFile('local', ['local' => 'stale', 'public' => 'changed by hand'], trashed: true);
+        $this->disks['local']->unreadable = [$path];
+        Log::spy();
+
+        expect(MediaCustody::settle(DB::connection(), $id))->toBe(MediaCustody::SET_ASIDE)
+            ->and(custodyCopies($path))->toBe(['public' => null, MediaDisks::PRIVATE => hash('sha256', 'changed by hand'), 'old-cdn' => null])
+            ->and(custodyRow($id)->disk)->toBe('local')
+            ->and(file_get_contents($this->disks['local']->root().'/'.$path))->toBe('stale')
+            ->and(custodyEvents('local'))->toBe(['fileExists', 'fileExists', 'checksum']);
+
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $message): bool => str_contains($message, 'so the copy on [public] is kept')
+            && str_contains($message, 'Unreadable, and set aside: [local]'))->once();
+    });
+
+    // T67(i)
+    it('refuses when no disk the web serves holds the file', function (): void {
+        custodyHostPrivate();
+        custodyLocal();
+        [$id, $path] = custodyFile('local', ['local' => 'stale', MediaDisks::PRIVATE => CUSTODY_PNG], trashed: true);
+        $this->disks['local']->unreadable = [$path];
+
+        expect(fn () => MediaCustody::settle(DB::connection(), $id))->toThrow(MediaCustodyFailure::class, 'exists and cannot be read');
+
+        expect(custodyByteOperations())->toBe([])
+            ->and(custodyRow($id)->disk)->toBe('local');
+    });
+
+    // T67(ii)
+    it('refuses a publication, whose target is public, on any copy it cannot read', function (string $how): void {
+        [$id, $path] = custodyFile(MediaDisks::PRIVATE, [MediaDisks::PRIVATE => CUSTODY_PNG, 'old-cdn' => CUSTODY_PNG]);
+        $this->disks[MediaDisks::PRIVATE]->unreadable = [$path];
+        Log::spy();
+
+        if ($how === 'publish') {
+            MediaCustody::publish(DB::connection(), [$id]);
+
+            Log::shouldHaveReceived('warning')->withArgs(fn (string $message): bool => str_contains($message, "entry {$id}: publication failed")
+                && str_contains($message, 'exists and cannot be read'))->once();
+        } else {
+            expect(fn () => MediaCustody::settle(DB::connection(), $id, publication: true))->toThrow(MediaCustodyFailure::class, 'exists and cannot be read');
+        }
+
+        expect(custodyByteOperations())->toBe([])
+            ->and(custodyRow($id)->disk)->toBe(MediaDisks::PRIVATE);
+    })->with(['publish', 'settle']);
+
+    // T67(iii)
+    it('refuses on an unreadable copy on a disk the web serves', function (): void {
+        [$id, $path] = custodyFile('public', ['public' => CUSTODY_PNG, 'old-cdn' => 'changed by hand'], trashed: true);
+        $this->disks['public']->unreadable = [$path];
+
+        expect(fn () => MediaCustody::settle(DB::connection(), $id))->toThrow(MediaCustodyFailure::class, 'exists and cannot be read');
+
+        expect(custodyByteOperations())->toBe([])
+            ->and(custodyCopies($path)[MediaDisks::PRIVATE])->toBeNull()
+            ->and(custodyRow($id)->disk)->toBe('public');
+    });
+
+    // T67(iv)
+    it('refuses on an unreadable copy on the target, and never overwrites it', function (): void {
+        [$id, $path] = custodyFile('public', ['public' => CUSTODY_PNG, MediaDisks::PRIVATE => 'stale'], trashed: true);
+        $this->disks[MediaDisks::PRIVATE]->unreadable = [$path];
+
+        expect(fn () => MediaCustody::settle(DB::connection(), $id))->toThrow(MediaCustodyFailure::class, 'exists and cannot be read');
+
+        expect(custodyByteOperations())->toBe([])
+            ->and(file_get_contents($this->disks[MediaDisks::PRIVATE]->root().'/'.$path))->toBe('stale');
+    });
+
+    // T67(v)
+    it('refuses on a disk whose presence cannot be told, and sets nothing aside', function (): void {
+        [$id, $path] = custodyFile('gone', ['public' => CUSTODY_PNG], trashed: true);
+
+        expect(fn () => MediaCustody::settle(DB::connection(), $id))->toThrow(MediaCustodyFailure::class, 'whether it exists cannot be told');
+
+        expect(custodyByteOperations())->toBe([])
+            ->and(Storage::disk('public')->get($path))->toBe(CUSTODY_PNG)
+            ->and(custodyRow($id)->disk)->toBe('gone');
+    });
+
+    // T67(vii-a): present at the presence pass, gone at its hash — no served copy was read, so nothing answers for it.
+    it('refuses when the served copy is gone by the time it is read', function (): void {
+        custodyHostPrivate();
+        custodyLocal();
+        [$id, $path] = custodyFile('local', ['local' => 'stale', MediaDisks::PRIVATE => 'differs', 'public' => CUSTODY_PNG], trashed: true);
+        $this->disks['local']->unreadable = [$path];
+        $public = $this->disks['public'];
+        $public->onOperation(2, static function () use ($public, $path): void {
+            @unlink($public->root().'/'.$path);
+        }, 'any');
+
+        expect(fn () => MediaCustody::settle(DB::connection(), $id))->toThrow(MediaCustodyFailure::class, 'exists and cannot be read');
+
+        expect(custodyByteOperations())->toBe([])
+            ->and(custodyRow($id)->disk)->toBe('local');
+    });
+
+    // T67(vii-b): as (vii-a) with a matching copy elsewhere — the keeper matches, and settle removed no served copy.
+    it('refuses, rather than setting a copy aside, when it removed no served copy', function (): void {
+        custodyHostPrivate();
+        custodyLocal();
+        [$id, $path] = custodyFile('local', ['local' => 'stale', MediaDisks::PRIVATE => CUSTODY_PNG, 'public' => CUSTODY_PNG], trashed: true);
+        $this->disks['local']->unreadable = [$path];
+        $public = $this->disks['public'];
+        $public->onOperation(2, static function () use ($public, $path): void {
+            @unlink($public->root().'/'.$path);
+        }, 'any');
+
+        expect(fn () => MediaCustody::settle(DB::connection(), $id))->toThrow(MediaCustodyFailure::class, 'exists and cannot be read');
+
+        // The sweep clears a partial beside each served path whether or not one is there; no copy of the file is deleted.
+        expect(array_filter(custodyByteOperations(), static fn (string $operation): bool => str_starts_with($operation, 'delete')
+            && ! str_ends_with($operation, MediaBytes::PARTIAL)))->toBe([])
+            ->and(custodyRow($id)->disk)->toBe('local')
+            ->and(file_get_contents($this->disks['local']->root().'/'.$path))->toBe('stale');
     });
 });
 

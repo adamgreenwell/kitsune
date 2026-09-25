@@ -236,6 +236,11 @@ final class MediaWithdrawal
                 throw new MediaWithdrawalRefused($id, MediaWithdrawalRefused::COINCIDING, $target, $this->operation, $coinciding);
             }
 
+            /*
+             * ⚠️ NOTHING IS SET ASIDE HERE. A trash or an erasure refuses on any copy it cannot read, which leaves the
+             * entry as it was; only settle, taking an already-trashed file off the web, sets such a copy aside (Adam,
+             * decision 6, 2026-09-25) — so no spare disks are passed.
+             */
             try {
                 $keeper = MediaCustody::keeper($file, $target, $named, array_values(array_unique([$target, $named, $public, ...$served])));
             } catch (MediaCustodyFailure $failure) {

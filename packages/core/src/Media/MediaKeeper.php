@@ -42,6 +42,10 @@ final readonly class MediaKeeper
      *                             copy's own hash otherwise
      * @param  bool  $targetHolds  whether the target disk already holds a copy with that hash
      * @param  array<string, ?string>  $hashes  every disk hashed, with what it read
+     * @param  list<string>  $spare  the disks whose unreadable copy this choice may set aside: empty unless settle is
+     *                               taking a file off the web (Adam, decision 6, 2026-09-25)
+     * @param  array<string, MediaCustodyFailure>  $setAside  each disk found holding a copy it could not read, set aside
+     *                                                        and never chosen, with its failure
      */
     public function __construct(
         public ?string $disk,
@@ -49,5 +53,7 @@ final readonly class MediaKeeper
         public string $mode,
         public bool $targetHolds,
         public array $hashes,
+        public array $spare = [],
+        public array $setAside = [],
     ) {}
 }

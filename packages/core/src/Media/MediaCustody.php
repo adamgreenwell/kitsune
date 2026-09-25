@@ -63,6 +63,9 @@ final class MediaCustody
     /** The file is gone from the disk, and the disk says so. */
     public const REMOVED = 'removed';
 
+    /** The file was taken off the web, and a copy that cannot be read was left where it is (Adam, decision 6, 2026-09-25). */
+    public const SET_ASIDE = 'set aside';
+
     /**
      * Entries whose files a rolled-back withdrawal moved, by connection name, waiting to be put back.
      *
@@ -147,29 +150,62 @@ final class MediaCustody
      * on another disk asked — core's private disk after a host moved the private disk — fell through to the target,
      * which held nothing, and its hash was read before it was taken (slice 5b).
      *
+     * ⚠️ AN UNREADABLE COPY MAY BE SET ASIDE, BUT ONLY TO TAKE A FILE OFF THE WEB (Adam, decision 6, 2026-09-25). With
+     * `$spare` — settle passes the disks it asks that are neither served nor the target, and only when the target is
+     * private — a copy on one of them that exists and cannot be read does not stop the choice while a disk the web serves
+     * holds the file: it is set aside, never chosen, and the choice is made among the copies that can be read. When no
+     * copy on a served disk could be read after all, nothing is taken off the web by the choice, so it refuses as it
+     * would have. A copy whose presence cannot be told is never set aside, and nothing else ever is.
+     *
      * @param  list<string>  $candidates  every disk to ask, the target and the named disk among them
+     * @param  list<string>  $spare  the disks whose unreadable copy may be set aside; empty everywhere but settle
      */
-    public static function keeper(stdClass $file, string $target, string $named, array $candidates): MediaKeeper
+    public static function keeper(stdClass $file, string $target, string $named, array $candidates, array $spare = []): MediaKeeper
     {
         $path = (string) $file->path;
         $checksum = is_string($file->checksum) && $file->checksum !== '' ? $file->checksum : null;
-        $present = array_values(array_filter($candidates, static fn (string $disk): bool => MediaBytes::present($disk, $path)));
+        $present = [];
+
+        foreach ($candidates as $disk) {
+            if (MediaBytes::present($disk, $path)) {
+                $present[] = $disk;
+            }
+        }
+
+        $served = MediaDisks::servedDisks(self::config());
+        $spare = $spare !== [] && array_intersect($present, $served) !== [] ? $spare : [];
         $hashes = [];
+        $setAside = [];
 
         foreach (array_values(array_unique([$target, $named, ...$candidates])) as $disk) {
             if (! in_array($disk, $present, true)) {
                 continue;
             }
 
-            $hashes[$disk] = MediaBytes::hash($disk, $path);
+            try {
+                $hashes[$disk] = MediaBytes::hash($disk, $path);
+            } catch (MediaCustodyFailure $failure) {
+                if ($failure->reason !== 'unreadable' || ! in_array($disk, $spare, true)) {
+                    throw $failure;
+                }
+
+                $setAside[$disk] = $failure;
+
+                continue;
+            }
 
             if (MediaBytes::same($hashes[$disk], $checksum)) {
-                return new MediaKeeper($disk, $checksum, MediaKeeper::MATCH, $disk === $target, $hashes);
+                return new MediaKeeper($disk, $checksum, MediaKeeper::MATCH, $disk === $target, $hashes, $spare, $setAside);
             }
         }
 
         // Every present copy has been hashed by now; one gone since it was seen is not a copy.
         $held = array_keys(array_filter($hashes, static fn (?string $hash): bool => $hash !== null));
+
+        // Set aside to take a file off the web, and no copy on a disk the web serves could be read after all.
+        if ($setAside !== [] && array_intersect($held, $served) === []) {
+            throw reset($setAside);
+        }
 
         if ($held === []) {
             return new MediaKeeper(null, $checksum, MediaKeeper::MISSING, false, $hashes);
@@ -199,17 +235,18 @@ final class MediaCustody
 
         Log::warning(sprintf(
             'Media custody, entry %d: no copy of [%s] matches its recorded checksum [%s], so the copy on [%s] is kept '
-            .'(%s) and every other is verified against it. Each disk held: %s. A copy was changed outside Kitsune '
+            .'(%s) and every other is verified against it. Each disk held: %s.%s A copy was changed outside Kitsune '
             .'(ADR-042 decision 5).',
             (int) $file->entry_id,
             $path,
             $checksum ?? 'none',
             $disk,
-            $mode === MediaKeeper::NAMED ? 'the disk the row names' : 'the first in the configured order',
+            $mode === MediaKeeper::NAMED ? 'the disk the row names' : 'the first in Adam\'s order',
             json_encode($hashes, JSON_UNESCAPED_SLASHES),
+            $setAside === [] ? '' : sprintf(' Unreadable, and set aside: [%s].', implode(', ', array_keys($setAside))),
         ));
 
-        return new MediaKeeper($disk, $expected, $mode, MediaBytes::same($hashes[$target] ?? null, $expected), $hashes);
+        return new MediaKeeper($disk, $expected, $mode, MediaBytes::same($hashes[$target] ?? null, $expected), $hashes, $spare, $setAside);
     }
 
     /**
@@ -219,6 +256,12 @@ final class MediaCustody
      *
      * With `$publication`, only a file that belongs on the public disk is moved: publication follows a restore, and
      * the entry may have been trashed again since.
+     *
+     * ⚠️ THE ORDER: THE KEPT COPY ONTO THE TARGET, THEN EVERY SERVED COPY AWAY, THEN THE NAMED DISK'S, THEN THE ROW — slice
+     * 5b. The served disks go first, so a failure on the disk the row names cannot keep a file on the web; the row moves
+     * last, so it never names a disk whose copy was not settled. A copy that exists and cannot be read on a disk neither
+     * served nor the target is set aside while the file is taken off the web, never touched; a row naming that disk keeps
+     * naming it (Adam, decision 6, 2026-09-25).
      *
      * @throws LogicException inside an open transaction
      * @throws MediaCustodyFailure when a copy cannot be written, verified or removed; nothing it verified is lost
@@ -253,7 +296,12 @@ final class MediaCustody
             $path = (string) $file->path;
             $named = (string) $file->disk;
             $asked = self::asked($config, $target, $named);
-            $keeper = self::keeper($file, $target, $named, $asked);
+            $served = MediaDisks::servedDisks($config);
+
+            // The disks whose unreadable copy may be set aside: neither served nor the target, and only to take a file
+            // off the web (Adam, decision 6, 2026-09-25).
+            $spare = $target !== $public ? array_values(array_diff($asked, [$target], $served)) : [];
+            $keeper = self::keeper($file, $target, $named, $asked, $spare);
 
             if ($keeper->disk === null || $keeper->expected === null) {
                 Log::warning(sprintf(
@@ -284,27 +332,67 @@ final class MediaCustody
                 $changed = true;
             }
 
-            if ($named !== $target) {
-                $connection->table('media_files')->where('entry_id', (int) $file->entry_id)->update(['disk' => $target]);
-                $changed = true;
+            /*
+             * ⚠️ PRIVATE: NO DISK THE WEB SERVES KEEPS A COPY — AND FIRST, so a failure on the disk the row names cannot
+             * keep a file on the web (review of slice 5b). Of the disks asked, so none whose root does not exist is built.
+             */
+            $swept = 0;
+
+            if ($target !== $public) {
+                foreach (array_intersect($asked, $served) as $disk) {
+                    if ($disk !== $target && self::removeCopy($config, $target, $disk, $path, $keeper)) {
+                        $swept++;
+                    }
+                }
+            }
+
+            $changed = $changed || $swept > 0;
+            $setAside = $keeper->setAside;
+
+            // Decision 6 answers for taking a file off the web: with no served copy removed here, it refuses as it would.
+            if ($setAside !== [] && $swept === 0) {
+                throw reset($setAside);
             }
 
             /*
              * ⚠️ MOVE-OFF: THE DISK THE ROW NAMED LOSES ITS COPY, unless it is a private one. A disk that was once the
              * public one — an object store with no url, say — can still serve what it holds with no configuration
-             * saying so, and nothing would ever name that copy again.
+             * saying so, and nothing would ever name that copy again. Unless it cannot be read and was set aside: then
+             * the row stays on it (Adam, decision 6, 2026-09-25).
              */
-            if ($named !== $target && ! in_array($named, [$private, MediaDisks::PRIVATE], true)) {
-                $changed = self::removeCopy($config, $target, $named, $path, $keeper) || $changed;
+            if ($named !== $target && ! in_array($named, [$private, MediaDisks::PRIVATE], true) && ! isset($setAside[$named])) {
+                try {
+                    $changed = self::removeCopy($config, $target, $named, $path, $keeper) || $changed;
+                } catch (MediaCustodyFailure $failure) {
+                    // Its first hash may be here, when the keeper matched before it reached the named disk.
+                    if ($failure->reason !== 'unreadable' || ! in_array($named, $keeper->spare, true) || $swept === 0) {
+                        throw $failure;
+                    }
+
+                    $setAside[$named] = $failure;
+                }
             }
 
-            // Private: no disk the web serves keeps a copy — of those asked, so none whose root does not exist is built.
-            if ($target !== $public) {
-                foreach (array_intersect($asked, MediaDisks::servedDisks($config)) as $disk) {
-                    if ($disk !== $target) {
-                        $changed = self::removeCopy($config, $target, $disk, $path, $keeper) || $changed;
-                    }
-                }
+            // The row moves last, and never off a named disk whose copy was set aside: that copy stays where a row points.
+            if ($named !== $target && ! isset($setAside[$named])) {
+                $connection->table('media_files')->where('entry_id', (int) $file->entry_id)->update(['disk' => $target]);
+                $changed = true;
+            }
+
+            foreach (array_keys($setAside) as $disk) {
+                Log::warning(sprintf(
+                    'Media custody, entry %d: the copy of [%s] on [%s] exists and cannot be read, so it was left where it '
+                    .'is — not chosen, overwritten or removed — and the file was taken off every disk the web serves from '
+                    .'a readable copy verified on [%s] (Adam, decision 6, 2026-09-25).',
+                    (int) $file->entry_id,
+                    $path,
+                    $disk,
+                    $target,
+                ));
+            }
+
+            if ($setAside !== []) {
+                return self::SET_ASIDE;
             }
 
             return $changed ? self::SETTLED : self::UNCHANGED;

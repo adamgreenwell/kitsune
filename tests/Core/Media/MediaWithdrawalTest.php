@@ -634,6 +634,26 @@ describe('disks that cannot keep a trashed file private', function (): void {
     });
 
     /*
+     * T67(vi). A trash sets nothing aside: it refuses on any copy it cannot read and leaves the entry live, so nothing is
+     * exposed by refusing. Only settle, taking an already-trashed file off the web, sets such a copy aside (Adam,
+     * decision 6, 2026-09-25).
+     */
+    it('refuses to trash a file whose named copy cannot be read, and sets nothing aside', function (): void {
+        [$entry, $path] = withdrawable();
+        $local = ($this->disk)('local', ['visibility' => 'private']);
+        Storage::disk('local')->put($path, 'stale');
+        DB::table('media_files')->where('entry_id', $entry->id)->update(['disk' => 'local']);
+        $local->unreadable = [$path];
+        RefusingDisk::forgetLog();
+
+        expect(fn () => $entry->delete())->toThrow(MediaWithdrawalRefused::class, 'a copy could not be read on');
+
+        expect(bytesChanged())->toBe([])
+            ->and(isTrashed($entry))->toBeFalse()
+            ->and(heldAt($path, ['public'])['public'])->toBe($this->checksum);
+    });
+
+    /*
      * T62. One bucket and key prefix through two endpoints may be one store: a "copy" to the private disk could be the
      * public file itself. Refused as the configuration, before a byte moves (slice 5b).
      */
