@@ -62,7 +62,8 @@ beforeEach(function (): void {
 afterEach(function (): void {
     app(Context::class)->forget();
 
-    foreach ($this->roots as $root) {
+    // Absent when the harness skipped the test on a server engine before `beforeEach` ran.
+    foreach ($this->roots ?? [] as $root) {
         exec('rm -rf '.escapeshellarg($root));
     }
 });
