@@ -30,7 +30,7 @@ use Kitsune\Core\Tests\Fixtures\FailingCommitPdo;
 use Kitsune\Core\Tests\Fixtures\RefusingDisk;
 
 /*
- * Custody at a real level 0 — ADR-042 decision 5 (T44-T51).
+ * Custody at a real level 0 — ADR-042 decision 5 (T44-T51; slice 5b: T74, T91).
  *
  * ⚠️ EVERY CASE HERE IS A MOMENT ONLY THE OUTERMOST TRANSACTION REACHES: a COMMIT that fails before it lands or after,
  * a rollback that empties the transaction manager, callbacks that run after the outermost commit and nowhere else. Under
@@ -326,7 +326,8 @@ describe('a restore at level 0', function (): void {
 /*
  * T51. SQLite: every custody path holds the database's write lock before its first byte moves (Adam, 2026-09-24). At
  * that first byte operation a second connection asks for the write lock with no wait, and must be told the database is
- * busy.
+ * busy. T74: `removeExtra()` and a forced reconcile join the dataset, and a read-only reconcile leaves the lock free
+ * (slice 5b).
  */
 describe('the write lock on SQLite', function (): void {
     /**

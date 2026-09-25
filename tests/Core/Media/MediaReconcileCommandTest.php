@@ -25,7 +25,7 @@ use Kitsune\Core\Tests\Fixtures\RefusingDisk;
 use League\Flysystem\Filesystem;
 
 /*
- * kitsune:media-reconcile — ADR-042 decision 5, slice 5b (T77-T90).
+ * kitsune:media-reconcile — ADR-042 decision 5, slice 5b (T77-T90, T104-T107, T109, T114).
  *
  * ⚠️ FROM THE DISKS, THE ROWS AND THE OUTPUT AS THEY ARE AFTERWARDS. Each case sets a row and its disks by hand, runs the
  * command as an operator would, and reads what each disk holds by hash, what the row names, the line the command printed
@@ -517,7 +517,7 @@ describe('failures', function (): void {
 
         [$exit, $output] = reconcileRun(['--force' => true]);
 
-        expect(reconcileLine($output, $missing))->toContain('→ missing: no disk custody asks holds its file — kitsune:media-prune lists a copy at its path on any other disk')
+        expect(reconcileLine($output, $missing))->toContain('→ missing: no disk custody asks holds its file — kitsune:media-prune lists a copy at its path on a disk another row names')
             ->and(reconcileHeld($nextPath)[MediaDisks::PRIVATE])->toBe($this->checksum)
             ->and($exit)->toBe(1);
     });
@@ -701,5 +701,93 @@ describe('reading at scale', function (): void {
             ->and($output)->toContain('1 of 1 media row disagreed with where its bytes were when listed, and none still does')
             ->and($output)->not->toContain('Re-run with --force')
             ->and($exit)->toBe(0);
+    });
+});
+
+/*
+ * T107. A row naming the public disk under another name — Laravel's `public`, while `kitsune.media.disks.public` names
+ * another disk at the same directory — is listed as awaiting publication, because delivery trusts the name; forced, only
+ * the row moves: the copy there is the public disk's own, and nothing is copied or deleted (review of slice 5b).
+ */
+it('repoints a row naming the public disk under another name, and moves no byte', function (): void {
+    $root = $this->disks['public']->root();
+    config(['filesystems.disks.media' => ['driver' => 'local', 'root' => $root, 'url' => 'https://media.example.test']]);
+    RefusingDisk::install('media', $root);
+    config(['kitsune.media.disks.public' => 'media']);
+    [$id, $path] = reconcileFile('public', ['public' => RECONCILE_PNG]);
+
+    [$listed, $listing] = reconcileRun();
+    RefusingDisk::forgetLog();
+    [$exit, $output] = reconcileRun(['--force' => true]);
+
+    expect(reconcileLine($listing, $id))->toStartWith('awaiting publication ')
+        ->and($listed)->toBe(1)
+        // Prune sweeps that directory as [media], whatever names it: no warning that it would stop.
+        ->and($listing)->not->toContain('row names [public]')
+        ->and($output)->not->toContain('row names [public]')
+        ->and(reconcileNamed($id))->toBe('media')
+        ->and(hash_file('sha256', $root.'/'.$path))->toBe($this->checksum)
+        ->and(array_filter(RefusingDisk::$log, static fn (array $event): bool => $event['bytes']))->toBe([])
+        ->and($output)->not->toContain('failed')
+        ->and($exit)->toBe(0);
+});
+
+/*
+ * T114. Only the same file is the target's own. A named disk whose directory merely nests inside the public disk's holds
+ * another file at the path — one the web may serve — so the move-off refuses as it did, and the row still names it
+ * (review of slice 5b: the first fix for T107 repointed it on `onePlace()` alone, and stranded the copy).
+ */
+it('refuses, and repoints nothing, when the named disk only nests inside the public disk', function (): void {
+    $root = $this->disks['public']->root().'/media/sub';
+    mkdir($root, 0777, true);
+    config(['filesystems.disks.nested' => ['driver' => 'local', 'root' => $root]]);
+    RefusingDisk::install('nested', $root);
+    [$id, $path] = reconcileFile('nested', ['nested' => RECONCILE_PNG, 'public' => RECONCILE_PNG]);
+
+    [$exit, $output] = reconcileRun(['--force' => true, '--entry' => [(string) $id]]);
+
+    expect(reconcileNamed($id))->toBe('nested')
+        ->and(hash_file('sha256', $root.'/'.$path))->toBe($this->checksum)
+        ->and(reconcileLine($output, $id))->toContain('→ failed')
+        ->and($exit)->toBe(1);
+});
+
+/*
+ * T109. The warning before a run moves the last rows off a disk prune then stops sweeping for orphans: a former public
+ * disk the web still serves included, and a run over the entries that are every row naming it — never one that leaves
+ * a row behind (review of slice 5b).
+ */
+describe('the disks a run moves the last rows off', function (): void {
+    it('warns of a served disk, which prune scans for extra copies only once no row names it', function (): void {
+        reconcileFile('old-cdn', ['old-cdn' => RECONCILE_PNG]);
+
+        [, $listed] = reconcileRun();
+        [, $forced] = reconcileRun(['--force' => true]);
+
+        expect($listed)->toContain('1 row names [old-cdn], which kitsune:media-prune sweeps for orphans only while a row names it')
+            ->and($forced)->toContain('1 row names [old-cdn]: this run moves the row off it, after which kitsune:media-prune no longer sweeps it');
+    });
+
+    it('warns a run over entries only when they are every row naming the disk', function (): void {
+        reconcileDisk('local');
+        [$first] = reconcileFile('local', ['local' => RECONCILE_PNG], visibility: 'private');
+        [$second] = reconcileFile('local', ['local' => RECONCILE_PNG], visibility: 'private');
+
+        [, $one] = reconcileRun(['--entry' => [(string) $first]]);
+        [, $both] = reconcileRun(['--entry' => [(string) $first, (string) $second]]);
+        [, $forced] = reconcileRun(['--force' => true, '--entry' => [(string) $first, (string) $second]]);
+
+        expect($one)->not->toContain('[local]')
+            ->and($both)->toContain('All 2 rows naming [local] are among these entries: kitsune:media-prune sweeps [local] for orphans only while a row names it')
+            ->and($forced)->toContain('All 2 rows naming [local] are among these entries: this run moves them off it');
+    });
+
+    it('never warns of the configured disks or core\'s own', function (): void {
+        reconcileFile('public', ['public' => RECONCILE_PNG]);
+        reconcileFile(MediaDisks::PRIVATE, [MediaDisks::PRIVATE => RECONCILE_PNG], trashed: true);
+
+        [, $output] = reconcileRun();
+
+        expect($output)->not->toContain('sweeps for orphans');
     });
 });

@@ -12,6 +12,8 @@ namespace Kitsune\Core\Console;
 
 use Illuminate\Console\Command;
 use Illuminate\Contracts\Config\Repository;
+use Illuminate\Log\Events\MessageLogged;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Storage;
 use Kitsune\Core\Media\MediaBytes;
 use Kitsune\Core\Media\MediaCustody;
@@ -61,6 +63,17 @@ final class MediaPruneCommand extends Command
 
     protected $description = 'Find media files no media_files row needs, and copies beside a row\'s own (ADR-041, ADR-042)';
 
+    /** @var list<string> custody's warnings for the extra copy being removed, printed after it */
+    private array $warnings = [];
+
+    /**
+     * Whether a forced run is collecting them now, and whether this instance has registered its listener — one per
+     * instance, because Artisan reuses a command in a process (as `kitsune:media-reconcile` does).
+     */
+    private bool $collecting = false;
+
+    private bool $listening = false;
+
     public function handle(): int
     {
         $config = app('config');
@@ -103,50 +116,69 @@ final class MediaPruneCommand extends Command
          * and is not listed. A local one whose root does not exist holds nothing, and is not built: building it would
          * create the directory.
          */
-        $kitsune = array_values(array_unique([$public, $private, ...array_map(static fn (stdClass $row): string => (string) $row->disk, $rows)]));
+        $kitsune = array_values(array_unique([$public, $private]));
 
         if (! in_array(MediaDisks::PRIVATE, $kitsune, true) && MediaDisks::mayHold($config, MediaDisks::PRIVATE)) {
             $kitsune[] = MediaDisks::PRIVATE;
         }
 
+        /*
+         * ⚠️ A DISK THAT IS ANOTHER SCANNED DISK UNDER ANOTHER NAME IS NOT SCANNED — review of slice 5b, twice. Its
+         * listing is that disk's, so every file there would be listed twice — as an extra copy of itself, beside a disk
+         * a row names or another served disk — and removing one would remove the file. So each disk a row names, then
+         * each served disk, is compared with the disks already queued, the configured ones first: one place, and it is
+         * left to the disk it aliases, whose listing holds its files; cannot be told apart, and it is not scanned either,
+         * and says so; an alias of the private disk, which the web must not serve, says so too. Asked only of disks that
+         * are configured and can hold anything: asking builds a local disk, which would create its root. A row's disk
+         * that cannot be asked is scanned as before, and its listing reports what is wrong with it.
+         */
+        $named = array_values(array_diff(array_unique(array_map(static fn (stdClass $row): string => (string) $row->disk, $rows)), $kitsune));
+        $servedOnly = array_values(array_diff(MediaDisks::servedDisks($config), $kitsune, $named));
         $served = [];
 
-        /*
-         * ⚠️ A SERVED DISK THAT IS A MEDIA DISK UNDER ANOTHER NAME IS NOT SCANNED — review of slice 5b. Its listing is
-         * that disk's, so every file there would read as an extra copy of itself, and removing one would remove the
-         * file. Asked only of a disk that can hold anything: asking builds a local disk, which would create its root.
-         */
-        foreach (array_diff(MediaDisks::servedDisks($config), $kitsune) as $disk) {
-            if (! MediaDisks::mayHold($config, $disk)) {
+        foreach ([...$named, ...$servedOnly] as $disk) {
+            $isNamed = in_array($disk, $named, true);
+            $askable = is_array($config->get("filesystems.disks.{$disk}")) && MediaDisks::mayHold($config, $disk);
+
+            if (! $askable) {
+                // A served disk that cannot hold anything is not built; a row's disk is listed, and says why it cannot be.
+                if ($isNamed) {
+                    $kitsune[] = $disk;
+                }
+
                 continue;
             }
 
-            $asPublic = MediaDisks::onePlace($config, $disk, $public);
-            $asPrivate = MediaDisks::onePlace($config, $disk, $private);
+            $other = $this->aliasOf($config, $disk, [...$kitsune, ...$served], $private);
 
-            if ($asPublic === true) {
+            if ($other === false) {
                 continue;
             }
 
-            if ($asPublic !== false || $asPrivate !== false) {
+            if ($other !== null) {
                 $this->warn(sprintf(
                     'Not scanning [%s]: it is, or cannot be told apart from, [%s] — one bucket through two endpoints, or '
-                    .'one place — so a file there could be the file itself. kitsune:media-reconcile --force refuses while '
-                    .'the private disk is one of them.',
+                    .'one place — so a file there could be the file itself.%s',
                     $disk,
-                    $asPublic !== false ? $public : $private,
+                    $other,
+                    $other === $private ? ' kitsune:media-reconcile --force refuses while the private disk is one of them.' : '',
                 ));
 
                 continue;
             }
 
-            $served[] = $disk;
+            if ($isNamed) {
+                $kitsune[] = $disk;
+            } else {
+                $served[] = $disk;
+            }
         }
 
         $orphans = [];
         $partials = [];
         $extras = [];
         $own = [];
+        $unlisted = [];
         $failed = 0;
 
         foreach ([...$kitsune, ...$served] as $disk) {
@@ -156,6 +188,7 @@ final class MediaPruneCommand extends Command
                 $paths = Storage::disk($disk)->allFiles('media');
             } catch (Throwable $failure) {
                 $this->error(sprintf('Could not list [%s]: %s', $disk, $failure->getMessage()));
+                $unlisted[] = $disk;
                 $failed++;
 
                 continue;
@@ -197,7 +230,7 @@ final class MediaPruneCommand extends Command
 
         $removable = array_values(array_filter($extras, static fn (array $extra): bool => $extra['removable']));
 
-        $this->report($orphans, $partials, $extras, $rows, $public, $config);
+        $this->report($orphans, $partials, $extras, $rows, $public, $config, $unlisted);
 
         if ($orphans === [] && $partials === [] && $removable === []) {
             return $failed === 0 ? self::SUCCESS : self::FAILURE;
@@ -217,6 +250,16 @@ final class MediaPruneCommand extends Command
             ));
 
             return $failed === 0 ? self::SUCCESS : self::FAILURE;
+        }
+
+        // A file freed by work not yet committed reads as an orphan here, and would stay deleted if it rolled back.
+        if (! MediaCustody::isOutermost($connection)) {
+            $this->error(
+                'Refusing to prune inside an open transaction: a file freed by work that has not committed reads as an '
+                .'orphan, and would stay deleted if that work rolled back (ADR-042 decision 5). Nothing was removed.'
+            );
+
+            return self::FAILURE;
         }
 
         try {
@@ -271,43 +314,68 @@ final class MediaPruneCommand extends Command
         }
 
         $extraRemoved = 0;
-        $extraGone = 0;
+        $noLongerExtra = 0;
+        $extraErased = 0;
         $extraKept = 0;
+
+        if ($removable !== [] && ! $this->listening) {
+            $this->listening = true;
+
+            Event::listen(MessageLogged::class, function (MessageLogged $logged): void {
+                if ($this->collecting && $logged->level === 'warning' && str_starts_with($logged->message, 'Media custody')) {
+                    $this->warnings[] = $logged->message;
+                }
+            });
+        }
 
         foreach ($removable as $extra) {
             $entryId = (int) $extra['row']->entry_id;
+            $this->warnings = [];
+            $this->collecting = true;
 
             try {
                 $outcome = MediaCustody::removeExtra($connection, $entryId, $extra['disk']);
             } catch (Throwable $failure) {
-                $this->error(sprintf('Could not remove [%s:%s]: %s', $extra['disk'], $extra['path'], $failure->getMessage()));
-                $failed++;
-
-                continue;
+                $outcome = $failure;
+            } finally {
+                $this->collecting = false;
             }
 
-            match ($outcome) {
-                MediaCustody::SETTLED => $extraRemoved++,
-                MediaCustody::UNSETTLED => (function () use ($extra, $entryId, &$extraKept): void {
+            match (true) {
+                $outcome instanceof Throwable => (function () use ($extra, $outcome, &$failed): void {
+                    $this->error(sprintf('Could not remove [%s:%s]: %s', $extra['disk'], $extra['path'], $outcome->getMessage()));
+                    $failed++;
+                })(),
+                $outcome === MediaCustody::SETTLED => $extraRemoved++,
+                $outcome === MediaCustody::GONE => $extraErased++,
+                $outcome === MediaCustody::UNSETTLED => (function () use ($extra, $entryId, &$extraKept): void {
                     $extraKept++;
                     $this->line(sprintf(
-                        'Kept [%s:%s], entry %d — under the lock its row did not name the disk its state says, or that disk '
-                        .'did not hold the copy kept; the log says which, and kitsune:media-reconcile --entry=%d shows where '
-                        .'the file is.',
+                        'Kept [%s:%s], entry %d — %s',
                         $extra['disk'],
                         $extra['path'],
                         $entryId,
-                        $entryId,
+                        $this->warnings === []
+                            ? sprintf('under the lock its row no longer named the disk its state says: kitsune:media-reconcile '
+                                .'--entry=%d --force settles the row first.', $entryId)
+                            : 'custody says why, and what settles it:',
                     ));
                 })(),
-                default => $extraGone++,
+                default => $noLongerExtra++,
             };
+
+            // What custody logged for this copy — a differing copy's two hashes, or why it was kept — as reconcile prints it.
+            foreach ($this->warnings as $warning) {
+                $this->line('    '.$warning);
+            }
+
+            $this->warnings = [];
         }
 
         $total = count($orphans) + count($partials);
 
         $this->info(sprintf(
-            'Removed %d of %d orphaned or leftover file%s and %d of %d extra cop%s.%s%s%s',
+            'Removed %d of %d orphaned or leftover file%s and %d of %d extra cop%s.%s%s%s%s',
             $removed,
             $total,
             $total === 1 ? '' : 's',
@@ -315,12 +383,49 @@ final class MediaPruneCommand extends Command
             count($removable),
             count($removable) === 1 ? 'y' : 'ies',
             $reclaimed === 0 ? '' : sprintf(' %d kept: a row claimed %s since the listing.', $reclaimed, $reclaimed === 1 ? 'its path' : 'their paths'),
-            $extraGone === 0 ? '' : sprintf(' %d extra cop%s gone since the listing.', $extraGone, $extraGone === 1 ? 'y was' : 'ies were'),
-            $extraKept === 0 ? '' : sprintf(' %d kept under the lock — kitsune:media-reconcile says why.', $extraKept),
+            $noLongerExtra === 0 ? '' : sprintf(
+                ' %d no longer an extra copy under the lock — gone, or now the copy %s row names.',
+                $noLongerExtra,
+                $noLongerExtra === 1 ? 'its' : 'their',
+            ),
+            $extraErased === 0 ? '' : sprintf(
+                ' %d whose entry was erased since the listing: its disposal removes %s, and logs any copy it could not.',
+                $extraErased,
+                $extraErased === 1 ? 'the copy' : 'the copies',
+            ),
+            $extraKept === 0 ? '' : sprintf(' %d kept under the lock, each with its reason above.', $extraKept),
         ));
 
         /* A disk that refused is reported by the count disagreeing, rather than by silence. */
         return $failed === 0 ? self::SUCCESS : self::FAILURE;
+    }
+
+    /**
+     * Whether a disk is one already queued under another name: null when it is none of them; false when it is one of
+     * them, not the private disk, and is left to it silently; the other disk's name when it cannot be told apart from
+     * one, or is the private disk — which is said.
+     *
+     * @param  list<string>  $queued
+     */
+    private function aliasOf(Repository $config, string $disk, array $queued, string $private): string|false|null
+    {
+        $places = [];
+
+        foreach ($queued as $other) {
+            if (is_array($config->get("filesystems.disks.{$other}")) && MediaDisks::mayHold($config, $other)) {
+                $places[$other] = MediaDisks::onePlace($config, $disk, $other);
+            }
+        }
+
+        $same = array_search(true, $places, true);
+        $unsure = array_search(null, $places, true);
+
+        return match (true) {
+            $same !== false && $same !== $private => false,
+            $same !== false => (string) $same,
+            $unsure !== false => (string) $unsure,
+            default => null,
+        };
     }
 
     /**
@@ -330,8 +435,9 @@ final class MediaPruneCommand extends Command
      * @param  list<array{disk: string, path: string, row: stdClass}>  $partials
      * @param  list<array{disk: string, path: string, row: stdClass, removable: bool}>  $extras
      * @param  list<stdClass>  $rows
+     * @param  list<string>  $unlisted  the disks whose listing failed: what they hold was not asked
      */
-    private function report(array $orphans, array $partials, array $extras, array $rows, string $public, Repository $config): void
+    private function report(array $orphans, array $partials, array $extras, array $rows, string $public, Repository $config, array $unlisted): void
     {
         if ($orphans === []) {
             $this->info('No orphaned media files.');
@@ -361,6 +467,7 @@ final class MediaPruneCommand extends Command
                     match (true) {
                         $k['removable'] => 'removed, once asked again under the lock',
                         (string) $k['row']->disk !== MediaCustody::target($k['row'], $k['row']) => 'kept: kitsune:media-reconcile moves its row first',
+                        in_array((string) $k['row']->disk, $unlisted, true) => sprintf('kept: [%s] could not be listed', (string) $k['row']->disk),
                         default => 'kept: the disk its row names does not hold the file',
                     },
                 ], $extras),

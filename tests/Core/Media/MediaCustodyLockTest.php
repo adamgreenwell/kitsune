@@ -29,7 +29,7 @@ use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tests\Fixtures\RefusingDisk;
 
 /*
- * Custody's locks, on every engine — ADR-042 decision 5 (T52-T54).
+ * Custody's locks, on every engine — ADR-042 decision 5 (T52-T54; slice 5b: T73, T84).
  *
  * ⚠️ WHAT IS LOCKED, IN WHAT ORDER, BEFORE ANY BYTE MOVES, read from one timeline of the statements the connection ran
  * and the operations the disks were asked for. And against a real rival: a second connection holding a row, so a lock
@@ -101,7 +101,8 @@ function lockFirst(array $timeline, string $pattern): int
 /*
  * T52. The lock order, on every engine, on every path that moves bytes: on PostgreSQL, MySQL and MariaDB the entry and
  * then its file read `FOR UPDATE`; on SQLite a write to `media_files` first, which takes the database's write lock; and
- * the trash's and the erasure's own row writes before their first byte.
+ * the trash's and the erasure's own row writes before their first byte. T73: `removeExtra()` and a forced reconcile
+ * join the dataset (slice 5b).
  */
 describe('the lock order', function (): void {
     beforeEach(function (): void {

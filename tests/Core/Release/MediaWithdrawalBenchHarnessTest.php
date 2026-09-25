@@ -107,3 +107,30 @@ it('verifies a command by the rows it counted under each label, and under no oth
         // The rows, not what --force did with them.
         ->and(withdrawalBenchCounts($forced, ['exposed' => 1000]))->toBeTrue();
 });
+
+/* (M)'s contention rows print their figures only when the holder held, the build was seen and the prober reported (T55). */
+it('prints no contention figure for a row that did not happen as its heading says', function (): void {
+    $row = ['attempt' => 'a write to media_files', 'outcome' => 'ok', 'waited' => 1712.4, 'statement' => 2051.0, 'up' => 2210.9];
+
+    expect(withdrawalBenchContentionLine([...$row, 'verified' => true]))->toBe('| a write to media_files | ok | 1712.4 | 2051.0 | 2210.9 |')
+        ->and(withdrawalBenchContentionLine([...$row, 'verified' => false]))->toBe('| a write to media_files | not verified — no figure (ok) | | | |');
+});
+
+/* ...and a row is verified only when every part of it happened: the holder held, and committed after the build began (T55). */
+it('verifies a contention row only when the holder held, the build was seen and the prober reported', function (): void {
+    $seen = [
+        'held' => true,
+        'holder' => ['exit' => 0, 'last' => '{"outcome":"held until two seconds into the build","waited":0}'],
+        'built' => true,
+        'prober' => ['exit' => 0, 'outcome' => 'ok'],
+    ];
+
+    expect(withdrawalBenchContentionVerified($seen))->toBeTrue()
+        ->and(withdrawalBenchContentionVerified([...$seen, 'holder' => null]))->toBeTrue()
+        ->and(withdrawalBenchContentionVerified([...$seen, 'held' => false]))->toBeFalse()
+        ->and(withdrawalBenchContentionVerified([...$seen, 'holder' => ['exit' => 1, 'last' => $seen['holder']['last']]]))->toBeFalse()
+        ->and(withdrawalBenchContentionVerified([...$seen, 'holder' => ['exit' => 0, 'last' => 'PHP Fatal error']]))->toBeFalse()
+        ->and(withdrawalBenchContentionVerified([...$seen, 'built' => false]))->toBeFalse()
+        ->and(withdrawalBenchContentionVerified([...$seen, 'prober' => ['exit' => 255, 'outcome' => 'ok']]))->toBeFalse()
+        ->and(withdrawalBenchContentionVerified([...$seen, 'prober' => ['exit' => 0, 'outcome' => 'no result: Fatal']]))->toBeFalse();
+});

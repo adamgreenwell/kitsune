@@ -28,7 +28,8 @@ use Kitsune\Core\Tests\Fixtures\RefusingDisk;
 use League\Flysystem\Filesystem;
 
 /*
- * Custody of a file's bytes, asked directly — ADR-042 decision 5 (T14-T19).
+ * Custody of a file's bytes, asked directly — ADR-042 decision 5 (T14-T19; slice 5b: T61, T63-T68, T72,
+ * T98-T100, T102).
  *
  * ⚠️ ON ROWS WRITTEN WITH `DB::table`, NOTHING WIRED TO A DELETE. What these pin is custody's own rule — when it may
  * run, which copy it keeps, where it puts the file and what it removes — so the fixtures set a row and the disks by
@@ -800,7 +801,9 @@ describe('unreadable copies and exposure', function (): void {
 
         expect(fn () => MediaCustody::settle(DB::connection(), $id))->toThrow(MediaCustodyFailure::class, 'exists and cannot be read');
 
+        // Refused by the keeper, at the target's own hash, before any other copy was read — not by a later re-read.
         expect(custodyByteOperations())->toBe([])
+            ->and(custodyEvents('public'))->toBe(['fileExists'])
             ->and(file_get_contents($this->disks[MediaDisks::PRIVATE]->root().'/'.$path))->toBe('stale');
     });
 
@@ -813,6 +816,21 @@ describe('unreadable copies and exposure', function (): void {
         expect(custodyByteOperations())->toBe([])
             ->and(Storage::disk('public')->get($path))->toBe(CUSTODY_PNG)
             ->and(custodyRow($id)->disk)->toBe('gone');
+    });
+
+    // T67(v), where it can happen: a disk that answered the presence pass and cannot say at the hash (review of 5b).
+    it('sets nothing aside when a disk that answered cannot tell whether it holds the copy by the time it is read', function (): void {
+        $local = custodyLocal();
+        [$id, $path] = custodyFile('local', ['local' => 'stale', 'public' => CUSTODY_PNG], trashed: true);
+        $local->onOperation(2, static function () use ($local, $path): void {
+            $local->unknown = [$path];
+        }, 'any');
+
+        expect(fn () => MediaCustody::settle(DB::connection(), $id))->toThrow(MediaCustodyFailure::class, 'whether it exists cannot be told');
+
+        expect(custodyByteOperations())->toBe([])
+            ->and(Storage::disk('public')->get($path))->toBe(CUSTODY_PNG)
+            ->and(custodyRow($id)->disk)->toBe('local');
     });
 
     // T67(vii-a): present at the presence pass, gone at its hash — no served copy was read, so nothing answers for it.

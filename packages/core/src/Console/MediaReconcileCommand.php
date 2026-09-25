@@ -154,9 +154,7 @@ final class MediaReconcileCommand extends Command
                 .'0001_01_01_000010_make_media_file_paths_unique has run.');
         }
 
-        if ($entries === null) {
-            $this->legacy($connection, $config, $force);
-        }
+        $this->legacy($connection, $config, $force, $entries);
 
         if ($force && ! $this->listening) {
             $this->listening = true;
@@ -343,52 +341,108 @@ final class MediaReconcileCommand extends Command
     }
 
     /**
-     * Say so when rows still name a local disk that is neither configured, core's nor served — ADR-041's `local` —
-     * because prune sweeps such a disk for orphans only while a row names it, and a forced run moves the rows off it.
+     * Say so when rows still name a disk that is neither configured nor core's — ADR-041's `local`, a former public
+     * disk — because prune lists orphans on such a disk only while a row names it, and a forced run moves the rows off it.
      *
-     * Not asked under `--entry`, whose rows are not every row naming the disk; and a disk no configuration names is left
-     * out, because prune cannot sweep it either. A configuration that cannot be read says nothing here: each row reports
-     * it as unknown.
+     * ⚠️ SERVED DISKS TOO — review of slice 5b. Prune scans a served disk whatever names it, but only for extra copies: a
+     * file there no row's path names is taken for the host's. So once the last row leaves a former public disk, an
+     * orphan an erasure could not remove there stays on the web and is never listed again.
+     *
+     * Under `--entry`, only when these entries' rows are every row naming the disk: a run over one entry can move the last.
+     * A disk no configuration names is left out, because prune cannot sweep it either. A configuration that cannot be
+     * read says nothing here: each row reports it as unknown.
+     *
+     * @param  list<int>|null  $entries
      */
-    private function legacy(Connection $connection, Repository $config, bool $force): void
+    private function legacy(Connection $connection, Repository $config, bool $force, ?array $entries): void
     {
         try {
-            $known = [
-                MediaDisks::configured($config, 'public'),
-                MediaDisks::configured($config, 'private'),
-                MediaDisks::PRIVATE,
-                ...MediaDisks::servedDisks($config),
-            ];
+            $known = [MediaDisks::configured($config, 'public'), MediaDisks::configured($config, 'private'), MediaDisks::PRIVATE];
         } catch (Throwable) {
             return;
         }
 
-        $named = $connection->table('media_files')
+        $naming = static fn (Builder $rows): Collection => $rows
             ->select('disk')
             ->selectRaw('count(*) as rows_naming')
             ->groupBy('disk')
             ->orderBy('disk')
             ->pluck('rows_naming', 'disk');
 
+        $named = $naming($connection->table('media_files'));
+        $moving = $entries === null ? null : $naming($connection->table('media_files')->whereIntegerInRaw('entry_id', $entries));
+
         foreach ($named as $disk => $rows) {
             $disk = (string) $disk;
+            $rows = (int) $rows;
 
             if (in_array($disk, $known, true) || ! is_array($config->get("filesystems.disks.{$disk}"))) {
                 continue;
             }
 
-            $this->warn(sprintf(
-                $force
-                    ? '%d row%s [%s]: this run moves %s off it, after which kitsune:media-prune no longer sweeps it for '
-                      .'orphans — stop now and run kitsune:media-prune --force first if it may hold any.'
-                    : '%d row%s [%s], which kitsune:media-prune sweeps for orphans only while a row names it: run '
-                      .'kitsune:media-prune --force before kitsune:media-reconcile --force moves %s off it.',
-                (int) $rows,
-                (int) $rows === 1 ? ' names' : 's name',
-                $disk,
-                (int) $rows === 1 ? 'it' : 'them',
-            ));
+            if ($moving !== null && (int) ($moving[$disk] ?? 0) !== $rows) {
+                continue;
+            }
+
+            // Another name for a disk prune always sweeps — Laravel's `public`, say, at the public disk's directory — is
+            // swept under that name whatever names it (review of slice 5b).
+            if ($this->sweptAs($config, $disk, $known)) {
+                continue;
+            }
+
+            $subject = $moving === null
+                ? sprintf('%d row%s [%s]', $rows, $rows === 1 ? ' names' : 's name', $disk)
+                : sprintf('%s [%s] %s among these entries', $rows === 1 ? 'The one row naming' : "All {$rows} rows naming", $disk, $rows === 1 ? 'is' : 'are');
+            $them = $rows === 1 ? 'the row' : 'them';
+
+            $this->warn(match (true) {
+                $force => sprintf(
+                    '%s: this run moves %s off it, after which kitsune:media-prune no longer sweeps it for orphans — stop '
+                    .'now and run kitsune:media-prune --force first if it may hold any.',
+                    $subject,
+                    $them,
+                ),
+                $moving === null => sprintf(
+                    '%s, which kitsune:media-prune sweeps for orphans only while a row names it: run kitsune:media-prune '
+                    .'--force before kitsune:media-reconcile --force moves %s off it.',
+                    $subject,
+                    $them,
+                ),
+                default => sprintf(
+                    '%s: kitsune:media-prune sweeps [%s] for orphans only while a row names it, so run kitsune:media-prune '
+                    .'--force before kitsune:media-reconcile --force moves %s off it.',
+                    $subject,
+                    $disk,
+                    $them,
+                ),
+            });
         }
+    }
+
+    /**
+     * Whether a disk is, or cannot be told apart from, one of these — asked only of disks that can hold anything, since
+     * asking builds a local disk. A disk that cannot be asked is not one of them.
+     *
+     * @param  list<string>  $disks
+     */
+    private function sweptAs(Repository $config, string $disk, array $disks): bool
+    {
+        try {
+            if (! MediaDisks::mayHold($config, $disk)) {
+                return false;
+            }
+
+            foreach ($disks as $other) {
+                if (is_array($config->get("filesystems.disks.{$other}")) && MediaDisks::mayHold($config, $other)
+                    && MediaDisks::onePlace($config, $disk, $other) !== false) {
+                    return true;
+                }
+            }
+        } catch (Throwable) {
+            return false;
+        }
+
+        return false;
     }
 
     /**
@@ -479,8 +533,8 @@ final class MediaReconcileCommand extends Command
 
             if ($settled === MediaCustody::MISSING) {
                 return [
-                    'missing: no disk custody asks holds its file — kitsune:media-prune lists a copy at its path on any other '
-                    .'disk; otherwise restore it from a backup, or erase the entry',
+                    'missing: no disk custody asks holds its file — kitsune:media-prune lists a copy at its path on a disk '
+                    .'another row names; otherwise restore it from a backup, or erase the entry',
                     'missing',
                 ];
             }

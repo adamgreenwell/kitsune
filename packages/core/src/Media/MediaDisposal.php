@@ -96,7 +96,7 @@ final class MediaDisposal
                     return self::removeEverywhere($file) ? 1 : 0;
                 });
             } catch (Throwable $e) {
-                self::report($file['disk'], $file['path'], 'disposal could not run — '.$e->getMessage());
+                self::couldNotRun($file, $e, $committed);
             }
         }
 
@@ -143,6 +143,56 @@ final class MediaDisposal
         }
 
         return $clean;
+    }
+
+    /**
+     * Say what a disposal that could not run left, and where — ADR-042 decision 5.
+     *
+     * ⚠️ NOT WHERE THE ROW POINTED, BUT WHERE THE BYTES ARE — review of slice 5b. This once reported the disk the row
+     * named as though its copy were still there, and said of every disk, the public one and core's private one
+     * included, that Kitsune does not serve it. The erasure took every served copy off the web before it committed, to
+     * the private disk; what is left is there, on core's private disk, and on the disk the row named when that is none
+     * of them.
+     *
+     * ⚠️ AND ONLY WHEN THE ERASURE REPORTED ITS COMMIT. From the force-delete's failure path it may not have committed —
+     * a withdrawal refused, a COMMIT that failed — and then the entry and its file may be exactly where they were.
+     *
+     * @param  array{entry_id: int, disk: string, path: string}  $file
+     */
+    private static function couldNotRun(array $file, Throwable $e, bool $committed): void
+    {
+        if (! $committed) {
+            Log::warning(sprintf(
+                'Kitsune could not dispose of [%s], the file of entry %d, after its force-delete reported failure: '
+                .'disposal could not run — %s. The force-delete may not have committed, so the entry and its file may be '
+                .'where they were; kitsune:media-reconcile --entry=%d says where the file is (ADR-042 decision 5).',
+                $file['path'],
+                $file['entry_id'],
+                $e->getMessage(),
+                $file['entry_id'],
+            ));
+
+            return;
+        }
+
+        try {
+            $config = app('config');
+            $swept = [MediaDisks::configured($config, 'public'), MediaDisks::configured($config, 'private'), MediaDisks::PRIVATE];
+            $elsewhere = ! in_array($file['disk'], [...$swept, ...MediaDisks::servedDisks($config)], true);
+        } catch (Throwable) {
+            $elsewhere = true;
+        }
+
+        Log::warning(sprintf(
+            'Kitsune could not dispose of [%s], the file of force-deleted entry %d, whose row named [%s]: disposal could not '
+            .'run — %s. The erasure took every served copy off the web before it committed; `kitsune:media-prune` removes '
+            .'what is left on the configured media disks and core\'s private disk%s.',
+            $file['path'],
+            $file['entry_id'],
+            $file['disk'],
+            $e->getMessage(),
+            $elsewhere ? sprintf(', and on [%s] while any row names it — after that, remove it by hand', $file['disk']) : '',
+        ));
     }
 
     private static function report(string $disk, string $path, string $why, bool $private = false, bool $served = false): void

@@ -324,8 +324,8 @@ final class MediaCustody
                 Log::warning(sprintf(
                     'Media custody, entry %d: no disk holds [%s] — not [%s], nor any other disk custody asks — so '
                     .'nothing was moved. kitsune:media-reconcile lists it as missing, and kitsune:media-prune lists a copy '
-                    .'at its path on any other disk; otherwise restore it from a backup, or erase the entry (ADR-042 '
-                    .'decision 5).',
+                    .'at its path on a disk another row names — the one place it looks that custody does not; otherwise '
+                    .'restore it from a backup, or erase the entry (ADR-042 decision 5).',
                     (int) $file->entry_id,
                     $path,
                     $named,
@@ -382,8 +382,15 @@ final class MediaCustody
              * public one — an object store with no url, say — can still serve what it holds with no configuration
              * saying so, and nothing would ever name that copy again. Unless it cannot be read and was set aside: then
              * the row stays on it (Adam, decision 6, 2026-09-25).
+             *
+             * ⚠️ NOR WHEN ITS COPY IS THE TARGET'S OWN FILE — review of slice 5b. A row naming Laravel's `public` while the
+             * public disk is another name for the same directory failed on every run and was never repointed:
+             * `removeCopy()` rightly refuses to remove the one file both names reach. Only the row moves then — and only
+             * when the file itself is the same, on local disks: two disks `onePlace()` merely cannot tell apart, or whose
+             * directories nest, hold two files at the path, and the move-off refuses as it did (review of slice 5b, again).
              */
-            if ($named !== $target && ! in_array($named, [$private, MediaDisks::PRIVATE], true) && ! isset($setAside[$named])) {
+            if ($named !== $target && ! in_array($named, [$private, MediaDisks::PRIVATE], true) && ! isset($setAside[$named])
+                && ! MediaBytes::sameObject($target, $named, $path)) {
                 try {
                     $changed = self::removeCopy($config, $target, $named, $path, $keeper) || $changed;
                 } catch (MediaCustodyFailure $failure) {
@@ -545,13 +552,7 @@ final class MediaCustody
      */
     public static function removeExtra(Connection $connection, int $entryId, string $disk): string
     {
-        if (! self::isOutermost($connection)) {
-            throw new LogicException(sprintf(
-                'Refusing to remove an extra copy of entry %d\'s file inside an open transaction (ADR-042 decision 5).',
-                $entryId,
-            ));
-        }
-
+        self::refuseInsideTransaction($connection, sprintf('an extra copy of entry %d\'s file', $entryId));
         self::refuseSharedPaths($connection);
 
         return self::locked($connection, $entryId, static function (?stdClass $entry, ?stdClass $file) use ($disk): string {
@@ -651,9 +652,23 @@ final class MediaCustody
                 (int) $file->entry_id,
                 $path,
                 $target,
-                $keeper->disk === null
-                    ? 'because no disk holds one now'
-                    : sprintf('which is on [%s]; kitsune:media-reconcile --entry=%d --force rewrites [%s] from it', $keeper->disk, (int) $file->entry_id, $target),
+                match (true) {
+                    $keeper->disk === null => 'because no disk holds one now',
+                    // Reconcile asks only the disks custody asks: a copy elsewhere is restored by hand (Adam, decision 5).
+                    in_array($keeper->disk, self::asked($config, $target, $target), true) => sprintf(
+                        'which is on [%s]; kitsune:media-reconcile --entry=%d --force rewrites [%s] from it',
+                        $keeper->disk,
+                        (int) $file->entry_id,
+                        $target,
+                    ),
+                    default => sprintf(
+                        'which is on [%s], a disk kitsune:media-reconcile does not ask: copy it over [%s] by hand; '
+                        .'kitsune:media-reconcile --entry=%d then verifies it',
+                        $keeper->disk,
+                        $target,
+                        (int) $file->entry_id,
+                    ),
+                },
             ));
 
             return self::UNSETTLED;
@@ -826,9 +841,15 @@ final class MediaCustody
      * ⚠️ A CLAIM CHECK, NOT A SHARING CHECK. Paths are unique (Adam, decision 8, 2026-09-25), but the listing that found
      * the file is not locked, and `store()` writes an upload's bytes before its row: a row committed since the listing
      * claims a path no row named then, which the index cannot prevent. The recheck is a lookup under the index.
+     *
+     * ⚠️ NEVER INSIDE AN OPEN TRANSACTION — review of slice 5b. The recheck would read that transaction's own work: a
+     * file an erasure not yet committed has freed reads as an orphan, and stays deleted when the erasure rolls back.
+     *
+     * @throws LogicException inside an open transaction
      */
     public static function removeOrphan(Connection $connection, string $disk, string $path): string
     {
+        self::refuseInsideTransaction($connection, sprintf('an orphan, [%s:%s],', $disk, $path));
         $claimed = str_ends_with($path, MediaBytes::PARTIAL) ? substr($path, 0, -strlen(MediaBytes::PARTIAL)) : $path;
 
         return self::locked($connection, 0, static function () use ($connection, $disk, $path, $claimed): string {
@@ -842,14 +863,29 @@ final class MediaCustody
         });
     }
 
-    /** Remove a partial copy custody left beside an entry's file, with the entry locked. */
+    /**
+     * Remove a partial copy custody left beside an entry's file, with the entry locked — outside any transaction, as an
+     * orphan is.
+     *
+     * @throws LogicException inside an open transaction
+     */
     public static function removeTemp(Connection $connection, int $entryId, string $disk, string $partial): string
     {
+        self::refuseInsideTransaction($connection, sprintf('entry %d\'s partial copy, [%s:%s],', $entryId, $disk, $partial));
+
         return self::locked($connection, $entryId, static function () use ($disk, $partial): string {
             MediaBytes::delete($disk, $partial);
 
             return self::REMOVED;
         });
+    }
+
+    /** Refuse to remove anything inside an open transaction: what it read could still roll back (ADR-042 decision 5). */
+    private static function refuseInsideTransaction(Connection $connection, string $what): void
+    {
+        if (! self::isOutermost($connection)) {
+            throw new LogicException(sprintf('Refusing to remove %s inside an open transaction (ADR-042 decision 5).', $what));
+        }
     }
 
     /**

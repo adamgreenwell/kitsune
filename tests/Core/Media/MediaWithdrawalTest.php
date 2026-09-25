@@ -33,7 +33,7 @@ use Kitsune\Core\Tests\Fixtures\RefusingDisk;
 
 /*
  * A trashed file leaves the web before the trash commits; a restored one is published after — ADR-042 decision 5
- * (T23-T37, T39).
+ * (T23-T37, T39; slice 5b: T62, T67(vi), T69-T71, T75, T101).
  *
  * ⚠️ FROM THE DISKS AND THE ROW AS THEY ARE AFTERWARDS. Every case reads what each disk holds at the path, by hash,
  * and what the row names — so a refusal that happened for some other reason, or a copy that "succeeded" onto the

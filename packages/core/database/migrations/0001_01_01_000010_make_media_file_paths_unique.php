@@ -22,8 +22,9 @@ use League\Flysystem\WhitespacePathNormalizer;
  * belongs to this file and nothing else."* Withdrawal, publication, disposal and prune each act on a file by its path, on
  * every disk: a second row naming that path would have its bytes moved or deleted by a step acting for the first. The
  * index makes a second row naming it impossible. And Flysystem normalises every location before a disk sees it —
- * `/media/x`, `media//x` and `media\x` are all the file at `media/x`, and `media/a/../x` is no file at all — so a unique
- * string guarantees one row per file only if every row writes its path the way the disks read it. Both are checked.
+ * `/media/x`, `media//x`, `media\x` and `media/a/../x` are all the file at `media/x` — so a unique string guarantees one
+ * row per file only if every row writes its path the way the disks read it. Both are checked: this migration checks the
+ * rows there are, and `MediaFile` every row it creates.
  *
  * ⚠️ IT REFUSES BEFORE IT CHANGES ANYTHING, as `0001_01_01_000008` does and for its reason: on MySQL and MariaDB a schema
  * statement commits on its own, and Laravel runs SQLite's migrations outside a transaction, so a refusal thrown after the

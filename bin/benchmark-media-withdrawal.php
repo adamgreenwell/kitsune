@@ -160,6 +160,37 @@ function withdrawalBenchCounts(string $output, array $expected): bool
     return $counted === $expected;
 }
 
+/**
+ * Whether an (M) contention row happened as its heading says: the holder, where there is one, held its row before the
+ * build was armed, exited cleanly and said it committed after the build began; the build statement was seen; and the
+ * prober reported.
+ *
+ * @param  array{held: bool, holder: ?array{exit: ?int, last: string}, built: bool, prober: array{exit: ?int, outcome: string}}  $seen
+ */
+function withdrawalBenchContentionVerified(array $seen): bool
+{
+    $holder = $seen['holder'];
+    $said = $holder === null ? null : json_decode($holder['last'], true);
+
+    return $seen['held']
+        && ($holder === null || ($holder['exit'] === 0 && is_array($said) && ($said['outcome'] ?? null) === 'held until two seconds into the build'))
+        && $seen['built']
+        && $seen['prober']['exit'] === 0
+        && ! str_starts_with($seen['prober']['outcome'], 'no result');
+}
+
+/**
+ * An (M) contention row's line: its figures only when it happened as its heading says; otherwise what was seen, and none.
+ *
+ * @param  array{attempt: string, outcome: string, waited: float, statement: float, up: float, verified: bool}  $row
+ */
+function withdrawalBenchContentionLine(array $row): string
+{
+    return $row['verified']
+        ? sprintf('| %s | %s | %.1f | %.1f | %.1f |', $row['attempt'], $row['outcome'], $row['waited'], $row['statement'], $row['up'])
+        : sprintf('| %s | not verified — no figure (%s) | | | |', $row['attempt'], $row['outcome']);
+}
+
 /** @param  list<string>  $argv */
 function withdrawalBenchMain(array $argv): int
 {
@@ -314,7 +345,7 @@ function withdrawalBenchRun(string $directory): int
         $say('|---|---|---|---|---|');
 
         foreach (withdrawalBenchMigrationContention($directory, $driver) as $row) {
-            $say(sprintf('| %s | %s | %.1f | %.1f | %.1f |', $row['attempt'], $row['outcome'], $row['waited'], $row['statement'], $row['up']));
+            $say(withdrawalBenchContentionLine($row));
         }
     } finally {
         $after();
@@ -1088,19 +1119,26 @@ final class WithdrawalBench
     }
 
     /**
-     * The migration's check alone, over the seed: every path read, grouped and compared as the disks read it.
+     * The migration's check alone, over the seed: every path read, grouped and compared as the disks read it — with the
+     * index dropped before each run, as a deploy runs it: the index would answer the grouping (review of slice 5b).
      *
      * @return array{setup: Closure(): array<string, mixed>, run: Closure(array<string, mixed>): void, verify: Closure(array<string, mixed>): bool}
      */
     private function migrationCheck(): array
     {
         return [
-            'setup' => static fn (): array => [],
+            'setup' => function (): array {
+                if ($this->pathsIndexed()) {
+                    $this->migration()->down();
+                }
+
+                return [];
+            },
             'run' => function (array &$state): void {
                 $this->migration()->refuseUnsafePaths(DB::table('media_files'));
                 $state['checked'] = true;
             },
-            'verify' => static fn (array $state): bool => ($state['checked'] ?? false) === true,
+            'verify' => fn (array $state): bool => ($state['checked'] ?? false) === true && ! $this->pathsIndexed(),
         ];
     }
 
@@ -1254,8 +1292,9 @@ final class WithdrawalBench
 }
 
 /**
- * A migration's `up()` as `migrate` runs it: inside a transaction where the engine's schema changes can be — PostgreSQL
- * and SQLite — so the locks it takes are held as long as they would be in a deploy.
+ * A migration's `up()` as `migrate` runs it: inside a transaction where Laravel's grammar runs schema changes in one —
+ * of the engines here, PostgreSQL alone; SQLite, MySQL and MariaDB run it statement by statement — so the locks it takes
+ * are held as long as they would be in a deploy.
  */
 function withdrawalBenchMigrate(object $migration): void
 {
@@ -1276,10 +1315,14 @@ function withdrawalBenchMigrate(object $migration): void
  * or writes to it: how long each of the others waited, the build statement's time and `up()`'s. On SQLite a second
  * process makes read-first writes for the whole of `up()`, and counts those told the database is locked.
  *
+ * ⚠️ A ROW IS PRINTED ONLY WHEN IT HAPPENED AS ITS HEADING SAYS — review of slice 5b: the holder held its row before the
+ * build was armed and says it committed after, the build statement was seen, and the prober reported. Otherwise the row
+ * says so, and prints no figure.
+ *
  * ⚠️ SIGNALLED AT THE BUILD STATEMENT, NOT AT `up()`. The check before it reads every row, and would outlast a hold
  * begun at `up()`, so the build would find nothing to wait on; `beforeExecuting` runs as the statement is sent.
  *
- * @return list<array{attempt: string, outcome: string, waited: float, statement: float, up: float}>
+ * @return list<array{attempt: string, outcome: string, waited: float, statement: float, up: float, verified: bool}>
  */
 function withdrawalBenchMigrationContention(string $directory, string $driver): array
 {
@@ -1320,6 +1363,9 @@ function withdrawalBenchMigrationContention(string $directory, string $driver): 
             usleep(5_000);
         }
 
+        // Held before the build is armed, or the build has nothing to wait on.
+        $held = $holder === null || is_file($directory.'/readyh');
+
         if ($driver === 'sqlite') {
             touch($directory.'/signalp');
         }
@@ -1342,6 +1388,7 @@ function withdrawalBenchMigrationContention(string $directory, string $driver): 
 
         $lines = preg_split('/\R/', trim($prober->getOutput())) ?: [];
         $result = json_decode((string) end($lines), true) ?: ['outcome' => 'no result: '.substr(trim($prober->getErrorOutput()), 0, 120), 'waited' => 0.0];
+        $holderLines = $holder === null ? [] : (preg_split('/\R/', trim($holder->getOutput())) ?: []);
 
         $rows[] = [
             'attempt' => $attempt,
@@ -1349,6 +1396,12 @@ function withdrawalBenchMigrationContention(string $directory, string $driver): 
             'waited' => (float) $result['waited'],
             'statement' => $built === null ? 0.0 : ($ended - $built) / 1e6,
             'up' => ($ended - $started) / 1e6,
+            'verified' => withdrawalBenchContentionVerified([
+                'held' => $held,
+                'holder' => $holder === null ? null : ['exit' => $holder->getExitCode(), 'last' => (string) end($holderLines)],
+                'built' => $built !== null,
+                'prober' => ['exit' => $prober->getExitCode(), 'outcome' => (string) $result['outcome']],
+            ]),
         ];
     }
 
