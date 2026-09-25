@@ -12,6 +12,7 @@ use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
+use Kitsune\Core\Media\MediaCustody;
 use Kitsune\Core\Media\MediaDisks;
 use Kitsune\Core\Media\MediaLibrary;
 use Kitsune\Core\Models\EntryType;
@@ -131,4 +132,26 @@ it('builds a unique index on the path once every path is one row\'s, and down() 
 
     expect($thrown)->toBeNull()
         ->and(pathMigrationIndexed())->toBeTrue();
+});
+
+/*
+ * T76. Custody removes a copy at a path only on the understanding that the path is one row's, so it asks the database
+ * before it relies on that: with the index taken away, the third write refuses, naming the migration, rather than remove
+ * the only copy of another row that shares the path.
+ */
+it('refuses the third write while media_files.path is not unique', function (): void {
+    [$a, $path] = pathMigrationStored($this->image);
+    [$b] = pathMigrationStored($this->image);
+
+    $this->migration->down();
+    DB::table('media_files')->where('entry_id', $b)->update(['path' => $path, 'disk' => MediaDisks::PRIVATE]);
+    DB::table('entries')->where('id', $b)->update(['deleted_at' => now()]);
+    Storage::disk(MediaDisks::PRIVATE)->put($path, 'the other entry\'s only copy');
+
+    expect(fn () => MediaCustody::cleanUp(DB::connection(), $a))->toThrow(
+        RuntimeException::class,
+        'Refusing: media_files.path is not unique on this database',
+    );
+
+    expect(Storage::disk(MediaDisks::PRIVATE)->get($path))->toBe('the other entry\'s only copy');
 });

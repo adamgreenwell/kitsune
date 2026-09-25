@@ -611,6 +611,72 @@ describe('settle', function (): void {
 });
 
 /*
+ * T72. Prune's removal of an extra copy: only while the row names the disk its state says, and that disk holds the copy
+ * kept; never the target itself; and never before every copy it would remove has been read.
+ */
+describe('removeExtra', function (): void {
+    it('removes an extra copy of a settled file', function (): void {
+        [$id, $path] = custodyFile('public', ['public' => CUSTODY_PNG, 'old-cdn' => CUSTODY_PNG]);
+
+        expect(MediaCustody::removeExtra(DB::connection(), $id, 'old-cdn'))->toBe(MediaCustody::SETTLED)
+            ->and(custodyCopies($path))->toBe(['public' => $this->checksum, MediaDisks::PRIVATE => null, 'old-cdn' => null]);
+    });
+
+    it('keeps everything while the row does not name the disk its state says', function (): void {
+        // Published, not yet committed: the row still names the private disk, and the public copy is the target's.
+        [$id, $path] = custodyFile(MediaDisks::PRIVATE, [MediaDisks::PRIVATE => CUSTODY_PNG, 'public' => CUSTODY_PNG]);
+
+        expect(MediaCustody::removeExtra(DB::connection(), $id, MediaDisks::PRIVATE))->toBe(MediaCustody::UNSETTLED)
+            ->and(custodyCopies($path))->toBe(['public' => $this->checksum, MediaDisks::PRIVATE => $this->checksum, 'old-cdn' => null]);
+    });
+
+    it('never removes the target\'s own copy', function (): void {
+        [$id, $path] = custodyFile('public', ['public' => CUSTODY_PNG]);
+
+        expect(MediaCustody::removeExtra(DB::connection(), $id, 'public'))->toBe(MediaCustody::UNCHANGED)
+            ->and(custodyCopies($path)['public'])->toBe($this->checksum);
+    });
+
+    it('says the entry is gone, and touches nothing', function (): void {
+        [$id, $path] = custodyFile('public', ['public' => CUSTODY_PNG, 'old-cdn' => CUSTODY_PNG]);
+        DB::table('entries')->where('id', $id)->delete();
+
+        expect(MediaCustody::removeExtra(DB::connection(), $id, 'old-cdn'))->toBe(MediaCustody::GONE)
+            ->and(custodyByteOperations())->toBe([]);
+    });
+
+    it('fails on a copy it cannot read, and removes nothing', function (): void {
+        [$id, $path] = custodyFile('public', ['public' => CUSTODY_PNG, 'old-cdn' => 'changed by hand']);
+        $this->disks['old-cdn']->unreadable = [$path];
+
+        expect(fn () => MediaCustody::removeExtra(DB::connection(), $id, 'old-cdn'))->toThrow(MediaCustodyFailure::class, 'exists and cannot be read');
+
+        expect(custodyByteOperations())->toBe([]);
+    });
+
+    it('refuses inside an open transaction', function (): void {
+        [$id, $path] = custodyFile('public', ['public' => CUSTODY_PNG, 'old-cdn' => CUSTODY_PNG]);
+
+        expect(fn () => DB::transaction(fn () => MediaCustody::removeExtra(DB::connection(), $id, 'old-cdn')))
+            ->toThrow(LogicException::class, 'inside an open transaction');
+
+        expect(custodyCopies($path)['old-cdn'])->toBe($this->checksum);
+    });
+
+    /** The third write reads every copy before it removes the first: a copy it cannot read keeps the others too. */
+    it('reads every copy before it removes any', function (): void {
+        custodyHostPrivate();
+        [$id, $path] = custodyFile('public', ['public' => CUSTODY_PNG, 'host-private' => CUSTODY_PNG, MediaDisks::PRIVATE => 'stale']);
+        $this->disks[MediaDisks::PRIVATE]->unreadable = [$path];
+
+        expect(fn () => MediaCustody::cleanUp(DB::connection(), $id))->toThrow(MediaCustodyFailure::class, 'exists and cannot be read');
+
+        expect(custodyByteOperations())->toBe([])
+            ->and(Storage::disk('host-private')->get($path))->toBe(CUSTODY_PNG);
+    });
+});
+
+/*
  * T66-T67. An unreadable copy and a file on the web — Adam, decision 6, 2026-09-25.
  *
  * ⚠️ SET ASIDE ONLY TO TAKE A FILE OFF THE WEB, AND NEVER TOUCHED. While settle withdraws to the private disk a file a

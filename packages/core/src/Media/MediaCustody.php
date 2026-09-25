@@ -18,6 +18,7 @@ use Illuminate\Database\DatabaseTransactionsManager;
 use Illuminate\Database\Query\Expression;
 use Illuminate\Support\Facades\Log;
 use Kitsune\Core\Database\TransactionRecovery;
+use Kitsune\Core\Models\MediaFile;
 use LogicException;
 use RuntimeException;
 use stdClass;
@@ -35,8 +36,11 @@ use Throwable;
  * byte moves (Adam, 2026-09-24); elsewhere the entry and its file are read `FOR UPDATE`, entry first.
  *
  * ⚠️ NO COPY IS DELETED UNTIL ANOTHER IS VERIFIED. A copy counts once it has been written and read back with a
- * matching hash — no fsync, as `store()` also has none — and one disk's copy is deleted only while another's is known
- * to hold the same bytes. Two names for one place are refused before anything moves: a "copy" there is the file.
+ * matching hash — no fsync, as `store()` also has none — and ~~one disk's copy is deleted only while another's is known
+ * to hold the same bytes~~ a copy is deleted only once the kept copy is verified by SHA-256 on the disk its row names or
+ * is moving to — one that differs goes with both hashes logged (Adam, decisions 2 and 2b, 2026-09-24); one alone
+ * matching the checksum never, and one that cannot be read never (Adam, decision 6, 2026-09-25). Two names for one
+ * place, or two that cannot be told apart, are refused before anything moves: a "copy" there could be the file.
  *
  * ⚠️ BYTES MOVE AFTER THE OUTERMOST COMMIT, NEVER INSIDE A TRANSACTION THAT MIGHT STILL ROLL BACK. Publication
  * follows the commit that made a file public again; the compensation of a withdrawal the database then rolled back
@@ -67,11 +71,24 @@ final class MediaCustody
     public const SET_ASIDE = 'set aside';
 
     /**
+     * Nothing was removed: the row does not name the disk its state says, that disk does not hold the copy kept, or a
+     * copy that alone matches the checksum would have gone.
+     */
+    public const UNSETTLED = 'unsettled';
+
+    /**
      * Entries whose files a rolled-back withdrawal moved, by connection name, waiting to be put back.
      *
      * @var array<string, array<int, true>>
      */
     private array $pending = [];
+
+    /**
+     * Whether `media_files.path` is unique, by connection name, asked once.
+     *
+     * @var array<string, bool>
+     */
+    private array $unique = [];
 
     /**
      * Run the work with an entry and its file locked, on this connection, in a transaction `TransactionRecovery`
@@ -446,18 +463,22 @@ final class MediaCustody
     }
 
     /**
-     * Delete the private copy of a live public file, once the public disk verifiably holds the same bytes — the third
-     * write, after a publication or a compensation (ADR-042 decision 5).
+     * Delete the private copies of a live public file, once the public disk holds the copy kept — the third write, after
+     * a publication or a compensation (ADR-042 decision 5).
      *
      * ⚠️ LOCKED, AND ASKED AGAIN: the entry still live, still public, its row still naming the public disk. A delete
      * that got there first has made the private copy the one it claims, and it is left alone. Review found the unlocked
      * version: a delete landing between a publication's commit and its cleanup copied the public bytes back to the
      * private path, had that fresh copy deleted by the cleanup, then deleted the public copy — the file on neither disk.
      *
-     * ⚠️ AND ONLY WHILE ANOTHER COPY IS KNOWN TO HOLD THE SAME BYTES (rule 2): the public copy's hash is compared with the
-     * private copy's under the lock, and a copy that differs, or cannot be read, is kept.
+     * ⚠️ ~~AND ONLY WHILE ANOTHER COPY IS KNOWN TO HOLD THE SAME BYTES (rule 2): the public copy's hash is compared with the
+     * private copy's under the lock, and a copy that differs, or cannot be read, is kept.~~ AND ONLY ONCE THE PUBLIC DISK
+     * HOLDS THE COPY KEPT (rule 2, as decided): a private copy matching it goes, one that differs goes with both hashes
+     * logged (Adam, decisions 2 and 2b — "the rest waits for 5b"), and one that alone matches the checksum, or cannot be
+     * read, keeps everything. `removeBeside()` argues it once, for this and for prune.
      *
      * @throws LogicException inside an open transaction
+     * @throws RuntimeException when `media_files.path` is not unique on this database
      * @throws MediaCustodyFailure when a copy cannot be read or removed
      */
     public static function cleanUp(Connection $connection, int $entryId): string
@@ -468,6 +489,8 @@ final class MediaCustody
                 $entryId,
             ));
         }
+
+        self::refuseSharedPaths($connection);
 
         return self::locked($connection, $entryId, static function (?stdClass $entry, ?stdClass $file): string {
             if ($entry === null || $file === null) {
@@ -481,42 +504,174 @@ final class MediaCustody
                 return self::UNCHANGED;
             }
 
-            $path = (string) $file->path;
-            $changed = false;
+            $private = [MediaDisks::configured($config, 'private')];
 
-            foreach (array_diff(array_unique([MediaDisks::configured($config, 'private'), MediaDisks::PRIVATE]), [$public]) as $disk) {
-                if (! MediaBytes::present($disk, $path)) {
-                    continue;
-                }
-
-                MediaDisks::refuseCoincidingMediaDisks($config, $public, $disk);
-
-                if (MediaBytes::sameObject($public, $disk, $path)) {
-                    throw new MediaCustodyFailure('coinciding', $disk, $path);
-                }
-
-                $published = MediaBytes::hash($public, $path);
-                $copy = MediaBytes::hash($disk, $path);
-
-                if (! MediaBytes::same($published, $copy)) {
-                    Log::warning(sprintf(
-                        'Media custody, entry %d: the private copy of [%s] on [%s] was kept — the public copy %s '
-                        .'(ADR-042 decision 5). kitsune:media-prune lists it as kept.',
-                        (int) $file->entry_id,
-                        $path,
-                        $disk,
-                        $published === null ? 'is missing' : "differs from it ([{$published}] against [{$copy}])",
-                    ));
-
-                    continue;
-                }
-
-                MediaBytes::delete($disk, $path);
-                $changed = true;
+            // Core's own, wherever the private disk points, when it can hold anything: building it would create it.
+            if (MediaDisks::mayHold($config, MediaDisks::PRIVATE)) {
+                $private[] = MediaDisks::PRIVATE;
             }
 
-            return $changed ? self::SETTLED : self::UNCHANGED;
+            return self::removeBeside($config, $file, $public, array_values(array_diff(array_unique($private), [$public])));
         });
+    }
+
+    /**
+     * Remove a copy at a row's path on a disk the row does not name — prune's removal of an extra copy (ADR-042 decision
+     * 5, slice 5b).
+     *
+     * ⚠️ ONLY WHILE THE ROW NAMES THE DISK ITS STATE SAYS, asked under the lock: a row that does not is reconcile's, and
+     * the extra copy may be the one it needs. Then as the third write: the target must hold the copy kept.
+     *
+     * @throws LogicException inside an open transaction
+     * @throws RuntimeException when `media_files.path` is not unique, or the two disks cannot be told apart
+     * @throws MediaCustodyFailure when a copy cannot be read or removed
+     */
+    public static function removeExtra(Connection $connection, int $entryId, string $disk): string
+    {
+        if (! self::isOutermost($connection)) {
+            throw new LogicException(sprintf(
+                'Refusing to remove an extra copy of entry %d\'s file inside an open transaction (ADR-042 decision 5).',
+                $entryId,
+            ));
+        }
+
+        self::refuseSharedPaths($connection);
+
+        return self::locked($connection, $entryId, static function (?stdClass $entry, ?stdClass $file) use ($disk): string {
+            if ($entry === null || $file === null) {
+                return self::GONE;
+            }
+
+            $target = self::target($entry, $file);
+
+            if ((string) $file->disk !== $target) {
+                return self::UNSETTLED;
+            }
+
+            return self::removeBeside(self::config(), $file, $target, [$disk]);
+        });
+    }
+
+    /**
+     * Whether `media_files.path` is unique on this connection — the premise that lets custody remove a copy at a path as
+     * one row's (Adam, decision 8, 2026-09-25).
+     *
+     * ⚠️ ASKED OF THE DATABASE, NOT ASSUMED. Nothing checks for a second row naming a path any more, because the index
+     * makes one impossible; a checkout that has not migrated, or the migration's `down()`, would take that away and leave
+     * nothing in its place. Asked once per connection for a request or a command.
+     */
+    public static function pathsAreUnique(Connection $connection): bool
+    {
+        $custody = app(self::class);
+
+        return $custody->unique[$connection->getName()] ??= collect($connection->getSchemaBuilder()->getIndexes(MediaFile::TABLE))
+            ->contains(static fn (array $index): bool => (bool) $index['unique'] && $index['columns'] === ['path']);
+    }
+
+    /** @throws RuntimeException when `media_files.path` is not unique on this connection */
+    private static function refuseSharedPaths(Connection $connection): void
+    {
+        if (self::pathsAreUnique($connection)) {
+            return;
+        }
+
+        throw new RuntimeException(
+            'Refusing: media_files.path is not unique on this database, and custody removes a copy only on the '
+            .'understanding that its path is one row\'s (ADR-042 decision 5; Adam, decision 8, 2026-09-25). Run the '
+            .'migration 0001_01_01_000010_make_media_file_paths_unique (php artisan migrate) and try again. Nothing was '
+            .'removed.'
+        );
+    }
+
+    /**
+     * Remove every copy on these disks once the target — the disk the row names — holds the copy kept: the third write
+     * and prune's removal of an extra copy, argued once (ADR-042 decision 5, rule 2; Adam, decisions 2 and 2b).
+     *
+     * Inside the lock. A disk that is the target under another name is left out; one that cannot be told from it is
+     * refused before anything is read.
+     *
+     * ⚠️ EVERY COPY IS HASHED BEFORE THE FIRST DELETE — review of slice 5b. A copy the keeper saw and read as absent a
+     * moment later, and that is back now, is hashed again rather than deleted unhashed; and a copy that cannot be read
+     * fails the step with nothing removed.
+     *
+     * ⚠️ A COPY THAT ALONE MATCHES THE CHECKSUM NEVER GOES. When the target's copy was kept for want of any match, and a
+     * copy here turns out to match, nothing is removed: *"nothing matching it is touched by a fallback"*.
+     *
+     * @param  list<string>  $disks
+     */
+    private static function removeBeside(Repository $config, stdClass $file, string $target, array $disks): string
+    {
+        $path = (string) $file->path;
+        $checksum = is_string($file->checksum) && $file->checksum !== '' ? $file->checksum : null;
+        $others = [];
+
+        foreach ($disks as $disk) {
+            $place = MediaDisks::onePlace($config, $target, $disk);
+
+            if ($place === true) {
+                continue;
+            }
+
+            if ($place === null) {
+                MediaDisks::refuseCoincidingMediaDisks($config, $target, $disk);
+            }
+
+            $others[] = $disk;
+        }
+
+        $held = array_values(array_filter($others, static fn (string $disk): bool => MediaBytes::present($disk, $path)));
+
+        if ($held === []) {
+            return self::UNCHANGED;
+        }
+
+        $keeper = self::keeper($file, $target, $target, [$target, ...$held]);
+
+        if (! $keeper->targetHolds) {
+            Log::warning(sprintf(
+                'Media custody, entry %d: nothing was removed beside [%s] — [%s], the disk the row names, does not hold '
+                .'the copy kept, %s (ADR-042 decision 5).',
+                (int) $file->entry_id,
+                $path,
+                $target,
+                $keeper->disk === null ? 'because no disk holds one now' : "which is on [{$keeper->disk}]",
+            ));
+
+            return self::UNSETTLED;
+        }
+
+        $hashes = [];
+
+        foreach ($held as $disk) {
+            $hash = $keeper->hashes[$disk] ?? MediaBytes::hash($disk, $path);
+
+            if ($hash === null) {
+                continue;
+            }
+
+            if ($keeper->mode !== MediaKeeper::MATCH && MediaBytes::same($hash, $checksum)) {
+                Log::warning(sprintf(
+                    'Media custody, entry %d: nothing was removed beside [%s] — the copy on [%s] alone matches the '
+                    .'recorded checksum, and [%s], the disk the row names, holds one that does not (ADR-042 decision 5).',
+                    (int) $file->entry_id,
+                    $path,
+                    $disk,
+                    $target,
+                ));
+
+                return self::UNSETTLED;
+            }
+
+            $hashes[$disk] = $hash;
+        }
+
+        $keeper = new MediaKeeper($keeper->disk, $keeper->expected, $keeper->mode, $keeper->targetHolds, [...$keeper->hashes, ...$hashes]);
+
+        foreach (array_keys($hashes) as $disk) {
+            self::removeCopy($config, $target, $disk, $path, $keeper);
+        }
+
+        return $hashes === [] ? self::UNCHANGED : self::SETTLED;
     }
 
     /**
@@ -677,7 +832,7 @@ final class MediaCustody
      * Delete one disk's copy, and any partial beside it, once the target is known to be another place.
      *
      * A copy that differs from the kept one is logged before it goes: it is the only trace of a change made outside
-     * Kitsune.
+     * Kitsune. A hash the keeper took as absent, of a copy that is here now, is taken again (slice 5b).
      *
      * @return bool whether the disk held a copy
      */
@@ -692,7 +847,7 @@ final class MediaCustody
         $held = MediaBytes::present($disk, $path);
 
         if ($held) {
-            $hash = array_key_exists($disk, $keeper->hashes) ? $keeper->hashes[$disk] : MediaBytes::hash($disk, $path);
+            $hash = $keeper->hashes[$disk] ?? MediaBytes::hash($disk, $path);
 
             self::noteDiffering($disk, $path, $hash, $keeper, 'removing', $target);
 

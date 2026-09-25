@@ -569,15 +569,103 @@ describe('cleaning up after a publication', function (): void {
             ->and(heldAt($path))->toBe(['public' => $this->checksum, MediaDisks::PRIVATE => $this->checksum]);
     });
 
-    it('keeps a private copy that differs from the published one, and says so', function (): void {
+    /*
+     * T69. ~~A private copy that differs from the published one is kept.~~ Decision 2b removes a differing copy the row
+     * does not name, with both hashes logged, wherever a step removes copies — "the rest waits for 5b", and the third
+     * write is one (Adam, decisions 2 and 2b, 2026-09-24).
+     */
+    it('removes a private copy that differs from the published one, naming both hashes', function (): void {
         [$entry, $path] = withdrawable();
         Storage::disk(MediaDisks::PRIVATE)->put($path, 'changed by hand');
         Log::spy();
 
-        expect(MediaCustody::cleanUp(DB::connection(), $entry->id))->toBe(MediaCustody::UNCHANGED)
-            ->and(heldAt($path)[MediaDisks::PRIVATE])->toBe(hash('sha256', 'changed by hand'));
-        Log::shouldHaveReceived('warning')->withArgs(fn (string $message): bool => str_contains($message, 'the private copy of')
-            && str_contains($message, hash('sha256', 'changed by hand')))->once();
+        expect(MediaCustody::cleanUp(DB::connection(), $entry->id))->toBe(MediaCustody::SETTLED)
+            ->and(heldAt($path))->toBe(['public' => $this->checksum, MediaDisks::PRIVATE => null]);
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $message): bool => str_starts_with($message, 'Media custody: removing')
+            && str_contains($message, hash('sha256', 'changed by hand'))
+            && str_contains($message, $this->checksum))->once();
+    });
+
+    /*
+     * T70. It removes nothing while the public disk does not hold the copy kept: when the private copy alone matches the
+     * checksum, when the public copy is gone by the time it is read, and when a copy that alone matches read as absent to
+     * the keeper and is back by the time it would be removed.
+     */
+    it('keeps everything while the private copy alone matches the checksum', function (): void {
+        [$entry, $path] = withdrawable();
+        Storage::disk('public')->put($path, 'changed by hand');
+        Storage::disk(MediaDisks::PRIVATE)->put($path, WITHDRAWN_PNG);
+
+        expect(MediaCustody::cleanUp(DB::connection(), $entry->id))->toBe(MediaCustody::UNSETTLED)
+            ->and(heldAt($path))->toBe(['public' => hash('sha256', 'changed by hand'), MediaDisks::PRIVATE => $this->checksum]);
+    });
+
+    it('keeps everything when the public copy is gone by the time it is read', function (): void {
+        [$entry, $path] = withdrawable();
+        Storage::disk(MediaDisks::PRIVATE)->put($path, 'the only copy left');
+        $public = $this->disks['public'];
+        $public->onOperation(2, static function () use ($public, $path): void {
+            @unlink($public->root().'/'.$path);
+        }, 'any');
+
+        expect(MediaCustody::cleanUp(DB::connection(), $entry->id))->toBe(MediaCustody::UNSETTLED)
+            ->and(heldAt($path)[MediaDisks::PRIVATE])->toBe(hash('sha256', 'the only copy left'));
+    });
+
+    it('keeps a copy that alone matches, though the keeper read it as absent', function (): void {
+        [$entry, $path] = withdrawable();
+        Storage::disk('public')->put($path, 'changed by hand');
+        Storage::disk(MediaDisks::PRIVATE)->put($path, WITHDRAWN_PNG);
+        $private = $this->disks[MediaDisks::PRIVATE];
+        $file = $private->root().'/'.$path;
+        // The cleanup's presence check and the keeper's, then the keeper's hash — gone — then the removal's hash: back.
+        $private->onOperation(3, static function () use ($file): void {
+            rename($file, $file.'.away');
+        }, 'any');
+        $private->onOperation(4, static function () use ($file): void {
+            rename($file.'.away', $file);
+        }, 'any');
+
+        expect(MediaCustody::cleanUp(DB::connection(), $entry->id))->toBe(MediaCustody::UNSETTLED)
+            ->and(heldAt($path))->toBe(['public' => hash('sha256', 'changed by hand'), MediaDisks::PRIVATE => $this->checksum]);
+    });
+
+    /* T71. Nothing matches the checksum: the copy the row names is kept, and the other goes, logged (decision 2b). */
+    it('removes the private copy when nothing matches, keeping the published one the row names', function (): void {
+        [$entry, $path] = withdrawable();
+        Storage::disk('public')->put($path, 'changed by hand');
+        Storage::disk(MediaDisks::PRIVATE)->put($path, 'changed another way');
+
+        expect(MediaCustody::cleanUp(DB::connection(), $entry->id))->toBe(MediaCustody::SETTLED)
+            ->and(heldAt($path))->toBe(['public' => hash('sha256', 'changed by hand'), MediaDisks::PRIVATE => null]);
+    });
+
+    /*
+     * T75. A served copy seen at withdrawal's presence check, read as absent by the keeper and back when it is deleted,
+     * is hashed before it goes, so a copy that differs is still named with both hashes.
+     */
+    it('hashes a copy before it deletes it, though the keeper read it as absent', function (): void {
+        [$entry, $path] = withdrawable();
+        Storage::disk('public')->put($path, 'changed by hand');
+        $cdn = ($this->disk)('old-cdn', ['url' => 'https://cdn.example.test']);
+        Storage::disk('old-cdn')->put($path, 'a served copy');
+        $file = $cdn->root().'/'.$path;
+        // Withdrawal's presence check and its partial's, the keeper's presence check, the keeper's hash — gone — then
+        // withdrawal's own hash before the delete: back.
+        $cdn->onOperation(4, static function () use ($file): void {
+            rename($file, $file.'.away');
+        }, 'any');
+        $cdn->onOperation(5, static function () use ($file): void {
+            rename($file.'.away', $file);
+        }, 'any');
+        Log::spy();
+
+        $entry->delete();
+
+        expect(heldAt($path, ['public', 'old-cdn']))->toBe(['public' => null, 'old-cdn' => null]);
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $message): bool => str_starts_with($message, 'Media custody: removing')
+            && str_contains($message, 'on [old-cdn]')
+            && str_contains($message, hash('sha256', 'a served copy')))->once();
     });
 
     it('removes a private copy that matches the published one', function (): void {

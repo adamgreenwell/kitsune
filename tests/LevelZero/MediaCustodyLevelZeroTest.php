@@ -363,7 +363,7 @@ describe('the write lock on SQLite', function (): void {
             'publication', 'drain' => fn () => $entry->delete(),
             'removeTemp' => fn () => Storage::disk(MediaDisks::PRIVATE)->put(MediaBytes::partial($filePath), 'half'),
             // Published, with the private copy the third write removes once it has checked the public one.
-            'cleanUp' => fn () => Storage::disk(MediaDisks::PRIVATE)->put($filePath, LEVEL_ZERO_PNG),
+            'cleanUp', 'removeExtra' => fn () => Storage::disk(MediaDisks::PRIVATE)->put($filePath, LEVEL_ZERO_PNG),
             'removeOrphan' => fn () => Storage::disk(MediaDisks::PRIVATE)->put('media/orphan.png', 'bytes'),
             default => fn () => null,
         };
@@ -399,10 +399,11 @@ describe('the write lock on SQLite', function (): void {
             'removeTemp' => MediaCustody::removeTemp(DB::connection(), $entry->id, MediaDisks::PRIVATE, MediaBytes::partial($filePath)),
             'disposal' => MediaDisposal::remove(DB::connection(), [['entry_id' => $entry->id, 'disk' => 'public', 'path' => $filePath]]),
             'cleanUp' => MediaCustody::cleanUp(DB::connection(), $entry->id),
+            'removeExtra' => MediaCustody::removeExtra(DB::connection(), $entry->id, MediaDisks::PRIVATE),
         };
 
         expect($outcome())->toBe(['probed' => true, 'busy' => true]);
-    })->with(['soft delete', 'force-delete', 'publication', 'drain', 'removeOrphan', 'removeTemp', 'disposal', 'cleanUp']);
+    })->with(['soft delete', 'force-delete', 'publication', 'drain', 'removeOrphan', 'removeTemp', 'disposal', 'cleanUp', 'removeExtra']);
 
     /** The control: a transaction that only reads leaves the write lock to a rival. */
     it('leaves it free to a transaction that only reads', function (): void {

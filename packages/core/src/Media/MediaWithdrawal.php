@@ -269,7 +269,8 @@ final class MediaWithdrawal
                 }
 
                 try {
-                    $hash = array_key_exists($disk, $keeper->hashes) ? $keeper->hashes[$disk] : MediaBytes::hash($disk, $path);
+                    // Taken again when the keeper read it as absent and it is here now: nothing is deleted unhashed (5b).
+                    $hash = $keeper->hashes[$disk] ?? MediaBytes::hash($disk, $path);
                 } catch (MediaCustodyFailure $failure) {
                     throw $this->refused($id, MediaWithdrawalRefused::UNREADABLE, $failure);
                 }
