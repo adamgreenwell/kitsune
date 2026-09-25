@@ -414,6 +414,7 @@ it('names the residue custody can leave when a row survives without its bytes', 
 
     Log::shouldHaveReceived('warning')->once()->withArgs(fn (string $message): bool => str_contains($message, 'kitsune:media-prune')
         && str_contains($message, 'kept')
+        && str_contains($message, 'kitsune:media-reconcile --entry='.$entry->getKey().' --force')
         && ! str_contains($message, 'the state the write and disposal orders were chosen to avoid'));
 });
 

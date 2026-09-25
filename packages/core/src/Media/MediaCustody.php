@@ -322,8 +322,9 @@ final class MediaCustody
 
             if ($keeper->disk === null || $keeper->expected === null) {
                 Log::warning(sprintf(
-                    'Media custody, entry %d: no disk holds [%s] — not [%s], nor the configured or served disks — so '
-                    .'nothing was moved. kitsune:media-prune lists it (ADR-042 decision 5).',
+                    'Media custody, entry %d: no disk holds [%s] — not [%s], nor any other disk custody asks — so '
+                    .'nothing was moved. kitsune:media-reconcile lists it as missing: restore it from a backup, or erase '
+                    .'the entry (ADR-042 decision 5).',
                     (int) $file->entry_id,
                     $path,
                     $named,
@@ -400,11 +401,15 @@ final class MediaCustody
                 Log::warning(sprintf(
                     'Media custody, entry %d: the copy of [%s] on [%s] exists and cannot be read, so it was left where it '
                     .'is — not chosen, overwritten or removed — and the file was taken off every disk the web serves from '
-                    .'a readable copy verified on [%s] (Adam, decision 6, 2026-09-25).',
+                    .'a readable copy verified on [%s] (Adam, decision 6, 2026-09-25).%s',
                     (int) $file->entry_id,
                     $path,
                     $disk,
                     $target,
+                    $disk === $named
+                        ? sprintf(' The row still names [%s]; once it can be read, kitsune:media-reconcile --entry=%d --force '
+                          .'settles it.', $disk, (int) $file->entry_id)
+                        : '',
                 ));
             }
 
@@ -447,10 +452,11 @@ final class MediaCustody
                     $entryId,
                     $failure->getMessage(),
                     $landed
-                        ? 'though its row now names the public disk, so whether the commit landed is unknown. '
-                          .'kitsune:media-prune shows whether the file is there'
-                        : 'so it is not published, and may not be reachable at its public URL. kitsune:media-prune '
-                          .'lists it under "awaiting publication"; delete and restore the entry to retry',
+                        ? sprintf('though its row now names the public disk, so whether the commit landed is unknown. '
+                          .'kitsune:media-reconcile --entry=%d shows where the file is', $entryId)
+                        : sprintf('so it is not published, and may not be reachable at its public URL. '
+                          .'kitsune:media-prune and kitsune:media-reconcile list it under "awaiting publication", and '
+                          .'kitsune:media-reconcile --entry=%d --force publishes it', $entryId),
                 ));
 
                 continue;
@@ -652,11 +658,14 @@ final class MediaCustody
             if ($keeper->mode !== MediaKeeper::MATCH && MediaBytes::same($hash, $checksum)) {
                 Log::warning(sprintf(
                     'Media custody, entry %d: nothing was removed beside [%s] — the copy on [%s] alone matches the '
-                    .'recorded checksum, and [%s], the disk the row names, holds one that does not (ADR-042 decision 5).',
+                    .'recorded checksum, and [%s], the disk the row names, holds one that does not. %s (ADR-042 decision 5).',
                     (int) $file->entry_id,
                     $path,
                     $disk,
                     $target,
+                    in_array($disk, self::asked($config, $target, $target), true)
+                        ? sprintf('kitsune:media-reconcile --entry=%d --force rewrites [%s] from it', (int) $file->entry_id, $target)
+                        : sprintf('Copy it over [%s] by hand; kitsune:media-reconcile --entry=%d then verifies it', $target, (int) $file->entry_id),
                 ));
 
                 return self::UNSETTLED;
@@ -767,9 +776,11 @@ final class MediaCustody
             } catch (Throwable $failure) {
                 Log::warning(sprintf(
                     'Media custody, entry %d: its file could not be put back where its row says it belongs after the '
-                    .'write that moved it rolled back — %s. kitsune:media-prune lists it (ADR-042 decision 5).',
+                    .'write that moved it rolled back — %s. kitsune:media-prune lists it, and kitsune:media-reconcile '
+                    .'--entry=%d --force puts it back (ADR-042 decision 5).',
                     $entryId,
                     $failure->getMessage(),
+                    $entryId,
                 ));
 
                 continue;

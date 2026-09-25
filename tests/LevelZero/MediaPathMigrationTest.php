@@ -9,6 +9,7 @@
 declare(strict_types=1);
 
 use Illuminate\Database\QueryException;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
@@ -154,4 +155,20 @@ it('refuses the third write while media_files.path is not unique', function (): 
     );
 
     expect(Storage::disk(MediaDisks::PRIVATE)->get($path))->toBe('the other entry\'s only copy');
+});
+
+it('refuses a forced reconcile while media_files.path is not unique, before it reads a row', function (): void {
+    [, $path] = pathMigrationStored($this->image);
+    DB::table('entries')->update(['deleted_at' => now()]);
+
+    $this->migration->down();
+
+    $exit = Artisan::call('kitsune:media-reconcile', ['--force' => true]);
+    $lines = array_values(array_filter(explode("\n", trim(Artisan::output())), static fn (string $line): bool => trim($line) !== ''));
+
+    expect($exit)->toBe(1)
+        ->and($lines)->toHaveCount(1)
+        ->and($lines[0])->toContain('media_files.path is not unique on this database')
+        ->and(Storage::disk('public')->exists($path))->toBeTrue()
+        ->and(Storage::disk(MediaDisks::PRIVATE)->exists($path))->toBeFalse();
 });

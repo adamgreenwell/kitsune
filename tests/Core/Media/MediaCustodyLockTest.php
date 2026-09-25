@@ -12,6 +12,7 @@ use Illuminate\Database\Connection;
 use Illuminate\Database\DeadlockException;
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Database\QueryException;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
@@ -136,6 +137,8 @@ describe('the lock order', function (): void {
             'removeOrphan' => Storage::disk(MediaDisks::PRIVATE)->put('media/orphan.png', 'bytes'),
             'disposal' => DB::table('entries')->where('id', $id)->delete(),
             'cleanUp', 'removeExtra' => Storage::disk(MediaDisks::PRIVATE)->put($filePath, LOCK_PNG),
+            // A file trashed before withdrawal existed: still on the public disk its row names.
+            'reconcile' => DB::table('entries')->where('id', $id)->update(['deleted_at' => now()]),
         };
 
         $timeline = lockTimeline(fn () => match ($path) {
@@ -149,6 +152,7 @@ describe('the lock order', function (): void {
             'disposal' => MediaDisposal::remove(DB::connection(), [['entry_id' => $id, 'disk' => 'public', 'path' => $filePath]]),
             'cleanUp' => MediaCustody::cleanUp(DB::connection(), $id),
             'removeExtra' => MediaCustody::removeExtra(DB::connection(), $id, MediaDisks::PRIVATE),
+            'reconcile' => Artisan::call('kitsune:media-reconcile', ['--force' => true, '--entry' => [(string) $id]]),
         });
 
         $bytes = lockFirst($timeline, '/^bytes /');
@@ -168,7 +172,7 @@ describe('the lock order', function (): void {
                 ->and($files)->toBeGreaterThan($entries)
                 ->and($bytes)->toBeGreaterThan($files);
         }
-    })->with(['publication', 'drain', 'removeOrphan', 'removeTemp', 'disposal', 'cleanUp', 'removeExtra']);
+    })->with(['publication', 'drain', 'removeOrphan', 'removeTemp', 'disposal', 'cleanUp', 'removeExtra', 'reconcile']);
 
     it('writes the trash\'s and the erasure\'s own rows before their first byte', function (string $write): void {
         [$entry] = ($this->stored)();
@@ -274,6 +278,35 @@ describe('against a rival holding the row', function (): void {
             ->and(DB::table('entries')->where('id', $this->ids['entry'])->lockForUpdate()->value('deleted_at'))->toBeNull()
             ->and(hash('sha256', (string) Storage::disk('public')->get($this->path)))->toBe($this->checksum)
             ->and(Storage::disk(MediaDisks::PRIVATE)->exists($this->path))->toBeFalse();
+    });
+
+    /*
+     * T84. A forced reconcile waits for no row longer than the engine's lock wait: the row a rival holds fails, and says
+     * so, and the run goes on to settle the next and fails at the end.
+     */
+    it('fails a row a rival holds and settles the next', function (): void {
+        $source = tempnam(sys_get_temp_dir(), 'kitsune-lock-');
+        file_put_contents($source, LOCK_PNG);
+        $next = MediaLibrary::store($source, 'next.png', EntryType::query()->findOrFail($this->ids['type']), 'public');
+        unlink($source);
+        $nextPath = (string) DB::table('media_files')->where('entry_id', $next->id)->value('path');
+        DB::table('entries')->where('id', $next->id)->update(['deleted_at' => now()]);
+
+        $this->rival->beginTransaction();
+        $this->rival->table('entries')->where('id', $this->ids['entry'])->lockForUpdate()->first();
+
+        $exit = Artisan::call('kitsune:media-reconcile', ['--force' => true]);
+        $output = Artisan::output();
+
+        $this->rival->rollBack();
+
+        $held = collect(explode("\n", $output))->first(fn (string $line): bool => str_contains($line, ' entry '.$this->ids['entry'].' '));
+
+        expect($held)->toContain('→ failed: ')
+            ->and(Storage::disk('public')->exists($this->path))->toBeFalse()
+            ->and(Storage::disk(MediaDisks::PRIVATE)->exists($nextPath))->toBeTrue()
+            ->and(Storage::disk('public')->exists($nextPath))->toBeFalse()
+            ->and($exit)->toBe(1);
     });
 
     it('shows the engine keeping a savepoint\'s write that a lock wait interrupted', function (): void {

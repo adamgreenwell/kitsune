@@ -326,7 +326,7 @@ describe('the write lock on SQLite', function (): void {
      *
      * @param  array<string, RefusingDisk>  $disks
      */
-    function levelZeroProbe(string $file, array $disks): Closure
+    function levelZeroProbe(string $file, array $disks, string $kind = 'byte'): Closure
     {
         $outcome = ['probed' => false, 'busy' => null];
         $probe = function () use (&$outcome, $file): void {
@@ -348,7 +348,7 @@ describe('the write lock on SQLite', function (): void {
         };
 
         foreach ($disks as $disk) {
-            $disk->onOperation(1, $probe);
+            $disk->onOperation(1, $probe, $kind);
         }
 
         return function () use (&$outcome): array {
@@ -364,6 +364,8 @@ describe('the write lock on SQLite', function (): void {
             'removeTemp' => fn () => Storage::disk(MediaDisks::PRIVATE)->put(MediaBytes::partial($filePath), 'half'),
             // Published, with the private copy the third write removes once it has checked the public one.
             'cleanUp', 'removeExtra' => fn () => Storage::disk(MediaDisks::PRIVATE)->put($filePath, LEVEL_ZERO_PNG),
+            // A file trashed before withdrawal existed: still on the public disk its row names.
+            'reconcile' => fn () => DB::table('entries')->where('id', $entry->id)->update(['deleted_at' => now()]),
             'removeOrphan' => fn () => Storage::disk(MediaDisks::PRIVATE)->put('media/orphan.png', 'bytes'),
             default => fn () => null,
         };
@@ -400,10 +402,23 @@ describe('the write lock on SQLite', function (): void {
             'disposal' => MediaDisposal::remove(DB::connection(), [['entry_id' => $entry->id, 'disk' => 'public', 'path' => $filePath]]),
             'cleanUp' => MediaCustody::cleanUp(DB::connection(), $entry->id),
             'removeExtra' => MediaCustody::removeExtra(DB::connection(), $entry->id, MediaDisks::PRIVATE),
+            'reconcile' => Artisan::call('kitsune:media-reconcile', ['--force' => true]),
         };
 
         expect($outcome())->toBe(['probed' => true, 'busy' => true]);
-    })->with(['soft delete', 'force-delete', 'publication', 'drain', 'removeOrphan', 'removeTemp', 'disposal', 'cleanUp', 'removeExtra']);
+    })->with(['soft delete', 'force-delete', 'publication', 'drain', 'removeOrphan', 'removeTemp', 'disposal', 'cleanUp', 'removeExtra', 'reconcile']);
+
+    /** A read-only reconcile only asks whether each disk holds a path, and takes no lock while it does. */
+    it('leaves it free while a read-only reconcile asks the disks', function (): void {
+        [$entry] = levelZeroFile();
+        DB::table('entries')->where('id', $entry->id)->update(['deleted_at' => now()]);
+        RefusingDisk::forgetLog();
+        $outcome = levelZeroProbe($this->custodyFile, $this->disks, 'any');
+
+        Artisan::call('kitsune:media-reconcile');
+
+        expect($outcome())->toBe(['probed' => true, 'busy' => false]);
+    });
 
     /** The control: a transaction that only reads leaves the write lock to a rival. */
     it('leaves it free to a transaction that only reads', function (): void {
@@ -421,4 +436,32 @@ describe('the write lock on SQLite', function (): void {
 
         expect($free)->toBeTrue();
     });
+});
+
+/*
+ * T91. A forced reconcile whose COMMIT fails before it lands: the served copies went before it, so the trashed file is
+ * off the web whatever the row says, the run fails, and the next run settles the row it left.
+ */
+it('takes a trashed file off the web though the reconcile\'s COMMIT failed, and settles it on the next run', function (): void {
+    $root = sys_get_temp_dir().'/kitsune-level0-old-cdn-'.bin2hex(random_bytes(4));
+    mkdir($root, 0777, true);
+    $this->roots[] = $root;
+    config(['filesystems.disks.old-cdn' => ['driver' => 'local', 'root' => $root, 'url' => 'https://cdn.example.test']]);
+    $cdn = RefusingDisk::install('old-cdn', $root);
+    [$entry, $path] = levelZeroFile();
+    Storage::disk('old-cdn')->put($path, LEVEL_ZERO_PNG);
+    DB::table('entries')->where('id', $entry->id)->update(['deleted_at' => now()]);
+    $pdo = FailingCommitPdo::installOn(DB::connection(), $this->custodyFile);
+    $pdo->failNextCommit = 'before';
+
+    $exit = Artisan::call('kitsune:media-reconcile', ['--force' => true]);
+
+    expect($exit)->toBe(1)
+        ->and(Artisan::output())->toContain('→ failed: ')
+        ->and(levelZeroRow($entry))->toBe(['trashed' => true, 'disk' => 'public'])
+        ->and(levelZeroHeld($path))->toBe(['public' => null, MediaDisks::PRIVATE => $this->checksum])
+        ->and(is_file($cdn->root().'/'.$path))->toBeFalse();
+
+    expect(Artisan::call('kitsune:media-reconcile', ['--force' => true]))->toBe(0)
+        ->and(levelZeroRow($entry))->toBe(['trashed' => true, 'disk' => MediaDisks::PRIVATE]);
 });
