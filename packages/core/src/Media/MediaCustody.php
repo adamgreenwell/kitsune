@@ -506,6 +506,10 @@ final class MediaCustody
      * Remove a file no row claims, rechecked under the lock: a row naming the path, on any disk, refuses it.
      *
      * A partial copy is rechecked by the path it was written for.
+     *
+     * ⚠️ A CLAIM CHECK, NOT A SHARING CHECK. Paths are unique (Adam, decision 8, 2026-09-25), but the listing that found
+     * the file is not locked, and `store()` writes an upload's bytes before its row: a row committed since the listing
+     * claims a path no row named then, which the index cannot prevent. The recheck is a lookup under the index.
      */
     public static function removeOrphan(Connection $connection, string $disk, string $path): string
     {

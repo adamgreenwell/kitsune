@@ -76,7 +76,8 @@ final class MediaPruneCommand extends Command
 
         foreach ($rows as $row) {
             $claimed[$row->disk.':'.$row->path] = true;
-            $byPath[(string) $row->path] ??= $row;
+            // One row per path: `media_files_path_unique` (Adam, decision 8, 2026-09-25).
+            $byPath[(string) $row->path] = $row;
         }
 
         /*

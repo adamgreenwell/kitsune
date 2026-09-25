@@ -111,10 +111,23 @@ return new class extends Migration
             $table->primary(['role_id', 'user_id']);
             $table->index(['user_id', 'role_id']);
         });
+
+        /*
+         * `media_files`' path and its entry, with no index on the path — ADR-042 decision 5 (Adam, decision 8, 2026-09-25).
+         *
+         * ⚠️ `media_files_path_unique` refuses a second row naming one path, so the migration's check for rows that
+         * already do — the state an installation migrated before the index can be in — cannot be asked of `media_files`
+         * itself. Its column is declared as `media_files.path` is, so the engine compares it by the same collation.
+         */
+        Schema::create('media_path_fixtures', function (Blueprint $table): void {
+            $table->unsignedBigInteger('entry_id')->unique();
+            $table->string('path');
+        });
     }
 
     public function down(): void
     {
+        Schema::dropIfExists('media_path_fixtures');
         Schema::dropIfExists('role_user');
         Schema::dropIfExists('org_user');
         Schema::dropIfExists('users');
