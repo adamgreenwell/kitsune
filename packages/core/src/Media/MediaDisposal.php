@@ -156,7 +156,7 @@ final class MediaDisposal
                 $served => 'It is still on the web: withdrawal removed every served copy before the delete committed, '
                     .'so this one appeared after it. Remove it by hand.',
                 $private => 'It is a copy on a disk nothing serves; `kitsune:media-prune` removes it.',
-                default => sprintf('It is a copy on [%s], which Kitsune does not serve; `kitsune:media-prune` lists it.', $disk),
+                default => sprintf('It is a copy on [%s], which Kitsune does not serve; `kitsune:media-prune` removes it while any row names [%s]; after that, remove it by hand.', $disk, $disk),
             },
         ));
     }

@@ -420,7 +420,7 @@ final class MediaCustody
                     $disk === $named && $stays
                         ? sprintf(' The row still names [%s]; once it can be read, kitsune:media-reconcile --entry=%d --force '
                           .'settles it.', $disk, (int) $file->entry_id)
-                        : '',
+                        : ' kitsune:media-prune lists it, and removes it under its row\'s lock once it can be read.',
                 ));
             }
 
@@ -811,7 +811,7 @@ final class MediaCustody
         } catch (Throwable $failure) {
             Log::warning(sprintf(
                 'Media custody, entry %d: its private copy could not be removed — %s. The file is published; '
-                .'kitsune:media-prune lists the copy as kept (ADR-042 decision 5).',
+                .'kitsune:media-prune --force removes the copy once it can be (ADR-042 decision 5).',
                 $entryId,
                 $failure->getMessage(),
             ));

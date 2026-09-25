@@ -368,7 +368,7 @@ final class WithdrawalBench
 
         $groups[] = ['figures' => ['(B) bulk trash, 50 articles and 10 images of 200 KB: its hold' => 0], 'case' => $this->bulk(10, 200 << 10, articles: 50)];
         $groups[] = ['figures' => ['(F) a refused bulk trash, 10 × 4 MB, to the refusal with everything put back' => 'whole'], 'case' => $this->refusedBulk(10, 4 << 20)];
-        $groups[] = ['figures' => ['(G) prune --force: 1,000 orphans, 1,000 kept copies, about 10,000 rows' => 'whole'], 'case' => $this->prune(), 'runs' => 3];
+        $groups[] = ['figures' => ['(G) prune --force: 1,000 orphans, 500 identical and 500 differing extra copies, about 10,000 rows' => 'whole'], 'case' => $this->prune(), 'runs' => 3];
 
         foreach ([1, 3] as $extra) {
             [$before, $after] = $this->servedDisks($extra, 0);
@@ -650,8 +650,11 @@ final class WithdrawalBench
     }
 
     /**
-     * 1,000 orphans to remove, 1,000 kept copies and about 10,000 rows to list — and the kept copies, and the files
-     * whose rows name them, verified still there.
+     * 1,000 orphans and 1,000 extra copies to remove — half identical to the public copy, half differing from it — and
+     * about 10,000 rows to list; every orphan and extra copy verified gone, and every public copy still there.
+     *
+     * ⚠️ THE EXTRA COPIES ARE WRITTEN FOR EVERY RUN (review of slice 5b). Prune removes them now, so copies written once
+     * would leave the timed runs nothing to remove, and a figure for a removal that never happened.
      *
      * @return array{setup: Closure(): array<string, mixed>, run: Closure(array<string, mixed>): void, verify: Closure(array<string, mixed>): bool}
      */
@@ -664,7 +667,6 @@ final class WithdrawalBench
                 if ($kept === []) {
                     for ($i = 0; $i < 1000; $i++) {
                         [, $path, $checksum] = $this->file(1 << 10, month: '11');
-                        Storage::disk(MediaDisks::PRIVATE)->put($path, 'a kept copy');
                         $kept[] = [$path, $checksum];
                     }
 
@@ -677,6 +679,10 @@ final class WithdrawalBench
                     foreach (array_chunk($rows, 500) as $chunk) {
                         DB::table('entries')->insert($chunk);
                     }
+                }
+
+                foreach ($kept as $i => [$path]) {
+                    Storage::disk(MediaDisks::PRIVATE)->put($path, $i < 500 ? (string) Storage::disk('public')->get($path) : 'a differing copy');
                 }
 
                 for ($i = 0; $i < 1000; $i++) {
@@ -692,7 +698,7 @@ final class WithdrawalBench
                 }
 
                 foreach ($kept as [$path, $checksum]) {
-                    if (! $this->holds('public', $path, $checksum) || Storage::disk(MediaDisks::PRIVATE)->get($path) !== 'a kept copy') {
+                    if (! $this->holds('public', $path, $checksum) || Storage::disk(MediaDisks::PRIVATE)->exists($path)) {
                         return false;
                     }
                 }

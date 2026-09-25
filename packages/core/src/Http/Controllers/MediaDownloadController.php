@@ -128,15 +128,15 @@ final class MediaDownloadController
          * and `MediaDisposal` removes rows before bytes, so a row pointing at nothing is not a state either order
          * leaves. ADR-042 decision 5 names the one it can: a delete that was refused and whose compensation then
          * failed leaves the row naming the public disk and the only copy on the private one. `kitsune:media-prune`
-         * lists that copy as kept and `kitsune:media-reconcile --force` puts it back, so the log sends the operator
-         * there before concluding the file was removed outside Kitsune. (A restore whose publication did not finish is not this: its row names the private disk,
+         * lists that copy as an extra copy it keeps and `kitsune:media-reconcile --force` puts it back, so the log
+         * sends the operator there before concluding the file was removed outside Kitsune. (A restore whose publication did not finish is not this: its row names the private disk,
          * where its bytes are, and it is served.)
          */
         if (! $disk->exists((string) $file->path)) {
             Log::warning(sprintf(
                 'Kitsune has a media_files row whose bytes are missing: [%s:%s] for entry %s. If a delete of this '
                 .'entry was refused and its compensation failed, the only copy is on the private disk, where '
-                .'kitsune:media-prune lists it as kept; kitsune:media-reconcile --entry=%s --force puts it back '
+                .'kitsune:media-prune lists it as an extra copy, kept; kitsune:media-reconcile --entry=%s --force puts it back '
                 .'(ADR-042 decision 5). Otherwise the file was removed outside Kitsune.',
                 (string) $file->disk,
                 (string) $file->path,

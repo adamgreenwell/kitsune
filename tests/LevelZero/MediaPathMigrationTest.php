@@ -172,3 +172,17 @@ it('refuses a forced reconcile while media_files.path is not unique, before it r
         ->and(Storage::disk('public')->exists($path))->toBeTrue()
         ->and(Storage::disk(MediaDisks::PRIVATE)->exists($path))->toBeFalse();
 });
+
+it('refuses a forced prune while media_files.path is not unique, and removes nothing', function (): void {
+    pathMigrationStored($this->image);
+    $orphan = 'media/orphan-'.bin2hex(random_bytes(4)).'.png';
+    Storage::disk(MediaDisks::PRIVATE)->put($orphan, 'bytes');
+
+    $this->migration->down();
+
+    $exit = Artisan::call('kitsune:media-prune', ['--force' => true]);
+
+    expect($exit)->toBe(1)
+        ->and(Artisan::output())->toContain('Refusing: media_files.path is not unique on this database')
+        ->and(Storage::disk(MediaDisks::PRIVATE)->exists($orphan))->toBeTrue();
+});

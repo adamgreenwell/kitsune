@@ -9,6 +9,7 @@
 declare(strict_types=1);
 
 use Illuminate\Database\Events\TransactionBeginning;
+use Illuminate\Filesystem\FilesystemAdapter;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
@@ -21,6 +22,8 @@ use Kitsune\Core\Models\MediaFile;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
+use Kitsune\Core\Tests\Fixtures\RefusingDisk;
+use League\Flysystem\Filesystem;
 
 /*
  * The repair path for two best-effort gaps this system has on purpose — ADR-041.
@@ -33,6 +36,12 @@ use Kitsune\Core\Tenancy\Context;
 
 beforeEach(function (): void {
     Storage::fake(MediaDisks::PRIVATE);
+    /*
+     * ⚠️ AND THE CONFIGURATION NAMES THE FAKE'S ROOT. Prune asks the configuration whether core's private disk can hold
+     * anything before it lists it (`MediaDisks::mayHold()`); left at the default, it answered from a directory in
+     * vendor/ that exists only when an earlier test in the same process happened to build the real disk (review of 5b).
+     */
+    config(['filesystems.disks.'.MediaDisks::PRIVATE.'.root' => Storage::disk(MediaDisks::PRIVATE)->path('')]);
     Storage::fake('public');
 
     $this->org = Org::create(['slug' => 'acme', 'name' => 'Acme']);
@@ -52,6 +61,13 @@ afterEach(function (): void {
         @unlink($leftover);
     }
 });
+
+function pruneFixtureBytes(): string
+{
+    return (string) base64_decode(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+    );
+}
 
 function storedForPrune(EntryType $type): MediaFile
 {
@@ -207,7 +223,9 @@ it('leaves alone a disk no row names', function (): void {
  * What custody leaves, and what prune does with it — ADR-042 decision 5 (T20, T21).
  *
  * ⚠️ A FILE IS AN ORPHAN WHEN NO ROW NAMES ITS PATH, ON ANY DISK. Custody leaves verified copies at a row's own path on
- * disks the row does not name, and any one of them may be the only good copy: each is listed as kept, never deleted.
+ * disks the row does not name, and any one of them may be the only good copy: each is listed as ~~kept, never deleted~~
+ * an extra copy, and removed with --force only under its row's lock, once the disk the row names holds the copy kept
+ * (slice 5b, T92-T97).
  * Asserted by the list each path is printed under, from the command's whole output, so a path listed in the wrong
  * table cannot pass for one listed in the right one.
  */
@@ -272,7 +290,7 @@ describe('what custody leaves', function (): void {
         $exit = Artisan::call('kitsune:media-prune', $options);
         $output = Artisan::output();
         $sections = ['exit' => (string) $exit];
-        $headings = ['orphans' => null, 'partials' => 'Leftover partial copies', 'kept' => 'Kept copies', 'awaiting' => 'Awaiting publication', 'exposed' => 'Trashed on a served disk'];
+        $headings = ['orphans' => null, 'partials' => 'Leftover partial copies', 'extras' => 'Extra copies', 'awaiting' => 'Awaiting publication', 'exposed' => 'Trashed on a served disk'];
         $cuts = [];
 
         foreach ($headings as $name => $heading) {
@@ -295,9 +313,25 @@ describe('what custody leaves', function (): void {
         $sections = pruneSections();
 
         foreach (['only on private', 'published, uncommitted', 'restored', 'left on a served disk'] as $case) {
-            expect($sections['kept'])->toContain($this->paths[$case])
+            expect($sections['extras'])->toContain($this->paths[$case])
                 ->and($sections['orphans'])->not->toContain($this->paths[$case]);
         }
+
+        // What --force would do with each, read from the listing alone.
+        $said = static function (string $section, string $path): string {
+            foreach (explode("\n", $section) as $line) {
+                if (str_contains($line, $path) && ! str_contains($line, $path.MediaBytes::PARTIAL)) {
+                    return $line;
+                }
+            }
+
+            return '';
+        };
+
+        expect($said($sections['extras'], $this->paths['restored']))->toContain('removed, once asked again under the lock')
+            ->and($said($sections['extras'], $this->paths['left on a served disk']))->toContain('removed, once asked again under the lock')
+            ->and($said($sections['extras'], $this->paths['only on private']))->toContain('kept: the disk its row names does not hold the file')
+            ->and($said($sections['extras'], $this->paths['published, uncommitted']))->toContain('kept: kitsune:media-reconcile moves its row first');
 
         expect($sections['partials'])->toContain($this->paths['partial of a row'])
             ->and($sections['orphans'])->toContain($this->paths['orphan'])
@@ -312,21 +346,86 @@ describe('what custody leaves', function (): void {
         Storage::disk(MediaDisks::PRIVATE)->assertExists($this->paths['partial of a row']);
     });
 
-    it('removes only the orphans and the leftover partials when forced', function (): void {
+    /*
+     * T92. ~~Removes only the orphans and the leftover partials when forced.~~ And every extra copy of a settled file —
+     * identical or differing — while it keeps the sole copy of a row on the wrong disk, and a publication's copy the
+     * row does not name yet: those are kitsune:media-reconcile's.
+     */
+    it('removes the orphans, the leftover partials and the extra copies of settled files when forced', function (): void {
+        // A live public file on the public disk, and a private copy that differs from it.
+        $differing = (static function (EntryType $type): string {
+            $file = storedForPrune($type);
+            DB::table('media_files')->where('id', $file->getKey())->update(['visibility' => 'public', 'disk' => 'public']);
+            Storage::disk('public')->put($file->path, pruneFixtureBytes());
+            Storage::disk(MediaDisks::PRIVATE)->put($file->path, 'changed by hand');
+
+            return $file->path;
+        })($this->imageType);
+
         $sections = pruneSections(['--force' => true]);
 
         expect($sections['exit'])->toBe('0')
-            ->and($sections['all'])->toContain('Removed 3 of 3');
+            ->and($sections['all'])->toContain('Removed 3 of 3 orphaned or leftover files and 3 of 3 extra copies.');
 
         Storage::disk(MediaDisks::PRIVATE)->assertExists($this->paths['only on private']);
         Storage::disk('public')->assertExists($this->paths['published, uncommitted']);
-        Storage::disk(MediaDisks::PRIVATE)->assertExists($this->paths['restored']);
-        Storage::disk('old-cdn')->assertExists($this->paths['left on a served disk']);
+        Storage::disk(MediaDisks::PRIVATE)->assertExists($this->paths['published, uncommitted']);
         Storage::disk('old-cdn')->assertExists($this->paths['the host\'s']);
+
+        Storage::disk('public')->assertExists($this->paths['restored']);
+        Storage::disk(MediaDisks::PRIVATE)->assertMissing($this->paths['restored']);
+        Storage::disk('public')->assertExists($this->paths['left on a served disk']);
+        Storage::disk('old-cdn')->assertMissing($this->paths['left on a served disk']);
+        Storage::disk('public')->assertExists($differing);
+        Storage::disk(MediaDisks::PRIVATE)->assertMissing($differing);
 
         Storage::disk(MediaDisks::PRIVATE)->assertMissing($this->paths['partial of a row']);
         Storage::disk(MediaDisks::PRIVATE)->assertMissing($this->paths['orphan']);
         Storage::disk(MediaDisks::PRIVATE)->assertMissing($this->paths['orphaned partial']);
+    });
+
+    /*
+     * T93. The listing chooses; the lock decides: a trash landing after the listing makes the private disk the one the
+     * file belongs on, so its copy there is kept, and the run says so.
+     */
+    it('keeps an extra copy whose row a trash reached after the listing', function (): void {
+        $restored = DB::table('media_files')->where('path', $this->paths['restored'])->value('entry_id');
+        $landed = false;
+        Event::listen(TransactionBeginning::class, function () use ($restored, &$landed): void {
+            if (! $landed) {
+                $landed = true;
+                DB::table('entries')->where('id', $restored)->update(['deleted_at' => now()]);
+            }
+        });
+
+        $sections = pruneSections(['--force' => true]);
+
+        expect($landed)->toBeTrue()
+            ->and(hash('sha256', (string) Storage::disk(MediaDisks::PRIVATE)->get($this->paths['restored'])))->toBe(hash('sha256', pruneFixtureBytes()))
+            ->and($sections['all'])->not->toContain('Could not remove')
+            ->and($sections['all'])->toContain('Kept ['.MediaDisks::PRIVATE.':'.$this->paths['restored'].'], entry '.$restored)
+            ->and($sections['all'])->toContain('1 kept under the lock')
+            ->and($sections['exit'])->toBe('0');
+    });
+
+    /*
+     * T94. The copy the row names differs from the checksum and the extra copy matches it: prune keeps it, and
+     * reconcile rewrites the named copy from it, whose cleanup then removes it.
+     */
+    it('keeps an extra copy that alone matches, for reconcile to rewrite the named copy from', function (): void {
+        $file = storedForPrune($this->imageType);
+        DB::table('media_files')->where('id', $file->getKey())->update(['visibility' => 'public', 'disk' => 'public']);
+        Storage::disk(MediaDisks::PRIVATE)->put($file->path, pruneFixtureBytes());
+        Storage::disk('public')->put($file->path, 'changed by hand');
+
+        $sections = pruneSections(['--force' => true]);
+
+        expect($sections['all'])->toContain('Kept ['.MediaDisks::PRIVATE.':'.$file->path.']');
+        Storage::disk(MediaDisks::PRIVATE)->assertExists($file->path);
+
+        expect(Artisan::call('kitsune:media-reconcile', ['--force' => true, '--entry' => [(string) $file->entry_id]]))->toBe(0)
+            ->and(hash('sha256', (string) Storage::disk('public')->get($file->path)))->toBe(hash('sha256', pruneFixtureBytes()));
+        Storage::disk(MediaDisks::PRIVATE)->assertMissing($file->path);
     });
 
     /** Deleting asks what withdrawing asks: two names for one place would make a "copy" the file itself. */
@@ -366,4 +465,112 @@ describe('what custody leaves', function (): void {
 
         Storage::disk(MediaDisks::PRIVATE)->assertExists($this->paths[$case]);
     })->with(['orphan', 'orphaned partial']);
+});
+
+/*
+ * T95. A served disk that is a media disk under another name is not scanned — every file there would read as an extra
+ * copy of itself — and says so when it cannot be told apart; nor is a served disk whose root does not exist built.
+ */
+it('scans no served disk that is, or cannot be told from, a media disk, and builds none with no root', function (): void {
+    $root = sys_get_temp_dir().'/kitsune-prune-store-'.bin2hex(random_bytes(4));
+    mkdir($root, 0777, true);
+
+    try {
+        foreach (['public' => 'e', 'cdn' => 'f'] as $name => $endpoint) {
+            $config = ['driver' => 's3', 'bucket' => 'media', 'endpoint' => $endpoint, 'prefix' => 'site', 'url' => "https://{$name}.example.test"];
+            config(["filesystems.disks.{$name}" => $config]);
+            $adapter = new RefusingDisk($root, $name);
+            Storage::set($name, new FilesystemAdapter(new Filesystem($adapter), $adapter, $config));
+        }
+
+        $rootless = sys_get_temp_dir().'/kitsune-prune-rootless-'.bin2hex(random_bytes(4));
+        config(['filesystems.disks.rootless-cdn' => ['driver' => 'local', 'root' => $rootless, 'url' => 'https://rootless.example.test']]);
+        $file = storedForPrune($this->imageType);
+        DB::table('media_files')->where('id', $file->getKey())->update(['visibility' => 'public', 'disk' => 'public']);
+        Storage::disk(MediaDisks::PRIVATE)->delete($file->path);
+        Storage::disk('public')->put($file->path, pruneFixtureBytes());
+
+        foreach ([[], ['--force' => true]] as $options) {
+            $exit = Artisan::call('kitsune:media-prune', $options);
+            $output = Artisan::output();
+
+            expect($output)->toContain('Not scanning [cdn]: it is, or cannot be told apart from, [public]')
+                ->and(substr_count($output, 'Not scanning'))->toBe(1)
+                ->and($output)->not->toContain('Extra copies')
+                ->and(Storage::disk('public')->exists($file->path))->toBeTrue()
+                ->and(is_dir($rootless))->toBeFalse()
+                ->and($exit)->toBe(0);
+        }
+    } finally {
+        exec('rm -rf '.escapeshellarg($root));
+    }
+});
+
+it('scans no served local disk that is the public disk under another name, and says nothing of it', function (): void {
+    $file = storedForPrune($this->imageType);
+    $rootless = sys_get_temp_dir().'/kitsune-prune-rootless-local-'.bin2hex(random_bytes(4));
+    config([
+        'filesystems.disks.public-alias' => ['driver' => 'local', 'root' => Storage::disk('public')->path(''), 'url' => 'https://alias.example.test'],
+        // A local one whose root does not exist: asking whether it is the public disk would build it.
+        'filesystems.disks.rootless-cdn' => ['driver' => 'local', 'root' => $rootless, 'url' => 'https://rootless.example.test'],
+    ]);
+    DB::table('media_files')->where('id', $file->getKey())->update(['visibility' => 'public', 'disk' => 'public']);
+    Storage::disk(MediaDisks::PRIVATE)->delete($file->path);
+    Storage::disk('public')->put($file->path, pruneFixtureBytes());
+
+    $exit = Artisan::call('kitsune:media-prune', ['--force' => true]);
+    $output = Artisan::output();
+
+    expect($output)->not->toContain('public-alias')
+        ->and($output)->not->toContain('Extra copies')
+        ->and(Storage::disk('public')->exists($file->path))->toBeTrue()
+        ->and(is_dir($rootless))->toBeFalse()
+        ->and($exit)->toBe(0);
+});
+
+/* T96. A read-only run hashes nothing: it lists, and says what --force would do with each extra copy. */
+it('hashes nothing without --force, and says what --force would do', function (): void {
+    $roots = [];
+
+    try {
+        foreach (['public', MediaDisks::PRIVATE] as $name) {
+            $roots[$name] = sys_get_temp_dir().'/kitsune-prune-read-'.bin2hex(random_bytes(4));
+            mkdir($roots[$name], 0777, true);
+            RefusingDisk::install($name, $roots[$name]);
+        }
+
+        $file = storedForPrune($this->imageType);
+        DB::table('media_files')->where('id', $file->getKey())->update(['visibility' => 'public', 'disk' => 'public']);
+        Storage::disk(MediaDisks::PRIVATE)->delete($file->path);
+        Storage::disk('public')->put($file->path, pruneFixtureBytes());
+        Storage::disk(MediaDisks::PRIVATE)->put($file->path, pruneFixtureBytes());
+        RefusingDisk::forgetLog();
+
+        Artisan::call('kitsune:media-prune');
+        $output = Artisan::output();
+
+        expect(array_filter(RefusingDisk::$log, static fn (array $entry): bool => in_array($entry['event'], ['checksum', 'read', 'readStream'], true)))->toBe([])
+            ->and($output)->toContain('With --force')
+            ->and($output)->toContain('1 removable extra copy listed and nothing removed');
+    } finally {
+        foreach ($roots as $root) {
+            exec('rm -rf '.escapeshellarg($root));
+        }
+    }
+});
+
+/* T97. Extra copies alone are reason enough for a forced run to act: no orphan and no partial need be there. */
+it('removes extra copies when there is nothing else to remove', function (): void {
+    $file = storedForPrune($this->imageType);
+    DB::table('media_files')->where('id', $file->getKey())->update(['visibility' => 'public', 'disk' => 'public']);
+    Storage::disk(MediaDisks::PRIVATE)->delete($file->path);
+    Storage::disk('public')->put($file->path, pruneFixtureBytes());
+    Storage::disk(MediaDisks::PRIVATE)->put($file->path, pruneFixtureBytes());
+
+    $this->artisan('kitsune:media-prune --force')
+        ->expectsOutputToContain('Removed 0 of 0 orphaned or leftover files and 1 of 1 extra copy.')
+        ->assertSuccessful();
+
+    Storage::disk(MediaDisks::PRIVATE)->assertMissing($file->path);
+    Storage::disk('public')->assertExists($file->path);
 });
