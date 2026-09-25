@@ -63,6 +63,40 @@ it('rolls back its own savepoint when a nested write times out waiting for a loc
 });
 
 /*
+ * ⚠️ AND WHAT THE FAILED WRITE REGISTERED DOES NOT RUN WHEN THE HOST COMMITS — Codex, #153, asked whether the nested
+ * write's record stays pending. It does not: Laravel rolls its transaction manager back to the host's level before it
+ * throws `DeadlockException`, so the record and its after-commit work go with the savepoint. Pinned here beside the
+ * control, a write that succeeds, whose work runs.
+ */
+it('runs nothing a timed-out nested write registered when the host commits', function (bool $fails): void {
+    $ran = false;
+    $stand = AuditorStandIn::install()->beforeRecording(function () use (&$ran): void {
+        DB::afterCommit(function () use (&$ran): void {
+            $ran = true;
+        });
+    });
+
+    if ($fails) {
+        $stand->throwOnce(new QueryException(
+            (string) DB::connection()->getName(),
+            'insert into "audit_log"',
+            [],
+            new PDOException('SQLSTATE[HY000]: General error: 1205 Lock wait timeout exceeded; try restarting transaction'),
+        ));
+    }
+
+    DB::transaction(function (): void {
+        try {
+            $this->entry->update(['title' => 'Changed']);
+        } catch (DeadlockException) {
+            // The host carries on, and commits.
+        }
+    });
+
+    expect($ran)->toBe(! $fails);
+})->with(['the write timed out' => true, 'the control: the write succeeded' => false]);
+
+/*
  * ⚠️ A TRANSACTION MYSQL ENDED WITH AN ERROR, which leaves PDO's view of it stale — review. A deadlock ends the whole
  * transaction on an error packet, and pdo_mysql reads its transaction flag from the last success, so it still reports one
  * open. A nested write asked there must refuse — and leave Laravel's level where it found it: the first version checked
