@@ -19,6 +19,7 @@ use Illuminate\Database\Query\Expression;
 use Illuminate\Support\Facades\Log;
 use Kitsune\Core\Database\TransactionRecovery;
 use LogicException;
+use RuntimeException;
 use stdClass;
 use Throwable;
 
@@ -110,10 +111,41 @@ final class MediaCustody
     }
 
     /**
+     * The disks custody asks for a row's file: the target, the disk the row names, both configured media disks, core's
+     * own private disk and every served disk — those last two wherever they can hold anything (Adam, decision 5,
+     * 2026-09-25).
+     *
+     * ⚠️ CORE'S PRIVATE DISK TOO, WHEREVER THE PRIVATE DISK POINTS. Disposal always asks it, so a copy it could not remove
+     * can be there after a host moves the private disk elsewhere, and nothing else would ever find it. A disk whose root
+     * does not exist holds nothing, and is not built: building it would create the directory.
+     *
+     * @return list<string>
+     */
+    public static function asked(Repository $config, string $target, string $named): array
+    {
+        $mayHold = array_filter(
+            [MediaDisks::PRIVATE, ...MediaDisks::servedDisks($config)],
+            static fn (string $disk): bool => MediaDisks::mayHold($config, $disk),
+        );
+
+        return array_values(array_unique([
+            $target,
+            $named,
+            MediaDisks::configured($config, 'public'),
+            MediaDisks::configured($config, 'private'),
+            ...$mayHold,
+        ]));
+    }
+
+    /**
      * Choose the copy to keep, among the disks asked — `MediaKeeper` says in what order.
      *
      * ⚠️ THE TARGET IS HASHED FIRST, so a file already where it belongs costs one hash. And a copy that cannot be read
      * is a failure, never an absence: reading it as absent could choose a copy that differs and delete the file.
+     *
+     * ⚠️ EVERY DISK ASKED IS IN THE ORDER. The order once named only the configured and served disks, so a copy held only
+     * on another disk asked — core's private disk after a host moved the private disk — fell through to the target,
+     * which held nothing, and its hash was read before it was taken (slice 5b).
      *
      * @param  list<string>  $candidates  every disk to ask, the target and the named disk among them
      */
@@ -147,9 +179,16 @@ final class MediaCustody
             $disk = $named;
             $mode = MediaKeeper::NAMED;
         } else {
+            // Public, private, core's private disk, served, any other disk asked; the target last (Adam, decision 5).
             $config = self::config();
             $order = array_diff(
-                array_values(array_unique([MediaDisks::configured($config, 'public'), MediaDisks::configured($config, 'private'), ...MediaDisks::servedDisks($config)])),
+                array_values(array_unique([
+                    MediaDisks::configured($config, 'public'),
+                    MediaDisks::configured($config, 'private'),
+                    MediaDisks::PRIVATE,
+                    ...MediaDisks::servedDisks($config),
+                    ...$candidates,
+                ])),
                 [$target],
             );
             $disk = array_values(array_intersect($order, $held))[0] ?? $target;
@@ -183,6 +222,7 @@ final class MediaCustody
      *
      * @throws LogicException inside an open transaction
      * @throws MediaCustodyFailure when a copy cannot be written, verified or removed; nothing it verified is lost
+     * @throws RuntimeException when the configured disks cannot keep the promise, or two disks cannot be told apart
      */
     public static function settle(Connection $connection, int $entryId, bool $publication = false): string
     {
@@ -212,8 +252,8 @@ final class MediaCustody
 
             $path = (string) $file->path;
             $named = (string) $file->disk;
-            $served = MediaDisks::servedDisks($config);
-            $keeper = self::keeper($file, $target, $named, array_values(array_unique([$target, $named, $public, $private, ...$served])));
+            $asked = self::asked($config, $target, $named);
+            $keeper = self::keeper($file, $target, $named, $asked);
 
             if ($keeper->disk === null || $keeper->expected === null) {
                 Log::warning(sprintf(
@@ -258,9 +298,9 @@ final class MediaCustody
                 $changed = self::removeCopy($config, $target, $named, $path, $keeper) || $changed;
             }
 
-            // Private: no disk the web serves keeps a copy.
+            // Private: no disk the web serves keeps a copy — of those asked, so none whose root does not exist is built.
             if ($target !== $public) {
-                foreach ($served as $disk) {
+                foreach (array_intersect($asked, MediaDisks::servedDisks($config)) as $disk) {
                     if ($disk !== $target) {
                         $changed = self::removeCopy($config, $target, $disk, $path, $keeper) || $changed;
                     }

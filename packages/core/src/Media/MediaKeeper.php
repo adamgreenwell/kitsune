@@ -17,8 +17,10 @@ namespace Kitsune\Core\Media;
  *
  * ⚠️ THE RECORDED CHECKSUM FIRST, THEN THE DISK THE ROW NAMES. A copy matching the checksum `MediaLibrary` recorded
  * is the file. When none does, the copy on the disk the row names wins over any other (Adam, 2026-09-24): it is the
- * one delivery has been serving. Only when that disk holds nothing does a fixed order choose, and every choice but a
- * match is logged with each disk's hash, because it means a copy was changed outside Kitsune.
+ * one delivery has been serving. Only when that disk holds nothing does a fixed order choose — the configured public
+ * disk, the configured private disk, core's private disk, the served disks, any other disk asked, the target last (Adam,
+ * decision 5, 2026-09-25) — and every choice but a match is logged with each disk's hash, because it means a copy was
+ * changed outside Kitsune.
  */
 final readonly class MediaKeeper
 {
@@ -28,7 +30,7 @@ final readonly class MediaKeeper
     /** None matches, and the disk the row names holds a copy: it wins. */
     public const NAMED = 'named';
 
-    /** None matches and the named disk holds nothing: the first copy in the configured public, private, served order. */
+    /** None matches and the named disk holds nothing: the first copy in Adam's order, the target last. */
     public const FIRST = 'first';
 
     /** No disk custody asked holds the file. */

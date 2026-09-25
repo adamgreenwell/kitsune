@@ -370,6 +370,24 @@ final class MediaDisks
     }
 
     /**
+     * Whether a disk can hold a file at all: it is not local, or its root exists — asked of its configuration, and
+     * nothing is built.
+     *
+     * ⚠️ BUILDING A LOCAL DISK CREATES ITS ROOT. A served or private disk that was configured and never used would be
+     * created by the first step that asked it for a copy, from a read-only listing as much as from a move. A disk whose
+     * root does not exist holds nothing, so custody does not ask it. A disk that is not configured is refused: the
+     * caller decides whether it can be left out.
+     *
+     * @throws RuntimeException for a disk that is not configured
+     */
+    public static function mayHold(Repository $config, string $disk): bool
+    {
+        $root = self::resolved($config, $disk)['root'];
+
+        return $root === null || is_dir($root);
+    }
+
+    /**
      * A disk's `media/` directory as the filesystem resolves it, when the disk is local; null when it is not.
      *
      * It builds the disk, so it is asked only of a disk configured as local.

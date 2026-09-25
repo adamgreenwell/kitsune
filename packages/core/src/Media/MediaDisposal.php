@@ -119,7 +119,7 @@ final class MediaDisposal
 
         foreach ($disks as $disk) {
             // A served local disk nothing configures or names, whose root does not exist, holds nothing, and is not built.
-            if ($disk !== $file['disk'] && in_array($disk, $served, true) && ! self::rooted($disk)) {
+            if ($disk !== $file['disk'] && in_array($disk, $served, true) && ! MediaDisks::mayHold($config, $disk)) {
                 continue;
             }
 
@@ -143,14 +143,6 @@ final class MediaDisposal
         }
 
         return $clean;
-    }
-
-    /** Whether a disk is not local, or is local with a root that exists. Its configuration is read; nothing is built. */
-    private static function rooted(string $disk): bool
-    {
-        $root = MediaDisks::resolved(app('config'), $disk)['root'];
-
-        return $root === null || is_dir($root);
     }
 
     private static function report(string $disk, string $path, string $why, bool $private = false, bool $served = false): void

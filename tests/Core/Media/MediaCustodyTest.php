@@ -116,6 +116,23 @@ function custodyCopies(string $path): array
     return $copies;
 }
 
+/** Point the private disk at a host disk of its own, leaving core's private disk configured and asked. */
+function custodyHostPrivate(): RefusingDisk
+{
+    $root = sys_get_temp_dir().'/kitsune-custody-host-private-'.bin2hex(random_bytes(4));
+    mkdir($root, 0777, true);
+    // Read and written back whole: `test()` is a proxy, and an array appended through it is appended to a copy.
+    test()->roots = [...test()->roots, $root];
+    config([
+        'filesystems.disks.host-private' => ['driver' => 'local', 'root' => $root],
+        'kitsune.media.disks.private' => 'host-private',
+    ]);
+    $disk = RefusingDisk::install('host-private', $root);
+    test()->disks = [...test()->disks, 'host-private' => $disk];
+
+    return $disk;
+}
+
 function custodyRow(int $entryId): stdClass
 {
     return DB::table('media_files')->where('entry_id', $entryId)->first();
@@ -292,8 +309,8 @@ describe('the keeper', function (): void {
             ->and($keeper->targetHolds)->toBeTrue();
     });
 
-    /** ⚠️ THE DESIGN'S DEFAULT, PINNED: the configured public disk before the private one, then the served, the target last. */
-    it('keeps the first copy in the configured order when the copies differ, never the target\'s first', function (): void {
+    /** ⚠️ ADAM'S ORDER, PINNED (decision 5, 2026-09-25): the configured public disk before the private one, then the served, the target last. */
+    it('keeps the first copy in Adam\'s order when the copies differ, never the target\'s first', function (): void {
         [$id] = custodyFile('gone', ['public' => 'first', MediaDisks::PRIVATE => 'target', 'old-cdn' => 'served']);
 
         $keeper = MediaCustody::keeper(custodyRow($id), MediaDisks::PRIVATE, 'gone', [MediaDisks::PRIVATE, 'public', 'old-cdn']);
@@ -322,6 +339,49 @@ describe('the keeper', function (): void {
 
         expect($keeper->mode)->toBe(MediaKeeper::FIRST)
             ->and($keeper->disk)->toBe(MediaDisks::PRIVATE);
+    });
+
+    /*
+     * T63. Core's private disk comes after the configured private disk and before the served disks, and every other disk
+     * asked after those (Adam, decision 5, 2026-09-25). The order once left it out, so a copy held only there fell
+     * through to a target that held nothing, whose hash was then read before it was taken.
+     */
+    it('orders core\'s private disk after the configured private disk, and every disk asked before the target', function (): void {
+        custodyHostPrivate();
+        $root = sys_get_temp_dir().'/kitsune-custody-other-'.bin2hex(random_bytes(4));
+        mkdir($root, 0777, true);
+        $this->roots[] = $root;
+        RefusingDisk::install('other', $root);
+        [$id, $path] = custodyFile('gone', ['host-private' => 'private', MediaDisks::PRIVATE => 'core', 'old-cdn' => 'served', 'other' => 'other']);
+        // The named disk is gone from the configuration and holds nothing, so it is not asked, as T17 does.
+        $asked = ['public', 'host-private', MediaDisks::PRIVATE, 'old-cdn', 'other'];
+        $kept = function () use ($id, $asked): string {
+            $keeper = MediaCustody::keeper(custodyRow($id), 'public', 'gone', $asked);
+
+            expect($keeper->mode)->toBe(MediaKeeper::FIRST);
+
+            return (string) $keeper->disk;
+        };
+
+        expect($kept())->toBe('host-private');
+        Storage::disk('host-private')->delete($path);
+        expect($kept())->toBe(MediaDisks::PRIVATE);
+        Storage::disk(MediaDisks::PRIVATE)->delete($path);
+        expect($kept())->toBe('old-cdn');
+        Storage::disk('old-cdn')->delete($path);
+        expect($kept())->toBe('other');
+    });
+
+    it('keeps a copy held only on core\'s private disk once the private disk has moved', function (): void {
+        custodyHostPrivate();
+        [$id] = custodyFile('public', [MediaDisks::PRIVATE => 'core'], trashed: true);
+
+        $keeper = MediaCustody::keeper(custodyRow($id), 'host-private', 'public', MediaCustody::asked(config(), 'host-private', 'public'));
+
+        expect($keeper->mode)->toBe(MediaKeeper::FIRST)
+            ->and($keeper->disk)->toBe(MediaDisks::PRIVATE)
+            ->and($keeper->expected)->toBe(hash('sha256', 'core'))
+            ->and($keeper->targetHolds)->toBeFalse();
     });
 
     it('says so when no disk holds the file', function (): void {
@@ -441,6 +501,61 @@ describe('settle', function (): void {
             ->and(Storage::disk('public')->exists($path))->toBeFalse()
             ->and(custodyRow($id)->disk)->toBe('alias');
     });
+
+    /*
+     * T64. Custody asks core's private disk wherever the private disk points, so a copy a disposal or a move left there
+     * is found — and never asks a disk whose root does not exist, because building it would create the directory.
+     */
+    it('publishes from core\'s private disk when the private disk has moved and it alone holds the file', function (): void {
+        custodyHostPrivate();
+        [$id, $path] = custodyFile('host-private', [MediaDisks::PRIVATE => CUSTODY_PNG]);
+
+        expect(MediaCustody::settle(DB::connection(), $id, publication: true))->toBe(MediaCustody::SETTLED)
+            ->and(Storage::disk('public')->get($path))->toBe(CUSTODY_PNG)
+            ->and(custodyRow($id)->disk)->toBe('public');
+    });
+
+    it('builds no disk whose root does not exist', function (): void {
+        custodyHostPrivate();
+        $core = sys_get_temp_dir().'/kitsune-custody-rootless-core-'.bin2hex(random_bytes(4));
+        $cdn = sys_get_temp_dir().'/kitsune-custody-rootless-cdn-'.bin2hex(random_bytes(4));
+        config([
+            'filesystems.disks.'.MediaDisks::PRIVATE.'.root' => $core,
+            'filesystems.disks.rootless-cdn' => ['driver' => 'local', 'root' => $cdn, 'url' => 'https://rootless.example.test'],
+        ]);
+        Storage::forgetDisk(MediaDisks::PRIVATE);
+        [$id, $path] = custodyFile('public', ['public' => CUSTODY_PNG], trashed: true);
+
+        expect(MediaCustody::settle(DB::connection(), $id))->toBe(MediaCustody::SETTLED)
+            ->and(Storage::disk('host-private')->get($path))->toBe(CUSTODY_PNG)
+            ->and(is_dir($core))->toBeFalse()
+            ->and(is_dir($cdn))->toBeFalse();
+    });
+
+    /*
+     * T65. The cost of asking it: a copy there that cannot be read stops a publication and a compensation that reach it,
+     * as any unreadable copy does, and each says which disk.
+     */
+    it('refuses a publication and a compensation while core\'s private disk holds a copy it cannot read', function (string $step): void {
+        custodyHostPrivate();
+        [$id, $path] = custodyFile('host-private', ['host-private' => 'changed by hand', MediaDisks::PRIVATE => CUSTODY_PNG]);
+        $this->disks[MediaDisks::PRIVATE]->unreadable = [$path];
+        Log::spy();
+
+        if ($step === 'publication') {
+            MediaCustody::publish(DB::connection(), [$id]);
+        } else {
+            MediaCustody::queue(DB::connection()->getName(), [$id]);
+            MediaCustody::drain(DB::connection());
+        }
+
+        expect(custodyByteOperations())->toBe([])
+            ->and(custodyRow($id)->disk)->toBe('host-private')
+            ->and(Storage::disk('public')->exists($path))->toBeFalse();
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $message): bool => str_contains($message, "entry {$id}")
+            && str_contains($message, MediaDisks::PRIVATE)
+            && str_contains($message, 'cannot be read'))->once();
+    })->with(['publication', 'compensation']);
 
     /** A publication that fails is logged, never thrown — and the log does not claim a commit that was never made. */
     it('logs a publication it could not make, as not published', function (): void {

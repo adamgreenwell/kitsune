@@ -97,19 +97,14 @@ final class MediaPruneCommand extends Command
          * create the directory.
          */
         $kitsune = array_values(array_unique([$public, $private, ...array_map(static fn (stdClass $row): string => (string) $row->disk, $rows)]));
-        $core = MediaDisks::resolved($config, MediaDisks::PRIVATE)['root'];
 
-        if (! in_array(MediaDisks::PRIVATE, $kitsune, true) && ($core === null || is_dir($core))) {
+        if (! in_array(MediaDisks::PRIVATE, $kitsune, true) && MediaDisks::mayHold($config, MediaDisks::PRIVATE)) {
             $kitsune[] = MediaDisks::PRIVATE;
         }
 
         $served = array_values(array_filter(
             array_diff(MediaDisks::servedDisks($config), $kitsune),
-            static function (string $disk) use ($config): bool {
-                $resolved = MediaDisks::resolved($config, $disk);
-
-                return $resolved['root'] === null || is_dir($resolved['root']);
-            },
+            static fn (string $disk): bool => MediaDisks::mayHold($config, $disk),
         ));
 
         $orphans = [];
