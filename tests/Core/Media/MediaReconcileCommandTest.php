@@ -25,7 +25,7 @@ use Kitsune\Core\Tests\Fixtures\RefusingDisk;
 use League\Flysystem\Filesystem;
 
 /*
- * kitsune:media-reconcile — ADR-042 decision 5, slice 5b (T77-T90, T104-T107, T109, T114, T119).
+ * kitsune:media-reconcile — ADR-042 decision 5, slice 5b (T77-T90, T104-T107, T109, T114, T119, T122, T126).
  *
  * ⚠️ FROM THE DISKS, THE ROWS AND THE OUTPUT AS THEY ARE AFTERWARDS. Each case sets a row and its disks by hand, runs the
  * command as an operator would, and reads what each disk holds by hash, what the row names, the line the command printed
@@ -746,10 +746,30 @@ it('refuses, and repoints nothing, when the named disk only nests inside the pub
 
     [$exit, $output] = reconcileRun(['--force' => true, '--entry' => [(string) $id]]);
 
+    // And no advice to prune first, which refuses while the two nest: the nesting itself is named (review of 5b).
     expect(reconcileNamed($id))->toBe('nested')
         ->and(hash_file('sha256', $root.'/'.$path))->toBe($this->checksum)
         ->and(reconcileLine($output, $id))->toContain('→ failed')
+        ->and($output)->not->toContain('run kitsune:media-prune --force first')
+        ->and($output)->toContain('[nested]\'s media directory nests with [public]\'s: kitsune:media-prune never lists its orphans')
         ->and($exit)->toBe(1);
+});
+
+/*
+ * T122. A disk nested inside the public disk is another directory, and the survey asks it: a row whose only copy is
+ * there is awaiting publication, held by that disk — not missing (review of slice 5b).
+ */
+it('asks a disk nested inside the public disk, rather than taking it for the public disk', function (): void {
+    $root = $this->disks['public']->root().'/media/sub';
+    mkdir($root, 0777, true);
+    config(['filesystems.disks.nested' => ['driver' => 'local', 'root' => $root]]);
+    RefusingDisk::install('nested', $root);
+    [$id] = reconcileFile('nested', ['nested' => RECONCILE_PNG]);
+
+    [, $output] = reconcileRun(['--entry' => [(string) $id]]);
+
+    expect(reconcileLine($output, $id))->toStartWith('awaiting publication ')
+        ->and(reconcileLine($output, $id))->toContain('held by nested');
 });
 
 /*
@@ -800,6 +820,19 @@ describe('the disks a run moves the last rows off', function (): void {
         expect($one)->not->toContain('[local]')
             ->and($both)->toContain('All 2 rows naming [local] are among these entries: kitsune:media-prune sweeps [local] for orphans only while a row names it')
             ->and($forced)->toContain('All 2 rows naming [local] are among these entries: this run moves them off it');
+    });
+
+    // T126: a host's disk inside the legacy one stops prune while a row names it — so no advice to prune first.
+    it('names a host disk nested inside a legacy disk rather than advising a prune that refuses', function (): void {
+        $old = reconcileDisk('old');
+        mkdir($old->root().'/media/host', 0777, true);
+        config(['filesystems.disks.host-inner' => ['driver' => 'local', 'root' => $old->root().'/media/host']]);
+        reconcileFile('old', ['old' => RECONCILE_PNG], visibility: 'private');
+
+        [, $output] = reconcileRun();
+
+        expect($output)->toContain('[old]\'s media directory nests with [host-inner]\'s: kitsune:media-prune never lists its orphans')
+            ->and($output)->not->toContain('run kitsune:media-prune --force before');
     });
 
     it('never warns of the configured disks or core\'s own', function (): void {

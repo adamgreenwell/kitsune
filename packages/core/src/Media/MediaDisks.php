@@ -294,7 +294,7 @@ final class MediaDisks
 
         return [
             'driver' => $entry['driver'],
-            'root' => $local && is_string($entry['root'] ?? null) ? self::normalised(rtrim($entry['root'], '/').($prefix === '' ? '' : '/'.$prefix)) : null,
+            'root' => $local && is_string($entry['root'] ?? null) && $entry['root'] !== '' ? self::normalised(rtrim($entry['root'], '/').($prefix === '' ? '' : '/'.$prefix)) : null,
             'url' => is_string($entry['url'] ?? null) && $entry['url'] !== '' ? $entry['url'] : null,
             'bucket' => is_string($entry['bucket'] ?? $entry['container'] ?? null) ? ($entry['bucket'] ?? $entry['container']) : null,
             'endpoint' => is_string($entry['endpoint'] ?? null) ? $entry['endpoint'] : null,
@@ -378,13 +378,21 @@ final class MediaDisks
      * root does not exist holds nothing, so custody does not ask it. A disk that is not configured is refused: the
      * caller decides whether it can be left out.
      *
+     * ⚠️ AND A LOCAL DISK WITH NO ROOT CANNOT BE BUILT AT ALL — review of slice 5b. Laravel hands the adapter what the
+     * configuration holds, so a root left unset — an optional disk whose environment variable is empty — throws when the
+     * disk is built. Such a disk holds nothing, and asking it would stop whatever asked.
+     *
      * @throws RuntimeException for a disk that is not configured
      */
     public static function mayHold(Repository $config, string $disk): bool
     {
-        $root = self::resolved($config, $disk)['root'];
+        $resolved = self::resolved($config, $disk);
 
-        return $root === null || is_dir($root);
+        if ($resolved['driver'] === 'local') {
+            return $resolved['root'] !== null && is_dir($resolved['root']);
+        }
+
+        return true;
     }
 
     /**
@@ -521,16 +529,23 @@ final class MediaDisks
 
     /**
      * Whether two disks' media directories nest without being one directory: a local disk rooted inside another's
-     * `media/`, or an object store's prefix inside another's in the same bucket — ADR-042 decision 5.
+     * `media/`, or an object store's prefix inside another's `media/` prefix in the same bucket — ADR-042 decision 5.
      *
      * ⚠️ `onePlace()` IS TRUE OF BOTH, AND ONLY ONE IS AN ALIAS — review of slice 5b. Two names for one directory list the
      * same files at the same paths; a directory inside another is listed by the outer one under longer paths, where no
-     * row names them, so the inner disk's files read as the outer's orphans. It builds a local disk to resolve its
-     * media directory, so it is asked only of a disk that can hold something.
+     * row names them, so the inner disk's files read as the outer's orphans. An object store nests when its prefix lies
+     * inside another's `media/` prefix in the same bucket: `site/media/x` inside `site`, not `site/archive` beside it.
+     * It builds a local disk to resolve its media directory, so it is asked only of a disk that can hold something.
      */
     public static function nested(Repository $config, string $a, string $b): bool
     {
-        $media = $a === $b ? null : self::mediaDirectories($config, $a, $b);
+        return self::within($config, $a, $b) || self::within($config, $b, $a);
+    }
+
+    /** Whether the first disk's media directory lies inside the second's — nested, and the inner of the two. */
+    public static function within(Repository $config, string $inner, string $outer): bool
+    {
+        $media = $inner === $outer ? null : self::mediaDirectories($config, $inner, $outer);
 
         if ($media === null) {
             return false;
@@ -538,7 +553,7 @@ final class MediaDisks
 
         [$first, $second] = $media;
 
-        return $first !== $second && (str_starts_with($first, $second) || str_starts_with($second, $first));
+        return $first !== $second && str_starts_with($first, $second);
     }
 
     /**

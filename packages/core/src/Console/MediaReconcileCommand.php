@@ -386,7 +386,9 @@ final class MediaReconcileCommand extends Command
 
             // Another name for a disk prune always sweeps — Laravel's `public`, say, at the public disk's directory — is
             // swept under that name whatever names it (review of slice 5b).
-            if ($this->sweptAs($config, $disk, $known)) {
+            $swept = $this->sweptAs($config, $disk, $known);
+
+            if ($swept === true) {
                 continue;
             }
 
@@ -396,6 +398,13 @@ final class MediaReconcileCommand extends Command
             $them = $rows === 1 ? 'the row' : 'them';
 
             $this->warn(match (true) {
+                is_string($swept) => sprintf(
+                    '[%s]\'s media directory nests with [%s]\'s: kitsune:media-prune never lists its orphans while the two '
+                    .'nest — it refuses to list, or scans it for extra copies only — so move one of them, or remove its '
+                    .'leftovers by hand.',
+                    $disk,
+                    $swept,
+                ),
                 $force => sprintf(
                     '%s: this run moves %s off it, after which kitsune:media-prune no longer sweeps it for orphans — stop '
                     .'now and run kitsune:media-prune --force first if it may hold any.',
@@ -420,12 +429,14 @@ final class MediaReconcileCommand extends Command
     }
 
     /**
-     * Whether a disk is, or cannot be told apart from, one of these — asked only of disks that can hold anything, since
-     * asking builds a local disk. A disk that cannot be asked is not one of them.
+     * Whether prune sweeps a disk through one of these: true when it is one of them under another name, or cannot be told
+     * apart from one; the other's name when their media directories nest, and prune never lists its orphans; false when
+     * it sweeps it only while a row names it. Asked only of disks that can hold anything, since asking builds a local
+     * disk; a disk that cannot be asked is none of them.
      *
      * @param  list<string>  $disks
      */
-    private function sweptAs(Repository $config, string $disk, array $disks): bool
+    private function sweptAs(Repository $config, string $disk, array $disks): bool|string
     {
         try {
             if (! MediaDisks::mayHold($config, $disk)) {
@@ -433,10 +444,27 @@ final class MediaReconcileCommand extends Command
             }
 
             foreach ($disks as $other) {
-                // One directory, or one prune cannot tell apart and so never scans; a nested one prune refuses to list.
-                if (is_array($config->get("filesystems.disks.{$other}")) && MediaDisks::mayHold($config, $other)
-                    && MediaDisks::onePlace($config, $disk, $other) !== false && ! MediaDisks::nested($config, $disk, $other)) {
+                if (! is_array($config->get("filesystems.disks.{$other}")) || ! MediaDisks::mayHold($config, $other)) {
+                    continue;
+                }
+
+                // Nested: another directory, whose orphans prune never lists while the two nest (review of 5b).
+                if (MediaDisks::nested($config, $disk, $other)) {
+                    return $other;
+                }
+
+                // One directory, or one prune cannot tell apart, and so never scans.
+                if (MediaDisks::onePlace($config, $disk, $other) !== false) {
                     return true;
+                }
+            }
+
+            // And any configured disk inside it — a host's — which stops prune while a row names this one (review of 5b).
+            foreach (array_keys((array) $config->get('filesystems.disks', [])) as $other) {
+                $other = (string) $other;
+
+                if ($other !== $disk && MediaDisks::mayHold($config, $other) && MediaDisks::within($config, $other, $disk)) {
+                    return $other;
                 }
             }
         } catch (Throwable) {
@@ -471,8 +499,10 @@ final class MediaReconcileCommand extends Command
                     continue;
                 }
 
-                // Under a public target, P under another name, or a disk that cannot be told from it, is P itself.
-                if ($target === $public && $disk !== $public && MediaDisks::onePlace($config, $public, $disk) !== false) {
+                // Under a public target, P under another name, or a disk that cannot be told from it, is P itself; one
+                // nested in it or around it is another directory, holding another file at the path (review of 5b).
+                if ($target === $public && $disk !== $public && MediaDisks::onePlace($config, $public, $disk) !== false
+                    && ! MediaDisks::nested($config, $public, $disk)) {
                     continue;
                 }
 

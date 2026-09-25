@@ -386,10 +386,10 @@ final class MediaCustody
              * ⚠️ NOR WHEN ITS COPY IS THE TARGET'S OWN ENTRY — review of slice 5b. A row naming Laravel's `public` while the
              * public disk is another name for the same directory failed on every run and was never repointed:
              * `removeCopy()` rightly refuses to remove the one file both names reach. Only the row moves then — and only
-             * when the two names reach one directory entry: two disks `onePlace()` merely cannot tell apart, or whose
-             * directories nest, hold two files at the path; and a hard link, a symlinked file or a bind mount is one file
-             * under two entries, the other of which the web may serve. Each of those refuses, as it did (review of 5b,
-             * twice).
+             * when the two names reach one directory entry: two disks whose directories nest hold two files at the path;
+             * two `onePlace()` cannot tell apart may hold one file or two, which cannot be known; and a hard link, a
+             * symlinked file or a bind mount is one file under two entries, the other of which the web may serve. Each of
+             * those refuses, as it did (review of 5b, twice).
              */
             if ($named !== $target && ! in_array($named, [$private, MediaDisks::PRIVATE], true) && ! isset($setAside[$named])
                 && ! MediaBytes::sameEntry($target, $named, $path)) {

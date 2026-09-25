@@ -33,7 +33,7 @@ use Kitsune\Core\Tests\Fixtures\RefusingDisk;
 
 /*
  * A trashed file leaves the web before the trash commits; a restored one is published after — ADR-042 decision 5
- * (T23-T37, T39; slice 5b: T62, T67(vi), T69-T71, T75, T101).
+ * (T23-T37, T39; slice 5b: T62, T67(vi), T69-T71, T75, T101, T125).
  *
  * ⚠️ FROM THE DISKS AND THE ROW AS THEY ARE AFTERWARDS. Every case reads what each disk holds at the path, by hash,
  * and what the row names — so a refusal that happened for some other reason, or a copy that "succeeded" onto the
@@ -859,6 +859,21 @@ it('records the move by the disk alone', function (): void {
     expect(DB::getSchemaBuilder()->hasColumn('media_files', 'updated_at'))->toBeFalse()
         ->and(DB::table('audit_log')->where('target_type', 'like', '%MediaFile%')->count())->toBe(0);
 });
+
+/*
+ * T125. A served disk with no root holds nothing, and is not built: a trash asks `MediaDisks::mayHold()`, as the rest of
+ * custody does, where its own copy of the rule counted such a disk as holding, and building it refused every trash
+ * (review of slice 5b).
+ */
+it('trashes a public file past a served disk with no root', function (?string $root): void {
+    config(['filesystems.disks.rootless-cdn' => ['driver' => 'local', 'root' => $root, 'url' => 'https://rootless.example.test']]);
+    [$entry, $path] = withdrawable();
+
+    $entry->delete();
+
+    expect(DB::table('entries')->where('id', $entry->id)->value('deleted_at'))->not->toBeNull()
+        ->and(heldAt($path))->toBe(['public' => null, MediaDisks::PRIVATE => hash('sha256', WITHDRAWN_PNG)]);
+})->with(['no root' => [null], 'an empty root' => ['']]);
 
 /*
  * T39. A trash inside a transaction that then rolls back comes back through the listener.

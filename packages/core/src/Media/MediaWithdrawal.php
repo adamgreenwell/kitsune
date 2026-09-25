@@ -208,19 +208,13 @@ final class MediaWithdrawal
         $target = MediaDisks::configured($config, 'private');
         $reachable = $file->visibility === 'public' || in_array($named, $served, true);
 
-        // A served local disk nothing configures or names, whose root does not exist, holds nothing, and is not built.
-        $surfaces = array_values(array_filter(
-            array_diff(array_unique($reachable ? [$public, ...$served, $named] : [$public]), [$target]),
-            static function (string $disk) use ($config, $public, $named): bool {
-                if ($disk === $public || $disk === $named) {
-                    return true;
-                }
-
-                $root = MediaDisks::resolved($config, $disk)['root'];
-
-                return $root === null || is_dir($root);
-            },
-        ));
+        /*
+         * A served local disk whose root does not exist, or that has none, holds nothing, and is not built — asked of
+         * `MediaDisks::mayHold()`, which custody, disposal, reconcile and prune ask too: this kept its own copy of the rule,
+         * which counted a disk with no root as holding, and building one refused every trash (review of slice 5b).
+         */
+        $holding = array_values(array_filter($served, static fn (string $disk): bool => MediaDisks::mayHold($config, $disk)));
+        $surfaces = array_values(array_diff(array_unique($reachable ? [$public, ...$holding, $named] : [$public]), [$target]));
 
         try {
             $held = array_values(array_filter($surfaces, static fn (string $disk): bool => MediaBytes::present($disk, $path)));
@@ -242,7 +236,7 @@ final class MediaWithdrawal
              * decision 6, 2026-09-25) — so no spare disks are passed.
              */
             try {
-                $keeper = MediaCustody::keeper($file, $target, $named, array_values(array_unique([$target, $named, $public, ...$served])));
+                $keeper = MediaCustody::keeper($file, $target, $named, array_values(array_unique([$target, $named, $public, ...$holding])));
             } catch (MediaCustodyFailure $failure) {
                 throw $this->refused($id, MediaWithdrawalRefused::UNREADABLE, $failure);
             }

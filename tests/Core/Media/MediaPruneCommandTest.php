@@ -269,7 +269,7 @@ it('leaves alone a disk no row names', function (): void {
 
 /*
  * What custody leaves, and what prune does with it — ADR-042 decision 5 (T20, T21; slice 5b: T92-T97, T108,
- * T110-T112, T115-T118).
+ * T110-T112, T115-T118, T120, T121, T123, T124).
  *
  * ⚠️ A FILE IS AN ORPHAN WHEN NO ROW NAMES ITS PATH, ON ANY DISK. Custody leaves verified copies at a row's own path on
  * disks the row does not name, and any one of them may be the only good copy: each is listed as ~~kept, never deleted~~
@@ -769,11 +769,106 @@ it('lists nothing, and removes nothing, while a disk a row names nests inside th
     foreach ([[], ['--force' => true]] as $options) {
         $exit = Artisan::call('kitsune:media-prune', $options);
 
-        expect(Artisan::output())->toContain('Refusing to list: the media directories of [public] and [nested] nest')
+        expect(Artisan::output())->toContain('Refusing to list: the media directory of [nested] is inside [public]\'s')
             ->and($exit)->toBe(1)
             ->and(is_file($root.'/'.$file->path))->toBeTrue();
     }
 });
+
+/*
+ * T120-T121. Only a disk prune lists orphans on is refused for a disk nested inside it — every configured disk counted,
+ * a host's that nothing names or serves included — while two nesting disks prune scans only for extra copies are each
+ * scanned, since neither lists an orphan (review of slice 5b).
+ */
+it('scans two served disks that nest, since neither lists an orphan', function (): void {
+    $root = sys_get_temp_dir().'/kitsune-prune-host-'.bin2hex(random_bytes(4));
+    mkdir($root.'/media', 0777, true);
+
+    try {
+        config([
+            'filesystems.disks.host-public' => ['driver' => 'local', 'root' => $root, 'url' => 'https://host.example.test'],
+            'filesystems.disks.host-media' => ['driver' => 'local', 'root' => $root.'/media', 'url' => 'https://host.example.test/media'],
+        ]);
+        // A copy of a trashed file on the inner one, which is another directory, scanned for extra copies of its own.
+        $file = storedForPrune($this->imageType);
+        DB::table('entries')->where('id', $file->entry_id)->update(['deleted_at' => now()]);
+        Storage::disk('host-media')->put($file->path, pruneFixtureBytes());
+
+        $exit = Artisan::call('kitsune:media-prune');
+        $output = Artisan::output();
+
+        expect($output)->not->toContain('Refusing to list')
+            ->and($output)->toMatch('/^\| host-media +\| '.preg_quote($file->path, '/').'/m')
+            ->and($exit)->toBe(0);
+    } finally {
+        exec('rm -rf '.escapeshellarg($root));
+    }
+});
+
+it('lists nothing while a disk nothing names or serves nests inside the public disk', function (): void {
+    $root = Storage::disk('public')->path('media/host');
+    mkdir($root, 0777, true);
+    config(['filesystems.disks.host-archive' => ['driver' => 'local', 'root' => $root]]);
+    Storage::disk('host-archive')->put('media/12/photo.jpg', 'the host\'s');
+
+    $exit = Artisan::call('kitsune:media-prune', ['--force' => true]);
+
+    expect(Artisan::output())->toContain('Refusing to list: the media directory of [host-archive] is inside [public]\'s')
+        ->and($exit)->toBe(1)
+        ->and(is_file($root.'/media/12/photo.jpg'))->toBeTrue();
+});
+
+/*
+ * T123. The public disk inside a served host disk's media directory is not refused: the host disk lists no orphans, so
+ * it is scanned for extra copies — and one there, at a row's path, is kept for a hand, since custody takes a disk that
+ * nests with the row's target for one place and refuses to remove it (review of slice 5b).
+ */
+it('scans a served disk the public disk nests inside, and keeps its copies for a hand', function (): void {
+    $host = sys_get_temp_dir().'/kitsune-prune-host-'.bin2hex(random_bytes(4));
+    mkdir($host.'/media/site', 0777, true);
+
+    try {
+        config([
+            'filesystems.disks.host' => ['driver' => 'local', 'root' => $host, 'url' => 'https://host.example.test'],
+            'filesystems.disks.site' => ['driver' => 'local', 'root' => $host.'/media/site', 'url' => 'https://site.example.test'],
+            'kitsune.media.disks.public' => 'site',
+        ]);
+        $file = storedForPrune($this->imageType);
+        DB::table('media_files')->where('id', $file->getKey())->update(['visibility' => 'public', 'disk' => 'site']);
+        Storage::disk('site')->put($file->path, pruneFixtureBytes());
+        Storage::disk(MediaDisks::PRIVATE)->delete($file->path);
+        Storage::disk('host')->put($file->path, pruneFixtureBytes());
+        // And one whose own disk does not hold it: the copy on the host may be its only one (review of 5b).
+        $only = storedForPrune($this->imageType);
+        DB::table('media_files')->where('id', $only->getKey())->update(['visibility' => 'public', 'disk' => 'site']);
+        Storage::disk(MediaDisks::PRIVATE)->delete($only->path);
+        Storage::disk('host')->put($only->path, pruneFixtureBytes());
+
+        $exit = Artisan::call('kitsune:media-prune', ['--force' => true]);
+        $output = Artisan::output();
+
+        expect($output)->not->toContain('Refusing to list')
+            ->and($output)->toContain('kept: its media directory nests with [site]\'s — compare it with [site]\'s copy by hand')
+            ->and($output)->toContain('kept: its media directory nests with [site]\'s, which does not list the file — copy it over by hand')
+            ->and($output)->not->toContain('remove it by hand')
+            ->and(is_file($host.'/'.$only->path))->toBeTrue()
+            ->and($output)->not->toContain('removed, once asked again under the lock')
+            ->and(is_file($host.'/'.$file->path))->toBeTrue()
+            ->and($exit)->toBe(0);
+    } finally {
+        exec('rm -rf '.escapeshellarg($host));
+    }
+});
+
+/* T124. A configured local disk with no root cannot be built, and holds nothing: prune runs past it (review of 5b). */
+it('runs past a configured local disk with no root', function (?string $root): void {
+    config(['filesystems.disks.backups' => ['driver' => 'local', 'root' => $root]]);
+
+    $exit = Artisan::call('kitsune:media-prune');
+
+    expect(Artisan::output())->not->toContain('Refusing to list')
+        ->and($exit)->toBe(0);
+})->with(['no root' => [null], 'an empty root, as env() gives for a blank value' => ['']]);
 
 /* T112. A disk that could not be listed was not asked: its rows' extra copies say so, not that it lacks the file. */
 it('says a copy is kept because the disk its row names could not be listed, not because it lacks the file', function (): void {

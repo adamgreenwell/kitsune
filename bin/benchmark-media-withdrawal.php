@@ -34,6 +34,10 @@ declare(strict_types=1);
  * One warm-up, then seven runs, each on fresh random bytes; the median and the maximum. Every figure is warm-cache.
  * No threshold is proposed here: the numbers are for deciding on (ADR-042 decision 5).
  *
+ * ⚠️ AT ADR-027'S FLOOR, GIVE IT MORE THAN PHP'S DEFAULT 128 MB — `php -d memory_limit=512M` — or it stops in (G'):
+ * prune reads every media row at once, and over 100,000 rows that exhausts the default. The figure it then prints is
+ * the peak prune reached; the stop is itself the finding (slice 5b).
+ *
  * ⚠️ SLICE 5B'S GROUPS (I, J, J', K, G', M) RUN AFTER EVERY 5A GROUP, EACH ON ITS OWN SEED. Each clears every media row,
  * entry and file before it seeds and after it finishes, so what earlier groups left — byte-less rows among them — never
  * reaches a figure; and each verifies by counting what the command it runs reported, so a contaminated run prints none.
@@ -493,7 +497,8 @@ final class WithdrawalBench
         $groups[] = ['figures' => ['(I) reconcile, read-only: 100,000 rows, 1,000 findings' => 'whole', '(I) reconcile, read-only: peak memory, MB' => 'memory'], 'case' => $this->listing('kitsune:media-reconcile', ['exposed' => 1_000]), 'before' => $before, 'after' => $after];
 
         [$before, $after] = $this->isolated(fn (): mixed => $this->seedRows(99_000, 1_000, 1 << 10, 'exposed'));
-        $groups[] = ['figures' => ['(G\') prune, read-only: 100,000 rows' => 'whole'], 'case' => $this->listing('kitsune:media-prune', []), 'before' => $before, 'after' => $after];
+        // Its memory too: prune reads every row at once, where reconcile reads them in chunks (found at the floor, slice 5b).
+        $groups[] = ['figures' => ['(G\') prune, read-only: 100,000 rows' => 'whole', '(G\') prune, read-only: peak memory, MB' => 'memory'], 'case' => $this->listing('kitsune:media-prune', []), 'before' => $before, 'after' => $after];
 
         foreach (['4 MB' => 4 << 20, '64 MiB' => 64 << 20] as $size => $bytes) {
             foreach (['R1: live public, only on the private disk', 'R3: awaiting publication', 'R4: a differing private copy', 'R6: trashed on the public disk', 'R7: private, on a legacy disk'] as $kind) {
