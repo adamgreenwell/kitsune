@@ -12,10 +12,13 @@ namespace Kitsune\Core\Filament\Resources\EntryTypes\Pages;
 
 use Filament\Actions\CreateAction;
 use Filament\Resources\Pages\ListRecords;
+use Filament\Schemas\Concerns\RestrictsFileUploadsToSchemaComponents;
 use Kitsune\Core\Filament\Resources\EntryTypes\EntryTypeResource;
 
 class ListEntryTypes extends ListRecords
 {
+    use RestrictsFileUploadsToSchemaComponents;
+
     protected static string $resource = EntryTypeResource::class;
 
     protected function getHeaderActions(): array

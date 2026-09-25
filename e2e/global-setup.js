@@ -103,6 +103,20 @@ module.exports = async () => {
         throw new Error('global-setup: the shared photo does not link to the golfdom-only article');
     }
 
+    /*
+     * ⚠️ AND WHERE THE SERVER STAGES UPLOADS, asked of the application rather than guessed: `media-staging.spec.js`
+     * lists it before and after each request. Refused unless Livewire stages on core's intake disk (ADR-042 decision
+     * 4), which is the configuration that spec exists to exercise.
+     */
+    const staging = JSON.parse(execFileSync('php', [
+        'artisan', 'tinker', '--execute',
+        "echo json_encode(['disk' => config('livewire.temporary_file_upload.disk'), 'path' => Storage::disk('kitsune-intake')->path('')]);",
+    ], { cwd: skeleton, encoding: 'utf8' }).trim());
+
+    if (staging.disk !== 'kitsune-intake') {
+        throw new Error(`global-setup: Livewire stages on [${staging.disk}], not on core's intake disk`);
+    }
+
     fs.mkdirSync(path.join(__dirname, '..', '.playwright'), { recursive: true });
     fs.writeFileSync(
         path.join(__dirname, '..', '.playwright', 'media-fixture.json'),
@@ -114,6 +128,7 @@ module.exports = async () => {
             hiddenTargetId: String(fixtures.week4),
             frNoteId: String(fixtures.notes['note-fr']),
             nestedNoteId: String(fixtures.notes['nested-note']),
+            intakePath: staging.path,
         }, null, 4) + '\n',
     );
 };

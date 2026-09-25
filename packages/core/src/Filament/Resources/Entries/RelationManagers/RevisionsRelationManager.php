@@ -13,6 +13,7 @@ namespace Kitsune\Core\Filament\Resources\Entries\RelationManagers;
 use Filament\Actions\Action;
 use Filament\Notifications\Notification;
 use Filament\Resources\RelationManagers\RelationManager;
+use Filament\Schemas\Concerns\RestrictsFileUploadsToSchemaComponents;
 use Filament\Tables\Columns\TextColumn;
 use Filament\Tables\Table;
 use Kitsune\Core\Filament\Resources\Entries\EntryResource;
@@ -31,6 +32,8 @@ use Livewire\Attributes\On;
  */
 class RevisionsRelationManager extends RelationManager
 {
+    use RestrictsFileUploadsToSchemaComponents;
+
     protected static string $relationship = 'revisionHistory';
 
     protected static ?string $title = 'History';

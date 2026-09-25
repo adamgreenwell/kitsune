@@ -11,11 +11,13 @@ declare(strict_types=1);
 namespace Kitsune\Core\Filament\Resources\Roles\Pages;
 
 use Filament\Resources\Pages\CreateRecord;
+use Filament\Schemas\Concerns\RestrictsFileUploadsToSchemaComponents;
 use Kitsune\Core\Filament\Resources\Roles\Concerns\SyncsRolePermissions;
 use Kitsune\Core\Filament\Resources\Roles\RoleResource;
 
 class CreateRole extends CreateRecord
 {
+    use RestrictsFileUploadsToSchemaComponents;
     use SyncsRolePermissions;
 
     protected static string $resource = RoleResource::class;

@@ -11,6 +11,7 @@ declare(strict_types=1);
 namespace Kitsune\Core\Filament\Resources\Entries\Pages;
 
 use Filament\Resources\Pages\CreateRecord;
+use Filament\Schemas\Concerns\RestrictsFileUploadsToSchemaComponents;
 use Kitsune\Core\Filament\Concerns\InteractsWithEntryType;
 use Kitsune\Core\Filament\Concerns\SyncsFieldRelations;
 use Kitsune\Core\Filament\Resources\Entries\EntryResource;
@@ -19,6 +20,7 @@ use Kitsune\Core\Models\EntryType;
 class CreateEntry extends CreateRecord
 {
     use InteractsWithEntryType;
+    use RestrictsFileUploadsToSchemaComponents;
 
     // Relation fields are rows in entry_relations, not attributes, so they are
     // carried separately and written after the entry exists (ADR-015).
