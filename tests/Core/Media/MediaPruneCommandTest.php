@@ -155,6 +155,42 @@ it('looks at a disk a row still names, though no longer configured', function ()
     Storage::disk('local')->assertExists($media->path);
 });
 
+/**
+ * ⚠️ CORE'S OWN PRIVATE DISK IS ALWAYS KITSUNE'S TO SWEEP — Codex, #153. With the private disk pointed at a host's, a
+ * copy disposal could not remove from `kitsune-private` would otherwise never be found once no row named it.
+ */
+it('removes an orphan from core\'s private disk after the private disk has moved', function (): void {
+    config([
+        'filesystems.disks.host-private' => ['driver' => 'local', 'root' => storage_path('app/host-private')],
+        'kitsune.media.disks.private' => 'host-private',
+    ]);
+    Storage::fake('host-private');
+    $orphan = 'media/'.$this->org->getKey().'/2026/09/left-by-disposal.png';
+    Storage::disk(MediaDisks::PRIVATE)->put($orphan, 'bytes');
+
+    $this->artisan('kitsune:media-prune --force')
+        ->expectsOutputToContain('left-by-disposal.png')
+        ->assertSuccessful();
+
+    Storage::disk(MediaDisks::PRIVATE)->assertMissing($orphan);
+});
+
+/** Its control: never used, it has no root, and a read-only listing does not create one by building it. */
+it('does not create core\'s private disk when the private disk has moved and it was never used', function (): void {
+    $absent = sys_get_temp_dir().'/kitsune-prune-core-'.bin2hex(random_bytes(4));
+    config([
+        'filesystems.disks.host-private' => ['driver' => 'local', 'root' => storage_path('app/host-private')],
+        'filesystems.disks.'.MediaDisks::PRIVATE => ['driver' => 'local', 'root' => $absent],
+        'kitsune.media.disks.private' => 'host-private',
+    ]);
+    Storage::fake('host-private');
+    Storage::forgetDisk(MediaDisks::PRIVATE);
+
+    $this->artisan('kitsune:media-prune')->assertSuccessful();
+
+    expect(is_dir($absent))->toBeFalse();
+});
+
 /** The control: a disk nothing names and nothing is configured to use is the host's, and is left alone. */
 it('leaves alone a disk no row names', function (): void {
     Storage::fake('local');

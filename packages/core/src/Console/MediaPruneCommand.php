@@ -85,12 +85,23 @@ final class MediaPruneCommand extends Command
          * which disks it uses is the command's own rule: a disk nothing names and nothing is configured to use is not
          * this command's to sweep, because its `media/` folder may be the host's.
          *
+         * ⚠️ AND CORE'S OWN PRIVATE DISK ALWAYS — Codex, #153. With `kitsune.media.disks.private` pointed at a host disk,
+         * `kitsune-private` stops being configured, and a copy disposal could not remove from it — disposal always asks
+         * it — would never be listed once no row named it. Its `media/` is Kitsune's by definition. Unconfigured, local
+         * and without a root, it holds nothing and is not built, as a served disk below is not.
+         *
          * ⚠️ AND THE DISKS THE WEB SERVES — V — FOR KEPT COPIES ONLY. A copy custody could not remove from a disk that
          * serves it is the one an operator most needs to see; a file there that no row's path names is the host's,
          * and is not listed. A local one whose root does not exist holds nothing, and is not built: building it would
          * create the directory.
          */
         $kitsune = array_values(array_unique([$public, $private, ...array_map(static fn (stdClass $row): string => (string) $row->disk, $rows)]));
+        $core = MediaDisks::resolved($config, MediaDisks::PRIVATE)['root'];
+
+        if (! in_array(MediaDisks::PRIVATE, $kitsune, true) && ($core === null || is_dir($core))) {
+            $kitsune[] = MediaDisks::PRIVATE;
+        }
+
         $served = array_values(array_filter(
             array_diff(MediaDisks::servedDisks($config), $kitsune),
             static function (string $disk) use ($config): bool {

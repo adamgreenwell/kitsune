@@ -4299,7 +4299,8 @@ bulk paths both arrive, and restore likewise.
 > - **Prune keeps and lists.** ~~A file no row claims whose path a row names on the other media disk, where that row's own
 >   disk does not hold it, is the live copy in the wrong place.~~ A file at a path any row names, on any disk, is kept and
 >   listed, whatever disk it is on and whatever it holds: each may be the only good copy. Prune removes only a path no row
->   names — on the configured disks and the disks rows name, rechecked under custody's lock — and a partial copy,
+>   names — on the configured disks, core's own private disk (whenever it can hold anything, since disposal always asks
+>   it; Codex found on #153) and the disks rows name, rechecked under custody's lock — and a partial copy,
 >   `{path}.kitsune-partial`, under the lock of the row naming `{path}`, or as an orphan rechecked by `{path}` when no row
 >   does. The rule decision 4 quotes — *"it asks the database, never the filename"* — stands: the suffix chooses which
 >   lock to take; the table decides whether anything is deleted. It also lists, from the table alone, live public files
