@@ -370,11 +370,9 @@ describe('the disks the web serves', function (): void {
     /** Laravel's shipped filesystems configuration, with core's disks written into it and these added. */
     function servedConfiguration(array $extra = []): Repository
     {
-        $laravel = require base_path('vendor/laravel/framework/config/filesystems.php');
-
-        if (! is_array($laravel['disks'] ?? null)) {
-            $laravel = require dirname(__DIR__, 3).'/vendor/laravel/framework/config/filesystems.php';
-        }
+        // The repository's own framework, which the suite runs on. ⚠️ Not `base_path('vendor/…')`: that is Testbench's
+        // skeleton, which holds a `vendor` only where something linked one — a checkout on CI has none.
+        $laravel = require dirname(__DIR__, 3).'/vendor/laravel/framework/config/filesystems.php';
 
         $laravel['disks']['local']['serve'] = true;
         $laravel['disks'] = [...$laravel['disks'], ...$extra];
