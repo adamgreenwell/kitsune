@@ -9,6 +9,7 @@
 declare(strict_types=1);
 
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Kitsune\Core\Media\MediaDisks;
 use Kitsune\Core\Media\MediaLibrary;
@@ -18,6 +19,7 @@ use Kitsune\Core\Models\MediaFile;
 use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
+use Kitsune\Core\Tests\Fixtures\RefusingDisk;
 
 /*
  * Byte disposal — ADR-041: a soft-deleted media entry keeps its bytes because a restore must work, and a
@@ -133,20 +135,31 @@ it('force-deletes an ordinary entry with no media without complaint', function (
 /**
  * ⚠️ A DISK THAT REFUSES MUST NOT KEEP A FORCE-DELETE FROM COMPLETING. The operator asked for the row to go
  * and the row is the record; an unreachable object store or a read-only mount leaves an orphan, which
- * `kitsune:media prune` is the repair for. What it must not do is pass silently, so it is logged.
+ * `kitsune:media-prune` is the repair for. What it must not do is pass silently, so it is logged.
+ *
+ * On a disk that refuses the delete itself: one that cannot be built at all now refuses the erasure before it
+ * commits, because withdrawal cannot tell where the file is (ADR-042 decision 5).
  */
 it('completes the force-delete even when the bytes cannot be removed', function (): void {
-    $entry = aStoredImage($this->imageType);
-    $media = MediaFile::query()->where('entry_id', $entry->getKey())->firstOrFail();
+    $root = sys_get_temp_dir().'/kitsune-disp-refusing-'.bin2hex(random_bytes(4));
+    mkdir($root);
+    $private = RefusingDisk::install(MediaDisks::PRIVATE, $root);
 
-    /* Remove the file underneath, then make the disk itself unavailable to the disposal call. */
-    Storage::disk($media->disk)->delete($media->path);
-    config(['filesystems.disks.'.$media->disk => null]);
+    try {
+        $entry = aStoredImage($this->imageType);
+        $media = MediaFile::query()->where('entry_id', $entry->getKey())->firstOrFail();
+        $private->failDeletes = true;
+        Log::spy();
 
-    $entry->forceDelete();
+        $entry->forceDelete();
 
-    expect(DB::table('entries')->count())->toBe(0)
-        ->and(DB::table('media_files')->count())->toBe(0);
+        expect(DB::table('entries')->count())->toBe(0)
+            ->and(DB::table('media_files')->count())->toBe(0)
+            ->and(is_file($root.'/'.$media->path))->toBeTrue();
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $message): bool => str_contains($message, $media->path))->atLeast()->once();
+    } finally {
+        exec('rm -rf '.escapeshellarg($root));
+    }
 });
 
 /** Only the entries being deleted lose their bytes — a sibling's file is not collateral. */

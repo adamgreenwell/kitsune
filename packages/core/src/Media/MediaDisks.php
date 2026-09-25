@@ -12,6 +12,7 @@ namespace Kitsune\Core\Media;
 
 use Illuminate\Config\Repository as ConfigRepository;
 use Illuminate\Contracts\Config\Repository;
+use Illuminate\Support\Facades\Storage;
 use RuntimeException;
 
 /**
@@ -227,6 +228,298 @@ final class MediaDisks
                 }
             }
         }
+    }
+
+    /** The disk a visibility is stored on, read from this configuration as `MediaLibrary::diskFor()` reads it. */
+    public static function configured(Repository $config, string $visibility): string
+    {
+        $key = $visibility === 'public' ? 'public' : 'private';
+        $disk = $config->get("kitsune.media.disks.{$key}");
+
+        return is_string($disk) && $disk !== '' ? $disk : ($key === 'public' ? 'public' : self::PRIVATE);
+    }
+
+    /**
+     * A disk's configuration as the framework builds it — through every `scoped` layer — ADR-042 decision 5.
+     *
+     * ⚠️ AS `FilesystemManager::createScopedDriver()` DOES IT: prefixes join from the base disk inward, the outermost
+     * visibility set wins, and the url is the base disk's, since a scoped entry's own is never read. A local disk's root
+     * is its root with the joined prefix under it; an object store's `prefix` is the key prefix its objects sit under —
+     * its own `root`, then the joined prefix.
+     *
+     * @return array{driver: string, root: ?string, url: ?string, bucket: ?string, endpoint: ?string, prefix: string, visibility: ?string, serve: bool}
+     */
+    public static function resolved(Repository $config, string $disk): array
+    {
+        $entry = $config->get("filesystems.disks.{$disk}");
+        $prefix = '';
+        $visibility = null;
+        $seen = [];
+
+        while (is_array($entry) && ($entry['driver'] ?? null) === 'scoped') {
+            $parent = $entry['disk'] ?? null;
+
+            if (is_string($parent) && (isset($seen[$parent]) || count($seen) >= 8)) {
+                throw new RuntimeException(sprintf('Refusing to read the [%s] disk: its scoped disks form a cycle.', $disk));
+            }
+
+            $own = trim((string) ($entry['prefix'] ?? ''), '/');
+            $prefix = $own === '' ? $prefix : ($prefix === '' ? $own : $own.'/'.$prefix);
+            $visibility ??= is_string($entry['visibility'] ?? null) ? $entry['visibility'] : null;
+
+            if (is_string($parent)) {
+                $seen[$parent] = true;
+            }
+
+            $entry = is_string($parent) ? $config->get("filesystems.disks.{$parent}") : $parent;
+        }
+
+        if (! is_array($entry) || ! is_string($entry['driver'] ?? null)) {
+            throw new RuntimeException(sprintf('Refusing to read the [%s] disk: it, or a disk it is scoped over, is not configured.', $disk));
+        }
+
+        $base = trim((string) ($entry['prefix'] ?? ''), '/');
+        $prefix = trim($base === '' ? $prefix : ($prefix === '' ? $base : $base.'/'.$prefix), '/');
+        $local = $entry['driver'] === 'local';
+
+        /*
+         * ⚠️ AN OBJECT STORE'S OWN `root` IS A KEY PREFIX INSIDE THE STORE, innermost — Laravel hands it to the adapter,
+         * and wraps the disk's `prefix` and every scoped layer around that. Review found `root` left out: an S3 disk at
+         * `root` 'site' and another at `prefix` 'site' in the same bucket are one place, and compared as two, so a
+         * withdrawal took the file itself for its private copy and deleted it; while two disks with sibling roots
+         * compared as one, and refused every trash.
+         */
+        $storeRoot = $local ? '' : trim((string) ($entry['root'] ?? ''), '/');
+        $prefix = $storeRoot === '' ? $prefix : trim($storeRoot.($prefix === '' ? '' : '/'.$prefix), '/');
+
+        return [
+            'driver' => $entry['driver'],
+            'root' => $local && is_string($entry['root'] ?? null) ? self::normalised(rtrim($entry['root'], '/').($prefix === '' ? '' : '/'.$prefix)) : null,
+            'url' => is_string($entry['url'] ?? null) && $entry['url'] !== '' ? $entry['url'] : null,
+            'bucket' => is_string($entry['bucket'] ?? $entry['container'] ?? null) ? ($entry['bucket'] ?? $entry['container']) : null,
+            'endpoint' => is_string($entry['endpoint'] ?? null) ? $entry['endpoint'] : null,
+            'prefix' => $prefix,
+            'visibility' => $visibility ?? (is_string($entry['visibility'] ?? null) ? $entry['visibility'] : null),
+            'serve' => (bool) ($entry['serve'] ?? false),
+        ];
+    }
+
+    /**
+     * Every disk the web may serve a file from without Kitsune in the way — ADR-042 decision 5.
+     *
+     * ⚠️ AS THE FRAMEWORK SERVES, NOT AS A NAME SUGGESTS. A disk is served when it has a url (a scoped disk inherits its
+     * base disk's); when it is a local disk with `serve` on and public visibility, which Laravel's route answers with no
+     * signature; or when its media directory meets the document root, a directory a public link exposes, or such a
+     * disk's root. A local disk
+     * served only to signatures is not, because Kitsune mints none (finding 4). An object store with no url that is
+     * public by its own policy cannot be seen from here — a recorded limit. Core's private and intake disks, and the
+     * configured private disk, are never listed: `refuseUnsafeMediaDisks()` refuses a private disk that is served.
+     *
+     * @return list<string>
+     */
+    public static function servedDisks(Repository $config): array
+    {
+        $public = self::configured($config, 'public');
+        $private = self::configured($config, 'private');
+        $served = [$public];
+
+        foreach (array_keys((array) $config->get('filesystems.disks', [])) as $name) {
+            $name = (string) $name;
+
+            if (in_array($name, [$public, $private, self::PRIVATE, self::INTAKE], true)) {
+                continue;
+            }
+
+            if (self::servedBy($config, $name)) {
+                $served[] = $name;
+            }
+        }
+
+        return $served;
+    }
+
+    /** Whether the web may serve this disk's files without Kitsune in the way — the rule `servedDisks()` states. */
+    public static function servedBy(Repository $config, string $disk): bool
+    {
+        $entry = $config->get("filesystems.disks.{$disk}");
+
+        if (! is_array($entry)) {
+            return false;
+        }
+
+        $resolved = self::resolved($config, $disk);
+
+        // A local disk served with `serve` and public visibility is found below: its own root is one of the web's.
+        if ($resolved['url'] !== null) {
+            return true;
+        }
+
+        if ($resolved['root'] === null) {
+            return false;
+        }
+
+        $media = $resolved['root'].'media/';
+
+        foreach (self::webRoots($config) as $web) {
+            if (str_starts_with($media, $web) || str_starts_with($web, $media)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * A disk's `media/` directory as the filesystem resolves it, when the disk is local; null when it is not.
+     *
+     * It builds the disk, so it is asked only of a disk configured as local.
+     */
+    public static function mediaRoot(string $disk): ?string
+    {
+        return MediaBytes::local($disk) ? self::normalised(Storage::disk($disk)->path('media')) : null;
+    }
+
+    /**
+     * Refuse to move a byte while the configured disks cannot keep the promise — ADR-042 decision 5.
+     *
+     * The public and private disks must be two places, and the private one must be one the web does not serve: a
+     * withdrawn file would otherwise stay public.
+     */
+    public static function refuseUnsafeMediaDisks(Repository $config): void
+    {
+        $public = self::configured($config, 'public');
+        $private = self::configured($config, 'private');
+
+        self::refuseCoincidingMediaDisks($config, $public, $private);
+
+        if (self::servedBy($config, $private)) {
+            throw new RuntimeException(sprintf(
+                'Refusing: kitsune.media.disks.private names [%s], which the web serves — through a url, `serve` with '
+                .'public visibility, a public link or the document root — so a withdrawn file would stay public (ADR-042 '
+                .'decision 5). '
+                .'Nothing was moved.',
+                $private,
+            ));
+        }
+    }
+
+    /**
+     * Refuse when a disk shares its `media/` directory with any of the others — ADR-042 decision 5.
+     *
+     * Two names, one place: a "copy" from one to the other is the file itself, and deleting "the other copy" deletes the
+     * only one. Local disks are compared by their media directories as the filesystem resolves them, and a nest counts;
+     * others by driver, bucket, endpoint and prefix.
+     */
+    public static function refuseCoincidingMediaDisks(Repository $config, string $disk, string ...$others): void
+    {
+        foreach ($others as $other) {
+            if (! self::coincide($config, $disk, $other)) {
+                continue;
+            }
+
+            throw new RuntimeException(sprintf(
+                'Refusing: the [%s] and [%s] disks share their media/ directory, so a file cannot be withdrawn from one '
+                .'to the other — the copy would be the file itself (ADR-042 decision 5). Point kitsune.media.disks.public '
+                .'and kitsune.media.disks.private at two places. Nothing was moved.',
+                $disk,
+                $other,
+            ));
+        }
+    }
+
+    private static function coincide(Repository $config, string $a, string $b): bool
+    {
+        if ($a === $b) {
+            return true;
+        }
+
+        $one = self::resolved($config, $a);
+        $two = self::resolved($config, $b);
+
+        /*
+         * Local disks by their media directories as the filesystem resolves them — the instance's, so a faked disk counts
+         * at its own root. Only a disk configured as local is built here: building an object store needs its SDK.
+         */
+        if ($one['driver'] === 'local' && $two['driver'] === 'local') {
+            $first = self::localMediaRoot($config, $a, $one);
+            $second = self::localMediaRoot($config, $b, $two);
+
+            return str_starts_with($first, $second) || str_starts_with($second, $first);
+        }
+
+        if ($one['driver'] !== $two['driver'] || $one['bucket'] !== $two['bucket'] || $one['endpoint'] !== $two['endpoint']) {
+            return false;
+        }
+
+        $mediaOne = ($one['prefix'] === '' ? '' : $one['prefix'].'/').'media/';
+        $mediaTwo = ($two['prefix'] === '' ? '' : $two['prefix'].'/').'media/';
+
+        return str_starts_with($mediaOne, $mediaTwo) || str_starts_with($mediaTwo, $mediaOne);
+    }
+
+    /**
+     * A local disk's media directory: its instance's, so a faked disk counts at its own root — except a scoped disk,
+     * which is not built here (it needs Flysystem's path-prefixing package) and is rooted as the framework would root it.
+     *
+     * @param  array{root: ?string}  $resolved
+     */
+    private static function localMediaRoot(Repository $config, string $disk, array $resolved): string
+    {
+        $scoped = ($config->get("filesystems.disks.{$disk}.driver") ?? null) === 'scoped';
+
+        return ($scoped ? null : self::mediaRoot($disk)) ?? ($resolved['root'] ?? '').'media/';
+    }
+
+    /** @param  array<string, mixed>  $entry */
+    private static function servesPublicly(array $entry): bool
+    {
+        return ($entry['driver'] ?? null) === 'local'
+            && (bool) ($entry['serve'] ?? false)
+            && ($entry['visibility'] ?? 'private') === 'public';
+    }
+
+    /**
+     * Directories the web serves as they are: the document root, public link targets, and the roots of local disks
+     * served with a url or with `serve` and public visibility.
+     *
+     * @return list<string>
+     */
+    private static function webRoots(Repository $config): array
+    {
+        $roots = [];
+
+        foreach ((array) $config->get('filesystems.links', []) as $target) {
+            if (is_string($target) && $target !== '') {
+                $roots[] = self::normalised($target);
+            }
+        }
+
+        /*
+         * ⚠️ AND THE WEB SERVER'S DOCUMENT ROOT ITSELF — review. A link's target counts because its source sits in
+         * `public/`; a disk rooted in `public/` is served the same way, with nothing in the configuration to say so, and
+         * a private disk there would take every withdrawn file onto the web.
+         */
+        $roots[] = self::normalised(public_path());
+
+        foreach (array_keys((array) $config->get('filesystems.disks', [])) as $name) {
+            $entry = $config->get("filesystems.disks.{$name}");
+
+            if (! is_array($entry)) {
+                continue;
+            }
+
+            try {
+                $resolved = self::resolved($config, (string) $name);
+            } catch (RuntimeException) {
+                continue;
+            }
+
+            if ($resolved['root'] !== null && ($resolved['url'] !== null || self::servesPublicly($entry))) {
+                $roots[] = $resolved['root'];
+            }
+        }
+
+        return $roots;
     }
 
     /**

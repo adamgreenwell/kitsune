@@ -361,3 +361,124 @@ describe('a core disk redefined after core', function (): void {
         expect(fn () => (new KitsuneServiceProvider(app()))->boot())->not->toThrow(RuntimeException::class);
     });
 });
+
+/*
+ * Which disks the web serves, decided as the framework serves them — ADR-042 decision 5 (T12). Laravel's own shipped
+ * disks and links, loaded as a host inherits them, with the cases custody has to tell apart added beside them.
+ */
+describe('the disks the web serves', function (): void {
+    /** Laravel's shipped filesystems configuration, with core's disks written into it and these added. */
+    function servedConfiguration(array $extra = []): Repository
+    {
+        // The repository's own framework, which the suite runs on. ⚠️ Not `base_path('vendor/…')`: that is Testbench's
+        // skeleton, which holds a `vendor` only where something linked one — a checkout on CI has none.
+        $laravel = require dirname(__DIR__, 3).'/vendor/laravel/framework/config/filesystems.php';
+
+        $laravel['disks']['local']['serve'] = true;
+        $laravel['disks'] = [...$laravel['disks'], ...$extra];
+        $laravel['links'] = [public_path('storage') => storage_path('app/public')];
+
+        $config = new Repository(['filesystems' => $laravel, 'kitsune' => ['media' => ['disks' => ['public' => 'public', 'private' => MediaDisks::PRIVATE]]]]);
+        MediaDisks::define($config);
+
+        return $config;
+    }
+
+    it('lists what the framework serves, and nothing it does not', function (): void {
+        $config = servedConfiguration([
+            's3-cdn' => ['driver' => 's3', 'bucket' => 'b', 'url' => 'https://cdn.example.test'],
+            'media-cdn' => ['driver' => 'scoped', 'disk' => 's3-cdn', 'prefix' => 'x'],
+            'public-scoped' => ['driver' => 'scoped', 'disk' => 'public', 'prefix' => 'p'],
+            'under-public' => ['driver' => 'local', 'root' => storage_path('app/public/sub')],
+            'pub-serve' => ['driver' => 'local', 'root' => storage_path('app/elsewhere'), 'serve' => true, 'visibility' => 'public'],
+            'signed-scoped' => ['driver' => 'scoped', 'disk' => 'local', 'prefix' => 's'],
+            'in-docroot' => ['driver' => 'local', 'root' => public_path('assets')],
+        ]);
+
+        // Testbench ships `local` unserved; Laravel ships it served, and that is the case to decide.
+        expect($config->get('filesystems.disks.local.serve'))->toBeTrue()
+            ->and($config->get('filesystems.disks.s3.url'))->toBeNull();
+
+        // The whole list, not `not->toContain(a, b, …)`, which passes as soon as any one of them is missing.
+        expect(MediaDisks::servedDisks($config))
+            ->toEqualCanonicalizing(['public', 's3-cdn', 'media-cdn', 'public-scoped', 'under-public', 'pub-serve', 'in-docroot']);
+    });
+
+    it('refuses a scoped cycle, naming the disk', function (): void {
+        $config = servedConfiguration([
+            'loop-a' => ['driver' => 'scoped', 'disk' => 'loop-b', 'prefix' => 'a'],
+            'loop-b' => ['driver' => 'scoped', 'disk' => 'loop-a', 'prefix' => 'b'],
+        ]);
+
+        expect(fn () => MediaDisks::servedDisks($config))->toThrow(RuntimeException::class, 'cycle');
+    });
+});
+
+/*
+ * Disks that cannot keep the promise — ADR-042 decision 5 (T13). Asked of the configuration the application runs with,
+ * because a local disk is compared by the directory its instance writes to.
+ */
+describe('unsafe and coinciding media disks', function (): void {
+    afterEach(fn () => Storage::forgetDisk(['public', MediaDisks::PRIVATE, 'twin', 'cdn', 'linked', 'open', 'scoped-public']));
+
+    it('refuses a configuration where withdrawing would keep a file public', function (array $disks, string $private, string $words): void {
+        config(['filesystems.disks' => [...config('filesystems.disks'), ...$disks], 'kitsune.media.disks.private' => $private]);
+        config(['filesystems.links' => [public_path('storage') => storage_path('app/public'), public_path('linked') => storage_path('app/linked')]]);
+
+        expect(fn () => MediaDisks::refuseUnsafeMediaDisks(config()))->toThrow(RuntimeException::class, $words);
+    })->with([
+        // Closures where a path is built: the application does not exist while the file loads.
+        'the same disk' => [[], 'public', 'share their media/ directory'],
+        'two names for one root' => [fn (): array => ['twin' => ['driver' => 'local', 'root' => storage_path('app/public')]], 'twin', 'share their media/ directory'],
+        'private inside public\'s media/' => [fn (): array => ['twin' => ['driver' => 'local', 'root' => storage_path('app/public/media/x')]], 'twin', 'share their media/ directory'],
+        'a private disk with a url' => [fn (): array => ['cdn' => ['driver' => 'local', 'root' => storage_path('app/cdn'), 'url' => 'https://cdn.example.test']], 'cdn', 'kitsune.media.disks.private'],
+        'a private disk a link exposes' => [fn (): array => ['linked' => ['driver' => 'local', 'root' => storage_path('app/linked')]], 'linked', 'kitsune.media.disks.private'],
+        'a private disk served publicly' => [fn (): array => ['open' => ['driver' => 'local', 'root' => storage_path('app/open'), 'serve' => true, 'visibility' => 'public']], 'open', 'kitsune.media.disks.private'],
+        // Under the document root, with nothing in the configuration saying the web serves it — review.
+        'a private disk in the document root' => [fn (): array => ['open' => ['driver' => 'local', 'root' => public_path('private-media')]], 'open', 'the document root'],
+    ]);
+
+    /** The control: a disk rooted above both media directories is not either of them. */
+    it('allows a disk rooted above both media directories', function (): void {
+        config(['filesystems.disks.local' => ['driver' => 'local', 'root' => storage_path('app')]]);
+
+        expect(fn () => MediaDisks::refuseUnsafeMediaDisks(config()))->not->toThrow(RuntimeException::class);
+    });
+
+    it('compares object stores by bucket, endpoint and media prefix', function (array $a, array $b, bool $coincide): void {
+        config(['filesystems.disks.store-a' => $a, 'filesystems.disks.store-b' => $b]);
+
+        $refused = fn () => MediaDisks::refuseCoincidingMediaDisks(config(), 'store-a', 'store-b');
+
+        $coincide
+            ? expect($refused)->toThrow(RuntimeException::class, 'share their media/ directory')
+            : expect($refused)->not->toThrow(RuntimeException::class);
+    })->with([
+        'one bucket, one prefix' => [['driver' => 's3', 'bucket' => 'b', 'endpoint' => 'e', 'prefix' => 'a'], ['driver' => 's3', 'bucket' => 'b', 'endpoint' => 'e', 'prefix' => 'a'], true],
+        'a prefix inside the other\'s media/' => [['driver' => 's3', 'bucket' => 'b', 'endpoint' => 'e', 'prefix' => 'a'], ['driver' => 's3', 'bucket' => 'b', 'endpoint' => 'e', 'prefix' => 'a/media/x'], true],
+        'sibling prefixes' => [['driver' => 's3', 'bucket' => 'b', 'endpoint' => 'e', 'prefix' => 'a'], ['driver' => 's3', 'bucket' => 'b', 'endpoint' => 'e', 'prefix' => 'a/b'], false],
+        'another bucket' => [['driver' => 's3', 'bucket' => 'b', 'endpoint' => 'e', 'prefix' => 'a'], ['driver' => 's3', 'bucket' => 'c', 'endpoint' => 'e', 'prefix' => 'a'], false],
+        // The store's own `root` is a key prefix too, innermost — review found it ignored, both ways.
+        'one place, spelt as a root and as a prefix' => [['driver' => 's3', 'bucket' => 'b', 'endpoint' => 'e', 'root' => 'site'], ['driver' => 's3', 'bucket' => 'b', 'endpoint' => 'e', 'prefix' => 'site'], true],
+        'one root, one prefix under it' => [['driver' => 's3', 'bucket' => 'b', 'endpoint' => 'e', 'root' => 'site'], ['driver' => 's3', 'bucket' => 'b', 'endpoint' => 'e', 'root' => 'site', 'prefix' => 'media/x'], true],
+        'sibling roots in one bucket' => [['driver' => 's3', 'bucket' => 'b', 'endpoint' => 'e', 'root' => 'public'], ['driver' => 's3', 'bucket' => 'b', 'endpoint' => 'e', 'root' => 'private'], false],
+    ]);
+
+    it('sees a scoped disk over a bare bucket as the disk whose root is its prefix', function (): void {
+        config([
+            'filesystems.disks.bucket' => ['driver' => 's3', 'bucket' => 'b', 'endpoint' => 'e'],
+            'filesystems.disks.scoped-site' => ['driver' => 'scoped', 'disk' => 'bucket', 'prefix' => 'site'],
+            'filesystems.disks.rooted-site' => ['driver' => 's3', 'bucket' => 'b', 'endpoint' => 'e', 'root' => 'site'],
+        ]);
+
+        expect(fn () => MediaDisks::refuseCoincidingMediaDisks(config(), 'scoped-site', 'rooted-site'))
+            ->toThrow(RuntimeException::class, 'share their media/ directory');
+    });
+
+    it('sees a scoped disk inside another\'s media/', function (): void {
+        config(['filesystems.disks.scoped-public' => ['driver' => 'scoped', 'disk' => 'public', 'prefix' => 'media/x']]);
+
+        expect(fn () => MediaDisks::refuseCoincidingMediaDisks(config(), 'public', 'scoped-public'))
+            ->toThrow(RuntimeException::class, 'share their media/ directory');
+    });
+});

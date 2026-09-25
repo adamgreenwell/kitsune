@@ -36,6 +36,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Fields\FieldConfig;
+use Kitsune\Core\Filament\MediaDeletionNotice;
 use Kitsune\Core\Filament\Resources\Entries\Pages\CreateEntry;
 use Kitsune\Core\Filament\Resources\Entries\Pages\EditEntry;
 use Kitsune\Core\Filament\Resources\Entries\Pages\ListEntries;
@@ -373,7 +374,10 @@ class EntryResource extends Resource
             ])
             // Record links are exactly what 500s without isPersistent: true.
             ->recordActions([ViewAction::make(), EditAction::make()])
-            ->toolbarActions([BulkActionGroup::make([DeleteBulkAction::make()])])
+            // Each entry deleted on its own, and the ones whose files could not leave the web named (ADR-042 decision 5).
+            ->toolbarActions([BulkActionGroup::make([
+                DeleteBulkAction::make()->using(MediaDeletionNotice::deleteEach(...)),
+            ])])
             ->defaultSort(self::DEFAULT_SORT, 'desc')
             ->paginationMode(static fn (): PaginationMode => self::paginationModeFor(
                 app()->bound(EntryType::class) ? app(EntryType::class) : null,

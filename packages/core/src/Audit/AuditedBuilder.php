@@ -11,18 +11,24 @@ declare(strict_types=1);
 namespace Kitsune\Core\Audit;
 
 use Illuminate\Contracts\Database\Query\Expression;
+use Illuminate\Database\Connection;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use Kitsune\Core\Database\TransactionRecovery;
+use Kitsune\Core\Media\MediaCustody;
 use Kitsune\Core\Media\MediaDisposal;
+use Kitsune\Core\Media\MediaWithdrawal;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Schema\RevisionWrites;
 use Kitsune\Core\Tenancy\Concerns\ResolvesWrittenColumns;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tenancy\ScopedBuilder;
+use LogicException;
 use RuntimeException;
+use Throwable;
 
 /**
  * The single place every write is audited from.
@@ -250,6 +256,8 @@ class AuditedBuilder extends ScopedBuilder
      */
     public function upsert(array $values, $uniqueBy, $update = null)
     {
+        $this->refuseForeignFrom('upsert');
+
         throw new RuntimeException(self::NO_BULK_CREATE);
     }
 
@@ -340,6 +348,7 @@ class AuditedBuilder extends ScopedBuilder
     /** @param  array<string, mixed>  $values */
     public function update(array $values)
     {
+        $this->refuseForeignFrom('update');
         $this->refuseMisnamedEntryColumns($values);
         $this->refuseNoncanonicalEntryType($values);
 
@@ -348,6 +357,8 @@ class AuditedBuilder extends ScopedBuilder
 
         $this->guardScopeKeys($values);
         $this->refuseNoncanonicalStatus($values);
+        $this->refuseDeletedAtQualifier($values);
+        $this->refuseDeletedAtJsonPath($values);
 
         /*
          * ⚠️ AN INSTANCE MAY NOT WRITE OVER A ROW THAT MOVED UNDER IT — see
@@ -363,54 +374,221 @@ class AuditedBuilder extends ScopedBuilder
          *
          * A genuine bulk update arrives with a prototype that does not exist, so it is excluded by `exists`
          * and stays narrowed by the scope, which is what a bulk write has instead of a row to compare.
+         *
+         * ⚠️ AND A WRITE OF `deleted_at` CARRIES ITS FILES' CUSTODY — ADR-042 decision 5. Every door that trashes or
+         * restores an entry arrives here: an instance's delete and restore, a quiet save, a bulk delete, `touch()`,
+         * a spelling the engine folds. After the rows are written and before the transaction commits, what was
+         * trashed is taken off the web and what was restored is registered for publication; a failure refuses the
+         * write, and whatever had already moved is put back once nothing is left to commit.
          */
-        return $this->auditing($this->actionFor($values), function () use ($values) {
-            $this->refuseIfTheRowMoved('update');
-            $this->refuseRetypeAcrossMediaBoundary($values);
-            $this->refuseSlugOnSharedRows($values);
-            $this->refuseUnpermittedPublication($values);
+        $custody = $this->writesDeletedAt($values) ? new MediaWithdrawal($this->auditedConnection()) : null;
 
-            return parent::update($values);
-        }, $values);
+        try {
+            return $this->auditing($this->actionFor($values), function (array $keys) use ($values, $custody) {
+                $this->refuseIfTheRowMoved('update');
+                $this->refuseRetypeAcrossMediaBoundary($values);
+                $this->refuseSlugOnSharedRows($values);
+                $this->refuseUnpermittedPublication($values);
+
+                $result = parent::update($values);
+
+                $custody?->afterSoftWrite($keys);
+
+                return $result;
+            }, $values);
+        } catch (Throwable $failure) {
+            $custody?->compensate();
+
+            throw $failure;
+        }
     }
 
-    // delete() is deliberately NOT overridden. Entry soft-deletes, so both
-    // SoftDeletingScope's onDelete callback and runSoftDelete() route a
-    // deletion back through update() — where actionFor() reads `deleted_at`
-    // and names it. Auditing it here as well would record it twice.
+    /**
+     * A delete moves entries to the trash, through `update()` — and only a query that can do that may delete.
+     *
+     * Entry soft-deletes, so `SoftDeletingScope`'s `onDelete` callback and `runSoftDelete()` route a deletion back
+     * through `update()`, where `actionFor()` reads `deleted_at` and names it; auditing it here as well would record it
+     * twice.
+     *
+     * ⚠️ A QUERY WITHOUT THAT SCOPE IS REFUSED — ADR-042 decision 5. One built by `newModelQuery()`,
+     * `newQueryWithoutScopes()` or a collection's `toQuery()` never had the scope applied, so it has no `onDelete`, and
+     * Eloquent falls through to the query builder's DELETE: the rows erased outright, with no audit row and no custody
+     * of their files. Guessing that the caller meant `forceDelete()` would be guessing at an erasure.
+     */
+    public function delete()
+    {
+        $this->refuseForeignFrom('delete');
+
+        // The scope's `extend()` sets `onDelete` and registers its macros together; the macro is the typed half.
+        if (! $this->hasMacro('withTrashed')) {
+            throw new RuntimeException(
+                'Refusing to delete entries through a query without the soft-delete scope — one built by '
+                .'newModelQuery(), newQueryWithoutScopes() or a collection\'s toQuery() — because Eloquent would erase '
+                .'the rows outright, with no audit row and no custody of their files (ADR-020, ADR-042 decision 5). Use '
+                .'Entry::query()->…->delete() to move them to the trash, or forceDelete() to erase them.'
+            );
+        }
+
+        return parent::delete();
+    }
 
     public function forceDelete()
     {
+        $this->refuseForeignFrom('force-delete');
+
         /*
-         * ⚠️ READ BEFORE THE DELETE, REMOVED AFTER IT — ADR-041's byte disposal, asked of the builder rather
-         * than of a model event.
+         * ⚠️ ADR-041's byte disposal, asked of the builder rather than of a model event, IN ADR-042 DECISION 5's ORDER.
          *
-         * A `deleting` hook on `Entry` would miss `Entry::query()->forceDelete()`, which dispatches nothing,
-         * and a hook on `MediaFile` never fires at all: `media_files.entry_id` cascades, so the row goes
-         * inside the database where no PHP runs. This is the one place both the instance path and the bulk
-         * path arrive, because `SoftDeletes::forceDelete()` routes an instance through the builder too.
+         * A `deleting` hook on `Entry` would miss `Entry::query()->forceDelete()`, which dispatches nothing, and a hook
+         * on `MediaFile` never fires at all: `media_files.entry_id` cascades, so the row goes inside the database where
+         * no PHP runs. This is the one place both the instance path and the bulk path arrive, because
+         * `SoftDeletes::forceDelete()` routes an instance through the builder too.
          *
-         * Rows first, then bytes — the mirror of how `MediaLibrary` writes them, for the same reason: if the
-         * files went first and the delete then failed, a surviving entry would point at nothing.
+         * Inside the write: the entries are locked (`auditing()`), then their files, then the rows are deleted, then
+         * every copy the web could serve is withdrawn to the private disk — so a committed erasure never leaves a file
+         * public, and a withdrawal that cannot finish refuses the erasure with its rows intact. After the outermost
+         * commit, `MediaDisposal` removes what is left, asking again under the lock; from the failure path too, because
+         * a commit that reported failure may have landed.
          */
-        $files = MediaDisposal::filesFor(
-            (clone $this)->select($this->getModel()->getTable().'.id')->pluck('id')->map(
-                static fn (mixed $id): int => (int) $id,
-            )->all(),
-        );
+        $connection = $this->auditedConnection();
+        $custody = new MediaWithdrawal($connection, 'erase');
 
-        $result = $this->auditing('force_deleted', function () {
-            // ⚠️ The destructive half, and the reason that guard exists at all: an update is a field somebody
-            // may not have been allowed to touch, and this is a row that is gone.
-            $this->refuseIfTheRowMoved('force-delete');
+        try {
+            $result = $this->auditing('force_deleted', function (array $keys) use ($custody) {
+                // ⚠️ The destructive half, and the reason that guard exists at all: an update is a field somebody
+                // may not have been allowed to touch, and this is a row that is gone.
+                $this->refuseIfTheRowMoved('force-delete');
 
-            return parent::forceDelete();
-        });
+                $custody->lockFiles($keys);
 
-        /* Reports rather than throws: a disk that refuses must not keep a force-delete from completing. */
-        MediaDisposal::remove($files);
+                $result = parent::forceDelete();
+
+                $custody->withdrawAll();
+
+                return $result;
+            });
+        } catch (Throwable $failure) {
+            $custody->compensate();
+            MediaCustody::whenOutermost($connection, static fn () => MediaDisposal::remove($connection, $custody->files(), committed: false));
+
+            throw $failure;
+        }
+
+        /* Reports rather than throws: a disk that refuses must not undo a force-delete that has committed. */
+        MediaCustody::whenOutermost($connection, static fn () => MediaDisposal::remove($connection, $custody->files()));
 
         return $result;
+    }
+
+    /**
+     * Refuse a write whose `from` is not `entries` itself — ADR-042 decision 5.
+     *
+     * ⚠️ UNCONDITIONAL, AND INSIDE `withoutScopeBecause()` TOO. The keys `auditing()` locks, the scopes that narrow
+     * them and the files custody withdraws are all read through `entries`; aliased, or replaced by a sub-query, the
+     * rows written are not the rows those read. Joining other tables to `entries` is the way to reach them.
+     */
+    private function refuseForeignFrom(string $door): void
+    {
+        $from = $this->getQuery()->from;
+
+        if (is_string($from) && $from === $this->getModel()->getTable()) {
+            return;
+        }
+
+        throw new RuntimeException(sprintf(
+            'Refusing to %s entries through [%s]: an entry write runs against `%s` itself, unaliased, because the keys '
+            .'it audits, the scopes it applies and the files it withdraws are all read through that name (ADR-020, '
+            .'ADR-042 decision 5). Join other tables to `%s` instead.',
+            $door,
+            is_string($from) ? $from : 'a sub-query',
+            $this->getModel()->getTable(),
+            $this->getModel()->getTable(),
+        ));
+    }
+
+    /**
+     * Refuse `deleted_at` qualified by any table but `entries` — ADR-042 decision 5.
+     *
+     * ⚠️ BECAUSE MYSQL AND MARIADB KEEP THE QUALIFIER. `update(['p.deleted_at' => now()])` over a join trashes the
+     * joined rows there, and the entries' own rows on PostgreSQL and SQLite, which drop it: either way the rows trashed
+     * are not the rows whose files were withdrawn.
+     *
+     * @param  array<string, mixed>  $values
+     */
+    private function refuseDeletedAtQualifier(array $values): void
+    {
+        foreach (array_keys($values) as $written) {
+            $written = (string) $written;
+
+            if ($this->bareColumn($written) !== 'deleted_at') {
+                continue;
+            }
+
+            $column = explode('->', $written, 2)[0];
+            $dot = strrpos($column, '.');
+
+            if ($dot === false) {
+                continue;
+            }
+
+            $qualifier = implode('.', array_map(
+                static fn (string $segment): string => trim($segment, '`"[] '),
+                explode('.', substr($column, 0, $dot)),
+            ));
+
+            if ($qualifier !== $this->getModel()->getTable()) {
+                throw new RuntimeException(sprintf(
+                    'Refusing to write [%s]: an entry is trashed or restored through `%s.deleted_at` alone, because the '
+                    .'rows it trashes must be the rows whose files are withdrawn (ADR-042 decision 5).',
+                    $written,
+                    $this->getModel()->getTable(),
+                ));
+            }
+        }
+    }
+
+    /**
+     * Refuse a JSON path into `deleted_at` — ADR-042 decision 5.
+     *
+     * ⚠️ ITS VALUE IS NOT WHAT IT STORES. On SQLite `update(['deleted_at->x' => null])` stores `{}` and trashes the row,
+     * while the trail, reading the null, records a restore.
+     *
+     * @param  array<string, mixed>  $values
+     */
+    private function refuseDeletedAtJsonPath(array $values): void
+    {
+        foreach (array_keys($values) as $written) {
+            if (str_contains((string) $written, '->') && $this->bareColumn((string) $written) === 'deleted_at') {
+                throw new RuntimeException(sprintf(
+                    'Refusing to write [%s]: `deleted_at` holds no JSON, and on SQLite a path write stores {} and '
+                    .'trashes the row while the trail records a restore (ADR-042 decision 5).',
+                    $written,
+                ));
+            }
+        }
+    }
+
+    /**
+     * Refuse `deleted_at` at an arithmetic door — ADR-042 decision 5.
+     *
+     * ⚠️ THE FOUR ARITHMETIC METHODS NEVER REACH `update()`, where trashing a public file withdraws it: their extra
+     * columns are written by their own statement. So `increment('id', 0, ['deleted_at' => now()])` would trash an entry
+     * with its file still on the web, and the same with a null would restore one without publishing it. Trashing and
+     * restoring go through `delete()` and `restore()`.
+     *
+     * @param  array<array-key, mixed>  $columnsAndExtra
+     */
+    private function refuseSoftDeleteArithmetic(array $columnsAndExtra): void
+    {
+        foreach (array_keys($columnsAndExtra) as $written) {
+            if ($this->bareColumn((string) $written) === 'deleted_at') {
+                throw new RuntimeException(sprintf(
+                    'Refusing to write [%s] through an arithmetic update: an entry is trashed by delete() and restored by '
+                    .'restore(), which withdraw and publish its files (ADR-042 decision 5).',
+                    $written,
+                ));
+            }
+        }
     }
 
     /**
@@ -813,6 +991,8 @@ class AuditedBuilder extends ScopedBuilder
      */
     public function increment($column, $amount = 1, array $extra = [])
     {
+        $this->refuseForeignFrom('increment');
+        $this->refuseSoftDeleteArithmetic([(string) $column => $amount, ...$extra]);
         $this->refuseMisnamedEntryColumns([(string) $column => $amount, ...$extra]);
         $this->refuseScopeArithmetic([(string) $column => $amount, ...$extra]);
         $this->refusePerRowExtras($extra);
@@ -840,6 +1020,8 @@ class AuditedBuilder extends ScopedBuilder
      */
     public function decrement($column, $amount = 1, array $extra = [])
     {
+        $this->refuseForeignFrom('decrement');
+        $this->refuseSoftDeleteArithmetic([(string) $column => $amount, ...$extra]);
         $this->refuseMisnamedEntryColumns([(string) $column => $amount, ...$extra]);
         $this->refuseScopeArithmetic([(string) $column => $amount, ...$extra]);
         $this->refusePerRowExtras($extra);
@@ -872,6 +1054,8 @@ class AuditedBuilder extends ScopedBuilder
      */
     public function incrementEach(array $columns, array $extra = [])
     {
+        $this->refuseForeignFrom('increment');
+        $this->refuseSoftDeleteArithmetic([...$columns, ...$extra]);
         $this->refuseMisnamedEntryColumns([...$columns, ...$extra]);
         $this->refuseScopeArithmetic([...$columns, ...$extra]);
         $this->refusePerRowExtras($extra);
@@ -899,6 +1083,8 @@ class AuditedBuilder extends ScopedBuilder
      */
     public function decrementEach(array $columns, array $extra = [])
     {
+        $this->refuseForeignFrom('decrement');
+        $this->refuseSoftDeleteArithmetic([...$columns, ...$extra]);
         $this->refuseMisnamedEntryColumns([...$columns, ...$extra]);
         $this->refuseScopeArithmetic([...$columns, ...$extra]);
         $this->refusePerRowExtras($extra);
@@ -930,6 +1116,34 @@ class AuditedBuilder extends ScopedBuilder
      * @param  array<string, mixed>  $values
      */
     private function actionFor(array $values): string
+    {
+        return $this->writesDeletedAt($values) ? $this->deletedAtAction($values) : 'updated';
+    }
+
+    /**
+     * Whether this write assigns `deleted_at`, under any name the database would store into it.
+     *
+     * @param  array<string, mixed>  $values
+     */
+    private function writesDeletedAt(array $values): bool
+    {
+        $column = strtolower($this->getModel()->getDeletedAtColumn());
+
+        foreach (array_keys($values) as $written) {
+            if ($this->bareColumn((string) $written) === $column) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * "restored" or "deleted", by the value this write assigns to `deleted_at`.
+     *
+     * @param  array<string, mixed>  $values
+     */
+    private function deletedAtAction(array $values): string
     {
         $model = $this->getModel();
         $column = $model->getDeletedAtColumn();
@@ -988,14 +1202,20 @@ class AuditedBuilder extends ScopedBuilder
      * The keys are read BEFORE the write for the original reason too: after
      * it a deleted row has no id to look up.
      *
-     * @param  callable(): mixed  $write
+     * ⚠️ ON THE WRITE'S OWN CONNECTION, AND THROUGH `TransactionRecovery` — ADR-042 decision 5. A failure here, a
+     * failed commit above all, must not leave the engine inside a transaction or the transaction manager holding work
+     * registered for a write that never landed; `TransactionRecovery` says what it repairs. The write is handed the keys
+     * it is constrained to, so what runs inside it acts on exactly the rows audited.
+     *
+     * @param  callable(list<int|string>): mixed  $write
      * @param  array<string, mixed>  $written
      */
     private function auditing(string $action, callable $write, array $written = []): mixed
     {
         $model = $this->getModel();
+        $connection = $this->auditedConnection();
 
-        return DB::transaction(function () use ($action, $write, $model, $written): mixed {
+        return TransactionRecovery::run($connection, function () use ($action, $write, $model, $written): mixed {
             // ⚠️ DEDUPLICATED. A bulk write over a join — say `entries`
             // joined to `entry_relations`, where several rows point at one
             // entry — yields that entry's key once per matching row. The
@@ -1029,7 +1249,7 @@ class AuditedBuilder extends ScopedBuilder
             // describes exactly the rows the write is about to change.
             $before = $this->versionedStateOf($keys, $written);
 
-            $result = $write();
+            $result = $write($keys);
 
             $this->recordRevisions($before);
 
@@ -1052,6 +1272,18 @@ class AuditedBuilder extends ScopedBuilder
 
             return $result;
         });
+    }
+
+    /** The connection this write runs on — the one its transaction, its locks and its files' custody belong to. */
+    private function auditedConnection(): Connection
+    {
+        $connection = $this->getQuery()->getConnection();
+
+        if (! $connection instanceof Connection) {
+            throw new LogicException('Refusing an audited write on a connection that is not a database connection.');
+        }
+
+        return $connection;
     }
 
     /**

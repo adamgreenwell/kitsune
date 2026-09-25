@@ -127,6 +127,18 @@ it('gives a public file a direct disk URL under the linked path', function (): v
 });
 
 /**
+ * ⚠️ THE DISK DECIDES, NOT THE VISIBILITY — ADR-042 decision 5. A public file whose row names another disk — awaiting
+ * publication on the private disk, or a legacy row on `local` — is not at the public link's path, so it is delivered
+ * as private, and outside a panel that is no URL at all.
+ */
+it('gives no direct URL to a public file its row places on another disk', function (string $disk): void {
+    $entry = aDeliverableImage($this->imageType, 'public', 'logo.png');
+    DB::table('media_files')->where('entry_id', $entry->getKey())->update(['disk' => $disk]);
+
+    expect(MediaDelivery::urlFor($entry))->toBeNull();
+})->with(['awaiting publication on the private disk' => MediaDisks::PRIVATE, 'a legacy row on local' => 'local']);
+
+/**
  * ⚠️ AND THE INSTALLER HAS TO MAKE THE LINK, or the URL above names a path no web server can reach.
  * AGENTS.md §14: a published constraint nothing enforces is worse than an absent one. The browser suite
  * proves the link RESOLVES; this proves it is not removed from the two flows that create it.
@@ -287,7 +299,8 @@ it('sends the stored mime even when the path would say otherwise', function (): 
     $this->role->grant('entry.image.view');
     $entry = aDeliverableImage($this->imageType);
 
-    MediaFile::query()->where('entry_id', $entry->getKey())->update(['mime' => 'application/pdf']);
+    // Past the model, which fixes `mime` at creation: the disagreement is the fixture, not a write Kitsune makes.
+    DB::table('media_files')->where('entry_id', $entry->getKey())->update(['mime' => 'application/pdf']);
 
     $response = $this->actingAs($this->user)->get('/test-media/t/'.$entry->getKey());
 
@@ -381,6 +394,27 @@ it('answers 404 and reports when the row survives but the bytes do not', functio
     Log::shouldHaveReceived('warning')->once()->withArgs(
         fn (string $message): bool => str_contains($message, $file->path)
     );
+});
+
+/**
+ * ⚠️ AND IT SENDS THE OPERATOR TO THE RESIDUE ADR-042 DECISION 5 CAN LEAVE (T40), before concluding the file was removed
+ * outside Kitsune: a public row whose only copy is on the private disk is what a refused delete leaves when its
+ * compensation fails.
+ */
+it('names the residue custody can leave when a row survives without its bytes', function (): void {
+    $this->role->grant('entry.image.view');
+
+    $entry = aDeliverableImage($this->imageType, 'public');
+    $file = MediaFile::query()->where('entry_id', $entry->getKey())->firstOrFail();
+    Storage::disk(MediaDisks::PRIVATE)->put($file->path, (string) Storage::disk('public')->get($file->path));
+    Storage::disk('public')->delete($file->path);
+    Log::spy();
+
+    $this->actingAs($this->user)->get('/test-media/t/'.$entry->getKey())->assertNotFound();
+
+    Log::shouldHaveReceived('warning')->once()->withArgs(fn (string $message): bool => str_contains($message, 'kitsune:media-prune')
+        && str_contains($message, 'kept')
+        && ! str_contains($message, 'the state the write and disposal orders were chosen to avoid'));
 });
 
 /**

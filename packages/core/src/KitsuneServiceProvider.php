@@ -35,6 +35,7 @@ use Kitsune\Core\Console\SchemaSyncCommand;
 use Kitsune\Core\Fields\FieldTypeRegistry;
 use Kitsune\Core\Filament\RichText\BlockDirectionPlugin;
 use Kitsune\Core\Http\Middleware\HoldMediaStaging;
+use Kitsune\Core\Media\MediaCustody;
 use Kitsune\Core\Media\MediaDisks;
 use Kitsune\Core\Media\MediaStaging;
 use Kitsune\Core\Models\Entry;
@@ -70,6 +71,14 @@ final class KitsuneServiceProvider extends ServiceProvider
          * long-lived worker — which is the unbounded-map finding one step further on.
          */
         $this->app->scoped(RecordedRevisions::class, static fn (): RecordedRevisions => new RecordedRevisions);
+
+        /*
+         * The entries whose files a rolled-back withdrawal moved, waiting to be put back — ADR-042 decision 5. Scoped
+         * for the reason `RecordedRevisions` is: a queue a request leaves undrained, its drain waiting on a commit that
+         * never came, would otherwise ride into the next job on a long-lived worker. Dropped instead, its files stay
+         * where the withdrawal left them — on the private disk, which `kitsune:media-prune` lists.
+         */
+        $this->app->scoped(MediaCustody::class, static fn (): MediaCustody => new MediaCustody);
 
         /*
          * Settings resolution (ADR-022), scoped for the reason `Context` is: its memo is per request, and a
@@ -153,7 +162,7 @@ final class KitsuneServiceProvider extends ServiceProvider
          * refusing to memoise inside a transaction — that would cost a read per check on every write path,
          * for a window that only opens when somebody rolls back and then continues.
          */
-        Event::listen(TransactionRolledBack::class, static function (): void {
+        Event::listen(TransactionRolledBack::class, static function (TransactionRolledBack $event): void {
             Permissions::forget();
 
             /*
@@ -163,6 +172,12 @@ final class KitsuneServiceProvider extends ServiceProvider
              * alive, and none built: see `SettingsResolver::forgetEverywhere()`.
              */
             SettingsResolver::forgetEverywhere();
+
+            /*
+             * ⚠️ AND THE FILES A ROLLED-BACK WITHDRAWAL MOVED GO BACK — ADR-042 decision 5 — once nothing on the
+             * connection is left to commit. A no-op when nothing is queued, which is every rollback but those.
+             */
+            MediaCustody::drainSoon($event->connection);
         });
 
         /*
