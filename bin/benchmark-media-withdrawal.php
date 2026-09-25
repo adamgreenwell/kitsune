@@ -33,6 +33,10 @@ declare(strict_types=1);
  *
  * One warm-up, then seven runs, each on fresh random bytes; the median and the maximum. Every figure is warm-cache.
  * No threshold is proposed here: the numbers are for deciding on (ADR-042 decision 5).
+ *
+ * ⚠️ SLICE 5B'S GROUPS (I, J, J', K, G', M) RUN AFTER EVERY 5A GROUP, EACH ON ITS OWN SEED. Each clears every media row,
+ * entry and file before it seeds and after it finishes, so what earlier groups left — byte-less rows among them — never
+ * reaches a figure; and each verifies by counting what the command it runs reported, so a contaminated run prints none.
  */
 
 use Illuminate\Contracts\Console\Kernel;
@@ -47,6 +51,7 @@ use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Storage;
+use Kitsune\Core\Media\MediaCustody;
 use Kitsune\Core\Media\MediaDisks;
 use Kitsune\Core\Media\MediaLibrary;
 use Kitsune\Core\Models\Entry;
@@ -113,6 +118,46 @@ function withdrawalBenchFigure(string $label, array $runs): ?string
     $median = count($times) % 2 === 1 ? $times[$middle] : ($times[$middle - 1] + $times[$middle]) / 2;
 
     return sprintf('| %s | %.1f | %.1f |', $label, $median, max($times));
+}
+
+/**
+ * The share of a run its holds took, in percent: the time from each lock statement to its commit, summed, over the
+ * whole run — null when a hold never closed or nothing ran, so an unfinished run prints no share.
+ *
+ * @param  list<array{start: ?int, end: ?int}>  $holds  nanoseconds, from `hrtime()`
+ */
+function withdrawalBenchHeld(array $holds, float $wholeMs): ?float
+{
+    $taken = array_values(array_filter($holds, static fn (array $hold): bool => $hold['start'] !== null));
+
+    if ($taken === [] || $wholeMs <= 0.0 || in_array(null, array_column($taken, 'end'), true)) {
+        return null;
+    }
+
+    $held = array_sum(array_map(static fn (array $hold): float => ($hold['end'] - $hold['start']) / 1e6, $taken));
+
+    return 100.0 * $held / $wholeMs;
+}
+
+/**
+ * Whether a command's summary table counted exactly these rows under these labels — and none under any other.
+ *
+ * @param  array<string, int>  $expected  label => rows
+ */
+function withdrawalBenchCounts(string $output, array $expected): bool
+{
+    $counted = [];
+
+    foreach (preg_split('/\R/', $output) ?: [] as $line) {
+        if (preg_match('/^\|\s*([a-z][a-z ]*[a-z])\s*\|\s*(\d+)\s*\|/', $line, $match) === 1 && $match[1] !== 'Label') {
+            $counted[$match[1]] = (int) $match[2];
+        }
+    }
+
+    ksort($counted);
+    ksort($expected);
+
+    return $counted === $expected;
 }
 
 /** @param  list<string>  $argv */
@@ -245,6 +290,34 @@ function withdrawalBenchRun(string $directory): int
         foreach ($bench->contention($directory) as $row) {
             $say(sprintf('| %s | %s | %.1f | %s |', $row['attempt'], $row['outcome'], $row['waited'], $row['verified'] ? 'yes' : 'NO'));
         }
+
+        $say('');
+        $say('## Contention: a second process, signalled when a forced reconcile of a 64 MiB file trashed on the public disk takes its lock');
+        $say('| rival attempt | outcome | waited ms | custody verified |');
+        $say('|---|---|---|---|');
+
+        foreach ($bench->contention($directory, 'reconcile') as $row) {
+            $say(sprintf('| %s | %s | %.1f | %s |', $row['attempt'], $row['outcome'], $row['waited'], $row['verified'] ? 'yes' : 'NO'));
+        }
+    }
+
+    // (M): over its own seed, as the (M) groups had it.
+    [$before, $after] = $bench->migrationSeed();
+    $before();
+
+    try {
+        $say('');
+        $say($driver === 'sqlite'
+            ? '## (M) the unique-path migration over 100,000 rows, with read-first writes throughout up()'
+            : '## (M) the unique-path migration over 100,000 rows, its build behind a transaction that wrote a media_files row and commits two seconds into it');
+        $say('| attempt | outcome | waited ms | the build statement ms | up() ms |');
+        $say('|---|---|---|---|---|');
+
+        foreach (withdrawalBenchMigrationContention($directory, $driver) as $row) {
+            $say(sprintf('| %s | %s | %.1f | %.1f | %.1f |', $row['attempt'], $row['outcome'], $row['waited'], $row['statement'], $row['up']));
+        }
+    } finally {
+        $after();
     }
 
     return 0;
@@ -282,6 +355,9 @@ final class WithdrawalBench
     private array $open = [];
 
     private bool $timing = false;
+
+    /** @var list<array{0: int, 1: string, 2: string}> the residue rows the last seed wrote: entry, path and checksum */
+    private array $seeded = [];
 
     private string $lockPattern;
 
@@ -368,7 +444,8 @@ final class WithdrawalBench
 
         $groups[] = ['figures' => ['(B) bulk trash, 50 articles and 10 images of 200 KB: its hold' => 0], 'case' => $this->bulk(10, 200 << 10, articles: 50)];
         $groups[] = ['figures' => ['(F) a refused bulk trash, 10 × 4 MB, to the refusal with everything put back' => 'whole'], 'case' => $this->refusedBulk(10, 4 << 20)];
-        $groups[] = ['figures' => ['(G) prune --force: 1,000 orphans, 500 identical and 500 differing extra copies, about 10,000 rows' => 'whole'], 'case' => $this->prune(), 'runs' => 3];
+        // Seven runs, as the header says: the 5a figure was three (slice 5b's review).
+        $groups[] = ['figures' => ['(G) prune --force: 1,000 orphans, 500 identical and 500 differing extra copies, about 10,000 rows' => 'whole'], 'case' => $this->prune()];
 
         foreach ([1, 3] as $extra) {
             [$before, $after] = $this->servedDisks($extra, 0);
@@ -379,6 +456,39 @@ final class WithdrawalBench
             [$before, $after] = $this->servedDisks(1, $delay);
             $groups[] = ['figures' => ["(H) trash, 4 MB, one served disk answering each presence check in {$delay} ms (synthetic): its hold" => 0], 'case' => $this->trash(4 << 20), 'before' => $before, 'after' => $after];
         }
+
+        // Slice 5b: kitsune:media-reconcile, prune's removal of extra copies, and the migration making paths unique.
+        [$before, $after] = $this->isolated(fn (): mixed => $this->seedRows(99_000, 1_000, 1 << 10, 'exposed'));
+        $groups[] = ['figures' => ['(I) reconcile, read-only: 100,000 rows, 1,000 findings' => 'whole', '(I) reconcile, read-only: peak memory, MB' => 'memory'], 'case' => $this->listing('kitsune:media-reconcile', ['exposed' => 1_000]), 'before' => $before, 'after' => $after];
+
+        [$before, $after] = $this->isolated(fn (): mixed => $this->seedRows(99_000, 1_000, 1 << 10, 'exposed'));
+        $groups[] = ['figures' => ['(G\') prune, read-only: 100,000 rows' => 'whole'], 'case' => $this->listing('kitsune:media-prune', []), 'before' => $before, 'after' => $after];
+
+        foreach (['4 MB' => 4 << 20, '64 MiB' => 64 << 20] as $size => $bytes) {
+            foreach (['R1: live public, only on the private disk', 'R3: awaiting publication', 'R4: a differing private copy', 'R6: trashed on the public disk', 'R7: private, on a legacy disk'] as $kind) {
+                [$before, $after] = $this->isolated(static fn (): null => null, legacy: true);
+                $groups[] = ['figures' => [
+                    "(J) reconcile --force, {$kind}, {$size}: settle's hold" => 0,
+                    "(J) reconcile --force, {$kind}, {$size}: the cleanup's hold" => 1,
+                ], 'case' => $this->residue(substr($kind, 0, 2), $bytes), 'before' => $before, 'after' => $after];
+            }
+        }
+
+        [$before, $after] = $this->isolated(fn (): mixed => $this->seedRows(99_000, 1_000, 200 << 10, 'exposed'));
+        $groups[] = ['figures' => [
+            '(J\') reconcile --force: 100,000 rows, 1,000 trashed on the public disk, 200 KB' => 'whole',
+            '(J\') reconcile --force: the share of the run holding a lock, %' => 'held',
+            '(J\') reconcile --force: peak memory, MB' => 'memory',
+        ], 'case' => $this->atScale(), 'before' => $before, 'after' => $after];
+
+        [$before, $after] = $this->isolated(static fn (): null => null);
+        $groups[] = ['figures' => ['(K) prune\'s removal of an extra copy, 64 MiB: its hold' => 0], 'case' => $this->extraCopy(64 << 20), 'before' => $before, 'after' => $after];
+
+        [$before, $after] = $this->isolated(fn (): mixed => $this->seedRows(100_000, 0, 0, 'none'));
+        $groups[] = ['figures' => ['(M) the unique-path migration\'s check alone: 100,000 rows' => 'whole'], 'case' => $this->migrationCheck(), 'before' => $before, 'after' => $after];
+
+        [$before, $after] = $this->isolated(fn (): mixed => $this->seedRows(100_000, 0, 0, 'none'));
+        $groups[] = ['figures' => ['(M) the unique-path migration\'s up(), check and build: 100,000 rows' => 'whole'], 'case' => $this->migrationUp(), 'before' => $before, 'after' => $after];
 
         return $groups;
     }
@@ -431,6 +541,7 @@ final class WithdrawalBench
                     $hold = is_int($figure) ? ($holds[$figure] ?? null) : null;
                     $value = match (true) {
                         $figure === 'whole' => ($ended - $started) / 1e6,
+                        $figure === 'held' => withdrawalBenchHeld($this->holds, ($ended - $started) / 1e6),
                         $figure === 'memory' => $peak / (1 << 20),
                         $hold !== null && $hold['end'] !== null => ($hold['end'] - $hold['start']) / 1e6,
                         default => null,
@@ -709,6 +820,312 @@ final class WithdrawalBench
     }
 
     /**
+     * A group's own seed, and nothing left before or after it: every media row, entry and file cleared, then seeded.
+     *
+     * ⚠️ CLEARED BOTH WAYS. The 5a groups remove their files and never their rows, so thousands of byte-less rows would
+     * otherwise be listed by the reconcile groups as missing; and a 100,000-row seed left behind would slow every
+     * group after it. With `$legacy`, a local disk nothing configures as a media disk, for ADR-041's `local` rows.
+     *
+     * @param  Closure(): mixed  $seed
+     * @return array{0: Closure(): void, 1: Closure(): void}
+     */
+    private function isolated(Closure $seed, bool $legacy = false): array
+    {
+        $clear = static function (): void {
+            DB::table('media_files')->delete();
+            DB::table('entry_relations')->delete();
+            DB::table('entries')->delete();
+
+            foreach (['public', MediaDisks::PRIVATE, 'legacy'] as $disk) {
+                if ($disk !== 'legacy' || config('filesystems.disks.legacy') !== null) {
+                    Storage::disk($disk)->deleteDirectory('media');
+                }
+            }
+        };
+
+        return [
+            function () use ($clear, $seed, $legacy): void {
+                if ($legacy) {
+                    config(['filesystems.disks.legacy' => ['driver' => 'local', 'root' => storage_path('app/legacy')]]);
+                }
+
+                $clear();
+                $seed();
+            },
+            static function () use ($clear, $legacy): void {
+                $clear();
+
+                if ($legacy) {
+                    config(['filesystems.disks.legacy' => null]);
+                    Storage::forgetDisk('legacy');
+                }
+            },
+        ];
+    }
+
+    /**
+     * Rows at scale, below every guard: `$ok` live public files each on the public disk, where their rows say, and
+     * `$residue` files trashed while still on it — the residue slice 5a leaves from before it — spread over a hundred
+     * directories. Written straight to the disk's root: a hundred thousand writes through Flysystem would time the seed.
+     *
+     * @return list<array{0: int, 1: string, 2: string}> the residue rows: entry, path and checksum
+     */
+    private function seedRows(int $ok, int $residue, int $residueBytes, string $kind): array
+    {
+        $root = rtrim(Storage::disk('public')->path(''), '/');
+        $small = random_bytes(1 << 10);
+        $large = $residueBytes > 0 ? random_bytes($residueBytes) : '';
+        $made = [];
+        $rows = [];
+        $residues = [];
+
+        for ($n = 0; $n < $ok + $residue; $n++) {
+            $isResidue = $n >= $ok;
+            $directory = sprintf('media/1/2027/%02d', $n % 100);
+            $path = sprintf('%s/%s-%d.bin', $directory, $isResidue ? $kind : 'settled', $n);
+
+            if (! isset($made[$directory])) {
+                @mkdir($root.'/'.$directory, 0700, true);
+                $made[$directory] = true;
+            }
+
+            file_put_contents($root.'/'.$path, $isResidue ? $large : $small);
+            $rows[] = ['n' => $n, 'path' => $path, 'residue' => $isResidue];
+        }
+
+        $smallSum = hash('sha256', $small);
+        $largeSum = $large === '' ? $smallSum : hash('sha256', $large);
+
+        foreach (array_chunk($rows, 500) as $chunk) {
+            DB::table('entries')->insert(array_map(static fn (array $row): array => [
+                'site_id' => 1, 'org_id' => 1, 'entry_type_id' => 1, 'type_handle' => 'image', 'status' => 'published',
+                'slug' => 'seed-'.$row['n'], 'title' => 'Bench', 'deleted_at' => $row['residue'] ? now() : null,
+            ], $chunk));
+
+            $ids = DB::table('entries')->whereIn('slug', array_map(static fn (array $row): string => 'seed-'.$row['n'], $chunk))->pluck('id', 'slug');
+
+            DB::table('media_files')->insert(array_map(static fn (array $row): array => [
+                'entry_id' => (int) $ids['seed-'.$row['n']], 'disk' => 'public', 'path' => $row['path'],
+                'mime' => 'application/octet-stream', 'size_bytes' => $row['residue'] ? strlen($large) : strlen($small),
+                'checksum' => $row['residue'] ? $largeSum : $smallSum, 'visibility' => 'public', 'created_at' => now(),
+            ], $chunk));
+
+            foreach ($chunk as $row) {
+                if ($row['residue']) {
+                    $residues[] = [(int) $ids['seed-'.$row['n']], $row['path'], $largeSum];
+                }
+            }
+        }
+
+        $this->seeded = $residues;
+
+        return $residues;
+    }
+
+    /**
+     * A read-only command over the seed, verified by the counts it printed.
+     *
+     * @param  array<string, int>  $counts  label => rows, for reconcile; prune is verified against the seed itself
+     * @return array{setup: Closure(): array<string, mixed>, run: Closure(array<string, mixed>): void, verify: Closure(array<string, mixed>): bool}
+     */
+    private function listing(string $command, array $counts): array
+    {
+        return [
+            'setup' => static fn (): array => [],
+            'run' => static function (array &$state) use ($command): void {
+                $state['exit'] = Artisan::call($command);
+                $state['output'] = Artisan::output();
+            },
+            'verify' => function (array $state) use ($command, $counts): bool {
+                if ($command === 'kitsune:media-reconcile') {
+                    return $state['exit'] === 1 && withdrawalBenchCounts($state['output'], $counts);
+                }
+
+                // Prune: nothing orphaned, nothing extra, and every seeded residue listed as trashed on a served disk.
+                return $state['exit'] === 0
+                    && str_contains($state['output'], 'No orphaned media files.')
+                    && ! str_contains($state['output'], 'Extra copies')
+                    && preg_match_all('/^\| \d+ +\| public +\| media\/1\/2027\//m', $state['output']) === count($this->seeded);
+            },
+        ];
+    }
+
+    /**
+     * One row of each residue kind reconcile repairs, forced: settle's hold, then the cleanup's — and the row, and every
+     * disk, left as its state says.
+     *
+     * @return array{setup: Closure(): array<string, mixed>, run: Closure(array<string, mixed>): void, verify: Closure(array<string, mixed>): bool}
+     */
+    private function residue(string $kind, int $bytes): array
+    {
+        return [
+            'setup' => function () use ($kind, $bytes): array {
+                [$id, $path, $checksum] = match ($kind) {
+                    'R1', 'R3' => $this->file($bytes, 'public', MediaDisks::PRIVATE),
+                    'R7' => $this->file($bytes, 'public', 'legacy'),
+                    'R6' => $this->file($bytes, trashed: true),
+                    default => $this->file($bytes),
+                };
+
+                match ($kind) {
+                    // A compensation that failed: the row names the public disk, the only copy is on the private one.
+                    'R1' => DB::table('media_files')->where('entry_id', $id)->update(['disk' => 'public']),
+                    // ADR-041's private files on `local`.
+                    'R7' => DB::table('media_files')->where('entry_id', $id)->update(['visibility' => 'private']),
+                    // A private copy, of the same size, that differs from the public one.
+                    'R4' => Storage::disk(MediaDisks::PRIVATE)->put($path, random_bytes($bytes)),
+                    default => null,
+                };
+
+                return ['id' => $id, 'path' => $path, 'checksum' => $checksum];
+            },
+            'run' => static function (array &$state): void {
+                $state['exit'] = Artisan::call('kitsune:media-reconcile', ['--force' => true, '--entry' => [(string) $state['id']]]);
+            },
+            'verify' => function (array $state) use ($kind): bool {
+                $target = in_array($kind, ['R6', 'R7'], true) ? MediaDisks::PRIVATE : 'public';
+                $other = $target === 'public' ? MediaDisks::PRIVATE : 'public';
+
+                return $state['exit'] === 0
+                    && DB::table('media_files')->where('entry_id', $state['id'])->value('disk') === $target
+                    && $this->holds($target, $state['path'], $state['checksum'])
+                    && $this->holds($other, $state['path'], null)
+                    && ($kind !== 'R7' || ! Storage::disk('legacy')->exists($state['path']));
+            },
+        ];
+    }
+
+    /**
+     * Reconcile forced over a hundred thousand rows, a thousand of them trashed while on the public disk: the whole run,
+     * the share of it holding a lock, and its memory. Each run puts the thousand back where the seed left them.
+     *
+     * @return array{setup: Closure(): array<string, mixed>, run: Closure(array<string, mixed>): void, verify: Closure(array<string, mixed>): bool}
+     */
+    private function atScale(): array
+    {
+        return [
+            'setup' => function (): array {
+                $public = rtrim(Storage::disk('public')->path(''), '/');
+                $private = rtrim(Storage::disk(MediaDisks::PRIVATE)->path(''), '/');
+
+                foreach ($this->seeded as [, $path]) {
+                    if (is_file($private.'/'.$path)) {
+                        @mkdir(dirname($public.'/'.$path), 0700, true);
+                        rename($private.'/'.$path, $public.'/'.$path);
+                    }
+                }
+
+                foreach (array_chunk(array_column($this->seeded, 0), 500) as $ids) {
+                    DB::table('media_files')->whereIn('entry_id', $ids)->update(['disk' => 'public']);
+                }
+
+                return [];
+            },
+            'run' => static function (array &$state): void {
+                $state['exit'] = Artisan::call('kitsune:media-reconcile', ['--force' => true]);
+            },
+            'verify' => function (array $state): bool {
+                if ($state['exit'] !== 0 || DB::table('media_files')->where('disk', MediaDisks::PRIVATE)->count() !== count($this->seeded)) {
+                    return false;
+                }
+
+                foreach ($this->seeded as [, $path, $checksum]) {
+                    if (! $this->holds(MediaDisks::PRIVATE, $path, $checksum) || ! $this->holds('public', $path, null)) {
+                        return false;
+                    }
+                }
+
+                return true;
+            },
+        ];
+    }
+
+    /**
+     * Prune's removal of one extra copy: an identical private copy of a live public file, removed under the lock after
+     * both are hashed.
+     *
+     * @return array{setup: Closure(): array<string, mixed>, run: Closure(array<string, mixed>): void, verify: Closure(array<string, mixed>): bool}
+     */
+    private function extraCopy(int $bytes): array
+    {
+        return [
+            'setup' => function () use ($bytes): array {
+                [$id, $path, $checksum] = $this->file($bytes);
+                $copy = Storage::disk(MediaDisks::PRIVATE)->path($path);
+                @mkdir(dirname($copy), 0700, true);
+
+                if (! copy(Storage::disk('public')->path($path), $copy)) {
+                    throw new RuntimeException('Could not seed the extra copy.');
+                }
+
+                return ['id' => $id, 'path' => $path, 'checksum' => $checksum];
+            },
+            'run' => static function (array &$state): void {
+                $state['outcome'] = MediaCustody::removeExtra(DB::connection(), $state['id'], MediaDisks::PRIVATE);
+            },
+            'verify' => fn (array $state): bool => $state['outcome'] === MediaCustody::SETTLED
+                && $this->holds('public', $state['path'], $state['checksum'])
+                && $this->holds(MediaDisks::PRIVATE, $state['path'], null),
+        ];
+    }
+
+    /** @return array{0: Closure(): void, 1: Closure(): void} (M)'s seed, for the migration's contention section */
+    public function migrationSeed(): array
+    {
+        return $this->isolated(fn (): mixed => $this->seedRows(100_000, 0, 0, 'none'));
+    }
+
+    /** The migration that makes media file paths unique, as a fresh instance. */
+    private function migration(): object
+    {
+        return require dirname(__DIR__).'/packages/core/database/migrations/0001_01_01_000010_make_media_file_paths_unique.php';
+    }
+
+    private function pathsIndexed(): bool
+    {
+        return collect(DB::connection()->getSchemaBuilder()->getIndexes('media_files'))
+            ->contains(static fn (array $index): bool => (bool) $index['unique'] && $index['columns'] === ['path']);
+    }
+
+    /**
+     * The migration's check alone, over the seed: every path read, grouped and compared as the disks read it.
+     *
+     * @return array{setup: Closure(): array<string, mixed>, run: Closure(array<string, mixed>): void, verify: Closure(array<string, mixed>): bool}
+     */
+    private function migrationCheck(): array
+    {
+        return [
+            'setup' => static fn (): array => [],
+            'run' => function (array &$state): void {
+                $this->migration()->refuseUnsafePaths(DB::table('media_files'));
+                $state['checked'] = true;
+            },
+            'verify' => static fn (array $state): bool => ($state['checked'] ?? false) === true,
+        ];
+    }
+
+    /**
+     * The migration's `up()` over the seed — its check, then the build — with the index dropped before each run, and
+     * inside a transaction where `migrate` would run it in one.
+     *
+     * @return array{setup: Closure(): array<string, mixed>, run: Closure(array<string, mixed>): void, verify: Closure(array<string, mixed>): bool}
+     */
+    private function migrationUp(): array
+    {
+        return [
+            'setup' => function (): array {
+                if ($this->pathsIndexed()) {
+                    $this->migration()->down();
+                }
+
+                return [];
+            },
+            'run' => fn () => withdrawalBenchMigrate($this->migration()),
+            'verify' => fn (): bool => $this->pathsIndexed(),
+        ];
+    }
+
+    /**
      * Extra served disks for a group — local ones, or ones whose every presence check waits (synthetic) — and their
      * removal after it.
      *
@@ -756,20 +1173,24 @@ final class WithdrawalBench
     }
 
     /**
-     * (D): a second process, signalled when the trash of a 64 MiB file takes its lock, attempts each kind of write.
+     * (D): a second process, signalled when the trash of a 64 MiB file takes its lock, attempts each kind of write —
+     * or, with `$holder` 'reconcile', when a forced reconcile of a 64 MiB file trashed on the public disk takes it.
      *
      * @return list<array{attempt: string, outcome: string, waited: float, verified: bool}>
      */
-    public function contention(string $directory): array
+    public function contention(string $directory, string $holder = 'trash'): array
     {
         $rows = [];
+        $attempts = $holder === 'trash'
+            ? ['a write to the same entry', 'an audited save of another entry', 'a relation insert', 'an entry created', 'a plain read', 'a public file stored', 'a second trash', 'a long read across the COMMIT']
+            : ['a write to the same entry', 'an audited save of another entry', 'a plain read', 'a public file stored'];
 
-        foreach (['a write to the same entry', 'an audited save of another entry', 'a relation insert', 'an entry created', 'a plain read', 'a public file stored', 'a second trash', 'a long read across the COMMIT'] as $attempt) {
+        foreach ($attempts as $attempt) {
             if ($attempt === 'a long read across the COMMIT' && $this->driver !== 'sqlite') {
                 continue;
             }
 
-            [$id, $path, $checksum] = $this->file(64 << 20);
+            [$id, $path, $checksum] = $this->file(64 << 20, trashed: $holder === 'reconcile');
             [$otherId] = $this->file(1 << 10);
             $signal = $directory.'/signal';
             $ready = $directory.'/ready';
@@ -800,12 +1221,17 @@ final class WithdrawalBench
             $survived = true;
 
             try {
-                Entry::query()->findOrFail($id)->delete();
+                if ($holder === 'trash') {
+                    Entry::query()->findOrFail($id)->delete();
+                } elseif (Artisan::call('kitsune:media-reconcile', ['--force' => true, '--entry' => [(string) $id]]) !== 0) {
+                    throw new RuntimeException('The reconcile failed.');
+                }
+
                 $verified = $this->holds('public', $path, null) && $this->holds(MediaDisks::PRIVATE, $path, $checksum);
             } catch (Throwable) {
-                // A refused or failed trash must leave the file where it was.
+                // A refused or failed trash, or reconcile, must leave the file where it was.
                 $survived = false;
-                $verified = $this->holds('public', $path, $checksum) && DB::table('entries')->where('id', $id)->value('deleted_at') === null;
+                $verified = $this->holds('public', $path, $checksum) && ($holder === 'reconcile' || DB::table('entries')->where('id', $id)->value('deleted_at') === null);
             }
 
             $armed = false;
@@ -816,7 +1242,7 @@ final class WithdrawalBench
             $this->removeFiles();
 
             $rows[] = [
-                'attempt' => $attempt.($survived ? '' : ' (the trash itself failed, and was compensated)'),
+                'attempt' => $attempt.($survived ? '' : " (the {$holder} itself failed, and was compensated)"),
                 'outcome' => (string) $result['outcome'],
                 'waited' => (float) $result['waited'],
                 'verified' => $verified,
@@ -827,6 +1253,108 @@ final class WithdrawalBench
     }
 }
 
+/**
+ * A migration's `up()` as `migrate` runs it: inside a transaction where the engine's schema changes can be — PostgreSQL
+ * and SQLite — so the locks it takes are held as long as they would be in a deploy.
+ */
+function withdrawalBenchMigrate(object $migration): void
+{
+    if (DB::connection()->getSchemaGrammar()->supportsSchemaTransactions() && ($migration->withinTransaction ?? true)) {
+        DB::transaction(static fn () => $migration->up());
+
+        return;
+    }
+
+    $migration->up();
+}
+
+/**
+ * (M) the unique-path migration against what a serving release does meanwhile, over a hundred thousand rows.
+ *
+ * On PostgreSQL, MySQL and MariaDB a second process holds a transaction that wrote a `media_files` row until two
+ * seconds after the build statement begins, and a third, 300 ms after the build statement begins, reads `media_files`
+ * or writes to it: how long each of the others waited, the build statement's time and `up()`'s. On SQLite a second
+ * process makes read-first writes for the whole of `up()`, and counts those told the database is locked.
+ *
+ * ⚠️ SIGNALLED AT THE BUILD STATEMENT, NOT AT `up()`. The check before it reads every row, and would outlast a hold
+ * begun at `up()`, so the build would find nothing to wait on; `beforeExecuting` runs as the statement is sent.
+ *
+ * @return list<array{attempt: string, outcome: string, waited: float, statement: float, up: float}>
+ */
+function withdrawalBenchMigrationContention(string $directory, string $driver): array
+{
+    $rows = [];
+    $migration = require dirname(__DIR__).'/packages/core/database/migrations/0001_01_01_000010_make_media_file_paths_unique.php';
+    $attempts = $driver === 'sqlite' ? ['read-first writes during up()'] : ['a plain read of media_files', 'a write to media_files'];
+    [$same, $other] = DB::table('media_files')->orderBy('entry_id')->limit(2)->pluck('entry_id')->map(static fn (mixed $id): int => (int) $id)->all();
+    $built = null;
+    $armed = false;
+
+    DB::connection()->beforeExecuting(static function (string $query) use (&$armed, &$built, $directory, $driver): void {
+        if ($armed && preg_match('/^(create unique index|alter table .* add unique)/i', ltrim($query)) === 1) {
+            $armed = false;
+            $built = hrtime(true);
+
+            if ($driver !== 'sqlite') {
+                touch($directory.'/signalh');
+                touch($directory.'/signalp');
+            }
+        }
+    });
+
+    foreach ($attempts as $attempt) {
+        $migration->down();
+        $environment = ['KITSUNE_BENCH_DIRECTORY' => $directory, 'KITSUNE_BENCH_SAME' => (string) $same, 'KITSUNE_BENCH_OTHER' => (string) $other] + getenv();
+
+        foreach (['h', 'p', 'd'] as $tag) {
+            @unlink($directory.'/ready'.$tag);
+            @unlink($directory.'/signal'.$tag);
+        }
+
+        $holder = $driver === 'sqlite' ? null : new Process([PHP_BINARY, __FILE__, '--rival=hold a media_files row'], null, ['KITSUNE_BENCH_TAG' => 'h'] + $environment, null, 120);
+        $prober = new Process([PHP_BINARY, __FILE__, '--rival='.$attempt], null, ['KITSUNE_BENCH_TAG' => 'p'] + $environment, null, 120);
+        $holder?->start();
+        $prober->start();
+
+        for ($waited = 0; (! is_file($directory.'/readyp') || ($holder !== null && ! is_file($directory.'/readyh'))) && $waited < 30_000; $waited += 5) {
+            usleep(5_000);
+        }
+
+        if ($driver === 'sqlite') {
+            touch($directory.'/signalp');
+        }
+
+        [$built, $armed] = [null, true];
+        $started = hrtime(true);
+
+        try {
+            withdrawalBenchMigrate($migration);
+        } finally {
+            $ended = hrtime(true);
+            $armed = false;
+            // Whatever happened, the rivals are released: the holder commits, the SQLite prober stops.
+            touch($directory.'/signalh');
+            touch($directory.'/signalp');
+            touch($directory.'/signald');
+            $holder?->wait();
+            $prober->wait();
+        }
+
+        $lines = preg_split('/\R/', trim($prober->getOutput())) ?: [];
+        $result = json_decode((string) end($lines), true) ?: ['outcome' => 'no result: '.substr(trim($prober->getErrorOutput()), 0, 120), 'waited' => 0.0];
+
+        $rows[] = [
+            'attempt' => $attempt,
+            'outcome' => (string) $result['outcome'],
+            'waited' => (float) $result['waited'],
+            'statement' => $built === null ? 0.0 : ($ended - $built) / 1e6,
+            'up' => ($ended - $started) / 1e6,
+        ];
+    }
+
+    return $rows;
+}
+
 /** The second process: wait for the signal, attempt one write, and report what happened and how long it waited. */
 function withdrawalBenchRival(string $attempt, string $directory): int
 {
@@ -834,11 +1362,59 @@ function withdrawalBenchRival(string $attempt, string $directory): int
     app(Context::class)->setSite(Site::query()->findOrFail(1));
     $same = (int) getenv('KITSUNE_BENCH_SAME');
     $other = (int) getenv('KITSUNE_BENCH_OTHER');
+    // Its own files, when more than one rival runs at once: (M) runs a holder and a prober.
+    $tag = (string) getenv('KITSUNE_BENCH_TAG');
 
-    touch($directory.'/ready');
+    // (M)'s holder: a transaction that wrote a media_files row, committed two seconds after the build statement begins.
+    if ($attempt === 'hold a media_files row') {
+        DB::beginTransaction();
+        DB::table('media_files')->where('entry_id', $same)->update(['disk' => DB::raw('disk')]);
+        touch($directory.'/ready'.$tag);
 
-    for ($waited = 0; ! is_file($directory.'/signal') && $waited < 60_000; $waited += 1) {
+        for ($waited = 0; ! is_file($directory.'/signal'.$tag) && $waited < 60_000; $waited += 1) {
+            usleep(1_000);
+        }
+
+        usleep(2_000_000);
+        DB::commit();
+        echo json_encode(['outcome' => 'held until two seconds into the build', 'waited' => 0.0]), PHP_EOL;
+
+        return 0;
+    }
+
+    touch($directory.'/ready'.$tag);
+
+    for ($waited = 0; ! is_file($directory.'/signal'.$tag) && $waited < 60_000; $waited += 1) {
         usleep(1_000);
+    }
+
+    // (M) on SQLite: read-first writes, one after another, until up() is done.
+    if ($attempt === 'read-first writes during up()') {
+        [$tried, $locked] = [0, 0];
+
+        for ($spent = 0; ! is_file($directory.'/signald') && $spent < 30_000; $spent += 1) {
+            $tried++;
+
+            try {
+                DB::transaction(static function () use ($other): void {
+                    DB::table('entries')->where('id', $other)->value('title');
+                    DB::table('entries')->where('id', $other)->update(['title' => 'Rival']);
+                });
+            } catch (Throwable $failure) {
+                $locked += str_contains($failure->getMessage(), 'database is locked') ? 1 : 0;
+            }
+
+            usleep(1_000);
+        }
+
+        echo json_encode(['outcome' => sprintf('%d of %d told "database is locked"', $locked, $tried), 'waited' => 0.0]), PHP_EOL;
+
+        return 0;
+    }
+
+    // (M) elsewhere: 300 ms into the build statement, so it has queued behind the holder.
+    if (in_array($attempt, ['a plain read of media_files', 'a write to media_files'], true)) {
+        usleep(300_000);
     }
 
     $started = hrtime(true);
@@ -862,6 +1438,8 @@ function withdrawalBenchRival(string $attempt, string $directory): int
                 unlink($source);
             })(),
             'a second trash' => Entry::query()->findOrFail($other)->delete(),
+            'a plain read of media_files' => DB::table('media_files')->count(),
+            'a write to media_files' => DB::table('media_files')->where('entry_id', $other)->update(['disk' => DB::raw('disk')]),
             'a long read across the COMMIT' => (function (): void {
                 $reader = new PDO('sqlite:'.DB::connection()->getDatabaseName());
                 $reader->exec('BEGIN');

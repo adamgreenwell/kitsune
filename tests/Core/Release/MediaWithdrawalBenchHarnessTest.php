@@ -17,6 +17,9 @@ declare(strict_types=1);
  * runs only when it is the script; required, it defines its functions and returns.
  */
 
+use Symfony\Component\Console\Helper\Table;
+use Symfony\Component\Console\Output\BufferedOutput;
+
 require_once dirname(__DIR__, 3).'/bin/benchmark-media-withdrawal.php';
 
 const BENCH_RUN = '/tmp/kitsune-bench-withdrawal-run';
@@ -67,4 +70,40 @@ it('prints no figure unless every run verified', function (): void {
         ->and(withdrawalBenchFigure('trash', []))->toBeNull()
         ->and(withdrawalBenchFigure('trash', [['ms' => 3.0, 'verified' => true], ['ms' => 1.0, 'verified' => true], ['ms' => 2.0, 'verified' => true]]))
         ->toBe('| trash | 2.0 | 3.0 |');
+});
+
+/** A command's summary, rendered as `Command::table()` renders it. @param list<list<int|string>> $rows */
+function benchSummary(array $headers, array $rows): string
+{
+    $output = new BufferedOutput;
+    (new Table($output))->setHeaders($headers)->setRows($rows)->render();
+
+    return $output->fetch();
+}
+
+/** Slice 5b's share of a run spent holding a lock: printed only when every hold that took a lock closed (T55). */
+it('reads the share of a run its holds took, and none while a hold is open', function (): void {
+    $holds = [['start' => 0, 'end' => 20_000_000], ['start' => null, 'end' => 90_000_000], ['start' => 50_000_000, 'end' => 80_000_000]];
+
+    // 20 ms and 30 ms of a 100 ms run; the transaction that never took a lock is not a hold.
+    expect(withdrawalBenchHeld($holds, 100.0))->toBe(50.0)
+        ->and(withdrawalBenchHeld([...$holds, ['start' => 95_000_000, 'end' => null]], 100.0))->toBeNull()
+        ->and(withdrawalBenchHeld([['start' => null, 'end' => null]], 100.0))->toBeNull()
+        ->and(withdrawalBenchHeld([], 100.0))->toBeNull()
+        ->and(withdrawalBenchHeld($holds, 0.0))->toBeNull();
+});
+
+/** Slice 5b's groups verify by the counts their command printed: a count off by one, or a label unlooked-for, is no figure (T55). */
+it('verifies a command by the rows it counted under each label, and under no other', function (): void {
+    $listed = benchSummary(['Label', 'Rows'], [['exposed', 1000], ['awaiting publication', 3]]);
+    $forced = benchSummary(['Label', 'Rows', 'Settled', 'Nothing to do', 'Gone', 'Kept', 'Missing', 'Failed'], [['exposed', 1000, 998, 0, 0, 1, 0, 1]]);
+
+    expect(withdrawalBenchCounts($listed, ['exposed' => 1000, 'awaiting publication' => 3]))->toBeTrue()
+        ->and(withdrawalBenchCounts($listed, ['awaiting publication' => 3, 'exposed' => 1000]))->toBeTrue()
+        ->and(withdrawalBenchCounts($listed, ['exposed' => 1000]))->toBeFalse()
+        ->and(withdrawalBenchCounts($listed, ['exposed' => 999, 'awaiting publication' => 3]))->toBeFalse()
+        ->and(withdrawalBenchCounts($listed, ['exposed' => 1000, 'awaiting publication' => 3, 'missing' => 1]))->toBeFalse()
+        ->and(withdrawalBenchCounts('', ['exposed' => 1000]))->toBeFalse()
+        // The rows, not what --force did with them.
+        ->and(withdrawalBenchCounts($forced, ['exposed' => 1000]))->toBeTrue();
 });
