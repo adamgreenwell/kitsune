@@ -126,15 +126,37 @@ final class MediaPruneCommand extends Command
          * ⚠️ A DISK THAT IS ANOTHER SCANNED DISK UNDER ANOTHER NAME IS NOT SCANNED — review of slice 5b, twice. Its
          * listing is that disk's, so every file there would be listed twice — as an extra copy of itself, beside a disk
          * a row names or another served disk — and removing one would remove the file. So each disk a row names, then
-         * each served disk, is compared with the disks already queued, the configured ones first: one place, and it is
-         * left to the disk it aliases, whose listing holds its files; cannot be told apart, and it is not scanned either,
+         * each served disk, is compared with the disks already queued, the configured ones first: one place — one
+         * directory, since nesting was refused above — and it is left to the disk it aliases, whose listing holds its
+         * files at the same paths; cannot be told apart, and it is not scanned either,
          * and says so; an alias of the private disk, which the web must not serve, says so too. Asked only of disks that
          * are configured and can hold anything: asking builds a local disk, which would create its root. A row's disk
          * that cannot be asked is scanned as before, and its listing reports what is wrong with it.
          */
         $named = array_values(array_diff(array_unique(array_map(static fn (stdClass $row): string => (string) $row->disk, $rows)), $kitsune));
-        $servedOnly = array_values(array_diff(MediaDisks::servedDisks($config), $kitsune, $named));
+        $servedDisks = MediaDisks::servedDisks($config);
+        $servedOnly = array_values(array_diff($servedDisks, $kitsune, $named));
         $served = [];
+
+        /*
+         * ⚠️ NOTHING IS LISTED WHILE TWO MEDIA DIRECTORIES NEST — review of slice 5b. The outer disk lists the inner one's
+         * files under longer paths no row names, as its own orphans, and removing one would remove a file a row names
+         * on the inner disk. `onePlace()` counts nesting as one place, which is right for refusing a move and wrong for
+         * reading a listing.
+         */
+        $nesting = $this->nesting($config, [...$kitsune, ...$named, ...$servedOnly]);
+
+        if ($nesting !== null) {
+            $this->error(sprintf(
+                'Refusing to list: the media directories of [%s] and [%s] nest, so a file of the inner disk would be listed '
+                .'as an orphan of the outer one, and removing it would remove the file (ADR-042 decision 5). Point them at '
+                .'media directories that do not nest. Nothing was listed or removed.',
+                $nesting[0],
+                $nesting[1],
+            ));
+
+            return self::FAILURE;
+        }
 
         foreach ([...$named, ...$servedOnly] as $disk) {
             $isNamed = in_array($disk, $named, true);
@@ -161,7 +183,10 @@ final class MediaPruneCommand extends Command
                     .'one place — so a file there could be the file itself.%s',
                     $disk,
                     $other,
-                    $other === $private ? ' kitsune:media-reconcile --force refuses while the private disk is one of them.' : '',
+                    // Reconcile refuses a private disk the web serves; an unserved alias it repoints like any row.
+                    $other === $private && in_array($disk, $servedDisks, true)
+                        ? ' kitsune:media-reconcile --force refuses while the private disk is one of them.'
+                        : '',
                 ));
 
                 continue;
@@ -389,15 +414,42 @@ final class MediaPruneCommand extends Command
                 $noLongerExtra === 1 ? 'its' : 'their',
             ),
             $extraErased === 0 ? '' : sprintf(
-                ' %d whose entry was erased since the listing: its disposal removes %s, and logs any copy it could not.',
+                ' %d whose entry was erased since the listing: its disposal removes %s or logs why it could not — but '
+                .'not from a disk only other rows name, where the next run lists %s as an orphan.',
                 $extraErased,
                 $extraErased === 1 ? 'the copy' : 'the copies',
+                $extraErased === 1 ? 'it' : 'each'
             ),
             $extraKept === 0 ? '' : sprintf(' %d kept under the lock, each with its reason above.', $extraKept),
         ));
 
         /* A disk that refused is reported by the count disagreeing, rather than by silence. */
         return $failed === 0 ? self::SUCCESS : self::FAILURE;
+    }
+
+    /**
+     * Two of these disks whose media directories nest, or null — asked only of disks that are configured and can hold
+     * anything, since asking builds a local disk.
+     *
+     * @param  list<string>  $disks
+     * @return array{0: string, 1: string}|null
+     */
+    private function nesting(Repository $config, array $disks): ?array
+    {
+        $askable = array_values(array_filter(
+            array_unique($disks),
+            static fn (string $disk): bool => is_array($config->get("filesystems.disks.{$disk}")) && MediaDisks::mayHold($config, $disk),
+        ));
+
+        foreach ($askable as $i => $one) {
+            foreach (array_slice($askable, $i + 1) as $two) {
+                if (MediaDisks::nested($config, $one, $two)) {
+                    return [$one, $two];
+                }
+            }
+        }
+
+        return null;
     }
 
     /**

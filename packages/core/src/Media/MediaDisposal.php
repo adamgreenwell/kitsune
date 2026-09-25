@@ -148,11 +148,11 @@ final class MediaDisposal
     /**
      * Say what a disposal that could not run left, and where — ADR-042 decision 5.
      *
-     * ⚠️ NOT WHERE THE ROW POINTED, BUT WHERE THE BYTES ARE — review of slice 5b. This once reported the disk the row
+     * ⚠️ NOT WHERE THE ROW POINTED, BUT WHERE THE BYTES MAY BE — review of slice 5b. This once reported the disk the row
      * named as though its copy were still there, and said of every disk, the public one and core's private one
-     * included, that Kitsune does not serve it. The erasure took every served copy off the web before it committed, to
-     * the private disk; what is left is there, on core's private disk, and on the disk the row named when that is none
-     * of them.
+     * included, that Kitsune does not serve it. What is left may be on any disk disposal asks: prune sweeps the
+     * configured ones and core's private disk, and the disk the row named only while a row names it; a served disk
+     * nothing names is not swept, so a copy there is removed by hand.
      *
      * ⚠️ AND ONLY WHEN THE ERASURE REPORTED ITS COMMIT. From the force-delete's failure path it may not have committed —
      * a withdrawal refused, a COMMIT that failed — and then the entry and its file may be exactly where they were.
@@ -164,8 +164,9 @@ final class MediaDisposal
         if (! $committed) {
             Log::warning(sprintf(
                 'Kitsune could not dispose of [%s], the file of entry %d, after its force-delete reported failure: '
-                .'disposal could not run — %s. The force-delete may not have committed, so the entry and its file may be '
-                .'where they were; kitsune:media-reconcile --entry=%d says where the file is (ADR-042 decision 5).',
+                .'disposal could not run — %s. The force-delete may not have committed: if the entry is still there, '
+                .'kitsune:media-reconcile --entry=%d says where its file is; if it is gone, kitsune:media-prune lists what '
+                .'is left on the disks it sweeps (ADR-042 decision 5).',
                 $file['path'],
                 $file['entry_id'],
                 $e->getMessage(),
@@ -185,8 +186,9 @@ final class MediaDisposal
 
         Log::warning(sprintf(
             'Kitsune could not dispose of [%s], the file of force-deleted entry %d, whose row named [%s]: disposal could not '
-            .'run — %s. The erasure took every served copy off the web before it committed; `kitsune:media-prune` removes '
-            .'what is left on the configured media disks and core\'s private disk%s.',
+            .'run — %s. `kitsune:media-prune --force` removes what is left on the configured media disks and core\'s '
+            .'private disk%s; a copy on any other disk the web serves stays until it is removed by hand (ADR-042 '
+            .'decision 5).',
             $file['path'],
             $file['entry_id'],
             $file['disk'],

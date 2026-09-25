@@ -184,6 +184,26 @@ final class MediaBytes
             && $first['dev'] === $second['dev'] && $first['ino'] === $second['ino'];
     }
 
+    /**
+     * Whether two local disks name one directory entry at this path: their directories for it are one directory, as
+     * the filesystem resolves them, so the path on each is the same name for the same file.
+     *
+     * ⚠️ NOT THE SAME FILE, THE SAME ENTRY — review of slice 5b. A hard link, a symlinked file or a bind mount reaches one
+     * file through two entries, and removing the other entry is what takes that name off the web; only one entry under
+     * two disk names has nothing to remove. A mount the path's resolution cannot see reads as two entries, never as one.
+     */
+    public static function sameEntry(string $a, string $b, string $path): bool
+    {
+        if (! self::local($a) || ! self::local($b)) {
+            return false;
+        }
+
+        $first = realpath(dirname(Storage::disk($a)->path($path)));
+        $second = realpath(dirname(Storage::disk($b)->path($path)));
+
+        return $first !== false && $first === $second;
+    }
+
     /** An adapter may already have closed the stream it was handed. */
     private static function close(mixed $stream): void
     {

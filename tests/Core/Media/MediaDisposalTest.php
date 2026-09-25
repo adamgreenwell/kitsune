@@ -218,9 +218,9 @@ it('says where the bytes are when a disposal could not run', function (string $d
             && ! str_contains($message, 'does not serve'))
         ->once();
 })->with([
-    'core\'s private disk' => [MediaDisks::PRIVATE, 'removes what is left on the configured media disks and core\'s private disk.', false],
-    'the public disk' => ['public', 'took every served copy off the web before it committed', false],
+    'core\'s private disk' => [MediaDisks::PRIVATE, 'removes what is left on the configured media disks and core\'s private disk;', false],
+    'the public disk' => ['public', 'a copy on any other disk the web serves stays until it is removed by hand', false],
     'a disk that is none of those' => ['local', 'and on [local] while any row names it', true],
     // From the force-delete's failure path it may not have committed: nothing is claimed about where the bytes went.
-    'a force-delete that reported failure' => ['public', 'may not have committed, so the entry and its file may be where they were', false, false],
+    'a force-delete that reported failure' => ['public', 'may not have committed: if the entry is still there, kitsune:media-reconcile --entry=999999', false, false],
 ]);

@@ -504,6 +504,51 @@ final class MediaDisks
             return true;
         }
 
+        $media = self::mediaDirectories($config, $a, $b);
+
+        if ($media === null) {
+            return false;
+        }
+
+        [$first, $second, $sameEndpoint] = $media;
+
+        if (! str_starts_with($first, $second) && ! str_starts_with($second, $first)) {
+            return false;
+        }
+
+        return $sameEndpoint ? true : null;
+    }
+
+    /**
+     * Whether two disks' media directories nest without being one directory: a local disk rooted inside another's
+     * `media/`, or an object store's prefix inside another's in the same bucket — ADR-042 decision 5.
+     *
+     * ⚠️ `onePlace()` IS TRUE OF BOTH, AND ONLY ONE IS AN ALIAS — review of slice 5b. Two names for one directory list the
+     * same files at the same paths; a directory inside another is listed by the outer one under longer paths, where no
+     * row names them, so the inner disk's files read as the outer's orphans. It builds a local disk to resolve its
+     * media directory, so it is asked only of a disk that can hold something.
+     */
+    public static function nested(Repository $config, string $a, string $b): bool
+    {
+        $media = $a === $b ? null : self::mediaDirectories($config, $a, $b);
+
+        if ($media === null) {
+            return false;
+        }
+
+        [$first, $second] = $media;
+
+        return $first !== $second && (str_starts_with($first, $second) || str_starts_with($second, $first));
+    }
+
+    /**
+     * Two disks' media directories, comparable: local ones as the filesystem resolves them, or object stores' key
+     * prefixes in one bucket, with whether their endpoints are the same; null when they are not in one namespace.
+     *
+     * @return array{0: string, 1: string, 2: bool}|null
+     */
+    private static function mediaDirectories(Repository $config, string $a, string $b): ?array
+    {
         $one = self::resolved($config, $a);
         $two = self::resolved($config, $b);
 
@@ -512,24 +557,18 @@ final class MediaDisks
          * at its own root. Only a disk configured as local is built here: building an object store needs its SDK.
          */
         if ($one['driver'] === 'local' && $two['driver'] === 'local') {
-            $first = self::localMediaRoot($config, $a, $one);
-            $second = self::localMediaRoot($config, $b, $two);
-
-            return str_starts_with($first, $second) || str_starts_with($second, $first);
+            return [self::localMediaRoot($config, $a, $one), self::localMediaRoot($config, $b, $two), true];
         }
 
         if ($one['driver'] !== $two['driver'] || $one['bucket'] !== $two['bucket']) {
-            return false;
+            return null;
         }
 
-        $mediaOne = ($one['prefix'] === '' ? '' : $one['prefix'].'/').'media/';
-        $mediaTwo = ($two['prefix'] === '' ? '' : $two['prefix'].'/').'media/';
-
-        if (! str_starts_with($mediaOne, $mediaTwo) && ! str_starts_with($mediaTwo, $mediaOne)) {
-            return false;
-        }
-
-        return $one['endpoint'] === $two['endpoint'] ? true : null;
+        return [
+            ($one['prefix'] === '' ? '' : $one['prefix'].'/').'media/',
+            ($two['prefix'] === '' ? '' : $two['prefix'].'/').'media/',
+            $one['endpoint'] === $two['endpoint'],
+        ];
     }
 
     /**

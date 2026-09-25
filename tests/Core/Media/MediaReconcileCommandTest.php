@@ -25,7 +25,7 @@ use Kitsune\Core\Tests\Fixtures\RefusingDisk;
 use League\Flysystem\Filesystem;
 
 /*
- * kitsune:media-reconcile — ADR-042 decision 5, slice 5b (T77-T90, T104-T107, T109, T114).
+ * kitsune:media-reconcile — ADR-042 decision 5, slice 5b (T77-T90, T104-T107, T109, T114, T119).
  *
  * ⚠️ FROM THE DISKS, THE ROWS AND THE OUTPUT AS THEY ARE AFTERWARDS. Each case sets a row and its disks by hand, runs the
  * command as an operator would, and reads what each disk holds by hash, what the row names, the line the command printed
@@ -748,6 +748,26 @@ it('refuses, and repoints nothing, when the named disk only nests inside the pub
 
     expect(reconcileNamed($id))->toBe('nested')
         ->and(hash_file('sha256', $root.'/'.$path))->toBe($this->checksum)
+        ->and(reconcileLine($output, $id))->toContain('→ failed')
+        ->and($exit)->toBe(1);
+});
+
+/*
+ * T119. One file under two entries is not one entry: a named disk whose copy is a hard link to the target's file keeps
+ * that entry on a disk the web may still serve, so the move-off refuses and the row still names it — never repointed
+ * with the entry left behind (review of slice 5b).
+ */
+it('refuses, and repoints nothing, when the named copy is a hard link to the target\'s file', function (): void {
+    $old = reconcileDisk('old');
+    [$id, $path] = reconcileFile('old', ['old' => RECONCILE_PNG], trashed: true);
+    $private = $this->disks[MediaDisks::PRIVATE]->root().'/'.$path;
+    @mkdir(dirname($private), 0777, true);
+    link($old->root().'/'.$path, $private);
+
+    [$exit, $output] = reconcileRun(['--force' => true, '--entry' => [(string) $id]]);
+
+    expect(reconcileNamed($id))->toBe('old')
+        ->and(is_file($old->root().'/'.$path))->toBeTrue()
         ->and(reconcileLine($output, $id))->toContain('→ failed')
         ->and($exit)->toBe(1);
 });

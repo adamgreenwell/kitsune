@@ -269,7 +269,7 @@ it('leaves alone a disk no row names', function (): void {
 
 /*
  * What custody leaves, and what prune does with it — ADR-042 decision 5 (T20, T21; slice 5b: T92-T97, T108,
- * T110-T112, T115-T117).
+ * T110-T112, T115-T118).
  *
  * ⚠️ A FILE IS AN ORPHAN WHEN NO ROW NAMES ITS PATH, ON ANY DISK. Custody leaves verified copies at a row's own path on
  * disks the row does not name, and any one of them may be the only good copy: each is listed as ~~kept, never deleted~~
@@ -511,7 +511,7 @@ describe('what custody leaves', function (): void {
             ->and(Storage::disk('old-cdn')->exists($trashed->path))->toBeTrue()
             ->and($sections['exit'])->toBe('0');
     })->with([
-        'erased' => ['erased', '2 whose entry was erased since the listing: its disposal removes the copies, and logs any copy it could not.'],
+        'erased' => ['erased', '2 whose entry was erased since the listing: its disposal removes the copies or logs why it could not'],
         'restored, unpublished' => ['restored', 'under the lock its row no longer named the disk its state says: kitsune:media-reconcile --entry='],
     ]);
 
@@ -749,6 +749,29 @@ it('sends the operator to copy by hand a kept copy reconcile cannot reach', func
             ->and($exit)->toBe(0);
     } finally {
         exec('rm -rf '.escapeshellarg($archive));
+    }
+});
+
+/*
+ * T118. Two media directories that nest are not two names for one: the outer disk would list the inner one's files
+ * under longer paths as its own orphans, and remove a file a row names. Nothing is listed, and nothing removed (review
+ * of slice 5b).
+ */
+it('lists nothing, and removes nothing, while a disk a row names nests inside the public disk', function (): void {
+    $root = Storage::disk('public')->path('media/sub');
+    mkdir($root, 0777, true);
+    config(['filesystems.disks.nested' => ['driver' => 'local', 'root' => $root]]);
+    $file = storedForPrune($this->imageType);
+    Storage::disk('nested')->put($file->path, pruneFixtureBytes());
+    Storage::disk(MediaDisks::PRIVATE)->delete($file->path);
+    DB::table('media_files')->where('id', $file->getKey())->update(['visibility' => 'public', 'disk' => 'nested']);
+
+    foreach ([[], ['--force' => true]] as $options) {
+        $exit = Artisan::call('kitsune:media-prune', $options);
+
+        expect(Artisan::output())->toContain('Refusing to list: the media directories of [public] and [nested] nest')
+            ->and($exit)->toBe(1)
+            ->and(is_file($root.'/'.$file->path))->toBeTrue();
     }
 });
 

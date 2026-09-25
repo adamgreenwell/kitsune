@@ -41,8 +41,8 @@ use Throwable;
  * `MediaCustody::settle()` then `cleanUp()` — each its own outermost transaction under the row's lock, taking every
  * decision from the row as read there. The listing only chooses which rows to lock: a row a trash or a restore changed
  * since is settled as it now is, and one listed as missing is asked again (a publication may have moved it). No copy is
- * deleted until the copy kept is verified on the disk the row names or is moving to; one that cannot be read is never
- * touched (ADR-042 decision 5, rule 2; Adam, decisions 2, 2b and 6).
+ * deleted until the copy kept is verified on the disk the row's state says it belongs on; one that cannot be read is
+ * never touched (ADR-042 decision 5, rule 2; Adam, decisions 2, 2b and 6).
  *
  * ⚠️ IT FAILS ON FINDINGS (Adam, decision 7, 2026-09-25), so a deploy or a cron can run it as a check: read-only, while
  * any finding is still there when the rows are asked again at the end; forced, while any row failed, is missing or was
@@ -433,8 +433,9 @@ final class MediaReconcileCommand extends Command
             }
 
             foreach ($disks as $other) {
+                // One directory, or one prune cannot tell apart and so never scans; a nested one prune refuses to list.
                 if (is_array($config->get("filesystems.disks.{$other}")) && MediaDisks::mayHold($config, $other)
-                    && MediaDisks::onePlace($config, $disk, $other) !== false) {
+                    && MediaDisks::onePlace($config, $disk, $other) !== false && ! MediaDisks::nested($config, $disk, $other)) {
                     return true;
                 }
             }

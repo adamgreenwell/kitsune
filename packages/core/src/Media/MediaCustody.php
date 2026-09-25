@@ -37,8 +37,8 @@ use Throwable;
  *
  * ⚠️ NO COPY IS DELETED UNTIL ANOTHER IS VERIFIED. A copy counts once it has been written and read back with a
  * matching hash — no fsync, as `store()` also has none — and ~~one disk's copy is deleted only while another's is known
- * to hold the same bytes~~ a copy is deleted only once the kept copy is verified by SHA-256 on the disk its row names or
- * is moving to — one that differs goes with both hashes logged (Adam, decisions 2 and 2b, 2026-09-24); one alone
+ * to hold the same bytes~~ a copy is deleted only once the kept copy is verified by SHA-256 on the disk the row's state
+ * says it belongs on — one that differs goes with both hashes logged (Adam, decisions 2 and 2b, 2026-09-24); one alone
  * matching the checksum never, and one that cannot be read never (Adam, decision 6, 2026-09-25). Two names for one
  * place, or two that cannot be told apart, are refused before anything moves: a "copy" there could be the file.
  *
@@ -383,14 +383,16 @@ final class MediaCustody
              * saying so, and nothing would ever name that copy again. Unless it cannot be read and was set aside: then
              * the row stays on it (Adam, decision 6, 2026-09-25).
              *
-             * ⚠️ NOR WHEN ITS COPY IS THE TARGET'S OWN FILE — review of slice 5b. A row naming Laravel's `public` while the
+             * ⚠️ NOR WHEN ITS COPY IS THE TARGET'S OWN ENTRY — review of slice 5b. A row naming Laravel's `public` while the
              * public disk is another name for the same directory failed on every run and was never repointed:
              * `removeCopy()` rightly refuses to remove the one file both names reach. Only the row moves then — and only
-             * when the file itself is the same, on local disks: two disks `onePlace()` merely cannot tell apart, or whose
-             * directories nest, hold two files at the path, and the move-off refuses as it did (review of slice 5b, again).
+             * when the two names reach one directory entry: two disks `onePlace()` merely cannot tell apart, or whose
+             * directories nest, hold two files at the path; and a hard link, a symlinked file or a bind mount is one file
+             * under two entries, the other of which the web may serve. Each of those refuses, as it did (review of 5b,
+             * twice).
              */
             if ($named !== $target && ! in_array($named, [$private, MediaDisks::PRIVATE], true) && ! isset($setAside[$named])
-                && ! MediaBytes::sameObject($target, $named, $path)) {
+                && ! MediaBytes::sameEntry($target, $named, $path)) {
                 try {
                     $changed = self::removeCopy($config, $target, $named, $path, $keeper) || $changed;
                 } catch (MediaCustodyFailure $failure) {
