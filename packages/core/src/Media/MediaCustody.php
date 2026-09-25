@@ -230,6 +230,15 @@ final class MediaCustody
             $changed = false;
 
             if (! $keeper->targetHolds) {
+                /*
+                 * ⚠️ NOT ONTO THE SOURCE UNDER ANOTHER NAME — review of slice 5b. An object store is written at the key
+                 * itself, and discarded there when the copy does not verify: were the target the kept copy's own store
+                 * through another endpoint, a failed copy would delete the file, and the move-off after it would too.
+                 */
+                if ($keeper->disk !== $target) {
+                    MediaDisks::refuseCoincidingMediaDisks($config, $target, $keeper->disk);
+                }
+
                 self::noteDiffering($target, $path, $keeper->hashes[$target] ?? null, $keeper, 'overwriting');
                 MediaBytes::copyVerified($keeper->disk, $target, $path, $keeper->expected);
                 $changed = true;

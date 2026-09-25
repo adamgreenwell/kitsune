@@ -633,6 +633,25 @@ describe('disks that cannot keep a trashed file private', function (): void {
         expect(isTrashed($private))->toBeTrue();
     });
 
+    /*
+     * T62. One bucket and key prefix through two endpoints may be one store: a "copy" to the private disk could be the
+     * public file itself. Refused as the configuration, before a byte moves (slice 5b).
+     */
+    it('refuses while the public and private disks are one bucket through two endpoints', function (): void {
+        [$entry, $path] = withdrawable();
+        config([
+            'filesystems.disks.public' => ['driver' => 's3', 'bucket' => 'media', 'endpoint' => 'e', 'prefix' => 'site', 'url' => 'https://media.example.test'],
+            'filesystems.disks.host-private' => ['driver' => 's3', 'bucket' => 'media', 'endpoint' => 'f', 'prefix' => 'site'],
+            'kitsune.media.disks.private' => 'host-private',
+        ]);
+
+        expect(fn () => $entry->delete())->toThrow(MediaWithdrawalRefused::class, 'name one bucket through two endpoints');
+
+        expect(bytesChanged())->toBe([])
+            ->and(isTrashed($entry))->toBeFalse()
+            ->and(heldAt($path, ['public'])['public'])->toBe($this->checksum);
+    });
+
     it('refuses while the private disk is one the web serves', function (): void {
         [$entry, $path] = withdrawable();
         ($this->disk)('pub-serve', ['serve' => true, 'visibility' => 'public']);

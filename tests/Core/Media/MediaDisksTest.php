@@ -464,6 +464,66 @@ describe('unsafe and coinciding media disks', function (): void {
         'sibling roots in one bucket' => [['driver' => 's3', 'bucket' => 'b', 'endpoint' => 'e', 'root' => 'public'], ['driver' => 's3', 'bucket' => 'b', 'endpoint' => 'e', 'root' => 'private'], false],
     ]);
 
+    /*
+     * T60. One bucket through two endpoints cannot be told apart from one store — a region's endpoint and a custom
+     * domain name the same objects — so it is neither "one place" nor "two": every caller refuses it (slice 5b).
+     */
+    it('says one place, two, or that it cannot tell', function (array $a, array $b, ?bool $answer): void {
+        config(['filesystems.disks.store-a' => $a, 'filesystems.disks.store-b' => $b]);
+
+        expect(MediaDisks::onePlace(config(), 'store-a', 'store-b'))->toBe($answer)
+            ->and(MediaDisks::onePlace(config(), 'store-b', 'store-a'))->toBe($answer);
+    })->with([
+        'one endpoint, one prefix' => [['driver' => 's3', 'bucket' => 'b', 'endpoint' => 'e', 'prefix' => 'a'], ['driver' => 's3', 'bucket' => 'b', 'endpoint' => 'e', 'prefix' => 'a'], true],
+        'two endpoints, one prefix' => [['driver' => 's3', 'bucket' => 'b', 'endpoint' => 'e', 'prefix' => 'a'], ['driver' => 's3', 'bucket' => 'b', 'endpoint' => 'f', 'prefix' => 'a'], null],
+        'two endpoints, nesting prefixes' => [['driver' => 's3', 'bucket' => 'b', 'endpoint' => 'e', 'prefix' => 'a'], ['driver' => 's3', 'bucket' => 'b', 'endpoint' => 'f', 'prefix' => 'a/media/x'], null],
+        'one endpoint unset' => [['driver' => 's3', 'bucket' => 'b', 'prefix' => 'a'], ['driver' => 's3', 'bucket' => 'b', 'endpoint' => 'f', 'prefix' => 'a'], null],
+        'two endpoints, sibling prefixes' => [['driver' => 's3', 'bucket' => 'b', 'endpoint' => 'e', 'prefix' => 'a'], ['driver' => 's3', 'bucket' => 'b', 'endpoint' => 'f', 'prefix' => 'a/b'], false],
+        'two endpoints, two buckets' => [['driver' => 's3', 'bucket' => 'b', 'endpoint' => 'e', 'prefix' => 'a'], ['driver' => 's3', 'bucket' => 'c', 'endpoint' => 'f', 'prefix' => 'a'], false],
+        'a local disk and a store' => [['driver' => 'local', 'root' => '/nowhere/kitsune-t60'], ['driver' => 's3', 'bucket' => 'b', 'endpoint' => 'e'], false],
+    ]);
+
+    it('refuses one bucket through two endpoints, naming them', function (): void {
+        config([
+            'filesystems.disks.store-a' => ['driver' => 's3', 'bucket' => 'b', 'endpoint' => 'e', 'prefix' => 'a'],
+            'filesystems.disks.store-b' => ['driver' => 's3', 'bucket' => 'b', 'endpoint' => 'f', 'prefix' => 'a'],
+        ]);
+
+        expect(fn () => MediaDisks::refuseCoincidingMediaDisks(config(), 'store-a', 'store-b'))->toThrow(
+            RuntimeException::class,
+            'Refusing: the [store-a] and [store-b] disks name one bucket through two endpoints with nesting key prefixes',
+        );
+    });
+
+    /** A private object store with no url of its own, and a served one reaching its objects. */
+    it('refuses a private disk a served object store reaches', function (array $cdn, ?string $refusal): void {
+        config([
+            'filesystems.disks.store-private' => ['driver' => 's3', 'bucket' => 'b', 'endpoint' => 'e', 'prefix' => 'private'],
+            'filesystems.disks.store-cdn' => ['driver' => 's3', 'bucket' => 'b', 'url' => 'https://cdn.example.test', ...$cdn],
+            'kitsune.media.disks.private' => 'store-private',
+        ]);
+
+        $check = fn () => MediaDisks::refuseUnsafeMediaDisks(config());
+
+        $refusal === null
+            ? expect($check)->not->toThrow(RuntimeException::class)
+            : expect($check)->toThrow(RuntimeException::class, "kitsune.media.disks.private names [store-private], and [store-cdn], which the web serves, reaches the same objects — {$refusal}");
+    })->with([
+        'as one place' => [['endpoint' => 'e', 'prefix' => 'private'], 'one bucket and key prefix'],
+        'through another endpoint' => [['endpoint' => 'f', 'prefix' => 'private'], 'one bucket through two endpoints'],
+        'the control: elsewhere in the bucket' => [['endpoint' => 'e', 'prefix' => 'public'], null],
+    ]);
+
+    /** Asking a pair of local disks would build them: `servedBy()` already answers for those. */
+    it('builds no served local disk whose root does not exist', function (): void {
+        $root = sys_get_temp_dir().'/kitsune-t60-rootless-'.bin2hex(random_bytes(4));
+        config(['filesystems.disks.rootless' => ['driver' => 'local', 'root' => $root, 'url' => 'https://rootless.example.test']]);
+
+        MediaDisks::refuseUnsafeMediaDisks(config());
+
+        expect(is_dir($root))->toBeFalse();
+    });
+
     it('sees a scoped disk over a bare bucket as the disk whose root is its prefix', function (): void {
         config([
             'filesystems.disks.bucket' => ['driver' => 's3', 'bucket' => 'b', 'endpoint' => 'e'],

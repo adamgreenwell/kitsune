@@ -384,6 +384,12 @@ final class MediaDisks
      *
      * The public and private disks must be two places, and the private one must be one the web does not serve: a
      * withdrawn file would otherwise stay public.
+     *
+     * ⚠️ AND NO SERVED OBJECT STORE MAY REACH THE PRIVATE DISK'S OBJECTS — review of slice 5b. `servedBy()` reads a disk's
+     * own url and root, so a private object store with no url of its own passed while a served one reached the same
+     * bucket prefix — as one place, or through another endpoint, which cannot be told apart from one place. A pair where
+     * both disks are local is not asked: `servedBy()` already refuses a local private disk whose media directory meets
+     * a served local disk's root, and asking would build a served disk whose root does not exist.
      */
     public static function refuseUnsafeMediaDisks(Repository $config): void
     {
@@ -401,20 +407,56 @@ final class MediaDisks
                 $private,
             ));
         }
+
+        $privateIsLocal = self::resolved($config, $private)['driver'] === 'local';
+
+        foreach (self::servedDisks($config) as $served) {
+            if ($served === $public || ($privateIsLocal && self::resolved($config, $served)['driver'] === 'local')) {
+                continue;
+            }
+
+            $place = self::onePlace($config, $private, $served);
+
+            if ($place !== false) {
+                throw new RuntimeException(sprintf(
+                    'Refusing: kitsune.media.disks.private names [%s], and [%s], which the web serves, reaches the same '
+                    .'objects — %s — so a withdrawn file would stay public (ADR-042 decision 5). Nothing was moved.',
+                    $private,
+                    $served,
+                    $place === true
+                        ? 'one bucket and key prefix'
+                        : 'one bucket through two endpoints with nesting key prefixes, which cannot be told apart from one',
+                ));
+            }
+        }
     }
 
     /**
-     * Refuse when a disk shares its `media/` directory with any of the others — ADR-042 decision 5.
+     * Refuse when a disk shares its `media/` directory with any of the others, or cannot be told apart from one that
+     * does — ADR-042 decision 5.
      *
      * Two names, one place: a "copy" from one to the other is the file itself, and deleting "the other copy" deletes the
      * only one. Local disks are compared by their media directories as the filesystem resolves them, and a nest counts;
-     * others by driver, bucket, endpoint and prefix.
+     * others by driver, bucket, endpoint and prefix — and one bucket through two endpoints is refused too, because
+     * whether that is one store cannot be told (slice 5b).
      */
     public static function refuseCoincidingMediaDisks(Repository $config, string $disk, string ...$others): void
     {
         foreach ($others as $other) {
-            if (! self::coincide($config, $disk, $other)) {
+            $place = self::onePlace($config, $disk, $other);
+
+            if ($place === false) {
                 continue;
+            }
+
+            if ($place === null) {
+                throw new RuntimeException(sprintf(
+                    'Refusing: the [%s] and [%s] disks name one bucket through two endpoints with nesting key prefixes, so '
+                    .'whether they are one store cannot be told — a copy from one to the other could be the file itself '
+                    .'(ADR-042 decision 5). Give them key prefixes that do not nest, or one endpoint. Nothing was moved.',
+                    $disk,
+                    $other,
+                ));
             }
 
             throw new RuntimeException(sprintf(
@@ -427,7 +469,18 @@ final class MediaDisks
         }
     }
 
-    private static function coincide(Repository $config, string $a, string $b): bool
+    /**
+     * Whether two disks are one place: true when they are, false when they are provably two, and null when it cannot be
+     * told — one bucket, key prefixes that nest, and two endpoints — ADR-042 decision 5.
+     *
+     * ⚠️ TWO ENDPOINTS MAY NAME ONE STORE. A region's endpoint and a custom domain, or a path-style and a virtual-host
+     * address, reach the same objects under different names, and nothing in the configuration says which. The earlier
+     * comparison read them as two places, which let a step take the file itself for another copy and delete it; review
+     * of slice 5b found it. Every caller refuses the uncertain answer as it refuses one place.
+     *
+     * It builds a local disk to resolve its media directory, so it is asked only of a disk that can hold something.
+     */
+    public static function onePlace(Repository $config, string $a, string $b): ?bool
     {
         if ($a === $b) {
             return true;
@@ -447,14 +500,18 @@ final class MediaDisks
             return str_starts_with($first, $second) || str_starts_with($second, $first);
         }
 
-        if ($one['driver'] !== $two['driver'] || $one['bucket'] !== $two['bucket'] || $one['endpoint'] !== $two['endpoint']) {
+        if ($one['driver'] !== $two['driver'] || $one['bucket'] !== $two['bucket']) {
             return false;
         }
 
         $mediaOne = ($one['prefix'] === '' ? '' : $one['prefix'].'/').'media/';
         $mediaTwo = ($two['prefix'] === '' ? '' : $two['prefix'].'/').'media/';
 
-        return str_starts_with($mediaOne, $mediaTwo) || str_starts_with($mediaTwo, $mediaOne);
+        if (! str_starts_with($mediaOne, $mediaTwo) && ! str_starts_with($mediaTwo, $mediaOne)) {
+            return false;
+        }
+
+        return $one['endpoint'] === $two['endpoint'] ? true : null;
     }
 
     /**

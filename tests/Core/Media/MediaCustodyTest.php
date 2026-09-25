@@ -9,6 +9,7 @@
 declare(strict_types=1);
 
 use Illuminate\Database\Events\TransactionRolledBack;
+use Illuminate\Filesystem\FilesystemAdapter;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Log;
@@ -24,6 +25,7 @@ use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tests\Fixtures\RefusingDisk;
+use League\Flysystem\Filesystem;
 
 /*
  * Custody of a file's bytes, asked directly — ADR-042 decision 5 (T14-T19).
@@ -408,6 +410,36 @@ describe('settle', function (): void {
         Log::shouldHaveReceived('warning')->withArgs(fn (string $message): bool => str_starts_with($message, 'Media custody: removing')
             && str_contains($message, 'on [old-cdn]')
             && str_contains($message, 'which ['.MediaDisks::PRIVATE.'] holds'))->once();
+    });
+
+    /*
+     * T61. The public disk and the disk the row names are one bucket and key prefix through two endpoints — one store
+     * under two names, or two stores; nothing in the configuration says which. An object store is written at the key
+     * itself, so a copy onto the source under another name, or a move-off from it, could destroy the file: settle refuses
+     * before its first byte.
+     */
+    it('refuses to copy onto a disk it cannot tell from the source, before any byte', function (): void {
+        foreach (['public' => 'e', 'alias' => 'f'] as $name => $endpoint) {
+            $root = sys_get_temp_dir().'/kitsune-custody-store-'.$name.'-'.bin2hex(random_bytes(4));
+            mkdir($root, 0777, true);
+            $this->roots[] = $root;
+            $config = ['driver' => 's3', 'bucket' => 'media', 'endpoint' => $endpoint, 'prefix' => 'site', 'url' => $name === 'public' ? 'https://media.example.test' : null];
+            config(["filesystems.disks.{$name}" => $config]);
+            $adapter = new RefusingDisk($root, $name);
+            Storage::set($name, new FilesystemAdapter(new Filesystem($adapter), $adapter, $config));
+        }
+
+        [$id, $path] = custodyFile('alias', ['alias' => CUSTODY_PNG]);
+
+        expect(fn () => MediaCustody::settle(DB::connection(), $id))->toThrow(
+            RuntimeException::class,
+            'the [public] and [alias] disks name one bucket through two endpoints',
+        );
+
+        expect(custodyByteOperations())->toBe([])
+            ->and(Storage::disk('alias')->get($path))->toBe(CUSTODY_PNG)
+            ->and(Storage::disk('public')->exists($path))->toBeFalse()
+            ->and(custodyRow($id)->disk)->toBe('alias');
     });
 
     /** A publication that fails is logged, never thrown — and the log does not claim a commit that was never made. */
