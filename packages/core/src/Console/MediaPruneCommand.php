@@ -42,9 +42,11 @@ use Throwable;
  * writing beside a path (`MediaBytes::PARTIAL`) is decided by the path it was written for: the table decides every
  * delete, and the suffix only chooses which row's lock to take. Nothing is hashed.
  *
- * ⚠️ EVERY DELETE IS RECHECKED UNDER CUSTODY'S LOCK. The listing is read without one, so a row written since — an
- * upload, a restore — could claim a file listed as an orphan; `MediaCustody::removeOrphan()` asks again with the lock
- * held, and keeps the file if a row now names its path.
+ * ⚠️ EVERY DELETE IS RECHECKED UNDER CUSTODY'S LOCK. The listing is read without one, so a row committed since could
+ * claim a file listed as an orphan; `MediaCustody::removeOrphan()` asks again with the lock held, and keeps the file if
+ * a row now names its path. ⚠️ It sees committed rows only: `store()` writes an upload's bytes before its row, so a run
+ * landing between the two — or, off SQLite, before the row commits — removes a file an upload is about to claim. That
+ * limit is older than custody, and recorded in ADR-042.
  */
 final class MediaPruneCommand extends Command
 {

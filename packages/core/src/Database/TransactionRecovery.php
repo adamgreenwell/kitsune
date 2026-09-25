@@ -37,8 +37,11 @@ use Throwable;
  * - **A transaction the database already ended.** A MySQL deadlock, or a lock-wait timeout with
  *   `innodb_rollback_on_timeout`, ends the whole transaction under a nested call; Laravel's level stays where the host
  *   left it, and every later write in the host's closure would run in autocommit — committing rows before any byte they
- *   depend on has moved. A nested call here is refused unless the engine confirms, before and after its savepoint, that
- *   a transaction is open.
+ *   depend on has moved. A nested call here is refused unless the engine confirms, before its savepoint, that a
+ *   transaction is open — asked freshly: pdo_mysql reads its flag from the last success, and a deadlock ends the
+ *   transaction on an error, so on MySQL and MariaDB a statement is sent first for a current answer. Review found the
+ *   first version asking again inside its savepoint instead, which the server had never opened: Laravel's rollback of
+ *   it then failed, and left its level one too high.
  *
  * ⚠️ WHAT IT CANNOT REACH, stated so it is not mistaken for more. Writes a host made EARLIER in a transaction the database
  * ended are committed children of the host's record, which Laravel's rollback never visits; and a SQLite automatic
@@ -64,14 +67,7 @@ final class TransactionRecovery
         }
 
         try {
-            return $connection->transaction(static function (Connection $inside) use ($work, $level): mixed {
-                // After the savepoint too: MySQL reports its transaction status in the reply to each statement.
-                if ($level > 0) {
-                    self::refuseEndedTransaction($inside);
-                }
-
-                return $work($inside);
-            });
+            return $connection->transaction(static fn (Connection $inside): mixed => $work($inside));
         } catch (Throwable $failure) {
             if ($level === 0) {
                 self::afterOutermost($connection);
@@ -85,7 +81,18 @@ final class TransactionRecovery
 
     private static function refuseEndedTransaction(Connection $connection): void
     {
-        if (! $connection->getPdo()->inTransaction()) {
+        $pdo = $connection->getPdo();
+
+        // Every reply carries the server's transaction status: a statement first makes the flag current.
+        if (in_array($connection->getDriverName(), ['mysql', 'mariadb'], true)) {
+            $reply = $pdo->query('SELECT 1');
+
+            if ($reply !== false) {
+                $reply->fetchAll();
+            }
+        }
+
+        if (! $pdo->inTransaction()) {
             throw new RuntimeException(
                 'Refusing this write: the database has already ended the transaction it would run inside — a deadlock or '
                 .'a lock-wait timeout rolled it back — so it would commit on its own, before anything it depends on. '

@@ -57,6 +57,8 @@ test('shows a refused delete as a notification naming the entry, and keeps its f
         await expect(page.getByText('"Pinned scorecard" was not deleted')).toBeVisible();
         // Still on the entry: a refusal is not a success's redirect, and not an error page.
         await expect(page).toHaveURL(new RegExp(`/c/image/${pinned.id}/edit`));
+        // And the entry is shown as it is — not trashed — so it can be deleted again once the disk answers.
+        await expect(page.getByRole('button', { name: 'Delete' }).first()).toBeVisible();
     });
 
     expect((await page.request.get(`/storage/${pinned.path}`)).status()).toBe(200);

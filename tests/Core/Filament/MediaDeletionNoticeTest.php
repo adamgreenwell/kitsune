@@ -91,6 +91,27 @@ it('answers a refused delete with a notification naming the entry, escaped', fun
         ->and($notices[0]['body'])->not->toContain('<');
 });
 
+/** The page's own record is put back, or the page would re-render it as trashed and hide its Delete button. */
+it('leaves the record it could not delete as it was', function (): void {
+    $entry = ($this->store)('Logo', 'public');
+    $this->disks['public']->failDeletes = true;
+
+    MediaDeletionNotice::deleteOne($entry);
+
+    expect($entry->trashed())->toBeFalse()
+        ->and($entry->isDirty())->toBeFalse();
+});
+
+/** A configuration that cannot keep a file private refuses as a delete does: a notification, not an error page. */
+it('answers a delete the disks\' configuration refused with a notification too', function (): void {
+    $entry = ($this->store)('Logo', 'public');
+    config(['kitsune.media.disks.private' => 'public']);
+
+    expect(MediaDeletionNotice::deleteOne($entry))->toBeFalse()
+        ->and(stillLive($entry))->toBeTrue()
+        ->and(sentNotices()[0]['body'] ?? '')->toContain('share their media/ directory');
+});
+
 it('deletes quietly when nothing refuses', function (): void {
     $entry = ($this->store)('Logo', 'public');
 
@@ -114,7 +135,8 @@ it('deletes each entry on its own, and names every one that stayed, escaped', fu
     $deleted = ($this->store)('Private notes', 'private');
     $this->disks['public']->failDeletes = true;
 
-    MediaDeletionNotice::deleteEach(DeleteBulkAction::make(), [$refused, $deleted]);
+    $action = DeleteBulkAction::make();
+    MediaDeletionNotice::deleteEach($action, [$refused, $deleted]);
 
     $notices = sentNotices();
 
@@ -123,5 +145,27 @@ it('deletes each entry on its own, and names every one that stayed, escaped', fu
         ->and($notices)->toHaveCount(1)
         ->and($notices[0]['title'])->toBe('One entry was not deleted; its file could not be taken off the web')
         ->and($notices[0]['body'])->toStartWith('&quot;&lt;i&gt;Scorecard&lt;/i&gt;&quot; was not deleted: Refusing to trash entry '.$refused->id)
-        ->and($notices[0]['body'])->not->toContain('Private notes');
+        ->and($notices[0]['body'])->toEndWith('The other entry was deleted, and its file taken off the web.')
+        ->and($notices[0]['body'])->not->toContain('Private notes')
+        // Instead of Filament's own "could not be deleted", which says less, and would say it twice.
+        ->and((fn (): bool => $this->isFailureNotificationDisabled)->call($action))->toBeTrue();
+});
+
+/** Any other failure keeps Filament's own count, which is the only thing that reports it. */
+it('keeps Filament\'s notification when a failure was not a refusal', function (): void {
+    $refused = ($this->store)('Scorecard', 'public');
+    $failing = ($this->store)('Private notes', 'private');
+    $this->disks['public']->failDeletes = true;
+    AuditorStandIn::install()->beforeRecording(function () use ($failing): void {
+        if (DB::table('entries')->where('id', $failing->id)->whereNotNull('deleted_at')->exists()) {
+            throw new RuntimeException('the audit row could not be written');
+        }
+    });
+
+    $action = DeleteBulkAction::make();
+    MediaDeletionNotice::deleteEach($action, [$refused, $failing]);
+
+    expect(stillLive($refused))->toBeTrue()
+        ->and(stillLive($failing))->toBeTrue()
+        ->and((fn (): bool => $this->isFailureNotificationDisabled)->call($action))->toBeFalse();
 });

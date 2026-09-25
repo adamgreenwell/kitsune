@@ -27,5 +27,6 @@ return [
         'refused' => '":title" was not deleted',
         'refused_line' => '":title" was not deleted: :reason',
         'refused_bulk' => '{1} One entry was not deleted; its file could not be taken off the web|[2,*] :count entries were not deleted; their files could not be taken off the web',
+        'withdrawn_bulk' => '{1} The other entry was deleted, and its file taken off the web.|[2,*] The other :count entries were deleted, and their files taken off the web.',
     ],
 ];

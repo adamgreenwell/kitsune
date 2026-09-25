@@ -33,6 +33,9 @@ final class MediaWithdrawalRefused extends RuntimeException
     /** The private disk and a disk holding the file are one place, so a copy would be the file itself. */
     public const COINCIDING = 'coinciding';
 
+    /** The configured media disks cannot keep a withdrawn file private: they are one place, or the web serves the private one. */
+    public const UNSAFE_DISKS = 'unsafe_disks';
+
     public function __construct(
         public readonly int $entryId,
         public readonly string $reason,
@@ -40,6 +43,19 @@ final class MediaWithdrawalRefused extends RuntimeException
         string $operation,
         ?Throwable $previous = null,
     ) {
+        // The configuration's own refusal names disks and keys, never a file: it is shown as it is.
+        if ($reason === self::UNSAFE_DISKS) {
+            parent::__construct(sprintf(
+                'Refusing to %s entry %d: the configured media disks cannot keep a withdrawn file private, so the entry '
+                .'and its file stay as they were. %s',
+                $operation,
+                $entryId,
+                $previous?->getMessage() ?? '',
+            ), 0, $previous);
+
+            return;
+        }
+
         parent::__construct(sprintf(
             'Refusing to %s entry %d: its file could not be withdrawn from the web — %s [%s] — so the entry and its file '
             .'stay as they were (ADR-042 decision 5). The log names the file; retry once the disk answers.',

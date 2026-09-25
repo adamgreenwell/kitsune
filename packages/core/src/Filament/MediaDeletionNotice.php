@@ -45,6 +45,29 @@ final class MediaDeletionNotice
                 throw $refused;
             }
 
+            /*
+             * ⚠️ AND THE RECORD PUT BACK AS IT WAS — review. Eloquent set `deleted_at` on the page's own model before the
+             * write was refused, so the page re-rendered it as trashed and hid its Delete button.
+             */
+            $columns = [$record->getUpdatedAtColumn()];
+
+            if (method_exists($record, 'getDeletedAtColumn')) {
+                $columns[] = $record->getDeletedAtColumn();
+            }
+
+            foreach ($columns as $column) {
+                if (! is_string($column)) {
+                    continue;
+                }
+
+                // A column the model was loaded without is taken away again rather than set to null, which is a change.
+                if (array_key_exists($column, $record->getRawOriginal())) {
+                    $record->setAttribute($column, $record->getRawOriginal($column));
+                } else {
+                    $record->offsetUnset($column);
+                }
+            }
+
             Notification::make()
                 ->danger()
                 ->title(e(__('kitsune::media.delete.refused', ['title' => self::titleOf($record)])))
@@ -65,15 +88,23 @@ final class MediaDeletionNotice
     public static function deleteEach(DeleteBulkAction $action, iterable $records): void
     {
         $refusals = [];
+        $deleted = 0;
+        $other = 0;
         $reported = false;
 
         foreach ($records as $record) {
             try {
-                $record->delete() || $action->reportBulkProcessingFailure();
+                if ($record->delete()) {
+                    $deleted++;
+                } else {
+                    $other++;
+                    $action->reportBulkProcessingFailure();
+                }
             } catch (MediaWithdrawalRefused $refused) {
                 $action->reportBulkProcessingFailure();
                 $refusals[] = e(__('kitsune::media.delete.refused_line', ['title' => self::titleOf($record), 'reason' => $refused->getMessage()]));
             } catch (Throwable $failure) {
+                $other++;
                 $action->reportBulkProcessingFailure();
 
                 // As Filament does: the first is reported, and the rest would have been halted by it anyway.
@@ -88,9 +119,22 @@ final class MediaDeletionNotice
             return;
         }
 
+        if ($deleted > 0) {
+            $refusals[] = e(trans_choice('kitsune::media.delete.withdrawn_bulk', $deleted, ['count' => $deleted]));
+        }
+
+        /*
+         * ⚠️ THIS NOTICE INSTEAD OF FILAMENT'S when every failure was a refusal — its "could not be deleted" says less,
+         * and two notifications for one action say it twice. Any other failure keeps Filament's count, which is the
+         * only thing that reports it.
+         */
+        if ($other === 0) {
+            $action->failureNotification(null);
+        }
+
         Notification::make()
             ->danger()
-            ->title(e(trans_choice('kitsune::media.delete.refused_bulk', count($refusals), ['count' => count($refusals)])))
+            ->title(e(trans_choice('kitsune::media.delete.refused_bulk', count($refusals) - ($deleted > 0 ? 1 : 0), ['count' => count($refusals) - ($deleted > 0 ? 1 : 0)])))
             ->body(implode('<br>', $refusals))
             ->persistent()
             ->send();

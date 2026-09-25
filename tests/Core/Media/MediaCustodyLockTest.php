@@ -135,6 +135,7 @@ describe('the lock order', function (): void {
             'removeTemp' => Storage::disk(MediaDisks::PRIVATE)->put(MediaBytes::partial($filePath), 'half'),
             'removeOrphan' => Storage::disk(MediaDisks::PRIVATE)->put('media/orphan.png', 'bytes'),
             'disposal' => DB::table('entries')->where('id', $id)->delete(),
+            'cleanUp' => Storage::disk(MediaDisks::PRIVATE)->put($filePath, LOCK_PNG),
         };
 
         $timeline = lockTimeline(fn () => match ($path) {
@@ -146,6 +147,7 @@ describe('the lock order', function (): void {
             'removeOrphan' => MediaCustody::removeOrphan(DB::connection(), MediaDisks::PRIVATE, 'media/orphan.png'),
             'removeTemp' => MediaCustody::removeTemp(DB::connection(), $id, MediaDisks::PRIVATE, MediaBytes::partial($filePath)),
             'disposal' => MediaDisposal::remove(DB::connection(), [['entry_id' => $id, 'disk' => 'public', 'path' => $filePath]]),
+            'cleanUp' => MediaCustody::cleanUp(DB::connection(), $id),
         });
 
         $bytes = lockFirst($timeline, '/^bytes /');
@@ -165,7 +167,7 @@ describe('the lock order', function (): void {
                 ->and($files)->toBeGreaterThan($entries)
                 ->and($bytes)->toBeGreaterThan($files);
         }
-    })->with(['publication', 'drain', 'removeOrphan', 'removeTemp', 'disposal']);
+    })->with(['publication', 'drain', 'removeOrphan', 'removeTemp', 'disposal', 'cleanUp']);
 
     it('writes the trash\'s and the erasure\'s own rows before their first byte', function (string $write): void {
         [$entry] = ($this->stored)();

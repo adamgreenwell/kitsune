@@ -244,7 +244,8 @@ final class MediaDisks
      *
      * ⚠️ AS `FilesystemManager::createScopedDriver()` DOES IT: prefixes join from the base disk inward, the outermost
      * visibility set wins, and the url is the base disk's, since a scoped entry's own is never read. A local disk's root
-     * is its root with the joined prefix under it.
+     * is its root with the joined prefix under it; an object store's `prefix` is the key prefix its objects sit under —
+     * its own `root`, then the joined prefix.
      *
      * @return array{driver: string, root: ?string, url: ?string, bucket: ?string, endpoint: ?string, prefix: string, visibility: ?string, serve: bool}
      */
@@ -281,6 +282,16 @@ final class MediaDisks
         $prefix = trim($base === '' ? $prefix : ($prefix === '' ? $base : $base.'/'.$prefix), '/');
         $local = $entry['driver'] === 'local';
 
+        /*
+         * ⚠️ AN OBJECT STORE'S OWN `root` IS A KEY PREFIX INSIDE THE STORE, innermost — Laravel hands it to the adapter,
+         * and wraps the disk's `prefix` and every scoped layer around that. Review found `root` left out: an S3 disk at
+         * `root` 'site' and another at `prefix` 'site' in the same bucket are one place, and compared as two, so a
+         * withdrawal took the file itself for its private copy and deleted it; while two disks with sibling roots
+         * compared as one, and refused every trash.
+         */
+        $storeRoot = $local ? '' : trim((string) ($entry['root'] ?? ''), '/');
+        $prefix = $storeRoot === '' ? $prefix : trim($storeRoot.($prefix === '' ? '' : '/'.$prefix), '/');
+
         return [
             'driver' => $entry['driver'],
             'root' => $local && is_string($entry['root'] ?? null) ? self::normalised(rtrim($entry['root'], '/').($prefix === '' ? '' : '/'.$prefix)) : null,
@@ -298,7 +309,8 @@ final class MediaDisks
      *
      * ⚠️ AS THE FRAMEWORK SERVES, NOT AS A NAME SUGGESTS. A disk is served when it has a url (a scoped disk inherits its
      * base disk's); when it is a local disk with `serve` on and public visibility, which Laravel's route answers with no
-     * signature; or when its media directory meets a directory a public link exposes or such a disk's root. A local disk
+     * signature; or when its media directory meets the document root, a directory a public link exposes, or such a
+     * disk's root. A local disk
      * served only to signatures is not, because Kitsune mints none (finding 4). An object store with no url that is
      * public by its own policy cannot be seen from here — a recorded limit. Core's private and intake disks, and the
      * configured private disk, are never listed: `refuseUnsafeMediaDisks()` refuses a private disk that is served.
@@ -383,7 +395,8 @@ final class MediaDisks
         if (self::servedBy($config, $private)) {
             throw new RuntimeException(sprintf(
                 'Refusing: kitsune.media.disks.private names [%s], which the web serves — through a url, `serve` with '
-                .'public visibility, or a public link — so a withdrawn file would stay public (ADR-042 decision 5). '
+                .'public visibility, a public link or the document root — so a withdrawn file would stay public (ADR-042 '
+                .'decision 5). '
                 .'Nothing was moved.',
                 $private,
             ));
@@ -466,8 +479,8 @@ final class MediaDisks
     }
 
     /**
-     * Directories the web serves as they are: public link targets, and the roots of local disks served with a url or
-     * with `serve` and public visibility.
+     * Directories the web serves as they are: the document root, public link targets, and the roots of local disks
+     * served with a url or with `serve` and public visibility.
      *
      * @return list<string>
      */
@@ -480,6 +493,13 @@ final class MediaDisks
                 $roots[] = self::normalised($target);
             }
         }
+
+        /*
+         * ⚠️ AND THE WEB SERVER'S DOCUMENT ROOT ITSELF — review. A link's target counts because its source sits in
+         * `public/`; a disk rooted in `public/` is served the same way, with nothing in the configuration to say so, and
+         * a private disk there would take every withdrawn file onto the web.
+         */
+        $roots[] = self::normalised(public_path());
 
         foreach (array_keys((array) $config->get('filesystems.disks', [])) as $name) {
             $entry = $config->get("filesystems.disks.{$name}");

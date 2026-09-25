@@ -219,6 +219,18 @@ it('refuses a trash whose public copy cannot be removed', function (): void {
         ->and(heldAt($path))->toBe(['public' => $this->checksum, MediaDisks::PRIVATE => null]);
 });
 
+/** A public disk that says it deleted the copy and kept it: the trash is refused, not committed with its file public. */
+it('refuses a trash whose public copy is reported gone and is not', function (): void {
+    [$entry, $path] = withdrawable();
+    $this->disks['public']->keepOnDelete = true;
+
+    $refused = refusedBy(fn () => $entry->delete());
+
+    expect($refused->reason)->toBe(MediaWithdrawalRefused::DELETE_FAILED)
+        ->and(isTrashed($entry))->toBeFalse()
+        ->and(heldAt($path)['public'])->toBe($this->checksum);
+});
+
 /*
  * T27. A copy counts only once read back with the right hash.
  */
@@ -500,8 +512,10 @@ describe('publication', function (): void {
 
         Artisan::call('kitsune:media-prune');
         $output = Artisan::output();
+        $heading = strpos($output, 'Awaiting publication');
 
-        expect(substr($output, (int) strpos($output, 'Awaiting publication')))->toContain($path);
+        expect($heading)->not->toBeFalse()
+            ->and(substr($output, (int) $heading))->toContain($path);
     });
 
     it('publishes nothing for an entry that is trashed', function (): void {
@@ -613,7 +627,7 @@ describe('disks that cannot keep a trashed file private', function (): void {
             ->and(isTrashed($public))->toBeFalse()
             ->and(heldAt($path)['public'])->toBe($this->checksum);
 
-        config(['kitsune.media.disks.private' => MediaDisks::PRIVATE]);
+        // Under the same configuration: a private file on a disk nothing serves has nothing to withdraw.
         $private->delete();
 
         expect(isTrashed($private))->toBeTrue();

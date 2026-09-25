@@ -61,3 +61,77 @@ it('rolls back its own savepoint when a nested write times out waiting for a loc
         ->and(DB::table('entries')->where('id', $this->entry->id)->value('title'))->toBe('Original')
         ->and(DB::table('audit_log')->where('action', 'entry.updated')->exists())->toBeFalse();
 });
+
+/*
+ * ⚠️ A TRANSACTION MYSQL ENDED WITH AN ERROR, which leaves PDO's view of it stale — review. A deadlock ends the whole
+ * transaction on an error packet, and pdo_mysql reads its transaction flag from the last success, so it still reports one
+ * open. A nested write asked there must refuse — and leave Laravel's level where it found it: the first version checked
+ * again inside its savepoint, which the server never opened, and Laravel's rollback of that savepoint then failed and
+ * left its level one too high.
+ *
+ * The deadlock is made in one process: a second connection, through mysqli, holds one row and waits for the other
+ * asynchronously while this connection asks for the first. The second connection has written more, so the engine makes
+ * this one the victim.
+ */
+it('refuses a nested write after the server ended the transaction on an error, and keeps Laravel\'s level', function (): void {
+    if (! in_array(DB::connection()->getDriverName(), ['mysql', 'mariadb'], true)) {
+        $this->markTestSkipped('Only pdo_mysql reads its transaction flag from the last success rather than the server.');
+    }
+
+    $config = DB::connection()->getConfig();
+    $rival = new mysqli((string) $config['host'], (string) $config['username'], (string) $config['password'], (string) $config['database'], (int) $config['port']);
+    $rival->query('SET SESSION innodb_lock_wait_timeout = 5');
+
+    // Two rows both connections can see, committed by the rival and removed by it afterwards.
+    $slug = 'deadlock-'.bin2hex(random_bytes(3));
+    $rival->query("INSERT INTO orgs (slug, name) VALUES ('{$slug}-a', 'A'), ('{$slug}-b', 'B')");
+    $a = (int) $rival->query("SELECT id FROM orgs WHERE slug = '{$slug}-a'")->fetch_row()[0];
+    $b = (int) $rival->query("SELECT id FROM orgs WHERE slug = '{$slug}-b'")->fetch_row()[0];
+
+    try {
+        $rival->query('START TRANSACTION');
+
+        for ($i = 0; $i < 200; $i++) {
+            $rival->query("INSERT INTO orgs (slug, name) VALUES ('{$slug}-weight-{$i}', 'Weight')");
+        }
+
+        $rival->query("SELECT id FROM orgs WHERE id = {$b} FOR UPDATE");
+        DB::table('orgs')->where('id', $a)->lockForUpdate()->first();
+        $rival->query("SELECT id FROM orgs WHERE id = {$a} FOR UPDATE", MYSQLI_ASYNC);
+        usleep(200_000);
+
+        $deadlocked = false;
+
+        try {
+            DB::table('orgs')->where('id', $b)->lockForUpdate()->first();
+        } catch (QueryException $deadlock) {
+            $deadlocked = str_contains($deadlock->getMessage(), 'Deadlock');
+        }
+
+        $level = DB::transactionLevel();
+        $refused = null;
+
+        try {
+            $this->entry->update(['title' => 'Autocommitted']);
+        } catch (RuntimeException $refusal) {
+            $refused = $refusal;
+        }
+
+        $levelAfter = DB::transactionLevel();
+
+        expect($deadlocked)->toBeTrue()
+            ->and($refused?->getMessage())->toContain('already ended the transaction')
+            ->and($levelAfter)->toBe($level)
+            ->and(DB::table('entries')->where('id', $this->entry->id)->value('title'))->not->toBe('Autocommitted');
+    } finally {
+        $rival->reap_async_query();
+        $rival->query('ROLLBACK');
+        $rival->query("DELETE FROM orgs WHERE slug IN ('{$slug}-a', '{$slug}-b')");
+        $rival->close();
+
+        // The engine ended the suite's own transaction too; open one for it to roll back.
+        if (! DB::connection()->getPdo()->inTransaction()) {
+            DB::connection()->getPdo()->beginTransaction();
+        }
+    }
+});

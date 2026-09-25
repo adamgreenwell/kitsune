@@ -312,6 +312,16 @@ describe('the keeper', function (): void {
             ->and($keeper->targetHolds)->toBeFalse();
     });
 
+    /** With the target public, the configured private disk comes before the other served disks. */
+    it('keeps the private copy over a served disk\'s when the target is public and the copies differ', function (): void {
+        [$id] = custodyFile('gone', [MediaDisks::PRIVATE => 'private', 'old-cdn' => 'served']);
+
+        $keeper = MediaCustody::keeper(custodyRow($id), 'public', 'gone', ['public', MediaDisks::PRIVATE, 'old-cdn']);
+
+        expect($keeper->mode)->toBe(MediaKeeper::FIRST)
+            ->and($keeper->disk)->toBe(MediaDisks::PRIVATE);
+    });
+
     it('says so when no disk holds the file', function (): void {
         [$id] = custodyFile('public', []);
 

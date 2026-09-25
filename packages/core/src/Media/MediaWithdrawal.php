@@ -104,7 +104,7 @@ final class MediaWithdrawal
             return;
         }
 
-        MediaDisks::refuseUnsafeMediaDisks($config);
+        $this->refuseUnsafeDisks($config, (int) $candidates[0]->entry_id);
 
         // ⚠️ THE ROW FIRST: it names the private disk before any byte moves, inside the same transaction.
         $moving = array_values(array_map(
@@ -152,7 +152,7 @@ final class MediaWithdrawal
         }
 
         $config = self::config();
-        MediaDisks::refuseUnsafeMediaDisks($config);
+        $this->refuseUnsafeDisks($config, (int) $this->locked[0]->entry_id);
         $served = MediaDisks::servedDisks($config);
 
         foreach ($this->locked as $file) {
@@ -305,6 +305,19 @@ final class MediaWithdrawal
             false,
             false,
         );
+    }
+
+    /**
+     * The configuration's refusal, as this write's: a trash or an erasure refused like any other, so the admin shows it
+     * as a notification naming the entry rather than failing with an error (decision 7).
+     */
+    private function refuseUnsafeDisks(Repository $config, int $entryId): void
+    {
+        try {
+            MediaDisks::refuseUnsafeMediaDisks($config);
+        } catch (RuntimeException $unsafe) {
+            throw new MediaWithdrawalRefused($entryId, MediaWithdrawalRefused::UNSAFE_DISKS, MediaDisks::configured($config, 'private'), $this->operation, $unsafe);
+        }
     }
 
     /**

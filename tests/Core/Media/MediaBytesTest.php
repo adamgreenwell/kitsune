@@ -117,3 +117,12 @@ it('confirms a delete by looking again, and refuses one the disk would not do', 
 
     expect(fn () => MediaBytes::delete('bytes-source', 'media/1/2026/09/other.png'))->toThrow(MediaCustodyFailure::class, 'could not be deleted');
 });
+
+/** A disk that says it deleted a file and did not: only looking again finds it — review found nothing asked this. */
+it('refuses a delete the disk reported and did not do', function (): void {
+    $this->source->keepOnDelete = true;
+
+    expect(fn () => MediaBytes::delete('bytes-source', 'media/1/2026/09/photo.png'))->toThrow(MediaCustodyFailure::class, 'could not be deleted');
+
+    expect(Storage::disk('bytes-source')->exists('media/1/2026/09/photo.png'))->toBeTrue();
+});

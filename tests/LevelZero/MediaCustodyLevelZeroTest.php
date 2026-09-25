@@ -228,8 +228,10 @@ it('keeps the only copy when a host\'s COMMIT around an erasure fails', function
 
     Artisan::call('kitsune:media-prune', ['--force' => true]);
     $output = Artisan::output();
+    $heading = strpos($output, 'Kept copies');
 
-    expect(substr($output, (int) strpos($output, 'Kept copies')))->toContain($path)
+    expect($heading)->not->toBeFalse()
+        ->and(substr($output, (int) $heading))->toContain($path)
         ->and(levelZeroHeld($path)[MediaDisks::PRIVATE])->toBe($this->checksum);
 });
 
@@ -360,6 +362,8 @@ describe('the write lock on SQLite', function (): void {
         $arrange = match ($path) {
             'publication', 'drain' => fn () => $entry->delete(),
             'removeTemp' => fn () => Storage::disk(MediaDisks::PRIVATE)->put(MediaBytes::partial($filePath), 'half'),
+            // Published, with the private copy the third write removes once it has checked the public one.
+            'cleanUp' => fn () => Storage::disk(MediaDisks::PRIVATE)->put($filePath, LEVEL_ZERO_PNG),
             'removeOrphan' => fn () => Storage::disk(MediaDisks::PRIVATE)->put('media/orphan.png', 'bytes'),
             default => fn () => null,
         };
@@ -394,10 +398,11 @@ describe('the write lock on SQLite', function (): void {
             'removeOrphan' => MediaCustody::removeOrphan(DB::connection(), MediaDisks::PRIVATE, 'media/orphan.png'),
             'removeTemp' => MediaCustody::removeTemp(DB::connection(), $entry->id, MediaDisks::PRIVATE, MediaBytes::partial($filePath)),
             'disposal' => MediaDisposal::remove(DB::connection(), [['entry_id' => $entry->id, 'disk' => 'public', 'path' => $filePath]]),
+            'cleanUp' => MediaCustody::cleanUp(DB::connection(), $entry->id),
         };
 
         expect($outcome())->toBe(['probed' => true, 'busy' => true]);
-    })->with(['soft delete', 'force-delete', 'publication', 'drain', 'removeOrphan', 'removeTemp', 'disposal']);
+    })->with(['soft delete', 'force-delete', 'publication', 'drain', 'removeOrphan', 'removeTemp', 'disposal', 'cleanUp']);
 
     /** The control: a transaction that only reads leaves the write lock to a rival. */
     it('leaves it free to a transaction that only reads', function (): void {

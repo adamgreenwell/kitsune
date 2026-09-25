@@ -42,6 +42,9 @@ class RefusingDisk extends LocalFilesystemAdapter
 
     public bool $failDeletes = false;
 
+    /** Answer a delete as done and keep the file — a disk that acknowledges what it did not do. */
+    public bool $keepOnDelete = false;
+
     public bool $failMoves = false;
 
     /** Write only this many bytes of anything written, as an interrupted copy leaves it. */
@@ -134,6 +137,10 @@ class RefusingDisk extends LocalFilesystemAdapter
     public function delete(string $path): void
     {
         $this->operation('delete', $path, true);
+
+        if ($this->keepOnDelete) {
+            return;
+        }
 
         if ($this->failDeletes) {
             throw UnableToDeleteFile::atLocation($path, 'refused by the test');
