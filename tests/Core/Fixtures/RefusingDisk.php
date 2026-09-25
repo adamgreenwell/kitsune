@@ -16,6 +16,7 @@ use Illuminate\Support\Facades\Storage;
 use League\Flysystem\Config;
 use League\Flysystem\Filesystem;
 use League\Flysystem\Local\LocalFilesystemAdapter;
+use League\Flysystem\UnableToCheckFileExistence;
 use League\Flysystem\UnableToCopyFile;
 use League\Flysystem\UnableToDeleteFile;
 use League\Flysystem\UnableToMoveFile;
@@ -53,6 +54,9 @@ class RefusingDisk extends LocalFilesystemAdapter
     /** @var list<string> Paths that exist but cannot be read. */
     public array $unreadable = [];
 
+    /** @var list<string> Paths whose presence cannot be told: asking whether one exists throws, as a store's failure does. */
+    public array $unknown = [];
+
     /** @var list<array{n: int, kind: string, callback: Closure(string, ?string): void}> */
     private array $triggers = [];
 
@@ -76,6 +80,16 @@ class RefusingDisk extends LocalFilesystemAdapter
         $adapter = new self($root, $name);
 
         Storage::set($name, new LaravelLocalAdapter(new Filesystem($adapter), $adapter, ['driver' => 'local', 'root' => $root, ...$config]));
+
+        /*
+         * ⚠️ AND THE CONFIGURATION NAMES THE SAME ROOT, when the disk is configured as a local one. Custody asks the
+         * configuration whether a disk can hold anything before it builds one — `MediaDisks::mayHold()` — so a disk
+         * installed here while its configured root pointed elsewhere was asked only if that other directory happened to
+         * exist: in `vendor/`, where an earlier test had built the real disk (review of slice 5b).
+         */
+        if (is_array(config("filesystems.disks.{$name}")) && (config("filesystems.disks.{$name}.driver") ?? 'local') === 'local') {
+            config(["filesystems.disks.{$name}.root" => $root]);
+        }
 
         return $adapter;
     }
@@ -207,6 +221,10 @@ class RefusingDisk extends LocalFilesystemAdapter
     public function fileExists(string $location): bool
     {
         $this->operation('fileExists', $location, false);
+
+        if (in_array($location, $this->unknown, true)) {
+            throw UnableToCheckFileExistence::forLocation($location);
+        }
 
         return parent::fileExists($location);
     }

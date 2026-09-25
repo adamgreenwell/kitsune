@@ -66,8 +66,18 @@ final class MediaReconcileCommand extends Command
     /** @var list<string> custody's warnings, collected while a row is forced and printed after it */
     private array $warnings = [];
 
-    /** Whether this run is collecting them: a listener outlives the command in a process that runs another. */
+    /**
+     * Whether a forced run is collecting them now, and whether this instance has registered its listener.
+     *
+     * ⚠️ ONE LISTENER PER INSTANCE. Artisan resolves a command once per process and reuses it, so a listener added on
+     * each run piled up — every warning printed once per earlier run — and nothing ever removed one (review of 5b).
+     */
     private bool $collecting = false;
+
+    private bool $listening = false;
+
+    /** The outcomes that fail a forced run (Adam, decision 7, 2026-09-25). */
+    private const FAILING = ['kept', 'missing', 'failed'];
 
     public function handle(): int
     {
@@ -118,10 +128,13 @@ final class MediaReconcileCommand extends Command
         }
 
         $this->line(sprintf(
-            '%s every media row, trashed included: a file belongs on [%s] while its entry is live and it is public, and on [%s] otherwise.',
+            '%s %s, trashed included: a file belongs on [%s] while its entry is live and it is public, and on [%s] '
+            .'otherwise. Asking %s.',
             $force ? 'Reconciling' : 'Listing, read-only,',
+            $entries === null ? 'every media row' : 'these entries\' media rows',
             $public,
             $private,
+            $this->asking($config),
         ));
 
         if ($force && $connection->getDriverName() === 'sqlite') {
@@ -141,10 +154,12 @@ final class MediaReconcileCommand extends Command
                 .'0001_01_01_000010_make_media_file_paths_unique has run.');
         }
 
-        $this->legacy($connection, $config, $entries);
+        if ($entries === null) {
+            $this->legacy($connection, $config, $force);
+        }
 
-        if ($force) {
-            $this->collecting = true;
+        if ($force && ! $this->listening) {
+            $this->listening = true;
 
             Event::listen(MessageLogged::class, function (MessageLogged $logged): void {
                 if ($this->collecting && $logged->level === 'warning' && str_starts_with($logged->message, 'Media custody')) {
@@ -158,6 +173,69 @@ final class MediaReconcileCommand extends Command
         $total = 0;
         $bad = 0;
 
+        $this->collecting = $force;
+        $this->warnings = [];
+
+        try {
+            $this->reconcile($connection, $config, $entries, $force, $counts, $findings, $total, $bad);
+        } finally {
+            $this->collecting = false;
+            $this->warnings = [];
+        }
+
+        $this->summary($counts, $force);
+
+        if ($force) {
+            return $bad === 0 ? self::SUCCESS : self::FAILURE;
+        }
+
+        $remaining = $this->recheck($connection, $config, $findings);
+
+        if ($findings === []) {
+            $this->info('Every media row names the disk its state says, and that disk holds its file.');
+
+            return self::SUCCESS;
+        }
+
+        if ($remaining === 0) {
+            $this->info(sprintf(
+                '%d of %d media row%s disagreed with where %s bytes were when listed, and none still does: %s settled while '
+                .'this ran. Nothing was changed by this run.',
+                count($findings),
+                $total,
+                $total === 1 ? '' : 's',
+                count($findings) === 1 ? 'its' : 'their',
+                count($findings) === 1 ? 'it' : 'each',
+            ));
+
+            return self::SUCCESS;
+        }
+
+        $this->warn(sprintf(
+            '%d of %d media row%s disagree%s with where %s bytes are, and nothing was changed.%s Re-run with --force: each '
+            .'file is copied where its row\'s state says, verified by SHA-256, the row repointed, and the copies custody\'s '
+            .'steps remove removed — one that differs named in the log with both hashes. Media has no revision history '
+            .'and no undo.',
+            $remaining,
+            $total,
+            $total === 1 ? '' : 's',
+            $remaining === 1 ? 's' : '',
+            $remaining === 1 ? 'its' : 'their',
+            $remaining === count($findings) ? '' : sprintf(' %d more disagreed when listed and no longer do.', count($findings) - $remaining),
+        ));
+
+        return self::FAILURE;
+    }
+
+    /**
+     * List every row, and under `--force` settle each one listed, in chunks.
+     *
+     * @param  list<int>|null  $entries
+     * @param  array<string, array<string, int>>  $counts
+     * @param  list<int>  $findings
+     */
+    private function reconcile(Connection $connection, Repository $config, ?array $entries, bool $force, array &$counts, array &$findings, int &$total, int &$bad): void
+    {
         $this->rows($connection, $entries)->chunkById(500, function (Collection $rows) use ($config, $connection, $force, &$counts, &$findings, &$total, &$bad): void {
             foreach ($rows as $row) {
                 $total++;
@@ -180,10 +258,10 @@ final class MediaReconcileCommand extends Command
                     continue;
                 }
 
-                [$outcome, $kept] = $this->settle($connection, (int) $row->entry_id);
+                [$outcome, $bucket] = $this->settle($connection, (int) $row->entry_id);
                 $counts[$survey['label']]['listed'] = ($counts[$survey['label']]['listed'] ?? 0) + 1;
-                $counts[$survey['label']][$kept === null ? 'settled' : $kept] = ($counts[$survey['label']][$kept === null ? 'settled' : $kept] ?? 0) + 1;
-                $bad += $kept === null ? 0 : 1;
+                $counts[$survey['label']][$bucket] = ($counts[$survey['label']][$bucket] ?? 0) + 1;
+                $bad += in_array($bucket, self::FAILING, true) ? 1 : 0;
 
                 $this->line($line.'  → '.$outcome);
 
@@ -194,36 +272,6 @@ final class MediaReconcileCommand extends Command
                 $this->warnings = [];
             }
         }, 'media_files.entry_id', 'entry_id');
-
-        $this->collecting = false;
-        $this->summary($counts, $force);
-
-        if ($force) {
-            return $bad === 0 ? self::SUCCESS : self::FAILURE;
-        }
-
-        $remaining = $this->recheck($connection, $config, $findings);
-
-        if ($findings === []) {
-            $this->info('Every media row names the disk its state says, and that disk holds its file.');
-
-            return self::SUCCESS;
-        }
-
-        $this->warn(sprintf(
-            '%d of %d media row%s disagree%s with where %s bytes are, and nothing was changed.%s Re-run with --force: each '
-            .'file is copied where its row\'s state says, verified by SHA-256, the row repointed, and the copies custody\'s '
-            .'steps remove removed — one that differs named in the log with both hashes. Media has no revision history '
-            .'and no undo.',
-            count($findings),
-            $total,
-            $total === 1 ? '' : 's',
-            count($findings) === 1 ? 's' : '',
-            count($findings) === 1 ? 'its' : 'their',
-            $remaining === count($findings) ? '' : sprintf(' %d of those settled while this ran.', count($findings) - $remaining),
-        ));
-
-        return $remaining === 0 ? self::SUCCESS : self::FAILURE;
     }
 
     /** @return list<int>|null|false the entries asked for, null for every entry, false when an option is not an id */
@@ -239,8 +287,9 @@ final class MediaReconcileCommand extends Command
         $ids = [];
 
         foreach ($option as $value) {
-            if (! ctype_digit((string) $value) || (int) $value < 1) {
-                $this->error(sprintf('--entry takes an entry id, a whole number: [%s] is not one. Nothing was listed.', $value));
+            // A positive whole number, written as PHP reads it back: one past PHP_INT_MAX would become another id.
+            if (! ctype_digit((string) $value) || (int) $value < 1 || (string) (int) $value !== ltrim((string) $value, '0')) {
+                $this->error(sprintf('--entry takes an entry id, a positive whole number: [%s] is not one. Nothing was listed.', $value));
 
                 return false;
             }
@@ -279,22 +328,42 @@ final class MediaReconcileCommand extends Command
     }
 
     /**
-     * Say so when rows still name a disk that is neither configured, core's nor served — ADR-041's `local` — because prune
-     * sweeps such a disk for orphans only while a row names it, and reconcile moves the rows off it.
-     *
-     * @param  list<int>|null  $entries
+     * The disks every row is asked about beside its target and the disk it names: both configured disks, core's private
+     * disk and the served disks, the last two wherever they can hold anything — or why that cannot be said.
      */
-    private function legacy(Connection $connection, Repository $config, ?array $entries): void
+    private function asking(Repository $config): string
     {
-        $known = [
-            MediaDisks::configured($config, 'public'),
-            MediaDisks::configured($config, 'private'),
-            MediaDisks::PRIVATE,
-            ...MediaDisks::servedDisks($config),
-        ];
+        try {
+            $disks = MediaCustody::asked($config, MediaDisks::configured($config, 'public'), MediaDisks::configured($config, 'private'));
+        } catch (Throwable $failure) {
+            return 'no disk can be listed — '.$failure->getMessage();
+        }
+
+        return implode(', ', array_map(static fn (string $disk): string => "[{$disk}]", $disks)).', and the disk each row names';
+    }
+
+    /**
+     * Say so when rows still name a local disk that is neither configured, core's nor served — ADR-041's `local` —
+     * because prune sweeps such a disk for orphans only while a row names it, and a forced run moves the rows off it.
+     *
+     * Not asked under `--entry`, whose rows are not every row naming the disk; and a disk no configuration names is left
+     * out, because prune cannot sweep it either. A configuration that cannot be read says nothing here: each row reports
+     * it as unknown.
+     */
+    private function legacy(Connection $connection, Repository $config, bool $force): void
+    {
+        try {
+            $known = [
+                MediaDisks::configured($config, 'public'),
+                MediaDisks::configured($config, 'private'),
+                MediaDisks::PRIVATE,
+                ...MediaDisks::servedDisks($config),
+            ];
+        } catch (Throwable) {
+            return;
+        }
 
         $named = $connection->table('media_files')
-            ->when($entries !== null, static fn (Builder $query) => $query->whereIntegerInRaw('entry_id', (array) $entries))
             ->select('disk')
             ->selectRaw('count(*) as rows_naming')
             ->groupBy('disk')
@@ -302,16 +371,22 @@ final class MediaReconcileCommand extends Command
             ->pluck('rows_naming', 'disk');
 
         foreach ($named as $disk => $rows) {
-            if (in_array((string) $disk, $known, true)) {
+            $disk = (string) $disk;
+
+            if (in_array($disk, $known, true) || ! is_array($config->get("filesystems.disks.{$disk}"))) {
                 continue;
             }
 
             $this->warn(sprintf(
-                '%d row%s name [%s], which kitsune:media-prune sweeps only while a row names it: run kitsune:media-prune '
-                .'--force before reconcile moves the last.',
+                $force
+                    ? '%d row%s [%s]: this run moves %s off it, after which kitsune:media-prune no longer sweeps it for '
+                      .'orphans — stop now and run kitsune:media-prune --force first if it may hold any.'
+                    : '%d row%s [%s], which kitsune:media-prune sweeps for orphans only while a row names it: run '
+                      .'kitsune:media-prune --force before kitsune:media-reconcile --force moves %s off it.',
                 (int) $rows,
-                (int) $rows === 1 ? '' : 's',
+                (int) $rows === 1 ? ' names' : 's name',
                 $disk,
+                (int) $rows === 1 ? 'it' : 'them',
             ));
         }
     }
@@ -381,7 +456,7 @@ final class MediaReconcileCommand extends Command
             $survey['target'],
             match (true) {
                 $survey['failure'] !== null => 'held by: cannot be told — '.$survey['failure'],
-                $survey['held'] === [] => 'held by no disk',
+                $survey['held'] === [] => 'held by no disk custody asks',
                 default => 'held by '.implode(', ', $survey['held']),
             },
         );
@@ -391,47 +466,67 @@ final class MediaReconcileCommand extends Command
      * Settle one row, then clean up after it — a compensation's steps, each under the lock and each deciding from the row
      * as it is there.
      *
-     * @return array{string, ?string} what happened, and why the row counts against the run: failed, missing or kept
+     * @return array{string, string} what happened, and its outcome: settled, unchanged, gone, kept, missing or failed
      */
     private function settle(Connection $connection, int $entryId): array
     {
         try {
             $settled = MediaCustody::settle($connection, $entryId);
-        } catch (Throwable $failure) {
-            return ['failed: '.$failure->getMessage(), 'failed'];
-        }
 
-        if ($settled === MediaCustody::GONE) {
-            return ['gone since the listing', null];
-        }
+            if ($settled === MediaCustody::GONE) {
+                return ['gone since the listing', 'gone'];
+            }
 
-        if ($settled === MediaCustody::MISSING) {
-            return ['missing: no disk holds its file — restore it from a backup, or erase the entry', 'missing'];
-        }
+            if ($settled === MediaCustody::MISSING) {
+                return [
+                    'missing: no disk custody asks holds its file — kitsune:media-prune lists a copy at its path on any other '
+                    .'disk; otherwise restore it from a backup, or erase the entry',
+                    'missing',
+                ];
+            }
 
-        try {
             $cleaned = MediaCustody::cleanUp($connection, $entryId);
+
+            if ($settled === MediaCustody::SET_ASIDE) {
+                return [$this->setAside($connection, $entryId), 'kept'];
+            }
         } catch (Throwable $failure) {
             return ['failed: '.$failure->getMessage(), 'failed'];
-        }
-
-        // Only a withdrawal to the private disk sets a copy aside, so a row naming another disk kept its unreadable one.
-        if ($settled === MediaCustody::SET_ASIDE) {
-            $named = $connection->table('media_files')->where('entry_id', $entryId)->value('disk');
-            $stayed = is_string($named) && $named !== MediaDisks::configured(app('config'), 'private');
-
-            return [
-                'set aside: a copy that cannot be read was left untouched, and the file taken off the web (Adam, decision 6, '
-                .'2026-09-25)'.($stayed ? sprintf('; the row still names [%s]', $named) : ''),
-                'kept',
-            ];
         }
 
         if ($cleaned === MediaCustody::UNSETTLED) {
             return ['kept: a copy was left where it is, as the log below says', 'kept'];
         }
 
-        return [$settled === MediaCustody::SETTLED || $cleaned === MediaCustody::SETTLED ? 'settled' : 'nothing to do under the lock', null];
+        if ($settled === MediaCustody::SETTLED || $cleaned === MediaCustody::SETTLED) {
+            return ['settled', 'settled'];
+        }
+
+        return ['nothing to do under the lock', 'unchanged'];
+    }
+
+    /**
+     * Which disks' copies were set aside, from custody's own warnings for this row, and whether the row still names one
+     * (Adam, decision 6, 2026-09-25).
+     */
+    private function setAside(Connection $connection, int $entryId): string
+    {
+        $disks = [];
+
+        foreach ($this->warnings as $warning) {
+            if (preg_match('/^Media custody, entry '.$entryId.': the copy of \[[^\]]*\] on \[([^\]]+)\] exists and cannot be read, so it was left/', $warning, $match) === 1) {
+                $disks[] = $match[1];
+            }
+        }
+
+        $named = $connection->table('media_files')->where('entry_id', $entryId)->value('disk');
+        $stayed = is_string($named) && in_array($named, $disks, true);
+
+        return sprintf(
+            'set aside: [%s] cannot be read, left untouched, and the file taken off the web (Adam, decision 6, 2026-09-25)%s',
+            implode('], [', $disks),
+            $stayed ? sprintf('; the row still names [%s]', $named) : '',
+        );
     }
 
     /** @param array<string, array<string, int>> $counts */
@@ -444,10 +539,12 @@ final class MediaReconcileCommand extends Command
         $order = [...self::FINDINGS, 'extra'];
         uksort($counts, static fn (string $a, string $b): int => array_search($a, $order, true) <=> array_search($b, $order, true));
 
+        $outcomes = ['settled', 'unchanged', 'gone', 'kept', 'missing', 'failed'];
+
         $this->table(
-            $force ? ['Label', 'Rows', 'Settled', 'Kept', 'Missing', 'Failed'] : ['Label', 'Rows'],
+            $force ? ['Label', 'Rows', 'Settled', 'Nothing to do', 'Gone', 'Kept', 'Missing', 'Failed'] : ['Label', 'Rows'],
             array_map(static fn (string $label, array $count): array => $force
-                ? [$label, $count['listed'] ?? 0, $count['settled'] ?? 0, $count['kept'] ?? 0, $count['missing'] ?? 0, $count['failed'] ?? 0]
+                ? [$label, $count['listed'] ?? 0, ...array_map(static fn (string $outcome): int => $count[$outcome] ?? 0, $outcomes)]
                 : [$label, $count['listed'] ?? 0], array_keys($counts), $counts),
         );
     }

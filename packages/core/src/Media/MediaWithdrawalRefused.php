@@ -36,6 +36,12 @@ final class MediaWithdrawalRefused extends RuntimeException
     /** The configured media disks cannot keep a withdrawn file private: they are one place, or the web serves the private one. */
     public const UNSAFE_DISKS = 'unsafe_disks';
 
+    /**
+     * A copy changed while it was read: it read as absent a moment after it was seen, or it matched the recorded checksum
+     * after the copy to keep was chosen without it (review of slice 5b).
+     */
+    public const CHANGED = 'changed';
+
     public function __construct(
         public readonly int $entryId,
         public readonly string $reason,
@@ -65,6 +71,7 @@ final class MediaWithdrawalRefused extends RuntimeException
                 self::COPY_FAILED => 'a verified copy could not be written to the private disk',
                 self::DELETE_FAILED => 'a copy could not be removed from',
                 self::UNREADABLE => 'a copy could not be read on',
+                self::CHANGED => 'a copy changed while it was read, on',
                 default => 'the private disk and the disk holding the file are one place:',
             },
             $disk,

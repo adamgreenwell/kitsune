@@ -46,6 +46,8 @@ final readonly class MediaKeeper
      *                               taking a file off the web (Adam, decision 6, 2026-09-25)
      * @param  array<string, MediaCustodyFailure>  $setAside  each disk found holding a copy it could not read, set aside
      *                                                        and never chosen, with its failure
+     * @param  ?string  $checksum  the row's recorded checksum, so a step removing a copy the keeper never read can ask
+     *                             whether it is the one that matches
      */
     public function __construct(
         public ?string $disk,
@@ -55,5 +57,24 @@ final readonly class MediaKeeper
         public array $hashes,
         public array $spare = [],
         public array $setAside = [],
+        public ?string $checksum = null,
     ) {}
+
+    /**
+     * Refuse to remove or overwrite a copy that matches the recorded checksum while the copy kept does not — one the
+     * keeper read as absent, or never read, and that is there now.
+     *
+     * ⚠️ RULE 2, WHERE THE KEEPER COULD NOT SEE (review of slice 5b). A copy that flaps — an object store's 404 a moment
+     * before, a sync tool rewriting it — reads as absent when the keeper hashes it, so the choice falls back to a copy
+     * that differs; when a step then finds it there again, it is the one copy that is right, and nothing matching the
+     * checksum is ever touched by a fallback.
+     *
+     * @throws MediaCustodyFailure
+     */
+    public function refuseToLose(string $disk, string $path, ?string $hash): void
+    {
+        if ($this->mode !== self::MATCH && MediaBytes::same($hash, $this->checksum)) {
+            throw new MediaCustodyFailure('matches', $disk, $path);
+        }
+    }
 }

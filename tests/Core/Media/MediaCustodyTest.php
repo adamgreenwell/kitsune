@@ -155,6 +155,21 @@ function custodyEvents(string $disk): array
     ));
 }
 
+/**
+ * Make a disk's copy read as absent at its nth operation of any kind, and be there again at a later one — an object
+ * store's momentary 404, a sync tool rewriting the file.
+ */
+function custodyFlap(RefusingDisk $disk, string $path, int $away, int $back): void
+{
+    $file = $disk->root().'/'.$path;
+    $disk->onOperation($away, static function () use ($file): void {
+        rename($file, $file.'.away');
+    }, 'any');
+    $disk->onOperation($back, static function () use ($file): void {
+        rename($file.'.away', $file);
+    }, 'any');
+}
+
 function custodyRow(int $entryId): stdClass
 {
     return DB::table('media_files')->where('entry_id', $entryId)->first();
@@ -835,6 +850,85 @@ describe('unreadable copies and exposure', function (): void {
             && ! str_ends_with($operation, MediaBytes::PARTIAL)))->toBe([])
             ->and(custodyRow($id)->disk)->toBe('local')
             ->and(file_get_contents($this->disks['local']->root().'/'.$path))->toBe('stale');
+    });
+
+    // T67(vii-c): the keeper matched on the target before it read the named disk, whose first read is the move-off's.
+    it('refuses at the move-off when it removed no served copy', function (): void {
+        custodyLocal();
+        [$id, $path] = custodyFile('local', ['local' => 'stale', MediaDisks::PRIVATE => CUSTODY_PNG, 'public' => CUSTODY_PNG], trashed: true);
+        $this->disks['local']->unreadable = [$path];
+        $public = $this->disks['public'];
+        // Seen at the presence pass; gone when the sweep asks.
+        $public->onOperation(2, static function () use ($public, $path): void {
+            @unlink($public->root().'/'.$path);
+        }, 'any');
+
+        expect(fn () => MediaCustody::settle(DB::connection(), $id))->toThrow(MediaCustodyFailure::class, 'exists and cannot be read');
+
+        expect(custodyRow($id)->disk)->toBe('local')
+            ->and(file_get_contents($this->disks['local']->root().'/'.$path))->toBe('stale');
+    });
+
+    /*
+     * T102. Core's private disk keeps no row: prune sweeps it wherever the private disk points and lists a copy there at a
+     * row's path, so the row moves to where it belongs though the copy there was set aside.
+     */
+    it('moves the row off core\'s private disk though its copy there was set aside', function (): void {
+        custodyHostPrivate();
+        [$id, $path] = custodyFile(MediaDisks::PRIVATE, [MediaDisks::PRIVATE => 'stale', 'public' => CUSTODY_PNG], trashed: true);
+        $this->disks[MediaDisks::PRIVATE]->unreadable = [$path];
+        Log::spy();
+
+        expect(MediaCustody::settle(DB::connection(), $id))->toBe(MediaCustody::SET_ASIDE)
+            ->and(custodyRow($id)->disk)->toBe('host-private')
+            ->and(Storage::disk('host-private')->get($path))->toBe(CUSTODY_PNG)
+            ->and(Storage::disk('public')->exists($path))->toBeFalse()
+            ->and(file_get_contents($this->disks[MediaDisks::PRIVATE]->root().'/'.$path))->toBe('stale');
+
+        Log::shouldNotHaveReceived('warning', [Mockery::on(fn (string $message): bool => str_contains($message, 'The row still names'))]);
+    });
+});
+
+/*
+ * T98-T100. A copy that reads as absent when the keeper hashes it, and is there again when a step reaches it, is the one
+ * copy that matches the checksum when the keeper fell back to another: settle refuses rather than remove or overwrite it
+ * — rule 2's "nothing matching it is touched by a fallback", where the keeper could not see (review of slice 5b).
+ */
+describe('a copy that reads as absent and is back', function (): void {
+    // T98: the served sweep.
+    it('keeps a served copy that alone matches, though the keeper read it as absent', function (): void {
+        [$id, $path] = custodyFile('public', ['public' => CUSTODY_PNG, MediaDisks::PRIVATE => 'stale'], trashed: true);
+        // The presence pass; the keeper's hash — gone; the sweep's presence check — back.
+        custodyFlap($this->disks['public'], $path, away: 2, back: 3);
+
+        expect(fn () => MediaCustody::settle(DB::connection(), $id))->toThrow(MediaCustodyFailure::class, 'it matches the recorded checksum');
+
+        expect(Storage::disk('public')->get($path))->toBe(CUSTODY_PNG)
+            ->and(custodyRow($id)->disk)->toBe('public');
+    });
+
+    // T99: the move-off.
+    it('keeps a named copy that alone matches, though the keeper read it as absent', function (): void {
+        custodyLocal();
+        [$id, $path] = custodyFile('local', ['local' => CUSTODY_PNG, MediaDisks::PRIVATE => 'stale'], trashed: true);
+        custodyFlap($this->disks['local'], $path, away: 2, back: 3);
+
+        expect(fn () => MediaCustody::settle(DB::connection(), $id))->toThrow(MediaCustodyFailure::class, 'it matches the recorded checksum');
+
+        expect(file_get_contents($this->disks['local']->root().'/'.$path))->toBe(CUSTODY_PNG)
+            ->and(custodyRow($id)->disk)->toBe('local');
+    });
+
+    // T100: the copy onto the target.
+    it('never overwrites a target copy that alone matches, though the keeper read it as absent', function (): void {
+        [$id, $path] = custodyFile('public', ['public' => 'changed by hand', MediaDisks::PRIVATE => CUSTODY_PNG], trashed: true);
+        // The presence pass; the keeper's hash — gone; settle's own read before the copy — back.
+        custodyFlap($this->disks[MediaDisks::PRIVATE], $path, away: 2, back: 3);
+
+        expect(fn () => MediaCustody::settle(DB::connection(), $id))->toThrow(MediaCustodyFailure::class, 'it matches the recorded checksum');
+
+        expect(file_get_contents($this->disks[MediaDisks::PRIVATE]->root().'/'.$path))->toBe(CUSTODY_PNG)
+            ->and(Storage::disk('public')->get($path))->toBe('changed by hand');
     });
 });
 

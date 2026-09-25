@@ -212,7 +212,7 @@ final class MediaCustody
             }
 
             if (MediaBytes::same($hashes[$disk], $checksum)) {
-                return new MediaKeeper($disk, $checksum, MediaKeeper::MATCH, $disk === $target, $hashes, $spare, $setAside);
+                return new MediaKeeper($disk, $checksum, MediaKeeper::MATCH, $disk === $target, $hashes, $spare, $setAside, $checksum);
             }
         }
 
@@ -225,7 +225,7 @@ final class MediaCustody
         }
 
         if ($held === []) {
-            return new MediaKeeper(null, $checksum, MediaKeeper::MISSING, false, $hashes);
+            return new MediaKeeper(null, $checksum, MediaKeeper::MISSING, false, $hashes, checksum: $checksum);
         }
 
         if (in_array($named, $held, true)) {
@@ -263,7 +263,7 @@ final class MediaCustody
             $setAside === [] ? '' : sprintf(' Unreadable, and set aside: [%s].', implode(', ', array_keys($setAside))),
         ));
 
-        return new MediaKeeper($disk, $expected, $mode, MediaBytes::same($hashes[$target] ?? null, $expected), $hashes, $spare, $setAside);
+        return new MediaKeeper($disk, $expected, $mode, MediaBytes::same($hashes[$target] ?? null, $expected), $hashes, $spare, $setAside, $checksum);
     }
 
     /**
@@ -323,8 +323,9 @@ final class MediaCustody
             if ($keeper->disk === null || $keeper->expected === null) {
                 Log::warning(sprintf(
                     'Media custody, entry %d: no disk holds [%s] — not [%s], nor any other disk custody asks — so '
-                    .'nothing was moved. kitsune:media-reconcile lists it as missing: restore it from a backup, or erase '
-                    .'the entry (ADR-042 decision 5).',
+                    .'nothing was moved. kitsune:media-reconcile lists it as missing, and kitsune:media-prune lists a copy '
+                    .'at its path on any other disk; otherwise restore it from a backup, or erase the entry (ADR-042 '
+                    .'decision 5).',
                     (int) $file->entry_id,
                     $path,
                     $named,
@@ -345,7 +346,11 @@ final class MediaCustody
                     MediaDisks::refuseCoincidingMediaDisks($config, $target, $keeper->disk);
                 }
 
-                self::noteDiffering($target, $path, $keeper->hashes[$target] ?? null, $keeper, 'overwriting');
+                // Read again when the keeper read it as absent: a copy there now may be the one that matches.
+                $there = $keeper->hashes[$target] ?? MediaBytes::hash($target, $path);
+                $keeper->refuseToLose($target, $path, $there);
+
+                self::noteDiffering($target, $path, $there, $keeper, 'overwriting');
                 MediaBytes::copyVerified($keeper->disk, $target, $path, $keeper->expected);
                 $changed = true;
             }
@@ -391,8 +396,14 @@ final class MediaCustody
                 }
             }
 
-            // The row moves last, and never off a named disk whose copy was set aside: that copy stays where a row points.
-            if ($named !== $target && ! isset($setAside[$named])) {
+            /*
+             * The row moves last, and never off a named disk whose copy was set aside and would otherwise be stranded — one
+             * the move-off leaves: that copy stays where a row points. Core's private disk is not one: prune sweeps it
+             * wherever the private disk points, and lists a copy there at a row's path as an extra copy (review of 5b).
+             */
+            $stays = isset($setAside[$named]) && ! in_array($named, [$private, MediaDisks::PRIVATE], true);
+
+            if ($named !== $target && ! $stays) {
                 $connection->table('media_files')->where('entry_id', (int) $file->entry_id)->update(['disk' => $target]);
                 $changed = true;
             }
@@ -406,7 +417,7 @@ final class MediaCustody
                     $path,
                     $disk,
                     $target,
-                    $disk === $named
+                    $disk === $named && $stays
                         ? sprintf(' The row still names [%s]; once it can be read, kitsune:media-reconcile --entry=%d --force '
                           .'settles it.', $disk, (int) $file->entry_id)
                         : '',
@@ -640,7 +651,9 @@ final class MediaCustody
                 (int) $file->entry_id,
                 $path,
                 $target,
-                $keeper->disk === null ? 'because no disk holds one now' : "which is on [{$keeper->disk}]",
+                $keeper->disk === null
+                    ? 'because no disk holds one now'
+                    : sprintf('which is on [%s]; kitsune:media-reconcile --entry=%d --force rewrites [%s] from it', $keeper->disk, (int) $file->entry_id, $target),
             ));
 
             return self::UNSETTLED;
@@ -674,7 +687,7 @@ final class MediaCustody
             $hashes[$disk] = $hash;
         }
 
-        $keeper = new MediaKeeper($keeper->disk, $keeper->expected, $keeper->mode, $keeper->targetHolds, [...$keeper->hashes, ...$hashes]);
+        $keeper = new MediaKeeper($keeper->disk, $keeper->expected, $keeper->mode, $keeper->targetHolds, [...$keeper->hashes, ...$hashes], checksum: $keeper->checksum);
 
         foreach (array_keys($hashes) as $disk) {
             self::removeCopy($config, $target, $disk, $path, $keeper);
@@ -859,6 +872,7 @@ final class MediaCustody
 
         if ($held) {
             $hash = $keeper->hashes[$disk] ?? MediaBytes::hash($disk, $path);
+            $keeper->refuseToLose($disk, $path, $hash);
 
             self::noteDiffering($disk, $path, $hash, $keeper, 'removing', $target);
 

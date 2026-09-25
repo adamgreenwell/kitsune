@@ -20,7 +20,7 @@ use Throwable;
  *
  * The reason is a word a caller can branch on: `coinciding` (two disks are one place), `copy`, `verify` (the copy's
  * bytes do not match), `rename`, `delete`, `unreadable` (the file is there and cannot be read), `unknown` (whether it is
- * there cannot be told). The message names the disk and the path the application stores, never a server path.
+ * there cannot be told), `matches` (a copy the keeper read as absent is there, and is the one that matches). The message names the disk and the path the application stores, never a server path.
  */
 final class MediaCustodyFailure extends RuntimeException
 {
@@ -41,6 +41,7 @@ final class MediaCustodyFailure extends RuntimeException
                 'rename' => 'the verified copy could not be moved into place',
                 'delete' => 'it could not be deleted',
                 'unreadable' => 'it exists and cannot be read',
+                'matches' => 'it matches the recorded checksum and the copy kept does not — it read as absent a moment before',
                 default => 'whether it exists cannot be told',
             },
         ), 0, $previous);

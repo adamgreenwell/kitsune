@@ -247,17 +247,30 @@ final class MediaWithdrawal
                 throw $this->refused($id, MediaWithdrawalRefused::UNREADABLE, $failure);
             }
 
+            /*
+             * ⚠️ ~~Every copy seen a moment ago has gone since: there is nothing left to take off the web.~~ A copy seen a
+             * moment ago that reads as absent now may be back a moment later — an object store's 404, a sync tool
+             * rewriting it — and the trash would commit with it on the web (review of slice 5b). Refused: the entry stays
+             * as it was, and a retry finds the file where it is.
+             */
             if ($keeper->disk === null || $keeper->expected === null) {
-                // Every copy seen a moment ago has gone since: there is nothing left to take off the web.
-                return;
+                throw $this->refused($id, MediaWithdrawalRefused::CHANGED, new MediaCustodyFailure('unknown', $held[0], $path));
             }
 
             if (! $keeper->targetHolds) {
                 try {
-                    MediaCustody::noteDiffering($target, $path, $keeper->hashes[$target] ?? null, $keeper, 'overwriting');
+                    // Read again when the keeper read it as absent: a copy there now may be the one that matches.
+                    $there = $keeper->hashes[$target] ?? MediaBytes::hash($target, $path);
+                    $keeper->refuseToLose($target, $path, $there);
+                    MediaCustody::noteDiffering($target, $path, $there, $keeper, 'overwriting');
                     MediaBytes::copyVerified($keeper->disk, $target, $path, $keeper->expected);
                 } catch (MediaCustodyFailure $failure) {
-                    throw $this->refused($id, $failure->reason === 'coinciding' ? MediaWithdrawalRefused::COINCIDING : MediaWithdrawalRefused::COPY_FAILED, $failure);
+                    throw $this->refused($id, match ($failure->reason) {
+                        'coinciding' => MediaWithdrawalRefused::COINCIDING,
+                        'matches' => MediaWithdrawalRefused::CHANGED,
+                        'unreadable', 'unknown' => MediaWithdrawalRefused::UNREADABLE,
+                        default => MediaWithdrawalRefused::COPY_FAILED,
+                    }, $failure);
                 }
             }
 
@@ -269,10 +282,12 @@ final class MediaWithdrawal
                 }
 
                 try {
-                    // Taken again when the keeper read it as absent and it is here now: nothing is deleted unhashed (5b).
+                    // Taken again when the keeper read it as absent and it is here now: nothing is deleted unhashed, and
+                    // nothing that alone matches the checksum is deleted at all (review of slice 5b).
                     $hash = $keeper->hashes[$disk] ?? MediaBytes::hash($disk, $path);
+                    $keeper->refuseToLose($disk, $path, $hash);
                 } catch (MediaCustodyFailure $failure) {
-                    throw $this->refused($id, MediaWithdrawalRefused::UNREADABLE, $failure);
+                    throw $this->refused($id, $failure->reason === 'matches' ? MediaWithdrawalRefused::CHANGED : MediaWithdrawalRefused::UNREADABLE, $failure);
                 }
 
                 MediaCustody::noteDiffering($disk, $path, $hash, $keeper, 'removing', $target);

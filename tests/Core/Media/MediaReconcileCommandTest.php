@@ -184,7 +184,10 @@ describe('a read-only run', function (): void {
             ->and(array_values(array_unique(array_column(RefusingDisk::$log, 'event'))))->toBe(['fileExists'])
             ->and(array_filter($statements, static fn (string $sql): bool => str_contains($sql, 'for update') || str_starts_with(ltrim($sql), 'update')))->toBe([])
             ->and(DB::table('media_files')->orderBy('entry_id')->get(['entry_id', 'disk'])->map(fn (object $row): array => (array) $row)->all())->toBe($before)
-            ->and(strpos($output, '1 row name [local]'))->toBeLessThan(strpos($output, 'entry '.$rows['unknown'][0].' '))
+            ->and($output)->toContain('Asking [public], ['.MediaDisks::PRIVATE.'], [old-cdn], and the disk each row names.')
+            ->and($output)->toContain('1 row names [local], which kitsune:media-prune sweeps for orphans only while a row names it')
+            ->and($output)->not->toContain('names [gone]')
+            ->and(strpos($output, '1 row names [local]'))->toBeLessThan(strpos($output, 'entry '.$rows['unknown'][0].' '))
             ->and($output)->toContain('nothing was changed');
     });
 
@@ -238,6 +241,8 @@ describe('a forced run', function (): void {
             expect(is_file($this->disks['local']->root().'/'.$path))->toBeFalse();
         }
 
+        expect($output)->toContain('3 rows name [local]: this run moves them off it, after which kitsune:media-prune no longer sweeps it');
+
         // The differing private copy is named with both hashes, on the console as in the log.
         expect($output)->toContain('Media custody: removing the copy of ['.$r4differs[1].'] on ['.MediaDisks::PRIVATE.'], whose hash ['.hash('sha256', 'changed by hand').']')
             ->and($output)->toContain('differs from the kept copy\'s ['.$this->checksum.']')
@@ -276,7 +281,7 @@ describe('a forced run', function (): void {
         [$exit, $output] = reconcileRun(['--force' => true]);
 
         expect(reconcileLine($output, $id))->toStartWith('exposed ')
-            ->and(reconcileLine($output, $id))->toContain('→ set aside')
+            ->and(reconcileLine($output, $id))->toContain('→ set aside: ['.MediaDisks::PRIVATE.'] cannot be read, left untouched')
             ->and($output)->toContain('on ['.MediaDisks::PRIVATE.'] exists and cannot be read')
             ->and(reconcileHeld($path, ['public', 'host-private', MediaDisks::PRIVATE]))->toBe([
                 'public' => null,
@@ -285,10 +290,19 @@ describe('a forced run', function (): void {
             ])
             ->and($exit)->toBe(1);
 
+        // Read-only sees where the bytes are: an extra copy, prune's, and no finding.
         [$exit, $output] = reconcileRun();
 
         expect(reconcileLine($output, $id))->toStartWith('extra ')
             ->and($exit)->toBe(0);
+
+        // Forced, it reads them: off the web now, nothing answers for the unreadable copy, and the row fails until it can
+        // be read — a check that runs --force stays red where a read-only one does not.
+        [$exit, $output] = reconcileRun(['--force' => true]);
+
+        expect(reconcileLine($output, $id))->toContain('→ failed: ')
+            ->and(reconcileLine($output, $id))->toContain('exists and cannot be read')
+            ->and($exit)->toBe(1);
     });
 
     it('leaves a row on a named disk it cannot read, and fails every run until it can be read', function (): void {
@@ -378,6 +392,8 @@ describe('a forced run', function (): void {
 
         expect(reconcileLine($output, $id))->toStartWith('missing ')
             ->and(reconcileLine($output, $id))->toContain('→ nothing to do under the lock')
+            // Rows, settled, nothing to do: a row custody did not touch is not counted as settled.
+            ->and($output)->toMatch('/\\|\\s*missing\\s*\\|\\s*1\\s*\\|\\s*0\\s*\\|\\s*1\\s*\\|/')
             ->and($exit)->toBe(0);
     });
 
@@ -399,6 +415,7 @@ describe('a forced run', function (): void {
 
         expect($changed)->toBeTrue()
             ->and(reconcileLine($output, $id))->toContain('→ kept')
+            ->and($output)->toContain('kitsune:media-reconcile --entry='.$id.' --force rewrites [public] from it')
             ->and(reconcileHeld($path)[MediaDisks::PRIVATE])->toBe($this->checksum)
             ->and($exit)->toBe(1);
     });
@@ -473,9 +490,8 @@ describe('failures', function (): void {
 
         [$exit, $output] = reconcileRun(['--force' => true]);
 
-        expect(reconcileLine($output, $failing))->toContain('→ failed: ')
-            ->and(reconcileLine($output, $failing))->toContain('['.MediaDisks::PRIVATE.']')
-            ->and(reconcileLine($output, $failing))->toContain($failingPath)
+        // The failure's own words name the disk and the path, not only the listing before them.
+        expect(explode('→ failed: ', (string) reconcileLine($output, $failing))[1] ?? '')->toContain('['.$failingPath.'] on the ['.MediaDisks::PRIVATE.'] disk')
             ->and(reconcileNamed($failing))->toBe('public')
             ->and(reconcileHeld($failingPath)['public'])->toBe($this->checksum)
             ->and(reconcileLine($output, $next))->toContain('→ settled')
@@ -501,10 +517,57 @@ describe('failures', function (): void {
 
         [$exit, $output] = reconcileRun(['--force' => true]);
 
-        expect(reconcileLine($output, $missing))->toContain('→ missing')
+        expect(reconcileLine($output, $missing))->toContain('→ missing: no disk custody asks holds its file — kitsune:media-prune lists a copy at its path on any other disk')
             ->and(reconcileHeld($nextPath)[MediaDisks::PRIVATE])->toBe($this->checksum)
             ->and($exit)->toBe(1);
     });
+});
+
+/*
+ * T104. Whether a configured disk holds a path cannot be told — an object store's failure — so the row is unknown, never
+ * missing, and a forced run fails it.
+ */
+it('reads a presence check that fails as unknown, never absent', function (): void {
+    [$id, $path] = reconcileFile('public', ['public' => RECONCILE_PNG], trashed: true);
+    $this->disks['public']->unknown = [$path];
+
+    [$exit, $output] = reconcileRun();
+
+    expect(reconcileLine($output, $id))->toStartWith('unknown ')
+        ->and($exit)->toBe(1);
+
+    [$exit, $output] = reconcileRun(['--force' => true]);
+
+    expect(reconcileLine($output, $id))->toContain('→ failed: ')
+        ->and(reconcileLine($output, $id))->toContain('whether it exists cannot be told')
+        ->and(reconcileHeld($path)[MediaDisks::PRIVATE])->toBeNull()
+        ->and($exit)->toBe(1);
+});
+
+/* T105. Artisan reuses a command in a process: each forced run prints each custody warning once, whatever ran before. */
+it('prints each custody warning once, however many forced runs came before in the process', function (): void {
+    [$first] = reconcileFile('public', ['public' => RECONCILE_PNG, MediaDisks::PRIVATE => 'changed by hand']);
+    [$second, $path] = reconcileFile('public', ['public' => RECONCILE_PNG, MediaDisks::PRIVATE => 'changed another way']);
+
+    reconcileRun(['--force' => true, '--entry' => [(string) $first]]);
+    [, $output] = reconcileRun(['--force' => true, '--entry' => [(string) $second]]);
+
+    expect(substr_count($output, 'Media custody: removing the copy of ['.$path.']'))->toBe(1);
+});
+
+/*
+ * T106. A configuration no disk can be resolved from: read-only says what --force would refuse, and lists every row as
+ * unknown, rather than dying before the first.
+ */
+it('lists every row as unknown when the configuration cannot be read, rather than failing before the first', function (): void {
+    [$id] = reconcileFile('public', ['public' => RECONCILE_PNG], trashed: true);
+    config(['filesystems.disks.broken' => ['driver' => 'scoped', 'disk' => 'nowhere', 'prefix' => 'x']]);
+
+    [$exit, $output] = reconcileRun();
+
+    expect($output)->toContain('kitsune:media-reconcile --force refuses until this is fixed')
+        ->and(reconcileLine($output, $id))->toStartWith('unknown ')
+        ->and($exit)->toBe(1);
 });
 
 /* T85. Every org's rows, with no context set: a console asking on an operator's behalf has no org to narrow by. */
@@ -537,6 +600,15 @@ describe('--entry', function (): void {
             ->and(reconcileHeld($otherPath)['public'])->toBe($this->checksum)
             ->and($exit)->toBe(0);
     });
+
+    it('fails on an entry that is not a positive whole number, as written', function (string $value): void {
+        reconcileFile('public', ['public' => RECONCILE_PNG], trashed: true);
+
+        [$exit, $output] = reconcileRun(['--entry' => [$value]]);
+
+        expect($output)->toContain("--entry takes an entry id, a positive whole number: [{$value}] is not one")
+            ->and($exit)->toBe(1);
+    })->with(['0', '9223372036854775808', '1.5', 'x']);
 
     it('fails on an entry that has no media file, listing nothing', function (): void {
         [$id] = reconcileFile('public', ['public' => RECONCILE_PNG], trashed: true);
@@ -626,7 +698,8 @@ describe('reading at scale', function (): void {
 
         expect($settled)->toBeTrue()
             ->and(reconcileLine($output, $id))->toStartWith('exposed ')
-            ->and($output)->toContain('1 of those settled while this ran')
+            ->and($output)->toContain('1 of 1 media row disagreed with where its bytes were when listed, and none still does')
+            ->and($output)->not->toContain('Re-run with --force')
             ->and($exit)->toBe(0);
     });
 });

@@ -722,6 +722,67 @@ describe('disks that cannot keep a trashed file private', function (): void {
     });
 
     /*
+     * T101. A trash refuses rather than delete a copy that alone matches the checksum and read as absent to the keeper,
+     * and rather than commit when every copy it saw a moment ago read as absent — either may be back on the web a moment
+     * later (review of slice 5b).
+     */
+    it('refuses to trash while a copy that alone matches read as absent to the keeper', function (): void {
+        [$entry, $path] = withdrawable();
+        Storage::disk(MediaDisks::PRIVATE)->put($path, 'stale');
+        $public = $this->disks['public'];
+        $file = $public->root().'/'.$path;
+        // Withdrawal's presence check and its partial's, the keeper's presence check, the keeper's hash — gone — then
+        // withdrawal's own hash before the delete: back.
+        $public->onOperation(4, static function () use ($file): void {
+            rename($file, $file.'.away');
+        }, 'any');
+        $public->onOperation(5, static function () use ($file): void {
+            rename($file.'.away', $file);
+        }, 'any');
+
+        expect(fn () => $entry->delete())->toThrow(MediaWithdrawalRefused::class, 'a copy changed while it was read');
+
+        expect(isTrashed($entry))->toBeFalse()
+            ->and(heldAt($path)['public'])->toBe($this->checksum);
+    });
+
+    it('refuses to trash rather than overwrite a private copy that alone matches, though the keeper read it as absent', function (): void {
+        [$entry, $path] = withdrawable();
+        Storage::disk('public')->put($path, 'changed by hand');
+        Storage::disk(MediaDisks::PRIVATE)->put($path, WITHDRAWN_PNG);
+        $private = $this->disks[MediaDisks::PRIVATE];
+        $file = $private->root().'/'.$path;
+        // The keeper's presence check, its hash — gone — then withdrawal's own read before the copy: back.
+        $private->onOperation(2, static function () use ($file): void {
+            rename($file, $file.'.away');
+        }, 'any');
+        $private->onOperation(3, static function () use ($file): void {
+            rename($file.'.away', $file);
+        }, 'any');
+
+        expect(fn () => $entry->delete())->toThrow(MediaWithdrawalRefused::class, 'a copy changed while it was read');
+
+        expect(isTrashed($entry))->toBeFalse()
+            ->and(heldAt($path))->toBe(['public' => hash('sha256', 'changed by hand'), MediaDisks::PRIVATE => $this->checksum]);
+    });
+
+    it('refuses to trash while every copy it saw reads as absent', function (): void {
+        [$entry, $path] = withdrawable();
+        $public = $this->disks['public'];
+        $file = $public->root().'/'.$path;
+        $public->onOperation(4, static function () use ($file): void {
+            rename($file, $file.'.away');
+        }, 'any');
+
+        expect(fn () => $entry->delete())->toThrow(MediaWithdrawalRefused::class, 'a copy changed while it was read');
+
+        rename($file.'.away', $file);
+
+        expect(isTrashed($entry))->toBeFalse()
+            ->and(heldAt($path)['public'])->toBe($this->checksum);
+    });
+
+    /*
      * T67(vi). A trash sets nothing aside: it refuses on any copy it cannot read and leaves the entry live, so nothing is
      * exposed by refusing. Only settle, taking an already-trashed file off the web, sets such a copy aside (Adam,
      * decision 6, 2026-09-25).
