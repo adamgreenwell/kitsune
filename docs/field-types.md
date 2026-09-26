@@ -686,6 +686,12 @@ media_files
   created_at
 ```
 
+> ⚠️ **Amended 2026-09-25 by ADR-042 decision 5 (Adam, decision 8, 2026-09-25):** `path` is unique
+> (`media_files_path_unique`), added by a migration of its own that refuses an installation where two rows name one path
+> or a path is written in a form the disks read as another. A row's path is its file's and no other row's, so "dedupe"
+> can no longer mean two rows sharing one file: an import that shares one file between entries gives each its own copy,
+> and writes each path as the disks read it.
+
 A "media picker" field is therefore just **`relation` constrained to media entry types**. No new storage strategy, no second permission model, no parallel search index.
 
 Three things fall out of this for free, and they're the reason it's worth doing:
