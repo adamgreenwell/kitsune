@@ -386,7 +386,7 @@ final class MediaReconcileCommand extends Command
 
             // Another name for a disk prune always sweeps — Laravel's `public`, say, at the public disk's directory — is
             // swept under that name whatever names it (review of slice 5b).
-            $swept = $this->sweptAs($config, $disk, $known);
+            $swept = $this->sweptAs($config, $disk, $known, array_map('strval', $named->keys()->all()));
 
             if ($swept === true) {
                 continue;
@@ -435,8 +435,9 @@ final class MediaReconcileCommand extends Command
      * disk; a disk that cannot be asked is none of them.
      *
      * @param  list<string>  $disks
+     * @param  list<string>  $rowNamed  the disks rows name, which prune lists orphans on too
      */
-    private function sweptAs(Repository $config, string $disk, array $disks): bool|string
+    private function sweptAs(Repository $config, string $disk, array $disks, array $rowNamed): bool|string
     {
         try {
             if (! MediaDisks::mayHold($config, $disk)) {
@@ -459,12 +460,22 @@ final class MediaReconcileCommand extends Command
                 }
             }
 
-            // And any configured disk inside it — a host's — which stops prune while a row names this one (review of 5b).
+            /*
+             * And any configured disk inside it — a host's, read from its configuration alone — or another disk a row
+             * names that it lies inside: prune refuses to list while either nests (review of 5b). One disk that cannot
+             * be asked leaves out only itself.
+             */
             foreach (array_keys((array) $config->get('filesystems.disks', [])) as $other) {
                 $other = (string) $other;
 
-                if ($other !== $disk && MediaDisks::mayHold($config, $other) && MediaDisks::within($config, $other, $disk)) {
-                    return $other;
+                try {
+                    if ($other !== $disk && is_array($config->get("filesystems.disks.{$other}")) && MediaDisks::mayHold($config, $other)
+                        && (MediaDisks::within($config, $other, $disk, build: false)
+                            || (in_array($other, $rowNamed, true) && MediaDisks::within($config, $disk, $other)))) {
+                        return $other;
+                    }
+                } catch (Throwable) {
+                    continue;
                 }
             }
         } catch (Throwable) {

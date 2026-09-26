@@ -146,12 +146,10 @@ final class MediaPruneCommand extends Command
          * named by no row — lists no orphans, so nesting inside it harms nothing, and each is scanned. `onePlace()`
          * counts nesting as one place, which is right for refusing a move and wrong for reading a listing.
          */
-        $nesting = $this->nesting($config, [...$kitsune, ...$named], [
-            ...$kitsune,
-            ...$named,
-            ...$servedOnly,
-            ...array_map('strval', array_keys((array) $config->get('filesystems.disks', []))),
-        ]);
+        $nesting = $this->nesting($config, [...$kitsune, ...$named], [...$kitsune, ...$named, ...$servedOnly], array_map(
+            'strval',
+            array_keys((array) $config->get('filesystems.disks', [])),
+        ));
 
         if ($nesting !== null) {
             $this->error(sprintf(
@@ -443,23 +441,37 @@ final class MediaPruneCommand extends Command
 
     /**
      * A disk whose media directory lies inside one prune lists orphans on, and that one — [inner, outer] — or null.
-     * Asked only of disks that are configured and can hold anything, since asking builds a local disk.
+     * Asked only of disks that are configured and can hold anything. The disks prune scans are built, as the scan
+     * builds them; every other configured disk — a host's — is read from its configuration alone, since building one
+     * may need a package the install does not have (review of slice 5b). A disk that cannot be read either way cannot
+     * be built, by prune or anything else, and is left out.
      *
      * @param  list<string>  $listing  the disks prune lists orphans on
-     * @param  list<string>  $disks  every disk that could lie inside one of them
+     * @param  list<string>  $scanned  the disks prune scans, which it builds anyway
+     * @param  list<string>  $configured  every configured disk
      * @return array{0: string, 1: string}|null
      */
-    private function nesting(Repository $config, array $listing, array $disks): ?array
+    private function nesting(Repository $config, array $listing, array $scanned, array $configured): ?array
     {
         $askable = static fn (array $names): array => array_values(array_filter(
             array_unique($names),
-            static fn (string $disk): bool => is_array($config->get("filesystems.disks.{$disk}")) && MediaDisks::mayHold($config, $disk),
+            static function (string $disk) use ($config): bool {
+                try {
+                    return is_array($config->get("filesystems.disks.{$disk}")) && MediaDisks::mayHold($config, $disk);
+                } catch (Throwable) {
+                    return false;
+                }
+            },
         ));
 
         foreach ($askable($listing) as $outer) {
-            foreach ($askable($disks) as $inner) {
-                if (MediaDisks::within($config, $inner, $outer)) {
-                    return [$inner, $outer];
+            foreach ($askable([...$scanned, ...$configured]) as $inner) {
+                try {
+                    if (MediaDisks::within($config, $inner, $outer, build: in_array($inner, $scanned, true))) {
+                        return [$inner, $outer];
+                    }
+                } catch (Throwable) {
+                    continue;
                 }
             }
         }

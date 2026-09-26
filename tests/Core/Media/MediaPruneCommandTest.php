@@ -269,7 +269,7 @@ it('leaves alone a disk no row names', function (): void {
 
 /*
  * What custody leaves, and what prune does with it — ADR-042 decision 5 (T20, T21; slice 5b: T92-T97, T108,
- * T110-T112, T115-T118, T120, T121, T123, T124).
+ * T110-T112, T115-T118, T120, T121, T123, T124, T127).
  *
  * ⚠️ A FILE IS AN ORPHAN WHEN NO ROW NAMES ITS PATH, ON ANY DISK. Custody leaves verified copies at a row's own path on
  * disks the row does not name, and any one of them may be the only good copy: each is listed as ~~kept, never deleted~~
@@ -869,6 +869,41 @@ it('runs past a configured local disk with no root', function (?string $root): v
     expect(Artisan::output())->not->toContain('Refusing to list')
         ->and($exit)->toBe(0);
 })->with(['no root' => [null], 'an empty root, as env() gives for a blank value' => ['']]);
+
+/*
+ * T127. A host's disk that nothing here names or serves is read from its configuration, not built: building one may need
+ * a Flysystem package the install lacks — a read-only disk, a prefixed one — and prune stopped on every run (review of
+ * slice 5b).
+ */
+it('runs past a host disk it could not build', function (array $extra): void {
+    $root = sys_get_temp_dir().'/kitsune-prune-host-'.bin2hex(random_bytes(4));
+    mkdir($root, 0777, true);
+
+    try {
+        config(['filesystems.disks.host-archive' => ['driver' => 'local', 'root' => $root, ...$extra]]);
+
+        $exit = Artisan::call('kitsune:media-prune');
+
+        expect(Artisan::output())->not->toContain('Refusing to list')
+            ->and($exit)->toBe(0);
+    } finally {
+        exec('rm -rf '.escapeshellarg($root));
+    }
+})->with(['read-only' => [['read-only' => true]], 'prefixed' => [['prefix' => 'archive']]]);
+
+/* ...and one it could not build that nests inside the public disk is still seen to nest: read, not skipped. */
+it('still refuses a host disk it could not build that nests inside the public disk', function (): void {
+    $root = Storage::disk('public')->path('media/host');
+    mkdir($root, 0777, true);
+    config(['filesystems.disks.host-archive' => ['driver' => 'local', 'root' => $root, 'read-only' => true]]);
+    file_put_contents($root.'/photo.jpg', 'the host\'s');
+
+    $exit = Artisan::call('kitsune:media-prune', ['--force' => true]);
+
+    expect(Artisan::output())->toContain('Refusing to list: the media directory of [host-archive] is inside [public]\'s')
+        ->and(is_file($root.'/photo.jpg'))->toBeTrue()
+        ->and($exit)->toBe(1);
+});
 
 /* T112. A disk that could not be listed was not asked: its rows' extra copies say so, not that it lacks the file. */
 it('says a copy is kept because the disk its row names could not be listed, not because it lacks the file', function (): void {

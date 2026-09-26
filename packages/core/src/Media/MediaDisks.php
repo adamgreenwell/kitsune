@@ -542,10 +542,16 @@ final class MediaDisks
         return self::within($config, $a, $b) || self::within($config, $b, $a);
     }
 
-    /** Whether the first disk's media directory lies inside the second's — nested, and the inner of the two. */
-    public static function within(Repository $config, string $inner, string $outer): bool
+    /**
+     * Whether the first disk's media directory lies inside the second's — nested, and the inner of the two.
+     *
+     * With `$build` false the inner disk is read from its configuration alone, as a scoped disk always is: a host's disk
+     * that nothing here would otherwise touch is not built to be asked — building one may need a package the install
+     * does not have (review of slice 5b).
+     */
+    public static function within(Repository $config, string $inner, string $outer, bool $build = true): bool
     {
-        $media = $inner === $outer ? null : self::mediaDirectories($config, $inner, $outer);
+        $media = $inner === $outer ? null : self::mediaDirectories($config, $inner, $outer, $build);
 
         if ($media === null) {
             return false;
@@ -562,7 +568,7 @@ final class MediaDisks
      *
      * @return array{0: string, 1: string, 2: bool}|null
      */
-    private static function mediaDirectories(Repository $config, string $a, string $b): ?array
+    private static function mediaDirectories(Repository $config, string $a, string $b, bool $buildA = true): ?array
     {
         $one = self::resolved($config, $a);
         $two = self::resolved($config, $b);
@@ -572,7 +578,7 @@ final class MediaDisks
          * at its own root. Only a disk configured as local is built here: building an object store needs its SDK.
          */
         if ($one['driver'] === 'local' && $two['driver'] === 'local') {
-            return [self::localMediaRoot($config, $a, $one), self::localMediaRoot($config, $b, $two), true];
+            return [self::localMediaRoot($config, $a, $one, $buildA), self::localMediaRoot($config, $b, $two), true];
         }
 
         if ($one['driver'] !== $two['driver'] || $one['bucket'] !== $two['bucket']) {
@@ -592,11 +598,11 @@ final class MediaDisks
      *
      * @param  array{root: ?string}  $resolved
      */
-    private static function localMediaRoot(Repository $config, string $disk, array $resolved): string
+    private static function localMediaRoot(Repository $config, string $disk, array $resolved, bool $build = true): string
     {
         $scoped = ($config->get("filesystems.disks.{$disk}.driver") ?? null) === 'scoped';
 
-        return ($scoped ? null : self::mediaRoot($disk)) ?? ($resolved['root'] ?? '').'media/';
+        return ($scoped || ! $build ? null : self::mediaRoot($disk)) ?? ($resolved['root'] ?? '').'media/';
     }
 
     /** @param  array<string, mixed>  $entry */

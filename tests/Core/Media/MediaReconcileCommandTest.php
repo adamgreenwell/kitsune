@@ -25,7 +25,7 @@ use Kitsune\Core\Tests\Fixtures\RefusingDisk;
 use League\Flysystem\Filesystem;
 
 /*
- * kitsune:media-reconcile — ADR-042 decision 5, slice 5b (T77-T90, T104-T107, T109, T114, T119, T122, T126).
+ * kitsune:media-reconcile — ADR-042 decision 5, slice 5b (T77-T90, T104-T107, T109, T114, T119, T122, T126, T128).
  *
  * ⚠️ FROM THE DISKS, THE ROWS AND THE OUTPUT AS THEY ARE AFTERWARDS. Each case sets a row and its disks by hand, runs the
  * command as an operator would, and reads what each disk holds by hash, what the row names, the line the command printed
@@ -833,6 +833,23 @@ describe('the disks a run moves the last rows off', function (): void {
 
         expect($output)->toContain('[old]\'s media directory nests with [host-inner]\'s: kitsune:media-prune never lists its orphans')
             ->and($output)->not->toContain('run kitsune:media-prune --force before');
+    });
+
+    // T128: nor for a legacy disk inside another disk a row names — past a disk entry that is no disk at all.
+    it('names a legacy disk nested inside another a row names, past a disk entry it cannot read', function (): void {
+        // Configured before the others, so the scan meets it first.
+        config(['filesystems.disks.aaa-broken' => 'not a disk']);
+        $outer = reconcileDisk('outer');
+        mkdir($outer->root().'/media/inner', 0777, true);
+        config(['filesystems.disks.inner' => ['driver' => 'local', 'root' => $outer->root().'/media/inner']]);
+        RefusingDisk::install('inner', $outer->root().'/media/inner');
+        reconcileFile('outer', ['outer' => RECONCILE_PNG], visibility: 'private');
+        reconcileFile('inner', ['inner' => RECONCILE_PNG], visibility: 'private');
+
+        [, $output] = reconcileRun();
+
+        expect($output)->toContain('[inner]\'s media directory nests with [outer]\'s: kitsune:media-prune never lists its orphans')
+            ->and($output)->not->toContain('row names [inner], which kitsune:media-prune sweeps');
     });
 
     it('never warns of the configured disks or core\'s own', function (): void {
