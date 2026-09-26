@@ -294,7 +294,7 @@ final class MediaDisks
 
         return [
             'driver' => $entry['driver'],
-            'root' => $local && is_string($entry['root'] ?? null) ? self::normalised(rtrim($entry['root'], '/').($prefix === '' ? '' : '/'.$prefix)) : null,
+            'root' => $local && is_string($entry['root'] ?? null) && $entry['root'] !== '' ? self::normalised(rtrim($entry['root'], '/').($prefix === '' ? '' : '/'.$prefix)) : null,
             'url' => is_string($entry['url'] ?? null) && $entry['url'] !== '' ? $entry['url'] : null,
             'bucket' => is_string($entry['bucket'] ?? $entry['container'] ?? null) ? ($entry['bucket'] ?? $entry['container']) : null,
             'endpoint' => is_string($entry['endpoint'] ?? null) ? $entry['endpoint'] : null,
@@ -370,6 +370,32 @@ final class MediaDisks
     }
 
     /**
+     * Whether a disk can hold a file at all: it is not local, or its root exists — asked of its configuration, and
+     * nothing is built.
+     *
+     * ⚠️ BUILDING A LOCAL DISK CREATES ITS ROOT. A served or private disk that was configured and never used would be
+     * created by the first step that asked it for a copy, from a read-only listing as much as from a move. A disk whose
+     * root does not exist holds nothing, so custody does not ask it. A disk that is not configured is refused: the
+     * caller decides whether it can be left out.
+     *
+     * ⚠️ AND A LOCAL DISK WITH NO ROOT CANNOT BE BUILT AT ALL — review of slice 5b. Laravel hands the adapter what the
+     * configuration holds, so a root left unset — an optional disk whose environment variable is empty — throws when the
+     * disk is built. Such a disk holds nothing, and asking it would stop whatever asked.
+     *
+     * @throws RuntimeException for a disk that is not configured
+     */
+    public static function mayHold(Repository $config, string $disk): bool
+    {
+        $resolved = self::resolved($config, $disk);
+
+        if ($resolved['driver'] === 'local') {
+            return $resolved['root'] !== null && is_dir($resolved['root']);
+        }
+
+        return true;
+    }
+
+    /**
      * A disk's `media/` directory as the filesystem resolves it, when the disk is local; null when it is not.
      *
      * It builds the disk, so it is asked only of a disk configured as local.
@@ -384,6 +410,12 @@ final class MediaDisks
      *
      * The public and private disks must be two places, and the private one must be one the web does not serve: a
      * withdrawn file would otherwise stay public.
+     *
+     * ⚠️ AND NO SERVED OBJECT STORE MAY REACH THE PRIVATE DISK'S OBJECTS — review of slice 5b. `servedBy()` reads a disk's
+     * own url and root, so a private object store with no url of its own passed while a served one reached the same
+     * bucket prefix — as one place, or through another endpoint, which cannot be told apart from one place. A pair where
+     * both disks are local is not asked: `servedBy()` already refuses a local private disk whose media directory meets
+     * a served local disk's root, and asking would build a served disk whose root does not exist.
      */
     public static function refuseUnsafeMediaDisks(Repository $config): void
     {
@@ -401,20 +433,56 @@ final class MediaDisks
                 $private,
             ));
         }
+
+        $privateIsLocal = self::resolved($config, $private)['driver'] === 'local';
+
+        foreach (self::servedDisks($config) as $served) {
+            if ($served === $public || ($privateIsLocal && self::resolved($config, $served)['driver'] === 'local')) {
+                continue;
+            }
+
+            $place = self::onePlace($config, $private, $served);
+
+            if ($place !== false) {
+                throw new RuntimeException(sprintf(
+                    'Refusing: kitsune.media.disks.private names [%s], and [%s], which the web serves, reaches the same '
+                    .'objects — %s — so a withdrawn file would stay public (ADR-042 decision 5). Nothing was moved.',
+                    $private,
+                    $served,
+                    $place === true
+                        ? 'one bucket and key prefix'
+                        : 'one bucket through two endpoints with nesting key prefixes, which cannot be told apart from one',
+                ));
+            }
+        }
     }
 
     /**
-     * Refuse when a disk shares its `media/` directory with any of the others — ADR-042 decision 5.
+     * Refuse when a disk shares its `media/` directory with any of the others, or cannot be told apart from one that
+     * does — ADR-042 decision 5.
      *
      * Two names, one place: a "copy" from one to the other is the file itself, and deleting "the other copy" deletes the
      * only one. Local disks are compared by their media directories as the filesystem resolves them, and a nest counts;
-     * others by driver, bucket, endpoint and prefix.
+     * others by driver, bucket, endpoint and prefix — and one bucket through two endpoints is refused too, because
+     * whether that is one store cannot be told (slice 5b).
      */
     public static function refuseCoincidingMediaDisks(Repository $config, string $disk, string ...$others): void
     {
         foreach ($others as $other) {
-            if (! self::coincide($config, $disk, $other)) {
+            $place = self::onePlace($config, $disk, $other);
+
+            if ($place === false) {
                 continue;
+            }
+
+            if ($place === null) {
+                throw new RuntimeException(sprintf(
+                    'Refusing: the [%s] and [%s] disks name one bucket through two endpoints with nesting key prefixes, so '
+                    .'whether they are one store cannot be told — a copy from one to the other could be the file itself '
+                    .'(ADR-042 decision 5). Give them key prefixes that do not nest, or one endpoint. Nothing was moved.',
+                    $disk,
+                    $other,
+                ));
             }
 
             throw new RuntimeException(sprintf(
@@ -427,12 +495,81 @@ final class MediaDisks
         }
     }
 
-    private static function coincide(Repository $config, string $a, string $b): bool
+    /**
+     * Whether two disks are one place: true when they are, false when they are provably two, and null when it cannot be
+     * told — one bucket, key prefixes that nest, and two endpoints — ADR-042 decision 5.
+     *
+     * ⚠️ TWO ENDPOINTS MAY NAME ONE STORE. A region's endpoint and a custom domain, or a path-style and a virtual-host
+     * address, reach the same objects under different names, and nothing in the configuration says which. The earlier
+     * comparison read them as two places, which let a step take the file itself for another copy and delete it; review
+     * of slice 5b found it. Every caller refuses the uncertain answer as it refuses one place.
+     *
+     * It builds a local disk to resolve its media directory, so it is asked only of a disk that can hold something.
+     */
+    public static function onePlace(Repository $config, string $a, string $b): ?bool
     {
         if ($a === $b) {
             return true;
         }
 
+        $media = self::mediaDirectories($config, $a, $b);
+
+        if ($media === null) {
+            return false;
+        }
+
+        [$first, $second, $sameEndpoint] = $media;
+
+        if (! str_starts_with($first, $second) && ! str_starts_with($second, $first)) {
+            return false;
+        }
+
+        return $sameEndpoint ? true : null;
+    }
+
+    /**
+     * Whether two disks' media directories nest without being one directory: a local disk rooted inside another's
+     * `media/`, or an object store's prefix inside another's `media/` prefix in the same bucket — ADR-042 decision 5.
+     *
+     * ⚠️ `onePlace()` IS TRUE OF BOTH, AND ONLY ONE IS AN ALIAS — review of slice 5b. Two names for one directory list the
+     * same files at the same paths; a directory inside another is listed by the outer one under longer paths, where no
+     * row names them, so the inner disk's files read as the outer's orphans. An object store nests when its prefix lies
+     * inside another's `media/` prefix in the same bucket: `site/media/x` inside `site`, not `site/archive` beside it.
+     * It builds a local disk to resolve its media directory, so it is asked only of a disk that can hold something.
+     */
+    public static function nested(Repository $config, string $a, string $b): bool
+    {
+        return self::within($config, $a, $b) || self::within($config, $b, $a);
+    }
+
+    /**
+     * Whether the first disk's media directory lies inside the second's — nested, and the inner of the two.
+     *
+     * With `$build` false the inner disk is read from its configuration alone, as a scoped disk always is: a host's disk
+     * that nothing here would otherwise touch is not built to be asked — building one may need a package the install
+     * does not have (review of slice 5b).
+     */
+    public static function within(Repository $config, string $inner, string $outer, bool $build = true): bool
+    {
+        $media = $inner === $outer ? null : self::mediaDirectories($config, $inner, $outer, $build);
+
+        if ($media === null) {
+            return false;
+        }
+
+        [$first, $second] = $media;
+
+        return $first !== $second && str_starts_with($first, $second);
+    }
+
+    /**
+     * Two disks' media directories, comparable: local ones as the filesystem resolves them, or object stores' key
+     * prefixes in one bucket, with whether their endpoints are the same; null when they are not in one namespace.
+     *
+     * @return array{0: string, 1: string, 2: bool}|null
+     */
+    private static function mediaDirectories(Repository $config, string $a, string $b, bool $buildA = true): ?array
+    {
         $one = self::resolved($config, $a);
         $two = self::resolved($config, $b);
 
@@ -441,20 +578,18 @@ final class MediaDisks
          * at its own root. Only a disk configured as local is built here: building an object store needs its SDK.
          */
         if ($one['driver'] === 'local' && $two['driver'] === 'local') {
-            $first = self::localMediaRoot($config, $a, $one);
-            $second = self::localMediaRoot($config, $b, $two);
-
-            return str_starts_with($first, $second) || str_starts_with($second, $first);
+            return [self::localMediaRoot($config, $a, $one, $buildA), self::localMediaRoot($config, $b, $two), true];
         }
 
-        if ($one['driver'] !== $two['driver'] || $one['bucket'] !== $two['bucket'] || $one['endpoint'] !== $two['endpoint']) {
-            return false;
+        if ($one['driver'] !== $two['driver'] || $one['bucket'] !== $two['bucket']) {
+            return null;
         }
 
-        $mediaOne = ($one['prefix'] === '' ? '' : $one['prefix'].'/').'media/';
-        $mediaTwo = ($two['prefix'] === '' ? '' : $two['prefix'].'/').'media/';
-
-        return str_starts_with($mediaOne, $mediaTwo) || str_starts_with($mediaTwo, $mediaOne);
+        return [
+            ($one['prefix'] === '' ? '' : $one['prefix'].'/').'media/',
+            ($two['prefix'] === '' ? '' : $two['prefix'].'/').'media/',
+            $one['endpoint'] === $two['endpoint'],
+        ];
     }
 
     /**
@@ -463,11 +598,11 @@ final class MediaDisks
      *
      * @param  array{root: ?string}  $resolved
      */
-    private static function localMediaRoot(Repository $config, string $disk, array $resolved): string
+    private static function localMediaRoot(Repository $config, string $disk, array $resolved, bool $build = true): string
     {
         $scoped = ($config->get("filesystems.disks.{$disk}.driver") ?? null) === 'scoped';
 
-        return ($scoped ? null : self::mediaRoot($disk)) ?? ($resolved['root'] ?? '').'media/';
+        return ($scoped || ! $build ? null : self::mediaRoot($disk)) ?? ($resolved['root'] ?? '').'media/';
     }
 
     /** @param  array<string, mixed>  $entry */

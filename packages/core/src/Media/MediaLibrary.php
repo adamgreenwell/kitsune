@@ -35,10 +35,13 @@ use Throwable;
  * above, it is bounded to wasted disk, and the repair is a sweep rather than anything this method can promise.
  *
  * ⚠️ NO DEDUPE, THOUGH THE CHECKSUM IS STORED. ADR-016 published `checksum` as "dedupe + integrity" and
- * integrity is what it does here. Dedupe means two entries sharing one file, which makes disposal a
+ * integrity is what it does here. ~~Dedupe means two entries sharing one file, which makes disposal a
  * reference-counting problem — the shape ADR-028 already had to solve for generated columns — and that is a
  * decision with consequences rather than an optimisation to slip in. The column is populated so the decision
- * stays available.
+ * stays available.~~ Dedupe by two rows sharing one path is closed by `media_files_path_unique` (Adam, decision 8,
+ * 2026-09-25): custody acts on a file by its path, so sharing one would now need a table of its own, or the index
+ * dropped. Files are shared as one media entry, linked wherever they are needed (ADR-042 decision 2). The checksum
+ * stays for integrity, and for a dedupe that gives each row its own copy.
  */
 final class MediaLibrary
 {

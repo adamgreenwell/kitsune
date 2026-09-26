@@ -30,7 +30,7 @@ use Kitsune\Core\Tests\Fixtures\FailingCommitPdo;
 use Kitsune\Core\Tests\Fixtures\RefusingDisk;
 
 /*
- * Custody at a real level 0 — ADR-042 decision 5 (T44-T51).
+ * Custody at a real level 0 — ADR-042 decision 5 (T44-T51; slice 5b: T74, T91).
  *
  * ⚠️ EVERY CASE HERE IS A MOMENT ONLY THE OUTERMOST TRANSACTION REACHES: a COMMIT that fails before it lands or after,
  * a rollback that empties the transaction manager, callbacks that run after the outermost commit and nowhere else. Under
@@ -208,7 +208,8 @@ it('recovers a trash whose COMMIT was busy, puts the file back, and keeps the co
 /*
  * T48. An erasure inside a host transaction whose own COMMIT fails: Laravel never tells the manager, so the erasure's
  * disposal runs at the next commit anywhere — and finds the rows still there, keeps the only copy, says so, and prune
- * keeps it too. Nothing puts the file back: that is the residue ADR-042 accepts and lists.
+ * keeps it too. ~~Nothing puts the file back: that is the residue ADR-042 accepts and lists.~~ kitsune:media-reconcile
+ * puts it back, and prune then has nothing to say of it (slice 5b).
  */
 it('keeps the only copy when a host\'s COMMIT around an erasure fails', function (): void {
     [$entry, $path] = levelZeroFile();
@@ -228,11 +229,19 @@ it('keeps the only copy when a host\'s COMMIT around an erasure fails', function
 
     Artisan::call('kitsune:media-prune', ['--force' => true]);
     $output = Artisan::output();
-    $heading = strpos($output, 'Kept copies');
+    $heading = strpos($output, 'Extra copies');
 
     expect($heading)->not->toBeFalse()
         ->and(substr($output, (int) $heading))->toContain($path)
+        ->and(substr($output, (int) $heading))->toContain('kept: the disk its row names does not hold the file')
         ->and(levelZeroHeld($path)[MediaDisks::PRIVATE])->toBe($this->checksum);
+
+    expect(Artisan::call('kitsune:media-reconcile', ['--force' => true]))->toBe(0)
+        ->and(levelZeroHeld($path))->toBe(['public' => $this->checksum, MediaDisks::PRIVATE => null]);
+
+    Artisan::call('kitsune:media-prune');
+
+    expect(Artisan::output())->not->toContain($path);
 });
 
 /*
@@ -317,7 +326,8 @@ describe('a restore at level 0', function (): void {
 /*
  * T51. SQLite: every custody path holds the database's write lock before its first byte moves (Adam, 2026-09-24). At
  * that first byte operation a second connection asks for the write lock with no wait, and must be told the database is
- * busy.
+ * busy. T74: `removeExtra()` and a forced reconcile join the dataset, and a read-only reconcile leaves the lock free
+ * (slice 5b).
  */
 describe('the write lock on SQLite', function (): void {
     /**
@@ -326,7 +336,7 @@ describe('the write lock on SQLite', function (): void {
      *
      * @param  array<string, RefusingDisk>  $disks
      */
-    function levelZeroProbe(string $file, array $disks): Closure
+    function levelZeroProbe(string $file, array $disks, string $kind = 'byte'): Closure
     {
         $outcome = ['probed' => false, 'busy' => null];
         $probe = function () use (&$outcome, $file): void {
@@ -348,7 +358,7 @@ describe('the write lock on SQLite', function (): void {
         };
 
         foreach ($disks as $disk) {
-            $disk->onOperation(1, $probe);
+            $disk->onOperation(1, $probe, $kind);
         }
 
         return function () use (&$outcome): array {
@@ -363,7 +373,9 @@ describe('the write lock on SQLite', function (): void {
             'publication', 'drain' => fn () => $entry->delete(),
             'removeTemp' => fn () => Storage::disk(MediaDisks::PRIVATE)->put(MediaBytes::partial($filePath), 'half'),
             // Published, with the private copy the third write removes once it has checked the public one.
-            'cleanUp' => fn () => Storage::disk(MediaDisks::PRIVATE)->put($filePath, LEVEL_ZERO_PNG),
+            'cleanUp', 'removeExtra' => fn () => Storage::disk(MediaDisks::PRIVATE)->put($filePath, LEVEL_ZERO_PNG),
+            // A file trashed before withdrawal existed: still on the public disk its row names.
+            'reconcile' => fn () => DB::table('entries')->where('id', $entry->id)->update(['deleted_at' => now()]),
             'removeOrphan' => fn () => Storage::disk(MediaDisks::PRIVATE)->put('media/orphan.png', 'bytes'),
             default => fn () => null,
         };
@@ -399,10 +411,24 @@ describe('the write lock on SQLite', function (): void {
             'removeTemp' => MediaCustody::removeTemp(DB::connection(), $entry->id, MediaDisks::PRIVATE, MediaBytes::partial($filePath)),
             'disposal' => MediaDisposal::remove(DB::connection(), [['entry_id' => $entry->id, 'disk' => 'public', 'path' => $filePath]]),
             'cleanUp' => MediaCustody::cleanUp(DB::connection(), $entry->id),
+            'removeExtra' => MediaCustody::removeExtra(DB::connection(), $entry->id, MediaDisks::PRIVATE),
+            'reconcile' => Artisan::call('kitsune:media-reconcile', ['--force' => true]),
         };
 
         expect($outcome())->toBe(['probed' => true, 'busy' => true]);
-    })->with(['soft delete', 'force-delete', 'publication', 'drain', 'removeOrphan', 'removeTemp', 'disposal', 'cleanUp']);
+    })->with(['soft delete', 'force-delete', 'publication', 'drain', 'removeOrphan', 'removeTemp', 'disposal', 'cleanUp', 'removeExtra', 'reconcile']);
+
+    /** A read-only reconcile only asks whether each disk holds a path, and takes no lock while it does. */
+    it('leaves it free while a read-only reconcile asks the disks', function (): void {
+        [$entry] = levelZeroFile();
+        DB::table('entries')->where('id', $entry->id)->update(['deleted_at' => now()]);
+        RefusingDisk::forgetLog();
+        $outcome = levelZeroProbe($this->custodyFile, $this->disks, 'any');
+
+        Artisan::call('kitsune:media-reconcile');
+
+        expect($outcome())->toBe(['probed' => true, 'busy' => false]);
+    });
 
     /** The control: a transaction that only reads leaves the write lock to a rival. */
     it('leaves it free to a transaction that only reads', function (): void {
@@ -420,4 +446,32 @@ describe('the write lock on SQLite', function (): void {
 
         expect($free)->toBeTrue();
     });
+});
+
+/*
+ * T91. A forced reconcile whose COMMIT fails before it lands: the served copies went before it, so the trashed file is
+ * off the web whatever the row says, the run fails, and the next run settles the row it left.
+ */
+it('takes a trashed file off the web though the reconcile\'s COMMIT failed, and settles it on the next run', function (): void {
+    $root = sys_get_temp_dir().'/kitsune-level0-old-cdn-'.bin2hex(random_bytes(4));
+    mkdir($root, 0777, true);
+    $this->roots[] = $root;
+    config(['filesystems.disks.old-cdn' => ['driver' => 'local', 'root' => $root, 'url' => 'https://cdn.example.test']]);
+    $cdn = RefusingDisk::install('old-cdn', $root);
+    [$entry, $path] = levelZeroFile();
+    Storage::disk('old-cdn')->put($path, LEVEL_ZERO_PNG);
+    DB::table('entries')->where('id', $entry->id)->update(['deleted_at' => now()]);
+    $pdo = FailingCommitPdo::installOn(DB::connection(), $this->custodyFile);
+    $pdo->failNextCommit = 'before';
+
+    $exit = Artisan::call('kitsune:media-reconcile', ['--force' => true]);
+
+    expect($exit)->toBe(1)
+        ->and(Artisan::output())->toContain('→ failed: ')
+        ->and(levelZeroRow($entry))->toBe(['trashed' => true, 'disk' => 'public'])
+        ->and(levelZeroHeld($path))->toBe(['public' => null, MediaDisks::PRIVATE => $this->checksum])
+        ->and(is_file($cdn->root().'/'.$path))->toBeFalse();
+
+    expect(Artisan::call('kitsune:media-reconcile', ['--force' => true]))->toBe(0)
+        ->and(levelZeroRow($entry))->toBe(['trashed' => true, 'disk' => MediaDisks::PRIVATE]);
 });

@@ -441,7 +441,7 @@ Field values do not all live in the `values` JSON column. Every field type decla
 
 ## ADR-016 — Media are entries
 
-**Status:** Decided · 2026-09-07 · **Amended 2026-09-22 by ADR-041** — the published `media_files` column list gains `visibility`, and how bytes are delivered, made safe and disposed of is decided there · **Amended 2026-09-23 by ADR-042** — a media type is any type declared as one, not a system type
+**Status:** Decided · 2026-09-07 · **Amended 2026-09-22 by ADR-041** — the published `media_files` column list gains `visibility`, and how bytes are delivered, made safe and disposed of is decided there · **Amended 2026-09-23 by ADR-042** — a media type is any type declared as one, not a system type · **Amended 2026-09-25 by ADR-042 decision 5, slice 5b** — `media_files.path` is unique, and written as the disks read it
 
 There is no separate media subsystem. An uploaded file is an **entry** of a system entry type (`image`, `document`, `video`) carrying its own fields — alt text, caption, credit, rights, expiry. The bytes live in a companion `media_files` table joined 1:1 to that entry (disk, path, mime, size, checksum, dimensions, duration).
 
@@ -3489,7 +3489,7 @@ a secret that cannot be read back through any admin path; and a test-mode key re
 
 ## ADR-041 — Media bytes are private by default, sanitised on the way in, and have no derivatives yet
 
-**Status:** Decided · 2026-09-22 · **Amends ADR-016** (the published `media_files` column list gains `visibility`) and **`field-types.md` §5** · **Amended 2026-09-23 by ADR-042** — moves private files to a disk that is never served, decides that a soft-deleted public file's bytes leave the public disk, records that Livewire's staging was never under the upload rules as shipped, and *Enforced by* reports what landed · **Amended 2026-09-22** — "sent as an attachment" narrows to "not rendered as a document", so a private image can be displayed and everything that could carry script still cannot; see the amendment under *the read side is not left hollow* · **Phase 5a (ADR-040) stays blocked on media until the code lands**; this entry decides its shape, not its existence · **Amended 2026-09-24 by ADR-042 decision 5** — a force-delete locks its rows and files, deletes the rows, withdraws every copy the web could serve and commits before anything is disposed of; disposal follows the outermost commit, asks again under the lock whether the rows are gone and whether another row names the path, and removes the path from every disk that could hold it, still reporting rather than throwing
+**Status:** Decided · 2026-09-22 · **Amends ADR-016** (the published `media_files` column list gains `visibility`) and **`field-types.md` §5** · **Amended 2026-09-23 by ADR-042** — moves private files to a disk that is never served, decides that a soft-deleted public file's bytes leave the public disk, records that Livewire's staging was never under the upload rules as shipped, and *Enforced by* reports what landed · **Amended 2026-09-22** — "sent as an attachment" narrows to "not rendered as a document", so a private image can be displayed and everything that could carry script still cannot; see the amendment under *the read side is not left hollow* · **Phase 5a (ADR-040) stays blocked on media until the code lands**; this entry decides its shape, not its existence · **Amended 2026-09-24 by ADR-042 decision 5** — a force-delete locks its rows and files, deletes the rows, withdraws every copy the web could serve and commits before anything is disposed of; disposal follows the outermost commit, asks again under the lock whether the rows are gone and whether another row names the path, and removes the path from every disk that could hold it, still reporting rather than throwing · **Amended 2026-09-25 by ADR-042 decision 5, slice 5b** — reconcile moves `local` rows and withdraws files trashed before 5a; `media_files.path` is unique
 
 ADR-016 decided the shape of this in September and nothing was built: *"There is no separate media subsystem.
 An uploaded file is an **entry** of a system entry type … The bytes live in a companion `media_files` table."*
@@ -3539,9 +3539,9 @@ authorises first.
 > ⚠️ **Amended 2026-09-23 by ADR-042 — as shipped, the private disk was `local`, and `local` is served.** Laravel's
 > `local` disk has `serve => true`, which answers any signed `temporaryUrl()` for it without asking `EntryPolicy`. No
 > Kitsune code mints one, so nothing leaked, but "does not serve" described the intent rather than the disk. ADR-042
-> gives private media a disk of core's own with `serve` off, `kitsune-private`, and new private uploads land there.
-> Rows stored before it still name `local` and are delivered and disposed of from it; `kitsune:media-reconcile`,
-> which is to move them, is not yet built.
+> gives private media a disk of core's own with `serve` off, `kitsune-private`, and new private uploads land there. Rows
+> stored before it still name `local` and are delivered and disposed of from it; `kitsune:media-reconcile`, which is to
+> move them, ~~is not yet built~~ — built by ADR-042 decision 5, slice 5b (2026-09-25).
 
 ⚠️ **Authorising *what*, exactly, is deliberately left open here.** Today the only answer core can give is the
 entry's own permissions. ADR-040's entitlements are what will make "this reader paid for this download"
@@ -3680,16 +3680,17 @@ stops being defensible, is refusing SVG — and that stays available because the
 **Bytes follow the entry, and erasure reaches them.** A soft-deleted media entry keeps its bytes, because a
 restore must work; a force-delete removes them.
 
-> ⚠️ **Amended 2026-09-23 by ADR-042 — "keeps its bytes" did not say where, and for a public file that was the
-> whole question.** A public file's bytes are served by the web server with no PHP in the path, so a soft-deleted
-> public entry keeps its file live at its URL, and the admin has no way to take it down. ADR-042 decides that they
-> move to the private disk on soft delete and back on restore, and that a failed move refuses the delete — which
-> keeps "a restore must work" and stops "deleted" meaning "still at the origin". A copy a CDN or a browser has
-> already cached is not reached. ADR-042 also changes this entry's force-delete order for public files: rows first
-> and bytes second left a public file live at its URL whenever disposal failed or the process stopped after the
-> commit, so a force-delete now withdraws a public file to the private disk before its rows go, refuses if it cannot,
-> and disposes of the path on both disks afterwards. Not yet built: until it lands, a soft-deleted public file is
-> still served, and a force-delete whose disposal fails can leave a public one.
+> ⚠️ **Amended 2026-09-23 by ADR-042 — "keeps its bytes" did not say where, and for a public file that was the whole
+> question.** A public file's bytes are served by the web server with no PHP in the path, so a soft-deleted public entry
+> keeps its file live at its URL, and the admin has no way to take it down. ADR-042 decides that they move to the
+> private disk on soft delete and back on restore, and that a failed move refuses the delete — which keeps "a restore
+> must work" and stops "deleted" meaning "still at the origin". A copy a CDN or a browser has already cached is not
+> reached. ADR-042 also changes this entry's force-delete order for public files: rows first and bytes second left a
+> public file live at its URL whenever disposal failed or the process stopped after the commit, so a force-delete now
+> withdraws a public file to the private disk before its rows go, refuses if it cannot, and disposes of the path on both
+> disks afterwards. ~~Not yet built: until it lands, a soft-deleted public file is still served, and a force-delete
+> whose disposal fails can leave a public one.~~ Built by ADR-042 decision 5 (5a); a file trashed before it is withdrawn
+> by `kitsune:media-reconcile --force` (5b, 2026-09-25).
 
 ⚠️ **ADR-020 requires erasure to reach *revision history*; it says nothing about bytes on disk.** This entry
 **extends** it — a redaction that leaves the JPEG on disk has not erased the photograph — and owns the
@@ -3767,7 +3768,7 @@ every row, asserted so that a later change to populate it is a visible decision 
 
 ## ADR-042 — The media admin: shared by default, uploaded through one path, and withdrawn from the web when deleted
 
-**Status:** Decided · 2026-09-23 · **Amended 2026-09-23** — *Enforced by* reports the slice declaring media types, which landed, the slice making media shared by default, and the slice owning the upload staging, whose decision 4 records what was built and corrects its reason for not relying on Livewire's own sweep; decision 2 records how the widening was built, the three changes its measurement led Adam to make and the three costs Adam accepted, and AGENTS.md §4 is amended for an org-leading index · **Amended 2026-09-24** — decision 5 records what slice 5a built, Adam's decisions on the lock, rule 2's fallbacks, durability and reconcile's reach, and the 5a/5b split; it corrects its own orders for a trash and an erasure and the residue each leaves, and *Measured — decision 5* replaces the lock time this entry owed · **Delivers ADR-021's "the media library defaults to shared"**, which the store path shipped in #145 contradicts, and **amends ADR-021** — for media types, the admin's tenant scope admits the org's shared rows, and the org-shared slug rule becomes a guard · **Amends ADR-016 and `field-types.md` §5** — a media type is any type declared as one, not a system type · **Amends ADR-041** — moves private files to a disk that is never served, decides that a soft-deleted public file's bytes leave the public disk and that a force-delete withdraws a public file before its rows go and then disposes of the path on both media disks — amended 2026-09-24: a force-delete locks its rows and files, deletes the rows, withdraws every served copy, commits, and then disposes of the path on every disk that could hold it — records that Livewire's staging was never under the upload rules as shipped, and brings its *Enforced by* up to date · **Amends `architecture.md`'s published `entry_types` shape** (gains `is_media`, with its migration) · **Phase 5 (ADR-011, v1.0)** — the admin half ADR-041 left, and the half the DAM starter waits on
+**Status:** Decided · 2026-09-23 · **Amended 2026-09-23** — *Enforced by* reports the slice declaring media types, which landed, the slice making media shared by default, and the slice owning the upload staging, whose decision 4 records what was built and corrects its reason for not relying on Livewire's own sweep; decision 2 records how the widening was built, the three changes its measurement led Adam to make and the three costs Adam accepted, and AGENTS.md §4 is amended for an org-leading index · **Amended 2026-09-24** — decision 5 records what slice 5a built, Adam's decisions on the lock, rule 2's fallbacks, durability and reconcile's reach, and the 5a/5b split; it corrects its own orders for a trash and an erasure and the residue each leaves, and *Measured — decision 5* replaces the lock time this entry owed · **Amended 2026-09-25** — decision 5 records what slice 5b built — `kitsune:media-reconcile`, prune's removal of extra copies, the third write under 2b, and `media_files.path` unique and written as the disks read it — Adam's decisions on the keeper's order and reach, unreadable copies against exposure, reconcile's exit codes and unique paths, and *Measured — decision 5, slice 5b* · **Amends `field-types.md` §5's published `media_files` shape** (`path` becomes unique, with its migration) · **Delivers ADR-021's "the media library defaults to shared"**, which the store path shipped in #145 contradicts, and **amends ADR-021** — for media types, the admin's tenant scope admits the org's shared rows, and the org-shared slug rule becomes a guard · **Amends ADR-016 and `field-types.md` §5** — a media type is any type declared as one, not a system type · **Amends ADR-041** — moves private files to a disk that is never served, decides that a soft-deleted public file's bytes leave the public disk and that a force-delete withdraws a public file before its rows go and then disposes of the path on both media disks — amended 2026-09-24: a force-delete locks its rows and files, deletes the rows, withdraws every served copy, commits, and then disposes of the path on every disk that could hold it — records that Livewire's staging was never under the upload rules as shipped, and brings its *Enforced by* up to date · **Amends `architecture.md`'s published `entry_types` shape** (gains `is_media`, with its migration) · **Phase 5 (ADR-011, v1.0)** — the admin half ADR-041 left, and the half the DAM starter waits on
 
 ADR-041 decided how media bytes are stored, delivered, sanitised and disposed of, and #145–#148 built all of it:
 `MediaLibrary::store()`, `MediaIntake`, the panel route that authorises private files, disposal, prune, and SVG
@@ -4116,13 +4117,14 @@ file; the worst each can leave is a live public file served privately, which is 
 which `kitsune:media-reconcile` (below) repairs.
 
 ⚠️ **And a second rule, for loss rather than exposure: no step deletes a copy of a file without first establishing,
-under the row lock, that another copy exists — and a copy counts only if its SHA-256 matches the row's `checksum`.**
-Existence is not integrity: a copy interrupted part-way leaves a truncated file that exists, and a retry that trusted
-it would delete the intact source and commit a corrupt file as the only one. `store()` already records the checksum,
-so every step that asks "is there another copy?" — withdrawal, publication's cleanup, reconcile, prune — asks it of
-the bytes. Review found two places that broke it. A publication's trailing
-cleanup ran unlocked, so a delete landing just after the publication committed could copy the public bytes back to
-the private path, have that fresh copy deleted by the cleanup, and then delete the public copy — leaving the file on
+under the row lock, that another copy exists — and a copy counts only if its SHA-256 matches ~~the row's `checksum`~~
+the kept copy's — the checksum when any copy matches it, else the named copy's own, else the first in Adam's order
+(*Rule 2, as decided*; Adam, decision 5, 2026-09-25).** Existence is not integrity: a copy interrupted part-way leaves a
+truncated file that exists, and a retry that trusted it would delete the intact source and commit a corrupt file as the
+only one. `store()` already records the checksum, so every step that asks "is there another copy?" — withdrawal,
+publication's cleanup, reconcile, prune — asks it of the bytes. Review found two places that broke it. A publication's
+trailing cleanup ran unlocked, so a delete landing just after the publication committed could copy the public bytes back
+to the private path, have that fresh copy deleted by the cleanup, and then delete the public copy — leaving the file on
 neither disk. And an earlier draft of withdrawal removed an unnamed public copy outright, which destroys the file
 whenever that copy happens to be the only one.
 
@@ -4140,35 +4142,39 @@ changes: a file no row claims whose path a row names on the *other* media disk, 
 hold it, is the live copy in the wrong place. Prune reports it and never deletes it; `kitsune:media-reconcile` moves
 it to where its row says it belongs.
 
-⚠️ **Restore publishes after the outermost commit, because mirroring the delete would reopen the exposure.** The
-row is restored first, still naming the private disk, so the file is live and delivered privately. Publication is
-then registered with the connection's `afterCommit()`, which runs only once the outermost transaction has
-committed and is discarded if it rolls back. Publication is its own write: it locks the row, rechecks that the
-entry is still live, still public-visibility and still names the private disk, and stops if not; then it copies
-the private file to the public disk, updates the row to name `public`, and commits. Deleting the private copy is a
-third write, locked like the others: it rechecks that the entry is still live and still names `public`, and only
-then deletes. If a delete got there first, the recheck fails and the private copy — now the one the delete claims —
-is left alone. A cleanup that never runs leaves a private copy no row names, which prune may remove because the
-public copy is claimed.
+⚠️ **Restore publishes after the outermost commit, because mirroring the delete would reopen the exposure.** The row is
+restored first, still naming the private disk, so the file is live and delivered privately. Publication is then
+registered with the connection's `afterCommit()`, which runs only once the outermost transaction has committed and is
+discarded if it rolls back. Publication is its own write: it locks the row, rechecks that the entry is still live, still
+public-visibility and still names the private disk, and stops if not; then it copies the private file to the public
+disk, updates the row to name `public`, and commits. Deleting the private copy is a third write, locked like the others:
+it rechecks that the entry is still live and still names `public`, and only then deletes. If a delete got there first,
+the recheck fails and the private copy — now the one the delete claims — is left alone. A cleanup that never runs leaves
+a private copy no row names, ~~which prune may remove because the public copy is claimed~~ which
+`kitsune:media-reconcile --force` removes through the cleanup, or prune once the public copy verifies under the lock.
 
-⚠️ **The lock is not optional, and review found the gap it closes.** Between the restore's commit and the
-publication, the row is unlocked, and a delete in that gap sees a file naming the private disk, withdraws nothing,
-and commits — after which an unlocked publication would put a deleted entry's file on the web. Locking the same
-row the delete locks serialises them: a delete that wins leaves publication a trashed row, and it publishes
-nothing; a publication that wins leaves the delete a row naming `public`, which it withdraws. A restore inside a transaction that later rolls back therefore publishes
-nothing. A publication that fails at any step — a failed copy, a failed update, a process that stops — leaves a
-live row naming the private disk with its bytes there, served privately until `kitsune:media-reconcile` moves them;
-a partial public copy that no row names is an orphan prune may remove, because the row's own disk holds the file.
-A failed private delete after the update leaves a private copy no row names, which prune may remove because the
-public copy is claimed. Nothing in this order leaves a trashed entry's file on the web.
+⚠️ **The lock is not optional, and review found the gap it closes.** Between the restore's commit and the publication,
+the row is unlocked, and a delete in that gap sees a file naming the private disk, withdraws nothing, and commits —
+after which an unlocked publication would put a deleted entry's file on the web. Locking the same row the delete locks
+serialises them: a delete that wins leaves publication a trashed row, and it publishes nothing; a publication that wins
+leaves the delete a row naming `public`, which it withdraws. A restore inside a transaction that later rolls back
+therefore publishes nothing. A publication that fails at any step — a failed copy, a failed update, a process that stops
+— leaves a live row naming the private disk with its bytes there, served privately until `kitsune:media-reconcile` moves
+them; a partial public copy that no row names is ~~an orphan~~ a leftover partial prune removes under the row's lock,
+because the row's own disk holds the file. A failed private delete after the update leaves a private copy no row names,
+~~which prune may remove because the public copy is claimed~~ which `kitsune:media-reconcile --force` removes through
+the cleanup, or prune once the public copy verifies under the lock. Nothing in this order leaves a trashed entry's file
+on the web.
 
-⚠️ **Withdrawal trusts the file's path, not the row's `disk`.** A publication that stops after its copy and before
-its commit leaves a public copy no row names — and a later delete, reading `disk`, would see a private file and
-withdraw nothing, leaving the leftover live under a deleted entry. So a soft delete withdraws any copy at the file's
-path on the public disk whether or not the row names it — and *withdraws* means moves: it copies the public file to
-the private path unless a copy matching the row's checksum is already there, and only then deletes the public one, so a leftover that turns out
-to be the only copy is kept rather than destroyed. Paths are generated per upload from random bytes, so the path
-belongs to this file and nothing else.
+⚠️ **Withdrawal trusts the file's path, not the row's `disk`.** A publication that stops after its copy and before its
+commit leaves a public copy no row names — and a later delete, reading `disk`, would see a private file and withdraw
+nothing, leaving the leftover live under a deleted entry. So a soft delete withdraws any copy at the file's path on the
+public disk whether or not the row names it — and *withdraws* means moves: it copies the public file to the private path
+unless a copy matching the row's checksum is already there, and only then deletes the public one, so a leftover that
+turns out to be the only copy is kept rather than destroyed. Paths are generated per upload from random bytes, so the
+path belongs to this file and nothing else — and since slice 5b the database refuses a second row naming a path, as the
+engine compares strings, and `MediaFile` refuses to create one whose path is not written as the disks read it (Adam,
+decision 8, 2026-09-25); an insert past the model is the insert-path gap *Enforced by* records.
 
 ⚠️ **Force-delete withdraws before it commits, as soft delete does — and review found ADR-041's order exposing
 files.** ADR-041 put rows first and bytes second, reporting rather than throwing when the bytes will not go, on the
@@ -4189,12 +4195,16 @@ yields `/storage/{path}`, the public symlink's path, where the file is not — o
 
 ⚠️ **The repair is a command, and the database is the durable half.** `kitsune:media-reconcile` compares every ~~live~~
 media row's `disk` — trashed rows included (Adam, decision 4, 2026-09-24), settled to the private disk — with where its
-visibility says its bytes belong, and where the bytes actually are, and reports
-every disagreement; with `--force` it moves the bytes to where the row's visibility says and updates `disk` to
-match — under the same row lock the delete and the publication take, with the same recheck, so it cannot race
-either of them. It is read-only by default for `kitsune:media-prune`'s reason — it moves files — and it never deletes the
-only copy of anything. It repairs both residues this decision accepts: a live row naming `public` whose bytes the
-delete left on the private disk, and a restored row whose publication did not finish.
+~~visibility~~ state — public while its entry is live and its file public, private otherwise — says its bytes belong,
+and where the bytes actually are, and reports every disagreement; with `--force` it moves the bytes to where the row's
+~~visibility~~ state says and updates `disk` to match — under the same row lock the delete and the publication take,
+with the same recheck, so it cannot race either of them. It is read-only by default for `kitsune:media-prune`'s reason —
+it moves files — and it ~~never deletes the only copy of anything~~ deletes no copy until the kept copy is verified,
+under the lock, on the disk the row's state says it belongs on — one that differs goes with both hashes logged (Adam,
+decisions 2 and 2b, 2026-09-24), one alone matching the checksum never, one that cannot be read never, and a row whose
+named copy was set aside keeps naming it, unless that disk is core's private disk, which prune sweeps wherever the
+private disk points (Adam, decision 6, 2026-09-25). It repairs both residues this decision accepts: a live row naming
+`public` whose bytes the delete left on the private disk, and a restored row whose publication did not finish.
 
 ⚠️ **The builder's bulk path is all or nothing; the admin's bulk action is per file.** A builder-level
 `Entry::query()->delete()` over public media compensates every move made so far when any one fails, and refuses the
@@ -4240,39 +4250,53 @@ bulk paths both arrive, and restore likewise.
 >   matching it is touched by a fallback. When none matches and the disk the row names holds a readable copy, that copy
 >   wins — it is the one delivery has been serving — and replaces the UNVERIFIABLE refusal an earlier draft proposed;
 >   differing copies the row does not name are removed with a warning naming both hashes where a step removes copies at
->   all: a withdrawal from every disk the web serves, a publication from the disk it moves the row off (the rest waits
->   for 5b, above). When the named disk holds nothing, the step verifies against the kept copy's own hash, so the file
->   can still be withdrawn and erased, and logs the mismatch. **Durability:** a copy counts once it has been written and
->   read back with the expected hash — on a local disk beside the path and renamed into place, on an object store at the
->   key itself and verified there; there is no fsync, as `store()` has none, and a power loss before the page cache
->   reaches the disk is the recorded limit. **The design's rules, pending Adam:** which copy wins when the named disk
->   holds nothing and the copies differ — the configured public disk, then the configured private one, then the served
->   disks, the target last — and that a copy which exists and cannot be read is never taken for absent: the step
->   refuses, a trash and an erasure alike, until the copy can be read.
+>   all: a withdrawal from every disk the web serves, a publication from the disk it moves the row off ~~(the rest waits
+>   for 5b, above)~~ — and since 5b the third write and prune's removal of extra copies (below). When the named disk
+>   holds nothing, the step verifies against the kept copy's own hash, so the file can still be withdrawn and erased,
+>   and logs the mismatch. **Durability:** a copy counts once it has been written and read back with the expected hash —
+>   on a local disk beside the path and renamed into place, on an object store at the key itself and verified there;
+>   there is no fsync, as `store()` has none, and a power loss before the page cache reaches the disk is the recorded
+>   limit. ~~**The design's rules, pending Adam:** which copy wins when the named disk holds nothing and the copies
+>   differ — the configured public disk, then the configured private one, then the served disks, the target last — and
+>   that a copy which exists and cannot be read is never taken for absent: the step refuses, a trash and an erasure
+>   alike, until the copy can be read.~~ **Decided by Adam:** the order when the named disk holds nothing — public,
+>   private, core's private disk, served, any other disk asked, the target last (Adam, decision 5, 2026-09-25); and a
+>   copy which exists and cannot be read is never taken for absent: the step refuses, a trash and an erasure alike —
+>   except that settle, withdrawing to a private target while a served disk holds the file, sets aside one on a disk
+>   neither served nor the target, never touching it, and keeps a row on its named disk when that is the one set aside,
+>   unless it is core's private disk, which prune sweeps wherever the private disk points (Adam, decision 6,
+>   2026-09-25).
 > - **A trash's order is corrected.** ~~Copy each public file to the private disk, delete the public copy, then mark the
 >   rows deleted.~~ The rows are marked deleted and `media_files.disk` pointed at the private disk first, inside the
 >   write — on SQLite that UPDATE is the write lock — then each file is copied, read back and every served copy deleted,
 >   then the write commits. What a failure had already moved is put back by the rollback's own callback, by the rollback
 >   event, or by the write's own catch, whichever reaches it — each queues, and the queue drains once — once nothing on
 >   the connection is left to commit, and settled from the row as it was committed. ~~Which `kitsune:media-prune` may
->   remove~~: prune keeps it, and lists it.
+>   remove~~: prune keeps it, and lists it — and since 5b removes it with `--force`, under its row's lock, once the row
+>   is settled (below).
 > - **Withdrawal trusts the path on every disk the web serves.** A disk is served when it has a url, its own or its
 >   scoped parent's; when it is local with `serve` on and public visibility, which Laravel's route answers unsigned —
 >   `serve` with private visibility is not counted, because Kitsune mints no signature (finding 4); or when its `media/`
 >   directory meets the document root, a public link's target or such a disk's root — the document root added after
->   review found a private disk inside `public/` passing as unserved. A trash withdraws the path from each of them and from
->   the disk the row names; a private file on a disk nothing serves is looked for on the configured public disk alone,
->   so a served disk that cannot be reached does not block its erasure. An object store public by its own policy, with
->   no url, cannot be seen from the configuration — a recorded limit; every move still deletes the copy on the disk it
->   leaves unless that is the private disk, so custody never strands a copy where no row points.
+>   review found a private disk inside `public/` passing as unserved. A trash withdraws the path from each of them and
+>   from the disk the row names; a private file on a disk nothing serves is looked for on the configured public disk
+>   alone, so a served disk that cannot be reached does not block its erasure. An object store public by its own policy,
+>   with no url, cannot be seen from the configuration — a recorded limit; every move still deletes the copy on the disk
+>   it leaves unless that is the private disk ~~, so custody never strands a copy where no row points~~ — and settle
+>   also keeps one on core's own, which prune sweeps wherever the private disk points — so custody strands no copy prune
+>   cannot find; and a row whose named copy cannot be read and was set aside keeps naming it, unless that disk is core's
+>   private disk (Adam, decision 6, 2026-09-25).
 > - **Two disks that are one place, and a private disk the web serves, refuse before a byte moves.** The configured
 >   public and private disks must differ: not one name, not local `media/` directories equal or nested, not object
 >   stores sharing driver, bucket and endpoint with nested key prefixes — an object store's own `root` counted as the
->   innermost part of its prefix, which review found left out both ways — and roots nested above `media/` do not
->   count, Laravel 10's `local` being the example. Either refusal reaches the editor as the write's refusal, a
->   notification naming the entry, not an error page. The configured private disk must not be served. Each copy and each delete also
+>   innermost part of its prefix, which review found left out both ways — and roots nested above `media/` do not count,
+>   Laravel 10's `local` being the example. Either refusal reaches the editor as the write's refusal, a notification
+>   naming the entry, not an error page. The configured private disk must not be served. Each copy and each delete also
 >   checks the file itself, so a symlink cannot make a "copy" the file. The recorded limits: a bind mount nesting into
->   `media/`, two endpoints naming one store, and a directory PHP cannot traverse, where a copy reads as absent.
+>   `media/`, ~~two endpoints naming one store~~ — refused since 5b wherever a step keeps one copy and removes another:
+>   settle, the cleanup, prune's removal and a trash's or an erasure's withdrawal, through the check that two disks are
+>   two places; and between the configured private disk and any served object store by the configuration check; disposal
+>   keeps no copy, so it has nothing to refuse — and a directory PHP cannot traverse, where a copy reads as absent.
 > - **An erasure's order.** ~~A force-delete reads each file under the row lock, withdraws any copy at its path on the
 >   public disk to the private one before the rows go … and only then disposes of the bytes from the path on both media
 >   disks.~~ It locks the entries, then their files, deletes the rows, withdraws every copy the web could serve to the
@@ -4285,10 +4309,11 @@ bulk paths both arrive, and restore likewise.
 >   disk — and it runs only once nothing is left to commit. A restore whose write failed registers publication again
 >   from its failure path: after a COMMIT that landed, the file is still published; after a real rollback, the recheck
 >   publishes nothing. Publication deletes the copy on the disk it moved the row off, unless that is the private disk.
->   The third write is built as this decision wrote it, and also follows a compensation: under the lock, the entry
->   still live, public and naming the public disk, it deletes the private copy only while the public one holds the same
->   bytes by hash. The interleaving is tested deterministically: a delete landing between a publication's commit and its
->   cleanup leaves the file on the private disk, which the delete claims.
+>   The third write is built as this decision wrote it, and also follows a compensation: under the lock, the entry still
+>   live, public and naming the public disk, it deletes the private copy only while the public one holds the same bytes
+>   by hash — and since 5b one that differs too, with both hashes logged (below). The interleaving is tested
+>   deterministically: a delete landing between a publication's commit and its cleanup leaves the file on the private
+>   disk, which the delete claims.
 > - **Delivery trusts the disk, as decided; built.** A direct URL is given only to a public file whose row names the
 >   configured public disk; every other row, `local`'s included, is delivered through the route that authorises first.
 > - **The admin, as decided; built.** The bulk delete deletes each entry on its own, names every entry it could not
@@ -4296,17 +4321,19 @@ bulk paths both arrive, and restore likewise.
 >   a refusal — any other failure keeps Filament's count, which is what reports it; a single delete's refusal is a
 >   notification naming the entry, and leaves the page's record as it was. Both are escaped as text (decision 7),
 >   because Filament keeps markup in a notification.
-> - **Prune keeps and lists.** ~~A file no row claims whose path a row names on the other media disk, where that row's own
->   disk does not hold it, is the live copy in the wrong place.~~ A file at a path any row names, on any disk, is kept and
->   listed, whatever disk it is on and whatever it holds: each may be the only good copy. Prune removes only a path no row
->   names — on the configured disks, core's own private disk (whenever it can hold anything, since disposal always asks
->   it; Codex found on #153) and the disks rows name, rechecked under custody's lock — and a partial copy,
->   `{path}.kitsune-partial`, under the lock of the row naming `{path}`, or as an orphan rechecked by `{path}` when no row
->   does. The rule decision 4 quotes — *"it asks the database, never the filename"* — stands: the suffix chooses which
->   lock to take; the table decides whether anything is deleted. It also lists, from the table alone, live public files
->   awaiting publication and trashed files still on a served disk. **A recorded limit, older than this slice:** `store()`
->   writes a file's bytes before its row, so a `--force` run landing between them — or, off SQLite, before the upload's
->   row commits — removes a file an upload is about to claim; the recheck under the lock sees only committed rows.
+> - **Prune keeps and lists.** ~~A file no row claims whose path a row names on the other media disk, where that row's
+>   own disk does not hold it, is the live copy in the wrong place.~~ A file at a path any row names, on any disk, is
+>   kept and listed, whatever disk it is on and whatever it holds: each may be the only good copy — until 5b, which
+>   removes one beside a settled row's own with `--force`, under the row's lock, once it and the row's own copy are
+>   hashed (below). Prune removes ~~only~~ a path no row names — on the configured disks, core's own private disk
+>   (whenever it can hold anything, since disposal always asks it; Codex found on #153) and the disks rows name,
+>   rechecked under custody's lock — and a partial copy, `{path}.kitsune-partial`, under the lock of the row naming
+>   `{path}`, or as an orphan rechecked by `{path}` when no row does. The rule decision 4 quotes — *"it asks the
+>   database, never the filename"* — stands: the suffix chooses which lock to take; the table decides whether anything
+>   is deleted. It also lists, from the table alone, live public files awaiting publication and trashed files still on a
+>   served disk. **A recorded limit, older than this slice:** `store()` writes a file's bytes before its row, so a
+>   `--force` run landing between them — or, off SQLite, before the upload's row commits — removes a file an upload is
+>   about to claim; the recheck under the lock sees only committed rows.
 > - **The residue, as it now reads.** ~~The worst each can leave is a live public file served privately, … which
 >   `kitsune:media-reconcile` (below) repairs.~~ Neither direction leaves a file on the web under a trashed entry. The
 >   worst each leaves is a live public file that its public URL does not serve: a restore whose publication did not
@@ -4343,6 +4370,143 @@ bulk paths both arrive, and restore likewise.
 >   *Measured — decision 5*; the thresholds and the SQLite lever — accept the read-first failures, take the write lock
 >   at the first statement of an audited write and of `store()`, or begin SQLite transactions `IMMEDIATE` — are Adam's to
 >   set on them, and none is presumed in the code.
+
+> **Amended 2026-09-25 — what slice 5b built, and what Adam decided.** The decision stands; what follows records how its
+> second slice was built, the four questions it left that Adam answered, and the sentences above that the building
+> proved wrong, which are left visible where they are corrected.
+>
+> - **Built.** `kitsune:media-reconcile`; prune's removal of extra copies; the removal of differing copies wherever a
+>   step removes copies at all — the third write's cleanup and prune's removal included; and `media_files.path` unique,
+>   and written as the disks read it. A public file trashed before 5a is withdrawn by `kitsune:media-reconcile --force`.
+> - **Reconcile, as built (Adam, decision 4, 2026-09-24).** Every media row, trashed included, is asked where its bytes
+>   are: a file belongs on the configured public disk while its entry is live and its visibility public, and on the
+>   configured private disk otherwise. The disks asked are the ones settle asks — the target, the disk the row names,
+>   both configured media disks, core's private disk and every served disk, those last two only where they can hold
+>   anything — and each is asked only whether it holds the path; the listing builds no disk whose root does not exist
+>   but the two configured media disks. A row is labelled `unknown` (a disk could not say), `missing` (no disk asked
+>   holds it), `exposed` (it belongs on the private disk and a served disk holds it), `awaiting publication` or
+>   `elsewhere` (its row names another disk than the one it belongs on, public or private), `absent` (its row names that
+>   disk and the disk does not hold it), `private copy` (it belongs on the public disk and a private disk also holds it)
+>   or `extra` (more than one disk holds it — listed for prune, and not a finding). Read-only it lists them; `--entry`
+>   narrows it to named entries. `--force` refuses inside an open transaction, on media disks custody could not keep
+>   apart, and while `media_files.path` is not unique, and then, for each listed row, runs what a compensation runs —
+>   `settle()` then `cleanUp()`, each its own outermost transaction under the row's lock, each deciding from the row as
+>   read there — so a row a trash or a restore changed since the listing is settled as it now is, and `missing` is
+>   decided under the lock. It reads the rows in chunks of 500 and prints, per label, how many rows it settled, found
+>   nothing to do for, found gone, kept, found missing or failed, and what custody logged for each. Rows naming
+>   ADR-041's `local` are moved like any other. A run names each disk rows still name that is neither a configured media
+>   disk nor core's, nor one of them under another name — a former public disk the web still serves included, and under
+>   `--entry` only when those entries are every row naming it — warning that once the last row is moved off it, prune no
+>   longer sweeps it for orphans, so `kitsune:media-prune --force` goes first. A disk whose media directory nests with a
+>   configured one, or holds a host's disk inside it, is named with that instead: prune never lists its orphans while
+>   the two nest.
+> - **The keeper's order and reach (Adam, decision 5, 2026-09-25).** When no copy matches the checksum and the disk the
+>   row names holds nothing, the copy kept is the first in the order public, private, core's private disk, served, any
+>   other disk asked, the target last. Reconcile asks what settle asks, so the listing and the repair look in the same
+>   places. A matching copy found only on a disk other rows name is not reached for this row: prune lists it as an extra
+>   copy and keeps it, and a hand copy restores it. One on a disk no row names that is neither a configured media disk,
+>   core's private disk nor served is found by neither.
+> - **Unreadable copies against exposure (Adam, decision 6, 2026-09-25).** While settle withdraws to a private target a
+>   file a served disk holds, a copy that exists and cannot be read, on a disk neither served nor the target, no longer
+>   keeps the file on the web: the keeper sets it aside and chooses among the copies it can read, every served copy is
+>   removed, and the unreadable one is never chosen, overwritten or removed. The exception holds only while a copy on a
+>   served disk was read and removed under the lock; when none could be read after all, settle refuses as before. A row
+>   naming the set-aside disk keeps naming it, so the copy stays where a row points — unless that disk is core's private
+>   disk, which prune sweeps wherever the private disk points. The outcome is `set aside`, reported with the disk, and
+>   counted as kept (the design's reading of decision 7). A trash and an erasure are unchanged: an unreadable copy on
+>   any disk they ask still refuses them — for a file the web could reach, the private, named, public and served disks;
+>   a private file's trash reads nothing, and its erasure asks the public disk — and, only when that disk holds a stray
+>   copy, the private, named and served disks as well. A copy whose presence cannot be told is never set aside (open,
+>   below).
+> - **Exit codes (Adam, decision 7, 2026-09-25).** Read-only, the command fails while any finding is still there when
+>   each listed row is asked again at the end of the run, so a publication that finishes before that recheck does not
+>   fail a deploy's check; forced, while any row failed, is missing or was kept. A file with no bytes anywhere keeps it
+>   failing until its entry is erased or the file restored from a backup.
+> - **Unique paths (Adam, decision 8, 2026-09-25), as built.** Custody acts on a file by its path on every disk it asks,
+>   so a second row naming the same path would have its bytes moved or deleted by a step acting for the first. Migration
+>   `0001_01_01_000010_make_media_file_paths_unique` adds `media_files_path_unique` — on PostgreSQL an index, `CREATE
+>   UNIQUE INDEX`, rather than a constraint, whose `ALTER TABLE` takes ACCESS EXCLUSIVE — and first refuses, naming the
+>   entries, an installation where two rows name one path as the engine compares strings, or where a row's path is not
+>   in the form Flysystem reads it (`media/2/../1/x.png` is `media/1/x.png` to every disk). Both checks run before the
+>   DDL, so a refused migration has changed nothing and can be run again once the rows are corrected. `MediaFile`
+>   refuses to create a row whose path is not in that form; an insert past the model is not checked (below). What the
+>   index makes impossible — two rows sharing a path at once — is no longer guarded anywhere else;
+>   `MediaCustody::pathsAreUnique()` asks the database, once per connection, before the cleanup, prune's removal of an
+>   extra copy and either forced command remove anything, and they refuse where the migration has not run. The claim
+>   checks in `removeOrphan()` and in disposal stay: they guard a row claiming a path after the listing or after the
+>   erasure, which an index cannot prevent, and each is now a lookup under the index rather than a scan. *Dedupe* by two
+>   rows sharing one file is closed; an import that shares a file gives each entry its own copy.
+> - **The third write under 2b.** 5a's cleanup kept a private copy that differed from the published one, and left the
+>   rest to 5b. The cleanup and prune's `removeExtra()` now share one step: under the lock, while the row names the disk
+>   its state says and that disk holds the copy kept, it hashes the kept copy and every copy it would remove before the
+>   first delete, then removes them — one that differs with both hashes logged (Adam, decisions 2 and 2b, 2026-09-24).
+>   It keeps everything when a copy there alone matches the checksum, and removes nothing when a copy cannot be read. A
+>   hash the keeper read as absent is taken again before any delete, and a copy that has reappeared and matches the
+>   checksum while another was kept is refused rather than removed or overwritten — in settle's sweep, move-off and
+>   copy, and in withdrawal's copy and delete.
+> - **Prune removes extra copies.** A copy beside a settled row's own — an identical or differing private copy of a live
+>   public file, a public or served copy of a trashed one, core's private copy under a host's private disk — is listed
+>   read-only with whether `--force` would remove it, and removed with `--force` through `removeExtra()`, one copy at a
+>   time, printing what custody logged for each as reconcile does. A row that is not settled keeps its copy listed for
+>   reconcile. A copy on a disk whose media directory nests with its row's target is kept, and never offered for
+>   removal: custody takes the two for one place and leaves it out, so it may be the only copy, or the only one that
+>   matches — prune says to compare it with the target's by hand, or to copy it over when the target does not list the
+>   file. A disk a row names, or a served disk, that is another scanned disk under another name, or cannot be told apart
+>   from one — one bucket, the same key prefix, two endpoints — is not scanned, so no file is listed twice. And nothing
+>   is listed while a configured disk's media directory lies inside that of a disk prune lists orphans on — a configured
+>   media disk, core's private disk, or one a row names: that disk would list the inner one's files, under longer paths
+>   no row names, as its own orphans. A disk nested with one prune scans only for extra copies is another directory, and
+>   each is scanned. A configured local disk with no root that no row names holds nothing, and is never built — by
+>   prune, custody, disposal or a trash; one a row names is listed, and says why it cannot be. Prune refuses inside an
+>   open transaction, as reconcile does, and so does each removal it runs: a file freed by an erasure not yet committed
+>   would read as an orphan.
+> - **One bucket through two endpoints, refused.** The recorded limit ~~two endpoints naming one store~~ is now refused
+>   wherever a step keeps one copy and removes another: `MediaDisks::onePlace()` answers true (one place), false (two),
+>   or null — one bucket, key prefixes that nest, two endpoints — and null is refused wherever true is — except that the
+>   cleanup and prune's removal leave out a disk that is one place with the target, having nothing there to remove. The
+>   configuration check also refuses a private disk a served object store reaches. Settle refuses before copying onto a
+>   disk it cannot tell from the source, and now empties the served disks before it moves off the named disk, then
+>   repoints the row last, so a named disk the web does not serve cannot, by refusing its delete, keep a trashed file on
+>   the web. A named disk that reaches the target's own directory entry under another name — Laravel's `public` at the
+>   public disk's directory, say — loses nothing: only the row moves. One that merely nests inside the target holds
+>   another file at the path; one custody cannot tell apart from it may hold that file or another, which cannot be
+>   known; one that reaches the file through a hard link, a symlinked file or a mount holds another entry, which the web
+>   may serve. The move-off refuses each.
+> - **The lock list** gains reconcile's settle and cleanup, and `removeExtra()`: each takes the row's lock before a byte
+>   moves, as every other custody write does.
+> - **Open, for Adam.** Whether decision 6's exception also covers a copy whose presence cannot be told (`unknown`), not
+>   only one that exists and cannot be read. Built to the letter: a trashed file whose row names a disk that is gone
+>   from the configuration, or cannot be reached, stays on the web, and every run refuses it, until the disk is back;
+>   the guarantees hold either way, and the design recommends keeping the letter. Whether the unique-path migration sets
+>   a lock timeout on PostgreSQL, MySQL and MariaDB: none is set, as `…000008` and `…000009` set none, and *Measured —
+>   decision 5, slice 5b* has what its build waits for and what waits behind it. And a divergence, whose read-only half
+>   T79 pins: once a copy on core's private disk has been set aside, a read-only reconcile lists the row as `extra`,
+>   which is not a finding, and exits 0, while `kitsune:media-prune --force` fails on that copy until it can be read —
+>   and a forced reconcile does too, when the copy kept did not match the checksum. A deploy's check is green while
+>   `--force` is red.
+> - **Open, for Adam, found by measuring:** whether prune should read its rows in chunks. It reads every media row at
+>   once — 5a's design, on the ground that an installation's media table is smaller than its media directory — and at
+>   ADR-027's floor a read-only prune over 100,000 rows exhausts PHP's default 128 MB memory limit, where reconcile,
+>   which reads in chunks of 500, peaks at about 49 MB read-only and 52 MB forced. *Measured — decision 5, slice 5b* has
+>   the figures; until it is decided, a large installation runs prune with a higher `memory_limit`.
+> - **Still Adam's:** the SQLite lever and its thresholds. 5b presumes none. A forced reconcile on SQLite prints a note
+>   that it holds the database's write lock row by row, and *Measured — decision 5, slice 5b* adds the share of a run
+>   spent holding it.
+> - **Found on the way.** The FIRST fallback read the target's hash before the target was known to hold anything,
+>   undefined whenever the only copy was outside the configured and served disks, which 5a could not reach and 5b's
+>   order could; the MISSING log sent an operator to prune for any disk, where prune looks beyond custody only on disks
+>   other rows name; a rootless local disk was built — and its directory created — by a read-only listing; `settle()`
+>   had no `@throws` for its configuration refusals; 5a's prune figure was three runs, not the seven the text above its
+>   table says; T54 and T55 were already taken, so 5b's tests start at T56; `media_files.path` had no index, so both
+>   claim rechecks scanned the table; Flysystem reads several spellings as one path; `refuseUnsafeMediaDisks()` could
+>   not see a served object store reaching the private disk; a hash cached as absent let a copy go unhashed before a
+>   delete; PostgreSQL's unique constraint takes ACCESS EXCLUSIVE, where the index this migration builds takes SHARE; a
+>   row naming its target under another name could never be settled; prune removed orphans inside an open transaction,
+>   and could remove the file of a disk nested inside another's media directory as the outer disk's orphan — a hazard
+>   5a's prune already had; a disposal that could not run reported the disk the row had named, as though the web did not
+>   serve it, rather than where the bytes might be; a local disk with no root was taken as able to hold a file, and
+>   building it stopped prune and refused every trash; and prune, read-only, holds every media row in memory — above
+>   PHP's default 128 MB at 100,000 rows.
 
 **6. Tiles: public ones are same-origin; private ones load on click until measured.** A public tile's URL is a path
 on the host serving the admin, from a helper beside `MediaDelivery::urlFor()`. `urlFor()` itself stays absolute,
@@ -4466,7 +4630,7 @@ nothing. The raw output is kept with the private notes.
 | bulk trash, 10 × 64 MiB | 6,996 | 7,006 | 7,026 | 7,021 | 7,016 | 11,196 | 11,196 |
 | bulk trash, 50 articles and 10 images of 200 KB | 42 | 41 | 126 | 94 | 93 | 49 | 49 |
 | a refused bulk trash, 10 × 4 MB, everything put back (ms, not a hold) | 1,317 | 1,316 | 1,472 | 1,444 | 1,447 | 2,082 | 2,078 |
-| `kitsune:media-prune --force`: 1,000 orphans, 1,000 kept, ~10,000 rows (ms) | 412 | 395 | 5,891 | 5,070 | 4,677 | 306 | 342 |
+| `kitsune:media-prune --force`: 1,000 orphans, 1,000 kept, ~10,000 rows (ms) — three runs, not seven (found in slice 5b, whose prune figure also removes 1,000 extra copies, so is another figure) | 412 | 395 | 5,891 | 5,070 | 4,677 | 306 | 342 |
 | trash, 4 MB, three more served local disks | 46 | 46 | 55 | 52 | 52 | 72 | 74 |
 | trash, 4 MB, one served disk answering each presence check in 10 / 50 ms (synthetic) | 82 / 212 | 82 / 212 | 91 / 220 | 90 / 219 | 88 / 216 | 106 / 237 | 109 / 236 |
 
@@ -4500,6 +4664,94 @@ orphan, about 5 ms each.
 **Owed, and why here it could not be:** a real object store's presence check, since no S3, FTP or SFTP adapter is
 installed — the synthetic column stands in and says so; a media disk on a second filesystem; and the numbers on stage,
 which wait on stage.
+
+### Measured — decision 5, slice 5b, 2026-09-25
+
+`php bin/benchmark-media-withdrawal.php`, as *Measured — decision 5* ran it: a database named exactly
+`kitsune_bench_withdrawal` on each engine — SQLite 3.53.4 (rollback journal, and again in WAL), PostgreSQL 17.11, MySQL
+8.4.11 and MariaDB 10.6.28 in the repository's `compose.yaml` containers, on an Apple silicon laptop, at dfbe32e — and
+SQLite 3.46.1 in `bin/benchmark-floor.Dockerfile`'s image at ADR-027's floor, 1 vCPU and 1,024 MB, as a non-root user,
+in both journal modes, on the tree that became 6f38911 but for review round 7's fixes. The later commits change no timed
+path: prune's check for nesting media directories asks the configuration once a run, reconcile's survey asks a nested
+disk only where one is configured, and a trash asks `mayHold()` of each served disk — for the disks it looks on, where
+it asked an inline copy of the rule, and for the keeper's candidates, where it asked none — which differs only for a
+served local disk with no root, or whose root does not exist, and no group configures one. Slice 5b's groups run after
+every 5a group, each on a seed of its own, cleared before and after: 100,000 media rows of 1 KiB spread over a hundred
+directories, with the residue a group repairs among them. Every figure in the first table is the median of seven warm
+runs after one warm-up; a run verified what its command reported, or both disks by hash, or printed nothing. The
+contention figures below are one attempt each, per engine and journal mode, and a range spans those attempts. The raw
+output is kept with the private notes.
+
+| median, ms unless marked | SQLite | SQLite WAL | PostgreSQL | MySQL | MariaDB | floor | floor WAL |
+|---|---|---|---|---|---|---|---|
+| read-only reconcile, 100,000 rows, 1,000 findings (ms, not a hold) | 20,191 | 20,578 | 22,534 | 21,561 | 21,451 | 11,012 | 10,995 |
+| its peak memory, MB | 49 | 49 | 49 | 49 | 49 | 48 | 48 |
+| read-only prune, 100,000 rows (ms, not a hold) | 896 | 894 | 877 | 909 | 889 | 641 | 631 |
+| forced reconcile, R1 (live public, only on the private disk), 64 MiB: settle · the cleanup | 703 · 691 | 708 · 695 | 714 · 700 | 706 · 693 | 706 · 693 | 1,118 · 1,103 | 1,109 · 1,098 |
+| forced reconcile, R3 (awaiting publication), 64 MiB: settle · the cleanup | 703 · 690 | 706 · 692 | 715 · 694 | 708 · 694 | 708 · 693 | 1,116 · 1,102 | 1,107 · 1,097 |
+| forced reconcile, R4 (a differing private copy), 64 MiB: settle · the cleanup | 346 · 691 | 346 · 693 | 348 · 695 | 347 · 694 | 347 · 694 | 553 · 1,098 | 550 · 1,096 |
+| forced reconcile, R6 (trashed on the public disk), 64 MiB: settle · the cleanup | 705 · 0.1 | 708 · 0.1 | 714 · 1.3 | 710 · 0.9 | 709 · 1.0 | 1,122 · 0.1 | 1,118 · 0.1 |
+| forced reconcile, R7 (private, on a legacy disk), 64 MiB: settle · the cleanup | 706 · 0.1 | 708 · 0.1 | 714 · 1.4 | 711 · 1.0 | 710 · 0.9 | 1,121 · 0.1 | 1,120 · 0.1 |
+| forced reconcile, R1, 4 MB: settle · the cleanup | 46 · 44 | 46 · 45 | 48 · 47 | 46 · 46 | 46 · 45 | 80 · 78 | 70 · 68 |
+| forced reconcile, 100,000 rows, 1,000 trashed on the public disk, 200 KB (ms, not a hold) | 25,483 | 25,424 | 34,658 | 32,626 | 31,665 | 16,682 | 15,870 |
+| its share of the run holding a lock, % | 15.4 | 15.2 | 21.2 | 19.7 | 19.8 | 25.5 | 26.7 |
+| its peak memory, MB | 52 | 52 | 52 | 52 | 52 | 51 | 51 |
+| prune's removal of one 64 MiB extra copy: its hold | 690 | 694 | 694 | 693 | 691 | 1,098 | 1,097 |
+| `kitsune:media-prune --force`: 1,000 orphans, 500 identical and 500 differing extra copies, ~10,000 rows (ms, seven runs) | 887 | 869 | 9,624 | 7,674 | 7,640 | 501 | 459 |
+| the unique-path migration's check alone, 100,000 rows, no index (ms) | 151 | 152 | 348 | 510 | 1,790 | 138 | 137 |
+| the migration's `up()`, check and build, 100,000 rows (ms) | 203 | 209 | 456 | 788 | 1,961 | 198 | 203 |
+
+**Memory, and the floor's first run.** Reconcile reads rows in chunks of 500: read-only it peaked at 48–49 MB, forced at
+51–52 MB, on every engine. Prune reads every row at once — 5a's design — and at the floor, with PHP's default 128 MB
+`memory_limit`, a read-only prune over 100,000 rows stopped with PHP's own error, and the run with it. The floor figures
+above are from a second run given 512 MB, in which a read-only prune over the same rows peaked at 154 MB; the laptop's
+PHP sets no limit, and its runs did not yet record prune's memory. Whether prune should read its rows in chunks is open
+(decision 5, *Amended 2026-09-25*).
+
+**Contention against a forced reconcile.** A second process, signalled the moment a forced reconcile of a 64 MiB file
+trashed on the public disk takes its lock, attempts one write each time. The reconcile's hold is a settle's, which is a
+trash's on a row already trashed, and the outcomes are a trash's:
+
+| the rival's attempt | SQLite, either journal, laptop and floor | PostgreSQL, MySQL, MariaDB |
+|---|---|---|
+| a write to the same entry | waits for the hold, then succeeds (773–774 ms; 1,132–1,134 at the floor) | waits for the hold (712–720 ms) |
+| an audited save of another entry | **fails at once**: "database is locked" at its first write (7–25 ms) | goes through (33–45 ms) |
+| an upload, `MediaLibrary::store()` | **fails**: "database is locked" at its COMMIT (17–57 ms) | goes through (48–64 ms) |
+| a plain read | goes through (3–9 ms) | goes through (4–6 ms) |
+
+Custody's reconcile verified in every case.
+
+**The unique-path migration against a serving release.** Over 100,000 rows. On PostgreSQL, MySQL and MariaDB a second
+process holds a transaction that wrote a `media_files` row and commits it two seconds after the build statement begins,
+and a third reads the table, or writes to it, 300 ms into the build; on SQLite a second process makes read-first writes
+for the whole of `up()`:
+
+| | the build statement (ms) | `up()` (ms) | a plain read of `media_files` | a write to `media_files` |
+|---|---|---|---|---|
+| PostgreSQL | 2,134–2,138 | 2,477–2,482 | goes through (15 ms) | waits for the build (1,830 ms) |
+| MySQL | 2,255–2,256 | 3,973–4,439 | waits for the build (1,715 ms) | waits for the build (1,711 ms) |
+| MariaDB | 2,170–2,173 | 3,924–3,947 | waits for the build (1,713 ms) | waits for the build (1,710 ms) |
+| SQLite, laptop | 53 · 62 WAL | 246 · 215 WAL | — | 17 of 89 read-first writes refused · 27 of 144 WAL |
+| SQLite, floor | 60 · 72 WAL | 240 · 218 WAL | — | 20 of 72 refused · 40 of 155 WAL |
+
+On PostgreSQL the build waits for the open transaction and every write queues behind it, while reads go on — the index
+takes SHARE, where Laravel's constraint would have taken ACCESS EXCLUSIVE and stopped the reads too. On MySQL and
+MariaDB reads queue as well, behind the build's metadata lock: a transaction left open on `media_files` stops the
+serving release's media pages for as long as it stays open. On SQLite the build holds the write lock for about 50–70 ms,
+and a writer that reads first is refused during it.
+
+What the numbers say, without a threshold, which stays Adam's to set: a forced reconcile's holds are a trash's — the
+file's size, copied and re-hashed, about 11 ms per MiB on the laptop and 17–18 at the floor, the same on every engine —
+and a row whose file already sits where it belongs costs its lock and one hash. A cleanup's hold re-hashes both copies
+for a live public file with a private copy, and is the lock alone otherwise. At 100,000 rows the listing, not the holds,
+is the run: read-only reconcile asks every disk whether it holds every path, about 0.2 ms a row on the laptop and 0.1 at
+the floor, whose Linux filesystem answers faster; forced, 15–21% of the run on the laptop and 26–27% at the floor was
+spent holding a lock. Prune's removal of an extra copy costs what the cleanup does. The migration's check and build over
+100,000 rows take 0.2–2 s, MariaDB's grouping the slowest; what waits on the build is the table above, and no lock
+timeout is set (open, decision 5, *Amended 2026-09-25*).
+
+**Owed, and why here it could not be:** as for 5a — a real object store's presence check and listing at 100,000 rows, a
+media disk on a second filesystem, and the numbers on stage.
 
 ### What this costs
 
@@ -4549,10 +4801,11 @@ real cost to an editor, and it is paid until the number exists.
 **A soft delete can fail, and holds its rows while it moves bytes.** Decision 5 makes a public file's delete
 depend on a disk move, refuses the delete when the move fails, and keeps the rows locked while the bytes move.
 
-**Some failures leave a live file served privately until someone reconciles it.** That is the price of never
-leaving one exposed: the database is committed first for a restore and last for a delete, and the bytes that
-disagree with it afterwards are repaired by a command rather than by an automatic retry, because nothing in this
-installation is scheduled.
+**Some failures leave a live file ~~served privately~~ that its public URL does not serve — privately after a failed
+publication, by neither URL after a failed compensation — until someone reconciles it.** That is the price of never
+leaving one exposed: the database is committed first for a restore and last for a delete, and the bytes that disagree
+with it afterwards are repaired by a command rather than by an automatic retry, because nothing in this installation is
+scheduled.
 
 **A trashed public file leaves the web inside the write, and the write waits for it.** The rows stay locked while the
 file is copied to the private disk, read back and removed from every disk the web serves — up to 64 MiB, twice
@@ -4560,48 +4813,124 @@ hashed. On SQLite that hold is the database's write lock: a writer whose first s
 one that reads first — an audited entry update, an upload — fails at once with "database is locked", with no byte
 moved. *Measured — decision 5* has the figures; what to do about them is Adam's.
 
-**Every public delete asks each served disk for the file.** A disk with a url the configuration names, that cannot
-be built or reached — `AWS_URL` set with no S3 adapter installed, say — refuses every public delete, naming it, and
-leaves every restore of a public file unpublished and every compensation undone, until it is fixed or its url
-removed. A slow one lengthens every hold. And a copy that exists and cannot be read, on any disk custody asks — a
-stale private copy with the wrong permissions, say — refuses a trash and an erasure of that file until it can be read
-(the design's rule, pending Adam).
+**Every public delete asks each served disk for the file.** A disk with a url the configuration names, that cannot be
+built or reached — `AWS_URL` set with no S3 adapter installed, say — refuses every public delete, naming it, and leaves
+every restore of a public file unpublished and every compensation undone, until it is fixed or its url removed. A slow
+one lengthens every hold. And a copy that exists and cannot be read, on ~~any disk custody asks~~ the private, named,
+public or served disks — the ones a trash or an erasure of a file the web could reach asks; a stale private copy with
+the wrong permissions, say — refuses a trash and an erasure of that file until it can be read; a private file's trash
+reads nothing, and its erasure asks the public disk — and, only when that disk holds a stray copy, the private, named
+and served disks as well ~~(the design's rule, pending Adam)~~ (Adam, decision 6, 2026-09-25). One on a disk neither
+served nor the private disk no longer keeps an already-trashed file on the web while a served disk holds it: reconcile
+withdraws the file and reports the copy; one on the private disk or a served disk still refuses it. And since 5b every
+settle also asks core's private disk when the private disk is another, so an unreadable copy there stops a publication
+and a compensation that reach it, naming the disk; a trash's and an erasure's withdrawal then ask it only when the row
+names it.
 
-**Until slice 5b, some residue waits for an operator.** A public file trashed before 5a stays public; a file a failed
+~~**Until slice 5b, some residue waits for an operator.** A public file trashed before 5a stays public; a file a failed
 compensation or publication left on the private disk answers 404 at its public URL. `kitsune:media-prune` lists both,
 and deleting and restoring the entry — or trashing it again — repairs each; `kitsune:media-reconcile` will do it in
-bulk.
+bulk.~~
+
+**Residue waits for an operator's reconcile** (amended 2026-09-25, slice 5b). Nothing is scheduled, so a public file
+trashed before 5a stays public, and a file a failed compensation or publication left on the private disk answers 404 at
+its public URL, until someone runs `kitsune:media-reconcile --force`. Read-only, it fails while either is there, so a
+deploy can run it as a check.
+
+**A repaired row costs up to two holds.** Reconcile runs settle and then the cleanup for each row it forces, each under
+the row's lock. Settle re-hashes what it keeps; the cleanup re-hashes both copies only for a live public file with a
+private copy, and is otherwise the lock alone. On SQLite each is the database's write lock, and a save or an upload that
+reads before it writes fails during it. *Measured — decision 5, slice 5b* has the share of a run spent holding it.
+
+**Prune hashes before each removal.** An extra copy goes only once it and the copy its row names have been hashed under
+the row's lock, so each removal reads both — the named copy once for every extra copy beside it — where 5a's prune
+hashed nothing.
+
+**The third write now removes a differing private copy.** A published file's private copy that differs from the public
+one goes with both hashes logged, where 5a kept it (Adam, decisions 2 and 2b). If the differing copy was the one that
+mattered, the log is what is left of it.
+
+**Every settle asks core's private disk, whenever the private disk is another.** A copy there that cannot be read stops
+a publication and a compensation that reach it, naming the disk, until it can be read or is removed by hand.
+
+**Public and private disks that are one bucket through two endpoints, and a private disk a served object store reaches,
+refuse almost everything.** Every trash of a file the web could reach, every erasure, every publication and every forced
+reconcile refuses, naming both disks, until the configuration changes — even where the two endpoints are in fact two
+stores, because custody cannot tell them apart; a forced prune refuses once it has anything to remove. A restore still
+commits, and stays unpublished; a private file's trash moves nothing, and goes through. Two other disks of that shape
+refuse only a step that would keep one copy and remove the other.
+
+**A NAMED choice recurs.** When no copy matches the checksum, the named disk's copy is kept and every run that reaches
+the row logs the mismatch again; nothing records that an operator has seen it.
+
+**A FIRST choice is applied in bulk (decision 5).** When no copy matches and the named disk holds nothing, a forced
+reconcile keeps the first copy in Adam's order for every such row, without asking row by row, and removes the copies its
+steps reach — the served ones when the file belongs on the private disk, and the private ones of a published file — each
+differing one with both hashes logged. Any other is left for `kitsune:media-prune --force`, which removes it the same
+way.
+
+**A trashed file can leave the web while an unreadable copy remains (decision 6).** The copy is kept, never touched, and
+reported; the copy chosen may not be the one that matched, since the unreadable one might have. A row whose named disk
+holds the set-aside copy fails every forced run until that copy can be read.
+
+**A file with no bytes keeps a read-only reconcile red (decision 7)** until its entry is erased or the file restored
+from a backup; and a run short enough to finish while a publication is still in flight fails on it, because its
+end-of-run recheck still finds the file awaiting publication.
+
+**Paths are unique (decision 8).** An import that shares one file between entries is refused by the index; one that
+writes a path in a form the disks read as another is refused through `MediaFile`, and not through the query builder,
+which is the insert-path gap. An installation holding either will not migrate until the rows are corrected by a direct
+UPDATE, which the refusal names. The build holds `media_files` while the previous release serves: on PostgreSQL writes
+wait for it; on MySQL and MariaDB statements on the table, reads included, queue behind its metadata lock while an open
+transaction that touched the table holds that lock off, at the build's start and end; and on SQLite it holds the write
+lock. *Measured — decision 5, slice 5b* has the figures; no lock timeout is set, which is open (decision 5, *Amended
+2026-09-25*).
+
+**Prune lists nothing while a disk nests inside one it lists orphans on.** A configured disk — a host's own included,
+whatever names or serves it — rooted inside the `media/` directory of a configured media disk, core's private disk or a
+disk a row names, or an object store's prefix inside such a disk's `media/` prefix, stops every prune, read-only
+included, until one of them moves: the outer listing would show the inner disk's files as orphans.
+
+**Prune holds every media row in memory.** It reads the whole table at once, so its memory grows with the number of
+media files: at 100,000 rows it exceeds PHP's default 128 MB, and the command stops with PHP's own error until it is
+given more (open, decision 5, *Amended 2026-09-25*).
+
+**Moving the last row off a legacy disk ends prune's sweep of it.** Prune lists orphans on `local`, or on a former
+public disk the web still serves, only while a row names it, so a legacy disk's leftovers must be pruned before
+reconcile moves its last rows; the command says so, under `--entry` too when those entries are the last. A legacy disk
+whose media directory nests with a disk prune lists orphans on — a configured media disk, core's private disk or another
+a row names — or holds any configured disk inside it, is never swept for orphans while they nest, and the command says
+that instead: its leftovers are removed by hand.
 
 ### Enforced by
 
 **Nothing yet.** This entry is the decision, not a report of work done.
 
-> ⚠️ **Amended 2026-09-23 — the slice declaring media types landed**, and each guard it adds was removed in turn and
-> its test watched fail. `MediaTypesTest`: the migration marks a type whose every entry carries a file, trashed
-> entries included; refuses a type mixing the two, naming it by handle and id with its count of entries without a
-> file, and counting a trashed one; and refuses before it alters the table — the refusal arrives rather than the
-> engine's duplicate-column error, and the statement log holds only reads. `is_media` cannot change after creation
-> through the instance, a quiet save, in bulk, or when a `saving` listener registered later changes it — nor inside
-> `withoutScopeBecause()`, through an update, a quiet save, an arithmetic write's extra columns or an upsert, because
-> it is a column fixed at creation and `ScopedBuilder` refuses those on every update (Codex, #150). `store()`
-> refuses a type without it, reading the stored flag rather than the instance's — and again inside its row
-> transaction, so a type that stops being one while its file is written is refused. `kitsune:media-types` reports a
-> type whose flag disagrees with its entries and fails; forced, it marks, unmarks or refuses one type by the
-> migration's rule, trashed entries counting, leaves an empty type alone, and refuses a handle two orgs share. A
-> retype across the boundary is
-> refused in both directions — through the instance, a quiet save, in bulk, an arithmetic write's extra columns, and
-> inside `withoutScopeBecause()` — while one within it moves the file with the entry, and the hatch can still do so
-> in bulk; arithmetic on the type id and a type id that is not a positive whole number are refused. The seeder's
-> byte-less rival `image` is gone and its stored rival file carries `admin.spec.js`'s cross-org assertion, with
-> Golfdom's own file and the rival's owner seeing theirs as the two controls; `media-delivery.spec.js` asks for that
-> file's id as Golfdom's owner (404) and as the rival's (200). `entity-type-builder.spec.js` creates a media type
-> through the builder and finds the switch locked afterwards. **Private disk:** `MediaDisksTest` — private uploads go
-> to core's `kitsune-private`, local with `serve` off, defined when the provider registers; the framework's own route
-> registration, run over the disks as core leaves them, routes `local` when it is served and never this one; its root
-> sits outside every other local disk's, and the skeleton ignores it as it ignores `storage/app/private`; a host's
-> definition under the name is replaced. `MediaDeliveryTest` and `MediaDisposalTest` serve and dispose of a row still
-> naming `local` from `local`, and `kitsune:media-prune` sweeps every disk a row names. **Not yet:**
-> `kitsune:media-reconcile`, which is to move those rows, lands with the deletion protocol.
+> ⚠️ **Amended 2026-09-23 — the slice declaring media types landed**, and each guard it adds was removed in turn and its
+> test watched fail. `MediaTypesTest`: the migration marks a type whose every entry carries a file, trashed entries
+> included; refuses a type mixing the two, naming it by handle and id with its count of entries without a file, and
+> counting a trashed one; and refuses before it alters the table — the refusal arrives rather than the engine's
+> duplicate-column error, and the statement log holds only reads. `is_media` cannot change after creation through the
+> instance, a quiet save, in bulk, or when a `saving` listener registered later changes it — nor inside
+> `withoutScopeBecause()`, through an update, a quiet save, an arithmetic write's extra columns or an upsert, because it
+> is a column fixed at creation and `ScopedBuilder` refuses those on every update (Codex, #150). `store()` refuses a
+> type without it, reading the stored flag rather than the instance's — and again inside its row transaction, so a type
+> that stops being one while its file is written is refused. `kitsune:media-types` reports a type whose flag disagrees
+> with its entries and fails; forced, it marks, unmarks or refuses one type by the migration's rule, trashed entries
+> counting, leaves an empty type alone, and refuses a handle two orgs share. A retype across the boundary is refused in
+> both directions — through the instance, a quiet save, in bulk, an arithmetic write's extra columns, and inside
+> `withoutScopeBecause()` — while one within it moves the file with the entry, and the hatch can still do so in bulk;
+> arithmetic on the type id and a type id that is not a positive whole number are refused. The seeder's byte-less rival
+> `image` is gone and its stored rival file carries `admin.spec.js`'s cross-org assertion, with Golfdom's own file and
+> the rival's owner seeing theirs as the two controls; `media-delivery.spec.js` asks for that file's id as Golfdom's
+> owner (404) and as the rival's (200). `entity-type-builder.spec.js` creates a media type through the builder and finds
+> the switch locked afterwards. **Private disk:** `MediaDisksTest` — private uploads go to core's `kitsune-private`,
+> local with `serve` off, defined when the provider registers; the framework's own route registration, run over the
+> disks as core leaves them, routes `local` when it is served and never this one; its root sits outside every other
+> local disk's, and the skeleton ignores it as it ignores `storage/app/private`; a host's definition under the name is
+> replaced. `MediaDeliveryTest` and `MediaDisposalTest` serve and dispose of a row still naming `local` from `local`,
+> and `kitsune:media-prune` sweeps every disk a row names. ~~**Not yet:** `kitsune:media-reconcile`, which is to move
+> those rows, lands with the deletion protocol.~~ Built by ADR-042 decision 5, slice 5b (2026-09-25).
 
 > ⚠️ **Amended 2026-09-23 — the slice making media shared by default landed**, and each guard it adds was removed in
 > turn and its test watched fail. **Sharing:** `MediaLibraryTest` — `store()` writes no site and no slug by default and
@@ -4712,23 +5041,24 @@ When it lands:
   file uploaded without it is stored private.
 - **Authorisation.** A user without `create` sees no Upload; one with `create` but not `publish` sees it disabled
   with the reason; a forged call from either stores nothing on any disk.
-- **Deletion.** A soft-deleted public file is absent from the public disk and restored to it, through the instance
-  and in bulk. A builder-level bulk soft delete whose move fails part-way leaves every row and every byte where it
-  was; a restore inside a transaction that rolls back leaves nothing on the public disk; a restore whose publication
-  fails leaves a live entry naming the private disk and delivered privately; the interleaving is covered
-  deterministically — a restore commits, the entry is soft-deleted before its publication runs, and the
-  publication then publishes nothing; a publication commits, the entry is soft-deleted before the publication's cleanup runs, and the
-  cleanup then deletes nothing, leaving the file on the private disk; a soft delete withdraws a public copy at the
-  file's path that the row does not name, and when that copy is the only one it is moved rather than deleted; a
-  truncated private copy at the path does not count as a copy — withdrawal re-copies, and the public source
-  survives; the admin's bulk delete names which
-  files were withdrawn and which refused, and the admin shows a refused delete as a
-  notification naming the file rather than a 500. `kitsune:media-prune --force` leaves a file whose path a live row
-  names on the other media disk, and `kitsune:media-reconcile` reports it read-only and moves it with `--force`,
-  never deleting a sole copy. A force-delete of a public file withdraws it before the rows go — a force-delete whose
-  withdrawal fails is refused and leaves the entry and its public file in place — and disposes of the path on both
-  media disks afterwards; a disposal that fails after the commit leaves nothing on the public disk. A public-visibility row naming the private disk is delivered as private. Coinciding
-  public and private disks make the first move refuse.
+- **Deletion.** A soft-deleted public file is absent from the public disk and restored to it, through the instance and
+  in bulk. A builder-level bulk soft delete whose move fails part-way leaves every row and every byte where it was; a
+  restore inside a transaction that rolls back leaves nothing on the public disk; a restore whose publication fails
+  leaves a live entry naming the private disk and delivered privately; the interleaving is covered deterministically — a
+  restore commits, the entry is soft-deleted before its publication runs, and the publication then publishes nothing; a
+  publication commits, the entry is soft-deleted before the publication's cleanup runs, and the cleanup then deletes
+  nothing, leaving the file on the private disk; a soft delete withdraws a public copy at the file's path that the row
+  does not name, and when that copy is the only one it is moved rather than deleted; a truncated private copy at the
+  path does not count as a copy — withdrawal re-copies, and the public source survives; the admin's bulk delete names
+  which files were withdrawn and which refused, and the admin shows a refused delete as a notification naming the file
+  rather than a 500. `kitsune:media-prune --force` leaves a file whose path a live row names on the other media disk —
+  while the row is not settled on its own disk; once it is, it removes it as an extra copy (5b) — and
+  `kitsune:media-reconcile` reports it read-only and moves it with `--force`, ~~never deleting a sole copy~~ deleting no
+  copy until the kept copy is verified on the disk the row's state says — a differing one removed with both hashes
+  logged (5b). A force-delete of a public file withdraws it before the rows go — a force-delete whose withdrawal fails
+  is refused and leaves the entry and its public file in place — and disposes of the path on both media disks
+  afterwards; a disposal that fails after the commit leaves nothing on the public disk. A public-visibility row naming
+  the private disk is delivered as private. Coinciding public and private disks make the first move refuse.
 - **Tiles.** A public tile's URL carries no scheme or host. The media list makes no request to the private media
   route until a tile is clicked.
 - **Refusals.** A refusal shown to an editor is `MediaIntake`'s own text, escaped; a database error shows none of
@@ -4776,10 +5106,75 @@ When it lands:
 >   (a refused delete a notification naming the entry, escaped; the bulk delete naming each refusal; a deleted public
 >   file's URL no longer answering); `MediaWithdrawalBenchHarnessTest` (the benchmark refusing where it would do harm).
 >
-> **Not yet (slice 5b):** `kitsune:media-reconcile`; prune's removal of redundant copies; the deletion of differing
-> copies on a disk neither served nor named, and on the private disk when it is not the target. **Not yet, and not
-> 5b's:** the insert path (`insertGetId`) through `TransactionRecovery` and the door guards; `store()`'s bytes written
-> before its row, which a concurrent `kitsune:media-prune --force` can remove.
+> ~~**Not yet (slice 5b):** `kitsune:media-reconcile`; prune's removal of redundant copies; the deletion of differing
+> copies on a disk neither served nor named, and on the private disk when it is not the target.~~ Built — below. **Not
+> yet, and not 5b's:** the insert path (`insertGetId`) through `TransactionRecovery` and the door guards; `store()`'s
+> bytes written before its row, which a concurrent `kitsune:media-prune --force` can remove.
+
+> ⚠️ **Amended 2026-09-25 — slice 5b, decision 5, landed**, and each guard was removed in turn and its test watched
+> fail, beside a run of the same tests passing unmutated: 159 mutations, on the engine each case is about. By family:
+> - **Paths** (13). `MediaPathIndexTest` — the migration's check refuses two rows naming one path, naming the path and
+>   every entry, as each engine compares strings (a case variant refused on MySQL and MariaDB and not on PostgreSQL or
+>   SQLite), and a path in any form the disks read as another, or cannot read; the index refuses a second row on every
+>   engine, exactly where the check does; `MediaFile` refuses to create a path not in the disks' form, before any
+>   statement. `tests/LevelZero/MediaPathMigrationTest` — a refused `up()` ran only reads and left no index, even where
+>   the build would have succeeded; `down()` removes it. T21 and disposal's path recheck, re-verified under the index.
+> - **Disks** (7). `MediaDisksTest` — one bucket through two endpoints is neither one place nor two, and is refused with
+>   the configured disks and between a private disk and a served object store; local pairs are not asked, and no
+>   rootless disk is built. Settle (`MediaCustodyTest`) and a trash (`MediaWithdrawalTest`) refuse such a pair before
+>   any byte.
+> - **Custody** (28). `MediaCustodyTest` — the keeper's order, core's private disk asked and a rootless one never built;
+>   the cost of asking it; decision 6 in three forms, and the rule standing everywhere else — no served holder, a public
+>   target, an unreadable served copy, an unreadable target refused at its own hash, a presence that cannot be told at
+>   the presence pass or at the hash, a copy gone between the two; the served sweep before the move-off;
+>   `removeExtra()`; a copy that reads as absent and is back, at the sweep, the move-off and the copy; a set-aside copy
+>   on core's private disk keeping no row.
+> - **The third write** (5). `MediaWithdrawalTest` — a differing private copy removed with both hashes; nothing removed
+>   when a copy there alone matches, when the kept copy vanished, or when a copy flapped; the named copy kept when
+>   nothing matches.
+> - **Withdrawal and disposal** (9). `MediaWithdrawalTest` — a trash still refused on an unreadable copy; a served copy
+>   hashed again before its delete; a trash refused rather than delete a copy that read as absent and is back, and
+>   rather than commit when every copy it saw is gone. Disposal builds no served disk whose root does not exist, and a
+>   trash none with no root, or an empty one (`MediaWithdrawalTest`), and a disposal that could not run says what
+>   removes what is left, and where it must be removed by hand — or, after a force-delete that reported failure, that it
+>   may not have committed (`MediaDisposalTest`).
+> - **Reconcile** (42). `MediaReconcileCommandTest` — read-only asks only whether disks hold paths, locks nothing and
+>   fails on findings; `--force` reaches the settled state for every residue kind; decision 6 through the command; a
+>   restore, a trash or a publication landing between the listing and the lock; every refusal; a row's failure its own;
+>   rows of every org; `--entry`; chunks of 500 and a recheck with no bound id list; a finding settled before the
+>   recheck; a copy changed between settle and the cleanup, kept; a presence check that fails, unknown; one listener per
+>   process; a configuration it cannot read; a row naming the public disk under another name, repointed with no byte
+>   moved and no warning, while one on a disk that only nests inside it, or whose copy is a hard link to the target's,
+>   is refused and keeps its row, and a disk nested inside it is asked, not taken for it, and named in a warning of its
+>   own, as is a host's disk nested inside a legacy one, and a legacy disk inside another a row names; the warning
+>   before the last rows leave a legacy or former public disk, under `--entry` only when they are the last.
+> - **Prune** (35). `MediaPruneCommandTest` — extra copies removed under the lock, exactly those, a trashed file's
+>   public, served and core-private copies among them; a real trash landing after the listing, which makes the copy the
+>   file's own; an entry erased, or a row a restore unsettled, since the listing; an own copy that differs, keeping the
+>   extra copy that matches until reconcile rewrites it, with custody's reason on the console — or a hand copy, when the
+>   copy kept is on a disk reconcile never asks; a disk that is another scanned disk under another name not scanned,
+>   whether a row names it or the web serves it; nothing listed while a configured disk, a host's included, nests inside
+>   one prune lists orphans on, while the public disk inside a served host disk, and two nesting disks prune scans only
+>   for extra copies, are each scanned, a copy on a disk nesting with its row's target kept, never offered for removal,
+>   and the operator told to compare it or copy it over by hand; a configured local disk with no root, or an empty one,
+>   never built, and a host's disk read from its configuration rather than built, so one prune could not build is still
+>   seen to nest; nothing hashed read-only; the early return; a disk that could not be listed named as such; nothing
+>   removed inside an open transaction, by the command or by a removal it runs.
+> - **Locks** (4). `MediaCustodyLockTest` — `removeExtra()` and a forced reconcile join T52's order on every engine; a
+>   rival holding one row fails that row alone.
+> - **Level 0** (5). `tests/LevelZero/MediaCustodyLevelZeroTest` — `removeExtra()` and a forced reconcile hold SQLite's
+>   write lock at their first byte, and a read-only reconcile leaves it free; `tests/LevelZero/MediaPathMigrationTest` —
+>   without the index, the cleanup, reconcile and prune each refuse. Beside them, with no mutation of their own: a
+>   forced reconcile whose settle COMMIT failed leaves nothing on the web, and a rerun finishes it (T91); and after a
+>   failed erasure prune lists core's private copy as extra, and reconcile puts the file back (T48).
+> - **The rest.** `MediaDeliveryTest` (the missing-bytes log naming reconcile, 1); `MediaWithdrawalBenchHarnessTest`
+>   (the benchmark printing no `held` share while a hold is open, no figure for a group whose command counted rows other
+>   than those it seeded, and no contention figure for a row that did not happen as its heading says — its holder held
+>   and committed, its build was seen, its prober reported — 10).
+>
+> **Not yet, and not 5b's**, beside the two above: a raw insert of a path in a form the disks read as another, which
+> only `MediaFile`'s creating guard refuses; and `removeOrphan()`'s recheck as a locking read, which would now wait on
+> an upload's uncommitted row on MySQL and MariaDB — both belong with the insert-path work.
 
 ---
 

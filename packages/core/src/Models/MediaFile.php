@@ -16,6 +16,9 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Kitsune\Core\Tenancy\Attributes\Unscoped;
 use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
 use Kitsune\Core\Tenancy\Contracts\FixesColumnsAtCreation;
+use League\Flysystem\WhitespacePathNormalizer;
+use RuntimeException;
+use Throwable;
 
 /**
  * The bytes behind a media entry — ADR-016, with ADR-041's visibility.
@@ -35,6 +38,13 @@ use Kitsune\Core\Tenancy\Contracts\FixesColumnsAtCreation;
  * ⚠️ ONLY `disk` MOVES AFTER CREATION — ADR-042 decision 5. Custody moves a file between the public and private disks
  * and writes where it now is, through the query builder under its own lock; every other column is what `store()`
  * wrote, and `columnsFixedAtCreation()` says why each one stays so.
+ *
+ * ⚠️ A PATH IS WRITTEN AS THE DISKS READ IT, AND IS ONE ROW'S (Adam, decision 8, 2026-09-25). Custody acts on a file by
+ * its path on every disk, so a path must name this file and no other row's. `media_files_path_unique` refuses a second
+ * row naming one; and because Flysystem normalises every location — `/media/x`, `media//x` and `media\x` are all the file
+ * at `media/x` — a row is refused here, before anything reaches the engine, unless its path is already in the form the
+ * disks read. `path` is fixed after creation, so creation is the only model door. A mass or raw insert passes neither
+ * the model nor this check: ADR-042 records that insert path as not yet guarded.
  *
  * @property int $id
  * @property int $entry_id
@@ -73,6 +83,28 @@ class MediaFile extends Model implements FixesColumnsAtCreation
         'duration_ms' => 'integer',
         'created_at' => 'datetime',
     ];
+
+    protected static function booted(): void
+    {
+        static::creating(static function (self $file): void {
+            $path = (string) $file->getAttribute('path');
+
+            try {
+                $read = (new WhitespacePathNormalizer)->normalizePath($path);
+            } catch (Throwable) {
+                $read = null;
+            }
+
+            if ($read !== $path) {
+                throw new RuntimeException(sprintf(
+                    'Refusing to store a media file at [%s]: %s, so the path would not be this file\'s alone (ADR-042 '
+                    .'decision 5; Adam, decision 8, 2026-09-25). Nothing was written.',
+                    $path,
+                    $read === null ? 'no disk can read it' : "every disk reads it as [{$read}]",
+                ));
+            }
+        });
+    }
 
     /** @return BelongsTo<Entry, $this> */
     public function entry(): BelongsTo

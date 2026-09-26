@@ -29,6 +29,7 @@ use Kitsune\Core\Console\BenchmarkStorageCommand;
 use Kitsune\Core\Console\BlueprintCommand;
 use Kitsune\Core\Console\MediaIntakeSweepCommand;
 use Kitsune\Core\Console\MediaPruneCommand;
+use Kitsune\Core\Console\MediaReconcileCommand;
 use Kitsune\Core\Console\MediaTypesCommand;
 use Kitsune\Core\Console\ModuleCommand;
 use Kitsune\Core\Console\SchemaSyncCommand;
@@ -76,7 +77,8 @@ final class KitsuneServiceProvider extends ServiceProvider
          * The entries whose files a rolled-back withdrawal moved, waiting to be put back — ADR-042 decision 5. Scoped
          * for the reason `RecordedRevisions` is: a queue a request leaves undrained, its drain waiting on a commit that
          * never came, would otherwise ride into the next job on a long-lived worker. Dropped instead, its files stay
-         * where the withdrawal left them — on the private disk, which `kitsune:media-prune` lists.
+         * where the withdrawal left them — on the private disk, which `kitsune:media-prune` lists and
+         * `kitsune:media-reconcile --force` puts back.
          */
         $this->app->scoped(MediaCustody::class, static fn (): MediaCustody => new MediaCustody);
 
@@ -220,6 +222,7 @@ final class KitsuneServiceProvider extends ServiceProvider
                 BlueprintCommand::class,
                 MediaIntakeSweepCommand::class,
                 MediaPruneCommand::class,
+                MediaReconcileCommand::class,
                 MediaTypesCommand::class,
                 BenchmarkStorageCommand::class,
                 BenchmarkFloorCommand::class,

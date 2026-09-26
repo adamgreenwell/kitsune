@@ -208,19 +208,13 @@ final class MediaWithdrawal
         $target = MediaDisks::configured($config, 'private');
         $reachable = $file->visibility === 'public' || in_array($named, $served, true);
 
-        // A served local disk nothing configures or names, whose root does not exist, holds nothing, and is not built.
-        $surfaces = array_values(array_filter(
-            array_diff(array_unique($reachable ? [$public, ...$served, $named] : [$public]), [$target]),
-            static function (string $disk) use ($config, $public, $named): bool {
-                if ($disk === $public || $disk === $named) {
-                    return true;
-                }
-
-                $root = MediaDisks::resolved($config, $disk)['root'];
-
-                return $root === null || is_dir($root);
-            },
-        ));
+        /*
+         * A served local disk whose root does not exist, or that has none, holds nothing, and is not built — asked of
+         * `MediaDisks::mayHold()`, which custody, disposal, reconcile and prune ask too: this kept its own copy of the rule,
+         * which counted a disk with no root as holding, and building one refused every trash (review of slice 5b).
+         */
+        $holding = array_values(array_filter($served, static fn (string $disk): bool => MediaDisks::mayHold($config, $disk)));
+        $surfaces = array_values(array_diff(array_unique($reachable ? [$public, ...$holding, $named] : [$public]), [$target]));
 
         try {
             $held = array_values(array_filter($surfaces, static fn (string $disk): bool => MediaBytes::present($disk, $path)));
@@ -236,23 +230,41 @@ final class MediaWithdrawal
                 throw new MediaWithdrawalRefused($id, MediaWithdrawalRefused::COINCIDING, $target, $this->operation, $coinciding);
             }
 
+            /*
+             * ⚠️ NOTHING IS SET ASIDE HERE. A trash or an erasure refuses on any copy it cannot read, which leaves the
+             * entry as it was; only settle, taking an already-trashed file off the web, sets such a copy aside (Adam,
+             * decision 6, 2026-09-25) — so no spare disks are passed.
+             */
             try {
-                $keeper = MediaCustody::keeper($file, $target, $named, array_values(array_unique([$target, $named, $public, ...$served])));
+                $keeper = MediaCustody::keeper($file, $target, $named, array_values(array_unique([$target, $named, $public, ...$holding])));
             } catch (MediaCustodyFailure $failure) {
                 throw $this->refused($id, MediaWithdrawalRefused::UNREADABLE, $failure);
             }
 
+            /*
+             * ⚠️ ~~Every copy seen a moment ago has gone since: there is nothing left to take off the web.~~ A copy seen a
+             * moment ago that reads as absent now may be back a moment later — an object store's 404, a sync tool
+             * rewriting it — and the trash would commit with it on the web (review of slice 5b). Refused: the entry stays
+             * as it was, and a retry finds the file where it is.
+             */
             if ($keeper->disk === null || $keeper->expected === null) {
-                // Every copy seen a moment ago has gone since: there is nothing left to take off the web.
-                return;
+                throw $this->refused($id, MediaWithdrawalRefused::CHANGED, new MediaCustodyFailure('unknown', $held[0], $path));
             }
 
             if (! $keeper->targetHolds) {
                 try {
-                    MediaCustody::noteDiffering($target, $path, $keeper->hashes[$target] ?? null, $keeper, 'overwriting');
+                    // Read again when the keeper read it as absent: a copy there now may be the one that matches.
+                    $there = $keeper->hashes[$target] ?? MediaBytes::hash($target, $path);
+                    $keeper->refuseToLose($target, $path, $there);
+                    MediaCustody::noteDiffering($target, $path, $there, $keeper, 'overwriting');
                     MediaBytes::copyVerified($keeper->disk, $target, $path, $keeper->expected);
                 } catch (MediaCustodyFailure $failure) {
-                    throw $this->refused($id, $failure->reason === 'coinciding' ? MediaWithdrawalRefused::COINCIDING : MediaWithdrawalRefused::COPY_FAILED, $failure);
+                    throw $this->refused($id, match ($failure->reason) {
+                        'coinciding' => MediaWithdrawalRefused::COINCIDING,
+                        'matches' => MediaWithdrawalRefused::CHANGED,
+                        'unreadable', 'unknown' => MediaWithdrawalRefused::UNREADABLE,
+                        default => MediaWithdrawalRefused::COPY_FAILED,
+                    }, $failure);
                 }
             }
 
@@ -264,9 +276,12 @@ final class MediaWithdrawal
                 }
 
                 try {
-                    $hash = array_key_exists($disk, $keeper->hashes) ? $keeper->hashes[$disk] : MediaBytes::hash($disk, $path);
+                    // Taken again when the keeper read it as absent and it is here now: nothing is deleted unhashed, and
+                    // nothing that alone matches the checksum is deleted at all (review of slice 5b).
+                    $hash = $keeper->hashes[$disk] ?? MediaBytes::hash($disk, $path);
+                    $keeper->refuseToLose($disk, $path, $hash);
                 } catch (MediaCustodyFailure $failure) {
-                    throw $this->refused($id, MediaWithdrawalRefused::UNREADABLE, $failure);
+                    throw $this->refused($id, $failure->reason === 'matches' ? MediaWithdrawalRefused::CHANGED : MediaWithdrawalRefused::UNREADABLE, $failure);
                 }
 
                 MediaCustody::noteDiffering($disk, $path, $hash, $keeper, 'removing', $target);

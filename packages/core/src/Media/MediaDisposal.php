@@ -32,7 +32,9 @@ use Throwable;
  * gone, a surviving entry would point at nothing. ADR-042 decision 5 orders both halves around the commit. The
  * force-delete withdraws every copy the web could serve before it commits, keeping a verified one on the private
  * disk; this removes what is left, only once nothing on the connection is left to commit, and for each file it asks
- * again with the entry locked — a delete that did not commit, or a path another row still names, keeps its bytes.
+ * again with the entry locked — a delete that did not commit, or a path a row has claimed since the erasure, keeps its
+ * bytes. Paths are unique (Adam, decision 8, 2026-09-25), so while the erased row existed no other could name its path;
+ * the check guards a row written after the erasure committed, naming the path it freed.
  *
  * ⚠️ EVERY DISK THAT COULD HOLD THE PATH, not only the one the row named: the private copy withdrawal kept, a stray
  * copy on a served disk, a partial copy beside any of them.
@@ -94,7 +96,7 @@ final class MediaDisposal
                     return self::removeEverywhere($file) ? 1 : 0;
                 });
             } catch (Throwable $e) {
-                self::report($file['disk'], $file['path'], 'disposal could not run — '.$e->getMessage());
+                self::couldNotRun($file, $e, $committed);
             }
         }
 
@@ -117,7 +119,7 @@ final class MediaDisposal
 
         foreach ($disks as $disk) {
             // A served local disk nothing configures or names, whose root does not exist, holds nothing, and is not built.
-            if ($disk !== $file['disk'] && in_array($disk, $served, true) && ! self::rooted($disk)) {
+            if ($disk !== $file['disk'] && in_array($disk, $served, true) && ! MediaDisks::mayHold($config, $disk)) {
                 continue;
             }
 
@@ -143,12 +145,56 @@ final class MediaDisposal
         return $clean;
     }
 
-    /** Whether a disk is not local, or is local with a root that exists. Its configuration is read; nothing is built. */
-    private static function rooted(string $disk): bool
+    /**
+     * Say what a disposal that could not run left, and where — ADR-042 decision 5.
+     *
+     * ⚠️ NOT WHERE THE ROW POINTED, BUT WHERE THE BYTES MAY BE — review of slice 5b. This once reported the disk the row
+     * named as though its copy were still there, and said of every disk, the public one and core's private one
+     * included, that Kitsune does not serve it. What is left may be on any disk disposal asks: prune sweeps the
+     * configured ones and core's private disk, and the disk the row named only while a row names it; a served disk
+     * nothing names is not swept, so a copy there is removed by hand.
+     *
+     * ⚠️ AND ONLY WHEN THE ERASURE REPORTED ITS COMMIT. From the force-delete's failure path it may not have committed —
+     * a withdrawal refused, a COMMIT that failed — and then the entry and its file may be exactly where they were.
+     *
+     * @param  array{entry_id: int, disk: string, path: string}  $file
+     */
+    private static function couldNotRun(array $file, Throwable $e, bool $committed): void
     {
-        $root = MediaDisks::resolved(app('config'), $disk)['root'];
+        if (! $committed) {
+            Log::warning(sprintf(
+                'Kitsune could not dispose of [%s], the file of entry %d, after its force-delete reported failure: '
+                .'disposal could not run — %s. The force-delete may not have committed: if the entry is still there, '
+                .'kitsune:media-reconcile --entry=%d says where its file is; if it is gone, kitsune:media-prune lists what '
+                .'is left on the disks it sweeps (ADR-042 decision 5).',
+                $file['path'],
+                $file['entry_id'],
+                $e->getMessage(),
+                $file['entry_id'],
+            ));
 
-        return $root === null || is_dir($root);
+            return;
+        }
+
+        try {
+            $config = app('config');
+            $swept = [MediaDisks::configured($config, 'public'), MediaDisks::configured($config, 'private'), MediaDisks::PRIVATE];
+            $elsewhere = ! in_array($file['disk'], [...$swept, ...MediaDisks::servedDisks($config)], true);
+        } catch (Throwable) {
+            $elsewhere = true;
+        }
+
+        Log::warning(sprintf(
+            'Kitsune could not dispose of [%s], the file of force-deleted entry %d, whose row named [%s]: disposal could not '
+            .'run — %s. `kitsune:media-prune --force` removes what is left on the configured media disks and core\'s '
+            .'private disk%s; a copy on any other disk the web serves stays until it is removed by hand (ADR-042 '
+            .'decision 5).',
+            $file['path'],
+            $file['entry_id'],
+            $file['disk'],
+            $e->getMessage(),
+            $elsewhere ? sprintf(', and on [%s] while any row names it — after that, remove it by hand', $file['disk']) : '',
+        ));
     }
 
     private static function report(string $disk, string $path, string $why, bool $private = false, bool $served = false): void
@@ -162,7 +208,7 @@ final class MediaDisposal
                 $served => 'It is still on the web: withdrawal removed every served copy before the delete committed, '
                     .'so this one appeared after it. Remove it by hand.',
                 $private => 'It is a copy on a disk nothing serves; `kitsune:media-prune` removes it.',
-                default => sprintf('It is a copy on [%s], which Kitsune does not serve; `kitsune:media-prune` lists it.', $disk),
+                default => sprintf('It is a copy on [%s], which Kitsune does not serve; `kitsune:media-prune` removes it while any row names [%s]; after that, remove it by hand.', $disk, $disk),
             },
         ));
     }

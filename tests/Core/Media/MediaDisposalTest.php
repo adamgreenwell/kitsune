@@ -12,6 +12,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Kitsune\Core\Media\MediaDisks;
+use Kitsune\Core\Media\MediaDisposal;
 use Kitsune\Core\Media\MediaLibrary;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
@@ -191,3 +192,35 @@ it('removes the bytes of a row that still names local from local', function (): 
     Storage::disk('local')->assertMissing($media->path);
     expect(DB::table('media_files')->count())->toBe(0);
 });
+
+/*
+ * T113. A disposal that could not run says where the bytes are, not where the row pointed: the erasure took every
+ * served copy off the web, so the public disk is not said to hold one; prune sweeps the configured disks and core's
+ * private disk whatever names them; and a disk that is none of those only while a row names it (review of slice 5b).
+ */
+it('says where the bytes are when a disposal could not run', function (string $disk, string $says, bool $byHand, bool $committed = true): void {
+    Log::spy();
+    $armed = true;
+    DB::connection()->beforeExecuting(function (string $query) use (&$armed): void {
+        if ($armed && str_contains($query, 'media_files')) {
+            $armed = false;
+
+            throw new RuntimeException('the lock wait timed out');
+        }
+    });
+
+    MediaDisposal::remove(DB::connection(), [['entry_id' => 999999, 'disk' => $disk, 'path' => 'media/1/2026/09/gone.png']], $committed);
+
+    Log::shouldHaveReceived('warning')
+        ->withArgs(fn (string $message): bool => str_contains($message, 'disposal could not run — the lock wait timed out')
+            && str_contains($message, $says)
+            && str_contains($message, 'remove it by hand') === $byHand
+            && ! str_contains($message, 'does not serve'))
+        ->once();
+})->with([
+    'core\'s private disk' => [MediaDisks::PRIVATE, 'removes what is left on the configured media disks and core\'s private disk;', false],
+    'the public disk' => ['public', 'a copy on any other disk the web serves stays until it is removed by hand', false],
+    'a disk that is none of those' => ['local', 'and on [local] while any row names it', true],
+    // From the force-delete's failure path it may not have committed: nothing is claimed about where the bytes went.
+    'a force-delete that reported failure' => ['public', 'may not have committed: if the entry is still there, kitsune:media-reconcile --entry=999999', false, false],
+]);

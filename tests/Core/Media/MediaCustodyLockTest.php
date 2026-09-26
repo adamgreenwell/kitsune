@@ -12,6 +12,7 @@ use Illuminate\Database\Connection;
 use Illuminate\Database\DeadlockException;
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Database\QueryException;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
@@ -28,7 +29,7 @@ use Kitsune\Core\Tenancy\Context;
 use Kitsune\Core\Tests\Fixtures\RefusingDisk;
 
 /*
- * Custody's locks, on every engine — ADR-042 decision 5 (T52-T54).
+ * Custody's locks, on every engine — ADR-042 decision 5 (T52-T54; slice 5b: T73, T84).
  *
  * ⚠️ WHAT IS LOCKED, IN WHAT ORDER, BEFORE ANY BYTE MOVES, read from one timeline of the statements the connection ran
  * and the operations the disks were asked for. And against a real rival: a second connection holding a row, so a lock
@@ -100,7 +101,8 @@ function lockFirst(array $timeline, string $pattern): int
 /*
  * T52. The lock order, on every engine, on every path that moves bytes: on PostgreSQL, MySQL and MariaDB the entry and
  * then its file read `FOR UPDATE`; on SQLite a write to `media_files` first, which takes the database's write lock; and
- * the trash's and the erasure's own row writes before their first byte.
+ * the trash's and the erasure's own row writes before their first byte. T73: `removeExtra()` and a forced reconcile
+ * join the dataset (slice 5b).
  */
 describe('the lock order', function (): void {
     beforeEach(function (): void {
@@ -135,7 +137,9 @@ describe('the lock order', function (): void {
             'removeTemp' => Storage::disk(MediaDisks::PRIVATE)->put(MediaBytes::partial($filePath), 'half'),
             'removeOrphan' => Storage::disk(MediaDisks::PRIVATE)->put('media/orphan.png', 'bytes'),
             'disposal' => DB::table('entries')->where('id', $id)->delete(),
-            'cleanUp' => Storage::disk(MediaDisks::PRIVATE)->put($filePath, LOCK_PNG),
+            'cleanUp', 'removeExtra' => Storage::disk(MediaDisks::PRIVATE)->put($filePath, LOCK_PNG),
+            // A file trashed before withdrawal existed: still on the public disk its row names.
+            'reconcile' => DB::table('entries')->where('id', $id)->update(['deleted_at' => now()]),
         };
 
         $timeline = lockTimeline(fn () => match ($path) {
@@ -148,6 +152,8 @@ describe('the lock order', function (): void {
             'removeTemp' => MediaCustody::removeTemp(DB::connection(), $id, MediaDisks::PRIVATE, MediaBytes::partial($filePath)),
             'disposal' => MediaDisposal::remove(DB::connection(), [['entry_id' => $id, 'disk' => 'public', 'path' => $filePath]]),
             'cleanUp' => MediaCustody::cleanUp(DB::connection(), $id),
+            'removeExtra' => MediaCustody::removeExtra(DB::connection(), $id, MediaDisks::PRIVATE),
+            'reconcile' => Artisan::call('kitsune:media-reconcile', ['--force' => true, '--entry' => [(string) $id]]),
         });
 
         $bytes = lockFirst($timeline, '/^bytes /');
@@ -167,7 +173,7 @@ describe('the lock order', function (): void {
                 ->and($files)->toBeGreaterThan($entries)
                 ->and($bytes)->toBeGreaterThan($files);
         }
-    })->with(['publication', 'drain', 'removeOrphan', 'removeTemp', 'disposal', 'cleanUp']);
+    })->with(['publication', 'drain', 'removeOrphan', 'removeTemp', 'disposal', 'cleanUp', 'removeExtra', 'reconcile']);
 
     it('writes the trash\'s and the erasure\'s own rows before their first byte', function (string $write): void {
         [$entry] = ($this->stored)();
@@ -273,6 +279,35 @@ describe('against a rival holding the row', function (): void {
             ->and(DB::table('entries')->where('id', $this->ids['entry'])->lockForUpdate()->value('deleted_at'))->toBeNull()
             ->and(hash('sha256', (string) Storage::disk('public')->get($this->path)))->toBe($this->checksum)
             ->and(Storage::disk(MediaDisks::PRIVATE)->exists($this->path))->toBeFalse();
+    });
+
+    /*
+     * T84. A forced reconcile waits for no row longer than the engine's lock wait: the row a rival holds fails, and says
+     * so, and the run goes on to settle the next and fails at the end.
+     */
+    it('fails a row a rival holds and settles the next', function (): void {
+        $source = tempnam(sys_get_temp_dir(), 'kitsune-lock-');
+        file_put_contents($source, LOCK_PNG);
+        $next = MediaLibrary::store($source, 'next.png', EntryType::query()->findOrFail($this->ids['type']), 'public');
+        unlink($source);
+        $nextPath = (string) DB::table('media_files')->where('entry_id', $next->id)->value('path');
+        DB::table('entries')->where('id', $next->id)->update(['deleted_at' => now()]);
+
+        $this->rival->beginTransaction();
+        $this->rival->table('entries')->where('id', $this->ids['entry'])->lockForUpdate()->first();
+
+        $exit = Artisan::call('kitsune:media-reconcile', ['--force' => true]);
+        $output = Artisan::output();
+
+        $this->rival->rollBack();
+
+        $held = collect(explode("\n", $output))->first(fn (string $line): bool => str_contains($line, ' entry '.$this->ids['entry'].' '));
+
+        expect($held)->toContain('→ failed: ')
+            ->and(Storage::disk('public')->exists($this->path))->toBeFalse()
+            ->and(Storage::disk(MediaDisks::PRIVATE)->exists($nextPath))->toBeTrue()
+            ->and(Storage::disk('public')->exists($nextPath))->toBeFalse()
+            ->and($exit)->toBe(1);
     });
 
     it('shows the engine keeping a savepoint\'s write that a lock wait interrupted', function (): void {
