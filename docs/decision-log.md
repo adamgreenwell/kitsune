@@ -5175,6 +5175,73 @@ timeout is set ~~(open, decision 5, *Amended 2026-09-25*)~~ (Adam, decision 10, 
 **Owed, and why here it could not be:** as for 5a — a real object store's presence check and listing at 100,000 rows, a
 media disk on a second filesystem, and the numbers on stage.
 
+### Measured — decision 5, slice 5c, 2026-09-28
+
+`php bin/benchmark-media-withdrawal.php "--only=I,G',J',N,N',I',I''"`, as *Measured — decision 5, slice 5b* ran it: a
+database named exactly `kitsune_bench_withdrawal` on each engine — SQLite 3.53.4 (rollback journal, and again in WAL),
+PostgreSQL 17.11, MySQL 8.4.11 and MariaDB 10.6.28 in the repository's `compose.yaml` containers, on an Apple silicon
+laptop — and SQLite 3.46.1 in `bin/benchmark-floor.Dockerfile`'s image at ADR-027's floor, 1 vCPU and 1,024 MB, as a
+non-root user, in both journal modes, at PHP's default 128 MB `memory_limit`; all at e3a7a29. Each read-only listing
+runs in a PHP process of its own at 128 MB, as an operator runs it — on the laptop too, whose CLI sets no limit — and
+reports its peak twice: what PHP allocated, bootstrap included, and the real size the limit is enforced on. The groups
+are 5c's and the 5b groups its change touches: reconcile's read-only listing (I), prune's (G'), a forced reconcile at
+scale (J'), measured in this process as 5b measured it; prune over 10,000 and 100,000 rows each with an extra copy (N)
+and awaiting publication (N'); and reconcile opening both copies of 1,000 files held twice (I') beside a control of the
+same rows settled, its served disk asked of each and holding nothing (I''). Every figure is the median of seven warm
+runs after one warm-up; a run verified the rows its command reported, and a listing the limit it ran under, or printed
+nothing. The raw output is kept with the private notes.
+
+| median, ms unless marked | SQLite | SQLite WAL | PostgreSQL | MySQL | MariaDB | floor | floor WAL |
+|---|---|---|---|---|---|---|---|
+| read-only reconcile (I), 100,000 rows, 1,000 findings | 21,761 | 21,901 | 24,344 | 22,976 | 22,907 | 12,710 | 12,560 |
+| its peak memory, MB | 42.7 | 42.7 | 42.8 | 42.9 | 42.9 | 42.2 | 42.2 |
+| read-only prune (G'), 100,000 rows where they belong | 1,099 | 1,091 | 3,718 | 2,720 | 2,266 | 926 | 957 |
+| its peak memory, MB | 42.7 | 42.7 | 42.8 | 42.7 | 42.8 | 42.2 | 42.2 |
+| forced reconcile (J'), 100,000 rows, 1,000 trashed on the public disk, 200 KB | 25,703 | 25,440 | 32,364 | 30,690 | 30,183 | 17,967 | 17,141 |
+| its share of the run holding a lock, % | 13.8 | 13.5 | 16.6 | 16.4 | 16.4 | 24.3 | 24.4 |
+| its peak memory, MB | 46.6 | 46.6 | 46.8 | 46.8 | 46.8 | 46.1 | 46.1 |
+| read-only prune (N), 10,000 rows, each with an extra copy | 392 | 391 | 597 | 883 | 759 | 286 | 289 |
+| its peak memory, MB | 45.3 | 45.3 | 45.1 | 45.1 | 45.1 | 43.4 | 43.4 |
+| read-only prune (N), 100,000 rows, each with an extra copy | 4,035 | 4,254 | 6,911 | 6,442 | 5,817 | 3,130 | 3,033 |
+| its peak memory, MB | 59.7 | 59.7 | 59.8 | 59.8 | 59.8 | 59.2 | 59.2 |
+| read-only prune (N'), 10,000 rows awaiting publication | 157 | 156 | 318 | 315 | 287 | 111 | 112 |
+| its peak memory, MB | 43.6 | 43.6 | 43.6 | 43.5 | 43.6 | 42.2 | 42.2 |
+| read-only prune (N'), 100,000 rows awaiting publication | 1,579 | 1,586 | 3,629 | 3,288 | 2,865 | 1,176 | 1,208 |
+| its peak memory, MB | 42.6 | 42.6 | 42.8 | 42.7 | 42.8 | 42.2 | 42.2 |
+| read-only reconcile (I'), 100,000 rows, 1,000 held twice, both copies opened | 30,265 | 30,370 | 32,758 | 31,431 | 31,323 | 17,713 | 17,793 |
+| its control (I''), the same rows settled | 30,222 | 30,311 | 32,616 | 31,243 | 31,237 | 17,687 | 17,661 |
+| (I') − (I''): 1,000 rows held twice | 42 | 58 | 142 | 188 | 86 | 26 | 132 |
+| (I')'s peak memory, MB | 42.5 | 42.5 | 42.6 | 42.5 | 42.6 | 42.0 | 42.0 |
+
+**Memory, and the floor.** At the floor, at PHP's default 128 MB, every group finished. A read-only prune over 100,000
+rows (G'), which in 5b's first floor run stopped with PHP's own error, and given 512 MB peaked at 154 MB, peaked at 42.2
+MB — about what the bootstrap and one batch cost. Its peak no longer grows with the table: 42.6–42.8 MB over 100,000
+rows awaiting publication (N'), against 43.5–43.6 over 10,000. What it lists it holds: 100,000 extra copies (N) peaked
+14.4 MB above 10,000 on the laptop and 15.8 at the floor — some 0.17–0.18 KB a copy at the peak, where one is held in
+about 0.13 KB and its row is asked about — 59.2–59.8 MB in all, under half the default limit, and the real size 61.0 MB
+on every engine. The real size of every other listing read 42.5–48.5 MB. A forced reconcile at scale (J'), measured as
+5b measured it, peaked at 46.1–46.8 MB, against 51–52; the read-only figures come from a process of their own, and are
+not 5b's to compare.
+
+**What the batches cost.** Prune pays for holding only what it lists in queries — one per 500 rows for the disks rows
+name, one per 500 files a disk lists, one per 500 rows for each list of rows — each a round trip, which SQLite, in the
+process, barely pays: over 100,000 rows where they belong (G'), 1.1 s on SQLite against 5b's 0.9 s, and 2.3–3.7 s on
+MariaDB, MySQL and PostgreSQL against 0.9 s each; 0.9–1.0 s at the floor against 0.6. Over 100,000 extra copies (N),
+3.0–6.9 s; over 100,000 rows awaiting publication (N'), 1.2–3.6 s.
+
+**What decision 12 costs.** Opening both copies of 1,000 files held twice — 2,000 opens, a byte each, their lines, and
+the served disk's 1,000 presence hits — cost 26–188 ms over runs of 17.7–32.8 s, about the spread of either group's
+seven runs: (I') − (I'') is the whole cost, which a whole run cannot resolve further. What a served disk beside the
+configured ones costs is larger, and 5b's already: asked of every row, it made (I'') 34–41% longer than (I). Read-only
+reconcile (I) itself takes 6–8% longer than 5b's on the laptop and 14–15% at the floor, for the survey's new questions
+of each row — whether its path is misnamed before any disk is asked among them; forced (J'), within 8% of 5b's either
+way, holding a lock for 13.5–24.4% of the run against 15.2–26.7.
+
+5c adds no hold of its own: the holds, the contention table and the migration's figures are 5b's, and were not
+repeated. **Owed**, as for 5a and 5b: a real object store's listing and
+presence checks at 100,000 rows — prune's batches ask the table once per 500 files an object store lists, and a disk an
+extra copy belongs on is listed twice — a media disk on a second filesystem, and the numbers on stage.
+
 ### What this costs
 
 **Core now reaches into the host's Livewire configuration.** Every Livewire upload in the application, the host's
@@ -5652,6 +5719,52 @@ When it lands:
 > **Not yet, and not 5b's**, beside the two above: a raw insert of a path in a form the disks read as another, which
 > only `MediaFile`'s creating guard refuses; and `removeOrphan()`'s recheck as a locking read, which would now wait on
 > an upload's uncommitted row on MySQL and MariaDB — both belong with the insert-path work.
+
+> ⚠️ **Amended 2026-09-28 — slice 5c, decision 5, landed**, and each guard was removed in turn and its test watched
+> fail, beside a run of the same tests passing unmutated: 222 mutations, on the engine each case is about — 218 on
+> SQLite, three on MySQL, one on PostgreSQL — and the spelling guard's on a case-sensitive volume, since the case it
+> needs is one macOS's default volume folds. By family:
+> - **Prune** (60). `MediaPruneCommandTest` — the disks rows name, read in batches past the first; each disk listed
+>   lazily, its files classified 500 at a time by the rows naming their paths, matched in PHP byte for byte, a
+>   collation's match claiming nothing, and a value stored as a BLOB on SQLite found; a listing that fails part-way
+>   contributing nothing; names the engine cannot hold never sent; the packed extra copy — its entry and disk bounds, its
+>   flags, a disk named with digits — and the second listing, which holds only the paths prune holds, however many
+>   settled files it lists; each list a line an entry; every kept extra copy's line saying what settles it, misnamed
+>   first, then a disk that could not be listed, a row naming a disk that overlaps the target, a read-through disk named
+>   or served, a nest, a disk custody does not ask, and one whose asking cannot be told; a table whose paths are not
+>   unique said to be one before any line naming a forced command; a host disk nothing names or serves never built to
+>   ask whether it nests, and a scanned one built and read from its configuration where it cannot be.
+> - **Reconcile** (57). `MediaReconcileCommandTest` — decision 12's opens: an `extra` row's copies, the copy an
+>   `elsewhere` row names beside the file where it belongs, and the restored row's, a copy that cannot be read failing
+>   the check and every `--force`; the kinds, in order — `misnamed`, `unknown`, `overlapping`, `unreadable`, the
+>   read-through ones and `coinciding`; a disk skipped as the public disk asked for every row `--force` would settle,
+>   but a read-through one whose half's root would be created, at any depth, and never one whose half cannot be built;
+>   a local disk custody asks with no root, or a missing root that cannot be created — a file, a dangling link, a
+>   directory it may not write into or search — `unknown`, whichever disk it is, and one whose root exists built; the
+>   count of rows naming a disk across every chunk; the warning before the last rows leave a legacy disk, past a pair
+>   that cannot be compared and a disk that cannot be built; the closing line's words.
+> - **Disks** (39). `MediaDisksTest` — a read-through disk compared by the places its halves reach, each layer's prefix
+>   beneath the next, a scoped layer's too, and nested wherever any place lies; served wherever a half is; a cycle never
+>   built, and refused; a host driver's halves read from its instance only where the step builds it anyway; the unsafe
+>   and coinciding refusals over read-through disks.
+> - **Custody** (24) and **bytes** (20). `MediaCustodyTest`, `MediaBytesTest`, `MediaPruneCommandTest` — no copy read
+>   or removed through a read-through disk; a name every disk reads as another path, or refuses, never deleted; an
+>   orphan's recheck under the lock by every spelling the volume reaches as the file, as TEXT and as a BLOB on SQLite;
+>   `overlapsTarget()`; a misnamed row refused before any disk is asked; a copy's first byte read without a hash;
+>   every disk built through one guard.
+> - **Withdrawal and disposal** (10). `MediaWithdrawalTest`, `MediaDisposalTest` — a read-through refusal said as one,
+>   at the keeper, at a partial copy, and at a delete the copy flapped back for; a misnamed row's trash refused; a trash
+>   of an entry with no media file asking no disk; an erasure's disposal skipping a cycle, and saying a read-through copy
+>   is removed by hand; its path recheck finding a BLOB row.
+> - **The harness** (12). `MediaWithdrawalBenchHarnessTest` — (N) verified by the extra copies each entry has, and a
+>   listing by exactly the rows under its heading; a child timed after its warm-up, verified by its limit and by what it
+>   opened, its closing line naming no orphan, its output undecorated; the run's directory removed from the outermost
+>   cleanup, and on SIGINT, SIGQUIT, SIGTERM and SIGHUP; the control's served disk given the media tree (I') walks.
+>
+> **Not yet, and not 5c's**: whether custody holds a `read-through` disk, each half as a disk of its own (open, for
+> Adam) — until then it asks one only whether it holds a file; a host driver's read-through disk with no url of its
+> own, served only through a half, not counted as served (recorded); and on SQLite a TEXT row and a BLOB row naming one
+> path, which the index and the migration's check admit — with the insert-path work.
 
 ---
 
