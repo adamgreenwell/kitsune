@@ -22,7 +22,8 @@ declare(strict_types=1);
  *
  * ⚠️ AND IT WRITES MEDIA ONLY UNDER A DIRECTORY OF ITS OWN: the storage path is set before the application boots, to a
  * directory made for this run, and both media disks must resolve inside it or it stops. It removes the directory when
- * it finishes, however it finishes.
+ * it finishes, and after a fatal error, Ctrl-C, Ctrl-\, SIGTERM or SIGHUP where pcntl is loaded (`withdrawalBenchCleanup()`);
+ * any other signal, SIGKILL among them, leaves it.
  *
  * ⚠️ WHAT IS TIMED IS WHAT IS BUILT: custody as it runs — the copy written beside the path, read back and renamed; no
  * fsync; presence asked before any hash. A hold runs from the statement that takes the lock — the entry read `FOR
@@ -34,11 +35,23 @@ declare(strict_types=1);
  * One warm-up, then seven runs, each on fresh random bytes; the median and the maximum. Every figure is warm-cache.
  * No threshold is proposed here: the numbers are for deciding on (ADR-042 decision 5).
  *
- * ⚠️ AT ADR-027'S FLOOR, GIVE IT MORE THAN PHP'S DEFAULT 128 MB — `php -d memory_limit=512M` — or it stops in (G'):
+ * ~~⚠️ AT ADR-027'S FLOOR, GIVE IT MORE THAN PHP'S DEFAULT 128 MB — `php -d memory_limit=512M` — or it stops in (G'):
  * prune reads every media row at once, and over 100,000 rows that exhausts the default. The figure it then prints is
- * the peak prune reached; the stop is itself the finding (slice 5b).
+ * the peak prune reached; the stop is itself the finding (slice 5b).~~ ⚠️ AT ADR-027'S FLOOR, RUN IT AT PHP'S DEFAULT
+ * 128 MB, which is the point: since slice 5c prune reads rows in batches (Adam, decision 11, 2026-09-26), and (G'), (N)
+ * and (N') completing is the pass. ⚠️ EACH READ-ONLY LISTING RUNS IN A FRESH PHP PROCESS, as an operator runs it, AT
+ * 128 MB WHATEVER THIS ONE RUNS AT — PHP's default, and the floor image's — so the pass is tested on every host, a
+ * laptop whose CLI sets no limit included: in this process, the seed's hundred thousand rows leave the memory manager's
+ * chunks half full, and the real size — what the limit is enforced on — read nearly twice what the command allocated
+ * (slice 5c's first trial). The child times the command once the console application is built, reports its peak twice — what PHP allocated, bootstrap
+ * included, and the real size — and the limit it ran under, which a figure verifies against; it writes its report to a
+ * file of the run's, never into memory beside what it holds, and the report is read back a line at a time.
  *
- * ⚠️ SLICE 5B'S GROUPS (I, J, J', K, G', M) RUN AFTER EVERY 5A GROUP, EACH ON ITS OWN SEED. Each clears every media row,
+ * `"--only=G',N,N',I,I',I''"` (quoted: the names carry primes) runs just the groups named — each by the name its first label
+ * opens with — and no contention section; a name no group opens with refuses the run.
+ *
+ * ⚠️ SLICE 5B'S GROUPS (I, J, J', K, G', M) RUN AFTER EVERY 5A GROUP, EACH ON ITS OWN SEED, AND 5C'S (N, N', I', I'') AFTER (K),
+ * BEFORE THE TWO (M) GROUPS. Each clears every media row,
  * entry and file before it seeds and after it finishes, so what earlier groups left — byte-less rows among them — never
  * reaches a figure; and each verifies by counting what the command it runs reported, so a contaminated run prints none.
  */
@@ -55,6 +68,7 @@ use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Storage;
+use Kitsune\Core\Console\MediaPruneCommand;
 use Kitsune\Core\Media\MediaCustody;
 use Kitsune\Core\Media\MediaDisks;
 use Kitsune\Core\Media\MediaLibrary;
@@ -64,10 +78,19 @@ use Kitsune\Core\Models\Org;
 use Kitsune\Core\Models\Site;
 use Kitsune\Core\Tenancy\Context;
 use League\Flysystem\Filesystem;
+use Symfony\Component\Console\Output\NullOutput;
+use Symfony\Component\Console\Output\OutputInterface;
+use Symfony\Component\Console\Output\StreamOutput;
 use Symfony\Component\Process\Process;
 
 /** The one database name this harness runs against. */
 const WITHDRAWAL_BENCH_DATABASE = 'kitsune_bench_withdrawal';
+
+/** What prune says of each extra copy the (N) groups seed: its row names the public disk, which holds its file. */
+const WITHDRAWAL_BENCH_REMOVABLE = ' — live, its row names [public], it belongs on [public]: removed, once asked again under the lock';
+
+/** What each read-only listing runs at: PHP's default `memory_limit`, which the floor image keeps (slice 5c). */
+const WITHDRAWAL_BENCH_CHILD_LIMIT = '128M';
 
 /**
  * Why the harness must not run here, or null. Asked before anything is touched.
@@ -125,6 +148,20 @@ function withdrawalBenchFigure(string $label, array $runs): ?string
 }
 
 /**
+ * A figure no run verified: why, when a run stopped rather than listed wrongly — its first line, as a table cell holds it.
+ *
+ * @param  list<array{ms: float, verified: bool, stopped?: ?string}>  $runs
+ */
+function withdrawalBenchUnverified(string $label, array $runs): string
+{
+    $stopped = array_values(array_filter(array_column($runs, 'stopped')))[0] ?? null;
+
+    return $stopped === null
+        ? "| {$label} | not verified — no figure | |"
+        : sprintf('| %s | not verified — no figure (%s) | |', $label, str_replace('|', '/', (string) strtok((string) $stopped, "\n")));
+}
+
+/**
  * The share of a run its holds took, in percent: the time from each lock statement to its commit, summed, over the
  * whole run — null when a hold never closed or nothing ran, so an unfinished run prints no share.
  *
@@ -146,13 +183,14 @@ function withdrawalBenchHeld(array $holds, float $wholeMs): ?float
 /**
  * Whether a command's summary table counted exactly these rows under these labels — and none under any other.
  *
+ * @param  iterable<string>  $lines  the report, a line each, without line endings
  * @param  array<string, int>  $expected  label => rows
  */
-function withdrawalBenchCounts(string $output, array $expected): bool
+function withdrawalBenchCounts(iterable $lines, array $expected): bool
 {
     $counted = [];
 
-    foreach (preg_split('/\R/', $output) ?: [] as $line) {
+    foreach ($lines as $line) {
         if (preg_match('/^\|\s*([a-z][a-z ]*[a-z])\s*\|\s*(\d+)\s*\|/', $line, $match) === 1 && $match[1] !== 'Label') {
             $counted[$match[1]] = (int) $match[2];
         }
@@ -162,6 +200,178 @@ function withdrawalBenchCounts(string $output, array $expected): bool
     ksort($expected);
 
     return $counted === $expected;
+}
+
+/**
+ * The exit code a read-only reconcile over this seed gives: 0 where it finds nothing — an extra copy, while every copy can
+ * be read, is not a finding, and a run of settled rows has none — and 1 otherwise.
+ *
+ * @param  array<string, int>  $counts  label => rows
+ */
+function withdrawalBenchReconcileExit(array $counts): int
+{
+    return in_array(array_keys($counts), [[], ['extra']], true) ? 0 : 1;
+}
+
+/**
+ * Whether a listing child's last line says it ran at the floor's limit and, for reconcile, opened each extra row's two
+ * copies and no other row's — a pass at another limit is no pass at the floor, and a seed reconcile opens nothing of
+ * verifies no opening (review of slice 5c: both were checked only where no test reached them).
+ *
+ * @param  array<string, mixed>  $child
+ * @param  array<string, int>  $counts  label => rows
+ */
+function withdrawalBenchChildVerified(array $child, string $command, array $counts): bool
+{
+    return ($child['limit'] ?? null) === WITHDRAWAL_BENCH_CHILD_LIMIT
+        && ($command !== 'kitsune:media-reconcile' || ($child['opened'] ?? -1) === 2 * ($counts['extra'] ?? 0));
+}
+
+/**
+ * Whether a read-only prune said it found no orphan and, given a count, closed on exactly that many removable extra
+ * copies — its own summary, matched whole, so 11000 is not 1000. Read a line at a time.
+ *
+ * @param  iterable<string>  $lines  the report, a line each, without line endings
+ */
+function withdrawalBenchPruneClosing(iterable $lines, ?int $removable): bool
+{
+    [$orphanless, $summary] = [false, $removable === null];
+    $closing = $removable === null ? null : sprintf(' and %d removable extra cop%s listed and nothing removed.', $removable, $removable === 1 ? 'y' : 'ies');
+
+    foreach ($lines as $line) {
+        $orphanless = $orphanless || $line === 'No orphaned media files.';
+        $summary = $summary || ($closing !== null && preg_match('/^\d+ orphaned files?, \d+ leftover partial cop(?:y|ies)'.preg_quote($closing, '/').'/', $line) === 1);
+    }
+
+    return $orphanless && $summary;
+}
+
+/**
+ * Whether prune printed exactly these rows under a heading, a line each, as `MediaPruneCommand::rowLine()` writes them and
+ * followed by what it says of each — no row missing, none extra, none twice, none under another entry, and the heading
+ * printed once: a list printed again is not the list printed once, whatever it holds (review of slice 5c) — read a line
+ * at a time. Rows under other headings are theirs: `withdrawalBenchOnlyList()` rules those lists out.
+ *
+ * @param  iterable<string>  $lines  the report, a line each, without line endings
+ * @param  iterable<array{0: int, 1: string, 2: string}>  $rows  entry, disk and path
+ * @param  string  $verdict  what follows each row's line: an extra copy's, what --force would do with it
+ */
+function withdrawalBenchListed(iterable $lines, string $heading, iterable $rows, string $verdict = ''): bool
+{
+    $expected = [];
+
+    foreach ($rows as $row) {
+        $expected[MediaPruneCommand::rowLine((object) ['entry_id' => $row[0], 'disk' => $row[1], 'path' => $row[2]]).$verdict] = true;
+    }
+
+    [$found, $ended] = [false, false];
+
+    foreach ($lines as $line) {
+        if (str_starts_with($line, $heading)) {
+            if ($found) {
+                return false;
+            }
+
+            $found = true;
+
+            continue;
+        }
+
+        if (! $found || $ended) {
+            continue;
+        }
+
+        if (! str_starts_with($line, '  entry ')) {
+            $ended = true;
+
+            continue;
+        }
+
+        if (! isset($expected[$line])) {
+            return false;
+        }
+
+        unset($expected[$line]);
+    }
+
+    // Every row expected was read under its heading — or, with no heading printed, none was expected.
+    return $expected === [];
+}
+
+/**
+ * Whether prune printed no list but this one — nor partial copies, extra copies, rows awaiting publication or rows
+ * trashed on a served disk under any other heading — so a figure is not verified by a run that listed more than its seed.
+ *
+ * @param  iterable<string>  $lines  the report, a line each, without line endings
+ */
+function withdrawalBenchOnlyList(iterable $lines, string $heading): bool
+{
+    foreach ($lines as $line) {
+        foreach (['Orphaned media files', 'Leftover partial copies', 'Extra copies', 'Awaiting publication', 'Trashed on a served disk'] as $list) {
+            if ($list !== $heading && str_starts_with($line, $list)) {
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
+/**
+ * A report file's lines, one at a time, without line endings: a hundred thousand of them are not read whole.
+ *
+ * @return Generator<int, string>
+ */
+function withdrawalBenchLinesOf(string $file): Generator
+{
+    $handle = fopen($file, 'rb');
+
+    try {
+        while (($line = fgets($handle)) !== false) {
+            yield rtrim($line, "\r\n");
+        }
+    } finally {
+        fclose($handle);
+    }
+}
+
+/**
+ * The names `--only` gives that no group's first label opens with — each of which would run nothing, silently.
+ *
+ * @param  list<string>  $firstLabels
+ * @param  list<string>  $only
+ * @return list<string>
+ */
+function withdrawalBenchUnknownOnly(array $firstLabels, array $only): array
+{
+    return array_values(array_filter($only, static fn (string $name): bool => ! withdrawalBenchSelectedAny($firstLabels, $name)));
+}
+
+/** @param  list<string>  $firstLabels */
+function withdrawalBenchSelectedAny(array $firstLabels, string $name): bool
+{
+    foreach ($firstLabels as $label) {
+        if (withdrawalBenchSelected([$label], [$name])) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+/**
+ * Whether a group is one `--only` names, by the name its first label opens with: every group when nothing is named.
+ *
+ * @param  list<string>  $labels
+ * @param  list<string>|null  $only
+ */
+function withdrawalBenchSelected(array $labels, ?array $only): bool
+{
+    if ($only === null) {
+        return true;
+    }
+
+    return preg_match('/^\(([^)]+)\) /', $labels[0] ?? '', $match) === 1 && in_array($match[1], $only, true);
 }
 
 /**
@@ -199,10 +409,17 @@ function withdrawalBenchContentionLine(array $row): string
 function withdrawalBenchMain(array $argv): int
 {
     $rival = null;
+    $child = null;
 
     foreach ($argv as $argument) {
         if (str_starts_with($argument, '--rival=')) {
             $rival = substr($argument, 8);
+        }
+
+        if (str_starts_with($argument, '--child=')) {
+            $child = substr($argument, 8);
+            // A child runs in the parent's directory, as a rival does, and leaves it for the parent to remove.
+            $rival = '';
         }
     }
 
@@ -221,13 +438,23 @@ function withdrawalBenchMain(array $argv): int
         }
     }
 
+    if ($rival === null) {
+        withdrawalBenchCleanup($directory);
+    }
+
     try {
-        $root = dirname(__DIR__).'/skeleton';
-        require_once $root.'/vendor/autoload.php';
-        $app = require $root.'/bootstrap/app.php';
-        // Before the application boots, so every disk rooted in storage_path() — core's included — is rooted here.
-        $app->useStoragePath($directory.'/storage');
-        $app->make(Kernel::class)->bootstrap();
+        withdrawalBenchBoot($child, static function () use ($directory): void {
+            $root = dirname(__DIR__).'/skeleton';
+            require_once $root.'/vendor/autoload.php';
+            $app = require $root.'/bootstrap/app.php';
+            // Before the application boots, so every disk rooted in storage_path() — core's included — is rooted here.
+            $app->useStoragePath($directory.'/storage');
+            $app->make(Kernel::class)->bootstrap();
+        });
+
+        if ($child !== null) {
+            return withdrawalBenchChild($child);
+        }
 
         if ($rival !== null) {
             return withdrawalBenchRival($rival, $directory);
@@ -283,7 +510,7 @@ function withdrawalBenchRun(string $directory): int
     };
 
     $version = (string) (DB::selectOne($driver === 'sqlite' ? 'select sqlite_version() as v' : 'select version() as v')->v ?? '');
-    $say("# {$driver} {$version} — ".php_uname('s').' '.php_uname('m').', PHP '.PHP_VERSION.', warm cache');
+    $say("# {$driver} {$version} — ".php_uname('s').' '.php_uname('m').', PHP '.PHP_VERSION.', memory_limit '.ini_get('memory_limit').' (each read-only listing: '.WITHDRAWAL_BENCH_CHILD_LIMIT.'), warm cache');
 
     if ($driver === 'sqlite') {
         $pdo = DB::connection()->getPdo();
@@ -304,6 +531,25 @@ function withdrawalBenchRun(string $directory): int
     }
 
     $bench = new WithdrawalBench($driver);
+    $only = null;
+
+    foreach ($GLOBALS['argv'] ?? [] as $argument) {
+        if (str_starts_with((string) $argument, '--only=')) {
+            $only = array_values(array_filter(array_map('trim', explode(',', substr((string) $argument, 7))), 'strlen'));
+        }
+    }
+
+    if ($only !== null) {
+        $unknown = withdrawalBenchUnknownOnly(array_map(static fn (array $group): string => (string) array_key_first($group['figures']), $bench->groups()), $only);
+
+        if ($only === [] || $unknown !== []) {
+            fwrite(STDERR, sprintf("Refusing to measure: --only names %s, which no group's first label opens with.\n", $only === [] ? 'nothing' : '['.implode('], [', $unknown).']'));
+
+            return 1;
+        }
+
+        $say('# only: '.implode(', ', $only));
+    }
 
     $say('');
     $say('## Holds (ms): median | max, seven runs after one warm-up');
@@ -311,9 +557,17 @@ function withdrawalBenchRun(string $directory): int
     $say('|---|---|---|');
 
     foreach ($bench->groups() as $group) {
-        foreach ($bench->measure($group) as $label => $runs) {
-            $say(withdrawalBenchFigure($label, $runs) ?? "| {$label} | not verified — no figure | |");
+        if (! withdrawalBenchSelected(array_keys($group['figures']), $only)) {
+            continue;
         }
+
+        foreach ($bench->measure($group) as $label => $runs) {
+            $say(withdrawalBenchFigure($label, $runs) ?? withdrawalBenchUnverified($label, $runs));
+        }
+    }
+
+    if ($only !== null) {
+        return 0;
     }
 
     if ($driver === 'sqlite' || in_array($driver, ['mysql', 'mariadb', 'pgsql'], true)) {
@@ -391,8 +645,17 @@ final class WithdrawalBench
 
     private bool $timing = false;
 
-    /** @var list<array{0: int, 1: string, 2: string}> the residue rows the last seed wrote: entry, path and checksum */
+    /**
+     * @var array<int, string> the residue rows the last seed wrote, entry => path — a hundred thousand of them, so held
+     *                         as little as a row can be (review of slice 5c)
+     */
     private array $seeded = [];
+
+    /** Every residue's checksum: the seed writes each one the same bytes. */
+    private string $seededSum = '';
+
+    /** What the last seed's residue rows are: `exposed`, `extra`, `awaiting` or `none`. */
+    private string $seededKind = 'none';
 
     private string $lockPattern;
 
@@ -494,11 +757,12 @@ final class WithdrawalBench
 
         // Slice 5b: kitsune:media-reconcile, prune's removal of extra copies, and the migration making paths unique.
         [$before, $after] = $this->isolated(fn (): mixed => $this->seedRows(99_000, 1_000, 1 << 10, 'exposed'));
-        $groups[] = ['figures' => ['(I) reconcile, read-only: 100,000 rows, 1,000 findings' => 'whole', '(I) reconcile, read-only: peak memory, MB' => 'memory'], 'case' => $this->listing('kitsune:media-reconcile', ['exposed' => 1_000]), 'before' => $before, 'after' => $after];
+        $groups[] = ['figures' => ['(I) reconcile, read-only: 100,000 rows, 1,000 findings' => 'whole', '(I) reconcile, read-only: peak memory, MB' => 'memory', '(I) reconcile, read-only: peak real memory, MB' => 'real memory'], 'case' => $this->listing('kitsune:media-reconcile', ['exposed' => 1_000]), 'before' => $before, 'after' => $after];
 
         [$before, $after] = $this->isolated(fn (): mixed => $this->seedRows(99_000, 1_000, 1 << 10, 'exposed'));
-        // Its memory too: prune reads every row at once, where reconcile reads them in chunks (found at the floor, slice 5b).
-        $groups[] = ['figures' => ['(G\') prune, read-only: 100,000 rows' => 'whole', '(G\') prune, read-only: peak memory, MB' => 'memory'], 'case' => $this->listing('kitsune:media-prune', []), 'before' => $before, 'after' => $after];
+        // Its memory too: ~~prune reads every row at once, where reconcile reads them in chunks (found at the floor, slice
+        // 5b)~~ prune reads rows in batches since slice 5c, and this group completing at the floor's 128 MB is the pass.
+        $groups[] = ['figures' => ['(G\') prune, read-only: 100,000 rows' => 'whole', '(G\') prune, read-only: peak memory, MB' => 'memory', '(G\') prune, read-only: peak real memory, MB' => 'real memory'], 'case' => $this->listing('kitsune:media-prune', []), 'before' => $before, 'after' => $after];
 
         foreach (['4 MB' => 4 << 20, '64 MiB' => 64 << 20] as $size => $bytes) {
             foreach (['R1: live public, only on the private disk', 'R3: awaiting publication', 'R4: a differing private copy', 'R6: trashed on the public disk', 'R7: private, on a legacy disk'] as $kind) {
@@ -510,6 +774,8 @@ final class WithdrawalBench
             }
         }
 
+        // Measured as 5b measured it: in this process, its report buffered, the peak PHP allocated — beside 5b's figure, not
+        // a read-only listing's from a child.
         [$before, $after] = $this->isolated(fn (): mixed => $this->seedRows(99_000, 1_000, 200 << 10, 'exposed'));
         $groups[] = ['figures' => [
             '(J\') reconcile --force: 100,000 rows, 1,000 trashed on the public disk, 200 KB' => 'whole',
@@ -519,6 +785,38 @@ final class WithdrawalBench
 
         [$before, $after] = $this->isolated(static fn (): null => null);
         $groups[] = ['figures' => ['(K) prune\'s removal of an extra copy, 64 MiB: its hold' => 0], 'case' => $this->extraCopy(64 << 20), 'before' => $before, 'after' => $after];
+
+        /*
+         * Slice 5c: what prune holds is what it lists, so its memory is measured where it lists the most — every file an
+         * extra copy (N), and every row awaiting publication (N'), at two sizes for the slope — and reconcile's opening of
+         * each copy of a file held twice (I') beside (I''): the same rows settled, the same served disk asked of each,
+         * its media/ tree the same, and no findings, so neither run asks its findings again at the end (Adam, decisions 11 and 12, 2026-09-26). (I')
+         * − (I'') is the whole cost of 1,000 rows held twice — their 2,000 opens, their lines and the served disk's 1,000
+         * presence hits, and the check whether that disk nests with the target, asked once a pair since it cost as much as
+         * the opens asked before each (review of slice 5c) — not the opens alone, which a whole run cannot resolve. Beside (I), (I') also asks one more disk
+         * of every row, which cost some 40% of the run (review of slice 5c, twice).
+         */
+        foreach ([10_000 => '10,000', 100_000 => '100,000'] as $rows => $size) {
+            [$before, $after] = $this->isolated(fn (): mixed => $this->seedRows(0, $rows, 1 << 10, 'extra'));
+            $groups[] = ['figures' => ["(N) prune, read-only: {$size} rows, each with an extra copy" => 'whole', "(N) prune, read-only, {$size} extra copies: peak memory, MB" => 'memory', "(N) prune, read-only, {$size} extra copies: peak real memory, MB" => 'real memory'], 'case' => $this->listing('kitsune:media-prune', []), 'before' => $before, 'after' => $after];
+
+            [$before, $after] = $this->isolated(fn (): mixed => $this->seedRows(0, $rows, 1 << 10, 'awaiting'));
+            $groups[] = ['figures' => ["(N') prune, read-only: {$size} rows awaiting publication" => 'whole', "(N') prune, read-only, {$size} awaiting: peak memory, MB" => 'memory', "(N') prune, read-only, {$size} awaiting: peak real memory, MB" => 'real memory'], 'case' => $this->listing('kitsune:media-prune', []), 'before' => $before, 'after' => $after];
+        }
+
+        // Held twice where reconcile calls it `extra` and opens both copies: on the public disk and on a served one — a copy on
+        // core's private disk is a `private copy`, a finding opened by nothing (review of slice 5c).
+        [$before, $after] = $this->withBenchServed($this->isolated(fn (): mixed => $this->seedRows(99_000, 1_000, 1 << 10, 'served')));
+        $groups[] = [
+            'figures' => ['(I\') reconcile, read-only: 100,000 rows, 1,000 held twice, both copies of each opened' => 'whole', '(I\') reconcile, read-only, 1,000 held twice: peak memory, MB' => 'memory', '(I\') reconcile, read-only, 1,000 held twice: peak real memory, MB' => 'real memory'],
+            'case' => $this->listing('kitsune:media-reconcile', ['extra' => 1_000]), 'before' => $before, 'after' => $after,
+        ];
+
+        [$before, $after] = $this->withBenchServed($this->isolated(fn (): mixed => $this->seedRows(100_000, 0, 1 << 10, 'none')));
+        $groups[] = [
+            'figures' => ['(I\'\') control: (I\')\'s 100,000 rows settled, its served disk empty, no findings' => 'whole', '(I\'\') control: peak memory, MB' => 'memory', '(I\'\') control: peak real memory, MB' => 'real memory'],
+            'case' => $this->listing('kitsune:media-reconcile', []), 'before' => $before, 'after' => $after,
+        ];
 
         [$before, $after] = $this->isolated(fn (): mixed => $this->seedRows(100_000, 0, 0, 'none'));
         $groups[] = ['figures' => ['(M) the unique-path migration\'s check alone: 100,000 rows' => 'whole'], 'case' => $this->migrationCheck(), 'before' => $before, 'after' => $after];
@@ -554,16 +852,20 @@ final class WithdrawalBench
                 $this->timing = true;
                 $started = hrtime(true);
                 $failed = false;
+                $stopped = null;
 
                 try {
                     $run($state);
-                } catch (Throwable) {
+                } catch (Throwable $failure) {
                     $failed = true;
+                    // Kept, so a figure that could not be verified says why — a stop is not a wrong listing.
+                    $stopped = $failure->getMessage();
                 }
 
                 $ended = hrtime(true);
                 $this->timing = false;
                 $peak = memory_get_peak_usage();
+                $real = memory_get_peak_usage(true);
                 $verified = ! $failed && $verify($state);
                 $this->removeFiles();
 
@@ -575,15 +877,22 @@ final class WithdrawalBench
                     // The transactions that took a lock, in order: the others — a read, a no-op — are not holds.
                     $holds = array_values(array_filter($this->holds, static fn (array $hold): bool => $hold['start'] !== null));
                     $hold = is_int($figure) ? ($holds[$figure] ?? null) : null;
+                    // A case run in a child reports its own: the command's time, and the child's memory.
+                    $child = $state['child'] ?? null;
                     $value = match (true) {
+                        $child !== null && $figure === 'whole' => $child['ms'],
+                        $child !== null && $figure === 'memory' => $child['peak'] / (1 << 20),
+                        $child !== null && $figure === 'real memory' => $child['real'] / (1 << 20),
                         $figure === 'whole' => ($ended - $started) / 1e6,
                         $figure === 'held' => withdrawalBenchHeld($this->holds, ($ended - $started) / 1e6),
                         $figure === 'memory' => $peak / (1 << 20),
+                        // What `memory_limit` is enforced on: the memory manager's chunks, not the bytes in them.
+                        $figure === 'real memory' => $real / (1 << 20),
                         $hold !== null && $hold['end'] !== null => ($hold['end'] - $hold['start']) / 1e6,
                         default => null,
                     };
 
-                    $results[$label][] = ['ms' => $value ?? 0.0, 'verified' => $verified && $value !== null];
+                    $results[$label][] = ['ms' => $value ?? 0.0, 'verified' => $verified && $value !== null, 'stopped' => $stopped];
                 }
             }
         } finally {
@@ -867,16 +1176,20 @@ final class WithdrawalBench
      */
     private function isolated(Closure $seed, bool $legacy = false): array
     {
-        $clear = static function (): void {
+        $clear = function (): void {
             DB::table('media_files')->delete();
             DB::table('entry_relations')->delete();
             DB::table('entries')->delete();
 
-            foreach (['public', MediaDisks::PRIVATE, 'legacy'] as $disk) {
-                if ($disk !== 'legacy' || config('filesystems.disks.legacy') !== null) {
+            foreach (['public', MediaDisks::PRIVATE, 'legacy', 'bench-served'] as $disk) {
+                if (in_array($disk, ['public', MediaDisks::PRIVATE], true) || config("filesystems.disks.{$disk}") !== null) {
                     Storage::disk($disk)->deleteDirectory('media');
                 }
             }
+
+            // What the last seed left in memory goes with it: a hundred thousand residues, beside the next seed's.
+            $this->seeded = [];
+            $this->seededKind = 'none';
         };
 
         return [
@@ -888,7 +1201,7 @@ final class WithdrawalBench
                 $clear();
                 $seed();
             },
-            static function () use ($clear, $legacy): void {
+            function () use ($clear, $legacy): void {
                 $clear();
 
                 if ($legacy) {
@@ -903,59 +1216,100 @@ final class WithdrawalBench
      * Rows at scale, below every guard: `$ok` live public files each on the public disk, where their rows say, and
      * `$residue` files trashed while still on it — the residue slice 5a leaves from before it — spread over a hundred
      * directories. Written straight to the disk's root: a hundred thousand writes through Flysystem would time the seed.
+     * Slice 5c's residues: `extra`, live public files on the public disk with a second copy on core's private disk, which
+     * prune lists and reconcile calls a `private copy`; `served`, the second copy on a served disk instead, which reconcile
+     * calls `extra` and opens; and `awaiting`, live public files whose rows name core's private disk, which holds them.
      *
-     * @return list<array{0: int, 1: string, 2: string}> the residue rows: entry, path and checksum
+     * ⚠️ FIVE HUNDRED ROWS AT A TIME, holding none of them after (review of slice 5c): a list of every row to insert
+     * held more than the floor's 128 MB beside the residues of the seed before it.
      */
-    private function seedRows(int $ok, int $residue, int $residueBytes, string $kind): array
+    private function seedRows(int $ok, int $residue, int $residueBytes, string $kind): void
     {
         $root = rtrim(Storage::disk('public')->path(''), '/');
+        $private = rtrim(Storage::disk(MediaDisks::PRIVATE)->path(''), '/');
+        $served = storage_path('app/bench-served');
         $small = random_bytes(1 << 10);
         $large = $residueBytes > 0 ? random_bytes($residueBytes) : '';
-        $made = [];
-        $rows = [];
-        $residues = [];
-
-        for ($n = 0; $n < $ok + $residue; $n++) {
-            $isResidue = $n >= $ok;
-            $directory = sprintf('media/1/2027/%02d', $n % 100);
-            $path = sprintf('%s/%s-%d.bin', $directory, $isResidue ? $kind : 'settled', $n);
-
-            if (! isset($made[$directory])) {
-                @mkdir($root.'/'.$directory, 0700, true);
-                $made[$directory] = true;
-            }
-
-            file_put_contents($root.'/'.$path, $isResidue ? $large : $small);
-            $rows[] = ['n' => $n, 'path' => $path, 'residue' => $isResidue];
-        }
-
         $smallSum = hash('sha256', $small);
         $largeSum = $large === '' ? $smallSum : hash('sha256', $large);
+        $this->seeded = [];
+        $this->seededSum = $largeSum;
+        $this->seededKind = $kind;
 
-        foreach (array_chunk($rows, 500) as $chunk) {
+        for ($from = 0; $from < $ok + $residue; $from += 500) {
+            $chunk = [];
+
+            for ($n = $from; $n < min($from + 500, $ok + $residue); $n++) {
+                $isResidue = $n >= $ok;
+                $directory = sprintf('media/1/2027/%02d', $n % 100);
+                $path = sprintf('%s/%s-%d.bin', $directory, $isResidue ? $kind : 'settled', $n);
+
+                if ($n < 100) {
+                    @mkdir($root.'/'.$directory, 0700, true);
+                    @mkdir($private.'/'.$directory, 0700, true);
+
+                    // Wherever the served disk is configured, so every miss there walks as deep in (I'') as in (I'): a
+                    // disk with no media/ tree fails each at its first component, which cost (I') − (I'') more than the
+                    // copies it is said to measure (review of slice 5c).
+                    if ($kind === 'served' || config('filesystems.disks.bench-served') !== null) {
+                        @mkdir($served.'/'.$directory, 0700, true);
+                    }
+                }
+
+                if (! $isResidue || $kind !== 'awaiting') {
+                    file_put_contents($root.'/'.$path, $isResidue ? $large : $small);
+                }
+
+                if ($isResidue && in_array($kind, ['extra', 'awaiting', 'served'], true)) {
+                    file_put_contents(($kind === 'served' ? $served : $private).'/'.$path, $large);
+                }
+
+                $chunk[] = ['n' => $n, 'path' => $path, 'residue' => $isResidue];
+            }
+
             DB::table('entries')->insert(array_map(static fn (array $row): array => [
                 'site_id' => 1, 'org_id' => 1, 'entry_type_id' => 1, 'type_handle' => 'image', 'status' => 'published',
-                'slug' => 'seed-'.$row['n'], 'title' => 'Bench', 'deleted_at' => $row['residue'] ? now() : null,
+                'slug' => 'seed-'.$row['n'], 'title' => 'Bench', 'deleted_at' => $row['residue'] && $kind === 'exposed' ? now() : null,
             ], $chunk));
 
             $ids = DB::table('entries')->whereIn('slug', array_map(static fn (array $row): string => 'seed-'.$row['n'], $chunk))->pluck('id', 'slug');
 
             DB::table('media_files')->insert(array_map(static fn (array $row): array => [
-                'entry_id' => (int) $ids['seed-'.$row['n']], 'disk' => 'public', 'path' => $row['path'],
+                'entry_id' => (int) $ids['seed-'.$row['n']], 'disk' => $row['residue'] && $kind === 'awaiting' ? MediaDisks::PRIVATE : 'public', 'path' => $row['path'],
                 'mime' => 'application/octet-stream', 'size_bytes' => $row['residue'] ? strlen($large) : strlen($small),
                 'checksum' => $row['residue'] ? $largeSum : $smallSum, 'visibility' => 'public', 'created_at' => now(),
             ], $chunk));
 
             foreach ($chunk as $row) {
                 if ($row['residue']) {
-                    $residues[] = [(int) $ids['seed-'.$row['n']], $row['path'], $largeSum];
+                    $this->seeded[(int) $ids['seed-'.$row['n']]] = $row['path'];
                 }
             }
         }
+    }
 
-        $this->seeded = $residues;
+    /**
+     * A group's before and after, with (I')'s served disk configured around them — `bench-served`, a local disk with a url.
+     *
+     * @param  array{0: Closure(): void, 1: Closure(): void}  $isolated
+     * @return array{0: Closure(): void, 1: Closure(): void}
+     */
+    private function withBenchServed(array $isolated): array
+    {
+        [$before, $after] = $isolated;
 
-        return $residues;
+        return [
+            static function () use ($before): void {
+                @mkdir(storage_path('app/bench-served'), 0755, true);
+                config(['filesystems.disks.bench-served' => ['driver' => 'local', 'root' => storage_path('app/bench-served'), 'url' => 'https://bench-served.bench']]);
+                $before();
+            },
+            static function () use ($after): void {
+                $after();
+                config(['filesystems.disks.bench-served' => null]);
+                Storage::forgetDisk('bench-served');
+            },
+        ];
     }
 
     /**
@@ -967,23 +1321,84 @@ final class WithdrawalBench
     private function listing(string $command, array $counts): array
     {
         return [
-            'setup' => static fn (): array => [],
+            'setup' => static fn (): array => ['file' => storage_path('bench-report.txt')],
             'run' => static function (array &$state) use ($command): void {
-                $state['exit'] = Artisan::call($command);
-                $state['output'] = Artisan::output();
-            },
-            'verify' => function (array $state) use ($command, $counts): bool {
-                if ($command === 'kitsune:media-reconcile') {
-                    return $state['exit'] === 1 && withdrawalBenchCounts($state['output'], $counts);
+                // In a fresh process at the floor's limit, its report to a file as plain text, without colour codes whatever
+                // the environment asks (withdrawalBenchReportOutput()).
+                $process = new Process(
+                    [PHP_BINARY, '-d', 'memory_limit='.WITHDRAWAL_BENCH_CHILD_LIMIT, __FILE__, '--child='.$command],
+                    null,
+                    [
+                        'KITSUNE_BENCH_DIRECTORY' => dirname(storage_path()),
+                        'KITSUNE_BENCH_REPORT' => $state['file'],
+                        'KITSUNE_BENCH_SERVED' => config('filesystems.disks.bench-served') === null ? '' : '1',
+                    ] + getenv(),
+                    null,
+                    3600,
+                );
+                $process->run();
+                $said = json_decode(trim((string) strrchr("\n".trim($process->getOutput()), "\n")), true);
+
+                if (is_array($said) && isset($said['stopped'])) {
+                    throw new RuntimeException(sprintf('stopped at %s: %s — peak %.1f MB, real %.1f MB', $said['limit'], $said['stopped'], $said['peak'] / (1 << 20), $said['real'] / (1 << 20)));
                 }
 
-                // Prune: nothing orphaned, nothing extra, and every seeded residue listed as trashed on a served disk.
-                return $state['exit'] === 0
-                    && str_contains($state['output'], 'No orphaned media files.')
-                    && ! str_contains($state['output'], 'Extra copies')
-                    && preg_match_all('/^\| \d+ +\| public +\| media\/1\/2027\//m', $state['output']) === count($this->seeded);
+                if (! $process->isSuccessful() || ! is_array($said)) {
+                    throw new RuntimeException('The listing\'s process stopped: '.trim($process->getErrorOutput().' '.$process->getOutput()));
+                }
+
+                $state['exit'] = $said['exit'];
+                $state['child'] = $said;
+            },
+            'verify' => function (array $state) use ($command, $counts): bool {
+                try {
+                    // A pass at the floor is a pass at the floor's limit, and says so; and reconcile opened each of an extra
+                    // row's copies — two a row held twice — and no other row's.
+                    if (! withdrawalBenchChildVerified($state['child'] ?? [], $command, $counts)) {
+                        return false;
+                    }
+
+                    if ($command === 'kitsune:media-reconcile') {
+                        return $state['exit'] === withdrawalBenchReconcileExit($counts)
+                            && withdrawalBenchCounts(withdrawalBenchLinesOf($state['file']), $counts);
+                    }
+
+                    return $state['exit'] === 0 && $this->prunePrinted($state['file']);
+                } finally {
+                    @unlink($state['file']);
+                }
             },
         ];
+    }
+
+    /**
+     * Whether a read-only prune printed what the last seed left, and nothing else: no orphan, and each seeded residue
+     * where it belongs, exactly — every extra copy as one --force would remove, under the entry it belongs to, every row
+     * awaiting publication, or every row trashed on a served disk (review of slice 5c: extra copies were counted, not
+     * matched, so a copy listed under another entry, or twice, still passed). Read a line at a time.
+     */
+    private function prunePrinted(string $file): bool
+    {
+        return withdrawalBenchPruneClosing(withdrawalBenchLinesOf($file), $this->seededKind === 'extra' ? count($this->seeded) : null) && match ($this->seededKind) {
+            'extra' => withdrawalBenchOnlyList(withdrawalBenchLinesOf($file), 'Extra copies')
+                && withdrawalBenchListed(withdrawalBenchLinesOf($file), 'Extra copies', $this->seededRows(MediaDisks::PRIVATE), WITHDRAWAL_BENCH_REMOVABLE),
+            'awaiting' => withdrawalBenchOnlyList(withdrawalBenchLinesOf($file), 'Awaiting publication')
+                && withdrawalBenchListed(withdrawalBenchLinesOf($file), 'Awaiting publication', $this->seededRows(MediaDisks::PRIVATE)),
+            default => withdrawalBenchOnlyList(withdrawalBenchLinesOf($file), 'Trashed on a served disk')
+                && withdrawalBenchListed(withdrawalBenchLinesOf($file), 'Trashed on a served disk', $this->seededRows('public')),
+        };
+    }
+
+    /**
+     * The seeded residues as entry, disk and path, one at a time.
+     *
+     * @return Generator<int, array{0: int, 1: string, 2: string}>
+     */
+    private function seededRows(string $disk): Generator
+    {
+        foreach ($this->seeded as $entryId => $path) {
+            yield [$entryId, $disk, $path];
+        }
     }
 
     /**
@@ -1044,14 +1459,14 @@ final class WithdrawalBench
                 $public = rtrim(Storage::disk('public')->path(''), '/');
                 $private = rtrim(Storage::disk(MediaDisks::PRIVATE)->path(''), '/');
 
-                foreach ($this->seeded as [, $path]) {
+                foreach ($this->seeded as $path) {
                     if (is_file($private.'/'.$path)) {
                         @mkdir(dirname($public.'/'.$path), 0700, true);
                         rename($private.'/'.$path, $public.'/'.$path);
                     }
                 }
 
-                foreach (array_chunk(array_column($this->seeded, 0), 500) as $ids) {
+                foreach (array_chunk(array_keys($this->seeded), 500) as $ids) {
                     DB::table('media_files')->whereIn('entry_id', $ids)->update(['disk' => 'public']);
                 }
 
@@ -1065,8 +1480,8 @@ final class WithdrawalBench
                     return false;
                 }
 
-                foreach ($this->seeded as [, $path, $checksum]) {
-                    if (! $this->holds(MediaDisks::PRIVATE, $path, $checksum) || ! $this->holds('public', $path, null)) {
+                foreach ($this->seeded as $path) {
+                    if (! $this->holds(MediaDisks::PRIVATE, $path, $this->seededSum) || ! $this->holds('public', $path, null)) {
                         return false;
                     }
                 }
@@ -1411,6 +1826,156 @@ function withdrawalBenchMigrationContention(string $directory, string $driver): 
     }
 
     return $rows;
+}
+
+/**
+ * A child's stop reporter, then the application's boot, in that order — see `withdrawalBenchStopReporter()`.
+ *
+ * @param  Closure(): void  $boot
+ */
+function withdrawalBenchBoot(?string $child, Closure $boot): void
+{
+    if ($child !== null) {
+        withdrawalBenchStopReporter();
+    }
+
+    $boot();
+}
+
+/**
+ * A child's report of its own stop — memory, above all, at the floor's 128 MB — with the peak it reached, as the last line
+ * it prints (review of slice 5c).
+ *
+ * ⚠️ REGISTERED BEFORE THE APPLICATION BOOTS, AND IT ENDS THE PROCESS. Shutdown functions run in the order they were
+ * registered, and Laravel's, registered as it boots, renders the error — and runs out of memory again, abandoning every
+ * shutdown function after it, or prints its render below this one. Exiting from here skips them.
+ */
+function withdrawalBenchStopReporter(): void
+{
+    $limit = (string) ini_get('memory_limit');
+
+    register_shutdown_function(static function () use ($limit): void {
+        $error = error_get_last();
+
+        if ($error === null || ! in_array($error['type'], [E_ERROR, E_CORE_ERROR, E_COMPILE_ERROR], true)) {
+            return;
+        }
+
+        ini_set('memory_limit', '-1');
+        echo PHP_EOL, json_encode([
+            'stopped' => $error['message'].' ('.basename($error['file']).':'.$error['line'].')',
+            'peak' => memory_get_peak_usage(), 'real' => memory_get_peak_usage(true), 'limit' => $limit,
+        ]), PHP_EOL;
+
+        exit(255);
+    });
+}
+
+/**
+ * Remove the run's directory when the process finishes, and after a fatal error, Ctrl-C, Ctrl-\, SIGTERM or SIGHUP; any
+ * other signal, SIGKILL among them, leaves it. A fatal error — memory, above all — skips `finally`: the directory goes all
+ * the same (review of slice 5c). Laravel's own
+ * shutdown handler, registered as the application boots after this, then logs the error to storage_path('logs'), inside
+ * the directory, and makes it again (review of slice 5c, twice): so it goes once more, from a function registered while
+ * shutting down — which runs after every one registered before it. And a signal PHP has no handler for ends the process
+ * with neither `finally` nor a shutdown function run, leaving 100,000 seeded files behind a stopped run: each is turned
+ * into an exit, which runs the shutdown functions but not `finally` blocks, so the directory goes from the one registered
+ * here (review of slice 5c, three times). Only where pcntl is loaded; SIGKILL cannot be caught.
+ */
+function withdrawalBenchCleanup(string $directory): void
+{
+    register_shutdown_function(static function () use ($directory): void {
+        ini_set('memory_limit', '-1');
+        exec('rm -rf '.escapeshellarg($directory));
+        register_shutdown_function(static fn () => exec('rm -rf '.escapeshellarg($directory)));
+    });
+
+    if (function_exists('pcntl_async_signals')) {
+        pcntl_async_signals(true);
+
+        foreach ([SIGINT, SIGQUIT, SIGTERM, SIGHUP] as $signal) {
+            pcntl_signal($signal, static function () use ($signal): void {
+                exit(128 + $signal);
+            });
+        }
+    }
+}
+
+/**
+ * Run a command, timed from once the console application is built and the console's own classes are loaded — as a run in
+ * the harness's own process finds them, and as 5b's figures were timed. The command's first run still loads its own.
+ *
+ * @return array{int, float} the exit code, and the command's own time in ms
+ */
+function withdrawalBenchTimed(string $command, OutputInterface $output): array
+{
+    Artisan::call('env', [], new NullOutput);
+    $started = hrtime(true);
+    $exit = Artisan::call($command, [], $output);
+
+    return [$exit, (hrtime(true) - $started) / 1e6];
+}
+
+/**
+ * The report a child writes: plain text, whatever the environment asks — a FORCE_COLOR the parent passes on wrapped a
+ * line in colour codes, and no check that reads the report could match it (review of slice 5c).
+ *
+ * @param  resource  $handle
+ */
+function withdrawalBenchReportOutput($handle): StreamOutput
+{
+    return new StreamOutput($handle, StreamOutput::VERBOSITY_NORMAL, false);
+}
+
+/**
+ * A read-only listing in a process of its own, as an operator runs it: its report to the file the parent names, then one
+ * line of JSON — the exit code, the command's own time, the process's peak memory, allocated and real, the memory limit
+ * it ran under, and how many copies it opened on the public and served disks. listing()'s verify reads the exit code and
+ * the limit, and for reconcile the copies opened; measure() takes the time and both peaks as the case's figures.
+ */
+function withdrawalBenchChild(string $command): int
+{
+    // (I')'s served disk, which the parent's configuration does not reach across the process boundary.
+    if (getenv('KITSUNE_BENCH_SERVED') === '1') {
+        config(['filesystems.disks.bench-served' => ['driver' => 'local', 'root' => storage_path('app/bench-served'), 'url' => 'https://bench-served.bench']]);
+    }
+
+    // Every copy reconcile opens, counted, so a figure that says it opened them is verified by it.
+    $opened = 0;
+
+    foreach (['public', 'bench-served'] as $name) {
+        if (config("filesystems.disks.{$name}") === null) {
+            continue;
+        }
+
+        $root = (string) config("filesystems.disks.{$name}.root");
+        $adapter = new class($root, $opened) extends League\Flysystem\Local\LocalFilesystemAdapter
+        {
+            public function __construct(string $root, private int &$opened)
+            {
+                parent::__construct($root);
+            }
+
+            public function readStream(string $path)
+            {
+                $this->opened++;
+
+                return parent::readStream($path);
+            }
+        };
+        Storage::set($name, new LocalFilesystemAdapter(new Filesystem($adapter), $adapter, (array) config("filesystems.disks.{$name}")));
+    }
+
+    $handle = fopen((string) getenv('KITSUNE_BENCH_REPORT'), 'w+b');
+    [$exit, $ms] = withdrawalBenchTimed($command, withdrawalBenchReportOutput($handle));
+    fclose($handle);
+
+    echo json_encode([
+        'exit' => $exit, 'ms' => $ms, 'peak' => memory_get_peak_usage(), 'real' => memory_get_peak_usage(true),
+        'limit' => ini_get('memory_limit'), 'opened' => $opened,
+    ]), PHP_EOL;
+
+    return 0;
 }
 
 /** The second process: wait for the signal, attempt one write, and report what happened and how long it waited. */

@@ -219,6 +219,32 @@ it('refuses a trash whose public copy cannot be removed', function (): void {
         ->and(heldAt($path))->toBe(['public' => $this->checksum, MediaDisks::PRIVATE => null]);
 });
 
+/*
+ * A row path written past `MediaFile` in a form the disks read as another — a doubled slash, by a direct-DB write — is
+ * refused before any disk is asked: once, the copy was written to the private disk through the name the disks read, over
+ * any file another row keeps there, and the removal after it refused with advice to retry (review of slice 5c). Nothing
+ * changes, the trash and the erasure are refused alike, and another row's file at that name keeps its bytes.
+ */
+it('refuses a trash and an erasure of a row whose path the disks read as another, before any disk is asked', function (bool $erasure): void {
+    [$entry, $path] = withdrawable();
+    DB::table('media_files')->where('entry_id', $entry->id)->update(['path' => dirname($path).'//'.basename($path)]);
+    [$other, $otherPath] = withdrawable('private');
+    rename(Storage::disk(MediaDisks::PRIVATE)->path($otherPath), Storage::disk(MediaDisks::PRIVATE)->path($path));
+    file_put_contents(Storage::disk(MediaDisks::PRIVATE)->path($path), 'another row\'s bytes');
+    DB::table('media_files')->where('entry_id', $other->id)->update(['path' => $path]);
+    RefusingDisk::forgetLog();
+
+    $refused = refusedBy(fn () => $erasure ? $entry->forceDelete() : $entry->delete());
+
+    expect($refused->reason)->toBe(MediaWithdrawalRefused::MISNAMED)
+        ->and($refused->getMessage())->toContain('correct media_files.path')
+        ->and($refused->getMessage())->not->toContain('retry once the disk answers')
+        ->and(bytesChanged())->toBe([])
+        ->and(DB::table('entries')->where('id', $entry->id)->exists())->toBeTrue()
+        ->and(isTrashed($entry))->toBeFalse()
+        ->and(heldAt($path))->toBe(['public' => $this->checksum, MediaDisks::PRIVATE => hash('sha256', 'another row\'s bytes')]);
+})->with(['the trash' => false, 'the erasure' => true]);
+
 /** A public disk that says it deleted the copy and kept it: the trash is refused, not committed with its file public. */
 it('refuses a trash whose public copy is reported gone and is not', function (): void {
     [$entry, $path] = withdrawable();
@@ -929,6 +955,226 @@ it('puts the file back after a nested trash times out and the host commits', fun
 });
 
 /*
+ * A trash or a restore of an entry with no media file asks no disk — nor the configuration of one, where a disk a host
+ * configured and nothing uses may not resolve: a read-through disk whose half is not configured, or whose halves name
+ * each other, or a scoped disk over one not configured (review of slice 5c).
+ */
+it('trashes and restores an entry with no media file whatever disks the host has configured', function (array $disks): void {
+    config(collect($disks)->mapWithKeys(fn (array $entry, string $name): array => ["filesystems.disks.{$name}" => $entry])->all());
+    $entry = Entry::create(['entry_type_id' => $this->article->id, 'title' => 'Plain', 'slug' => 'plain']);
+
+    $entry->delete();
+
+    expect(isTrashed($entry))->toBeTrue();
+
+    Entry::withTrashed()->findOrFail($entry->id)->restore();
+
+    expect(isTrashed($entry))->toBeFalse();
+})->with([
+    'a read-through disk whose half is not configured' => [['mirror' => ['driver' => 'read-through', 'primary' => 'nope', 'fallback' => 'public']]],
+    'read-through disks naming each other' => [[
+        'loop-a' => ['driver' => 'read-through', 'primary' => 'loop-b', 'fallback' => 'public'],
+        'loop-b' => ['driver' => 'read-through', 'primary' => 'loop-a', 'fallback' => 'public'],
+    ]],
+    'a scoped disk over one not configured' => [['scoped-nope' => ['driver' => 'scoped', 'disk' => 'nope', 'prefix' => 'x']]],
+]);
+
+/*
+ * A read-through disk whose half is the public disk is served, and asked whether it holds the file: once the public disk's
+ * copy is gone it holds nothing, and the trash passes it — it was refused, since custody removes no copy through such a
+ * disk; while its other half holds the file, the trash is refused, and nothing is trashed (review of slice 5c).
+ */
+it('trashes a public file past a read-through disk over the public disk, unless its other half holds the file', function (bool $archived): void {
+    ($this->disk)('archive', ['visibility' => 'private']);
+    config(['filesystems.disks.tier' => ['driver' => 'read-through', 'primary' => 'public', 'fallback' => 'archive']]);
+    [$entry, $path] = withdrawable();
+
+    expect(MediaDisks::servedDisks(config()))->toContain('tier');
+
+    if ($archived) {
+        Storage::disk('archive')->put($path, WITHDRAWN_PNG);
+
+        expect(refusedBy(fn () => $entry->delete())->getMessage())->toContain('a copy is on a read-through disk, which custody neither reads nor removes a copy through: [tier]')
+            ->and(refusedBy(fn () => $entry->delete())->getMessage())->not->toContain('retry once the disk answers')
+            ->and(isTrashed($entry))->toBeFalse()
+            ->and(heldAt($path, ['archive']))->toBe(['archive' => $this->checksum]);
+
+        return;
+    }
+
+    $entry->delete();
+
+    expect(isTrashed($entry))->toBeTrue()
+        ->and(heldAt($path, ['public', MediaDisks::PRIVATE, 'archive']))->toBe(['public' => null, MediaDisks::PRIVATE => $this->checksum, 'archive' => null]);
+})->with(['its other half empty' => false, 'its other half holding the file' => true]);
+
+/*
+ * ...and a served read-through disk whose copy reads as absent when the trash hashes it and is back when it deletes it:
+ * the delete refuses it as a read-through copy, and the refusal says so — not that a delete failed, which a retry would
+ * put right (review of slice 5c).
+ */
+it('refuses a read-through copy that is back by the delete as one, not as a failed delete', function (): void {
+    ($this->disk)('tier-primary', ['visibility' => 'private']);
+    $archive = ($this->disk)('archive', ['visibility' => 'private']);
+    config(['filesystems.disks.tier' => ['driver' => 'read-through', 'primary' => 'tier-primary', 'fallback' => 'archive', 'url' => 'https://tier.example.test']]);
+    [$entry, $path] = withdrawable();
+    Storage::disk('archive')->put($path, WITHDRAWN_PNG);
+    $file = $archive->root().'/'.$path;
+    // Asked by the withdrawal, for its partial, and by the keeper — then gone for the hash, and back for the delete.
+    $archive->onOperation(4, static function () use ($file): void {
+        rename($file, $file.'.away');
+    }, 'any');
+    $archive->onOperation(5, static function () use ($file): void {
+        rename($file.'.away', $file);
+    }, 'any');
+
+    expect(refusedBy(fn () => $entry->delete())->getMessage())->toContain('a copy is on a read-through disk, which custody neither reads nor removes a copy through: [tier]')
+        ->and(isTrashed($entry))->toBeFalse()
+        ->and(heldAt($path, ['archive']))->toBe(['archive' => $this->checksum]);
+});
+
+/*
+ * A disk of a host's own driver that nothing uses is not built by a trash, which lists the served disks inside the entry's
+ * lock: one whose build recursed ran every trash out of memory, and one with a root that did not exist had it created
+ * (review of slice 5c, twice).
+ */
+it('trashes a public file past a disk of a host\'s own driver that nothing uses, building none', function (): void {
+    $built = 0;
+    $root = sys_get_temp_dir().'/kitsune-withdrawal-host-unused-'.bin2hex(random_bytes(4));
+    Storage::extend('counting', static function ($app, array $config) use (&$built) {
+        $built++;
+
+        return $app['filesystem']->createLocalDriver($config);
+    });
+    // Built under the manager's own name: named after its half, Laravel refuses it before building anything.
+    Storage::extend('mirror-self', static fn ($app) => $app['filesystem']->createReadThroughDriver(['driver' => 'read-through', 'primary' => 'host-self', 'fallback' => 'local']));
+    config([
+        'filesystems.disks.host-archive' => ['driver' => 'counting', 'root' => $root],
+        'filesystems.disks.host-self' => ['driver' => 'mirror-self'],
+    ]);
+    [$entry, $path] = withdrawable();
+    $limit = ini_get('memory_limit');
+    ini_set('memory_limit', (string) (memory_get_usage(true) + 128 * 1024 * 1024));
+
+    try {
+        $entry->delete();
+    } finally {
+        ini_set('memory_limit', $limit);
+        $made = is_dir($root);
+        exec('rm -rf '.escapeshellarg($root));
+    }
+
+    expect(isTrashed($entry))->toBeTrue()
+        ->and(heldAt($path))->toBe(['public' => null, MediaDisks::PRIVATE => $this->checksum])
+        ->and($built)->toBe(0)
+        ->and($made)->toBeFalse();
+});
+
+/*
+ * A served read-through disk whose primary is the private disk refuses every trash, as an unsafe configuration does,
+ * whether configured as one or built as one by a driver of the host's own: the file it withdraws would be served through
+ * it. Built as one, it was compared by a configuration that names no halves, and the trash committed with the file on
+ * the web (review of slice 5c).
+ */
+it('refuses a trash while a served read-through disk reaches the private disk, however it is built', function (string $built): void {
+    ($this->disk)('old', ['visibility' => 'private']);
+
+    if ($built === 'configured') {
+        config(['filesystems.disks.x' => ['driver' => 'read-through', 'primary' => MediaDisks::PRIVATE, 'fallback' => 'old', 'url' => 'https://x.example.test']]);
+    } else {
+        Storage::extend('mirror', static fn ($app) => $app['filesystem']->createReadThroughDriver(['driver' => 'read-through', 'primary' => MediaDisks::PRIVATE, 'fallback' => 'old'], 'x'));
+        config(['filesystems.disks.x' => ['driver' => 'mirror', 'url' => 'https://x.example.test']]);
+    }
+
+    [$entry, $path] = withdrawable();
+
+    $refused = refusedBy(fn () => $entry->delete());
+
+    expect($refused->reason)->toBe(MediaWithdrawalRefused::UNSAFE_DISKS)
+        ->and($refused->getMessage())->toContain('and [x], which the web serves, reaches the same objects')
+        ->and(isTrashed($entry))->toBeFalse()
+        ->and(namedDisk($entry))->toBe('public')
+        ->and(heldAt($path))->toBe(['public' => $this->checksum, MediaDisks::PRIVATE => null]);
+})->with(['configured as one' => 'configured', 'built by a driver of the host\'s own' => 'extended']);
+
+/*
+ * A trash of a public file whose row names a read-through disk whose halves name each other is refused, as one whose
+ * presence cannot be told, and the disk is never built — Laravel's builder recursed until memory ran out, a fatal error
+ * no catch can answer (review of slice 5c). Nothing changes.
+ */
+it('refuses a trash whose row names a read-through cycle, without building it', function (): void {
+    config([
+        'filesystems.disks.loop-a' => ['driver' => 'read-through', 'primary' => 'loop-b', 'fallback' => 'public'],
+        'filesystems.disks.loop-b' => ['driver' => 'read-through', 'primary' => 'loop-a', 'fallback' => 'public'],
+    ]);
+    [$entry, $path] = withdrawable();
+    DB::table('media_files')->where('entry_id', $entry->id)->update(['disk' => 'loop-a']);
+    RefusingDisk::forgetLog();
+    $limit = ini_get('memory_limit');
+    // A missing guard fails the test, not by growing into a laptop's unlimited memory.
+    ini_set('memory_limit', (string) (memory_get_usage(true) + 128 * 1024 * 1024));
+
+    try {
+        $refused = refusedBy(fn () => $entry->delete());
+    } finally {
+        ini_set('memory_limit', $limit);
+    }
+
+    expect($refused->reason)->toBe(MediaWithdrawalRefused::UNREADABLE)
+        ->and($refused->disk)->toBe('loop-a')
+        ->and(isTrashed($entry))->toBeFalse()
+        ->and(namedDisk($entry))->toBe('loop-a')
+        ->and(bytesChanged())->toBe([])
+        ->and(heldAt($path))->toBe(['public' => $this->checksum, MediaDisks::PRIVATE => null]);
+});
+
+/*
+ * ...and refused at a partial copy's removal alike: one the fallback half holds — left when that disk was the public one —
+ * is reached through the read-through disk, which custody removes nothing through, so a retry never takes it off
+ * (review of slice 5c). The trash and the erasure are both refused as read-through, and nothing is lost.
+ */
+it('refuses a trash and an erasure at a partial copy a read-through disk reaches, as read-through', function (bool $erasure): void {
+    ($this->disk)('archive', ['visibility' => 'private']);
+    config(['filesystems.disks.tier' => ['driver' => 'read-through', 'primary' => 'public', 'fallback' => 'archive']]);
+    [$entry, $path] = withdrawable();
+    Storage::disk('archive')->put(MediaBytes::partial($path), 'half');
+
+    $refused = refusedBy(fn () => $erasure ? $entry->forceDelete() : $entry->delete());
+
+    expect($refused->reason)->toBe(MediaWithdrawalRefused::READ_THROUGH)
+        ->and($refused->disk)->toBe('tier')
+        ->and($refused->getMessage())->not->toContain('retry once the disk answers')
+        ->and(isTrashed($entry))->toBeFalse()
+        ->and(DB::table('entries')->where('id', $entry->id)->exists())->toBeTrue()
+        ->and(heldAt($path, ['public', MediaDisks::PRIVATE, 'archive']))->toBe(['public' => $this->checksum, MediaDisks::PRIVATE => null, 'archive' => null])
+        ->and(Storage::disk('archive')->get(MediaBytes::partial($path)))->toBe('half');
+})->with(['the trash' => false, 'the erasure' => true]);
+
+/*
+ * ...and refused at the copy to keep, not only once the public copy is gone, when a read-through disk is asked before any
+ * copy matches: the public copy changed by hand, the keeper goes on to [tier], and that refusal reads as a read-through
+ * one — a retry never answers it (review of slice 5c). Nothing is written or removed first.
+ */
+it('refuses a trash at the copy to keep when a read-through disk over the public disk is asked before any copy matches', function (): void {
+    ($this->disk)('archive', ['visibility' => 'private']);
+    config(['filesystems.disks.tier' => ['driver' => 'read-through', 'primary' => 'public', 'fallback' => 'archive']]);
+    [$entry, $path] = withdrawable();
+    Storage::disk('public')->put($path, 'changed by hand');
+    RefusingDisk::forgetLog();
+
+    $refused = refusedBy(fn () => $entry->delete());
+
+    expect($refused->reason)->toBe(MediaWithdrawalRefused::READ_THROUGH)
+        ->and($refused->disk)->toBe('tier')
+        ->and($refused->getMessage())->toContain('a copy is on a read-through disk, which custody neither reads nor removes a copy through: [tier]')
+        ->and($refused->getMessage())->not->toContain('retry once the disk answers')
+        ->and(isTrashed($entry))->toBeFalse()
+        ->and(namedDisk($entry))->toBe('public')
+        ->and(bytesChanged())->toBe([])
+        ->and(heldAt($path, ['public', MediaDisks::PRIVATE, 'archive']))->toBe(['public' => hash('sha256', 'changed by hand'), MediaDisks::PRIVATE => null, 'archive' => null]);
+});
+
+/*
  * T30. No copy stays on a served disk a row is moved off, whether the web serves it by a url, by `serve` with public
  * visibility, or through a scoped disk's parent — the three ways `MediaDisks::servedDisks()` knows.
  *
@@ -1167,14 +1413,24 @@ describe('erasure', function (): void {
         expect(Storage::disk('public')->exists($path))->toBeTrue();
     });
 
-    it('keeps a file another row still names', function (): void {
+    // ...on SQLite too where that row's path is stored as a BLOB, which never equals a TEXT parameter (review of 5c).
+    it('keeps a file another row still names', function (bool $blob): void {
         [, $path] = withdrawable();
+
+        if ($blob) {
+            if (DB::connection()->getDriverName() !== 'sqlite') {
+                test()->markTestSkipped('only SQLite keeps a value\'s storage class apart from its column\'s type');
+            }
+
+            DB::update('update media_files set path = cast(path as blob) where path = ?', [$path]);
+        }
+
         Log::spy();
 
         expect(MediaDisposal::remove(DB::connection(), [['entry_id' => 999_999, 'disk' => 'public', 'path' => $path]]))->toBe(0)
             ->and(heldAt($path)['public'])->toBe($this->checksum);
         Log::shouldHaveReceived('warning')->withArgs(fn (string $message): bool => str_contains($message, 'another media_files row names the same path'))->once();
-    });
+    })->with(['stored as text' => false, 'stored as a BLOB' => true]);
 
     /** Decisions 2 and 2b keep an erasure possible when no copy matches the recorded checksum. */
     it('erases a file whose copies match nothing it recorded', function (string $fixture): void {

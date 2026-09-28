@@ -82,7 +82,7 @@ final class MediaDisposal
                         return 0;
                     }
 
-                    if ($connection->table('media_files')->where('path', $file['path'])->exists()) {
+                    if (MediaCustody::whereStored($connection->table('media_files'), 'path', [$file['path']])->exists()) {
                         Log::warning(sprintf(
                             'Kitsune kept [%s], the file of force-deleted entry %d: another media_files row names the same '
                             .'path (ADR-042 decision 5).',
@@ -118,6 +118,26 @@ final class MediaDisposal
         $clean = true;
 
         foreach ($disks as $disk) {
+            /*
+             * Never built: Laravel would recurse through its halves until memory ran out, after the erasure committed
+             * (review of slice 5c). Only the disk the row named can be one — a configured one is refused before the
+             * commit, and a served one is not served — and prune refuses it too, so it says so rather than send anyone
+             * there.
+             */
+            if (MediaDisks::cycles($config, $disk)) {
+                Log::warning(sprintf(
+                    'Kitsune did not ask [%s] for [%s], the file of force-deleted entry %d: its read-through disks name each '
+                    .'other, so it is never built, and kitsune:media-prune refuses it too. Whatever its halves hold at that '
+                    .'path is removed by hand, through the half that holds it (ADR-042 decision 5).',
+                    $disk,
+                    $file['path'],
+                    $file['entry_id'],
+                ));
+                $clean = false;
+
+                continue;
+            }
+
             // A served local disk nothing configures or names, whose root does not exist, holds nothing, and is not built.
             if ($disk !== $file['disk'] && in_array($disk, $served, true) && ! MediaDisks::mayHold($config, $disk)) {
                 continue;
@@ -135,6 +155,19 @@ final class MediaDisposal
             foreach ($paths as $path) {
                 try {
                     MediaBytes::delete($disk, $path);
+                } catch (MediaCustodyFailure $e) {
+                    // Its row is gone, so there is no copy to compare it with, and prune refuses it too, as it does every
+                    // orphan on a read-through disk: said so, rather than sent to either (review of slice 5c).
+                    $readThrough = $e->reason === 'read-through';
+                    self::report(
+                        $disk,
+                        $path,
+                        $readThrough ? (new MediaCustodyFailure('read-through-unclaimed', $disk, $path, $e))->getMessage() : $e->getMessage(),
+                        in_array($disk, $private, true),
+                        in_array($disk, $served, true),
+                        $readThrough,
+                    );
+                    $clean = false;
                 } catch (Throwable $e) {
                     self::report($disk, $path, $e->getMessage(), in_array($disk, $private, true), in_array($disk, $served, true));
                     $clean = false;
@@ -197,7 +230,7 @@ final class MediaDisposal
         ));
     }
 
-    private static function report(string $disk, string $path, string $why, bool $private = false, bool $served = false): void
+    private static function report(string $disk, string $path, string $why, bool $private = false, bool $served = false, bool $readThrough = false): void
     {
         Log::warning(sprintf(
             'Kitsune could not remove a media file whose entry was force-deleted: [%s:%s] — %s. %s',
@@ -207,6 +240,7 @@ final class MediaDisposal
             match (true) {
                 $served => 'It is still on the web: withdrawal removed every served copy before the delete committed, '
                     .'so this one appeared after it. Remove it by hand.',
+                $readThrough => '`kitsune:media-prune` refuses it too, as it does every orphan on a read-through disk.',
                 $private => 'It is a copy on a disk nothing serves; `kitsune:media-prune` removes it.',
                 default => sprintf('It is a copy on [%s], which Kitsune does not serve; `kitsune:media-prune` removes it while any row names [%s]; after that, remove it by hand.', $disk, $disk),
             },

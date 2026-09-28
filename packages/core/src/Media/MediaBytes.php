@@ -10,8 +10,13 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Media;
 
+use Illuminate\Contracts\Filesystem\Filesystem;
 use Illuminate\Filesystem\LocalFilesystemAdapter;
+use Illuminate\Filesystem\ReadThroughFilesystem;
 use Illuminate\Support\Facades\Storage;
+use League\Flysystem\WhitespacePathNormalizer;
+use LogicException;
+use Normalizer;
 use Throwable;
 
 /**
@@ -36,13 +41,13 @@ final class MediaBytes
 
     public static function local(string $disk): bool
     {
-        return Storage::disk($disk) instanceof LocalFilesystemAdapter;
+        return self::disk($disk) instanceof LocalFilesystemAdapter;
     }
 
     public static function present(string $disk, string $path): bool
     {
         try {
-            return Storage::disk($disk)->fileExists($path);
+            return self::disk($disk)->fileExists($path);
         } catch (Throwable $failure) {
             throw new MediaCustodyFailure('unknown', $disk, $path, $failure);
         }
@@ -55,8 +60,10 @@ final class MediaBytes
             return null;
         }
 
+        self::refuseReadThrough($disk, $path);
+
         try {
-            $hash = Storage::disk($disk)->checksum($path, ['checksum_algo' => 'sha256']);
+            $hash = self::disk($disk)->checksum($path, ['checksum_algo' => 'sha256']);
         } catch (Throwable $failure) {
             throw new MediaCustodyFailure('unreadable', $disk, $path, $failure);
         }
@@ -66,6 +73,127 @@ final class MediaBytes
         }
 
         return $hash;
+    }
+
+    /**
+     * Whether a copy a disk holds can be read — opened, and its first byte read — without hashing it: the read-only
+     * listing's stand-in for the read custody makes before it removes anything (Adam, decision 12, 2026-09-26).
+     *
+     * ⚠️ ASKED ONLY OF A COPY THE DISK SAYS IT HOLDS, so false means "there, and cannot be read", as `hash()`'s failure
+     * does. A copy that opens and then fails part-way reads as readable here; `hash()` finds it. Opened through Laravel's
+     * `readStream()`: one open on a local disk; on an S3 disk one GET, abandoned after the first byte only where the disk
+     * sets `'stream_reads' => true` — Laravel's default is false, and the SDK then downloads the whole object into
+     * `php://temp` before `readStream()` returns, as an FTP or SFTP disk's adapter always does (review of slice 5c, twice).
+     *
+     * ⚠️ NEVER OF A `read-through` DISK — review of slice 5c. Opened through one, a copy only its fallback holds is copied
+     * into its primary, so a read-only check would write; and custody removes no copy there (`delete()`), so no step
+     * reads one to remove it, and the check has nothing to stand in for.
+     *
+     * @throws LogicException for a read-through disk
+     */
+    public static function readable(string $disk, string $path): bool
+    {
+        if (self::disk($disk) instanceof ReadThroughFilesystem) {
+            throw new LogicException(sprintf('Refusing to open [%s] on the [%s] disk: it is a read-through disk, which would copy it into its primary.', $path, $disk));
+        }
+
+        try {
+            // A disk configured not to throw answers a copy it cannot open with null.
+            $stream = self::disk($disk)->readStream($path);
+
+            if (! is_resource($stream)) {
+                return false;
+            }
+
+            try {
+                return fread($stream, 1) !== false;
+            } finally {
+                fclose($stream);
+            }
+        } catch (Throwable) {
+            return false;
+        }
+    }
+
+    /**
+     * Whether the disk holds a file under exactly this listed name — on a local disk, a file reached through no link, on
+     * itself or on a directory above it — so that removing the name removes what the listing saw (review of slice 5c).
+     *
+     * ⚠️ A LOCAL DISK LISTS A BACKSLASH IN A FILE'S NAME AS `/`: `a\b.png` is listed as `a/b.png`, which holds nothing, or
+     * a link the listing left out, or a file under a linked directory it left out. Removing that name removed nothing and
+     * said it had, on every run, or removed what the link reaches — a file outside the media directory.
+     */
+    public static function held(string $disk, string $path): bool
+    {
+        if (! self::present($disk, $path)) {
+            return false;
+        }
+
+        if (! self::local($disk)) {
+            return true;
+        }
+
+        // Every component below `media/`, where the listing starts: the disk's root and `media` itself may be links — a
+        // deployment's shared `storage`, media on another volume — and the listing follows both (review of slice 5c).
+        $filesystem = self::disk($disk);
+        $parts = explode('/', $path);
+        $reached = count($parts) > 1 && $parts[0] === 'media' ? array_shift($parts) : '';
+
+        foreach ($parts as $part) {
+            $reached = $reached === '' ? $part : $reached.'/'.$part;
+
+            if (is_link($filesystem->path($reached))) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * The other spellings of a listed name that reach this very file on a local disk: in lower case, or in another Unicode
+     * normalization, on a volume that folds them — APFS, NTFS, SMB, ext4's casefold. Nothing on any other disk: an object
+     * store compares keys byte for byte (review of slice 5c).
+     *
+     * @return list<string>
+     */
+    public static function spellingsOf(string $disk, string $path): array
+    {
+        if (! self::local($disk)) {
+            return [];
+        }
+
+        $filesystem = self::disk($disk);
+        $file = @stat($filesystem->path($path));
+
+        if (! is_array($file)) {
+            return [];
+        }
+
+        $candidates = [mb_strtolower($path)];
+
+        if (class_exists(Normalizer::class)) {
+            foreach ([Normalizer::FORM_C, Normalizer::FORM_D] as $form) {
+                $normal = Normalizer::normalize($path, $form);
+
+                if (is_string($normal)) {
+                    $candidates[] = $normal;
+                    $candidates[] = mb_strtolower($normal);
+                }
+            }
+        }
+
+        $spellings = [];
+
+        foreach (array_unique($candidates) as $spelling) {
+            $other = $spelling === $path ? false : @stat($filesystem->path($spelling));
+
+            if (is_array($other) && $other['dev'] === $file['dev'] && $other['ino'] === $file['ino']) {
+                $spellings[] = $spelling;
+            }
+        }
+
+        return $spellings;
     }
 
     public static function same(?string $a, ?string $b): bool
@@ -85,6 +213,9 @@ final class MediaBytes
      */
     public static function copyVerified(string $from, string $to, string $path, string $expected): void
     {
+        self::refuseReadThrough($from, $path);
+        self::refuseReadThrough($to, $path);
+
         if (self::sameObject($from, $to, $path)) {
             throw new MediaCustodyFailure('coinciding', $to, $path);
         }
@@ -92,7 +223,7 @@ final class MediaBytes
         $destination = self::local($to) ? self::partial($path) : $path;
 
         try {
-            $stream = Storage::disk($from)->readStream($path);
+            $stream = self::disk($from)->readStream($path);
         } catch (Throwable $failure) {
             throw new MediaCustodyFailure('unreadable', $from, $path, $failure);
         }
@@ -102,7 +233,7 @@ final class MediaBytes
         }
 
         try {
-            $written = Storage::disk($to)->writeStream($destination, $stream);
+            $written = self::disk($to)->writeStream($destination, $stream);
         } catch (Throwable $failure) {
             self::discard($to, $destination);
 
@@ -135,7 +266,7 @@ final class MediaBytes
             $moved = false;
 
             try {
-                $moved = Storage::disk($to)->move($destination, $path);
+                $moved = self::disk($to)->move($destination, $path);
             } catch (Throwable) {
                 $moved = false;
             }
@@ -151,12 +282,38 @@ final class MediaBytes
     /**
      * Delete a file and confirm it is gone.
      *
+     * ⚠️ ONLY A NAME EVERY DISK READS AS ITSELF — review of slice 5c. Flysystem normalizes a path before it acts on it:
+     * a name holding `//`, `.` or `..` — an object store's key, or a local file's whose backslashes the listing gave as
+     * `/` — is read as another path, and deleting it would delete that one: a row's only file, or a file outside the
+     * media directory. Such a name is refused, as `MediaFile` refuses it for a row, and is removed by hand. A local
+     * name whose backslashes alone the listing changed reads as itself, and holds nothing: a removal of a listed name
+     * asks `held()` first (`MediaCustody::removeOrphan()`).
+     *
+     * ⚠️ NEVER THROUGH A `read-through` DISK (`refuseReadThrough()`) — but one that holds the path on neither half is
+     * asked only that, and nothing is removed.
+     *
      * @throws MediaCustodyFailure
      */
     public static function delete(string $disk, string $path): void
     {
+        self::refuseUnnamable($disk, $path);
+
         try {
-            $deleted = Storage::disk($disk)->delete($path);
+            $filesystem = self::disk($disk);
+        } catch (ReadThroughCycle $cycle) {
+            throw new MediaCustodyFailure('unknown', $disk, $path, $cycle);
+        }
+
+        // Asked whether it holds the path, a read-through disk that holds it on neither half has nothing to remove and
+        // nothing read: a disposal or a withdrawal that deletes from every served disk passes it (review of slice 5c).
+        if ($filesystem instanceof ReadThroughFilesystem && ! self::present($disk, $path)) {
+            return;
+        }
+
+        self::refuseReadThrough($disk, $path);
+
+        try {
+            $deleted = $filesystem->delete($path);
         } catch (Throwable $failure) {
             throw new MediaCustodyFailure('delete', $disk, $path, $failure);
         }
@@ -177,8 +334,8 @@ final class MediaBytes
             return false;
         }
 
-        $first = @stat(Storage::disk($a)->path($path));
-        $second = @stat(Storage::disk($b)->path($path));
+        $first = @stat(self::disk($a)->path($path));
+        $second = @stat(self::disk($b)->path($path));
 
         return is_array($first) && is_array($second)
             && $first['dev'] === $second['dev'] && $first['ino'] === $second['ino'];
@@ -198,10 +355,90 @@ final class MediaBytes
             return false;
         }
 
-        $first = realpath(dirname(Storage::disk($a)->path($path)));
-        $second = realpath(dirname(Storage::disk($b)->path($path)));
+        $first = realpath(dirname(self::disk($a)->path($path)));
+        $second = realpath(dirname(self::disk($b)->path($path)));
 
         return $first !== false && $first === $second;
+    }
+
+    /**
+     * Refuse a name no disk can be asked about as itself: one Flysystem refuses — not UTF-8, or holding a character of
+     * Unicode's class C — or reads as another path, as `delete()` explains. Asked before any disk is asked of a listed
+     * name, so its refusal is the one given, whatever a disk would have been asked next (review of slice 5c). An orphan's
+     * claim under the lock is asked first (`MediaCustody::removeOrphan()`): a name a row claims is kept, and on PostgreSQL
+     * a name that is not UTF-8 fails that lookup (22021).
+     *
+     * @throws MediaCustodyFailure `refused`, or `aliased`
+     */
+    public static function refuseUnnamable(string $disk, string $path): void
+    {
+        try {
+            $read = (new WhitespacePathNormalizer)->normalizePath($path);
+        } catch (Throwable $failure) {
+            throw new MediaCustodyFailure('refused', $disk, $path, $failure);
+        }
+
+        if ($read !== $path) {
+            throw new MediaCustodyFailure('aliased', $disk, $path);
+        }
+    }
+
+    /**
+     * Refuse a row whose path every disk reads as another path, or refuses: written past `MediaFile`'s guard — a direct
+     * insert, an import — any step that copied or removed it would act on the path the disks read, another row's file
+     * among them (review of slice 5c). Asked before custody asks any disk of the row.
+     *
+     * @throws MediaCustodyFailure `misnamed`
+     */
+    public static function refuseMisnamed(string $disk, string $path): void
+    {
+        try {
+            self::refuseUnnamable($disk, $path);
+        } catch (MediaCustodyFailure $failure) {
+            throw new MediaCustodyFailure('misnamed', $disk, $path, $failure);
+        }
+    }
+
+    /**
+     * Refuse to read or remove a copy through a `read-through` disk — review of slice 5c.
+     *
+     * ⚠️ ITS READ WRITES, AND ITS DELETE REMOVES WHAT WAS NOT READ. A copy only its fallback holds is copied into its
+     * primary as it is read — a hash, a copy's source — and its delete removes the path from both halves, when custody
+     * read only one of them, the primary if it holds the file: a copy never hashed went with it, the only one that matched
+     * the checksum, or one that differed with no warning naming its hash. So custody asks a read-through disk only whether
+     * it holds a file, and a step that would read or remove a copy there fails, with nothing done. It may be the only
+     * copy, or the only one that matches the checksum, so a person compares it with the copy where the row belongs, by
+     * hand, before removing it through the disk each half is (ADR-042 decision 5, open for Adam).
+     *
+     * @throws MediaCustodyFailure
+     */
+    private static function refuseReadThrough(string $disk, string $path): void
+    {
+        if (self::readsThrough($disk)) {
+            throw new MediaCustodyFailure('read-through', $disk, $path);
+        }
+    }
+
+    /** Whether a disk is built as a `read-through` one — by the configuration, or a driver of the host's own. */
+    public static function readsThrough(string $disk): bool
+    {
+        return self::disk($disk) instanceof ReadThroughFilesystem;
+    }
+
+    /**
+     * The disk, built — never a `read-through` one whose halves name each other, which Laravel's builder would follow
+     * until memory ran out: a fatal error no catch can answer. Every disk this class asks is built here, so no step can
+     * build one, whichever disk a row names (review of slice 5c).
+     *
+     * @throws ReadThroughCycle
+     */
+    private static function disk(string $disk): Filesystem
+    {
+        if (MediaDisks::cycles(config(), $disk)) {
+            throw new ReadThroughCycle(sprintf('Refusing to build the [%s] disk: its read-through disks form a cycle.', $disk));
+        }
+
+        return Storage::disk($disk);
     }
 
     /** An adapter may already have closed the stream it was handed. */
@@ -216,7 +453,7 @@ final class MediaBytes
     private static function discard(string $disk, string $path): void
     {
         try {
-            Storage::disk($disk)->delete($path);
+            self::disk($disk)->delete($path);
         } catch (Throwable) {
             // Left for kitsune:media-prune, which removes a temporary copy under its row's lock.
         }

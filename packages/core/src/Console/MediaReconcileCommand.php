@@ -14,11 +14,14 @@ use Illuminate\Console\Command;
 use Illuminate\Contracts\Config\Repository;
 use Illuminate\Database\Connection;
 use Illuminate\Database\Query\Builder;
+use Illuminate\Filesystem\ReadThroughFilesystem;
 use Illuminate\Log\Events\MessageLogged;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Storage;
 use Kitsune\Core\Media\MediaBytes;
 use Kitsune\Core\Media\MediaCustody;
+use Kitsune\Core\Media\MediaCustodyFailure;
 use Kitsune\Core\Media\MediaDisks;
 use Kitsune\Core\Models\MediaFile;
 use RuntimeException;
@@ -35,7 +38,16 @@ use Throwable;
  *
  * ⚠️ READ-ONLY WITHOUT `--force`, for `kitsune:media-prune`'s reason: it moves files, and media has no revision history
  * and no undo. The listing asks each disk whether it holds the path and hashes nothing, so it can say where the bytes
- * are, not whether they are the right ones; `--force` finds that out under the lock.
+ * are, not whether they are the right ones; `--force` finds that out under the lock. Of an `extra` row — its file where it
+ * belongs, held on more than one disk, nothing else wrong — each copy is opened and its first byte read (on an FTP or
+ * SFTP disk, or an S3 disk without `stream_reads`, a download of the whole copy), except on a disk
+ * whose media directory nests with the target's, or a `read-through` disk; so is the copy an `elsewhere` row names while
+ * the disk it belongs on holds the file too, whatever left it there — decision 6's set-aside copy, a move-off that
+ * failed, a row naming core's private disk — and the copy an `awaiting publication` row names on a disk that is neither
+ * private disk, while the configured private disk holds the file too — decision 6's row once its entry is restored
+ * among them. Every --force fails on each of these while it cannot be read; a row naming core's private disk is
+ * repointed first, then kept. No other copy is opened. A copy that cannot be read fails every `--force` that would
+ * remove it (Adam, decision 12, 2026-09-26).
  *
  * ⚠️ `--force` DECIDES NOTHING FROM THE LISTING. For each listed row it runs exactly what a compensation runs —
  * `MediaCustody::settle()` then `cleanUp()` — each its own outermost transaction under the row's lock, taking every
@@ -46,7 +58,10 @@ use Throwable;
  *
  * ⚠️ IT FAILS ON FINDINGS (Adam, decision 7, 2026-09-25), so a deploy or a cron can run it as a check: read-only, while
  * any finding is still there when the rows are asked again at the end; forced, while any row failed, is missing or was
- * kept. A file with no bytes anywhere keeps it failing until its entry is erased or the file restored from a backup.
+ * kept. A file with no bytes anywhere keeps it failing until its entry is erased or the file restored from a backup; a
+ * copy the listing opens, or a forced row's second look, and cannot read keeps both failing until it can be read (Adam,
+ * decision 12, 2026-09-26) — not one on a disk nesting with the target, which prune keeps for a hand, nor a file's lone
+ * copy, which only a forced prune reads (ADR-042 decision 5, *What it leaves*).
  *
  * ⚠️ ON SQLITE A FORCED RUN HOLDS THE DATABASE'S WRITE LOCK, row by row, while bytes move, and a save or an upload that
  * reads before it writes fails during each hold. The lever is Adam's (ADR-042, *Measured — decision 5, slice 5b*): the
@@ -60,11 +75,18 @@ final class MediaReconcileCommand extends Command
 
     protected $description = 'Find media files that are not where their row\'s state says they belong, and put them there (ADR-042)';
 
-    /** The labels that are findings; `extra` is listed for `kitsune:media-prune`, and is not one. */
-    private const FINDINGS = ['unknown', 'missing', 'exposed', 'awaiting publication', 'elsewhere', 'absent', 'private copy'];
+    /**
+     * The labels that are findings; `extra` is listed for `kitsune:media-prune`, and is not one — unless a copy cannot be
+     * read, which is `unreadable` (Adam, decision 12, 2026-09-26). A row whose path the disks read as another, or refuse,
+     * is `misnamed`, wherever its file is: custody refuses it (review of slice 5c).
+     */
+    private const FINDINGS = ['misnamed', 'unknown', 'missing', 'exposed', 'awaiting publication', 'elsewhere', 'absent', 'private copy', 'unreadable'];
 
     /** @var list<string> custody's warnings, collected while a row is forced and printed after it */
     private array $warnings = [];
+
+    /** @var array<string, bool> whether each disk nests with a target, asked once a pair and run, as prune remembers it */
+    private array $nests = [];
 
     /**
      * Whether a forced run is collecting them now, and whether this instance has registered its listener.
@@ -81,6 +103,8 @@ final class MediaReconcileCommand extends Command
 
     public function handle(): int
     {
+        // Artisan reuses a command in a process: nothing is remembered from a run before.
+        $this->nests = [];
         $config = app('config');
         $connection = (new MediaFile)->getConnection();
         $force = (bool) $this->option('force');
@@ -187,7 +211,8 @@ final class MediaReconcileCommand extends Command
             return $bad === 0 ? self::SUCCESS : self::FAILURE;
         }
 
-        $remaining = $this->recheck($connection, $config, $findings);
+        $still = $this->recheck($connection, $config, $findings);
+        $remaining = array_sum($still);
 
         if ($findings === []) {
             $this->info('Every media row names the disk its state says, and that disk holds its file.');
@@ -195,32 +220,127 @@ final class MediaReconcileCommand extends Command
             return self::SUCCESS;
         }
 
+        // Not every finding is a disagreement: one may have become readable, or its disk answerable (review of slice 5c).
         if ($remaining === 0) {
             $this->info(sprintf(
-                '%d of %d media row%s disagreed with where %s bytes were when listed, and none still does: %s settled while '
-                .'this ran. Nothing was changed by this run.',
+                '%d of %d media row%s %s a finding when listed, and none still is: %s settled, or became readable or '
+                .'answerable, while this ran. Nothing was changed by this run.',
                 count($findings),
                 $total,
                 $total === 1 ? '' : 's',
-                count($findings) === 1 ? 'its' : 'their',
+                count($findings) === 1 ? 'was' : 'were',
                 count($findings) === 1 ? 'it' : 'each',
             ));
 
             return self::SUCCESS;
         }
 
-        $this->warn(sprintf(
-            '%d of %d media row%s disagree%s with where %s bytes are, and nothing was changed.%s Re-run with --force: each '
-            .'file is copied where its row\'s state says, verified by SHA-256, the row repointed, and the copies custody\'s '
-            .'steps remove removed — one that differs named in the log with both hashes. Media has no revision history '
-            .'and no undo.',
-            $remaining,
-            $total,
-            $total === 1 ? '' : 's',
-            $remaining === 1 ? 's' : '',
-            $remaining === 1 ? 'its' : 'their',
-            $remaining === count($findings) ? '' : sprintf(' %d more disagreed when listed and no longer do.', count($findings) - $remaining),
-        ));
+        /*
+         * Each kind told what settles it (review of slice 5c): a copy the listing found it cannot read, a disk that cannot
+         * say whether it holds the file (Adam, decision 9), a file custody would have to read or remove through a
+         * read-through disk, a row naming a disk that reaches the one its file belongs on, a file held only on a disk that
+         * is, cannot be told apart from, or nests with the one it belongs on, and a row whose path the disks read as
+         * another, are not ones --force can put right, so none is sent there. A copy the listing did not open and cannot be read, --force names, and fails on.
+         */
+        $unreadable = $still['unreadable'] ?? 0;
+        $unknown = $still['unknown'] ?? 0;
+        $readThrough = $still['read-through'] ?? 0;
+        $misnamed = $still['misnamed'] ?? 0;
+        $overlapping = $still['overlapping'] ?? 0;
+        $coinciding = $still['coinciding'] ?? 0;
+        $astray = $remaining - $unreadable - $unknown - $readThrough - $misnamed - $overlapping - $coinciding;
+
+        $this->warn(implode(' ', array_filter([
+            $astray === 0 ? null : sprintf(
+                '%d of %d media row%s disagree%s with where %s bytes are, and nothing was changed. Re-run with --force: '
+                .'each file is copied where its row\'s state says, verified by SHA-256, the row repointed, and the copies '
+                .'custody\'s steps remove removed — one that differs named in the log with both hashes, and one that cannot '
+                .'be read named, and the run failed on it, its row kept or failed. Media has no revision history and no undo.',
+                $astray,
+                $total,
+                $total === 1 ? '' : 's',
+                $astray === 1 ? 's' : '',
+                $astray === 1 ? 'its' : 'their',
+            ),
+            $unreadable === 0 ? null : sprintf(
+                '%d of %d media row%s hold%s a copy that cannot be read, on the disk %s line above names, and nothing was '
+                .'changed: make it readable. Until it can be, every --force run leaves it and fails on it (Adam, decision '
+                .'12, 2026-09-26).',
+                $unreadable,
+                $total,
+                $total === 1 ? '' : 's',
+                $unreadable === 1 ? 's' : '',
+                $unreadable === 1 ? 'its' : 'each',
+            ),
+            $readThrough === 0 ? null : sprintf(
+                '%d of %d media row%s file%s held on a read-through disk, which custody neither reads, copies from nor removes '
+                .'a copy through, and nothing was changed: copy the file where its row belongs by hand if it is not there, '
+                .'checking it against the recorded checksum; then compare the read-through disk\'s copy with it and, where '
+                .'custody would remove it — a served copy of a file kept off the web, or one on the disk the row names — take '
+                .'it off through the disk each half is. Until then every --force run fails on it (ADR-042 decision 5, open '
+                .'for Adam).',
+                $readThrough,
+                $total,
+                $total === 1 ? '\'s' : 's\'',
+                $readThrough === 1 ? ' is' : 's are',
+            ),
+            $coinciding === 0 ? null : sprintf(
+                '%d of %d media row%s file%s held only on a disk that cannot be told apart from the one %s belongs on, or whose '
+                .'media directory nests with it, and nothing was changed: custody copies no file onto a disk from one that may be '
+                .'it or nests with it. Copy the file where its row belongs by hand, checking it against the recorded checksum. '
+                .'Until then every --force run refuses %s.',
+                $coinciding,
+                $total,
+                $total === 1 ? '\'s' : 's\'',
+                $coinciding === 1 ? ' is' : 's are',
+                $coinciding === 1 ? 'it' : 'each',
+                $coinciding === 1 ? 'it' : 'them',
+            ),
+            $overlapping === 0 ? null : sprintf(
+                '%d of %d media row%s disk%s reach%s the disk %s file belongs on, or cannot be told apart from it, and nothing '
+                .'was changed: custody moves no row off a disk that may hold the very file it would keep, and removes no copy '
+                .'there. Copy the file where its row belongs by hand if it is not there, checking it against the recorded '
+                .'checksum, then correct media_files.disk to that disk — or point the disk the row names at a place that does '
+                .'not overlap it. Until then every --force run refuses %s.',
+                $overlapping,
+                $total,
+                $total === 1 ? '\'s' : 's\'',
+                $overlapping === 1 ? '' : 's',
+                $overlapping === 1 ? 'es' : '',
+                $overlapping === 1 ? 'its' : 'each',
+                $overlapping === 1 ? 'it' : 'them',
+            ),
+            $misnamed === 0 ? null : sprintf(
+                '%d of %d media row%s path%s not written as the disks read it, or refused by them, as %s line above says, and '
+                .'nothing was changed: correct media_files.path to the path its file is under, as the disks read it, unless '
+                .'another row names that path — a file under the row\'s literal name, one no disk reads or removes, moved by hand '
+                .'to such a path first, checked against the recorded checksum. Until then every --force run, trash and erasure '
+                .'refuses %s.',
+                $misnamed,
+                $total,
+                $total === 1 ? '\'s' : 's\'',
+                $misnamed === 1 ? ' is' : 's are',
+                $misnamed === 1 ? 'its' : 'each',
+                $misnamed === 1 ? 'it' : 'them',
+            ),
+            $unknown === 0 ? null : sprintf(
+                '%d of %d media row%s could not be asked about — a disk could not say whether it holds %s file, as %s line '
+                .'above says — and nothing was changed: make the disk reachable, or its configuration whole. Until then every '
+                .'--force run refuses %s (Adam, decision 9, 2026-09-26).',
+                $unknown,
+                $total,
+                $total === 1 ? '' : 's',
+                $unknown === 1 ? 'its' : 'their',
+                $unknown === 1 ? 'its' : 'each',
+                $unknown === 1 ? 'it' : 'them',
+            ),
+            $remaining === count($findings) ? null : sprintf(
+                '%d more %s when listed and no longer %s.',
+                count($findings) - $remaining,
+                count($findings) - $remaining === 1 ? 'was a finding' : 'were findings',
+                count($findings) - $remaining === 1 ? 'is' : 'are',
+            ),
+        ])));
 
         return self::FAILURE;
     }
@@ -256,7 +376,7 @@ final class MediaReconcileCommand extends Command
                     continue;
                 }
 
-                [$outcome, $bucket] = $this->settle($connection, (int) $row->entry_id);
+                [$outcome, $bucket] = $this->askAgain($connection, $config, (int) $row->entry_id, ...$this->settle($connection, (int) $row->entry_id));
                 $counts[$survey['label']]['listed'] = ($counts[$survey['label']]['listed'] ?? 0) + 1;
                 $counts[$survey['label']][$bucket] = ($counts[$survey['label']][$bucket] ?? 0) + 1;
                 $bad += in_array($bucket, self::FAILING, true) ? 1 : 0;
@@ -285,14 +405,22 @@ final class MediaReconcileCommand extends Command
         $ids = [];
 
         foreach ($option as $value) {
-            // A positive whole number, written as PHP reads it back: one past PHP_INT_MAX would become another id.
-            if (! ctype_digit((string) $value) || (int) $value < 1 || (string) (int) $value !== ltrim((string) $value, '0')) {
-                $this->error(sprintf('--entry takes an entry id, a positive whole number: [%s] is not one. Nothing was listed.', $value));
+            /*
+             * A whole number, written as PHP reads it back — zero and below among them, which SQLite's and PostgreSQL's
+             * signed ids hold (MySQL's and MariaDB's are unsigned: zero at most, never below), and which prune and custody
+             * name in the `--entry` they advise (review of slice 5c): one past either end of PHP's integer would become
+             * another id.
+             */
+            $text = (string) $value;
+            $written = preg_replace('/\A(-?)0+(?=\d)/', '$1', $text);
+
+            if (preg_match('/\A-?\d+\z/', $text) !== 1 || (string) (int) $text !== $written) {
+                $this->error(sprintf('--entry takes an entry id, a whole number: [%s] is not one. Nothing was listed.', $value));
 
                 return false;
             }
 
-            $ids[] = (int) $value;
+            $ids[] = (int) $text;
         }
 
         return array_values(array_unique($ids));
@@ -362,31 +490,43 @@ final class MediaReconcileCommand extends Command
             return;
         }
 
-        $naming = static fn (Builder $rows): Collection => $rows
-            ->select('disk')
-            ->selectRaw('count(*) as rows_naming')
-            ->groupBy('disk')
-            ->orderBy('disk')
-            ->pluck('rows_naming', 'disk');
+        /*
+         * ⚠️ COUNTED IN PHP, BY THE NAME AS WRITTEN — review of slice 5c. MySQL and MariaDB group `disk` under the column's
+         * collation, which folds `LEGACY` into `legacy`: the warning went to the spelling no configuration names, or
+         * counted another disk's rows, while prune, which compares the names in PHP, stopped sweeping the disk.
+         */
+        $naming = static function (Builder $rows): array {
+            $counts = [];
+
+            $rows->select(['id', 'disk'])->chunkById(500, function (Collection $batch) use (&$counts): void {
+                foreach ($batch as $row) {
+                    $counts[(string) $row->disk] = ($counts[(string) $row->disk] ?? 0) + 1;
+                }
+            }, 'id');
+
+            ksort($counts, SORT_STRING);
+
+            return $counts;
+        };
 
         $named = $naming($connection->table('media_files'));
         $moving = $entries === null ? null : $naming($connection->table('media_files')->whereIntegerInRaw('entry_id', $entries));
 
         foreach ($named as $disk => $rows) {
+            // A disk named with digits alone is an integer key.
             $disk = (string) $disk;
-            $rows = (int) $rows;
 
             if (in_array($disk, $known, true) || ! is_array($config->get("filesystems.disks.{$disk}"))) {
                 continue;
             }
 
-            if ($moving !== null && (int) ($moving[$disk] ?? 0) !== $rows) {
+            if ($moving !== null && ($moving[$disk] ?? 0) !== $rows) {
                 continue;
             }
 
             // Another name for a disk prune always sweeps — Laravel's `public`, say, at the public disk's directory — is
             // swept under that name whatever names it (review of slice 5b).
-            $swept = $this->sweptAs($config, $disk, $known, array_map('strval', $named->keys()->all()));
+            $swept = $this->sweptAs($config, $disk, $known, array_map('strval', array_keys($named)));
 
             if ($swept === true) {
                 continue;
@@ -445,37 +585,69 @@ final class MediaReconcileCommand extends Command
             }
 
             foreach ($disks as $other) {
-                if (! is_array($config->get("filesystems.disks.{$other}")) || ! MediaDisks::mayHold($config, $other)) {
+                // One pair that cannot be compared — a disk that cannot be built — leaves out only that pair, and the rest
+                // still decide (review of slice 5c).
+                try {
+                    if (! is_array($config->get("filesystems.disks.{$other}")) || ! MediaDisks::mayHold($config, $other)) {
+                        continue;
+                    }
+
+                    // Nested: another directory, whose orphans prune never lists while the two nest (review of 5b).
+                    if (MediaDisks::nested($config, $disk, $other)) {
+                        return $other;
+                    }
+
+                    // One directory, or one prune cannot tell apart, and so never scans.
+                    if (MediaDisks::onePlace($config, $disk, $other) !== false) {
+                        return true;
+                    }
+                } catch (Throwable) {
                     continue;
-                }
-
-                // Nested: another directory, whose orphans prune never lists while the two nest (review of 5b).
-                if (MediaDisks::nested($config, $disk, $other)) {
-                    return $other;
-                }
-
-                // One directory, or one prune cannot tell apart, and so never scans.
-                if (MediaDisks::onePlace($config, $disk, $other) !== false) {
-                    return true;
                 }
             }
 
             /*
-             * And any configured disk inside it — a host's, read from its configuration alone — or another disk a row
-             * names that it lies inside: prune refuses to list while either nests (review of 5b). One disk that cannot
-             * be asked leaves out only itself.
+             * And any configured disk inside it, or another disk a row names that it lies inside: prune refuses to list
+             * while either nests (review of 5b). As prune asks: a disk it scans — served, or named by a row — is built,
+             * so a read-through disk a driver of the host's own builds is compared by its halves, and read from its
+             * configuration alone where building it throws; any other, a host's nothing uses among them, is read from its
+             * configuration alone (review of slice 5c). One disk that cannot be asked leaves out only itself.
              */
+            $scanned = [...MediaDisks::servedDisks($config), ...$rowNamed];
+
             foreach (array_keys((array) $config->get('filesystems.disks', [])) as $other) {
                 $other = (string) $other;
 
-                try {
-                    if ($other !== $disk && is_array($config->get("filesystems.disks.{$other}")) && MediaDisks::mayHold($config, $other)
-                        && (MediaDisks::within($config, $other, $disk, build: false)
-                            || (in_array($other, $rowNamed, true) && MediaDisks::within($config, $disk, $other)))) {
-                        return $other;
-                    }
-                } catch (Throwable) {
+                if ($other === $disk || ! is_array($config->get("filesystems.disks.{$other}"))) {
                     continue;
+                }
+
+                foreach (in_array($other, $scanned, true) ? [true, false] : [false] as $build) {
+                    try {
+                        if (MediaDisks::mayHold($config, $other) && MediaDisks::within($config, $other, $disk, build: $build)) {
+                            return $other;
+                        }
+
+                        break;
+                    } catch (Throwable) {
+                        continue;
+                    }
+                }
+
+                // A disk a row names that it lies inside — it too is built, as prune scans it, and read from its
+                // configuration alone where building it throws (review of slice 5c).
+                if (in_array($other, $rowNamed, true)) {
+                    foreach ([true, false] as $build) {
+                        try {
+                            if (MediaDisks::mayHold($config, $other) && MediaDisks::within($config, $disk, $other, build: $build)) {
+                                return $other;
+                            }
+
+                            break;
+                        } catch (Throwable) {
+                            continue;
+                        }
+                    }
                 }
             }
         } catch (Throwable) {
@@ -486,12 +658,34 @@ final class MediaReconcileCommand extends Command
     }
 
     /**
-     * Where a row's file belongs and which disks hold its path, from the unlocked row and presence alone.
+     * Where a row's file belongs and which disks hold its path, from the unlocked row and presence alone — and, for a file
+     * where it belongs and held on more than one disk, whether each copy can be read.
      *
-     * ⚠️ A DISK WHOSE ROOT DOES NOT EXIST IS NOT ASKED: it holds nothing, and building it would create it. A failure to
-     * tell whether a disk holds the path is `unknown`, never absent.
+     * ⚠️ A DISK WHOSE ROOT DOES NOT EXIST IS NOT ASKED: it holds nothing, and building it would create it — but for a
+     * `read-through` disk's half, which asking the read-through disk builds: a local half whose root does not exist is
+     * created — but one whose root cannot be created is not built, and makes the row `unknown` (`refuseBlockedHalf()`;
+     * review of slice 5c, twice). A local disk custody asks whatever it holds — the target, the disk the row names, a
+     * configured one — with no root, or a root that cannot be created, makes the row `unknown`: every --force fails to
+     * build it. A failure to tell whether a disk holds the path is `unknown`, never absent — every disk the keeper asks
+     * is asked for a row --force would settle, but, for a row held on another disk, a read-through disk skipped as the
+     * public disk whose building would create a local half's root (review of 5c).
      *
-     * @return array{label: ?string, target: string, held: list<string>, failure: ?string}
+     * ⚠️ A COPY THAT CANNOT BE READ FAILS THE CHECK (Adam, decision 12, 2026-09-26). A file held twice is `extra`,
+     * which prune removes under the lock after reading every copy, where a disk's listing shows it; one of them that
+     * cannot be read fails that removal every time, so the check that says `extra` must not pass. Each copy is opened
+     * and its first byte read — nothing is hashed, though on an FTP or SFTP disk, or an S3 disk without `stream_reads`,
+     * opening downloads the whole copy — the target's and whatever else the row holds, since every forced run's keeper
+     * reads it first; but not one on a disk whose media directory nests with the target's, nor one on a `read-through`
+     * disk, where no step removes a copy and so none reads it to remove it (review of slice 5c). Beside a copy prune
+     * keeps for a hand, only a forced prune passes on an unreadable target's copy. Every other label is a finding
+     * already; of those, only two are opened, both states every --force fails on while the copy cannot be read: an
+     * `elsewhere` row whose file is where it belongs and on the disk the row names (decision 6's among them, and any
+     * other row in that state; one naming core's private disk is repointed by --force, then kept), and an `awaiting
+     * publication` row whose named disk, neither private one, holds the file while the configured private disk holds it
+     * too (decision 6's row once its entry is restored among them) — so the closing line does not send a copy --force
+     * cannot read back to --force.
+     *
+     * @return array{label: ?string, target: string, held: list<string>, failure: ?string, unreadable: list<string>}
      */
     private function survey(Repository $config, stdClass $row): array
     {
@@ -502,11 +696,42 @@ final class MediaReconcileCommand extends Command
         $path = (string) $row->path;
         $held = [];
 
+        /*
+         * ⚠️ BEFORE ANY DISK IS ASKED — review of slice 5c. A row path written past `MediaFile` in a form the disks read as
+         * another, or refuse, is asked about as the path they read: the check read such a row as settled, or as a finding
+         * --force would put right, while every --force, trash and erasure refused it. It is `misnamed`, a finding, wherever
+         * its file is, and its row is what a person corrects.
+         */
+        try {
+            MediaBytes::refuseMisnamed($target, $path);
+        } catch (MediaCustodyFailure $misnamed) {
+            return ['label' => 'misnamed', 'target' => $target, 'held' => [], 'failure' => $misnamed->getMessage(), 'unreadable' => []];
+        }
+
+        $skipped = [];
+
         try {
             $served = MediaDisks::servedDisks($config);
 
             foreach (MediaCustody::asked($config, $target, $named) as $disk) {
                 if (! MediaDisks::mayHold($config, $disk)) {
+                    // Custody asks the target, the disk the row names and both configured disks whatever they hold, and
+                    // builds each: a local one with no root, or one whose root cannot be created — a file where it
+                    // should be, a dangling link, a missing root whose nearest existing directory it may not write into
+                    // or search — cannot be built, so every --force refuses the row as unknown (Adam, decision 9), and
+                    // so does this, rather than send it there. One whose root exists, and whose prefix below it does
+                    // not, is built, and holds nothing (review of slice 5c, three times).
+                    $resolved = MediaDisks::resolved($config, $disk);
+
+                    if ($resolved['driver'] === 'local' && ($resolved['root'] === null || self::rootCannotBeMade($config, $disk))) {
+                        throw new RuntimeException(sprintf('the [%s] disk is local and its root is missing or cannot be created, so it cannot be built, and whether it holds the file cannot be told', $disk));
+                    }
+
+                    // The target or the disk the row names, which custody asks whatever it holds (review of slice 5c).
+                    if (in_array($disk, [$target, $named], true) && MediaDisks::cycles($config, $disk)) {
+                        throw new RuntimeException(sprintf('the [%s] disk is a read-through one whose halves name each other, so it cannot be built, and whether it holds the file cannot be told', $disk));
+                    }
+
                     continue;
                 }
 
@@ -514,15 +739,37 @@ final class MediaReconcileCommand extends Command
                 // nested in it or around it is another directory, holding another file at the path (review of 5b).
                 if ($target === $public && $disk !== $public && MediaDisks::onePlace($config, $public, $disk) !== false
                     && ! MediaDisks::nested($config, $public, $disk)) {
+                    $skipped[] = $disk;
+
                     continue;
                 }
+
+                // A read-through disk a half of which cannot be built is not built either (review of slice 5c).
+                $this->refuseBlockedHalf($config, $disk);
 
                 if (MediaBytes::present($disk, $path)) {
                     $held[] = $disk;
                 }
             }
+
+            /*
+             * Held nowhere else, each disk skipped above as the public disk under another name is asked, as every --force's
+             * keeper asks it: one that holds the file holds it — never `missing` — and one that cannot say whether it does
+             * makes the row `unknown` (Adam, decision 9), never sent to --force (review of slice 5c, twice).
+             */
+            $askedSkipped = $held === [];
+
+            if ($askedSkipped) {
+                foreach ($skipped as $disk) {
+                    $this->refuseBlockedHalf($config, $disk);
+
+                    if (MediaBytes::present($disk, $path)) {
+                        $held[] = $disk;
+                    }
+                }
+            }
         } catch (Throwable $failure) {
-            return ['label' => 'unknown', 'target' => $target, 'held' => $held, 'failure' => $failure->getMessage()];
+            return ['label' => 'unknown', 'target' => $target, 'held' => $held, 'failure' => $failure->getMessage(), 'unreadable' => []];
         }
 
         $label = match (true) {
@@ -536,10 +783,220 @@ final class MediaReconcileCommand extends Command
             default => null,
         };
 
-        return ['label' => $label, 'target' => $target, 'held' => $held, 'failure' => null];
+        /*
+         * ...and for every row --force would settle, whatever else holds the file: its keeper asks each skipped disk
+         * whether it holds the path before it hashes anything, so one that cannot say makes the row `unknown` here too —
+         * the check passed it, or sent it to a --force that failed on that disk every run (Adam, decision 9; review of slice
+         * 5c, three times). A read-through disk whose building would create a local half's root, at any depth, is not asked
+         * here: that half holds nothing, and asking only to hear whether the disk can answer would create it (T87) — held
+         * nowhere else, it is asked above, and building it creates that root, as the listing records. One a half of which
+         * cannot be created is not built, and makes the row `unknown`: building it fails, as every --force's does (review
+         * of slice 5c). A settled row, which --force leaves alone, asks nothing more.
+         */
+        if ($label !== null && ! $askedSkipped) {
+            try {
+                foreach ($skipped as $disk) {
+                    $this->refuseBlockedHalf($config, $disk);
+
+                    if (! $this->makesAHalfRoot($config, $disk)) {
+                        MediaBytes::present($disk, $path);
+                    }
+                }
+            } catch (Throwable $failure) {
+                return ['label' => 'unknown', 'target' => $target, 'held' => $held, 'failure' => $failure->getMessage(), 'unreadable' => []];
+            }
+        }
+
+        $opened = match (true) {
+            $label === 'extra' => $held,
+            // Decision 6 leaves a copy it set aside where a row points: the file where it belongs, and the row still naming
+            // the disk that cannot read it — which every --force refuses until it can (review of slice 5c).
+            $label === 'elsewhere' && in_array($target, $held, true) && in_array($named, $held, true) => [$named],
+            // ...and so is the row it becomes once its entry is restored, the configured private disk holding the file:
+            // for a public target no copy is set aside, so every --force refuses it too (review of slice 5c).
+            $label === 'awaiting publication' && in_array($named, $held, true) && ! in_array($named, [$private, MediaDisks::PRIVATE], true)
+                && in_array($private, $held, true) => [$named],
+            default => [],
+        };
+
+        $unreadable = array_values(array_filter($opened, fn (string $disk): bool => ! $this->nestsWithTarget($config, $disk, $target)
+            && ! $this->readsThrough($disk) && ! MediaBytes::readable($disk, $path)));
+
+        return ['label' => $label === 'extra' && $unreadable !== [] ? 'unreadable' : $label, 'target' => $target, 'held' => $held, 'failure' => null, 'unreadable' => $unreadable];
     }
 
-    /** @param array{label: ?string, target: string, held: list<string>, failure: ?string} $survey */
+    /**
+     * Whether a disk is a `read-through` one — custody removes no copy through it (`MediaBytes::delete()`), so prune keeps
+     * a copy there for a hand and no step reads one to remove it; opened, a copy only its fallback holds would be copied
+     * into its primary (review of slice 5c). Asked of a disk that holds the path, and so is built already.
+     */
+    private function readsThrough(string $disk): bool
+    {
+        try {
+            return Storage::disk($disk) instanceof ReadThroughFilesystem;
+        } catch (Throwable) {
+            return false;
+        }
+    }
+
+    /**
+     * Whether a local disk's own root — not its root plus a prefix, which Laravel does not create — cannot be created, as
+     * Flysystem creates it when the disk is built (`cannotMake()`). Asked of the configuration and the file system;
+     * nothing is created.
+     */
+    private static function rootCannotBeMade(Repository $config, string $disk): bool
+    {
+        [$entry] = MediaDisks::unscoped($config, $config->get("filesystems.disks.{$disk}"), $disk);
+
+        return self::cannotMake(is_array($entry) && is_string($entry['root'] ?? null) ? $entry['root'] : '');
+    }
+
+    /**
+     * Whether building a local disk rooted here fails to create its root: none configured; a file or a link where a
+     * directory must be; or, for a root that does not exist, a nearest existing directory it may not write into or
+     * search. A root that exists is not created — Flysystem's `ensureDirectoryExists()` returns at `is_dir()` — so the build
+     * cannot fail on it, whatever its mode, and whatever is missing below it, under a prefix Laravel does not create
+     * (review of slice 5c, twice).
+     */
+    private static function cannotMake(string $root): bool
+    {
+        if ($root === '') {
+            return true;
+        }
+
+        $path = rtrim($root, '/') === '' ? '/' : rtrim($root, '/');
+
+        if (is_dir($path)) {
+            return false;
+        }
+
+        while (! is_dir($path)) {
+            // A regular file, a link to one, or a dangling link — which file_exists() does not see — where a directory must be.
+            if (file_exists($path) || is_link($path)) {
+                return true;
+            }
+
+            $parent = dirname($path);
+
+            if ($parent === $path) {
+                return true;
+            }
+
+            $path = $parent;
+        }
+
+        return ! is_writable($path) || ! is_executable($path);
+    }
+
+    /**
+     * Whether building a `read-through` disk configured as one would create a local half's root that does not exist, at
+     * any depth — not one whose root cannot be created, which the build fails on (`refuseBlockedHalf()`). A walk that
+     * cannot finish answers no, and the disk is asked, as before.
+     */
+    private function makesAHalfRoot(Repository $config, string $disk): bool
+    {
+        return $this->halfRoot($config, $disk) === 'missing';
+    }
+
+    /**
+     * Refuse to ask a `read-through` disk with a local half whose root cannot be created: building it fails — as every
+     * --force's does — after creating any other half's missing root, so it is never built, and the row is `unknown`
+     * (review of slice 5c).
+     */
+    private function refuseBlockedHalf(Repository $config, string $disk): void
+    {
+        if ($this->halfRoot($config, $disk) === 'blocked') {
+            throw new RuntimeException(sprintf('the [%s] disk reads through to a local disk whose root cannot be created, so it cannot be built, and whether it holds the file cannot be told', $disk));
+        }
+    }
+
+    /**
+     * What building a `read-through` disk would meet in a local half's root, at any depth: 'blocked' where one cannot be
+     * created, 'missing' where one does not exist and would be created, and null where there is none. Laravel builds each
+     * half as the disk is built — a named one by its name, one written inline from its entry, a scoped one's base through
+     * its layers — and a local one creates its own root, never its root plus a prefix (review of slice 5c, three times).
+     * A blocked half wins over a missing one, which building would create before it failed. A walk that cannot finish
+     * answers null.
+     *
+     * @return 'blocked'|'missing'|null
+     */
+    private function halfRoot(Repository $config, string $disk): ?string
+    {
+        try {
+            return MediaDisks::readsThrough($config, $disk) ? $this->missingRoot($config, $config->get("filesystems.disks.{$disk}"), $disk, 0) : null;
+        } catch (Throwable) {
+            return null;
+        }
+    }
+
+    /** @return 'blocked'|'missing'|null */
+    private function missingRoot(Repository $config, mixed $entry, string $disk, int $depth): ?string
+    {
+        [$base] = MediaDisks::unscoped($config, $entry, $disk);
+
+        if (! is_array($base) || $depth >= 8) {
+            return null;
+        }
+
+        if (($base['driver'] ?? null) === 'read-through') {
+            $found = null;
+
+            foreach ([$base['primary'] ?? null, $base['fallback'] ?? null] as $half) {
+                $root = $this->missingRoot($config, is_string($half) ? $config->get("filesystems.disks.{$half}") : $half, $disk, $depth + 1);
+
+                if ($root === 'blocked') {
+                    return 'blocked';
+                }
+
+                $found ??= $root;
+            }
+
+            return $found;
+        }
+
+        if ($depth === 0 || ($base['driver'] ?? null) !== 'local' || ! is_string($base['root'] ?? null) || $base['root'] === '' || is_dir($base['root'])) {
+            return null;
+        }
+
+        return self::cannotMake($base['root']) ? 'blocked' : 'missing';
+    }
+
+    /**
+     * Whether a disk is, cannot be told apart from, or nests with the public disk — settle copies onto it from none of
+     * them (`refuseCoincidingMediaDisks()`, where a nest counts; review of slice 5c, twice).
+     */
+    private function coincidesWithPublic(Repository $config, string $public, string $disk): bool
+    {
+        try {
+            return $disk !== $public && MediaDisks::onePlace($config, $public, $disk) !== false;
+        } catch (Throwable) {
+            return false;
+        }
+    }
+
+    /**
+     * Whether a disk's media directory nests with the target's — prune keeps a copy there for a hand, and custody takes
+     * the two for one place. A disk that cannot be asked does not nest, and is read.
+     *
+     * Remembered for each pair: asked afresh before every open, it cost a row held twice about as much as its two opens
+     * (review of slice 5c).
+     */
+    private function nestsWithTarget(Repository $config, string $disk, string $target): bool
+    {
+        if ($disk === $target) {
+            return false;
+        }
+
+        return $this->nests[$disk."\0".$target] ??= (static function () use ($config, $disk, $target): bool {
+            try {
+                return MediaDisks::mayHold($config, $disk) && MediaDisks::mayHold($config, $target) && MediaDisks::nested($config, $disk, $target);
+            } catch (Throwable) {
+                return false;
+            }
+        })();
+    }
+
+    /** @param array{label: ?string, target: string, held: list<string>, failure: ?string, unreadable: list<string>} $survey */
     private function describe(stdClass $row, array $survey): string
     {
         return sprintf(
@@ -551,8 +1008,10 @@ final class MediaReconcileCommand extends Command
             (string) $row->disk,
             $survey['target'],
             match (true) {
+                $survey['label'] === 'misnamed' => 'not asked — '.$survey['failure'],
                 $survey['failure'] !== null => 'held by: cannot be told — '.$survey['failure'],
                 $survey['held'] === [] => 'held by no disk custody asks',
+                $survey['unreadable'] !== [] => sprintf('held by %s — [%s] cannot be read', implode(', ', $survey['held']), implode('], [', $survey['unreadable'])),
                 default => 'held by '.implode(', ', $survey['held']),
             },
         );
@@ -602,6 +1061,54 @@ final class MediaReconcileCommand extends Command
     }
 
     /**
+     * A forced row that settled, or needed nothing, asked again as it now is: while a copy of its file cannot be read it
+     * was kept, and fails the run (Adam, decisions 7 and 12, 2026-09-26).
+     *
+     * ⚠️ WHATEVER IT WAS LISTED AS — review of slice 5c. Settle stops reading once the target's copy matches, and the
+     * cleanup reads only the private disks, so a row listed `private copy` or `exposed` can settle past a copy on another
+     * disk that nothing read; read-only would then fail on it while `--force` passed. Asked of the row read again, since
+     * settle may have repointed it; a second look a disk cannot answer fails the row, as one the database cannot does. It
+     * costs a read of the row, a presence check on each disk custody asks, and the listing's opens where they apply.
+     *
+     * @return array{string, string}
+     */
+    private function askAgain(Connection $connection, Repository $config, int $entryId, string $outcome, string $bucket): array
+    {
+        if (! in_array($bucket, ['settled', 'unchanged'], true)) {
+            return [$outcome, $bucket];
+        }
+
+        $told = null;
+        $survey = null;
+
+        try {
+            $row = $this->rows($connection, [$entryId])->first();
+            $survey = $row === null ? null : $this->survey($config, $row);
+        } catch (Throwable $failure) {
+            $told = $failure->getMessage();
+        }
+
+        $told ??= $survey !== null && $survey['failure'] !== null ? $survey['failure'] : null;
+
+        if ($told !== null) {
+            return [($bucket === 'settled' ? 'settled, then ' : '').'failed: asked again, it could not be told — '.$told, 'failed'];
+        }
+
+        if ($survey === null || $survey['label'] !== 'unreadable') {
+            return [$outcome, $bucket];
+        }
+
+        return [
+            sprintf(
+                '%skept: [%s] cannot be read, and every --force run leaves it and fails until it can be read — make it readable',
+                $bucket === 'settled' ? 'settled, then ' : '',
+                implode('], [', $survey['unreadable']),
+            ),
+            'kept',
+        ];
+    }
+
+    /**
      * Which disks' copies were set aside, from custody's own warnings for this row, and whether the row still names one
      * (Adam, decision 6, 2026-09-25).
      */
@@ -646,22 +1153,60 @@ final class MediaReconcileCommand extends Command
     }
 
     /**
-     * How many of the findings are still there, asked again of each row: a restore's publication in flight while the
-     * listing ran is not a problem, and a check run by a deploy should not fail on one.
+     * How many of the findings are still there, by label, asked again of each row: a restore's publication in flight while
+     * the listing ran is not a problem, and a check run by a deploy should not fail on one.
      *
      * ⚠️ IN SLICES, THE IDS WRITTEN INTO THE STATEMENT: `whereIntegerInRaw` binds nothing, so no engine's limit on bound
      * parameters is reached however many findings there are.
      *
      * @param  list<int>  $findings
+     * @return array<string, int>
      */
-    private function recheck(Connection $connection, Repository $config, array $findings): int
+    private function recheck(Connection $connection, Repository $config, array $findings): array
     {
-        $remaining = 0;
+        $remaining = [];
+
+        try {
+            $public = MediaDisks::configured($config, 'public');
+            $private = MediaDisks::configured($config, 'private');
+            $served = MediaDisks::servedDisks($config);
+        } catch (Throwable) {
+            [$public, $private, $served] = [null, null, []];
+        }
 
         foreach (array_chunk($findings, 500) as $slice) {
             foreach ($this->rows($connection, $slice)->get() as $row) {
-                if (in_array($this->survey($config, $row)['label'], self::FINDINGS, true)) {
-                    $remaining++;
+                $survey = $this->survey($config, $row);
+
+                if (in_array($survey['label'], self::FINDINGS, true)) {
+                    /*
+                     * What settles it, rather than what it is: a copy that cannot be read, whatever the label; and a row
+                     * whose settling needs a read-through disk custody neither reads, copies from nor removes a copy
+                     * through (review of slice 5c) — its file held only on such disks; off the web, still on a served one,
+                     * which custody's sweep removes; or on the disk its row names, which the move-off removes. A row that
+                     * could not be asked is `unknown`, whatever a disk asked before the one that failed answered.
+                     */
+                    $target = $survey['target'];
+                    $named = (string) $row->disk;
+                    $readThrough = array_values(array_filter($survey['held'], fn (string $disk): bool => $this->readsThrough($disk)));
+                    $kind = match (true) {
+                        $survey['label'] === 'misnamed' => 'misnamed',
+                        $survey['failure'] !== null => 'unknown',
+                        // Only while a disk custody asks holds the file does settle reach the move-off: one held nowhere is
+                        // missing, and --force says so. The disk the row names is asked too, which the survey skips where
+                        // it cannot be told from the public disk (review of slice 5c).
+                        MediaCustody::overlapsTarget($config, $target, $named, (string) $row->path) && $survey['held'] !== [] => 'overlapping',
+                        $survey['unreadable'] !== [] => 'unreadable',
+                        $survey['held'] !== [] && ! in_array($target, $survey['held'], true) && $readThrough === $survey['held'] => 'read-through',
+                        $target !== $public && array_diff(array_intersect($readThrough, $served), [$target]) !== [] => 'read-through',
+                        $named !== $target && in_array($named, $readThrough, true) && ! in_array($named, [$private, MediaDisks::PRIVATE], true) => 'read-through',
+                        // Held only on disks that are, cannot be told apart from, or nest with the public disk: settle
+                        // copies from none of them onto it, since the copy could be the file itself (review of slice 5c).
+                        $target === $public && $survey['held'] !== [] && ! in_array($target, $survey['held'], true)
+                            && array_filter($survey['held'], fn (string $disk): bool => ! $this->coincidesWithPublic($config, $public, $disk)) === [] => 'coinciding',
+                        default => (string) $survey['label'],
+                    };
+                    $remaining[$kind] = ($remaining[$kind] ?? 0) + 1;
                 }
             }
         }

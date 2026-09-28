@@ -418,7 +418,10 @@ describe('the write lock on SQLite', function (): void {
         expect($outcome())->toBe(['probed' => true, 'busy' => true]);
     })->with(['soft delete', 'force-delete', 'publication', 'drain', 'removeOrphan', 'removeTemp', 'disposal', 'cleanUp', 'removeExtra', 'reconcile']);
 
-    /** A read-only reconcile only asks whether each disk holds a path, and takes no lock while it does. */
+    /**
+     * A read-only reconcile ~~only~~ asks whether each disk holds a path — opening, a byte each, only the copies of a file
+     * held twice where it belongs, which this row is not (Adam, decision 12, 2026-09-26) — and takes no lock while it does.
+     */
     it('leaves it free while a read-only reconcile asks the disks', function (): void {
         [$entry] = levelZeroFile();
         DB::table('entries')->where('id', $entry->id)->update(['deleted_at' => now()]);

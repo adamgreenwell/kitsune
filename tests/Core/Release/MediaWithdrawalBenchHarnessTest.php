@@ -17,8 +17,14 @@ declare(strict_types=1);
  * runs only when it is the script; required, it defines its functions and returns.
  */
 
+use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\Storage;
+use Kitsune\Core\Console\MediaPruneCommand;
+use Kitsune\Core\Media\MediaDisks;
 use Symfony\Component\Console\Helper\Table;
 use Symfony\Component\Console\Output\BufferedOutput;
+use Symfony\Component\Console\Output\NullOutput;
+use Symfony\Component\Process\Process;
 
 require_once dirname(__DIR__, 3).'/bin/benchmark-media-withdrawal.php';
 
@@ -98,14 +104,14 @@ it('verifies a command by the rows it counted under each label, and under no oth
     $listed = benchSummary(['Label', 'Rows'], [['exposed', 1000], ['awaiting publication', 3]]);
     $forced = benchSummary(['Label', 'Rows', 'Settled', 'Nothing to do', 'Gone', 'Kept', 'Missing', 'Failed'], [['exposed', 1000, 998, 0, 0, 1, 0, 1]]);
 
-    expect(withdrawalBenchCounts($listed, ['exposed' => 1000, 'awaiting publication' => 3]))->toBeTrue()
-        ->and(withdrawalBenchCounts($listed, ['awaiting publication' => 3, 'exposed' => 1000]))->toBeTrue()
-        ->and(withdrawalBenchCounts($listed, ['exposed' => 1000]))->toBeFalse()
-        ->and(withdrawalBenchCounts($listed, ['exposed' => 999, 'awaiting publication' => 3]))->toBeFalse()
-        ->and(withdrawalBenchCounts($listed, ['exposed' => 1000, 'awaiting publication' => 3, 'missing' => 1]))->toBeFalse()
-        ->and(withdrawalBenchCounts('', ['exposed' => 1000]))->toBeFalse()
+    expect(withdrawalBenchCounts(preg_split('/\R/', $listed), ['exposed' => 1000, 'awaiting publication' => 3]))->toBeTrue()
+        ->and(withdrawalBenchCounts(preg_split('/\R/', $listed), ['awaiting publication' => 3, 'exposed' => 1000]))->toBeTrue()
+        ->and(withdrawalBenchCounts(preg_split('/\R/', $listed), ['exposed' => 1000]))->toBeFalse()
+        ->and(withdrawalBenchCounts(preg_split('/\R/', $listed), ['exposed' => 999, 'awaiting publication' => 3]))->toBeFalse()
+        ->and(withdrawalBenchCounts(preg_split('/\R/', $listed), ['exposed' => 1000, 'awaiting publication' => 3, 'missing' => 1]))->toBeFalse()
+        ->and(withdrawalBenchCounts([], ['exposed' => 1000]))->toBeFalse()
         // The rows, not what --force did with them.
-        ->and(withdrawalBenchCounts($forced, ['exposed' => 1000]))->toBeTrue();
+        ->and(withdrawalBenchCounts(preg_split('/\R/', $forced), ['exposed' => 1000]))->toBeTrue();
 });
 
 /* (M)'s contention rows print their figures only when the holder held, the build was seen and the prober reported (T55). */
@@ -134,3 +140,375 @@ it('verifies a contention row only when the holder held, the build was seen and 
         ->and(withdrawalBenchContentionVerified([...$seen, 'prober' => ['exit' => 255, 'outcome' => 'ok']]))->toBeFalse()
         ->and(withdrawalBenchContentionVerified([...$seen, 'prober' => ['exit' => 0, 'outcome' => 'no result: Fatal']]))->toBeFalse();
 });
+
+/*
+ * T145. Slice 5c's prune groups verify the rows prune printed a line each — exactly the seeded ones, no more and no fewer,
+ * under the heading they belong to — in the line `MediaPruneCommand::rowLine()` writes for each, an extra copy's followed
+ * by what --force would do with it.
+ */
+it('verifies a list of rows by exactly the rows under its heading, a line at a time', function (): void {
+    $line = static fn (int $entry, string $path): string => MediaPruneCommand::rowLine((object) ['entry_id' => $entry, 'disk' => 'public', 'path' => $path]);
+    $output = [
+        'No orphaned media files.',
+        'Trashed on a served disk — trashed, and still on a disk the web serves:',
+        $line(2, 'media/1/2027/00/b.bin'),
+        $line(1, 'media/1/2027/00/a.bin'),
+        'Removed nothing.',
+    ];
+    $rows = [[1, 'public', 'media/1/2027/00/a.bin'], [2, 'public', 'media/1/2027/00/b.bin']];
+
+    expect(withdrawalBenchListed($output, 'Trashed on a served disk', $rows))->toBeTrue()
+        ->and(withdrawalBenchListed($output, 'Trashed on a served disk', [$rows[0]]))->toBeFalse()
+        ->and(withdrawalBenchListed($output, 'Trashed on a served disk', [...$rows, [3, 'public', 'media/1/2027/00/c.bin']]))->toBeFalse()
+        ->and(withdrawalBenchListed($output, 'Awaiting publication', $rows))->toBeFalse()
+        ->and(withdrawalBenchListed($output, 'Awaiting publication', []))->toBeTrue()
+        ->and(withdrawalBenchListed($output, 'Trashed on a served disk', [[1, 'kitsune-private', 'media/1/2027/00/a.bin'], $rows[1]]))->toBeFalse()
+        // A row printed twice is not two rows.
+        ->and(withdrawalBenchListed([...array_slice($output, 0, 3), $line(2, 'media/1/2027/00/b.bin'), ...array_slice($output, 3)], 'Trashed on a served disk', $rows))->toBeFalse()
+        // Nor is a list printed twice one list, whether it holds the same rows again or one never seeded (review of 5c).
+        ->and(withdrawalBenchListed([...$output, ...array_slice($output, 1, 3)], 'Trashed on a served disk', $rows))->toBeFalse()
+        ->and(withdrawalBenchListed([...$output, $output[1], $line(9, 'media/1/2027/00/z.bin')], 'Trashed on a served disk', $rows))->toBeFalse();
+
+    // Under its own heading only: prune prints rows awaiting publication before those trashed on a served disk.
+    $awaiting = [5, 'kitsune-private', 'media/1/2027/00/p.bin'];
+    $both = [
+        'No orphaned media files.',
+        'Awaiting publication — live and public, on a disk that is not the public one:',
+        MediaPruneCommand::rowLine((object) ['entry_id' => 5, 'disk' => 'kitsune-private', 'path' => 'media/1/2027/00/p.bin']),
+        'Trashed on a served disk — trashed, and still on a disk the web serves:',
+        $line(1, 'media/1/2027/00/a.bin'),
+    ];
+
+    expect(withdrawalBenchListed($both, 'Awaiting publication', [$awaiting]))->toBeTrue()
+        ->and(withdrawalBenchListed($both, 'Awaiting publication', [$awaiting, $rows[0]]))->toBeFalse()
+        ->and(withdrawalBenchListed($both, 'Trashed on a served disk', [$rows[0]]))->toBeTrue()
+        // Rows given one at a time, as the harness gives a hundred thousand of them.
+        ->and(withdrawalBenchListed($both, 'Trashed on a served disk', (static function () use ($rows): Generator {
+            yield $rows[0];
+        })()))->toBeTrue();
+});
+
+/* ...an extra copy's under the entry it belongs to, and as one --force would remove: counted, a copy read back under
+ * another entry — what a wrong packed id would print — or listed twice still passed (review of slice 5c). */
+it('verifies extra copies by entry, path and what --force would do with each', function (): void {
+    $line = static fn (int $entry, string $path, string $verdict = WITHDRAWAL_BENCH_REMOVABLE): string => MediaPruneCommand::rowLine((object) ['entry_id' => $entry, 'disk' => 'kitsune-private', 'path' => $path]).$verdict;
+    $report = static fn (string ...$lines): array => ['No orphaned media files.', 'Extra copies — a copy beside the one its row names:', ...$lines, '2 removable extra copies.'];
+    $rows = [[101, 'kitsune-private', 'media/1/2027/00/extra-0.bin'], [102, 'kitsune-private', 'media/1/2027/01/extra-1.bin']];
+    $listed = static fn (array $report): bool => withdrawalBenchListed($report, 'Extra copies', $rows, WITHDRAWAL_BENCH_REMOVABLE);
+
+    expect($listed($report($line(101, $rows[0][2]), $line(102, $rows[1][2]))))->toBeTrue()
+        ->and($listed($report($line(7, $rows[0][2]), $line(7, $rows[1][2]))))->toBeFalse()
+        ->and($listed($report($line(101, $rows[0][2]), $line(101, $rows[0][2]))))->toBeFalse()
+        ->and($listed($report($line(101, 'media/1/2027/02/other.bin'), $line(102, $rows[1][2]))))->toBeFalse()
+        ->and($listed($report($line(101, $rows[0][2]))))->toBeFalse()
+        ->and($listed($report($line(101, $rows[0][2]), $line(102, $rows[1][2], ' — live, its row names [public], it belongs on [public]: kept: [public] could not be listed'))))->toBeFalse()
+        // Its heading again, over the same rows or one never seeded, is a list printed twice.
+        ->and($listed($report($line(101, $rows[0][2]), $line(102, $rows[1][2]), 'Extra copies — again:', $line(101, $rows[0][2]), $line(102, $rows[1][2]))))->toBeFalse()
+        ->and($listed($report($line(101, $rows[0][2]), $line(102, $rows[1][2]), 'Extra copies — again:', $line(999, 'media/1/2027/02/never-seeded.bin'))))->toBeFalse();
+});
+
+/*
+ * A listing's figure is a pass at the floor's limit, and reconcile's over (I') one that opened each extra row's two copies
+ * and no other row's: a child at another limit, or a seed reconcile calls `private copy` and opens nothing of, is no
+ * figure — checks no test reached until they were drawn out of the run (review of slice 5c).
+ */
+it('verifies a listing child by its limit and, for reconcile, the copies it opened', function (): void {
+    expect(withdrawalBenchChildVerified(['limit' => '128M', 'opened' => 2000], 'kitsune:media-reconcile', ['extra' => 1000]))->toBeTrue()
+        ->and(withdrawalBenchChildVerified(['limit' => '128M', 'opened' => 0], 'kitsune:media-reconcile', []))->toBeTrue()
+        ->and(withdrawalBenchChildVerified(['limit' => '128M'], 'kitsune:media-prune', []))->toBeTrue()
+        ->and(withdrawalBenchChildVerified(['limit' => '-1', 'opened' => 2000], 'kitsune:media-reconcile', ['extra' => 1000]))->toBeFalse()
+        ->and(withdrawalBenchChildVerified(['limit' => '-1'], 'kitsune:media-prune', []))->toBeFalse()
+        ->and(withdrawalBenchChildVerified([], 'kitsune:media-prune', []))->toBeFalse()
+        ->and(withdrawalBenchChildVerified(['limit' => '128M', 'opened' => 0], 'kitsune:media-reconcile', ['extra' => 1000]))->toBeFalse()
+        ->and(withdrawalBenchChildVerified(['limit' => '128M', 'opened' => 1000], 'kitsune:media-reconcile', ['extra' => 1000]))->toBeFalse()
+        ->and(withdrawalBenchChildVerified(['limit' => '128M'], 'kitsune:media-reconcile', ['extra' => 1000]))->toBeFalse();
+});
+
+/* ...and prune's, one that found no orphan and closed on exactly the seeded count of removable extra copies. */
+it('verifies prune\'s closing by no orphan and exactly the removable count', function (): void {
+    $summary = static fn (int $removable): string => sprintf('0 orphaned files, 0 leftover partial copies and %d removable extra copies listed and nothing removed. Re-run with --force to delete them.', $removable);
+
+    expect(withdrawalBenchPruneClosing(['No orphaned media files.', $summary(1000)], 1000))->toBeTrue()
+        ->and(withdrawalBenchPruneClosing([$summary(1000)], 1000))->toBeFalse()
+        ->and(withdrawalBenchPruneClosing(['No orphaned media files.', $summary(11000)], 1000))->toBeFalse()
+        ->and(withdrawalBenchPruneClosing(['No orphaned media files.'], 1000))->toBeFalse()
+        ->and(withdrawalBenchPruneClosing(['No orphaned media files.'], null))->toBeTrue()
+        ->and(withdrawalBenchPruneClosing(["\e[32mNo orphaned media files.\e[39m"], null))->toBeFalse()
+        ->and(withdrawalBenchPruneClosing(['No orphaned media files.', '0 orphaned files, 0 leftover partial copies and 1 removable extra copy listed and nothing removed.'], 1))->toBeTrue();
+});
+
+/*
+ * (I'')'s served disk has the directories (I')'s misses walk, so (I') − (I'') is the copies held twice, not a path's
+ * depth: without them each miss there failed at its first component, and the difference was mostly that (review of
+ * slice 5c). The harness's own seed, at a small scale.
+ */
+it('gives the control\'s served disk the directories the served seed makes', function (): void {
+    Storage::fake('public');
+    Storage::fake(MediaDisks::PRIVATE);
+    withdrawalBenchSeed();
+    $bench = new WithdrawalBench('sqlite');
+    $call = static fn (string $method, mixed ...$args): mixed => (new ReflectionMethod($bench, $method))->invoke($bench, ...$args);
+    $tree = static function (): array {
+        $root = storage_path('app/bench-served/media');
+        $directories = [];
+
+        if (is_dir($root)) {
+            foreach (new RecursiveIteratorIterator(new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS), RecursiveIteratorIterator::SELF_FIRST) as $file) {
+                if ($file->isDir()) {
+                    $directories[] = substr($file->getPathname(), strlen($root));
+                }
+            }
+        }
+
+        sort($directories);
+
+        return $directories;
+    };
+    $trees = [];
+
+    try {
+        foreach (['served' => 50, 'none' => 0] as $kind => $residue) {
+            [$before, $after] = $call('withBenchServed', $call('isolated', fn (): mixed => $call('seedRows', 150, $residue, 16, $kind)));
+            $before();
+            $trees[$kind] = $tree();
+            $after();
+        }
+    } finally {
+        exec('rm -rf '.escapeshellarg(storage_path('app/bench-served')));
+    }
+
+    expect($trees['none'])->toBe($trees['served'])->and($trees['none'])->toHaveCount(102);
+});
+
+/*
+ * A child's command is timed once the console application is built: timed with it, every child's figure counted some
+ * 30 ms of building it, which a run in the harness's own process — 5b's figures — never did (review of slice 5c).
+ */
+it('times a child\'s command only once the console application is built', function (): void {
+    // The kernel is final, so it is stood in for, not mocked: building the application takes 200 ms here.
+    $console = new class
+    {
+        /** @var list<array{0: string, 1: object}> */
+        public array $calls = [];
+
+        public function call(string $command, array $parameters, object $output): int
+        {
+            $this->calls[] = [$command, $output];
+
+            if ($command === 'env') {
+                usleep(200_000);
+            }
+
+            return $command === 'env' ? 0 : 3;
+        }
+    };
+    Artisan::swap($console);
+    $output = new BufferedOutput;
+
+    [$exit, $ms] = withdrawalBenchTimed('kitsune:media-prune', $output);
+
+    expect(array_map(static fn (array $call): string => $call[0], $console->calls))->toBe(['env', 'kitsune:media-prune'])
+        ->and($console->calls[0][1])->toBeInstanceOf(NullOutput::class)
+        ->and($console->calls[1][1])->toBe($output)
+        ->and($exit)->toBe(3)
+        ->and($ms)->toBeLessThan(200.0);
+});
+
+/* A read-only reconcile passes over (I'')'s settled rows and (I')'s extra ones, and fails over any finding (slice 5c). */
+it('expects a read-only reconcile to pass on no findings or extra copies alone', function (): void {
+    expect(withdrawalBenchReconcileExit([]))->toBe(0)
+        ->and(withdrawalBenchReconcileExit(['extra' => 1_000]))->toBe(0)
+        ->and(withdrawalBenchReconcileExit(['exposed' => 1_000]))->toBe(1)
+        ->and(withdrawalBenchReconcileExit(['extra' => 1, 'exposed' => 1]))->toBe(1);
+});
+
+/*
+ * ...and prune's lines are built at their own size: the (N') verify holds a hundred thousand of them, and an unqualified
+ * `sprintf` kept each in a 320-byte block, over three times its exact one — some 22 MB of the floor's 128 (review of
+ * slice 5c).
+ */
+it('builds each listed line at its own size', function (): void {
+    gc_collect_cycles();
+    $before = memory_get_usage();
+    $lines = [];
+
+    for ($n = 1; $n <= 10_000; $n++) {
+        $lines[] = MediaPruneCommand::rowLine((object) ['entry_id' => $n, 'disk' => 'kitsune-private', 'path' => 'media/1/2027/09/'.$n.'-bench.bin']);
+    }
+
+    expect((memory_get_usage() - $before) / 10_000)->toBeLessThan(200.0)
+        ->and($lines)->toHaveCount(10_000);
+});
+
+/* `--only` runs the groups named by the name each first label opens with — G' is not G — and every group when none is named. */
+it('selects a group by the letter its label opens with', function (): void {
+    expect(withdrawalBenchSelected(['(G\') prune, read-only: 100,000 rows'], null))->toBeTrue()
+        ->and(withdrawalBenchSelected(['(G\') prune, read-only: 100,000 rows'], ['G\'', 'N']))->toBeTrue()
+        ->and(withdrawalBenchSelected(['(G\') prune, read-only: 100,000 rows'], ['G']))->toBeFalse()
+        ->and(withdrawalBenchSelected(['(N\') prune, read-only: 10,000 rows awaiting publication'], ['N']))->toBeFalse()
+        ->and(withdrawalBenchSelected([], ['N']))->toBeFalse();
+});
+
+/* ...and a name no group's first label opens with is named, so the run refuses rather than measure nothing — (E) included. */
+it('names what --only gives that no group opens with', function (): void {
+    $firstLabels = ['(A) trash, 8 KB: its hold', '(G\') prune, read-only: 100,000 rows', '(N) prune, read-only: 10,000 rows, each with an extra copy'];
+
+    expect(withdrawalBenchUnknownOnly($firstLabels, ['G\'', 'N']))->toBe([])
+        ->and(withdrawalBenchUnknownOnly($firstLabels, ['E', 'N', 'G']))->toBe(['E', 'G']);
+});
+
+/* T145, continued: a figure prune's run verifies is one whose report holds no list but the seeded one. */
+it('verifies that prune printed no list but its own', function (): void {
+    $line = MediaPruneCommand::rowLine((object) ['entry_id' => 1, 'disk' => 'public', 'path' => 'media/1/2027/00/a.bin']);
+    $only = ['No orphaned media files.', 'Trashed on a served disk — trashed, and still on a disk the web serves:', $line];
+    $more = [...$only, 'Awaiting publication — live and public, on a disk that is not the public one:', $line];
+
+    expect(withdrawalBenchOnlyList($only, 'Trashed on a served disk'))->toBeTrue()
+        ->and(withdrawalBenchOnlyList($more, 'Trashed on a served disk'))->toBeFalse()
+        ->and(withdrawalBenchOnlyList(['Orphaned media files — no row names their paths, on any disk:'], 'Extra copies'))->toBeFalse();
+});
+
+/* ...and a figure no run verified says why when a run stopped — the floor's limit reached — rather than listed wrongly. */
+it('says why a figure was not verified when a run stopped', function (): void {
+    $wrong = [['ms' => 1.0, 'verified' => false, 'stopped' => null]];
+    $stopped = [['ms' => 0.0, 'verified' => false, 'stopped' => "stopped at 128M: Allowed memory size of 134217728 bytes exhausted | here\nand more"]];
+
+    expect(withdrawalBenchUnverified('(N) prune', $wrong))->toBe('| (N) prune | not verified — no figure | |')
+        ->and(withdrawalBenchUnverified('(N) prune', $stopped))->toBe('| (N) prune | not verified — no figure (stopped at 128M: Allowed memory size of 134217728 bytes exhausted / here) | |');
+});
+
+/*
+ * ...and a child that runs out of memory says so itself, as its last line — before any shutdown function registered after
+ * the reporter, which is how Laravel's render, registered as the application boots, would bury it or fail in its turn.
+ */
+it('reports a stop as the last line a child prints, ahead of any later shutdown function', function (): void {
+    $script = tempnam(sys_get_temp_dir(), 'kitsune-bench-stop-');
+    file_put_contents($script, '<?php require '.var_export(dirname(__DIR__, 3).'/bin/benchmark-media-withdrawal.php', true).';'
+        .' withdrawalBenchStopReporter();'
+        .' register_shutdown_function(static function (): void { echo "a later shutdown function", PHP_EOL; });'
+        .' $held = []; while (true) { $held[] = str_repeat("x", 1 << 16); }');
+
+    try {
+        $process = new Process([PHP_BINARY, '-d', 'memory_limit=16M', $script]);
+        $process->run();
+        $last = json_decode(trim((string) strrchr("\n".trim($process->getOutput()), "\n")), true);
+
+        expect($last)->toBeArray()
+            ->and($last['stopped'])->toContain('Allowed memory size')
+            ->and($last['limit'])->toBe('16M')
+            ->and($last['peak'])->toBeGreaterThan(0)
+            ->and($process->getOutput())->not->toContain('a later shutdown function')
+            ->and($process->getExitCode())->toBe(255);
+    } finally {
+        @unlink($script);
+    }
+});
+
+/*
+ * The run's directory goes when the parent finishes, and after a fatal error or one of the signals below — past a later
+ * shutdown function that makes it again, as Laravel's handler does when it logs that error to storage_path('logs')
+ * inside it (review of slice 5c).
+ */
+it('removes the run\'s directory after a fatal error, and after a later shutdown function makes it again', function (): void {
+    $directory = sys_get_temp_dir().'/kitsune-bench-cleanup-'.bin2hex(random_bytes(6));
+    mkdir($directory.'/storage/logs', 0700, true);
+    $script = tempnam(sys_get_temp_dir(), 'kitsune-bench-cleanup-');
+    file_put_contents($script, '<?php require '.var_export(dirname(__DIR__, 3).'/bin/benchmark-media-withdrawal.php', true).';'
+        .' $directory = '.var_export($directory, true).'; withdrawalBenchCleanup($directory);'
+        .' register_shutdown_function(static function () use ($directory): void { @mkdir($directory."/storage/logs", 0700, true); file_put_contents($directory."/storage/logs/laravel.log", "logged"); });'
+        .' $held = []; while (true) { $held[] = str_repeat("x", 1 << 16); }');
+
+    try {
+        $process = new Process([PHP_BINARY, '-d', 'memory_limit=16M', $script]);
+        $process->run();
+
+        expect($process->getExitCode())->toBe(255)
+            ->and(is_dir($directory))->toBeFalse();
+    } finally {
+        @unlink($script);
+        exec('rm -rf '.escapeshellarg($directory));
+    }
+});
+
+/*
+ * ...and past Ctrl-C, Ctrl-\, SIGTERM and SIGHUP, which end a process PHP has no handler for with neither `finally` nor a
+ * shutdown function run: a stopped run left its directory, and 100,000 seeded files, behind (review of slice 5c).
+ */
+it('removes the run\'s directory when the parent is stopped by a signal', function (int $signal): void {
+    $directory = sys_get_temp_dir().'/kitsune-bench-cleanup-'.bin2hex(random_bytes(6));
+    mkdir($directory.'/storage', 0700, true);
+    $script = tempnam(sys_get_temp_dir(), 'kitsune-bench-cleanup-');
+    file_put_contents($script, '<?php require '.var_export(dirname(__DIR__, 3).'/bin/benchmark-media-withdrawal.php', true).';'
+        .' $directory = '.var_export($directory, true).'; withdrawalBenchCleanup($directory);'
+        .' touch($directory."/ready"); while (true) { usleep(10_000); }');
+
+    try {
+        $process = new Process([PHP_BINARY, $script]);
+        $process->start();
+
+        for ($waited = 0; ! is_file($directory.'/ready') && $waited < 10_000; $waited += 10) {
+            usleep(10_000);
+        }
+
+        $ready = is_file($directory.'/ready');
+        $process->signal($signal);
+        $process->wait();
+
+        expect($ready)->toBeTrue()
+            ->and($process->getExitCode())->toBe(128 + $signal)
+            ->and(is_dir($directory))->toBeFalse();
+    } finally {
+        @unlink($script);
+        exec('rm -rf '.escapeshellarg($directory));
+    }
+})->with(['Ctrl-C' => fn (): int => SIGINT, 'Ctrl-\\' => fn (): int => SIGQUIT, 'SIGTERM' => fn (): int => SIGTERM, 'SIGHUP' => fn (): int => SIGHUP])
+    ->skip(! function_exists('pcntl_signal'), 'pcntl is not loaded, so no signal is caught');
+
+/* ...and a child's report is plain text, colour codes or none asked for: the checks read it line by line, exactly. */
+it('writes a child\'s report without colour codes, whatever the environment asks', function (): void {
+    $before = getenv('FORCE_COLOR');
+    putenv('FORCE_COLOR=1');
+    $handle = fopen('php://memory', 'w+b');
+
+    try {
+        withdrawalBenchReportOutput($handle)->writeln('<info>No orphaned media files.</info>');
+        rewind($handle);
+
+        expect(stream_get_contents($handle))->toBe('No orphaned media files.'.PHP_EOL);
+    } finally {
+        fclose($handle);
+        putenv($before === false ? 'FORCE_COLOR' : 'FORCE_COLOR='.$before);
+    }
+});
+
+/*
+ * ...and it is registered before the application boots, which registers Laravel's own shutdown handler: that one would
+ * otherwise run first, and run out of memory again, and the report never be printed. A child boots through the seam that
+ * orders the two; here, over a bare application's HandleExceptions, as the skeleton's boot registers it.
+ */
+it('registers a child\'s stop reporter before the application boots, and a parent\'s not at all', function (?string $child): void {
+    $script = tempnam(sys_get_temp_dir(), 'kitsune-bench-boot-');
+    file_put_contents($script, '<?php require '.var_export(dirname(__DIR__, 3).'/vendor/autoload.php', true).';'
+        .' require '.var_export(dirname(__DIR__, 3).'/bin/benchmark-media-withdrawal.php', true).';'
+        .' withdrawalBenchBoot('.var_export($child, true).', static function (): void {'
+        .' $app = new Illuminate\\Foundation\\Application(sys_get_temp_dir()); $app["env"] = "local";'
+        .' (new Illuminate\\Foundation\\Bootstrap\\HandleExceptions)->bootstrap($app); });'
+        .' $held = []; while (true) { $held[] = str_repeat("x", 1 << 16); }');
+
+    try {
+        $process = new Process([PHP_BINARY, '-d', 'memory_limit=16M', $script]);
+        $process->run();
+        $last = json_decode(trim((string) strrchr("\n".trim($process->getOutput()), "\n")), true);
+
+        if ($child === null) {
+            expect(is_array($last) && isset($last['stopped']))->toBeFalse();
+        } else {
+            expect($last)->toBeArray()
+                ->and($last['stopped'])->toContain('Allowed memory size')
+                ->and($last['limit'])->toBe('16M')
+                ->and($process->getExitCode())->toBe(255);
+        }
+    } finally {
+        @unlink($script);
+    }
+})->with(['a child' => ['kitsune:media-prune'], 'the parent' => [null]]);
