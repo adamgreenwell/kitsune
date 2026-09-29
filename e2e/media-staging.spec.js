@@ -201,9 +201,10 @@ test.describe('what may be staged', () => {
      * ⚠️ THE REFUSED ONE UP TO THREE TIMES, BECAUSE THE UPLOAD IS NOT THE ONLY THING THAT SWEEPS. Any request may draw
      * the sweep after its response — `HoldMediaStaging`, 2 in 100 (Codex, #152) — so a stale file missing after one
      * refused upload does not say the refusal swept it. CI drew it on both tries of one run (#157), with the stale pair
-     * written before the dashboard loaded and so exposed to every request the page made. It is written now just before
-     * each refused upload, once the URL is minted, so little but that request's own draw can reach it. A refusal that
-     * sweeps removes it on every try; the lottery removes it three tries running at 8 in a million.
+     * written before the dashboard loaded: measured, five draws reached it (the page, `livewire.js`, the favicon, the
+     * mint and the refusal), near one try in ten. It is written now just before each refused upload, once the URL is
+     * minted, and measured, the refusal's own draw is the only one that reaches it. A refusal that sweeps removes it on
+     * every try; the lottery removes it three tries running at 8 in a million.
      */
     test('sweeps a stale staged file on the next accepted upload, and not on a refused one', async ({ page }) => {
         const dir = path.join(media().intakePath, 'livewire-tmp');
