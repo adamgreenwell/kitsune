@@ -441,7 +441,7 @@ Field values do not all live in the `values` JSON column. Every field type decla
 
 ## ADR-016 — Media are entries
 
-**Status:** Decided · 2026-09-07 · **Amended 2026-09-22 by ADR-041** — the published `media_files` column list gains `visibility`, and how bytes are delivered, made safe and disposed of is decided there · **Amended 2026-09-23 by ADR-042** — a media type is any type declared as one, not a system type · **Amended 2026-09-25 by ADR-042 decision 5, slice 5b** — `media_files.path` is unique, and written as the disks read it
+**Status:** Decided · 2026-09-07 · **Amended 2026-09-22 by ADR-041** — the published `media_files` column list gains `visibility`, and how bytes are delivered, made safe and disposed of is decided there · **Amended 2026-09-23 by ADR-042** — a media type is any type declared as one, not a system type · **Amended 2026-09-25 by ADR-042 decision 5, slice 5b** — `media_files.path` is unique, and written as the disks read it · **Amended 2026-09-28 by ADR-042 decision 5, slice 5c** — `MediaFile` refuses a `media_files.path` ending in custody's partial suffix, in any case a volume reads as it
 
 There is no separate media subsystem. An uploaded file is an **entry** of a system entry type (`image`, `document`, `video`) carrying its own fields — alt text, caption, credit, rights, expiry. The bytes live in a companion `media_files` table joined 1:1 to that entry (disk, path, mime, size, checksum, dimensions, duration).
 
@@ -3768,7 +3768,7 @@ every row, asserted so that a later change to populate it is a visible decision 
 
 ## ADR-042 — The media admin: shared by default, uploaded through one path, and withdrawn from the web when deleted
 
-**Status:** Decided · 2026-09-23 · **Amended 2026-09-23** — *Enforced by* reports the slice declaring media types, which landed, the slice making media shared by default, and the slice owning the upload staging, whose decision 4 records what was built and corrects its reason for not relying on Livewire's own sweep; decision 2 records how the widening was built, the three changes its measurement led Adam to make and the three costs Adam accepted, and AGENTS.md §4 is amended for an org-leading index · **Amended 2026-09-24** — decision 5 records what slice 5a built, Adam's decisions on the lock, rule 2's fallbacks, durability and reconcile's reach, and the 5a/5b split; it corrects its own orders for a trash and an erasure and the residue each leaves, and *Measured — decision 5* replaces the lock time this entry owed · **Amended 2026-09-25** — decision 5 records what slice 5b built — `kitsune:media-reconcile`, prune's removal of extra copies, the third write under 2b, and `media_files.path` unique and written as the disks read it — Adam's decisions on the keeper's order and reach, unreadable copies against exposure, reconcile's exit codes and unique paths, and *Measured — decision 5, slice 5b* · **Amended 2026-09-26** — decision 5 records Adam's answers to the four questions slice 5b left — no copy whose presence cannot be told is set aside, the unique-path migration sets no lock timeout, prune reads rows in batches, and a copy that cannot be read fails the read-only check — what slice 5c built, and *Measured — decision 5, slice 5c*, and leaves one question open, for Adam: whether custody should hold a read-through disk · **Amends `field-types.md` §5's published `media_files` shape** (`path` becomes unique, with its migration) · **Delivers ADR-021's "the media library defaults to shared"**, which the store path shipped in #145 contradicts, and **amends ADR-021** — for media types, the admin's tenant scope admits the org's shared rows, and the org-shared slug rule becomes a guard · **Amends ADR-016 and `field-types.md` §5** — a media type is any type declared as one, not a system type · **Amends ADR-041** — moves private files to a disk that is never served, decides that a soft-deleted public file's bytes leave the public disk and that a force-delete withdraws a public file before its rows go and then disposes of the path on both media disks — amended 2026-09-24: a force-delete locks its rows and files, deletes the rows, withdraws every served copy, commits, and then disposes of the path on every disk that could hold it — records that Livewire's staging was never under the upload rules as shipped, and brings its *Enforced by* up to date · **Amends `architecture.md`'s published `entry_types` shape** (gains `is_media`, with its migration) · **Phase 5 (ADR-011, v1.0)** — the admin half ADR-041 left, and the half the DAM starter waits on
+**Status:** Decided · 2026-09-23 · **Amended 2026-09-23** — *Enforced by* reports the slice declaring media types, which landed, the slice making media shared by default, and the slice owning the upload staging, whose decision 4 records what was built and corrects its reason for not relying on Livewire's own sweep; decision 2 records how the widening was built, the three changes its measurement led Adam to make and the three costs Adam accepted, and AGENTS.md §4 is amended for an org-leading index · **Amended 2026-09-24** — decision 5 records what slice 5a built, Adam's decisions on the lock, rule 2's fallbacks, durability and reconcile's reach, and the 5a/5b split; it corrects its own orders for a trash and an erasure and the residue each leaves, and *Measured — decision 5* replaces the lock time this entry owed · **Amended 2026-09-25** — decision 5 records what slice 5b built — `kitsune:media-reconcile`, prune's removal of extra copies, the third write under 2b, and `media_files.path` unique and written as the disks read it — Adam's decisions on the keeper's order and reach, unreadable copies against exposure, reconcile's exit codes and unique paths, and *Measured — decision 5, slice 5b* · **Amended 2026-09-26** — decision 5 records Adam's answers to the four questions slice 5b left — no copy whose presence cannot be told is set aside, the unique-path migration sets no lock timeout, prune reads rows in batches, and a copy that cannot be read fails the read-only check — and what slice 5c built, and leaves one question open, for Adam: whether custody should hold a read-through disk · **Amended 2026-09-28** — *Measured — decision 5, slice 5c* records what slice 5c measured, and *Enforced by* reports slice 5c, which landed; decision 5 records how prune asks the volume whether a row reaches a listed name in another spelling (Codex, #155), decision 8 leaves a second question open, for Adam: whether paths should be unique as the volumes fold them, and decision 9 a third: whether a local disk's root whose stat is refused should fail the step that asks it, where `MediaDisks::mayHold()` takes it to hold nothing; and `MediaFile` refuses a path ending in custody's partial suffix, in any case a volume reads as it (decision 8, as built) · **Amends `field-types.md` §5's published `media_files` shape** (`path` becomes unique, with its migration, and never ends in custody's partial suffix, amended 2026-09-28) · **Delivers ADR-021's "the media library defaults to shared"**, which the store path shipped in #145 contradicts, and **amends ADR-021** — for media types, the admin's tenant scope admits the org's shared rows, and the org-shared slug rule becomes a guard · **Amends ADR-016 and `field-types.md` §5** — a media type is any type declared as one, not a system type · **Amends ADR-041** — moves private files to a disk that is never served, decides that a soft-deleted public file's bytes leave the public disk and that a force-delete withdraws a public file before its rows go and then disposes of the path on both media disks — amended 2026-09-24: a force-delete locks its rows and files, deletes the rows, withdraws every served copy, commits, and then disposes of the path on every disk that could hold it — records that Livewire's staging was never under the upload rules as shipped, and brings its *Enforced by* up to date · **Amends `architecture.md`'s published `entry_types` shape** (gains `is_media`, with its migration) · **Phase 5 (ADR-011, v1.0)** — the admin half ADR-041 left, and the half the DAM starter waits on
 
 ADR-041 decided how media bytes are stored, delivered, sanitised and disposed of, and #145–#148 built all of it:
 `MediaLibrary::store()`, `MediaIntake`, the panel route that authorises private files, disposal, prune, and SVG
@@ -4174,7 +4174,8 @@ unless a copy matching the row's checksum is already there, and only then delete
 turns out to be the only copy is kept rather than destroyed. Paths are generated per upload from random bytes, so the
 path belongs to this file and nothing else — and since slice 5b the database refuses a second row naming a path, as the
 engine compares strings, and `MediaFile` refuses to create one whose path is not written as the disks read it (Adam,
-decision 8, 2026-09-25); an insert past the model is the insert-path gap *Enforced by* records.
+decision 8, 2026-09-25), and since slice 5c one ending in custody's partial suffix, in any case a volume reads as it; an
+insert past the model is the insert-path gap *Enforced by* records.
 
 ⚠️ **Force-delete withdraws before it commits, as soft delete does — and review found ADR-041's order exposing
 files.** ADR-041 put rows first and bytes second, reporting rather than throwing when the bytes will not go, on the
@@ -4382,7 +4383,8 @@ bulk paths both arrive, and restore likewise.
 >   are: a file belongs on the configured public disk while its entry is live and its visibility public, and on the
 >   configured private disk otherwise. The disks asked are the ones settle asks — the target, the disk the row names,
 >   both configured media disks, core's private disk and every served disk, those last two only where they can hold
->   anything — and each is asked ~~only~~ whether it holds the path — and each copy of an `extra` row, but one on a disk
+>   anything, and core's private disk, under a private target, not where it is that target under another name and the
+>   row does not name it, so its file is counted once (review of slice 5c) — and each is asked ~~only~~ whether it holds the path — and each copy of an `extra` row, but one on a disk
 >   whose media directory nests with the target's or on a `read-through` disk, is opened and its first byte read, as is
 >   the copy an `elsewhere` row names while the disk it belongs on holds the file too — decision 6's set-aside copy
 >   among them — and the copy an `awaiting publication` row names on a disk that is neither private one while the
@@ -4437,13 +4439,26 @@ bulk paths both arrive, and restore likewise.
 >   entries, an installation where two rows name one path as the engine compares strings, or where a row's path is not
 >   in the form Flysystem reads it (`media/2/../1/x.png` is `media/1/x.png` to every disk). Both checks run before the
 >   DDL, so a refused migration has changed nothing and can be run again once the rows are corrected. `MediaFile`
->   refuses to create a row whose path is not in that form; an insert past the model is not checked (below). What the
->   index makes impossible — two rows sharing a path at once — is no longer guarded anywhere else;
+>   refuses to create a row whose path is not in that form, or that ends in custody's partial suffix in any case a
+>   volume reads as it — compared after a full Unicode case fold, so `.KITSUNE-PARTIAL`, the Kelvin sign for `k` and the
+>   long s for `s` among them — the name custody writes a copy under beside another path, and a trash, a disposal,
+>   settle and prune remove as that path's partial copy, which cost a row there its only file (review of slice 5c); an
+>   insert past the model is not checked (below).
+>   What the index makes impossible — two rows sharing a path at once — is no longer guarded anywhere else;
 >   `MediaCustody::pathsAreUnique()` asks the database, once per connection, before the cleanup, prune's removal of an
 >   extra copy and either forced command remove anything, and they refuse where the migration has not run. The claim
 >   checks in `removeOrphan()` and in disposal stay: they guard a row claiming a path after the listing or after the
 >   erasure, which an index cannot prevent, and each is now a lookup under the index rather than a scan. *Dedupe* by two
->   rows sharing one file is closed; an import that shares a file gives each entry its own copy.
+>   rows sharing one file is closed; an import that shares a file gives each entry its own copy. Closed as the engine
+>   compares paths, not as a volume reads them: two rows whose paths differ only in a spelling a volume folds and the
+>   engine compares apart are two rows and, on such a volume, one file, and a step acting for one — prune's removal of
+>   an extra copy, the cleanup, a trash, settle, an erasure's disposal — acts on the other's. On SQLite and PostgreSQL,
+>   which compare bytes, that is any such pair, `media/PHOTO.png` beside `media/photo.png`; on MySQL and MariaDB the
+>   index refuses a pair the column's collation compares equal — a case pair under every default, and under
+>   utf8mb4_unicode_ci and MySQL 8.4's utf8mb4_0900_ai_ci `ß` for `ss` and an NFD spelling beside the NFC too — and
+>   admits the rest: under MariaDB 10.6's utf8mb4_general_ci, which reads `ß` as `s` and weighs a combining mark,
+>   `STRASSE.png` beside `straße.png` and an NFD spelling beside the NFC, and under a `_bin` collation every pair
+>   (review of slice 5c; Codex, #155). **Open, for Adam:** whether paths should be unique as the volumes fold them.
 > - **The third write under 2b.** 5a's cleanup kept a private copy that differed from the published one, and left the
 >   rest to 5b. The cleanup and prune's `removeExtra()` now share one step: under the lock, while the row names the disk
 >   its state says and that disk holds the copy kept, it hashes the kept copy and every copy it would remove before the
@@ -4461,7 +4476,9 @@ bulk paths both arrive, and restore likewise.
 >   matches — prune says to compare it with the target's by hand, or to copy it over when the target does not list the
 >   file. A disk a row names, or a served disk, that is another scanned disk under another name, or cannot be told apart
 >   from one — one bucket, the same key prefix, two endpoints; since 5c, a `read-through` disk compared by the places its
->   halves reach, one that reaches the other through a half — is not scanned, so no file is listed twice. And nothing
+>   halves reach, one that reaches the other through a half — is not scanned, so no file is listed twice; nor is core's
+>   private disk where `MediaDisks::onePlace()` says it is the configured private disk under another name, the two not
+>   nested, while one that cannot be told apart from it is scanned (review of slice 5c). And nothing
 >   is listed while a configured disk's media directory lies inside that of a disk prune lists orphans on — a configured
 >   media disk, core's private disk, or one a row names: that disk would list the inner one's files, under longer paths
 >   no row names, as its own orphans. A disk nested with one prune scans only for extra copies is another directory, and
@@ -4527,7 +4544,19 @@ bulk paths both arrive, and restore likewise.
 >   the file (`unknown`). A trashed file whose row names a disk gone from the configuration, or one that cannot be
 >   reached, stays on the web, and every run refuses it and says so, until the disk is back — a configuration to repair,
 >   not a copy to step past. Reconcile's closing line now says as much: a row on a disk that cannot be asked is sent to
->   the disk and its configuration, not to `--force`.
+>   the disk and its configuration, not to `--force`. And a local disk's copy is asked so too, and one on a local half
+>   of a read-through disk — primary or fallback, at any depth, under each layer's prefix — which answers by that half's
+>   `is_file()`: a stat refused for a reason other than absence — a directory the command's user may not search, as a
+>   private disk's are where the web server wrote them, an I/O error — makes the presence check a failure
+>   (`MediaBytes::present()`, `statOf()`), where Flysystem's `is_file()` read it as absence, and the check passed on a
+>   trashed file's copy left on the web, or called a file missing that is there and advised erasing its entry (review
+>   of slice 5c). Not yet so a local disk's root, where a step asks `MediaDisks::mayHold()` whether to ask the disk at
+>   all — core's private disk while another is the private one, and a served disk that is neither the target, the disk
+>   a row names nor a configured one: custody's survey, a trash, an erasure's disposal, a withdrawal and prune's scan
+>   leave out one whose root's stat is refused, as one that does not exist, so a copy there is never found; open, for
+>   Adam, since trash, erasure and withdrawal ask it too. The target, the disk a row names and both configured disks are
+>   built whatever it says: for one of those, such a root makes the check list its rows `unknown`, sent to the disk's
+>   configuration, and every `--force` fail (T159), and prune's listing of it fails.
 > - **The unique-path migration sets no lock timeout (Adam, decision 10, 2026-09-26)**, as `…000008` and `…000009` set
 >   none. How long its build waits depends on open transactions, not rows: on PostgreSQL it waits for any open
 >   transaction that wrote to `media_files`, and later writes queue behind it; on MySQL and MariaDB it waits for any
@@ -4535,43 +4564,52 @@ bulk paths both arrive, and restore likewise.
 >   itself is instant, and a fresh installation builds the index before it serves anything — as stage did on 2026-09-26,
 >   and as the alpha will — so nothing is open for it to wait on; no production installation exists yet that served
 >   first. *Measured — decision 5, slice 5b* keeps what the build waits for and what waits behind it.
-> - **Prune reads rows in batches (Adam, decision 11, 2026-09-26), as built.** It holds what it lists and no row
->   besides. The disks rows name come from one pass over `id` and `disk`, 500 rows at a time, compared in PHP — MySQL
->   and MariaDB compare `disk` under the column's collation, which under every default ignores case and accents, and
->   under a PAD SPACE one trailing spaces too, so `SELECT DISTINCT` would fold two names the disks' own lookup keeps
->   apart — and are scanned in the order their first rows were written. Each disk is listed lazily, 500 files at a time
->   — Flysystem's listing, never `allFiles()`, which builds every entry and sorts them — and each batch asks the table
->   for the rows naming its paths, and a partial copy's path without its suffix: a query per 500 files, under
->   `media_files_path_unique` once the migration has run and a scan of the table where it has not. In the listing the
->   rows returned are matched in PHP byte for byte, so a collation's match never claims a file; every row claims its own
->   disk's copy, so on a table the migration refused, where two rows name one path, neither row's own file is listed as
->   the other's extra copy; and a name that is not UTF-8, which no PostgreSQL or MySQL row can hold, or that holds a
->   NUL, which no PostgreSQL string can and no row names, is never sent, and matches no row — but on SQLite, which
->   compares bytes within a storage class and is asked. There a value stored as a BLOB never equals one bound as text,
->   so each lookup asks for its values as both (`MediaCustody::whereStored()`), still under `media_files_path_unique`:
->   the batch's, the row lists' narrowing by disk and visibility, and the rechecks under the lock of an orphan and of an
->   erased row's copy — a row written past `MediaFile` with its path as a BLOB claimed nothing, and `--force` removed
->   its only file as an orphan, where the listing before 5c, which compared in PHP, kept it (review of slice 5c). A
->   listing that fails part-way contributes nothing, as `allFiles()`, which returned all or threw, did; the table's own
->   failure fails the run, and is never reported as a disk that could not be listed. What it lists it holds compactly —
->   orphans as paths, partial copies as path and entry, extra copies as path and one integer, about 0.13 KB each; an
->   extra copy whose entry id passes about ±10^15, or whose row names a 257th disk among the rows of extra copies, which
->   the integer cannot hold beside the rest, stops the run rather than be read back as another entry's or another disk's
->   — sorted per disk as `allFiles()` sorted them, so the order of each list, and of `--force`'s removals, is unchanged.
->   Whether the disk an extra copy belongs on holds its path is read from that disk's own listing — taken once more, for
->   the paths prune holds, where an extra copy's row names that disk — since remembering every path a disk listed would
->   hold the table again; and a disk that cannot be listed then fails the run, saying it is the second listing, and
->   every extra copy whose row names it is kept as one on a disk that could not be listed — while its own orphans and
->   partial copies, which its first listing held in full, are still listed and, with `--force`, removed, each asked
->   again under the lock. Before 5c it was taken from any disk that listed the path for a row naming that disk, the same
->   thing wherever paths are unique; on a table the migration refused, a copy was called removable when only another
->   row's disk held the file, and a forced run then refused at the unique-path check. Now such a copy is kept, as one
->   the disk its row names does not hold (T170), and a read-only run on such a table says first that both forced
->   commands refuse until the migration has run. It was asked of the disk for a while, before review found that
+> - **Prune reads rows in batches (Adam, decision 11, 2026-09-26), as built.** It holds what it lists and no row besides
+>   — and, where any disk lists an orphan, or a local disk a partial copy, reads the table once more, 500 rows at a
+>   time, to ask whether a row's path reaches it: a local disk's volume by stat, any other disk by the key the path is
+>   read as, with nothing asked of the disk — holding a key and a claim for each listed orphan, and for one another row
+>   reaches, that row's id or its entry's, whole within PHP's integer — on MySQL and MariaDB, whose ids are unsigned, one of 2^63 or more is read as
+>   9223372036854775807 here, as by the listing's partial copies and by custody, which take an integer entry id (Codex,
+>   #155; review of slice 5c). The disks rows name come from one pass over `id` and `disk`, 500
+>   rows at a time, compared in PHP — MySQL and MariaDB compare `disk` under the column's collation, which under every
+>   default ignores case and accents, and under a PAD SPACE one trailing spaces too, so `SELECT DISTINCT` would fold two
+>   names the disks' own lookup keeps apart — and are scanned in the order their first rows were written. Each disk is
+>   listed lazily, 500 files at a time — Flysystem's listing, never `allFiles()`, which builds every entry and sorts
+>   them — and each batch asks the table for the rows naming its paths, and a partial copy's path without its suffix: a
+>   query per 500 files, under `media_files_path_unique` once the migration has run and a scan of the table where it has
+>   not. In the listing the rows returned are matched in PHP byte for byte, so a collation's match never claims a file;
+>   every row claims its own disk's copy, so on a table the migration refused, where two rows name one path, neither
+>   row's own file is listed as the other's extra copy; and a name that is not UTF-8, which no PostgreSQL or MySQL row
+>   can hold, or that holds a NUL, which no PostgreSQL string can and no row names, is never sent, and matches no row —
+>   but on SQLite, which compares bytes within a storage class and is asked. There a value stored as a BLOB never equals
+>   one bound as text, so each lookup asks for its values as both (`MediaCustody::whereStored()`), the batch's and the
+>   rechecks under the lock of an orphan and of an erased row's copy, still under `media_files_path_unique`, and the row
+>   lists' narrowing by visibility and by disk, which no index serves — they read the table by its primary key, 500 rows
+>   at a time — a row written past `MediaFile` with its path as a BLOB claimed nothing, and `--force` removed its only
+>   file as an orphan, where the listing before 5c, which compared in PHP, kept it (review of slice 5c). A listing that
+>   fails part-way contributes nothing, as `allFiles()`, which returned all or threw, did; the table's own failure fails
+>   the run, and is never reported as a disk that could not be listed. What it lists it holds compactly — orphans as
+>   paths, partial copies as path and entry, extra copies as path and one integer, about 0.13 KB each; an extra copy
+>   whose entry id passes about ±10^15, or whose row names a 257th disk among the rows of extra copies, which the
+>   integer cannot hold beside the rest, stops the run rather than be read back as another entry's or another disk's;
+>   the pass's claims hold their ids apart from their kinds, where packed beside them an id past ±2^61 was read back as
+>   another, and a partial copy removed under an entry's lock not its own (review of slice 5c) — sorted per disk as
+>   `allFiles()` sorted them, and by disk in the order the disks are scanned, what the pass adds on a disk the listing
+>   found none on put back in that order (review of slice 5c), so the order of each list, and of `--force`'s removals,
+>   is unchanged. Whether the disk an extra copy belongs on holds its path is read from that disk's own listing — taken
+>   once more, for the paths prune holds, where an extra copy's row names that disk — since remembering every path a
+>   disk listed would hold the table again; and a disk that cannot be listed then fails the run, saying it is the second
+>   listing, and every extra copy whose row names it is kept as one on a disk that could not be listed — while its own
+>   orphans and partial copies, which its first listing held in full, are still listed and, with `--force`, removed,
+>   each asked again under the lock. Before 5c it was taken from any disk that listed the path for a row naming that
+>   disk, the same thing wherever paths are unique; on a table the migration refused, a copy was called removable when
+>   only another row's disk held the file, and a forced run then refused at the unique-path check. Now such a copy is
+>   kept, as one the disk its row names does not hold (T170), and a read-only run on such a table says first that both
+>   forced commands refuse until the migration has run. It was asked of the disk for a while, before review found that
 >   `fileExists` answers what a listing does not: through a symlink, a volume that folds case, and a `read-through`
 >   disk's fallback — the very copy being removed, which custody, hashing the target through that fallback, then
 >   removed.
-> - **Five things prune prints are not unchanged.** Every list prints a line an entry under its heading rather than a
+> - **Thirteen things prune prints are not unchanged.** Every list prints a line an entry under its heading rather than a
 >   table, which builds every row, and measures every cell, before it prints one — some 0.3 KB a row printed to a
 >   terminal, up to 0.7 KB into the buffer `Artisan::call()` writes to. An orphan prints as its disk in brackets and its
 >   path, under a heading of its own, *Orphaned media files*; a partial copy, a row awaiting publication and a row
@@ -4580,19 +4618,59 @@ bulk paths both arrive, and restore likewise.
 >   disk it belongs on, and what `--force` does with it. The two lists of rows print as a batched pass reads them, and
 >   are never held: after the public disk moves, every public row is awaiting publication. Where a forced run keeps a
 >   listed orphan because a row claimed its path under the lock, its closing line says the row claimed it under the lock
->   — one committed since the listing, or one the database, or the disk, takes for the same path — where it said the row
->   claimed it since the listing, which was false of a collation's match (*What it leaves, in names*). Where a listed
->   extra copy is, under the lock, the copy its row names, its closing line says it is no longer an extra copy under the
->   lock — now the copy its row names — where it said gone, or now the copy its row names: a copy gone since the listing
->   now fails, as `unheld`. And a disk prune does not scan, because it is, or cannot be told apart from, one it scans,
->   is named as one place, one bucket or host through two endpoints, or a read-through disk reaching it through a half,
->   where the warning said one bucket through two endpoints, or one place. And the heading over the extra copies no
->   longer says each goes once its row names the disk it belongs on and the rest are reconcile's: a copy whose line says
->   it goes is removed under its row's lock, and every other is kept, its line saying what settles it — reconcile, a
->   person, or prune run again once it can be — where the disk it belongs on could not be listed, or which disks custody
->   asks cannot be told, a configured media disk not being configured; a copy on a disk custody does not ask, one prune
->   scans only because another row names it, reconcile never sees, and its line says to copy it where it belongs by hand
->   (review of slice 5c).
+>   — one committed since the listing, or one the database takes for the same path — where it said the row claimed it
+>   since the listing, which was false of a collation's match (*What it leaves, in names*). Where a listed extra copy
+>   is, under the lock, the copy its row names, its closing line says it is no longer an extra copy under the lock — now
+>   the copy its row names — where it said gone, or now the copy its row names: a copy gone since the listing now fails,
+>   as `unheld`. And a disk prune does not scan, because it is, or cannot be told apart from, one it scans, is named as
+>   one place, one bucket or host through two endpoints, or a read-through disk reaching it through a half, where the
+>   warning said one bucket through two endpoints, or one place. And the heading over the extra copies no longer says
+>   each goes once its row names the disk it belongs on and the rest are reconcile's: a copy whose line says it goes is
+>   removed under its row's lock, and every other is kept, its line saying what settles it — reconcile, a person, or
+>   prune run again once it can be — where the disk it belongs on could not be listed, or which disks custody asks
+>   cannot be told, a configured media disk not being configured; a copy on a disk custody does not ask, one prune scans
+>   only because another row names it, reconcile never sees, and its line says to copy it where it belongs by hand
+>   (review of slice 5c). And a listed name a row naming another disk reaches under another spelling, which prune listed
+>   as an orphan, now prints under a heading of its own, *Copies a row reaches under another spelling, on a disk it does
+>   not name*, and is kept, its line saying what settles it: correcting `media_files.path`, where the row's path is not
+>   written as the disks read it; `kitsune:media-reconcile --force`, which takes it off the web where its file belongs
+>   off it, and removes it from a private disk where its file belongs on the web — the line naming the label the check
+>   gives the row, `awaiting publication`, `absent` or `private copy`, in the check's own order — either refusing it as
+>   coinciding where the two are one file, left for a hand; but where the row's own name on that disk is a link to the
+>   copy, it removes the link, not the copy, and where the copy has a hard link beside it that the row's path may reach
+>   instead, only the name it reaches, the other staying — on the web, on a served disk — until the next run lists it as
+>   an orphan; and where the disk the row names could not be built — not configured, a read-through cycle, a root that
+>   cannot be created — reaches the target's files or reads through, configured or built by a host's driver, its
+>   `--force` refuses the row, and the line says what stands in the way; one built whose listing alone failed — a link
+>   under Laravel's default link handling, a store that lists nothing but reads — reconcile asks as any other, and the
+>   line says it moves the row first, as before 5c; and
+>   where the copy is on a read-through disk, which custody neither reads nor removes, every `--force` of the row fails
+>   on it, and the line says to take it off by hand once the file is where it belongs (review of slice 5c); otherwise
+>   making the row's path and this name one spelling, with the name the disk its row
+>   names holds its file under where it holds one, after which the next run lists it as an extra copy; and, where its
+>   row is gone since the listing, that the next run asks again (Codex, #155; *What it leaves, in names*; review of
+>   slice 5c). And the pass's two other outcomes take a name out of the orphans too. A listed name a row's partial path
+>   reaches under another spelling, which prune listed as an orphan, now prints under *Leftover partial copies* as that
+>   row's — `entry` and its id — and `--force` removes it under that entry's lock. One the disk its row names reaches —
+>   under another spelling, through a link its listing skips, or as the key the disks read the row's path as — which
+>   prune listed as an orphan and `--force` removed, is now printed nowhere (Codex, #155; *What it leaves, in names*).
+>   And on a table the unique-path migration refused, a read-only run now prints first that `media_files.path` is not
+>   unique on this database and that both forced commands refuse until the migration has run, where it printed nothing;
+>   an extra copy there that only another row's disk holds says it is kept, as one the disk its row names does not hold,
+>   where it said it would be removed (T170; decision 11). And every name is printed as it is, where one holding what
+>   the console reads as a style — `<error>`, `<fg=red>`, `</>` — was stripped of it and named another file than the one
+>   listed, or than `--force` removes; reconcile's lines too, and every disk's name, in a failed removal, a nesting
+>   refused, a disk not scanned and the warning before the last rows leave a disk (review of slice 5c). And where the
+>   private disk is core's own under another name (`MediaDisks::onePlace()` true, the two not nested), prune no longer
+>   scans `kitsune-private`, and says so first — *Not scanning [kitsune-private]: it is [x], the private disk, under
+>   another name* — where it listed every private orphan twice, once under each name, `--force` removing it once and
+>   then failing as `unheld`, and listed a private file as a removable extra copy of itself, which `--force` never
+>   removed; one it cannot tell apart from core's, a read-through one reaching it through a half among them, is scanned
+>   as before (T154). And a leftover partial copy whose very name a row gives under the lock — committed since the
+>   listing, or written past `MediaFile` — is kept by `--force` and counted as claimed under the lock, where it was
+>   removed and counted removed. And a listed name ending in the partial suffix that a row gives byte for byte is listed
+>   as that row's extra copy, under *Extra copies*, where it was listed under *Leftover partial copies* as the row's at
+>   the path without the suffix, or as an orphan where no row named that path (review of slice 5c).
 > - **A copy that cannot be read fails the read-only check (Adam, decision 12, 2026-09-26), as built.** A row whose file
 >   is where it belongs and held on more than one disk custody asks — `extra`, which is not a finding — has each copy
 >   opened and its first byte read, nothing hashed (`MediaBytes::readable()`) — on an FTP or SFTP disk, or an S3 disk
@@ -4696,36 +4774,63 @@ bulk paths both arrive, and restore likewise.
 > - **What it leaves.** A copy that opens and fails part-way is found by the listing, which reads a byte; one that fails
 >   further in, by `--force` alone. A copy at a row's path on a disk only other rows name is prune's alone — reconcile
 >   asks what settle asks — and prune's removal reads the row's own copy first, so an unreadable copy of a file held on
->   one disk custody asks fails a forced prune while reconcile, which never opens a lone copy, passes (T133); a
->   set-aside copy is never there, since settle sets aside only on the disks it asks. A copy on a disk nesting with the
->   target is read only by settle's keeper, when neither the target's copy nor any the keeper hashes before it — on the
->   disk the row names, or on a configured, core's private or served disk configured before it — matches the checksum;
->   one that cannot be read then fails that forced run, and so does a readable one the keeper keeps — the first to match
->   the checksum — because settle refuses to copy onto the target from a disk that nests with it, while the check, which
->   does not open it, and a forced prune, which keeps it for a hand, pass (T166); a readable one the keeper passes over
->   does not, and the row is settled from the copy it keeps. The target's own copy that cannot be read, beside a copy
->   prune keeps for a hand — on a disk nesting with it, or on a read-through disk — fails both reconcile modes, whose
->   keeper reads it first, while a forced prune, which removes nothing for the row, passes (T180). The copy decision 6
->   sets aside on the disk its row still names sits at the row's own path on the row's own disk, so prune never lists
->   it, keeps the row's other copy for reconcile, and passes whether or not it can be read; the check names it while it
->   cannot be read, whether the entry stays trashed or is restored — then `awaiting publication`, the configured private
->   disk holding the file — and a forced reconcile fails on it until it can — then points the row where the file belongs
->   and removes it (T147). A disk's listing can leave out a copy its `fileExists` finds: a local disk configured `links
->   => skip` leaves out a symlink, and a read-through disk lists its primary alone. So an extra copy of a file the
->   target holds only as a symlink is kept by prune as one the disk does not hold — its `--force` passes — while
->   reconcile fails on a copy of it that cannot be read; and an extra copy the disk's own listing leaves out, a symlink
->   where links are skipped, is never listed by prune: while it cannot be read both reconcile modes fail on it and a
->   forced prune passes, and once it can, reconcile lists the row `extra` on every run, and the copy is removed by hand.
->   And a disk prune cannot tell apart from one it scans — one bucket or host through two endpoints, or a read-through
->   disk that reaches it through a half, or reaches more than it — is not scanned, and prune says so: reconcile, which
->   asks every served disk, fails on an unreadable copy there while prune passes, and a readable one is removed by hand.
+>   one disk custody asks fails a forced prune while reconcile, which never opens a lone copy where its row belongs,
+>   passes (T133); a set-aside copy is never there, since settle sets aside only on the disks it asks. A copy on a disk
+>   nesting with the target is read only by settle's keeper, when neither the target's copy nor any the keeper hashes
+>   before it — on the disk the row names, or on a configured, core's private or served disk configured before it —
+>   matches the checksum; one that cannot be read then fails that forced run, and so does a readable one the keeper
+>   keeps — the first to match the checksum — because settle refuses to copy onto the target from a disk that nests with
+>   it, while the check, which does not open it, and a forced prune, which keeps it for a hand, pass (T166); a readable
+>   one the keeper passes over does not, and the row is settled from the copy it keeps. The target's own copy that
+>   cannot be read, beside a copy prune keeps for a hand — on a disk nesting with it, or on a read-through disk — fails
+>   both reconcile modes, whose keeper reads it first, while a forced prune, which removes nothing for the row, passes
+>   (T180). The copy decision 6 sets aside on the disk its row still names sits at the row's own path on the row's own
+>   disk, so prune never lists it, keeps the row's other copy for reconcile, and passes whether or not it can be read;
+>   the check names it while it cannot be read, whether the entry stays trashed or is restored — then `awaiting
+>   publication`, the configured private disk holding the file — and a forced reconcile fails on it until it can — then
+>   points the row where the file belongs and removes it (T147). A disk's listing can leave out a copy its `fileExists`
+>   finds: a local disk configured `links => skip` leaves out a symlink, a read-through disk lists its primary alone,
+>   and a local disk on a volume that folds names lists a copy under the spelling it holds, which prune matches to rows
+>   byte for byte. So an extra copy whose row names the disk it belongs on, which reaches the file at the row's path but
+>   does not list it under that name — held there only as a symlink where links are skipped, under another spelling on a
+>   volume that folds names, or through a read-through disk's fallback — is kept by prune, whose line says the copy
+>   cannot be told from the row's own (review of #155's fix), and what settles it: under a private target, on a served
+>   disk, that it is on the web, the check lists the row `exposed` and `--force` takes it off; under a public target, on
+>   the configured or core's private disk, that the check lists the row `private copy` and `--force` removes it — either
+>   refusing it as coinciding where the two are one file, left for a hand; anywhere else, to check by hand whether the
+>   two are one file before taking it off (review of slice 5c). Its `--force` passes, while reconcile fails on a copy of
+>   it that cannot be read; and an extra copy the disk's own listing leaves out, a symlink where links are skipped, is
+>   never listed by prune: while it cannot be read both reconcile modes fail on it and a forced prune passes, and once
+>   it can, reconcile lists the row `extra` on every run, and the copy is removed by hand. So too a copy a disk custody
+>   asks holds under another spelling of the row's path, on a volume that folds names: on a disk prune lists orphans on
+>   it is listed as the row's copy under another spelling, or not at all where the row names that disk, and kept (*What
+>   it leaves, in names*); on a disk prune scans only for extra copies — served, and named by no row — it is not listed.
+>   While it cannot be read both reconcile modes fail on it and a forced prune passes. Once it can, what settles it
+>   depends on where it is, since reconcile finds it through the fold and `--force` removes it through the row's own
+>   spelling: under a public target, on the configured or core's private disk, the check lists the row `private copy` —
+>   `awaiting publication` where the row names a disk other than the public one, `absent` where the public disk does not
+>   hold its file — and `--force` removes the copy; under a private target, on a served disk, `exposed`, and `--force`'s
+>   sweep removes it; on a disk the row names that is neither the target nor a private disk, `awaiting publication` or
+>   `elsewhere`, and `--force`'s move-off removes it; on the disk its file belongs on, where the row names another, the
+>   check lists the row `awaiting publication`, `elsewhere` or `exposed`, and `--force` points the row at that copy
+>   under a name other than its path — a row spelt otherwise than its file (*What it leaves, in names*) — so prune's
+>   line says to make the spellings one first, after which it is an extra copy and `--force` settles it (review of slice
+>   5c); anywhere else — a served disk other than the public one under a public target, core's private disk under a
+>   private one while a host's disk is the private one — no step removes it, reconcile lists the row `extra` on every
+>   run, and the copy is renamed or removed by hand. Prune's line for such a copy says which (review of #155's fix). And
+>   a disk prune cannot tell apart from one it scans — one bucket or host through two endpoints, or a read-through disk
+>   that reaches it through a half, or reaches more than it — is not scanned, and prune says so: reconcile, which asks
+>   every served disk, fails on an unreadable copy there while prune passes, and a readable one is removed by hand.
 >   Under a public target the check asks such a disk only whether it holds the path — for every row `--force` would
 >   settle, as every forced run's keeper asks it — and a forced reconcile whose target's copy matches never reads it, so
->   a copy there is read by neither; one that cannot say makes the row `unknown` in both modes, but for a read-through
+>   a copy there is read by neither; nor is one of a row only the public disk and such a disk hold, which the check
+>   takes as settled, and no `--force` settles, stale target and all (review of slice 5c); one that cannot say makes the row `unknown` in both modes, but for a read-through
 >   one whose building would create a local half's root — at any depth, a half of a half among them — which the check
 >   leaves unasked for a row held on another disk (T87) — not one a half of which cannot be created, which the check
 >   does not build, and lists `unknown`, as every `--force` fails to build it: every `--force` fails on that row while
->   the check lists it as before; when the target's copy does not match, settle's keeper hashes it before any served
+>   the check lists it as before; when the target's copy does not match, of a row a forced reconcile settles — one
+>   listed because it names a disk other than the public one, or because another disk custody asks holds its file —
+>   settle's keeper hashes it before any served
 >   disk configured after it: an unreadable copy there fails every forced reconcile of the row, and so does a readable
 >   one the keeper keeps — the first to match the checksum, or, with none matching and the disk the row names holding
 >   none, the first in Adam's order — because settle refuses to copy onto the target from a disk it cannot tell from it,
@@ -4733,48 +4838,110 @@ bulk paths both arrive, and restore likewise.
 >   reached through the other endpoint — does not, and the row is settled from another disk that holds a match.
 > - **What it leaves, in names.** `--force` asks each orphan again under the lock, as before 5c, for a row naming its
 >   path — `where path in (?)` (`MediaCustody::whereStored()`), which the database compares under its collation, and on
->   SQLite asks as TEXT and as a BLOB — and now also by every other spelling a local disk reaches as the same file
->   (`MediaBytes::spellingsOf()`). On MySQL and MariaDB a listed orphan whose path the column's collation compares equal
->   to a row's is kept on every forced run, and said to be claimed. Under the default collations — Laravel's
+>   SQLite asks as TEXT and as a BLOB. On MySQL and MariaDB a listed orphan whose path the column's collation compares
+>   equal to a row's is kept on every forced run, and said to be claimed. Under the default collations — Laravel's
 >   utf8mb4_unicode_ci, MariaDB 10.6's utf8mb4_general_ci, MySQL 8.4's utf8mb4_0900_ai_ci — those are, among them: a
 >   path differing only in case or accents; under a PAD SPACE one, the first two, only in trailing spaces; under a UCA
 >   one, the first and third, only in characters it gives no weight — a zero-width space, a NUL — or in compatibility
 >   forms (`ab².png` for `ab2.png`, a full-width digit, `ß` for `ss`, `ﬁ` for `fi`); under utf8mb4_general_ci, `ß` for
 >   `s`; and under utf8mb4_unicode_ci and utf8mb4_general_ci, only in which character above U+FFFF it holds (`🐱.png`
->   beside a row's `🦊.png`) — measured on MySQL 8.4 and MariaDB 10.6. A case variant is the safe side, since on a volume
->   that folds case the file is the row's own; every other is another file on every volume, and is removed by hand. On
->   SQLite and PostgreSQL, which compare bytes, the recheck found no row for a name the volume reaches as a row's own
->   file under another case or Unicode normalization — APFS, NTFS, SMB, ext4's casefold — and `--force` removed the
->   row's only file, as it had since before 5c; each such spelling is now asked too — in lower case, in NFC or NFD, and
->   in lower case in either — and the name is kept where the spelling reaches this very file, and removed where it is
->   another file beside it (T176). A row path spelt in mixed case, which a lower-cased spelling cannot name, is not:
->   Kitsune writes none, and an import that did is compared by hand. Every name is first asked whether any disk can be
->   asked about it as itself (`MediaBytes::refuseUnnamable()`), before any disk is asked of it — an orphan's after its
->   claim is asked again under the lock: an orphan whose name Flysystem refuses — not UTF-8, or holding a character of
->   Unicode's class C, a NUL, a tab or a zero-width space — is listed on every engine and removed on none, and on
->   PostgreSQL one that is not UTF-8 is refused a step earlier, in the recheck; every forced run says every disk refuses
->   its name — on PostgreSQL, for a name that is not UTF-8, it gives the recheck's SQL error (22021) — and fails, until
->   it is removed by hand — unless the recheck under the lock finds a row: on PostgreSQL, whose driver cuts a bound
->   value short at a NUL, a name whose part before the NUL is a row's path; on MySQL and MariaDB under a UCA collation a
->   row's path with characters the collation gives no weight added — utf8mb4_general_ci weighs them; and under
->   utf8mb4_unicode_ci or utf8mb4_general_ci a name whose refused character is above U+FFFF, a private-use one, beside a
->   row naming another such character in its place. Such a name is said to be claimed on every forced run, which passes,
->   and it too is removed by hand. So is an orphan whose name Flysystem reads as another path — `.`, `..` or `//` in an
->   object store's key, or in a local file's whose backslashes the listing gives as `/`: it is listed on every engine
->   and removed on none, since removing it would remove the path it is read as, and every forced run fails on it (T171).
->   A local name whose backslashes alone the listing changed reads as itself and holds nothing, or is reached through a
->   link the listing left out, on the file or on a directory above it below `media/` — which, like the disk's root, may
->   itself be a link, media on another volume, and is followed: every forced run fails on it, as `unheld`, whether it
->   was listed as an orphan, a partial copy or an extra copy (`MediaBytes::held()`) — but for a partial or extra copy
->   whose name, read as `/`, is also a real one's on that disk: the two are listed as one, the first forced run removes
->   the real one and passes, and the runs after it fail. So does a name removed by another hand between the listing and
->   the lock, whose next run passes. And the console prints a name in NFC, whatever the disk holds it as: where a name
->   in NFD is on a volume that does not fold the two, the name printed is not the one to remove by hand. A row's own
->   path written past `MediaFile` in a form the disks read as another — a doubled slash, say, by a direct write to the
->   table, the insert-path gap — is listed by prune under the name the disks read, as an orphan, and `--force` removes
->   the row's only file, as it had since before 5c; the check lists that row as `misnamed`, a finding wherever its file
->   is, and a trash, an erasure or a forced reconcile of it is refused, each before any disk is asked, and prune keeps
->   its extra copy, read-only or forced, never offered as removable, each saying to correct the row's path
+>   beside a row's `🦊.png`) — measured on MySQL 8.4 and MariaDB 10.6. A case variant is the safe side, and so under a
+>   UCA collation are `ß` for `ss` and `ﬁ` for `fi`, which APFS folds as case (full case folding; measured, one inode):
+>   on a volume that folds them the file is the row's own. Every other — an accent, trailing spaces, a character given
+>   no weight, `²` or a full-width digit, utf8mb4_general_ci's `ß` for `s`, a character above U+FFFF — is another file
+>   on every volume measured, and is removed by hand. On SQLite and PostgreSQL, which compare bytes, and on MariaDB
+>   under utf8mb4_general_ci for a spelling it weighs apart — an NFD spelling of an NFC name, `STRASSE` for `straße` —
+>   that lookup finds no row for a name the volume reaches as a row's own file under another spelling — APFS, NTFS, SMB
+>   and ext4's casefold fold case and Unicode normalization by rules of their own — and `--force` removed the row's only
+>   file, as it had since before 5c. Asking the lower-case and normalized spellings of the listed name missed a row
+>   spelt in mixed case, an import's `KeptPhoto.PNG` for a listed `keptphoto.png` (Codex, #155); asking the table by
+>   pattern missed the Kelvin sign, the long s, `STRASSE` for `straße` and NFC and NFD mixed in one name, and scanned
+>   the table under every orphan's lock (review of the fix). So the volume is asked, not the names
+>   (`MediaPruneCommand::reachedByRows()`, `MediaBytes::reaches()`, T176): once every disk is listed, each local disk
+>   that listed an orphan is asked, for every row's path as the disk reads it — whatever disk the row names — and for
+>   its partial path where the disk listed an orphaned partial (one no row's path was written for), whether it reaches
+>   a listed orphan's very entry. A name a row naming
+>   that disk reaches is that row's file, and is listed nowhere; one a row naming another disk reaches is listed as a
+>   copy a row reaches under another spelling, and kept — its line says what settles it: correcting the row's path,
+>   where the row's path is one the disks read as another; a forced reconcile, where settle removes the row's copies on
+>   that disk — a served disk's copy of a file kept off the web, taken off through the fold or a directory link, where
+>   on SQLite and PostgreSQL 5b's `--force` removed it as an orphan — either refusing it as coinciding where the two are
+>   one file, left for a hand; but for a row's own name there that is itself a link to the copy, whose link alone settle
+>   removes, leaving the copy for the next run to list as an orphan, for a copy with a hard link beside it that the
+>   row's path may reach instead, of which settle removes only the name it reaches, and for a row naming a disk that
+>   could not be built, reaches the target's files or reads through, whose `--force` refuses it, and for a copy on a
+>   read-through disk, which custody neither reads nor removes, and on which every forced reconcile of the row fails
+>   until a person takes it off (review of slice 5c);
+>   otherwise — on the disk its file belongs on among them, where a forced reconcile would point the row at it under a
+>   name other than its path — making the row's path and this name one spelling, with the name the disk its row names
+>   holds its file under where it holds one, after which it is that row's extra copy; one a row's partial path reaches
+>   is that row's leftover partial copy, removed under its lock — only a name ending in the partial suffix, one custody
+>   could have written; a hard link of it under another name stays an orphan, asked again under the lock by its own name
+>   (review of slice 5c); and a row's own path wins over another disk's row, and either over a partial copy's — as a
+>   listed name a row gives byte for byte, one written past `MediaFile`, is that row's copy before it is another row's
+>   partial copy, and kept under the lock as that row's; and a partial copy the listing found on a local disk is asked
+>   of each row's own path too, which, reaching it — through a link the listing skips, or a spelling written past
+>   `MediaFile` — makes it that row's file, listed nowhere or as its copy under another spelling, never removed under
+>   another row's lock; no row's partial path takes one from the row the listing gave it (review of slice 5c). A hard
+>   link, beside the file or in another directory, is another entry, which removing the listed name leaves, and is
+>   removed; where a hard link and another spelling of a row's path share a directory, the volume does not say which
+>   entry the row reaches, and both are kept — for a row naming that disk listed nowhere, so no run shows the link, and
+>   only a look at the disk finds it; for a row naming another disk listed as copies under another spelling, of which a
+>   forced reconcile removes only the one the row's path reaches, and the next run lists the other as an orphan, as
+>   their lines say (review of slice 5c). A read-through disk whose primary — the half it lists — is local, at any depth, is
+>   asked by stat through that primary, as a local disk is (`MediaBytes::listsLocally()`; review of slice 5c) — through
+>   the disk's own `path()`, which Laravel builds from its configuration merged over its primary's, so where both set a
+>   prefix the name asked is not the one listed, and a row's own file there is listed as an orphan, on which every
+>   forced run fails, custody removing nothing through a read-through disk: recorded, with the read-through question. On a disk whose
+>   listing is not a local directory's — an object store, which compares keys byte for byte — no stat is asked: a row
+>   reaches only the key its path is read as, a doubled slash say, and is asked by that key. It is one more pass over
+>   the table, 500 rows at a time, outside any lock and on every volume — whether a volume folds is per directory on
+>   ext4 and NTFS, and every probe of a name missed some — which holds a key for each listed orphan, and whose failure
+>   fails the run — a stat the volume refuses for any reason but absence among them, I/O, permission, a network mount
+>   reconnecting, which was read as "nothing there" and left a row's file spelt otherwise an orphan for a forced run to
+>   remove once the error cleared (`MediaBytes::statOf()`; review of slice 5c) — but custody's partial name, which one
+>   refused as too long, by the volume or by PHP's own file functions at `PHP_MAXPATHLEN - 1` bytes or more, custody
+>   never wrote: absent, in the pass and in every presence check custody makes of it — a trash, an erasure, a
+>   disposal, the removal of an extra copy — where a row's legal 255-character path failed every run on a stray
+>   partial copy, and every removal beside it (`MediaBytes::tooLong()`, `present()`; review of slice 5c). Under the lock only the path is asked
+>   again, as before: a row written between the pass and the lock in a spelling other than its file's — a write past
+>   `MediaFile`, an import run beside `--force` — is not seen on SQLite and PostgreSQL, nor on MySQL and MariaDB for a
+>   spelling the column's collation weighs apart — under MariaDB 10.6's utf8mb4_general_ci an NFD spelling of an NFC
+>   name or `STRASSE` for `straße`, under a `_bin` collation any — and its file is removed, as is any file such an
+>   import writes before its row. A volume that gives two spellings of one file two inodes — a CIFS mount with
+>   `noserverino`, some FUSE mounts; not measured — is not seen to fold them, and a disk that folds names but is not
+>   local, an SFTP or FTP disk onto such a server, is not asked — nor a host driver's disk over a local directory that
+>   is not Laravel's local adapter, which is keyed as a store. A name below something that is not a directory is absent,
+>   as the volume says, though PHP reports that ENOTDIR as EIO: the directory above is asked (review of slice 5c). And a
+>   row spelt otherwise than its file names nothing once the files move to a volume that keeps spellings apart, where
+>   reconcile lists it `missing`. Every name is first asked whether any disk can be asked about it as itself
+>   (`MediaBytes::refuseUnnamable()`), before any disk is asked of it — an orphan's after its claim is asked again under
+>   the lock: an orphan whose name Flysystem refuses — not UTF-8, or holding a character of Unicode's class C, a NUL, a
+>   tab or a zero-width space — is listed on every engine and removed on none, and on PostgreSQL one that is not UTF-8
+>   is refused a step earlier, in the recheck; every forced run says every disk refuses its name — on PostgreSQL, for a
+>   name that is not UTF-8, it gives the recheck's SQL error (22021) — and fails, until it is removed by hand — unless
+>   the recheck under the lock finds a row: on PostgreSQL, whose driver cuts a bound value short at a NUL, a name whose
+>   part before the NUL is a row's path; on MySQL and MariaDB under a UCA collation a row's path with characters the
+>   collation gives no weight added — utf8mb4_general_ci weighs them; and under utf8mb4_unicode_ci or utf8mb4_general_ci
+>   a name whose refused character is above U+FFFF, a private-use one, beside a row naming another such character in its
+>   place. Such a name is said to be claimed on every forced run, which passes, and it too is removed by hand. So is an
+>   orphan whose name Flysystem reads as another path — `.`, `..` or `//` in an object store's key, or in a local file's
+>   whose backslashes the listing gives as `/`: it is listed on every engine and removed on none, since removing it
+>   would remove the path it is read as, and every forced run fails on it (T171). A local name whose backslashes alone
+>   the listing changed reads as itself and holds nothing, or is reached through a link the listing left out, on the
+>   file or on a directory above it below `media/` — which, like the disk's root, may itself be a link, media on another
+>   volume, and is followed: every forced run fails on it, as `unheld`, whether it was listed as an orphan, a partial
+>   copy or an extra copy (`MediaBytes::held()`) — but for a partial or extra copy whose name, read as `/`, is also a
+>   real one's on that disk: the two are listed as one, the first forced run removes the real one and passes, and the
+>   runs after it fail. So does a name removed by another hand between the listing and the lock, whose next run passes.
+>   And the console prints a name in NFC, whatever the disk holds it as: where a name in NFD is on a volume that does
+>   not fold the two, the name printed is not the one to remove by hand. A row's own path written past `MediaFile` in a
+>   form the disks read as another — a doubled slash, say, by a direct write to the table, the insert-path gap — is read
+>   by that pass as the disks read it, and reaches the file it is read as, which is listed nowhere, or as a copy under
+>   another spelling, and kept, where prune listed it as an orphan and `--force` removed the row's only file, as it had
+>   since before 5c (Codex, #155); the check lists that row as `misnamed`, a finding wherever its file is, and a trash,
+>   an erasure or a forced reconcile of it is refused, each before any disk is asked, and prune keeps its extra copy,
+>   read-only or forced, never offered as removable, each saying to correct the row's path
 >   (`MediaBytes::refuseMisnamed()`) — to the path its file is under, as the disks read it: a file under the row's
 >   literal name, which is where prune finds such a copy, no disk reads or removes, so it is moved by hand to such a
 >   path first, or the corrected row would name nothing — once, the copy was written through the name the disks read,
@@ -4867,7 +5034,8 @@ bulk paths both arrive, and restore likewise.
 >   cycle built it after the commit, and ran out of memory with nothing said — the one disk custody built unguarded; the
 >   check never asked whether a row's path is one the disks read as another, so it passed a row every `--force` refused,
 >   or sent it to `--force`, or to a disk that could not answer; prune still said reconcile moves a row first where the
->   disk its row names reads through, or could not be listed; a forced prune asked the disk about an extra copy before
+>   disk its row names reads through, or could not be listed — since the twenty-eighth, could not be built; a forced prune
+>   asked the disk about an extra copy before
 >   its name, and so gave a disk outage's word for a name the disks refuse; the benchmark's cleanup ran on a fatal error
 >   but not on Ctrl-C; the claims that every forced reconcile fails on a readable copy on a disk that cannot be told
 >   apart from a stale target, and that the check reads such a copy once, were broader than the code; and the
@@ -4927,7 +5095,108 @@ bulk paths both arrive, and restore likewise.
 >   unreadable copy failed, where it is kept; the opens were described as decision 6's alone; and reconcile's count
 >   across chunks, prune's sweep of a disk only a later batch names, the search permission of a root's directory, a
 >   configured disk the row does not name, and the settled-path bound of prune's second listing had no test, or one that
->   could not fail. Each is built as above, and tested.
+>   could not fail. Each is built as above, and tested. And Codex, on the pull request (#155): on a volume that folds
+>   case, a row spelt in mixed case — an import's — lost its only file to `--force`, which asked only the lower-case and
+>   normalized spellings of the listed name, and the record said a person compares it. Asked of the table by pattern
+>   first, the fix still lost a row's file to the Kelvin sign, the long s, `STRASSE` for `straße` and NFC and NFD mixed
+>   in one name, scanned the table under every orphan's lock and every erasure's, counted a hard link as a spelling, and
+>   failed on a volume that folds nothing — the nineteenth round, over it, which found too that two rows whose paths
+>   differ only in such a spelling share one file wherever the volume folds them, now open for Adam, and that the
+>   benchmark verified (I')'s opens by a total a run reading one copy twice passed. So the volume is asked, in the
+>   listing, as above; the spellings and the pattern are removed, and nothing more is asked under the lock. By its
+>   twentieth, over the pass: a served disk's copy of a file kept off the web, which the pass keeps, was said to be kept
+>   without saying it was on the web; the advice to correct a row's path could strand a copy or make a row name nothing;
+>   a row's path an object store reads as a key was still removed there; the pass's precedence, its batches past the
+>   first, its sort, its report's batches, a disk named with digits, a directory spelt otherwise and the ids a claim
+>   carries had no test that could fail; the benchmark could verify (O) without the pass having run; and the records
+>   misstated which collations refuse a folded pair, what the pass costs and against which baseline. Each is built as
+>   above, and tested. By its twenty-first, a round with one major finding: the pass's precedence and its reading of a
+>   directory by what the volume says were tested only where the volume folds case, so on CI's either could be removed
+>   with every test green, and a row's only file lost again; a private copy's line named the check's label where the
+>   check lists the row `absent` or `awaiting publication`; what the pass adds on a disk the listing found none on was
+>   listed, and removed, after disks scanned later; a claim's id past ±2^61 was read back as another, and a partial copy
+>   removed under another entry's lock; the spelt list's default line and the targets that choose its lines, an object
+>   store's claims, the catch of the presence check that chooses a kept copy's line, the row lists' exact decisions and
+>   the benchmark's settle step had no test that could fail, and a pass that read only its first batch verified a
+>   figure; and the records said only a local disk's orphan sets off the pass, left out the presence checks and the
+>   directory read a plain hard link costs, and misquoted a range, a baseline and a session. Each is built as above, and
+>   tested. By its twenty-second, a round with two major findings, one defect: `MediaBytes::reaches()`'s keeping of a
+>   row's own file, spelt otherwise, where that file has a hard link had no case outside a volume that folds case and no
+>   mutation, while the record said every such guard had a case every volume makes — it now has one in another
+>   normalization, which the case-sensitive volume runs, and the record named it as the one guard CI's volume could not
+>   catch. And the pass stat'ed each pair of a row and a listed link of one file, and read a shared directory for each,
+>   cubic where a dedup tool had linked them in one directory; the kept line said to check by hand where a forced
+>   reconcile settles the copy; the device, a trashed row's target, either private disk and the third name of one inode
+>   had no test that could fail; and the records put a copy on the disk its file belongs on among those no step settles,
+>   said a file's lone copy fails only a forced prune, left three changes out of what prune prints, and misquoted a
+>   range, the memory a name another row reaches costs, and what (G)'s removals ask under the lock. Each is built as
+>   above, and tested — but `reachedAmong()`'s one realpath and one directory read for all the listed names it is asked,
+>   prune's one call per row name, and `claim()` holding no id for a row's own file, which the probe measures and no
+>   test does — nor the pass's inode map appending each further name of one file in place, rather than copying the list.
+>   By its twenty-third, a round with two major findings: the pass's asking an object store by key, never by stat, was
+>   caught only where the volume folds case, the fake store's configuration naming its own local root — now it names
+>   none, as a real store's does not; and where a row's own name on the copy's disk is a link to the copy, prune said a
+>   forced reconcile takes the copy off the web, where reconcile removes the link alone and the copy stays served — now
+>   the line says so. And the lines naming a forced reconcile skipped the disks it refuses — one that could not be
+>   listed, one that reaches the target's files, a read-through one — which the extra copies' lines name; a hard link
+>   beside a row's partial path spelt otherwise was removed as that row's partial copy — now only a name ending in the
+>   partial suffix is taken for it, a second guard, beside the keeping of a row's own file, whose hard-link case only a
+>   folding volume makes, and runs in another normalization on the case-sensitive volume — a link at the row's partial
+>   path reaches it on every volume, as the twenty-sixth round found; the pass could hold every row it read, and (O') and (O'') could print a list, with no test failing; one
+>   mutant did not parse, and was counted caught; and the records said every lone copy elsewhere is hashed, put MariaDB
+>   outside the limit it shares, and left (O')'s real size and three of reconcile's guards out. Each is built as above,
+>   and tested. By its twenty-fourth, a round with one major finding: where a copy under another spelling has a hard
+>   link beside it, which the row's path may reach instead, the line said a forced reconcile takes this very copy off,
+>   where it removes only the name the row's path reaches — now the line says so. And the lines naming a forced
+>   reconcile left out that it refuses a copy that is the target's very file as coinciding, which an extra copy's line
+>   says; a stat the volume refused for a reason but absence was read as "nothing there", and a row's file spelt
+>   otherwise left for a forced run to remove; a name holding what the console reads as a style was printed stripped of
+>   it; a set-aside path holding `]` lost the disk from its line; and the read-through line's two clauses, the branch
+>   that keeps a name whose entry cannot be told, a file's only name held as an int, and three tests' 'lists nowhere'
+>   had no test that could fail. Each is built as above, and tested. By its twenty-fifth, a round with four major
+>   findings: a local disk's presence check read a stat refused for a reason but absence as an absence, so the check
+>   passed on a trashed file's copy left on the web, and called a file missing that is there — now it fails, as an
+>   object store's does; the pass asked a read-through disk over a local primary by key, and called a row's file there
+>   an orphan no row keeps — now it is asked by stat; the records said two guards only a folding volume reaches, where
+>   the names of one file beside each other are a third; and the pass's figures and described cost predated the
+>   access(2) that asks why a stat found nothing. And a name below a stray file failed every run, PHP reporting that
+>   ENOTDIR as EIO; the set-aside disk was read from a row that may be gone; the second listing's clean slate, the
+>   default line's other name and most lines printed as they are had no test that could fail; and the records misplaced
+>   the path index, left out the cost of asking whether a disk overlaps the target, and said reconcile unchanged. Each
+>   is built as above, and tested — but a local disk's root whose stat is refused, still taken to hold nothing, which is
+>   open for Adam. By its twenty-sixth, a round with four major findings, of two defects: a row written past `MediaFile`
+>   at a path ending in the partial suffix lost its only file to a forced prune, as another row's partial copy — now
+>   `MediaFile` refuses such a path, prune's table decides byte for byte before the suffix does, and the removal under
+>   the lock asks the table for the very name; and a read-through disk's presence check read a stat its local half
+>   refused as an absence, so a trash committed with its file left on a served one and the check passed — now each local
+>   half is asked why, at any depth, under the disk's own prefix. And a copy under another spelling on a read-through
+>   disk was said to be one a forced reconcile takes off, which refuses it; a row's legal 255-character path failed every
+>   run on a stray partial copy; the pass's reads, a nested read-through primary, the partial-suffix guard on a volume
+>   that folds nothing and the set-aside disk where the row is gone had no test that could fail; and the records counted
+>   a miss as one call more where it is three or more, held ids whole past PHP's integer, left decision 9's root rule
+>   unbounded and out of the open questions, left the default line's clause out of the guards only a folding volume
+>   reaches, and read one session's real size as the orphans'. Each is built as above, and tested — but where both a
+>   read-through disk and its primary set a prefix, the pass asks a name other than the one listed, and a raw insert at a
+>   partial-suffixed path is still cleared by a trash, a disposal and settle as another row's partial copy: both
+>   recorded. By its twenty-seventh, a round with five major findings, of two defects: `MediaFile` refused the partial
+>   suffix byte for byte, so on a volume that folds case a row created at `.KITSUNE-PARTIAL` lost its only file to the
+>   row beside it — now the path is compared after a full case fold; and prune took a partial copy's owner before the
+>   pass, so a row whose own path reached it through a link the listing skips, or a folded spelling, lost its file to a
+>   forced prune — now the pass asks each such copy of every row's own path. And where the private disk was core's own
+>   under another name, every private file counted twice, and an unreadable one failed the check while a forced prune
+>   passed; custody's partial name too long for the volume, or for PHP, failed every trash, erasure and removal beside a
+>   legal long name; the records said a disk that cannot be told from the public one fails a forced reconcile of a row
+>   no run settles, left the cost of asking why out of (G)'s holds and out of (J')'s figures, and misfiled one guard;
+>   and a partial copy claimed under the lock, the read-through line's other labels, a row's own path too long and the
+>   escaped refusals had no test that could fail. Each is built as above, and tested. Its twenty-eighth found no major
+>   finding, and its minors are built as above, and tested: prune said a forced reconcile would not settle a row whose
+>   disk could not be listed, where reconcile settled it at once unless the disk could not be built; reconcile's skip of
+>   core's private disk under another name dropped the disk a row names, asked afresh of each row, and had no test of
+>   its nesting or its `=== true`; disk names in a failed removal, a nesting refused, a disk not scanned and the warning
+>   before the last rows leave a disk were read as styles; two memory tests passed where no copy was seeded; a store's
+>   partial copy kept off the pass had no test; and the records misplaced (J')'s PostgreSQL figures and the pass's
+>   partial-path cost, left out removeTemp()'s lookup under the lock, round 27's trigger, reconcile's changes and three
+>   things prune prints, and `field-types.md` the partial suffix.
 
 **6. Tiles: public ones are same-origin; private ones load on click until measured.** A public tile's URL is a path
 on the host serving the admin, from a helper beside `MediaDelivery::urlFor()`. `urlFor()` itself stays absolute,
@@ -5181,66 +5450,180 @@ media disk on a second filesystem, and the numbers on stage.
 database named exactly `kitsune_bench_withdrawal` on each engine — SQLite 3.53.4 (rollback journal, and again in WAL),
 PostgreSQL 17.11, MySQL 8.4.11 and MariaDB 10.6.28 in the repository's `compose.yaml` containers, on an Apple silicon
 laptop — and SQLite 3.46.1 in `bin/benchmark-floor.Dockerfile`'s image at ADR-027's floor, 1 vCPU and 1,024 MB, as a
-non-root user, in both journal modes, at PHP's default 128 MB `memory_limit`; all at e3a7a29. Each read-only listing
-runs in a PHP process of its own at 128 MB, as an operator runs it — on the laptop too, whose CLI sets no limit — and
-reports its peak twice: what PHP allocated, bootstrap included, and the real size the limit is enforced on. The groups
-are 5c's and the 5b groups its change touches: reconcile's read-only listing (I), prune's (G'), a forced reconcile at
-scale (J'), measured in this process as 5b measured it; prune over 10,000 and 100,000 rows each with an extra copy (N)
-and awaiting publication (N'); and reconcile opening both copies of 1,000 files held twice (I') beside a control of the
-same rows settled, its served disk asked of each and holding nothing (I''). Every figure is the median of seven warm
-runs after one warm-up; a run verified the rows its command reported, and a listing the limit it ran under, or printed
-nothing. The raw output is kept with the private notes.
+non-root user, in both journal modes, at PHP's default 128 MB `memory_limit`; all at e3a7a29 but PostgreSQL's, which
+were measured again on the working tree after ea90214, before review round 21's fixes, its tables vacuumed and analysed
+after each group's seed: the
+dead rows the last group's delete left slowed whichever group met them, by as much as three quarters (review of #155's
+fix). Each read-only listing runs in a PHP process of its own at 128 MB, as an operator runs it — on the laptop too,
+whose CLI sets no limit — and reports its peak twice: what PHP allocated, bootstrap included, and the real size the
+limit is enforced on. The groups are 5c's and the 5b groups its change touches: reconcile's read-only listing (I),
+prune's (G'), a forced reconcile at scale (J'), measured in this process as 5b measured it; prune over 10,000 and
+100,000 rows each with an extra copy (N) and awaiting publication (N'); and reconcile opening both copies of 1,000 files
+held twice (I') beside a control of the same rows settled, its served disk asked of each and holding nothing (I'').
+Every figure is the median of seven warm runs after one warm-up; a run verified the rows its command reported, and a
+listing the limit it ran under, or printed nothing. The raw output is kept with the private notes.
 
 | median, ms unless marked | SQLite | SQLite WAL | PostgreSQL | MySQL | MariaDB | floor | floor WAL |
 |---|---|---|---|---|---|---|---|
-| read-only reconcile (I), 100,000 rows, 1,000 findings | 21,761 | 21,901 | 24,344 | 22,976 | 22,907 | 12,710 | 12,560 |
-| its peak memory, MB | 42.7 | 42.7 | 42.8 | 42.9 | 42.9 | 42.2 | 42.2 |
-| read-only prune (G'), 100,000 rows where they belong | 1,099 | 1,091 | 3,718 | 2,720 | 2,266 | 926 | 957 |
-| its peak memory, MB | 42.7 | 42.7 | 42.8 | 42.7 | 42.8 | 42.2 | 42.2 |
-| forced reconcile (J'), 100,000 rows, 1,000 trashed on the public disk, 200 KB | 25,703 | 25,440 | 32,364 | 30,690 | 30,183 | 17,967 | 17,141 |
-| its share of the run holding a lock, % | 13.8 | 13.5 | 16.6 | 16.4 | 16.4 | 24.3 | 24.4 |
-| its peak memory, MB | 46.6 | 46.6 | 46.8 | 46.8 | 46.8 | 46.1 | 46.1 |
-| read-only prune (N), 10,000 rows, each with an extra copy | 392 | 391 | 597 | 883 | 759 | 286 | 289 |
-| its peak memory, MB | 45.3 | 45.3 | 45.1 | 45.1 | 45.1 | 43.4 | 43.4 |
-| read-only prune (N), 100,000 rows, each with an extra copy | 4,035 | 4,254 | 6,911 | 6,442 | 5,817 | 3,130 | 3,033 |
-| its peak memory, MB | 59.7 | 59.7 | 59.8 | 59.8 | 59.8 | 59.2 | 59.2 |
-| read-only prune (N'), 10,000 rows awaiting publication | 157 | 156 | 318 | 315 | 287 | 111 | 112 |
+| read-only reconcile (I), 100,000 rows, 1,000 findings | 21,761 | 21,901 | 25,791 | 22,976 | 22,907 | 12,710 | 12,560 |
+| its peak memory, MB | 42.7 | 42.7 | 42.9 | 42.9 | 42.9 | 42.2 | 42.2 |
+| read-only prune (G'), 100,000 rows, 1,000 of them trashed on the public disk and listed | 1,099 | 1,091 | 3,369 | 2,720 | 2,266 | 926 | 957 |
+| its peak memory, MB | 42.7 | 42.7 | 42.9 | 42.7 | 42.8 | 42.2 | 42.2 |
+| forced reconcile (J'), 100,000 rows, 1,000 trashed on the public disk, 200 KB | 25,703 | 25,440 | 36,866 | 30,690 | 30,183 | 17,967 | 17,141 |
+| its share of the run holding a lock, % | 13.8 | 13.5 | 18.1 | 16.4 | 16.4 | 24.3 | 24.4 |
+| its peak memory, MB | 46.6 | 46.6 | 46.9 | 46.8 | 46.8 | 46.1 | 46.1 |
+| read-only prune (N), 10,000 rows, each with an extra copy | 392 | 391 | 644 | 883 | 759 | 286 | 289 |
+| its peak memory, MB | 45.3 | 45.3 | 45.2 | 45.1 | 45.1 | 43.4 | 43.4 |
+| read-only prune (N), 100,000 rows, each with an extra copy | 4,035 | 4,254 | 8,140 | 6,442 | 5,817 | 3,130 | 3,033 |
+| its peak memory, MB | 59.7 | 59.7 | 59.9 | 59.8 | 59.8 | 59.2 | 59.2 |
+| read-only prune (N'), 10,000 rows awaiting publication | 157 | 156 | 301 | 315 | 287 | 111 | 112 |
 | its peak memory, MB | 43.6 | 43.6 | 43.6 | 43.5 | 43.6 | 42.2 | 42.2 |
-| read-only prune (N'), 100,000 rows awaiting publication | 1,579 | 1,586 | 3,629 | 3,288 | 2,865 | 1,176 | 1,208 |
+| read-only prune (N'), 100,000 rows awaiting publication | 1,579 | 1,586 | 3,852 | 3,288 | 2,865 | 1,176 | 1,208 |
 | its peak memory, MB | 42.6 | 42.6 | 42.8 | 42.7 | 42.8 | 42.2 | 42.2 |
-| read-only reconcile (I'), 100,000 rows, 1,000 held twice, both copies opened | 30,265 | 30,370 | 32,758 | 31,431 | 31,323 | 17,713 | 17,793 |
-| its control (I''), the same rows settled | 30,222 | 30,311 | 32,616 | 31,243 | 31,237 | 17,687 | 17,661 |
-| (I') − (I''): 1,000 rows held twice | 42 | 58 | 142 | 188 | 86 | 26 | 132 |
-| (I')'s peak memory, MB | 42.5 | 42.5 | 42.6 | 42.5 | 42.6 | 42.0 | 42.0 |
+| read-only reconcile (I'), 100,000 rows, 1,000 held twice, both copies opened | 30,265 | 30,370 | 35,614 | 31,431 | 31,323 | 17,713 | 17,793 |
+| its control (I''), the same rows settled | 30,222 | 30,311 | 34,907 | 31,243 | 31,237 | 17,687 | 17,661 |
+| (I') − (I''): 1,000 rows held twice | 42 | 58 | 707 | 188 | 86 | 26 | 132 |
+| (I')'s peak memory, MB | 42.5 | 42.5 | 42.7 | 42.5 | 42.6 | 42.0 | 42.0 |
 
 **Memory, and the floor.** At the floor, at PHP's default 128 MB, every group finished. A read-only prune over 100,000
 rows (G'), which in 5b's first floor run stopped with PHP's own error, and given 512 MB peaked at 154 MB, peaked at 42.2
-MB — about what the bootstrap and one batch cost. Its peak no longer grows with the table: 42.6–42.8 MB over 100,000
-rows awaiting publication (N'), against 43.5–43.6 over 10,000. What it lists it holds: 100,000 extra copies (N) peaked
-14.4 MB above 10,000 on the laptop and 15.8 at the floor — some 0.17–0.18 KB a copy at the peak, where one is held in
-about 0.13 KB and its row is asked about — 59.2–59.8 MB in all, under half the default limit, and the real size 61.0 MB
-on every engine. The real size of every other listing read 42.5–48.5 MB. A forced reconcile at scale (J'), measured as
-5b measured it, peaked at 46.1–46.8 MB, against 51–52; the read-only figures come from a process of their own, and are
-not 5b's to compare.
+MB — about what the bootstrap and one batch cost. Its peak no longer grows with the table, but for rows spelt otherwise
+than their files (O'), below: over 100,000 rows awaiting publication (N') it read 42.6–42.8 MB on the laptop against
+43.5–43.6 over 10,000, and 42.2 at the floor over both. What it lists it holds: 100,000 extra copies (N) peaked
+14.4–14.7 MB above 10,000 on the laptop — 14.4 on SQLite, 14.7 on PostgreSQL, MySQL and MariaDB — and 15.8 at the floor
+— some 0.16–0.18 KB a copy at the peak, where one is held in about 0.13 KB and its row is asked about — 59.2–59.9 MB in
+all, under half the default limit, and the real size 61.0 MB on every engine. The real size of every other listing but
+(O'), below, read 42.5–48.5 MB; (O')'s read 63.0–65.0. A forced reconcile at scale (J'), measured as 5b measured it,
+peaked at 46.1–46.9 MB, against 51–52; the read-only figures come from a process of their own, and are not 5b's to
+compare.
 
 **What the batches cost.** Prune pays for holding only what it lists in queries — one per 500 rows for the disks rows
 name, one per 500 files a disk lists, one per 500 rows for each list of rows — each a round trip, which SQLite, in the
-process, barely pays: over 100,000 rows where they belong (G'), 1.1 s on SQLite against 5b's 0.9 s, and 2.3–3.7 s on
-MariaDB, MySQL and PostgreSQL against 0.9 s each; 0.9–1.0 s at the floor against 0.6. Over 100,000 extra copies (N),
-3.0–6.9 s; over 100,000 rows awaiting publication (N'), 1.2–3.6 s.
+process, barely pays: over 100,000 rows, 1,000 of them trashed on the public disk and listed (G'), 1.1 s on SQLite
+against 5b's 0.9 s, and 2.3–3.4 s on MariaDB, MySQL and PostgreSQL against 0.9 s each; 0.9–1.0 s at the floor against
+0.6. Over 100,000 extra copies (N), 3.0–8.1 s; over 100,000 rows awaiting publication (N'), 1.2–3.9 s.
 
 **What decision 12 costs.** Opening both copies of 1,000 files held twice — 2,000 opens, a byte each, their lines, and
-the served disk's 1,000 presence hits — cost 26–188 ms over runs of 17.7–32.8 s, about the spread of either group's
+the served disk's 1,000 presence hits — cost 26–707 ms over runs of 17.7–35.6 s, about the spread of either group's
 seven runs: (I') − (I'') is the whole cost, which a whole run cannot resolve further. What a served disk beside the
-configured ones costs is larger, and 5b's already: asked of every row, it made (I'') 34–41% longer than (I). Read-only
-reconcile (I) itself takes 6–8% longer than 5b's on the laptop and 14–15% at the floor, for the survey's new questions
-of each row — whether its path is misnamed before any disk is asked among them; forced (J'), within 8% of 5b's either
-way, holding a lock for 13.5–24.4% of the run against 15.2–26.7.
+configured ones costs is larger, and 5b's already: asked of every row, it made (I'') 35–41% longer than (I). Read-only
+reconcile (I) itself takes 6–8% longer than 5b's on the laptop — 14% on PostgreSQL, whose column is a later session's,
+where the same reconcile had read 8% in the first — and 14–15% at the floor, for the survey's new questions of each row
+— whether its path is misnamed before any disk is asked among them; forced (J'), at e3a7a29, within 8% of 5b's either
+way — PostgreSQL's 32,364 ms there, 6.6% below 5b's 34,658, where the table's 36,866 is its settled run's, 6.4% above
+— holding a lock for 13.5–24.4% of the run against 15.2–26.7, and not run again since (*After review round 25*). Runs a
+session apart moved by as much: (I'') read 6–23% slower on the server engines the second time it was run, so a
+comparison across sessions resolves nothing finer.
 
-5c adds no hold of its own: the holds, the contention table and the migration's figures are 5b's, and were not
-repeated. **Owed**, as for 5a and 5b: a real object store's listing and
-presence checks at 100,000 rows — prune's batches ask the table once per 500 files an object store lists, and a disk an
-extra copy belongs on is listed twice — a media disk on a second filesystem, and the numbers on stage.
+**The pass that asks the volume (Codex, #155).** Measured after it was built, on the working tree after ea90214, before
+review round 21's fixes, in one session with its control: (O), 99,000 rows where they belong and 1,000 orphans on core's private disk, which the
+pass asks every row's path about; (O''), the same 99,000 rows and no orphan or partial copy, and so no pass; (G') again; and (O'),
+100,000 rows each spelt with a doubled slash, as a direct import may write them, over files where the disks read them —
+every file an orphan the pass claims, with a key and a claim held for each. A figure said to cost the pass is verified
+by the listing's own count of the pass's queries, some where the seed lists an orphan and none where it lists none —
+exactly one per 500 rows and a last short or empty one since, 199 for (O)'s 99,000 rows and 201 for (O')'s 100,000,
+the last of each returning no row, where a pass
+that read only its first batch passed (review of slice 5c); (O), (O'') and (O') verified so on SQLite, and (O')'s peak
+unchanged by the pass's claims holding their ids apart.
+
+| median, ms unless marked | SQLite | SQLite WAL | PostgreSQL | MySQL | MariaDB | floor | floor WAL |
+|---|---|---|---|---|---|---|---|
+| read-only prune (O), 99,000 rows where they belong and 1,000 orphans | 1,994 | 1,993 | 4,324 | 3,740 | 3,324 | 1,428 | 1,431 |
+| its peak memory, MB | 42.6 | 42.6 | 42.8 | 42.8 | 42.9 | 42.2 | 42.2 |
+| its control (O''), the same 99,000 rows and no orphan | 1,418 | 1,338 | 3,246 | 2,846 | 2,495 | 1,075 | 1,039 |
+| its peak memory, MB | 42.5 | 42.5 | 42.5 | 42.5 | 42.6 | 42.0 | 42.0 |
+| (O) − (O''): the pass, and 1,000 orphans listed | 576 | 656 | 1,079 | 894 | 830 | 352 | 392 |
+| read-only prune (G'), in the same session | 1,287 | 1,365 | 3,369 | 2,888 | 2,571 | 1,124 | 1,017 |
+| read-only prune (O'), 100,000 rows each spelt as the disks read another | 3,082 | 2,925 | 4,282 | 4,522 | 4,354 | 1,979 | 2,012 |
+| its peak memory, MB | 62.1 | 62.1 | 62.2 | 62.1 | 62.2 | 61.5 | 61.5 |
+
+The pass costs 0.6–0.7 s on SQLite, 0.35–0.4 s at the floor and 0.8–1.1 s on PostgreSQL, MySQL and MariaDB, each run
+against its control in the same session. It is almost all the pass itself: a stat of each of the table's rows' paths —
+and, since these figures were taken, a posix_access() asking why of each one the stat finds absent — an lstat and an
+access(2) (`MediaBytes::statOf()`),
+measured again below: the pass read 1.1 s on SQLite and 0.55 s at the floor, where every row's file is on another disk
+(review of slice 5c) — which any orphan on a local disk sets off, whatever the number of orphans — so it grows with the
+table, not with the orphans, where no listed orphan is a hard link of a file a row names (*What this costs*). An orphan
+on a disk that is not local sets it off too, reading each row's path as a key with no stat; (O) and (O'') seed orphans
+on a local disk alone, and that was not measured. A partial copy the listing finds on a local disk sets it off too,
+orphan or none — a stat of each row's path on that disk, as an orphan's does, until a forced run removes the copy — and
+no group seeds one, so that was not measured either (review of slice 5c). In memory (O) peaked 0.1–0.3 MB above (O'') — 42.2–42.9 MB against
+42.0–42.6 — for the 1,000 orphans listed and the pass's key for each; their real size shows no difference the orphans
+can be charged with: at the floor one session read (O) at 44.5 MB and (O'') at 42.5, and the run after review round 25
+read both at 44.5 — PHP's 2 MB chunks, which a peak this close to a boundary crosses in one session and not in another
+(review of slice 5c). Where every file is claimed (O'), prune peaked at 61.5–62.2 MB, under
+half the floor's limit, and the real size read 63.0–65.0 — 65.0 on MariaDB, just over half: about 0.2 KB a name its
+row's own disk claims. None of it holds a lock. A forced prune — *Measured — decision 5, slice 5b*'s
+`kitsune:media-prune --force` row, (G) in the harness — was not run again. Under the lock, an extra copy's removal makes
+5b's checks, but every one of them that finds nothing now asks a local disk why (*After review round 25*): three calls
+more each, four where it was one — `delete()`'s confirmation that a removed file is gone, and the partial path deleted
+beside every removed copy, six calls more for each of (G)'s 1,000 extra copies. An orphan's removal and a partial
+copy's also asks whether the disk holds the file under the name it was listed by (`MediaBytes::held()`). A partial
+copy's removal first looks its own name up in `media_files` under the entry's lock, which 5b's did not do: one query, on
+SQLite as TEXT and as a BLOB (`MediaCustody::whereStored()`), inside the database's write lock; and an orphan's recheck
+asks for its name as well as its path where the name ends in the partial suffix. (G) seeds no partial copy, so no figure
+covers that lookup. An extra copy is asked the same before its lock is taken, after a check that
+the disk has it (`MediaBytes::present()`), and asked held() again where custody leaves it unchanged. On a local disk
+held() is a stat of the file and an lstat of each component below `media/` — five for each of (G)'s orphans, which with
+its `delete()`'s confirmation makes eight more under the lock than 5b's, and, before the lock, with present()'s stat,
+six for each of its 1,000 extra copies — and on any other disk one presence check more, a HEAD on an
+object store, two for an extra copy. (G) did not measure any of this. The pass before them reads (G)'s own table, a few
+thousand rows, and stats their paths on core's private disk alone, a few percent of (O)'s. (I') and (I'') were run again
+once the pass was built, verified by the copies opened on each disk, where a total passed a run that read one copy twice
+(review of the fix) — in a session of their own before this one, beside that session's own (O) and (O'), not the figures
+above, and on PostgreSQL in its settled run beside them: (I') − (I'') read −182 to 609 ms in that session and 707 in
+PostgreSQL's settled run, within the spread of the runs — MySQL's slowest (I'') 10.2 s above its median — and reconcile
+is as above: it has changed since only in writing each listed line, forced line and warning raw; escaping its refusals,
+its read-only unsafe-disk warning, the header's disk names, the disk names of its warning before the last rows leave a
+disk, and its --entry error; naming a set-aside copy's disk from custody's own words; and skipping core's private disk
+under a private target where it is the configured private disk under another name, asked once a run — none of which
+changes a timed path, the last asked in no group, whose private disk is core's own — and in asking a local disk why a
+copy it does not find is absent (`MediaBytes::present()`), which does: *After review round 25*, below (review of slice
+5c).
+
+**After review round 25.** A local disk's presence check now asks why it finds nothing (`MediaBytes::present()`), and so
+does each of the pass's stats (`MediaBytes::statOf()`): `posix_access()` looks the name up, and each missing directory
+above it, before it asks access(2), PHP's realpath cache keeping no absent name — so each of the pass's stats that
+finds nothing costs two calls more, and a presence check that finds nothing three more, a second stat before them.
+(I), (O), (O''), (I') and (I'') were run again on the tree to be committed, on SQLite and at the floor, verified as
+above. A forced reconcile at scale (J'), whose survey is (I)'s and whose settles confirm each removal by a presence
+check that finds nothing, pays the same calls and was not run again: its figures, and its comparison with 5b's above,
+are e3a7a29's but PostgreSQL's, which are its settled run's, on the working tree before review round 21's fixes. PostgreSQL, MySQL and MariaDB, whose presence checks are asked the same way, were not run again either.
+
+| median, ms | SQLite | floor | floor WAL |
+|---|---|---|---|
+| read-only reconcile (I), 100,000 rows, 1,000 findings | 25,231 | 13,376 | 13,369 |
+| read-only prune (O), 99,000 rows where they belong and 1,000 orphans | 2,348 | 1,551 | 1,532 |
+| its control (O''), the same 99,000 rows and no orphan | 1,280 | 992 | 991 |
+| (O) − (O''): the pass, and 1,000 orphans listed | 1,069 | 559 | 541 |
+| read-only reconcile (I'), 1,000 held twice, both copies opened | 33,915 | 18,679 | 18,699 |
+| its control (I''), the same rows settled | 33,886 | 18,606 | 18,646 |
+| (I') − (I'') | 29 | 73 | 52 |
+
+Against the tables above, (I) took 16% longer on SQLite and 5–6% at the floor, (I'') 12% and 5–6%, and the pass 1.9
+times as long on SQLite and 1.4–1.6 times at the floor — every row's path in (O) is on another disk than the one asked,
+and each costs at least three calls where it cost one: the stat, `posix_access()`'s lookup of the name, and its
+access(2), and a lookup more for each directory of the path the disk does not have. Runs a session apart have moved by as much, but not in one direction: (O'')
+here read 10% faster on SQLite and 5–8% at the floor than in the session above. Every peak read 41.7–42.9 MB, as before,
+and every real size 42.5–44.5, (O) and (O'') both 44.5 at the floor. Review round 26's changes ask nothing more on these
+paths, and were not run again: a read-through disk's local halves are asked only where one is configured, which no
+group is; a row's partial path refused as too long is asked once more only where its stat fails; and an orphan's
+recheck under the lock asks for two names where it ends in the partial suffix, one otherwise. Nor do review round 27's
+and 28's, which were not run again either: a partial copy the listing finds on a local disk sets off the pass, and no
+group seeds one; reconcile's skip of core's private disk under another name is asked once a run, only where the
+configured private disk is not core's own, which in no group it is; custody's partial name refused as too long is
+excused only after a stat fails; and `MediaFile`'s case-folded suffix check is made when a row is written, which no group
+times. And (I') − (I'') here is not quite the difference *What decision 12 costs* reads: each of (I'')'s 1,000 misses on
+the served disk now costs three calls more than the hit (I') has in its place, some 6 ms a thousand on the laptop, not
+measured at the floor, so the row understates the opens and their lines by about that much, within the spread of the
+runs; *What decision 12 costs* holds for the first table, whose figures all predate round 25.
+
+5c adds no hold of its own: the holds, the contention table and the migration's figures are 5b's, and were not repeated.
+**Owed**, as for 5a and 5b: a real object store's listing and presence checks at 100,000 rows — prune's batches ask the
+table once per 500 files an object store lists, and a disk an extra copy belongs on is listed twice, and asked once for
+each extra copy its second listing lacks, and one orphan such a store lists reads the whole table once more, by key — a
+media disk on a second filesystem, the numbers on stage, and a volume that folds names over a network, SMB or NFS, where
+each of the pass's stats is a round trip.
 
 ### What this costs
 
@@ -5366,17 +5749,23 @@ holds the set-aside copy fails every forced run until that copy can be read.
 from a backup; and a run short enough to finish while a publication is still in flight fails on it, because its
 end-of-run recheck still finds the file awaiting publication.
 
-**Paths are unique (decision 8).** An import that shares one file between entries is refused by the index; one that
-writes a path in a form the disks read as another is refused through `MediaFile`, and not through the query builder,
-which is the insert-path gap. So is a path written as a BLOB on SQLite, whose index and the migration's check compare
-within a storage class: a TEXT row and a BLOB row can name one path there, and only a write past `MediaFile` binds one;
-custody's lookups ask for both (`MediaCustody::whereStored()`), and such a pair is corrected by hand. An installation
-holding either will not migrate until the rows are corrected by a direct UPDATE, which the refusal names. The build
-holds `media_files` while the previous release serves: on PostgreSQL writes wait for it; on MySQL and MariaDB statements
-on the table, reads included, queue behind its metadata lock while an open transaction that touched the table holds that
-lock off, at the build's start and end; and on SQLite it holds the write lock. *Measured — decision 5, slice 5b* has the
-figures; no lock timeout is set, ~~which is open (decision 5, *Amended 2026-09-25*)~~ and none will be (Adam, decision
-10, 2026-09-26): a fresh installation builds the index before it serves anything, so nothing is open for it to wait on.
+**Paths are unique (decision 8).** An import that gives two entries one path is refused by the index where the engine
+compares the two paths equal: byte for byte on SQLite and PostgreSQL, as the column's collation compares on MySQL and
+MariaDB. One whose paths differ only in a spelling a volume folds and the engine compares apart — `media/PHOTO.png`
+beside `media/photo.png` on SQLite and PostgreSQL, `STRASSE.png` beside `straße.png` under MariaDB 10.6's
+utf8mb4_general_ci — is admitted, and on such a volume the two entries share one file, and a step acting for one acts on
+the other's: prune's removal of an extra copy, the cleanup, a trash, settle, an erasure's disposal. Whether paths should
+be unique as the volumes fold them is open, for Adam (decision 5, decision 8). An import that writes a path in a form
+the disks read as another is refused through `MediaFile`, and not through the query builder, which is the insert-path
+gap. So is a path written as a BLOB on SQLite, whose index and the migration's check compare within a storage class: a
+TEXT row and a BLOB row can name one path there, and only a write past `MediaFile` binds one; custody's lookups ask for
+both (`MediaCustody::whereStored()`), and such a pair is corrected by hand. An installation holding either will not
+migrate until the rows are corrected by a direct UPDATE, which the refusal names. The build holds `media_files` while
+the previous release serves: on PostgreSQL writes wait for it; on MySQL and MariaDB statements on the table, reads
+included, queue behind its metadata lock while an open transaction that touched the table holds that lock off, at the
+build's start and end; and on SQLite it holds the write lock. *Measured — decision 5, slice 5b* has the figures; no lock
+timeout is set, ~~which is open (decision 5, *Amended 2026-09-25*)~~ and none will be (Adam, decision 10, 2026-09-26): a
+fresh installation builds the index before it serves anything, so nothing is open for it to wait on.
 
 **Prune lists nothing while a disk nests inside one it lists orphans on.** A configured disk — a host's own included,
 whatever names or serves it — rooted inside the `media/` directory of a configured media disk, core's private disk or a
@@ -5388,13 +5777,52 @@ media files: at 100,000 rows it exceeds PHP's default 128 MB, and the command st
 given more (open, decision 5, *Amended 2026-09-25*).~~
 
 **Prune holds what it lists (Adam, decision 11, 2026-09-26).** It reads the table in batches and each disk as it lists,
-so a table whose files are where their rows say costs it what an empty one does; what it lists it holds, about 0.13 KB
-an entry, and more at its peak while an extra copy's row is asked about, so an installation whose every file is an
-orphan or an extra copy — a lost table, or a public disk moved — costs it that much a file. *Measured — decision 5,
-slice 5c* has both. It pays for the batches in queries: one per 500 rows for the disks rows name and one per 500 rows
-for each list of rows, each a range of the primary key, so each pass reads the table once in all; and one per 500 files
-a disk lists, a scan of the table where `media_files_path_unique` was never built. And a disk an extra copy's row names,
-and belongs on, is listed a second time — a LIST of the whole disk on an object store — for the paths prune holds.
+so a table whose files are listed under the very names their rows give costs it what an empty one does; what it lists it
+holds, about 0.13 KB an entry, and more at its peak while an extra copy's row is asked about, so an installation whose
+every file is an orphan or an extra copy — a lost table, or a public disk moved — costs it that much a file. *Measured —
+decision 5, slice 5c* has both. It pays for the batches in queries: one per 500 rows for the disks rows name and one per
+500 rows for each list of rows, each a range of the primary key, so each pass reads the table once in all; and one per
+500 files a disk lists, a scan of the table where `media_files_path_unique` was never built. And a disk an extra copy's
+row names, and belongs on, is listed a second time — a LIST of the whole disk on an object store — for the paths prune
+holds. And where any disk lists an orphan, or a local disk a partial copy, prune reads the table once more, outside any
+lock, on every volume, to ask whether a row reaches a listed name in another spelling: on each local disk that lists
+one — or read-through disk whose primary is local — it stats each row's path, twice where the disk lists an orphaned
+partial (a name ending in the partial suffix that no row's path was written for), and asks why each stat that finds
+nothing failed (`MediaBytes::statOf()`) — `posix_access()` looks up the name, and each missing directory above it,
+before its access(2) — so a row whose file is on another disk costs at least three calls, six where the disk lists an
+orphaned partial, each a lookup a network volume may send to its server — and on any other it reads each row's path as the disks
+read it and looks the key up among that disk's listed ones, asking the store nothing, so one stray orphan on an object
+store costs every run a second read of the table, which *Measured* does not have. It holds a key and a claim for each
+listed orphan — about 0.2 KB a name, so a table whose every row is spelt otherwise than its file, and whose every file
+is so listed, costs it that much a row, some 20 MB over 100,000 (O') — and for a name a row naming another disk reaches,
+or a row's partial path reaches, that row's id or its entry's too, and the name's place in the list it prints: about 0.3
+KB a name at the pass's peak, some 30 MB over 100,000 such names, which no group in *Measured* seeds (review of slice
+5c). Where a row's path stats to a file that listed names are other links of, it stats each such name not yet claimed
+and its directory — in any directory, so rows × names in stats wherever many rows and listed names are links of one
+file, as a dedup tool (hardlink, rdfind, `jdupes -L`) leaves byte-identical files, a placeholder imported once per entry
+say — and, where one of them shares the directory the row's path ends in under another name, reads that directory once
+for the row until the row's name is found: a plain hard link beside a row's own file among them, with no other spelling.
+In a probe on the laptop, 800 rows and 800 listed links of one file in another directory took 6.3 s read-only, and 400
+and 400 in one month's directory 1.7 s, where asked a name at a time 400 and 400 had taken 4.2 s and a minute; that is
+not in *Measured* (Codex, #155; review of slice 5c). And each extra copy prune keeps whose row names the disk it belongs
+on, where that disk's second listing lacks the path, has that disk asked, at most once, whether it reaches the row's
+path, only to choose the copy's line (`MediaPruneCommand::holds()`) — as does each copy under another spelling on a
+private disk whose row names the public one, to name the check's label — a stat on a local disk and a HEAD on an object
+store, in a read-only run too: after a public bucket is lost, 100,000 kept copies cost 100,000 HEADs, and no group in
+*Measured* reaches it (review of slice 5c). And each kept extra copy whose row names another disk, and each copy under
+another spelling whose line names a forced reconcile, has custody asked whether that disk overlaps the target
+(`MediaCustody::overlapsTarget()`), never cached: some 60 µs a copy on the laptop, about 6 s over 100,000 copies after a
+public disk has moved, which no group in *Measured* reaches either (review of slice 5c). And every presence check of a
+local disk, or of a read-through disk's local half, that finds nothing asks why (`MediaBytes::present()`) —
+reconcile's survey of every row on every disk custody asks among them — three calls more for each disk that does not
+hold a row's file: a second stat after Flysystem's `is_file()`, then `posix_access()`'s lookup of the name, and of each
+missing directory above it, and its access(2); at least four where it was one, the checks under custody's locks among
+them — `delete()`'s confirmation that a removed file is gone, and the partial path deleted beside every removed copy
+(review of slice 5c). And where the private disk is not core's own, reconcile asks once a run whether core's private
+disk is the private disk under another name, which resolves both media directories — some 40 µs on the laptop where
+the private disk is a host's local disk, 120 µs where it is core's own directory under another name — and remembers the
+answer, as it does whether a disk nests with the target: asked afresh of each private row, it cost a read-only
+reconcile of such rows 15–22% (review of slice 5c). The memo is measured, not tested, as the nesting one is.
 
 **Prune's lists are lines, not tables.** A script that read its tables reads nothing now: every entry is a line under
 its heading (decision 5, *Amended 2026-09-26*).
@@ -5412,21 +5840,25 @@ every copy the listing opens on the disk an `elsewhere` or `awaiting publication
 6's among them, and every private row's copy on the disk it names once the private disk has moved with its files copied
 ahead — and each opened copy of an `extra` row one of whose copies cannot be read, the target's too — and fails while
 one cannot be read; so does `--force`, and on an `extra` row's copies prune lists and would remove so does prune's. A
-file's lone copy fails only a forced prune; one on a disk nesting with the target, on a `read-through` disk, or — under
-a public target — on a disk that cannot be told apart from it, fails only a forced reconcile, when the target's copy
-does not match the checksum and no copy settle's keeper hashes before it does — the disk the row names, then the
-configured media disks, core's private disk and the served disks, in the order they are configured — one on a
-read-through disk whether or not it can be read, and one on a disk nesting with the target, or on one that cannot be
-told apart from it, while it cannot be read, or while it is the copy settle's keeper keeps; the target's own beside a
-copy prune keeps for a hand fails both reconcile modes, never prune; and the copy decision 6 leaves on the disk its row
-names, one its disk's listing leaves out — a symlink where links are skipped — and one on a disk prune cannot tell apart
-from another it scans fail only reconcile, never prune (*What it leaves*). Forced, each row settled, or needing nothing,
-is asked again as it now is: a read of the row and a presence check on each disk custody asks — a HEAD each on an object
-store, three a row where a served former public disk is configured — and the listing's opens where they apply. After the
-public disk moves, every row awaiting publication pays that, on top of settle's own copy and hash. Only a person settles
-it: make the copy readable, after which prune removes it where it lists it, and a person where it does not — or, for
-decision 6's copy on the disk its row names, a forced reconcile does. Before, the check was green while `--force` was
-red.
+file's lone copy where its row belongs fails only a forced prune, and only when prune removes a copy at its path on a
+disk only other rows name (T133); a lone copy anywhere else — an `absent`, `awaiting publication`, `elsewhere` or
+`exposed` row's — fails every forced reconcile, whose keeper hashes it, and never a forced prune, which keeps it or does
+not list it; one on a disk custody does not ask leaves its row `missing`, which every forced reconcile fails without
+reading it, and prune keeps; one on a disk nesting with the target, on a `read-through` disk, or — under a public target
+— on a disk that cannot be told apart from it, fails only a forced reconcile, and only of a row that run settles —
+listed because it names a disk other than the public one, or because another disk custody asks holds its file — when
+the target's copy does not match the checksum and no copy settle's keeper hashes before it does — the disk the row names, then the configured media disks,
+core's private disk and the served disks, in the order they are configured — one on a read-through disk whether or not
+it can be read, and one on a disk nesting with the target, or on one that cannot be told apart from it, while it cannot
+be read, or while it is the copy settle's keeper keeps; the target's own beside a copy prune keeps for a hand fails both
+reconcile modes, never prune; and the copy decision 6 leaves on the disk its row names, one its disk's listing leaves
+out — a symlink where links are skipped — and one on a disk prune cannot tell apart from another it scans fail only
+reconcile, never prune (*What it leaves*). Forced, each row settled, or needing nothing, is asked again as it now is: a
+read of the row and a presence check on each disk custody asks — a HEAD each on an object store, three a row where a
+served former public disk is configured — and the listing's opens where they apply. After the public disk moves, every
+row awaiting publication pays that, on top of settle's own copy and hash. Only a person settles it: make the copy
+readable, after which prune removes it where it lists it, and a person where it does not — or, for decision 6's copy on
+the disk its row names, a forced reconcile does. Before, the check was green while `--force` was red.
 
 **Custody does not hold a read-through disk, until Adam decides whether it should (open, decision 5, *Amended
 2026-09-26*).** A configured media disk that is one is refused; a copy on one — a served disk, or one rows name — is
@@ -5721,50 +6153,142 @@ When it lands:
 > an upload's uncommitted row on MySQL and MariaDB — both belong with the insert-path work.
 
 > ⚠️ **Amended 2026-09-28 — slice 5c, decision 5, landed**, and each guard was removed in turn and its test watched
-> fail, beside a run of the same tests passing unmutated: 222 mutations, on the engine each case is about — 218 on
-> SQLite, three on MySQL, one on PostgreSQL — and the spelling guard's on a case-sensitive volume, since the case it
-> needs is one macOS's default volume folds. By family:
-> - **Prune** (60). `MediaPruneCommandTest` — the disks rows name, read in batches past the first; each disk listed
->   lazily, its files classified 500 at a time by the rows naming their paths, matched in PHP byte for byte, a
->   collation's match claiming nothing, and a value stored as a BLOB on SQLite found; a listing that fails part-way
->   contributing nothing; names the engine cannot hold never sent; the packed extra copy — its entry and disk bounds, its
->   flags, a disk named with digits — and the second listing, which holds only the paths prune holds, however many
->   settled files it lists; each list a line an entry; every kept extra copy's line saying what settles it, misnamed
->   first, then a disk that could not be listed, a row naming a disk that overlaps the target, a read-through disk named
->   or served, a nest, a disk custody does not ask, and one whose asking cannot be told; a table whose paths are not
->   unique said to be one before any line naming a forced command; a host disk nothing names or serves never built to
->   ask whether it nests, and a scanned one built and read from its configuration where it cannot be.
-> - **Reconcile** (57). `MediaReconcileCommandTest` — decision 12's opens: an `extra` row's copies, the copy an
->   `elsewhere` row names beside the file where it belongs, and the restored row's, a copy that cannot be read failing
->   the check and every `--force`; the kinds, in order — `misnamed`, `unknown`, `overlapping`, `unreadable`, the
->   read-through ones and `coinciding`; a disk skipped as the public disk asked for every row `--force` would settle,
->   but a read-through one whose half's root would be created, at any depth, and never one whose half cannot be built;
->   a local disk custody asks with no root, or a missing root that cannot be created — a file, a dangling link, a
->   directory it may not write into or search — `unknown`, whichever disk it is, and one whose root exists built; the
->   count of rows naming a disk across every chunk; the warning before the last rows leave a legacy disk, past a pair
->   that cannot be compared and a disk that cannot be built; the closing line's words.
-> - **Disks** (39). `MediaDisksTest` — a read-through disk compared by the places its halves reach, each layer's prefix
->   beneath the next, a scoped layer's too, and nested wherever any place lies; served wherever a half is; a cycle never
->   built, and refused; a host driver's halves read from its instance only where the step builds it anyway; the unsafe
->   and coinciding refusals over read-through disks.
-> - **Custody** (24) and **bytes** (20). `MediaCustodyTest`, `MediaBytesTest`, `MediaPruneCommandTest` — no copy read
->   or removed through a read-through disk; a name every disk reads as another path, or refuses, never deleted; an
->   orphan's recheck under the lock by every spelling the volume reaches as the file, as TEXT and as a BLOB on SQLite;
->   `overlapsTarget()`; a misnamed row refused before any disk is asked; a copy's first byte read without a hash;
->   every disk built through one guard.
-> - **Withdrawal and disposal** (10). `MediaWithdrawalTest`, `MediaDisposalTest` — a read-through refusal said as one,
->   at the keeper, at a partial copy, and at a delete the copy flapped back for; a misnamed row's trash refused; a trash
->   of an entry with no media file asking no disk; an erasure's disposal skipping a cycle, and saying a read-through copy
->   is removed by hand; its path recheck finding a BLOB row.
-> - **The harness** (12). `MediaWithdrawalBenchHarnessTest` — (N) verified by the extra copies each entry has, and a
->   listing by exactly the rows under its heading; a child timed after its warm-up, verified by its limit and by what it
->   opened, its closing line naming no orphan, its output undecorated; the run's directory removed from the outermost
->   cleanup, and on SIGINT, SIGQUIT, SIGTERM and SIGHUP; the control's served disk given the media tree (I') walks.
+> fail, beside a run of the same tests passing unmutated: 390 mutations, on the engine each case is about — 362 on
+> SQLite, five on MySQL, two on PostgreSQL — and twenty-one on SQLite with the temporary directory and storage on a
+> case-sensitive volume, which folds no case and still folds Unicode normalization; each mutant is linted before its
+> tests run, so one that does not parse is never counted caught (review of slice 5c). The cases a folding volume makes
+> ran on the laptop's, which folds case and normalization; on a volume that folds nothing — CI's — they skip, and every
+> guard they reach has a case every volume makes, spelt with a doubled slash or a dot segment, or reached through a link
+> the listing skips — the pass's precedence in both orders, a directory the same by what the volume says under a disk
+> root reached through a link, a private copy's label, a copy on the web and a partial copy taken only by its name among
+> them — but three, two in one read and one in the line it leads to: `MediaBytes::reachedAmong()` keeping a row's own
+> file, spelt otherwise, where that file has a hard link; the pass recording the names of one file a row naming another
+> disk reaches beside each other, whose lines say a forced reconcile removes only the one the row's path reaches, and
+> the next run lists the other as an orphan; and the line for such a copy on the disk its file belongs on, which says
+> to make the spellings one, saying that any other name of this file there the next run lists as an orphan. Only a volume
+> that folds reaches them, since on one that folds nothing every name a row reaches is one its directory holds byte for
+> byte; their cases in another normalization run on the case-sensitive volume, and CI's ext4 does not catch their
+> removal. And the pass asking an object store by key, never by stat, which only a folding volume told apart, is caught
+> on every volume by a store whose configuration names no local root, as a real one's names none. Each of the twenty-one is
+> a mutation whose tests include a case only a folding volume makes, or which only a folding volume caught, run again on
+> the case-sensitive volume and caught there (review of slice 5c). A family is the mutations of one source file, with
+> the test files they run:
+> - **Prune** (175: `MediaPruneCommandTest` 155, `MediaReconcileCommandTest` 14,
+>   `tests/LevelZero/MediaPathMigrationTest` 3, `MediaWithdrawalBenchHarnessTest` 3) — the disks rows name, read in
+>   batches past the first; each disk listed lazily, its files classified 500 at a time by the rows naming their paths,
+>   matched in PHP byte for byte, a collation's match claiming nothing, and a value stored as a BLOB on SQLite found,
+>   its copy elsewhere the row's extra copy, and a name a row gives byte for byte that row's before any row's partial copy,
+>   and a partial copy the listing found asked of each row's own path — through a link the listing skips, or a folded
+>   spelling — and taken for that row's, listed nowhere or as its copy under another spelling, no row's partial path
+>   taking it, a disk left no partial copy listing none, and none on an object store asked; core's private disk not
+>   scanned where it is the private disk under another name, scanned where the two nest — the nesting refused — or where
+>   they cannot be compared; a disk built whose listing alone failed sent to reconcile first, and only one that could
+>   not be built said to stop it; its refusal of an unsafe private disk, and every disk's name, printed as they are; a listing that fails part-way contributing nothing; names the engine cannot
+>   hold never sent; the packed extra copy — its entry and disk bounds, its flags, a disk named with digits — and the
+>   second listing, which holds only the paths prune holds, however many settled files it lists, each from a clean slate
+>   after a disk scanned last failed its first; each list a line an entry, the lists of rows deciding in PHP byte for
+>   byte — a collation's match to `public` or to a served disk listing nothing (MySQL) — and printing each row before
+>   their pass reads the next batch; every kept extra copy's line saying what settles it, misnamed first, then a disk
+>   that could not be listed, a row naming a disk that overlaps the target, a read-through disk named or served, a nest,
+>   a disk its row names that reaches the path but lists it otherwise — what settles a copy on the web and a private
+>   copy said, the rest checked by hand, and, where that disk cannot say, the line the listing gives it — a disk custody
+>   does not ask, and one whose asking cannot be told; a table whose paths are not unique said to be one before any line
+>   naming a forced command (`MediaPathMigrationTest`); a host disk nothing names or serves never built to ask whether
+>   it nests, and a scanned one built and read from its configuration where it cannot be; and the pass that asks the
+>   volume (Codex, #155) — a name a row's path reaches as its very entry, however the volume folds it, through a link
+>   the listing skips, or read as another path, listed nowhere and kept, another disk's row's listed as such with what
+>   settles it — the label the check gives a private copy's row, in the check's order, on either private disk, and where
+>   neither the web nor settle takes the copy off — the disk its file belongs on among them, a trashed row's target read
+>   from its entry — the spellings made one — a served copy of a file kept off the web said to be on the web, a partial
+>   copy the row's leftover, by its name alone, a link at the row's own name whose link alone settle removes said so, a
+>   disk the row names that could not be built, one built whose listing alone failed sent to reconcile first, a disk
+>   that reaches the target's files or reads through, configured or built by a
+>   host's driver, said to stand in the way, core's private disk reading through not, a copy with a hard link beside it
+>   said to be removed only where the row's path reaches it, and a copy that is the target's very file said to be
+>   refused as coinciding, a row's own path winning in either order and another disk's over a partial copy, every name
+>   of one inode asked, the third as the first, and a file's only one held as an int, a stat the volume refuses for a
+>   reason but absence failing the run, a read-through disk over a local primary asked by stat, a row's partial path the
+>   volume refuses as too long absent and a row's own path failing the run, a copy under another spelling on a
+>   read-through disk said to be one every forced reconcile fails on, with the label the check gives its row, in the
+>   check's order, a partial copy claimed under the lock counted kept, the other name beside a copy on the disk its file belongs on said to be an
+>   orphan, an orphan's, a partial copy's, an extra copy's and a row awaiting publication's names printed as they are,
+>   and a failed removal's, the rows past the pass's first batch, every one read and none of them held, and listed nowhere, not as another
+>   disk's row's copy, a disk named with digits, what it adds sorted, and put back in the order the disks are scanned,
+>   the rows its list prints read 500 at a time and one gone since said so, the claims carrying the row's id or its
+>   entry's, whole past ±2^61 (SQLite and PostgreSQL), a row path the disks refuse reaching nothing, an object store
+>   asked by the key a row's path is read as and never by stat — for a row's own file, another disk's row's and a
+>   partial copy, the lower kind winning in either order, on a store named with digits, beside a row path the disks
+>   refuse — and the pass's failure failing the run.
+> - **Reconcile** (70: `MediaReconcileCommandTest` 68, `MediaPruneCommandTest` 2) — decision 12's opens: an `extra`
+>   row's copies, the copy an `elsewhere` row names beside the file where it belongs, and the restored row's, a copy
+>   that cannot be read failing the check and every `--force`; the kinds, in order — `misnamed`, `unknown`,
+>   `overlapping`, `unreadable`, the read-through ones and `coinciding`; a disk skipped as the public disk asked for
+>   every row `--force` would settle, but a read-through one whose half's root would be created, at any depth, and never
+>   one whose half cannot be built; a local disk custody asks with no root, or a missing root that cannot be created — a
+>   file, a dangling link, a directory it may not write into or search — `unknown`, whichever disk it is, and one whose
+>   root exists built; `--entry` taking an id below zero, and refusing one PHP would read back as another — one past
+>   either end of its integer, or `-0`; the count of rows naming a disk by the name as written, not grouped under the
+>   column's collation (MySQL), and across every chunk; the disk set aside named from custody's own words, for a path
+>   that holds `]`, and where the row is gone since; a listed line, and the `--entry` refusal, printed as they are, and so
+>   the unsafe-disk refusal, its read-only warning, the header's disk names and those of the warning before the last rows
+>   leave a disk; core's private disk counted once under a private target where it is the private disk under another
+>   name — but asked where the row names it, where the two nest, and where they cannot be told apart, the answer asked
+>   once a run; the
+>   warning before the last rows leave a legacy disk, past a pair that cannot be compared and a disk that cannot be
+>   built; the closing line's words.
+> - **Disks** (39: `MediaDisksTest` 27, `MediaPruneCommandTest` 5, `MediaReconcileCommandTest` 5, `MediaWithdrawalTest`
+>   2) — a read-through disk compared by the places its halves reach, each layer's prefix beneath the next, a scoped
+>   layer's too, and nested wherever any place lies; served wherever a half is; a cycle never built, and refused; a host
+>   driver's halves read from its instance only where the step builds it anyway; the unsafe and coinciding refusals over
+>   read-through disks.
+> - **Custody** (23: `MediaPruneCommandTest` 11, `MediaReconcileCommandTest` 9, `MediaCustodyTest` 3) and **bytes** (46:
+>   `MediaBytesTest` 21, `MediaPruneCommandTest` 19, `MediaWithdrawalTest` 2, `MediaDisposalTest` 1,
+>   `MediaReconcileCommandTest` 3) — no copy read or removed through a read-through disk; a name every disk reads as
+>   another path, or refuses, never deleted; a name removed only where the disk holds a file under it, reached through
+>   no link on the file or on a directory below `media/`, else failing as `unheld`, as an orphan, a partial copy or an
+>   extra copy (`MediaBytes::held()`); an orphan's recheck under the lock as TEXT and as a BLOB on SQLite, and by its own name as well as its path where it
+>   ends in the partial suffix, and a partial copy whose very name a row gives kept under the lock (`removeTemp()`); a name
+>   reaching only the very entry a disk listed — a hard link another, a link followed to its entry, a directory the same
+>   by what the volume says of it, not by its spelling, only one inode on one device, a name whose entry the volume
+>   cannot tell kept, and a row's own file spelt otherwise kept where it has a hard link, on a folding volume
+>   (`MediaBytes::reaches()`, `reachedAmong()`); a stat refused for a reason but absence a failure, never an absence,
+>   and a name below something that is not a directory absent — a stray file where a row's directory would be listed
+>   not failing the run (`MediaBytes::statOf()`); a local disk's presence check, and a read-through disk's on either
+>   local half, at any depth, under the disk's own prefix, failing where the volume cannot reach a copy
+>   (`MediaBytes::present()`) — but custody's partial name, refused as too long by the volume or by PHP at
+>   `PHP_MAXPATHLEN - 1` bytes, absent, and no other name (`tooLong()`); a read-through disk's listing taken as its
+>   primary's, followed down at any depth, a read-through primary over a local one included (`listsLocally()`); `overlapsTarget()`; a misnamed row refused
+>   before any disk is asked; a copy's first byte read without a hash; every disk built through one guard; a disk named
+>   with digits alone kept a string where custody compares the keeper's held copies with the served disks, warns of a
+>   copy set aside and removes a copy.
+> - **Withdrawal** (6: `MediaWithdrawalTest`) and **disposal** (4: `MediaDisposalTest` 3, `MediaWithdrawalTest` 1) — a
+>   read-through refusal said as one, at the keeper, at a partial copy, and at a delete the copy flapped back for; a
+>   misnamed row's trash refused; a trash of an entry with no media file asking no disk; an erasure's disposal skipping
+>   a cycle, and saying a read-through copy is removed by hand; its path recheck finding a BLOB row.
+> - **The model** (3: `MediaPathIndexTest`) — a row at a path ending in custody's partial suffix refused before any
+>   statement, in any case a volume reads as it — capitals, the Kelvin sign, the long s — and one holding the suffix
+>   elsewhere in its name created.
+> - **The harness** (24: `MediaWithdrawalBenchHarnessTest`) — (N) verified by the extra copies each entry has, (O) by
+>   exactly the orphans seeded and their count, (O') and (O'') by no list at all, and a listing by exactly the rows
+>   under its heading, a list of copies under another spelling counting as one; a prune figure verified by exactly the
+>   pass's reads of the table, one per 500 rows and a last short or empty one, as its seed calls for; a child timed after its
+>   warm-up, verified by its limit and by what it opened on each disk, its closing line naming no orphan, its output
+>   undecorated; PostgreSQL's tables vacuumed and analysed after each seed, by the step every group's seed runs, and
+>   nothing asked elsewhere or inside a transaction; the run's directory removed from the outermost cleanup, and on
+>   SIGINT, SIGQUIT, SIGTERM and SIGHUP; the control's served disk given the media tree (I') walks.
 >
 > **Not yet, and not 5c's**: whether custody holds a `read-through` disk, each half as a disk of its own (open, for
-> Adam) — until then it asks one only whether it holds a file; a host driver's read-through disk with no url of its
-> own, served only through a half, not counted as served (recorded); and on SQLite a TEXT row and a BLOB row naming one
-> path, which the index and the migration's check admit — with the insert-path work.
+> Adam) — until then it asks one only whether it holds a file; whether paths should be unique as the volumes fold them
+> (open, for Adam, decision 8) — until then two rows whose paths differ only in a spelling a folding volume reads as one
+> name one file there; a local disk's root whose stat is refused, taken to hold nothing as one that does not exist
+> (`MediaDisks::mayHold()`; open, for Adam, decision 9) — until then every step that asks it leaves that disk out, a
+> trash, an erasure and a withdrawal among them; a host driver's read-through disk with no url of its own, served only through a half, not counted
+> as served (recorded); where both a read-through disk and its primary set a prefix, the pass's stat of a name other
+> than the one listed (recorded); and on SQLite a TEXT row and a BLOB row naming one path, which the index and the
+> migration's check admit, and a row written past `MediaFile` at a path ending in the partial suffix, whose file a
+> trash, an erasure's disposal, settle and prune's removal of an extra copy delete beside the row at the path without
+> it, as that row's partial copy — prune's own listing asks the table first, and the volume of each row's own path —
+> with the insert-path work.
 
 ---
 

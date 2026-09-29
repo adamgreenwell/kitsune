@@ -8,6 +8,7 @@
 
 declare(strict_types=1);
 
+use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Database\Events\TransactionBeginning;
 use Illuminate\Filesystem\FilesystemAdapter;
 use Illuminate\Filesystem\LocalFilesystemAdapter;
@@ -18,6 +19,7 @@ use Illuminate\Support\Facades\Storage;
 use Kitsune\Core\Console\MediaPruneCommand;
 use Kitsune\Core\Media\MediaBytes;
 use Kitsune\Core\Media\MediaCustody;
+use Kitsune\Core\Media\MediaCustodyFailure;
 use Kitsune\Core\Media\MediaDisks;
 use Kitsune\Core\Media\MediaLibrary;
 use Kitsune\Core\Models\Entry;
@@ -141,6 +143,91 @@ it('removes nothing inside an open transaction, and neither does any removal it 
 
     Storage::disk(MediaDisks::PRIVATE)->assertExists($orphan);
 });
+
+/*
+ * ...and one a row claims by its very name between the listing and the lock is counted kept, never removed: the closing
+ * line said it had removed a file it had not (review of slice 5c). The rival row is written as the removal's own
+ * transaction begins.
+ */
+it('counts as kept, not removed, a partial copy a row claims by its very name under the lock', function (): void {
+    $file = storedForPrune($this->imageType);
+    $partial = MediaBytes::partial($file->path);
+    Storage::disk(MediaDisks::PRIVATE)->put($partial, 'half');
+    $claimed = false;
+
+    Event::listen(TransactionBeginning::class, function () use ($partial, &$claimed): void {
+        if ($claimed) {
+            return;
+        }
+
+        $claimed = true;
+        $other = storedForPrune($this->imageType);
+        DB::table('media_files')->where('id', $other->getKey())->update(['path' => $partial]);
+    });
+
+    $exit = Artisan::call('kitsune:media-prune', ['--force' => true]);
+
+    expect($claimed)->toBeTrue()
+        ->and(Artisan::output())->toContain('Removed 0 of 1 orphaned or leftover file and 0 of 0 extra copies. 1 kept: under the lock a row claimed its path')
+        ->and($exit)->toBe(0);
+    Storage::disk(MediaDisks::PRIVATE)->assertExists($partial);
+});
+
+/*
+ * A partial copy's name a row gives byte for byte — a row written past `MediaFile`, which refuses one — is that row's
+ * file: removed as another row's partial copy, the row lost its only file (review of slice 5c). Under the lock it is kept.
+ */
+it('keeps under the lock a partial copy whose very name a row gives', function (): void {
+    $file = storedForPrune($this->imageType);
+    $other = storedForPrune($this->imageType);
+    $partial = MediaBytes::partial($file->path);
+    DB::table('media_files')->where('id', $other->getKey())->update(['disk' => MediaDisks::PRIVATE, 'path' => $partial]);
+    Storage::disk(MediaDisks::PRIVATE)->put($partial, 'the other row\'s only file');
+
+    expect(MediaCustody::removeTemp(DB::connection(), (int) $file->entry_id, MediaDisks::PRIVATE, $partial))->toBe(MediaCustody::CLAIMED);
+
+    Storage::disk(MediaDisks::PRIVATE)->assertExists($partial);
+});
+
+/*
+ * ...and prune lists it as that row's copy, never another row's partial copy: the table decides, byte for byte, before
+ * the suffix does — a file on a disk the row does not name is its extra copy, and one on the disk it names is its own.
+ */
+it('lists a file whose very name a row gives as that row\'s, never another row\'s partial copy', function (string $named): void {
+    Storage::fake('legacy');
+    config(['filesystems.disks.legacy' => ['driver' => 'local', 'root' => Storage::disk('legacy')->path('')]]);
+    $file = storedForPrune($this->imageType);
+    $other = storedForPrune($this->imageType);
+    $partial = MediaBytes::partial($file->path);
+    Storage::disk($other->disk)->delete($other->path);
+    DB::table('media_files')->where('id', $other->getKey())->update(['disk' => $named, 'path' => $partial, 'visibility' => 'private']);
+    // Its only copy on core's private disk, and — where the row names that disk — a stale one on the public disk.
+    Storage::disk(MediaDisks::PRIVATE)->put($partial, pruneFixtureBytes());
+    $stale = $named === MediaDisks::PRIVATE ? 'public' : null;
+
+    if ($stale !== null) {
+        Storage::disk($stale)->put($partial, pruneFixtureBytes());
+    }
+
+    expect(Artisan::call('kitsune:media-prune'))->toBe(0);
+    $output = Artisan::output();
+    $extras = (string) strstr($output, 'Extra copies');
+
+    expect($output)->not->toContain('Leftover partial copies')
+        ->and($output)->not->toContain('Copies a row reaches under another spelling')
+        ->and($output)->toContain('No orphaned media files')
+        ->and($extras)->toContain('entry '.$other->entry_id.' ')
+        ->and($extras)->toContain($stale === null ? 'kept: kitsune:media-reconcile moves its row first' : 'removed, once asked again under the lock');
+
+    expect(Artisan::call('kitsune:media-prune', ['--force' => true]))->toBe(0);
+
+    Storage::disk(MediaDisks::PRIVATE)->assertExists($partial);
+    Storage::disk($file->disk)->assertExists($file->path);
+
+    if ($stale !== null) {
+        Storage::disk($stale)->assertMissing($partial);
+    }
+})->with(['a row naming another disk' => 'legacy', 'a row naming the disk that holds it, with a stale copy on another' => MediaDisks::PRIVATE]);
 
 /*
  * T110. With the private disk moved to a host's, a trashed file's copy left on core's private disk is an extra copy of
@@ -661,8 +748,9 @@ describe('what custody leaves', function (): void {
      * T21. The listing is read without a lock, so each delete asks again with custody's lock held. The rival row is
      * written as the removal's own transaction begins — between the listing and the recheck.
      */
-    it('keeps a file a row claimed since the listing', function (string $case): void {
-        $claim = $case === 'orphan' ? $this->paths['orphan'] : substr($this->paths['orphaned partial'], 0, -strlen(MediaBytes::PARTIAL));
+    it('keeps a file a row claimed since the listing', function (string $case, bool $named): void {
+        // A row may give a partial copy's own name, byte for byte, where it is written past `MediaFile` (review of 5c).
+        $claim = $named || $case === 'orphan' ? $this->paths[$case] : substr($this->paths[$case], 0, -strlen(MediaBytes::PARTIAL));
         $claimed = false;
 
         Event::listen(TransactionBeginning::class, function () use ($claim, &$claimed): void {
@@ -678,10 +766,14 @@ describe('what custody leaves', function (): void {
         $sections = pruneSections(['--force' => true]);
 
         expect($claimed)->toBeTrue()
-            ->and($sections['all'])->toContain('kept: under the lock a row claimed its path — one committed since the listing, or one the database, or the disk, takes for the same path.');
+            ->and($sections['all'])->toContain('kept: under the lock a row claimed its path — one committed since the listing, or one the database takes for the same path.');
 
         Storage::disk(MediaDisks::PRIVATE)->assertExists($this->paths[$case]);
-    })->with(['orphan', 'orphaned partial']);
+    })->with([
+        'an orphan' => ['orphan', false],
+        'an orphaned partial, by its path' => ['orphaned partial', false],
+        '...and by its name' => ['orphaned partial', true],
+    ]);
 });
 
 /*
@@ -999,7 +1091,7 @@ it('keeps a misnamed row\'s copy with the misnamed word, whatever disk the row n
             $output = Artisan::output();
 
             expect($output)->toContain('['.MediaDisks::PRIVATE.']  '.$named.' — live, its row names ['.$disk.'], it belongs on ['.$target."]: kept: its row's path is not written as the disks read it, and this copy is under that literal name")
-                ->and($output)->not->toContain('which its row names, could not be listed —')
+                ->and($output)->not->toContain('which its row names, could not be built —')
                 ->and($output)->not->toContain('a read-through disk, which custody neither reads')
                 ->and($output)->not->toContain('kitsune:media-reconcile --force moves no row off it')
                 ->and($output)->not->toContain('moves its row first')
@@ -1028,8 +1120,16 @@ it('matches a row whose values SQLite stores as a BLOB, and removes none of its 
         test()->markTestSkipped('only SQLite keeps a value\'s storage class apart from its column\'s type');
     }
 
+    // ...and its extra copy is the row's extra copy, listed as one it removes — not a copy the row reaches under another
+    // spelling, which the pass over the table would take it for were the batch's lookup blind to the BLOB (review of 5c).
+    $extra = $column === 'path beside an extra copy';
+    $column = $extra ? 'path' : $column;
     $file = storedForPrune($this->imageType);
     $privateRoot = rtrim(Storage::disk(MediaDisks::PRIVATE)->path(''), '/');
+
+    if ($extra) {
+        Storage::disk('public')->put($file->path, (string) Storage::disk(MediaDisks::PRIVATE)->get($file->path));
+    }
 
     if ($column === 'visibility') {
         // Live and public, still on the private disk: awaiting publication.
@@ -1051,7 +1151,12 @@ it('matches a row whose values SQLite stores as a BLOB, and removes none of its 
         $output = Artisan::output();
 
         expect($output)->toContain('No orphaned media files.')
+            ->and($output)->not->toContain('Copies a row reaches')
             ->and($exit)->toBe(0);
+
+        if ($extra && $options === []) {
+            expect($output)->toContain('[public]  '.$file->path.' — live, its row names ['.MediaDisks::PRIVATE.'], it belongs on ['.MediaDisks::PRIVATE.']: removed, once asked again under the lock');
+        }
 
         match ($column) {
             'visibility' => expect($output)->toContain('Awaiting publication')->and($output)->toContain($file->path),
@@ -1064,13 +1169,13 @@ it('matches a row whose values SQLite stores as a BLOB, and removes none of its 
         expect(MediaCustody::removeOrphan(DB::connection(), MediaDisks::PRIVATE, $file->path))->toBe(MediaCustody::CLAIMED)
             ->and(is_file($privateRoot.'/'.$file->path))->toBeTrue();
     }
-})->with(['its path' => 'path', 'its visibility' => 'visibility', 'its disk' => 'disk']);
+})->with(['its path' => 'path', 'its path, beside an extra copy' => 'path beside an extra copy', 'its visibility' => 'visibility', 'its disk' => 'disk']);
 
 /*
- * A copy whose row names a disk that is not configured is kept as one whose row names a disk that could not be listed:
+ * A copy whose row names a disk that is not configured is kept as one whose row names a disk that could not be built:
  * reconcile refuses the row until the disk can be asked, so prune does not say reconcile moves it first (review of 5c).
  */
-it('keeps a copy whose row names a disk that could not be listed, and sends it to no reconcile', function (bool $force): void {
+it('keeps a copy whose row names a disk that could not be built, and sends it to no reconcile', function (bool $force): void {
     $file = storedForPrune($this->imageType);
     DB::table('media_files')->where('id', $file->getKey())->update(['disk' => 'gone']);
 
@@ -1078,9 +1183,65 @@ it('keeps a copy whose row names a disk that could not be listed, and sends it t
     $output = Artisan::output();
 
     expect($output)->toContain('Could not list [gone]')
-        ->and($output)->toContain('kept: [gone], which its row names, could not be listed — kitsune:media-reconcile --force moves its row only once that disk can be asked')
+        ->and($output)->toContain('kept: [gone], which its row names, could not be built — kitsune:media-reconcile --force moves its row only once that disk can be asked')
         ->and($output)->not->toContain('moves its row first')
         ->and(is_file(Storage::disk(MediaDisks::PRIVATE)->path($file->path)))->toBeTrue()
+        ->and($exit)->toBe(1);
+})->with(['read-only' => false, 'forced' => true]);
+
+/*
+ * ...but one built whose listing alone failed — a link under Laravel's default link handling, which refuses to list it —
+ * is a disk reconcile asks as any other: the line said a forced reconcile would not move the row, and it did, at once
+ * (review of slice 5c). Every volume makes it.
+ */
+it('sends a copy whose row names a disk whose listing alone failed to a reconcile that moves the row first', function (): void {
+    $legacy = sys_get_temp_dir().'/kitsune-prune-legacy-'.bin2hex(random_bytes(4));
+    mkdir($legacy.'/media/shared', 0777, true);
+
+    try {
+        config(['filesystems.disks.legacy' => ['driver' => 'local', 'root' => $legacy]]);
+        $file = storedForPrune($this->imageType);
+        $bytes = (string) Storage::disk($file->disk)->get($file->path);
+        Storage::disk($file->disk)->delete($file->path);
+        Storage::disk('legacy')->put($file->path, $bytes);
+        Storage::disk('public')->put($file->path, $bytes);
+        symlink($legacy.'/'.$file->path, $legacy.'/media/shared/link.png');
+        DB::table('media_files')->where('id', $file->getKey())->update(['disk' => 'legacy', 'visibility' => 'public']);
+
+        Artisan::call('kitsune:media-prune');
+        $output = Artisan::output();
+
+        expect($output)->toContain('Could not list [legacy]')
+            ->and($output)->toContain('entry '.$file->entry_id.'  [public]  '.$file->path.' — live, its row names [legacy], it belongs on [public]: kept: kitsune:media-reconcile moves its row first')
+            ->and($output)->not->toContain('only once that disk can be asked');
+
+        expect(Artisan::call('kitsune:media-reconcile', ['--force' => true]))->toBe(0)
+            ->and(DB::table('media_files')->where('id', $file->getKey())->value('disk'))->toBe('public');
+    } finally {
+        exec('rm -rf '.escapeshellarg($legacy));
+    }
+});
+
+/*
+ * ...and a disk that failed its first listing, scanned last, leaves no failure behind: each target is listed again from a
+ * clean slate, and an extra copy whose row names a disk that listed is still removable (review of slice 5c).
+ */
+it('removes an extra copy beside a disk scanned last whose listing failed', function (bool $force): void {
+    $kept = storedForPrune($this->imageType);
+    DB::table('media_files')->where('id', $kept->getKey())->update(['visibility' => 'public', 'disk' => 'public']);
+    Storage::disk('public')->put($kept->path, (string) Storage::disk(MediaDisks::PRIVATE)->get($kept->path));
+    $gone = storedForPrune($this->imageType);
+    DB::table('media_files')->where('id', $gone->getKey())->update(['disk' => 'gone']);
+
+    $exit = Artisan::call('kitsune:media-prune', $force ? ['--force' => true] : []);
+    $output = Artisan::output();
+
+    expect($output)->toContain('Could not list [gone]')
+        ->and($output)->not->toContain('Could not list [public] again')
+        ->and($output)->not->toContain('kept: [public] could not be listed')
+        ->and($output)->toContain('removed, once asked again under the lock')
+        ->and(str_contains($output, 'and 1 of 1 extra copy'))->toBe($force)
+        ->and(is_file(Storage::disk(MediaDisks::PRIVATE)->path($kept->path)))->toBe(! $force)
         ->and($exit)->toBe(1);
 })->with(['read-only' => false, 'forced' => true]);
 
@@ -1360,7 +1521,7 @@ it('fails the listing of a read-through cycle a row names, and says why', functi
             // Its row's other copy is kept as one whose row names a disk that could not be listed. A cycle is configured
             // as read-through, so the read-through arms, asked first, would claim it and advise taking a copy off through
             // halves never built (review of slice 5c).
-            ->and($output)->toContain('kept: [loop-a], which its row names, could not be listed')
+            ->and($output)->toContain('kept: [loop-a], which its row names, could not be built')
             ->and($output)->not->toContain('moves its row first')
             ->and(is_file(Storage::disk(MediaDisks::PRIVATE)->path($file->path)))->toBeTrue()
             ->and($exit)->toBe(1);
@@ -1908,10 +2069,28 @@ function pruneRows(MediaFile $template, int $count, string $disk, string $name, 
     return $paths;
 }
 
+/**
+ * A stored file whose media_files id is not its entry's, so a line or a claim carrying the one where the other belongs is
+ * seen (review of #155's fix): a fresh table numbers both alike.
+ */
+function storedApartForPrune(EntryType $type): MediaFile
+{
+    $file = storedForPrune($type);
+    $id = (int) $file->getKey() + 100;
+    DB::table('media_files')->where('id', $file->getKey())->update(['id' => $id]);
+    $moved = MediaFile::query()->findOrFail($id);
+
+    expect((int) $moved->entry_id)->not->toBe($id);
+
+    return $moved;
+}
+
 /*
  * T135-T142, T144, T146, T151, T152, T154-T157, T160-T165, T169, T171, T176, T182. Prune reads rows in batches (Adam, decision 11, 2026-09-26): the disks rows name, then the rows naming
- * a batch of listed files, as each disk lists them — holding what it lists and no row besides — and lists exactly what it
- * listed when it held every row.
+ * a batch of listed files, as each disk lists them — holding what it lists and no row besides — and lists what it listed
+ * when it held every row, but for what ADR-042 decision 11's list of what prune prints that is not unchanged names: among
+ * them a name a row reaches under another spelling, which it listed as an orphan and the pass over the table now keeps
+ * under a heading of its own, lists as that row's partial copy, or lists nowhere (T176; Codex, #155).
  */
 describe('reading in batches', function (): void {
     beforeEach(function (): void {
@@ -2074,18 +2253,22 @@ describe('reading in batches', function (): void {
         }
     });
 
-    // T139: a file is claimed by a row naming exactly its path, whatever the engine's collation matches it to.
+    // T139: a file is claimed by a row naming exactly its path, whatever the engine's collation matches it to — an accent
+    // MySQL's and MariaDB's collations ignore, and no volume folds, so the check is the same on every volume (review of
+    // the fix for Codex, #155, where a case the laptop's volume folds made the row's own file its claim).
     it('claims a file only for a row naming exactly its path, on every engine', function (): void {
         $file = storedForPrune($this->imageType);
-        $upper = (string) preg_replace_callback('#[^/]+$#', static fn (array $name): string => strtoupper($name[0]), $file->path);
-        DB::table('media_files')->where('id', $file->getKey())->update(['path' => $upper]);
-        // Beside the row's own path, with a trailing space: another name, even on a volume that folds case.
-        Storage::disk(MediaDisks::PRIVATE)->put($upper.' ', 'bytes');
+        $dir = dirname($file->path);
+        rename($this->root.'/'.$file->path, $this->root.'/'.$dir.'/cafe.png');
+        $row = $dir.'/caf'."\u{e9}".'.png';
+        DB::table('media_files')->where('id', $file->getKey())->update(['path' => $row]);
+        // Beside the row's own path, with a trailing space: another name, on every volume.
+        Storage::disk(MediaDisks::PRIVATE)->put($row.' ', 'bytes');
 
         $exit = Artisan::call('kitsune:media-prune');
         $output = Artisan::output();
 
-        expect($output)->toContain($file->path)
+        expect($output)->toContain($dir.'/cafe.png')
             ->and($output)->toContain('2 orphaned files')
             ->and($output)->not->toContain('Extra copies')
             ->and($exit)->toBe(0);
@@ -2315,13 +2498,14 @@ describe('reading in batches', function (): void {
     ]);
 
     /*
-     * T176. A listed name the volume reaches as a row's own file — in another case, or another Unicode normalization — is
-     * kept: the lookup under the lock compares bytes on SQLite and PostgreSQL, found no row, and the row's own file was
-     * removed (review of slice 5c). Made on any volume: renamed where the volume folds the two, and where it does not, a
-     * hard link — two names for one file either way.
+     * T176. A listed name the volume reaches as a row's own file — however the row spells it: another case, the other
+     * Unicode normalization or the two mixed in one name, a character the volume folds to one inside ASCII, a length the
+     * fold changes, a directory spelt otherwise — is that row's file, and is listed nowhere. The recheck under the lock
+     * compares bytes on SQLite and PostgreSQL, found no row, and the row's only file was removed (review of slice 5c);
+     * asked by the listed name's spellings, then by pattern, it missed the mixed-case row an import writes (Codex, #155)
+     * and then the rest. So the volume is asked, by stat. Made only where the volume folds the two; skipped elsewhere.
      */
-    it('keeps a name the volume reaches as a row\'s own file', function (string $form): void {
-        // ...its row's path stored as a BLOB too, which a lookup by each spelling asks for as well (review of slice 5c).
+    it('lists nowhere a name the volume reaches as a row\'s own file', function (string $form): void {
         $blob = str_ends_with($form, ' blob');
         $form = $blob ? substr($form, 0, -strlen(' blob')) : $form;
 
@@ -2331,70 +2515,1919 @@ describe('reading in batches', function (): void {
 
         $kept = storedForPrune($this->imageType);
         $dir = dirname($kept->path);
-        $cafe = 'caf'."\u{e9}".'.png';
-        // The row's spelling — a host's import may have written any of these — and the name the disk holds instead.
-        [$path, $variant] = match ($form) {
+        $cafe = 'caf'."\u{e9}";
+        $nfd = static fn (string $name): string => (string) Normalizer::normalize($name, Normalizer::FORM_D);
+        // The row's spelling, and the name the disk holds its file under.
+        [$row, $name] = match ($form) {
             'case' => [$kept->path, $dir.'/'.strtoupper(basename($kept->path))],
-            'nfd name' => [$dir.'/'.$cafe, $dir.'/'.Normalizer::normalize($cafe, Normalizer::FORM_D)],
-            'nfc name' => [$dir.'/'.Normalizer::normalize($cafe, Normalizer::FORM_D), $dir.'/'.$cafe],
-            default => [$dir.'/'.$cafe, $dir.'/'.Normalizer::normalize(mb_strtoupper($cafe), Normalizer::FORM_D)],
+            'nfd name' => [$dir.'/'.$cafe.'.png', $dir.'/'.$nfd($cafe).'.png'],
+            'nfc name' => [$dir.'/'.$nfd($cafe).'.png', $dir.'/'.$cafe.'.png'],
+            'upper nfd name' => [$dir.'/'.$cafe.'.png', $dir.'/'.$nfd(mb_strtoupper($cafe.'.png'))],
+            'mixed case' => [$dir.'/KeptPhoto.PNG', $dir.'/keptphoto.png'],
+            'accented, upper' => [$dir.'/'.mb_strtoupper($cafe).'.png', $dir.'/'.$cafe.'.png'],
+            'accented, upper, the row in NFD' => [$dir.'/'.$nfd(mb_strtoupper($cafe)).'.png', $dir.'/'.$cafe.'.png'],
+            'kelvin' => [$dir."/\u{212A}eptphoto.png", $dir.'/keptphoto.png'],
+            'long s' => [$dir."/\u{17F}unphoto.png", $dir.'/sunphoto.png'],
+            'greek question mark' => [$dir."/kept\u{37E}photo.png", $dir.'/kept;photo.png'],
+            'varia' => [$dir."/kept\u{1FEF}photo.png", $dir.'/kept`photo.png'],
+            'sharp s' => [$dir.'/STRASSE.png', $dir."/stra\u{DF}e.png"],
+            'dotless i' => [$dir."/\u{131}lik-PHOTO.png", $dir."/\u{131}lik-photo.png"],
+            'mixed forms' => [$dir.'/'.$cafe.'-'.$nfd($cafe).'.png', $dir.'/'.$cafe.'-'.$cafe.'.png'],
+            default => [strtoupper($dir).'/0123', $dir.'/0123'],
         };
-
-        if ($path !== $kept->path) {
-            rename($this->root.'/'.$kept->path, $this->root.'/'.$path);
-            DB::table('media_files')->where('id', $kept->getKey())->update(['path' => $path]);
-        }
-
-        $folds = @stat($this->root.'/'.$variant) !== false;
-        $folds ? rename($this->root.'/'.$path, $this->root.'/'.$variant) : link($this->root.'/'.$path, $this->root.'/'.$variant);
+        rename($this->root.'/'.$kept->path, $this->root.'/'.$name);
+        $file = @stat($this->root.'/'.$name);
+        $reached = @stat($this->root.'/'.$row);
 
         // A volume that reaches the two as one file may keep the name as first written — case-sensitive APFS does, for a
-        // rename between normalizations: then no name is listed but the row's, and there is nothing to ask.
-        if (! in_array(basename($variant), scandir(dirname($this->root.'/'.$variant)) ?: [], true)) {
+        // rename between normalizations — and one that folds neither is asked nothing here.
+        if (! in_array(basename($name), scandir(dirname($this->root.'/'.$name)) ?: [], true)) {
             test()->markTestSkipped('this volume keeps the name as first written');
         }
+
+        if (! is_array($file) || ! is_array($reached) || $file['ino'] !== $reached['ino']) {
+            test()->markTestSkipped('this volume does not fold the two');
+        }
+
+        DB::table('media_files')->where('id', $kept->getKey())->update(['path' => $row]);
 
         if ($blob) {
             DB::update('update media_files set path = cast(path as blob) where id = ?', [$kept->getKey()]);
         }
 
         $exit = Artisan::call('kitsune:media-prune');
+        $output = Artisan::output();
 
-        // Listed as an orphan, by count: the console prints a name in NFC, whatever the disk holds it as.
-        expect(Artisan::output())->toContain('1 orphaned file, 0 leftover partial copies')->and($exit)->toBe(0);
+        expect($output)->toContain('No orphaned media files.')
+            ->and($output)->not->toContain('Copies a row reaches')
+            ->and($exit)->toBe(0);
 
         $exit = Artisan::call('kitsune:media-prune', ['--force' => true]);
 
-        expect(Artisan::output())->toContain('1 kept: under the lock a row claimed its path')
-            ->and(is_file($this->root.'/'.$variant))->toBeTrue()
-            ->and(is_file($this->root.'/'.$path))->toBeTrue()
+        expect(Artisan::output())->toContain('No orphaned media files.')
+            ->and(is_file($this->root.'/'.$name))->toBeTrue()
             ->and($exit)->toBe(0);
     })->with([
         'another case' => 'case',
         'the name in NFD, the row in NFC' => 'nfd name',
         'the name in NFC, the row in NFD' => 'nfc name',
         'the name upper case in NFD, the row lower case in NFC' => 'upper nfd name',
+        'an import\'s mixed case (Codex, #155)' => 'mixed case',
+        'an accented name in upper case' => 'accented, upper',
+        'an accented name in upper case, the row in NFD' => 'accented, upper, the row in NFD',
+        'the Kelvin sign for k' => 'kelvin',
+        'the long s for s' => 'long s',
+        'the Greek question mark for ;' => 'greek question mark',
+        'the varia for a backtick' => 'varia',
+        'STRASSE for straße' => 'sharp s',
+        'a dotless i' => 'dotless i',
+        'NFC and NFD mixed in one name' => 'mixed forms',
+        'a directory in another case, over a name with no cased letter' => 'directory',
         'another case, the row\'s path a BLOB' => 'case blob',
     ]);
 
-    // ...a partial copy's the same, by the path it was written for — where the volume folds the two, the one case in
-    // which the name is listed as an orphan rather than a partial copy of the row.
-    it('keeps a partial copy\'s name the volume reaches under the row\'s own spelling', function (): void {
+    // ...but a hard link is another entry for the file — beside it, in another directory, under another accent, or in
+    // another case where the volume keeps the two apart — which removing leaves the row's own: an orphan, on any volume.
+    // MySQL and MariaDB's collation claims it under the lock where it differs only in case or accents (review of the fix).
+    it('removes a name that is only another entry for a row\'s file', function (string $where): void {
         $kept = storedForPrune($this->imageType);
-        $partial = $kept->path.MediaBytes::PARTIAL;
-        $variant = dirname($kept->path).'/'.strtoupper(basename($kept->path)).MediaBytes::PARTIAL;
-        file_put_contents($this->root.'/'.$partial, 'part');
+        $dir = dirname($kept->path);
 
-        if (@stat($this->root.'/'.$variant) === false) {
-            test()->markTestSkipped('this volume does not fold case');
+        if ($where === 'accent') {
+            rename($this->root.'/'.$kept->path, $this->root.'/'.$dir.'/caf'."\u{e8}".'.png');
+            DB::table('media_files')->where('id', $kept->getKey())->update(['path' => $dir.'/caf'."\u{e8}".'.png']);
+            $kept->path = $dir.'/caf'."\u{e8}".'.png';
         }
 
-        rename($this->root.'/'.$partial, $this->root.'/'.$variant);
+        $link = match ($where) {
+            'beside' => $dir.'/other.png',
+            'elsewhere' => 'media/'.$this->org->getKey().'/2026/10/else.png',
+            'accent' => $dir.'/caf'."\u{e9}".'.png',
+            default => $dir.'/'.strtoupper(basename($kept->path)),
+        };
+
+        if ($where === 'case' && @stat($this->root.'/'.$link) !== false) {
+            test()->markTestSkipped('this volume folds case: the two names are one entry');
+        }
+
+        @mkdir(dirname($this->root.'/'.$link), 0777, true);
+        link($this->root.'/'.$kept->path, $this->root.'/'.$link);
+        $collates = in_array($where, ['accent', 'case'], true) && in_array(DB::connection()->getDriverName(), ['mysql', 'mariadb'], true);
+
+        $exit = Artisan::call('kitsune:media-prune');
+
+        expect(Artisan::output())->toContain('1 orphaned file')->and($exit)->toBe(0);
 
         $exit = Artisan::call('kitsune:media-prune', ['--force' => true]);
 
-        expect(Artisan::output())->toContain('1 kept: under the lock a row claimed its path')
-            ->and(is_file($this->root.'/'.$variant))->toBeTrue()
+        expect(Artisan::output())->toContain($collates ? '1 kept: under the lock a row claimed its path' : 'Removed 1 of 1 orphaned or leftover file')
+            ->and(is_file($this->root.'/'.$link))->toBe($collates)
+            ->and(hash_file('sha256', $this->root.'/'.$kept->path))->toBe(hash('sha256', pruneFixtureBytes()))
+            ->and($exit)->toBe(0);
+    })->with(['beside it' => 'beside', 'in another directory' => 'elsewhere', 'under another accent' => 'accent', 'in another case, where the volume keeps them apart' => 'case']);
+
+    // ...and a row's path that reaches its file through a link the listing skips — a month's directory, or the row's own
+    // name — lists that file nowhere: the listing's name for it is an orphan's no longer. A hard link to it elsewhere is
+    // still another entry (review of the fix).
+    it('lists nowhere a file a row\'s path reaches through a link the listing skips', function (string $shape): void {
+        $root = sys_get_temp_dir().'/kitsune-prune-links-'.bin2hex(random_bytes(4));
+        mkdir($root, 0777, true);
+
+        try {
+            config(['filesystems.disks.'.MediaDisks::PRIVATE => ['driver' => 'local', 'root' => $root, 'links' => 'skip']]);
+            Storage::forgetDisk(MediaDisks::PRIVATE);
+            $kept = storedForPrune($this->imageType);
+            $org = 'media/'.$this->org->getKey();
+            $bytes = hash_file('sha256', $root.'/'.$kept->path);
+
+            if ($shape === 'directory') {
+                // The month's directory a link to another, whose file the listing gives under the other's name.
+                rename($root.'/'.dirname($kept->path), $root.'/'.$org.'/real');
+                symlink($root.'/'.$org.'/real', $root.'/'.dirname($kept->path));
+                $row = $kept->path;
+                $removed = null;
+            } else {
+                // The row's name a link to b/target.png, which has a hard link at c/tlink.png.
+                mkdir($root.'/'.$org.'/b', 0777, true);
+                mkdir($root.'/'.$org.'/c', 0777, true);
+                rename($root.'/'.$kept->path, $root.'/'.$org.'/b/target.png');
+                link($root.'/'.$org.'/b/target.png', $root.'/'.$org.'/c/tlink.png');
+                symlink($root.'/'.$org.'/b/target.png', $root.'/'.$org.'/c/sym.png');
+                $row = $org.'/c/sym.png';
+                $removed = $org.'/c/tlink.png';
+                DB::table('media_files')->where('id', $kept->getKey())->update(['path' => $row]);
+            }
+
+            $exit = Artisan::call('kitsune:media-prune', ['--force' => true]);
+            $output = Artisan::output();
+
+            expect($output)->toContain($removed === null ? 'No orphaned media files.' : 'Removed 1 of 1 orphaned or leftover file')
+                // Listed nowhere, not as another disk's row's copy (review of slice 5c).
+                ->and($output)->not->toContain('Copies a row reaches')
+                ->and(hash_file('sha256', $root.'/'.$row))->toBe($bytes)
+                ->and($removed === null || ! file_exists($root.'/'.$removed))->toBeTrue()
+                ->and($exit)->toBe(0);
+        } finally {
+            exec('rm -rf '.escapeshellarg($root));
+        }
+    })->with(['through its month\'s directory' => 'directory', 'through its own name, beside a hard link elsewhere' => 'name']);
+
+    /*
+     * ...and where a row's other spelling and a hard link share a directory, which entry the row reaches cannot be told:
+     * both are kept, and listed nowhere where the row names that disk. A hard link in another directory is still removed
+     * (review of the fix). The same read keeps a row's own file, spelt otherwise, wherever that file has a hard link: only a
+     * volume that folds — case, or normalization, which a case-sensitive APFS volume still folds — makes it; on one that
+     * folds nothing, every name a row reaches is one its directory holds byte for byte (review of slice 5c).
+     */
+    it('keeps what a row reaches under another spelling beside a hard link, and removes one elsewhere', function (string $fold): void {
+        $sole = storedForPrune($this->imageType);
+        $pair = storedForPrune($this->imageType);
+        $dir = dirname($sole->path);
+        // The files in NFC; the rows in upper case, or in NFD.
+        rename($this->root.'/'.$sole->path, $this->root.'/'.$dir.'/sol'."\u{e9}".'.png');
+        rename($this->root.'/'.$pair->path, $this->root.'/'.$dir.'/t1'."\u{e9}".'.png');
+        [$soleRow, $pairRow] = $fold === 'case'
+            ? [$dir.'/SOL'."\u{c9}".'.PNG', $dir.'/T1'."\u{c9}".'.PNG']
+            : [$dir.'/sole'."\u{301}".'.png', $dir.'/t1e'."\u{301}".'.png'];
+
+        if (@stat($this->root.'/'.$soleRow) === false) {
+            test()->markTestSkipped('this volume does not fold '.$fold);
+        }
+
+        @mkdir($this->root.'/media/'.$this->org->getKey().'/2026/10', 0777, true);
+        link($this->root.'/'.$dir.'/sol'."\u{e9}".'.png', $this->root.'/media/'.$this->org->getKey().'/2026/10/sole-link.png');
+        link($this->root.'/'.$dir.'/t1'."\u{e9}".'.png', $this->root.'/'.$dir.'/t2.png');
+        DB::table('media_files')->where('id', $sole->getKey())->update(['path' => $soleRow]);
+        DB::table('media_files')->where('id', $pair->getKey())->update(['path' => $pairRow]);
+
+        $exit = Artisan::call('kitsune:media-prune', ['--force' => true]);
+
+        expect(Artisan::output())->toContain('Removed 1 of 1 orphaned or leftover file')
+            ->and(is_file($this->root.'/'.$dir.'/sol'."\u{e9}".'.png'))->toBeTrue()
+            ->and(file_exists($this->root.'/media/'.$this->org->getKey().'/2026/10/sole-link.png'))->toBeFalse()
+            ->and(is_file($this->root.'/'.$dir.'/t1'."\u{e9}".'.png'))->toBeTrue()
+            ->and(is_file($this->root.'/'.$dir.'/t2.png'))->toBeTrue()
+            ->and($exit)->toBe(0);
+    })->with(['in another case' => 'case', 'in another normalization' => 'normalization']);
+
+    /*
+     * ...and beside a row's partial path spelt otherwise, only a name custody could have written — one ending in the partial
+     * suffix — is taken for that row's leftover partial copy: a hard link of it under another name, which the volume
+     * cannot tell from the entry the partial path reaches, stays an orphan, asked again under the lock by its own name
+     * (review of slice 5c). Only a volume that folds makes it.
+     */
+    it('takes only a partial copy by its name for a row\'s partial path, and leaves a hard link of it an orphan', function (string $fold): void {
+        $kept = storedForPrune($this->imageType);
+        $dir = dirname($kept->path);
+        rename($this->root.'/'.$kept->path, $this->root.'/'.$dir.'/sol'."\u{e9}".'.png');
+        $partial = $dir.'/sol'."\u{e9}".'.png'.MediaBytes::PARTIAL;
+        file_put_contents($this->root.'/'.$partial, 'part');
+        link($this->root.'/'.$partial, $this->root.'/'.$dir.'/unrelated.bin');
+        $row = $fold === 'case' ? $dir.'/SOL'."\u{c9}".'.PNG' : $dir.'/sole'."\u{301}".'.png';
+
+        if (@stat($this->root.'/'.$row.MediaBytes::PARTIAL) === false) {
+            test()->markTestSkipped('this volume does not fold '.$fold);
+        }
+
+        DB::table('media_files')->where('id', $kept->getKey())->update(['path' => $row]);
+
+        Artisan::call('kitsune:media-prune');
+        $output = Artisan::output();
+        $orphans = strpos($output, 'Orphaned media files');
+        $partials = strpos($output, 'Leftover partial copies');
+        $link = strpos($output, '  ['.MediaDisks::PRIVATE.']  '.$dir.'/unrelated.bin');
+
+        expect($orphans)->not->toBeFalse()
+            ->and($partials)->not->toBeFalse()
+            ->and($link)->not->toBeFalse()
+            ->and($link)->toBeGreaterThan((int) $orphans)
+            ->and($link)->toBeLessThan((int) $partials)
+            ->and($output)->toContain('entry '.$kept->entry_id.'  ['.MediaDisks::PRIVATE.']  '.$partial)
+            ->and($output)->not->toContain('entry '.$kept->entry_id.'  ['.MediaDisks::PRIVATE.']  '.$dir.'/unrelated.bin');
+
+        $exit = Artisan::call('kitsune:media-prune', ['--force' => true]);
+
+        expect(Artisan::output())->toContain('Removed 2 of 2 orphaned or leftover files')
+            ->and(is_file($this->root.'/'.$dir.'/sol'."\u{e9}".'.png'))->toBeTrue()
+            ->and($exit)->toBe(0);
+    })->with(['in another case' => 'case', 'in another normalization' => 'normalization']);
+
+    /*
+     * ...and so where a link at a row's partial path reaches another listed file: that file, under a name custody never
+     * writes, stays an orphan, and is not listed as the row's partial copy (review of slice 5c). Reached through a link the
+     * listing skips, so every volume makes it.
+     */
+    it('takes only a partial copy by its name where a link at a row\'s partial path reaches another listed file', function (): void {
+        config(['filesystems.disks.'.MediaDisks::PRIVATE => ['driver' => 'local', 'root' => $this->root, 'links' => 'skip']]);
+        Storage::forgetDisk(MediaDisks::PRIVATE);
+        $kept = storedForPrune($this->imageType);
+        $dir = dirname($kept->path);
+        file_put_contents($this->root.'/'.$dir.'/unrelated.bin', 'x');
+        symlink($this->root.'/'.$dir.'/unrelated.bin', $this->root.'/'.$kept->path.MediaBytes::PARTIAL);
+        // A partial copy listed, so the pass asks each row's partial path.
+        file_put_contents($this->root.'/'.$dir.'/x.png'.MediaBytes::PARTIAL, 'part');
+
+        $exit = Artisan::call('kitsune:media-prune');
+        $output = Artisan::output();
+        $orphans = strpos($output, 'Orphaned media files');
+        $link = strpos($output, '  ['.MediaDisks::PRIVATE.']  '.$dir.'/unrelated.bin');
+
+        expect($orphans)->not->toBeFalse()
+            ->and($link)->toBeGreaterThan((int) $orphans)
+            ->and($output)->not->toContain('entry '.$kept->entry_id.'  ['.MediaDisks::PRIVATE.']  '.$dir.'/unrelated.bin')
+            ->and($output)->not->toContain('Leftover partial copies')
+            ->and($exit)->toBe(0);
+    });
+
+    // ...and custody's own removal of an extra copy asks the partial name beside it as absent too: the copy was removed,
+    // and the run failed saying whether the partial was there could not be told (review of slice 5c).
+    it('removes an extra copy of a row whose partial name the volume refuses as too long', function (): void {
+        $kept = storedForPrune($this->imageType);
+        $long = 'media/'.str_repeat('a', 245).'.png';
+        @mkdir($this->root.'/media', 0777, true);
+        rename($this->root.'/'.$kept->path, $this->root.'/'.$long);
+        DB::table('media_files')->where('id', $kept->getKey())->update(['path' => $long]);
+        Storage::disk('public')->put($long, 'stale');
+
+        $exit = Artisan::call('kitsune:media-prune', ['--force' => true]);
+
+        expect(Artisan::output())->toContain('Removed 0 of 0 orphaned or leftover files and 1 of 1 extra copy.')
+            ->and(Storage::disk('public')->exists($long))->toBeFalse()
+            ->and(is_file($this->root.'/'.$long))->toBeTrue()
+            ->and($exit)->toBe(0);
+    });
+
+    // ...and so is one PHP refuses, its path `PHP_MAXPATHLEN - 1` bytes or more, which it reports as EIO: a row's path
+    // under directories deep enough failed every run on a stray partial copy. Only SQLite's column holds such a path.
+    it('reads a row\'s partial path longer than PHP takes as absent', function (): void {
+        if (DB::connection()->getDriverName() !== 'sqlite') {
+            test()->markTestSkipped('only SQLite holds a path longer than 255 characters');
+        }
+
+        $kept = storedForPrune($this->imageType);
+        $dir = 'media';
+
+        while (strlen($this->root.'/'.$dir) < PHP_MAXPATHLEN - 200) {
+            $dir .= '/'.str_repeat('d', 150);
+        }
+
+        mkdir($this->root.'/'.$dir, 0777, true);
+        // The row's own path short of the limit, and its partial path past it.
+        $row = $dir.'/'.str_repeat('f', PHP_MAXPATHLEN - 10 - strlen($this->root.'/'.$dir));
+        rename($this->root.'/'.$kept->path, $this->root.'/'.$row);
+        DB::table('media_files')->where('id', $kept->getKey())->update(['path' => $row]);
+        $stray = 'media/'.$this->org->getKey().'/2026/09/stray.png'.MediaBytes::PARTIAL;
+        file_put_contents($this->root.'/'.$stray, 'part');
+
+        $exit = Artisan::call('kitsune:media-prune');
+
+        expect(Artisan::output())->toContain('  ['.MediaDisks::PRIVATE.']  '.$stray)->and($exit)->toBe(0);
+
+        $exit = Artisan::call('kitsune:media-prune', ['--force' => true]);
+
+        expect(is_file($this->root.'/'.$stray))->toBeFalse()
+            ->and(is_file($this->root.'/'.$row))->toBeTrue()
+            ->and($exit)->toBe(0);
+    });
+
+    // ...and a row's own path so refused fails the run, read-only and forced, and nothing is removed: whether its file is
+    // there cannot be told, as the volume says. APFS counts a name's characters and ext4 its bytes, so the name is 300
+    // ASCII characters, which only SQLite's column holds (review of slice 5c).
+    it('fails the run on a row\'s own path the volume refuses as too long', function (bool $force): void {
+        if (DB::connection()->getDriverName() !== 'sqlite') {
+            test()->markTestSkipped('only SQLite holds a path longer than 255 characters');
+        }
+
+        $kept = storedForPrune($this->imageType);
+        DB::table('media_files')->where('id', $kept->getKey())->update(['path' => 'media/'.str_repeat('a', 300).'.png']);
+        $stray = 'media/'.$this->org->getKey().'/2026/09/stray.png';
+        file_put_contents($this->root.'/'.$stray, 'x');
+
+        expect(fn () => Artisan::call('kitsune:media-prune', $force ? ['--force' => true] : []))
+            ->toThrow(MediaCustodyFailure::class, 'whether it exists cannot be told');
+        expect(is_file($this->root.'/'.$stray))->toBeTrue()
+            ->and(is_file($this->root.'/'.$kept->path))->toBeTrue();
+    })->with(['read-only' => false, 'forced' => true]);
+
+    /*
+     * ...and a partial copy the listing found is asked too: where a row's own path reaches it — through a link the listing
+     * skips, or in a spelling written past `MediaFile` — it is that row's file, never the partial copy another row's lock
+     * removes, which cost the row its only file (review of slice 5c). A link every volume makes; the spelling only a
+     * folding one. A partial copy no row's own path reaches is still its row's, and removed.
+     */
+    it('takes a listed partial copy a row\'s own path reaches for that row\'s file', function (string $case): void {
+        config(['filesystems.disks.'.MediaDisks::PRIVATE => ['driver' => 'local', 'root' => $this->root, 'links' => 'skip']]);
+        Storage::forgetDisk(MediaDisks::PRIVATE);
+        [$a, $b, $c] = [storedForPrune($this->imageType), storedForPrune($this->imageType), storedForPrune($this->imageType)];
+        // B's only file under A's partial name; C's partial copy a real one, which no row's own path reaches; and a partial
+        // copy no row's path is written for, an orphan, so the pass asks each row's partial path too — which never takes a
+        // partial copy from the row the listing gave it.
+        $partial = $a->path.MediaBytes::PARTIAL;
+        rename($this->root.'/'.$b->path, $this->root.'/'.$partial);
+        $alone = $case === 'alone';
+
+        if (! $alone) {
+            file_put_contents($this->root.'/'.$c->path.MediaBytes::PARTIAL, 'half');
+            file_put_contents($this->root.'/'.dirname($a->path).'/gone.png'.MediaBytes::PARTIAL, 'half');
+        }
+
+        if ($case === 'spelling') {
+            $row = $a->path.'.KITSUNE-PARTIAL';
+
+            if (@stat($this->root.'/'.$row) === false) {
+                test()->markTestSkipped('this volume does not fold case');
+            }
+        } else {
+            $row = dirname($a->path).'/link.png';
+            symlink($this->root.'/'.$partial, $this->root.'/'.$row);
+        }
+
+        $named = $case === 'another disk' ? 'legacy' : MediaDisks::PRIVATE;
+        config(['filesystems.disks.legacy' => ['driver' => 'local', 'root' => $this->root.'-legacy']]);
+        DB::table('media_files')->where('id', $b->getKey())->update(['path' => $row, 'disk' => $named]);
+
+        try {
+            $exit = Artisan::call('kitsune:media-prune');
+            $output = Artisan::output();
+
+            expect($output)->not->toContain('entry '.$a->entry_id.'  ['.MediaDisks::PRIVATE.']  '.$partial)
+                ->and($output)->toContain($named === 'legacy'
+                    ? 'entry '.$b->entry_id.'  ['.MediaDisks::PRIVATE.']  '.$partial.' — its row names [legacy] '.$row
+                    : ($alone ? 'No orphaned media files.' : 'Leftover partial copies'))
+                ->and($exit)->toBe(0);
+
+            // Alone, the disk's only partial copy taken for the row's own file leaves no heading behind it; beside C's, C's
+            // stays C's.
+            if ($alone) {
+                expect($output)->not->toContain('Leftover partial copies');
+            } else {
+                expect($output)->toContain('entry '.$c->entry_id.'  ['.MediaDisks::PRIVATE.']  '.$c->path.MediaBytes::PARTIAL);
+            }
+
+            $exit = Artisan::call('kitsune:media-prune', ['--force' => true]);
+
+            expect(Artisan::output())->toContain($alone ? 'No orphaned media files.' : 'Removed 2 of 2 orphaned or leftover files and')
+                ->and(is_file($this->root.'/'.$partial))->toBeTrue()
+                ->and(file_exists($this->root.'/'.$c->path.MediaBytes::PARTIAL))->toBeFalse()
+                ->and($exit)->toBe(0);
+        } finally {
+            exec('rm -rf '.escapeshellarg($this->root.'-legacy'));
+        }
+    })->with([
+        'through a link the listing skips' => 'link',
+        '...the disk\'s only partial copy' => 'alone',
+        '...for a row naming another disk' => 'another disk',
+        'in a spelling a folding volume reads as the name' => 'spelling',
+    ]);
+
+    /*
+     * ...and a row's partial path the volume refuses as too long is absent — custody never wrote one — where a row's own
+     * path, 255 characters and legal, made every run fail on a stray partial copy it had nothing to do with; the row's own
+     * path so refused still fails the run (review of slice 5c).
+     */
+    it('reads a row\'s partial path the volume refuses as too long as absent', function (): void {
+        $kept = storedForPrune($this->imageType);
+        $long = 'media/'.str_repeat('a', 245).'.png';
+        rename($this->root.'/'.$kept->path, $this->root.'/'.$long);
+        DB::table('media_files')->where('id', $kept->getKey())->update(['path' => $long]);
+        $stray = 'media/'.$this->org->getKey().'/2026/09/stray.png'.MediaBytes::PARTIAL;
+        file_put_contents($this->root.'/'.$stray, 'part');
+
+        $exit = Artisan::call('kitsune:media-prune');
+
+        expect(Artisan::output())->toContain('  ['.MediaDisks::PRIVATE.']  '.$stray)
+            ->and($exit)->toBe(0);
+
+        $exit = Artisan::call('kitsune:media-prune', ['--force' => true]);
+
+        expect(Artisan::output())->toContain('Removed 1 of 1 orphaned or leftover file and')
+            ->and(is_file($this->root.'/'.$stray))->toBeFalse()
+            ->and(is_file($this->root.'/'.$long))->toBeTrue()
+            ->and($exit)->toBe(0);
+    });
+
+    // ...and a row's path written past `MediaFile` in a form the disks read as another — the insert-path gap — reaches the
+    // file it is read as, which is that row's, and listed nowhere: `--force` removed the row's only file (Codex, #155).
+    it('lists nowhere the file a row\'s path the disks read as another reaches', function (string $spelt): void {
+        $kept = storedForPrune($this->imageType);
+        $dir = dirname($kept->path);
+        $row = $spelt === 'slash' ? $dir.'//'.basename($kept->path) : $dir.'/y/../'.basename($kept->path);
+        DB::table('media_files')->where('id', $kept->getKey())->update(['path' => $row]);
+
+        $exit = Artisan::call('kitsune:media-prune', ['--force' => true]);
+        $output = Artisan::output();
+
+        // Listed nowhere, not as another disk's row's copy (review of slice 5c).
+        expect($output)->toContain('No orphaned media files.')
+            ->and($output)->not->toContain('Copies a row reaches')
+            ->and(is_file($this->root.'/'.$kept->path))->toBeTrue()
+            ->and($exit)->toBe(0);
+    })->with(['a doubled slash' => 'slash', 'a parent segment' => 'parent']);
+
+    // ...and one a row naming another disk reaches is listed as a copy under another spelling, and kept, its line saying
+    // what settles it: a misnamed row's path corrected, or — where settle removes the row's copies there — a forced
+    // reconcile, through the volume's fold (Codex, #155; review of the fix).
+    it('lists a copy a row reaches under another spelling, on a disk it does not name, and keeps it', function (string $spelt): void {
+        $kept = storedApartForPrune($this->imageType);
+        $dir = dirname($kept->path);
+        $name = $dir.'/keptphoto.png';
+        rename($this->root.'/'.$kept->path, $this->root.'/'.$name);
+        $row = $spelt === 'fold' ? $dir.'/KeptPhoto.PNG' : $dir.'//keptphoto.png';
+
+        if ($spelt === 'fold' && @stat($this->root.'/'.$row) === false) {
+            test()->markTestSkipped('this volume does not fold case');
+        }
+
+        DB::table('media_files')->where('id', $kept->getKey())->update(['disk' => 'public', 'visibility' => 'public', 'path' => $row]);
+
+        $exit = Artisan::call('kitsune:media-prune');
+        $output = Artisan::output();
+
+        expect($output)->toContain('Copies a row reaches under another spelling, on a disk it does not name')
+            // The public disk holds nothing: the check lists the row absent before it would a private copy (review of 5c).
+            ->and($output)->toContain('entry '.$kept->entry_id.'  ['.MediaDisks::PRIVATE.']  '.$name.' — its row names [public] '.$row.': '.($spelt === 'fold'
+                ? 'kitsune:media-reconcile --force removes it, or refuses it as coinciding where the two are one file, left for a hand, and the check lists the row absent'
+                : 'its row\'s path is not written as the disks read it — correct media_files.path to the path its file is under, as the disks read it'))
+            ->and($output)->toContain('No orphaned media files.')
+            ->and($exit)->toBe(0);
+
+        $exit = Artisan::call('kitsune:media-prune', ['--force' => true]);
+
+        expect(is_file($this->root.'/'.$name))->toBeTrue()->and($exit)->toBe(0);
+    })->with(['in another case' => 'fold', 'with a doubled slash' => 'slash']);
+
+    /*
+     * ...and a copy on a private disk of a file that belongs on the web names the label the check gives its row, in the
+     * check's own order — `awaiting publication` where the row names another disk, `absent` where the public disk does not
+     * hold its file, `private copy` otherwise — and a forced reconcile removes it, as its line says (review of slice 5c):
+     * on core's disk, the configured private disk or not, and on a host's disk configured private. Reached through a link
+     * the private disk's listing skips, so every volume makes it.
+     */
+    it('names the label the check gives a copy on the private disk a public row reaches under another name', function (string $label, string $where): void {
+        $other = sys_get_temp_dir().'/kitsune-prune-other-'.bin2hex(random_bytes(4));
+        mkdir($other, 0777, true);
+
+        try {
+            if ($where === 'host') {
+                // The host's disk, configured private, holds the copy; core's disk is empty.
+                config(['filesystems.disks.'.MediaDisks::PRIVATE => ['driver' => 'local', 'root' => $other]]);
+                config(['filesystems.disks.host-private' => ['driver' => 'local', 'root' => $this->root, 'links' => 'skip'], 'kitsune.media.disks.private' => 'host-private']);
+                Storage::forgetDisk(MediaDisks::PRIVATE);
+            } else {
+                config(['filesystems.disks.'.MediaDisks::PRIVATE => ['driver' => 'local', 'root' => $this->root, 'links' => 'skip']]);
+                Storage::forgetDisk(MediaDisks::PRIVATE);
+            }
+
+            $kept = storedForPrune($this->imageType);
+            $row = dirname($kept->path, 2).'/lnk/'.basename($kept->path);
+            symlink($this->root.'/'.dirname($kept->path), $this->root.'/'.dirname($row));
+            $named = $label === 'awaiting publication' ? 'legacy' : 'public';
+            $copy = $where === 'host' ? 'host-private' : MediaDisks::PRIVATE;
+
+            if ($where === 'core beside host') {
+                // Core's disk holds the copy while a host's disk is the configured private one.
+                config(['filesystems.disks.host-private' => ['driver' => 'local', 'root' => $other], 'kitsune.media.disks.private' => 'host-private']);
+            }
+
+            if ($label === 'awaiting publication') {
+                config(['filesystems.disks.legacy' => ['driver' => 'local', 'root' => $other.'/legacy']]);
+                Storage::disk('legacy')->put($row, pruneFixtureBytes());
+            } elseif ($label === 'private copy') {
+                Storage::disk('public')->put($row, pruneFixtureBytes());
+            }
+
+            DB::table('media_files')->where('id', $kept->getKey())->update(['disk' => $named, 'visibility' => 'public', 'path' => $row]);
+
+            $exit = Artisan::call('kitsune:media-prune');
+
+            expect(Artisan::output())->toContain('entry '.$kept->entry_id.'  ['.$copy.']  '.$kept->path.' — its row names ['.$named.'] '.$row.': kitsune:media-reconcile --force removes it, or refuses it as coinciding where the two are one file, left for a hand, and the check lists the row '.$label)
+                ->and($exit)->toBe(0);
+
+            $exit = Artisan::call('kitsune:media-reconcile');
+
+            expect(Artisan::output())->toContain(str_pad($label, 20).' entry '.$kept->entry_id.'  live  ['.$row.']  names '.$named)
+                ->and($exit)->toBe(1);
+
+            Artisan::call('kitsune:media-reconcile', ['--force' => true]);
+
+            expect(file_exists($this->root.'/'.$kept->path))->toBeFalse();
+        } finally {
+            exec('rm -rf '.escapeshellarg($other));
+        }
+    })->with([
+        'private copy' => ['private copy', 'core'],
+        'absent' => ['absent', 'core'],
+        'awaiting publication' => ['awaiting publication', 'core'],
+        'private copy, on core\'s disk beside a host\'s private disk' => ['private copy', 'core beside host'],
+        'absent, on core\'s disk beside a host\'s private disk' => ['absent', 'core beside host'],
+        'private copy, on a host\'s disk configured private' => ['private copy', 'host'],
+        'absent, on a host\'s disk configured private' => ['absent', 'host'],
+    ]);
+
+    /*
+     * ...and where the disk its row names stands in the way of the forced reconcile the line would name — it could not be
+     * listed, it reaches the target's files, or it reads through — the line says so, as an extra copy's does, and never
+     * that reconcile takes the copy off or removes it (review of slice 5c). Reached through a link the listing skips, so
+     * every volume makes it.
+     */
+    it('says what stands in the way where reconcile cannot settle a copy under another spelling', function (string $case): void {
+        $other = sys_get_temp_dir().'/kitsune-prune-other-'.bin2hex(random_bytes(4));
+        mkdir($other, 0777, true);
+
+        try {
+            $kept = storedForPrune($this->imageType);
+            $lnk = dirname($kept->path, 2).'/lnk';
+            $row = $lnk.'/'.basename($kept->path);
+
+            if ($case === 'unlisted, on the web') {
+                // The web lists the private file's copy under the month; the row names a disk nothing configures.
+                config(['filesystems.disks.public' => ['driver' => 'local', 'root' => $other, 'url' => 'https://web.example.test', 'links' => 'skip']]);
+                Storage::forgetDisk('public');
+                Storage::disk('public')->put($kept->path, pruneFixtureBytes());
+                symlink($other.'/'.dirname($kept->path), $other.'/'.$lnk);
+                Storage::disk(MediaDisks::PRIVATE)->delete($kept->path);
+                [$copy, $named, $visibility] = ['public', 'ghost', 'private'];
+            } else {
+                config(['filesystems.disks.'.MediaDisks::PRIVATE => ['driver' => 'local', 'root' => $this->root, 'links' => 'skip']]);
+                Storage::forgetDisk(MediaDisks::PRIVATE);
+                symlink($this->root.'/'.dirname($kept->path), $this->root.'/'.$lnk);
+                [$copy, $visibility] = [MediaDisks::PRIVATE, 'public'];
+                $named = match ($case) {
+                    'unlisted' => 'ghost',
+                    default => 'rt',
+                };
+
+                if ($case === 'overlapping') {
+                    // A read-through disk over the public one: one place with it, which reconcile moves no row off.
+                    config(['filesystems.disks.rt-fallback' => ['driver' => 'local', 'root' => $other.'/f'], 'filesystems.disks.rt' => ['driver' => 'read-through', 'primary' => 'public', 'fallback' => 'rt-fallback']]);
+                } elseif ($case === 'read-through') {
+                    // A read-through disk over two others, whose primary holds the file at the row's path.
+                    config([
+                        'filesystems.disks.rt-primary' => ['driver' => 'local', 'root' => $other.'/p'],
+                        'filesystems.disks.rt-fallback' => ['driver' => 'local', 'root' => $other.'/f'],
+                        'filesystems.disks.rt' => ['driver' => 'read-through', 'primary' => 'rt-primary', 'fallback' => 'rt-fallback'],
+                    ]);
+                    Storage::disk('rt-primary')->put($row, pruneFixtureBytes());
+                } elseif ($case === 'read-through, built') {
+                    // The same, built by a driver of the host's own, which only its instance says reads through.
+                    Storage::extend('mirror', static fn ($app) => $app['filesystem']->createReadThroughDriver([
+                        'driver' => 'read-through',
+                        'primary' => ['driver' => 'local', 'root' => $other.'/p'],
+                        'fallback' => ['driver' => 'local', 'root' => $other.'/f'],
+                    ], 'rt'));
+                    config(['filesystems.disks.rt' => ['driver' => 'mirror']]);
+                    mkdir($other.'/p/'.dirname($row), 0777, true);
+                    mkdir($other.'/f', 0777, true);
+                    file_put_contents($other.'/p/'.$row, pruneFixtureBytes());
+                }
+            }
+
+            DB::table('media_files')->where('id', $kept->getKey())->update(['disk' => $named, 'visibility' => $visibility, 'path' => $row]);
+
+            $exit = Artisan::call('kitsune:media-prune');
+            $output = Artisan::output();
+
+            expect($output)->toContain('entry '.$kept->entry_id.'  ['.$copy.']  '.$kept->path.' — its row names ['.$named.'] '.$row.': '.match ($case) {
+                'overlapping' => 'kept: its row names [rt], which reaches [public]\'s files or cannot be told apart from it — kitsune:media-reconcile --force moves no row off it, and removes no copy through it',
+                'read-through', 'read-through, built' => 'kept: its row names [rt], a read-through disk, which custody neither reads nor removes a copy through — while [rt] holds the file, kitsune:media-reconcile --force cannot move its row',
+                default => 'kept: [ghost], which its row names, could not be built — kitsune:media-reconcile --force settles its row only once that disk can be asked: run kitsune:media-prune again once it can be',
+            })
+                ->and($output)->not->toContain('kitsune:media-reconcile --force removes it')
+                ->and($output)->not->toContain('takes it off')
+                ->and($exit)->toBe(str_starts_with($case, 'unlisted') ? 1 : 0);
+        } finally {
+            exec('rm -rf '.escapeshellarg($other));
+        }
+    })->with([
+        'a public file\'s copy on core\'s disk, its row naming a disk that could not be listed' => 'unlisted',
+        'a private file\'s copy on the web, its row naming a disk that could not be listed' => 'unlisted, on the web',
+        'a public file\'s copy on core\'s disk, its row naming a read-through disk over the public one' => 'overlapping',
+        'a public file\'s copy on core\'s disk, its row naming a read-through disk over two others' => 'read-through',
+        'a public file\'s copy on core\'s disk, its row naming a read-through disk a host\'s driver builds' => 'read-through, built',
+    ]);
+
+    /*
+     * ...and where the copy has another name beside it, a hard link, and the row's path spelt otherwise may reach either,
+     * settle removes only the name it reaches: the line says so, and that the other stays until the next run lists it as
+     * an orphan — never that reconcile takes this very copy off (review of slice 5c). Only a volume that folds makes it; in
+     * another normalization, the case-sensitive one does too.
+     */
+    it('says a forced reconcile removes only the name the row\'s path reaches, where a hard link sits beside it', function (string $case): void {
+        $other = sys_get_temp_dir().'/kitsune-prune-other-'.bin2hex(random_bytes(4));
+        mkdir($other, 0777, true);
+
+        try {
+            $kept = storedForPrune($this->imageType);
+            $dir = dirname($kept->path);
+            $nfc = $dir.'/caf'."\u{e9}".'.png';
+            $nfd = $dir.'/cafe'."\u{301}".'.png';
+
+            if ($case === 'on the web') {
+                // A private row on core's disk; the web holds the file under the other normalization, and a hard link.
+                config(['filesystems.disks.public' => ['driver' => 'local', 'root' => $other, 'url' => 'https://web.example.test']]);
+                Storage::forgetDisk('public');
+                rename($this->root.'/'.$kept->path, $this->root.'/'.$nfd);
+                Storage::disk('public')->put($nfc, pruneFixtureBytes());
+                [$copy, $root, $named, $label, $stays] = ['public', $other, MediaDisks::PRIVATE, 'exposed', 'stays on the web'];
+            } else {
+                // A public row on public; core's disk holds the file under the other normalization, and a hard link.
+                config(['filesystems.disks.public' => ['driver' => 'local', 'root' => $other, 'url' => 'https://web.example.test']]);
+                Storage::forgetDisk('public');
+                Storage::disk('public')->put($nfd, pruneFixtureBytes());
+                rename($this->root.'/'.$kept->path, $this->root.'/'.$nfc);
+                [$copy, $root, $named, $label, $stays] = [MediaDisks::PRIVATE, $this->root, 'public', 'private copy', 'stays'];
+            }
+
+            link($root.'/'.$nfc, $root.'/'.$dir.'/other.png');
+
+            if (@stat($root.'/'.$nfd) === false || stat($root.'/'.$nfd)['ino'] !== stat($root.'/'.$nfc)['ino']) {
+                test()->markTestSkipped('this volume does not fold normalization');
+            }
+
+            DB::table('media_files')->where('id', $kept->getKey())->update(['disk' => $named, 'visibility' => $case === 'on the web' ? 'private' : 'public', 'path' => $nfd]);
+
+            $exit = Artisan::call('kitsune:media-prune');
+
+            expect(Artisan::output())->toContain('entry '.$kept->entry_id.'  ['.$copy.']  '.$dir.'/other.png — its row names ['.$named.'] '.$nfd.': '.($case === 'on the web' ? 'on the web, and its file belongs off it — ' : '').'this file has another name beside it here, and the volume does not say which of them its row\'s path reaches: kitsune:media-reconcile --force removes that one, or refuses it as coinciding where the two are one file, left for a hand, and the check lists the row '.$label.'; where it is not this one, this copy '.$stays.', and the next run lists it as an orphan, which --force removes')
+                ->and($exit)->toBe(0);
+
+            Artisan::call('kitsune:media-reconcile', ['--force' => true]);
+
+            // The name the row's path reaches gone, the hard link beside it left: the next run lists it as an orphan.
+            expect(is_file($root.'/'.$dir.'/other.png'))->toBeTrue();
+
+            Artisan::call('kitsune:media-prune');
+
+            expect(Artisan::output())->toContain('  ['.$copy.']  '.$dir.'/other.png');
+        } finally {
+            exec('rm -rf '.escapeshellarg($other));
+        }
+    })->with(['on the web', 'private copy']);
+
+    /*
+     * ...and on the disk its file belongs on, where the line says to make the spellings one, the other name of the file
+     * beside it is said to be one the next run lists as an orphan, not as an extra copy (review of slice 5c). Only a volume
+     * that folds makes it; in another normalization, the case-sensitive one does too.
+     */
+    it('says the other name beside a copy on the disk its file belongs on is one the next run lists as an orphan', function (): void {
+        $other = sys_get_temp_dir().'/kitsune-prune-other-'.bin2hex(random_bytes(4));
+        mkdir($other, 0777, true);
+
+        try {
+            config(['filesystems.disks.legacy' => ['driver' => 'local', 'root' => $other]]);
+            $kept = storedForPrune($this->imageType);
+            $dir = dirname($kept->path);
+            $nfc = $dir.'/caf'."\u{e9}".'.png';
+            $nfd = $dir.'/cafe'."\u{301}".'.png';
+            rename($this->root.'/'.$kept->path, $this->root.'/'.$nfc);
+            link($this->root.'/'.$nfc, $this->root.'/'.$dir.'/other.png');
+
+            if (@stat($this->root.'/'.$nfd) === false || stat($this->root.'/'.$nfd)['ino'] !== stat($this->root.'/'.$nfc)['ino']) {
+                test()->markTestSkipped('this volume does not fold normalization');
+            }
+
+            // A private row naming another disk: core's disk, where its file belongs, holds it under the other spelling.
+            DB::table('media_files')->where('id', $kept->getKey())->update(['disk' => 'legacy', 'path' => $nfd]);
+
+            $exit = Artisan::call('kitsune:media-prune');
+            $output = Artisan::output();
+
+            foreach ([$nfc, $dir.'/other.png'] as $listed) {
+                expect($output)->toContain('entry '.$kept->entry_id.'  ['.MediaDisks::PRIVATE.']  '.$listed.' — its row names [legacy] '.$nfd.': make the row\'s path and this name one spelling, with the name [legacy] holds its file under where it holds one — rename the files, or correct media_files.path — and the next run lists this one as an extra copy; any other name of this file here the next run lists as an orphan');
+            }
+
+            expect($output)->not->toContain('kitsune:media-reconcile --force removes')->and($exit)->toBe(0);
+        } finally {
+            exec('rm -rf '.escapeshellarg($other));
+        }
+    });
+
+    /*
+     * ...and where the copy is the very file the target holds at the row's path — a hard link across the two roots — a
+     * forced reconcile refuses it as coinciding, and removes nothing: the line says so, as an extra copy's does (review of
+     * slice 5c). Reached through a link the listing skips, so every volume makes it.
+     */
+    it('says a forced reconcile refuses a copy under another spelling that is the very file the target holds', function (): void {
+        $other = sys_get_temp_dir().'/kitsune-prune-other-'.bin2hex(random_bytes(4));
+        mkdir($other, 0777, true);
+
+        try {
+            config(['filesystems.disks.'.MediaDisks::PRIVATE => ['driver' => 'local', 'root' => $this->root, 'links' => 'skip']]);
+            config(['filesystems.disks.public' => ['driver' => 'local', 'root' => $other, 'url' => 'https://web.example.test']]);
+            Storage::forgetDisk([MediaDisks::PRIVATE, 'public']);
+            $kept = storedForPrune($this->imageType);
+            $row = dirname($kept->path, 2).'/lnk/'.basename($kept->path);
+            symlink($this->root.'/'.dirname($kept->path), $this->root.'/'.dirname($row));
+            // Public's name at the row's path is a hard link of core's copy: one file, reached through two disks.
+            mkdir($other.'/'.dirname($row), 0777, true);
+            link($this->root.'/'.$kept->path, $other.'/'.$row);
+            DB::table('media_files')->where('id', $kept->getKey())->update(['disk' => 'public', 'visibility' => 'public', 'path' => $row]);
+
+            $exit = Artisan::call('kitsune:media-prune');
+
+            expect(Artisan::output())->toContain('entry '.$kept->entry_id.'  ['.MediaDisks::PRIVATE.']  '.$kept->path.' — its row names [public] '.$row.': kitsune:media-reconcile --force removes it, or refuses it as coinciding where the two are one file, left for a hand, and the check lists the row private copy')
+                ->and($exit)->toBe(0);
+
+            $exit = Artisan::call('kitsune:media-reconcile', ['--force' => true]);
+
+            expect(Artisan::output())->toContain('the same file, reached through two disks')
+                ->and(is_file($this->root.'/'.$kept->path))->toBeTrue()
+                ->and($exit)->toBe(1);
+        } finally {
+            exec('rm -rf '.escapeshellarg($other));
+        }
+    });
+
+    /*
+     * ...and a read-through disk whose primary is local lists a local directory: it is asked by stat through that primary,
+     * as a local disk is, never by key as an object store — a row's file there, reached through a link the listing skips,
+     * was listed as an orphan no row keeps, to be removed by hand (review of slice 5c). A primary that is itself a
+     * read-through disk over a local one is followed down, as `MediaBytes::listsLocally()` says. Every volume makes it.
+     */
+    it('asks a read-through disk over a local primary by stat, and lists nowhere the file a row reaches there', function (int $depth): void {
+        $other = sys_get_temp_dir().'/kitsune-prune-other-'.bin2hex(random_bytes(4));
+
+        try {
+            mkdir($other.'/p', 0777, true);
+            mkdir($other.'/f', 0777, true);
+            mkdir($other.'/f2', 0777, true);
+            config([
+                'filesystems.disks.rtp' => ['driver' => 'local', 'root' => $other.'/p', 'links' => 'skip'],
+                'filesystems.disks.rtf' => ['driver' => 'local', 'root' => $other.'/f'],
+                'filesystems.disks.rt' => ['driver' => 'read-through', 'primary' => 'rtp', 'fallback' => 'rtf'],
+                'filesystems.disks.rtf2' => ['driver' => 'local', 'root' => $other.'/f2'],
+                'filesystems.disks.rt2' => ['driver' => 'read-through', 'primary' => 'rt', 'fallback' => 'rtf2'],
+            ]);
+            $kept = storedForPrune($this->imageType);
+            $dir = dirname($kept->path);
+            // The row's name on the primary a link to real.png beside it, which the listing gives in its place.
+            mkdir($other.'/p/'.$dir, 0777, true);
+            file_put_contents($other.'/p/'.$dir.'/real.png', pruneFixtureBytes());
+            symlink($other.'/p/'.$dir.'/real.png', $other.'/p/'.$kept->path);
+            Storage::disk(MediaDisks::PRIVATE)->delete($kept->path);
+            DB::table('media_files')->where('id', $kept->getKey())->update(['disk' => $depth === 1 ? 'rt' : 'rt2']);
+            DB::table('entries')->where('id', $kept->entry_id)->update(['deleted_at' => now()]);
+
+            foreach ([[], ['--force' => true]] as $options) {
+                $exit = Artisan::call('kitsune:media-prune', $options);
+                $output = Artisan::output();
+
+                expect($output)->toContain('No orphaned media files.')
+                    ->and($output)->not->toContain('read-through disk')
+                    ->and($exit)->toBe(0);
+            }
+
+            expect(is_file($other.'/p/'.$dir.'/real.png'))->toBeTrue();
+        } finally {
+            exec('rm -rf '.escapeshellarg($other));
+        }
+    })->with(['one level' => 1, 'two levels' => 2]);
+
+    /*
+     * ...and a name below something that is not a directory — a stray file where a row's directory would be — is absent,
+     * as the volume says: PHP reports that ENOTDIR as EIO, and the run failed on every such row, read-only too, so the
+     * stray itself was never listed (review of slice 5c). Every volume makes it.
+     */
+    it('lists a stray file where a row\'s directory would be, and fails nothing for the rows below it', function (): void {
+        $kept = storedForPrune($this->imageType);
+        $org = 'media/'.$this->org->getKey();
+        // A regular file on public where the row's media/<org> directory would be.
+        Storage::disk('public')->put($org, 'a stray');
+
+        foreach ([[], ['--force' => true]] as $n => $options) {
+            $exit = Artisan::call('kitsune:media-prune', $options);
+            $output = Artisan::output();
+
+            expect($output)->toContain($n === 0 ? '  [public]  '.$org : 'Removed 1 of 1 orphaned or leftover file')
+                ->and($exit)->toBe(0);
+        }
+
+        expect(Storage::disk('public')->exists($org))->toBeFalse()
+            ->and(is_file($this->root.'/'.$kept->path))->toBeTrue();
+    });
+
+    /*
+     * ...and a stat the volume refuses for a reason other than absence — I/O, permission, a network mount reconnecting —
+     * fails the run before anything is removed, never read as "nothing there": the row's file, spelt otherwise, was left an
+     * orphan and removed once the error cleared (review of slice 5c). A directory made unsearchable stands in for it, at
+     * the pass's read of the table, or at the listing's lookup, before the listed names are asked.
+     */
+    it('fails the run, removing nothing, where the volume refuses a stat for a reason other than absence', function (string $side): void {
+        if (function_exists('posix_getuid') && posix_getuid() === 0) {
+            test()->markTestSkipped('root searches a directory whatever its mode');
+        }
+
+        $kept = storedForPrune($this->imageType);
+        $dir = dirname($kept->path);
+        $file = $dir.'/keptphoto.png';
+        rename($this->root.'/'.$kept->path, $this->root.'/'.$file);
+        DB::table('media_files')->where('id', $kept->getKey())->update(['path' => $dir.'//keptphoto.png']);
+        $locked = false;
+        DB::listen(function (QueryExecuted $query) use ($side, $dir, &$locked): void {
+            $pass = preg_match('/^select\W+id\W+,\W+entry_id\W+,\W+disk\W+,\W+path\W+from\W+media_files\W/i', $query->sql) === 1;
+            $lookup = preg_match('/left join\W+entries\W/i', $query->sql) === 1 && ! $pass;
+
+            if (! $locked && (($side === 'row' && $pass) || ($side === 'listed' && $lookup))) {
+                $locked = chmod($this->root.'/'.$dir, 0000);
+            }
+        });
+
+        try {
+            expect(fn () => Artisan::call('kitsune:media-prune', ['--force' => true]))->toThrow(MediaCustodyFailure::class, 'whether it exists cannot be told');
+        } finally {
+            chmod($this->root.'/'.$dir, 0755);
+        }
+
+        expect($locked)->toBeTrue()
+            ->and(is_file($this->root.'/'.$file))->toBeTrue();
+    })->with(['at a row\'s path' => 'row', 'at a listed name' => 'listed']);
+
+    /*
+     * ...and every name is printed as it is: one holding what the console reads as a style — `<error>`, `<fg=red>` — was
+     * stripped of it, and the line named another file than the one listed, or than --force removes (review of slice 5c).
+     */
+    it('prints each name as it is, whatever the console would read in it as a style', function (): void {
+        $kept = storedForPrune($this->imageType);
+        $dir = dirname($kept->path);
+        file_put_contents($this->root.'/'.$dir.'/a<error>bc.png', 'bytes');
+        file_put_contents($this->root.'/'.$dir.'/x<fg=red>y.png', 'bytes');
+        // A row whose path holds a style, on public, with an extra copy on core's disk.
+        $styled = $dir.'/r<info>ow.png';
+        rename($this->root.'/'.$kept->path, $this->root.'/'.$styled);
+        Storage::disk('public')->put($styled, pruneFixtureBytes());
+        DB::table('media_files')->where('id', $kept->getKey())->update(['disk' => 'public', 'visibility' => 'public', 'path' => $styled]);
+
+        Artisan::call('kitsune:media-prune');
+        $output = Artisan::output();
+
+        expect($output)->toContain('  ['.MediaDisks::PRIVATE.']  '.$dir.'/a<error>bc.png')
+            ->and($output)->toContain('  ['.MediaDisks::PRIVATE.']  '.$dir.'/x<fg=red>y.png')
+            ->and($output)->toContain(MediaPruneCommand::rowLine((object) ['entry_id' => $kept->entry_id, 'disk' => MediaDisks::PRIVATE, 'path' => $styled]));
+
+        Artisan::call('kitsune:media-reconcile');
+
+        expect(Artisan::output())->toContain('['.$styled.']');
+
+        // ...a partial copy's line, and a row awaiting publication's.
+        $partial = storedForPrune($this->imageType);
+        $partialName = $dir.'/p<error>q.png';
+        rename($this->root.'/'.$partial->path, $this->root.'/'.$partialName);
+        DB::table('media_files')->where('id', $partial->getKey())->update(['path' => $partialName]);
+        file_put_contents($this->root.'/'.$partialName.MediaBytes::PARTIAL, 'part');
+        $awaiting = storedForPrune($this->imageType);
+        $awaitingName = $dir.'/w<fg=red>a.png';
+        rename($this->root.'/'.$awaiting->path, $this->root.'/'.$awaitingName);
+        DB::table('media_files')->where('id', $awaiting->getKey())->update(['visibility' => 'public', 'path' => $awaitingName]);
+
+        Artisan::call('kitsune:media-prune');
+        $output = Artisan::output();
+
+        expect($output)->toContain(MediaPruneCommand::rowLine((object) ['entry_id' => $partial->entry_id, 'disk' => MediaDisks::PRIVATE, 'path' => $partialName.MediaBytes::PARTIAL]))
+            ->and($output)->toContain(MediaPruneCommand::rowLine((object) ['entry_id' => $awaiting->entry_id, 'disk' => MediaDisks::PRIVATE, 'path' => $awaitingName]));
+
+        // ...and a removal that fails names the file it failed on.
+        $this->private->failDeletes = true;
+        Artisan::call('kitsune:media-prune', ['--force' => true]);
+
+        expect(Artisan::output())->toContain('Could not remove ['.MediaDisks::PRIVATE.':'.$dir.'/a<error>bc.png]');
+
+        // ...and reconcile's --entry refusal names what it was given.
+        Artisan::call('kitsune:media-reconcile', ['--entry' => ['1<error>']]);
+
+        expect(Artisan::output())->toContain('[1<error>] is not one');
+    });
+
+    // ...and every disk's name too: in a failed removal, a nesting refused and a disk not scanned (review of slice 5c).
+    it('prints each disk\'s name as it is, whatever the console would read in it as a style', function (): void {
+        $styled = sys_get_temp_dir().'/kitsune-prune-styled-'.bin2hex(random_bytes(4));
+        mkdir($styled, 0777, true);
+
+        try {
+            config(['filesystems.disks.d<info>x' => ['driver' => 'local', 'root' => $styled]]);
+            $disk = RefusingDisk::install('d<info>x', $styled);
+            $kept = storedForPrune($this->imageType);
+            DB::table('media_files')->where('id', $kept->getKey())->update(['disk' => 'd<info>x']);
+            $orphan = dirname($kept->path).'/orphan.png';
+            Storage::disk('d<info>x')->put($orphan, 'bytes');
+            $disk->failDeletes = true;
+
+            Artisan::call('kitsune:media-prune', ['--force' => true]);
+
+            expect(Artisan::output())->toContain('Could not remove [d<info>x:'.$orphan.']');
+
+            // A disk whose media directory is inside the public disk's.
+            $inside = Storage::disk('public')->path('media/n');
+            mkdir($inside, 0777, true);
+            config(['filesystems.disks.d<info>x' => ['driver' => 'local', 'root' => $inside]]);
+            Storage::forgetDisk('d<info>x');
+            Artisan::call('kitsune:media-prune');
+
+            expect(Artisan::output())->toContain('the media directory of [d<info>x] is inside [public]\'s');
+
+            // A disk a row names that is core's private disk under another name.
+            config(['filesystems.disks.d<info>x' => ['driver' => 'local', 'root' => $styled]]);
+            config(['filesystems.disks.a<info>b' => ['driver' => 'local', 'root' => $this->root]]);
+            Storage::forgetDisk('d<info>x');
+            DB::table('media_files')->where('id', $kept->getKey())->update(['disk' => 'a<info>b']);
+            Artisan::call('kitsune:media-prune');
+
+            expect(Artisan::output())->toContain('Not scanning [a<info>b]: it is, or cannot be told apart from, ['.MediaDisks::PRIVATE.']');
+        } finally {
+            exec('rm -rf '.escapeshellarg($styled));
+        }
+    });
+
+    /*
+     * ...and where the private disk cannot be compared with core's — a read-through or scoped disk over one not configured
+     * — core's is scanned, and its orphan listed: only a private disk that is core's under another name leaves it out
+     * (review of slice 5c).
+     */
+    it('scans core\'s private disk when the private disk cannot be compared with it', function (array $hp): void {
+        config(['filesystems.disks.hp' => $hp, 'kitsune.media.disks.private' => 'hp']);
+        $orphan = 'media/'.$this->org->getKey().'/2026/09/orphan.png';
+        @mkdir(dirname($this->root.'/'.$orphan), 0777, true);
+        file_put_contents($this->root.'/'.$orphan, 'bytes');
+
+        Artisan::call('kitsune:media-prune');
+        $output = Artisan::output();
+
+        expect($output)->toContain('['.MediaDisks::PRIVATE.']  '.$orphan)
+            ->and($output)->not->toContain('Not scanning ['.MediaDisks::PRIVATE.']');
+    })->with([
+        'a read-through disk over one not configured' => [['driver' => 'read-through', 'primary' => 'public', 'fallback' => 'nowhere']],
+        'a scoped disk over one not configured' => [['driver' => 'scoped', 'disk' => 'nowhere', 'prefix' => 'x']],
+    ]);
+
+    /*
+     * ...and a row naming core's private disk while it reads through and a host's disk is the private one is no row on a
+     * read-through disk reconcile cannot move: custody asks core's disk as the private one, and settle takes a copy on the
+     * web off as for any private file (review of slice 5c). Reached through a link the web's listing skips.
+     */
+    it('says reconcile takes a copy on the web off for a row naming core\'s private disk while it reads through', function (): void {
+        $other = sys_get_temp_dir().'/kitsune-prune-other-'.bin2hex(random_bytes(4));
+
+        try {
+            foreach (['vault', 'kp', 'kf', 'web'] as $root) {
+                mkdir($other.'/'.$root, 0777, true);
+            }
+
+            config([
+                'filesystems.disks.vault' => ['driver' => 'local', 'root' => $other.'/vault'],
+                'kitsune.media.disks.private' => 'vault',
+            ]);
+            $kept = storedForPrune($this->imageType);
+            config([
+                'filesystems.disks.kp' => ['driver' => 'local', 'root' => $other.'/kp'],
+                'filesystems.disks.kf' => ['driver' => 'local', 'root' => $other.'/kf'],
+                'filesystems.disks.'.MediaDisks::PRIVATE => ['driver' => 'read-through', 'primary' => 'kp', 'fallback' => 'kf'],
+                'filesystems.disks.public' => ['driver' => 'local', 'root' => $other.'/web', 'url' => 'https://web.example.test', 'links' => 'skip'],
+            ]);
+            Storage::forgetDisk([MediaDisks::PRIVATE, 'public']);
+            $row = dirname($kept->path, 2).'/lnk/'.basename($kept->path);
+            Storage::disk('public')->put($kept->path, pruneFixtureBytes());
+            symlink($other.'/web/'.dirname($kept->path), $other.'/web/'.dirname($row));
+            DB::table('media_files')->where('id', $kept->getKey())->update(['disk' => MediaDisks::PRIVATE, 'path' => $row]);
+
+            Artisan::call('kitsune:media-prune');
+            $output = Artisan::output();
+
+            expect($output)->toContain('entry '.$kept->entry_id.'  [public]  '.$kept->path.' — its row names ['.MediaDisks::PRIVATE.'] '.$row.': on the web, and its file belongs off it — kitsune:media-reconcile --force takes it off')
+                ->and($output)->not->toContain('a read-through disk, which custody neither reads nor removes a copy through');
+        } finally {
+            exec('rm -rf '.escapeshellarg($other));
+        }
+    });
+
+    /*
+     * ...and where the disk that holds the copy is itself a read-through disk over a local primary, settle cannot take it
+     * off: custody neither reads nor removes a copy through one, so every forced reconcile of the row fails on it, and the
+     * line says what settles it, as an extra copy's does (review of slice 5c). Reached through a link the listing skips.
+     */
+    it('says a forced reconcile fails on a copy under another spelling on a read-through disk, and what settles it', function (string $case): void {
+        $other = sys_get_temp_dir().'/kitsune-prune-other-'.bin2hex(random_bytes(4));
+
+        try {
+            foreach (['vault', 'kp', 'kf', 'legacy'] as $root) {
+                mkdir($other.'/'.$root, 0777, true);
+            }
+
+            if ($case === 'exposed') {
+                config([
+                    'filesystems.disks.kp' => ['driver' => 'local', 'root' => $other.'/kp', 'links' => 'skip'],
+                    'filesystems.disks.kf' => ['driver' => 'local', 'root' => $other.'/kf'],
+                    'filesystems.disks.rtw' => ['driver' => 'read-through', 'primary' => 'kp', 'fallback' => 'kf', 'url' => 'https://rtw.example.test'],
+                ]);
+                [$copy, $named] = ['rtw', MediaDisks::PRIVATE];
+                // A row of its own on the served disk, so prune lists it.
+                $own = storedForPrune($this->imageType);
+                mkdir($other.'/kp/'.dirname($own->path), 0777, true);
+                file_put_contents($other.'/kp/'.$own->path, pruneFixtureBytes());
+                Storage::disk($own->disk)->delete($own->path);
+                DB::table('media_files')->where('id', $own->getKey())->update(['disk' => 'rtw']);
+            } else {
+                config([
+                    'filesystems.disks.vault' => ['driver' => 'local', 'root' => $other.'/vault'],
+                    'filesystems.disks.legacy' => ['driver' => 'local', 'root' => $other.'/legacy'],
+                    'kitsune.media.disks.private' => 'vault',
+                ]);
+                [$copy, $named] = [MediaDisks::PRIVATE, $case === 'awaiting publication' ? 'legacy' : 'public'];
+            }
+
+            $kept = storedForPrune($this->imageType);
+            $row = dirname($kept->path, 2).'/lnk/'.basename($kept->path);
+            // The row's file where it names it; the read-through disk's primary lists its copy under the month, lnk/ a link
+            // to it.
+            if ($case !== 'absent') {
+                Storage::disk($named)->put($row, pruneFixtureBytes());
+            }
+
+            @mkdir($other.'/kp/'.dirname($kept->path), 0777, true);
+            file_put_contents($other.'/kp/'.$kept->path, pruneFixtureBytes());
+            symlink($other.'/kp/'.dirname($kept->path), $other.'/kp/'.dirname($row));
+            Storage::disk($kept->disk)->delete($kept->path);
+            DB::table('media_files')->where('id', $kept->getKey())->update(['disk' => $named, 'path' => $row, 'visibility' => $case === 'exposed' ? 'private' : 'public']);
+
+            if ($case !== 'exposed') {
+                config([
+                    'filesystems.disks.kp' => ['driver' => 'local', 'root' => $other.'/kp', 'links' => 'skip'],
+                    'filesystems.disks.kf' => ['driver' => 'local', 'root' => $other.'/kf'],
+                    'filesystems.disks.'.MediaDisks::PRIVATE => ['driver' => 'read-through', 'primary' => 'kp', 'fallback' => 'kf'],
+                ]);
+                Storage::forgetDisk(MediaDisks::PRIVATE);
+            }
+
+            $exit = Artisan::call('kitsune:media-prune');
+            $output = Artisan::output();
+            $target = $case === 'exposed' ? MediaDisks::PRIVATE : 'public';
+
+            expect($output)->toContain('entry '.$kept->entry_id.'  ['.$copy.']  '.$kept->path.' — its row names ['.$named.'] '.$row.': kept: ['.$copy.'] is a read-through disk, which custody neither reads nor removes a copy through, and '.($case === 'exposed' ? 'the web serves it, and its file belongs off it' : 'its file belongs on the web, off this disk').' — every kitsune:media-reconcile --force of its row fails on this copy until it is gone, and the check lists the row '.$case.': copy the file to ['.$target.'] by hand if it is not there')
+                ->and($output)->not->toContain('takes it off')
+                ->and($output)->not->toContain('removes it')
+                ->and($exit)->toBe(0);
+
+            expect(Artisan::call('kitsune:media-reconcile', ['--force' => true]))->toBe(1)
+                ->and(Artisan::output())->toContain('it is a read-through disk')
+                ->and(is_file($other.'/kp/'.$kept->path))->toBeTrue();
+        } finally {
+            exec('rm -rf '.escapeshellarg($other));
+        }
+    })->with([
+        'a private file\'s copy on a served one' => 'exposed',
+        'a public file\'s copy on core\'s private disk' => 'private copy',
+        '...its row naming another disk' => 'awaiting publication',
+        '...the public disk not holding it' => 'absent',
+    ]);
+
+    /*
+     * ...and where the row's own name on the copy's disk is a link to the copy — a link at the last component, which the
+     * listing skips — settle removes the link, not the copy: the line says so, and that the next run lists the copy as an
+     * orphan, which a forced prune then removes (review of slice 5c). Every volume makes it.
+     */
+    it('says a forced reconcile removes the link, not the copy, where the row\'s own name there is a link to it', function (string $case): void {
+        $other = sys_get_temp_dir().'/kitsune-prune-other-'.bin2hex(random_bytes(4));
+        mkdir($other, 0777, true);
+
+        try {
+            $kept = storedForPrune($this->imageType);
+            $dir = dirname($kept->path);
+
+            if ($case === 'exposed') {
+                // A private file on core's disk; the web holds a copy, and the row's name there is a link to it.
+                config(['filesystems.disks.public' => ['driver' => 'local', 'root' => $other, 'url' => 'https://web.example.test', 'links' => 'skip']]);
+                Storage::forgetDisk('public');
+                Storage::disk('public')->put($dir.'/real.png', pruneFixtureBytes());
+                symlink($other.'/'.$dir.'/real.png', $other.'/'.$kept->path);
+                [$copy, $root, $label] = ['public', $other, 'exposed'];
+            } else {
+                // A public file on public; core's disk holds a copy, and the row's name there is a link to it.
+                config(['filesystems.disks.'.MediaDisks::PRIVATE => ['driver' => 'local', 'root' => $this->root, 'links' => 'skip']]);
+                Storage::forgetDisk(MediaDisks::PRIVATE);
+                rename($this->root.'/'.$kept->path, $this->root.'/'.$dir.'/real.png');
+                symlink($this->root.'/'.$dir.'/real.png', $this->root.'/'.$kept->path);
+                Storage::disk('public')->put($kept->path, pruneFixtureBytes());
+                DB::table('media_files')->where('id', $kept->getKey())->update(['disk' => 'public', 'visibility' => 'public']);
+                [$copy, $root, $label] = [MediaDisks::PRIVATE, $this->root, 'private copy'];
+            }
+
+            $exit = Artisan::call('kitsune:media-prune', ['--force' => true]);
+
+            expect(Artisan::output())->toContain('entry '.$kept->entry_id.'  ['.$copy.']  '.$dir.'/real.png — its row names ['.($case === 'exposed' ? MediaDisks::PRIVATE : 'public').'] '.$kept->path.': '.($case === 'exposed' ? 'on the web, and its file belongs off it — ' : '').'its row\'s path on this disk is a link to this copy, so kitsune:media-reconcile --force removes the link, not this copy, or refuses it as coinciding where the two are one file, left for a hand, and the check lists the row '.$label.'; the next run lists this copy as an orphan, which --force removes')
+                ->and(is_file($root.'/'.$dir.'/real.png'))->toBeTrue()
+                ->and($exit)->toBe(0);
+
+            $exit = Artisan::call('kitsune:media-reconcile');
+
+            expect(Artisan::output())->toContain(str_pad($label, 20).' entry '.$kept->entry_id)->and($exit)->toBe(1);
+
+            Artisan::call('kitsune:media-reconcile', ['--force' => true]);
+
+            // The link gone, the copy left: the next run lists it as an orphan, and a forced one removes it.
+            expect(is_link($root.'/'.$kept->path))->toBeFalse()
+                ->and(is_file($root.'/'.$dir.'/real.png'))->toBeTrue();
+
+            Artisan::call('kitsune:media-prune');
+
+            expect(Artisan::output())->toContain('  ['.$copy.']  '.$dir.'/real.png');
+
+            Artisan::call('kitsune:media-prune', ['--force' => true]);
+
+            expect(file_exists($root.'/'.$dir.'/real.png'))->toBeFalse();
+        } finally {
+            exec('rm -rf '.escapeshellarg($other));
+        }
+    })->with(['a private file\'s copy on the web' => 'exposed', 'a public file\'s copy on core\'s disk' => 'private copy']);
+
+    /*
+     * ...and one neither the web nor settle takes off — a private file's copy on core's disk while the configured private
+     * disk is the host's, or a public file's copy on another served disk — says to make the spellings one, after which it
+     * is an extra copy: never that reconcile removes it, or takes it off the web (review of slice 5c). So does one on the
+     * disk its file belongs on — a trashed public file's on the private disk, a public file's on the public disk its row
+     * does not name — where a forced reconcile would point the row at it under a name other than its path, which no run
+     * then shows (review of slice 5c). Reached through a link the listing skips, so every volume makes it.
+     */
+    it('says to make the spellings one where neither the web nor settle takes a copy off', function (string $case): void {
+        $other = sys_get_temp_dir().'/kitsune-prune-other-'.bin2hex(random_bytes(4));
+        mkdir($other, 0777, true);
+
+        try {
+            $kept = storedForPrune($this->imageType);
+            $lnk = dirname($kept->path, 2).'/lnk';
+            $row = $lnk.'/'.basename($kept->path);
+
+            if (in_array($case, ['private', 'trashed'], true)) {
+                config(['filesystems.disks.'.MediaDisks::PRIVATE => ['driver' => 'local', 'root' => $this->root, 'links' => 'skip']]);
+                Storage::forgetDisk(MediaDisks::PRIVATE);
+                symlink($this->root.'/'.dirname($kept->path), $this->root.'/'.$lnk);
+            }
+
+            if ($case === 'private') {
+                // Core's disk lists the file under the month; the host's, configured private, holds it at the row's path.
+                config(['filesystems.disks.host-private' => ['driver' => 'local', 'root' => $other], 'kitsune.media.disks.private' => 'host-private']);
+                Storage::disk('host-private')->put($row, pruneFixtureBytes());
+                [$named, $copy, $listed] = ['host-private', MediaDisks::PRIVATE, $kept->path];
+                DB::table('media_files')->where('id', $kept->getKey())->update(['disk' => $named, 'path' => $row]);
+            } elseif ($case === 'trashed') {
+                // A trashed public file belongs on core's disk, which lists it under the month; its row names public.
+                [$named, $copy, $listed] = ['public', MediaDisks::PRIVATE, $kept->path];
+                DB::table('media_files')->where('id', $kept->getKey())->update(['disk' => $named, 'visibility' => 'public', 'path' => $row]);
+                DB::table('entries')->where('id', $kept->entry_id)->update(['deleted_at' => now()]);
+            } elseif ($case === 'target') {
+                // A public file belongs on public, which lists it under the month; its row names core's disk.
+                config(['filesystems.disks.public' => ['driver' => 'local', 'root' => $other, 'url' => 'https://web.example.test', 'links' => 'skip']]);
+                Storage::forgetDisk('public');
+                Storage::disk('public')->put($kept->path, pruneFixtureBytes());
+                symlink($other.'/'.dirname($kept->path), $other.'/'.$lnk);
+                Storage::disk(MediaDisks::PRIVATE)->delete($kept->path);
+                [$named, $copy, $listed] = [MediaDisks::PRIVATE, 'public', $kept->path];
+                DB::table('media_files')->where('id', $kept->getKey())->update(['visibility' => 'public', 'path' => $row]);
+            } else {
+                // A served disk another row names lists the copy under the month; public holds the file at the row's path.
+                config(['filesystems.disks.cdn' => ['driver' => 'local', 'root' => $other, 'url' => 'https://cdn.example.test', 'links' => 'skip']]);
+                $second = storedForPrune($this->imageType);
+                Storage::disk('cdn')->put($second->path, pruneFixtureBytes());
+                DB::table('media_files')->where('id', $second->getKey())->update(['disk' => 'cdn', 'visibility' => 'public']);
+                Storage::disk(MediaDisks::PRIVATE)->delete($second->path);
+                Storage::disk('cdn')->put($kept->path, pruneFixtureBytes());
+                symlink($other.'/'.dirname($kept->path), $other.'/'.$lnk);
+                Storage::disk('public')->put($row, pruneFixtureBytes());
+                Storage::disk(MediaDisks::PRIVATE)->delete($kept->path);
+                [$named, $copy, $listed] = ['public', 'cdn', $kept->path];
+                DB::table('media_files')->where('id', $kept->getKey())->update(['disk' => $named, 'visibility' => 'public', 'path' => $row]);
+            }
+
+            foreach ([[], ['--force' => true]] as $options) {
+                $exit = Artisan::call('kitsune:media-prune', $options);
+                $output = Artisan::output();
+
+                expect($output)->toContain('entry '.$kept->entry_id.'  ['.$copy.']  '.$listed.' — its row names ['.$named.'] '.$row.': make the row\'s path and this name one spelling, with the name ['.$named.'] holds its file under where it holds one — rename the files, or correct media_files.path — and the next run lists this one as an extra copy')
+                    ->and($output)->not->toContain('kitsune:media-reconcile --force removes it')
+                    ->and($output)->not->toContain('takes it off')
+                    ->and($exit)->toBe(0);
+            }
+
+            expect(Storage::disk($copy)->exists($listed))->toBeTrue();
+        } finally {
+            exec('rm -rf '.escapeshellarg($other));
+        }
+    })->with([
+        'a private file\'s copy on core\'s disk' => 'private',
+        'a public file\'s copy on another served disk' => 'served',
+        'a trashed public file\'s copy on the private disk it belongs on' => 'trashed',
+        'a public file\'s copy on the public disk it belongs on, its row naming core\'s' => 'target',
+    ]);
+
+    // ...and one on the web, of a file kept off it, says so: a forced reconcile takes it off through the fold, which prune
+    // does not — where before the pass, on SQLite and PostgreSQL, --force removed it as an orphan (review of #155's fix) —
+    // and through a link the public disk's listing skips, on any volume (review of slice 5c).
+    it('says a copy on the web a private row reaches under another spelling is taken off by reconcile', function (string $spelt): void {
+        $kept = storedApartForPrune($this->imageType);
+        $dir = dirname($kept->path);
+
+        if ($spelt === 'link') {
+            $publicRoot = sys_get_temp_dir().'/kitsune-prune-web-'.bin2hex(random_bytes(4));
+            mkdir($publicRoot.'/'.$dir, 0777, true);
+            config(['filesystems.disks.public' => ['driver' => 'local', 'root' => $publicRoot, 'url' => 'https://web.example.test', 'links' => 'skip']]);
+            Storage::forgetDisk('public');
+            // The row reads the file under lnk/ on core's disk; the web lists its copy under the month, lnk/ a link to it.
+            $row = dirname($dir).'/lnk/'.basename($kept->path);
+            mkdir($this->root.'/'.dirname($row));
+            rename($this->root.'/'.$kept->path, $this->root.'/'.$row);
+            DB::table('media_files')->where('id', $kept->getKey())->update(['path' => $row]);
+            copy($this->root.'/'.$row, $publicRoot.'/'.$kept->path);
+            symlink($publicRoot.'/'.$dir, $publicRoot.'/'.dirname($row));
+            [$listed, $file] = [$kept->path, $this->root.'/'.$row];
+        } else {
+            $publicRoot = rtrim(Storage::disk('public')->path(''), '/');
+            $row = $kept->path;
+            $listed = $dir.'/'.strtoupper(basename($kept->path));
+            @mkdir($publicRoot.'/'.$dir, 0777, true);
+            copy($this->root.'/'.$kept->path, $publicRoot.'/'.$listed);
+            $file = $this->root.'/'.$kept->path;
+
+            if (@stat($publicRoot.'/'.$kept->path) === false) {
+                test()->markTestSkipped('this volume does not fold case');
+            }
+        }
+
+        try {
+            $exit = Artisan::call('kitsune:media-prune', ['--force' => true]);
+
+            expect(Artisan::output())->toContain('entry '.$kept->entry_id.'  [public]  '.$listed.' — its row names ['.MediaDisks::PRIVATE.'] '.$row.': on the web, and its file belongs off it — kitsune:media-reconcile --force takes it off, or refuses it as coinciding where the two are one file, left for a hand, and the check lists the row exposed')
+                ->and(is_file($publicRoot.'/'.$listed))->toBeTrue()
+                ->and($exit)->toBe(0);
+
+            $exit = Artisan::call('kitsune:media-reconcile');
+
+            expect(Artisan::output())->toContain('exposed')->and($exit)->toBe(1);
+
+            Artisan::call('kitsune:media-reconcile', ['--force' => true]);
+
+            expect(file_exists($publicRoot.'/'.$listed))->toBeFalse()
+                ->and(is_file($file))->toBeTrue();
+        } finally {
+            if ($spelt === 'link') {
+                exec('rm -rf '.escapeshellarg($publicRoot));
+            }
+        }
+    })->with(['in another case' => 'fold', 'through a link the listing skips' => 'link']);
+
+    /*
+     * ...and an extra copy whose row names the disk it belongs on, which reaches the row's path but lists its file under
+     * another name, cannot be told from the row's own: said so, never offered for removal (review of #155's fix). Where
+     * settle removes the row's copies there — a served disk's under a private target, a private disk's under a public one —
+     * reconcile finds the row's own through the fold or the link, and the line says its --force takes this one off, and
+     * that a file kept off the web is on it; elsewhere, to check the two by hand (review of slice 5c).
+     */
+    it('keeps an extra copy the disk its row names reaches under another name, saying what settles it', function (string $spelt, string $case): void {
+        $other = sys_get_temp_dir().'/kitsune-prune-other-'.bin2hex(random_bytes(4));
+        mkdir($other, 0777, true);
+
+        $served = sys_get_temp_dir().'/kitsune-prune-served-'.bin2hex(random_bytes(4));
+        mkdir($served, 0777, true);
+
+        try {
+            if ($case === 'by hand') {
+                config(['filesystems.disks.host-private' => ['driver' => 'local', 'root' => $other, 'links' => 'skip'], 'kitsune.media.disks.private' => 'host-private']);
+            }
+
+            $kept = storedApartForPrune($this->imageType);
+            $dir = dirname($kept->path);
+
+            if ($spelt === 'fold') {
+                // Core's disk holds the file under the upper-case name; public, the row's exact spelling.
+                $public = rtrim(Storage::disk('public')->path(''), '/');
+                $upper = $dir.'/'.strtoupper(basename($kept->path));
+                @mkdir($public.'/'.$dir, 0777, true);
+                copy($this->root.'/'.$kept->path, $public.'/'.$kept->path);
+                rename($this->root.'/'.$kept->path, $this->root.'/'.$upper);
+
+                if (@stat($this->root.'/'.$kept->path) === false) {
+                    test()->markTestSkipped('this volume does not fold case');
+                }
+
+                [$target, $copy, $row] = [MediaDisks::PRIVATE, 'public', $kept->path];
+            } else {
+                // The disk the file belongs on lists it under the month, lnk/ a link to it; the copy is at lnk/ elsewhere.
+                $row = dirname($dir).'/lnk/'.basename($kept->path);
+                [$target, $copy, $holder] = match ($case) {
+                    'exposed' => [MediaDisks::PRIVATE, 'public', $this->root],
+                    'private copy' => ['public', MediaDisks::PRIVATE, $other],
+                    'on the web by hand' => ['public', 'cdn', $other],
+                    default => ['host-private', MediaDisks::PRIVATE, $other],
+                };
+
+                if ($case === 'on the web by hand') {
+                    // Another served disk, which prune scans only for extra copies, holds the public file's copy.
+                    config(['filesystems.disks.cdn' => ['driver' => 'local', 'root' => $served, 'url' => 'https://cdn.example.test']]);
+                }
+
+                if ($case === 'exposed') {
+                    config(['filesystems.disks.'.MediaDisks::PRIVATE => ['driver' => 'local', 'root' => $this->root, 'links' => 'skip']]);
+                    Storage::forgetDisk(MediaDisks::PRIVATE);
+                } elseif (in_array($case, ['private copy', 'on the web by hand'], true)) {
+                    config(['filesystems.disks.public' => ['driver' => 'local', 'root' => $other, 'url' => 'https://web.example.test', 'links' => 'skip']]);
+                    Storage::forgetDisk('public');
+                    Storage::disk('public')->put($kept->path, pruneFixtureBytes());
+                    Storage::disk(MediaDisks::PRIVATE)->delete($kept->path);
+                }
+
+                symlink($holder.'/'.$dir, $holder.'/'.dirname($row));
+                Storage::disk($copy)->put($row, pruneFixtureBytes());
+                DB::table('media_files')->where('id', $kept->getKey())->update(['disk' => $target, 'path' => $row, 'visibility' => $target === 'public' ? 'public' : 'private']);
+            }
+
+            $exit = Artisan::call('kitsune:media-prune', ['--force' => true]);
+
+            expect(Artisan::output())->toContain('entry '.$kept->entry_id.'  ['.$copy.']  '.$row.' — live, its row names ['.$target.'], it belongs on ['.$target.']: kept: ['.$target.'] reaches the file at its row\'s path but does not list it under that name — a spelling the volume folds, a link its listing skips, or a read-through disk\'s fallback — so this copy cannot be told from the row\'s own: '.match ($case) {
+                'exposed' => 'it is on the web, and its file belongs off it — the check lists the row exposed, and kitsune:media-reconcile --force takes it off, or refuses it as coinciding where the two are one file, left for a hand',
+                'private copy' => 'the check lists the row private copy, and kitsune:media-reconcile --force removes it, or refuses it as coinciding where the two are one file, left for a hand',
+                default => 'check by hand whether the two are one file before taking this one off',
+            })
+                ->and(Storage::disk($copy)->exists($row))->toBeTrue()
+                ->and($exit)->toBe(0);
+
+            if (in_array($case, ['by hand', 'on the web by hand'], true)) {
+                return;
+            }
+
+            $exit = Artisan::call('kitsune:media-reconcile');
+
+            expect(Artisan::output())->toContain(str_pad($case, 20).' entry '.$kept->entry_id)->and($exit)->toBe(1);
+
+            Artisan::call('kitsune:media-reconcile', ['--force' => true]);
+
+            expect(Storage::disk($copy)->exists($row))->toBeFalse();
+        } finally {
+            exec('rm -rf '.escapeshellarg($other).' '.escapeshellarg($served));
+        }
+    })->with([
+        'on the web, in another case' => ['fold', 'exposed'],
+        'on the web, through a link the listing skips' => ['link', 'exposed'],
+        'a private copy, through a link the listing skips' => ['link', 'private copy'],
+        'on core\'s disk beside a host\'s private disk, through a link the listing skips' => ['link', 'by hand'],
+        'a public file\'s, on another served disk, through a link the listing skips' => ['link', 'on the web by hand'],
+    ]);
+
+    // ...and where the disk its row names cannot say whether it reaches the path, the copy keeps the line the listing gives
+    // it, and the report goes on: asked only to choose the line (review of slice 5c).
+    it('keeps an extra copy with its line, and goes on, when the disk its row names cannot say whether it reaches the path', function (bool $force): void {
+        $kept = storedForPrune($this->imageType);
+        Storage::disk('public')->put($kept->path, (string) file_get_contents($this->root.'/'.$kept->path));
+        unlink($this->root.'/'.$kept->path);
+        $this->private->unknown = [$kept->path];
+        RefusingDisk::forgetLog();
+
+        $exit = Artisan::call('kitsune:media-prune', $force ? ['--force' => true] : []);
+
+        expect(Artisan::output())->toContain('entry '.$kept->entry_id.'  [public]  '.$kept->path.' — live, its row names ['.MediaDisks::PRIVATE.'], it belongs on ['.MediaDisks::PRIVATE.']: kept: the disk its row names does not hold the file')
+            // Asked, so the test does not pass because the arm was never reached.
+            ->and(array_filter(RefusingDisk::$log, static fn (array $event): bool => $event['event'] === 'fileExists' && $event['path'] === $kept->path))->not->toBe([])
+            ->and(Storage::disk('public')->exists($kept->path))->toBeTrue()
+            ->and($exit)->toBe(0);
+    })->with(['read-only' => false, 'forced' => true]);
+
+    // ...and what the pass adds on a disk the listing found none on keeps the order the disks are scanned in: a partial
+    // copy listed, and removed by --force, before a disk scanned after it, and a copy under another spelling listed so,
+    // though the row that reaches the later disk's was read first (review of slice 5c).
+    it('lists and removes what the pass adds in the order the disks are scanned', function (): void {
+        $publicRoot = sys_get_temp_dir().'/kitsune-prune-first-'.bin2hex(random_bytes(4));
+        mkdir($publicRoot, 0777, true);
+
+        try {
+            RefusingDisk::install('public', $publicRoot);
+            // x first: the pass's first claim is then on core's disk, which is scanned after public.
+            $x = storedForPrune($this->imageType);
+            $a = storedForPrune($this->imageType);
+            $b = storedForPrune($this->imageType);
+            $y = storedForPrune($this->imageType);
+            $dir = dirname($a->path);
+            rename($this->root.'/'.$a->path, $this->root.'/'.$dir.'/a.png');
+            rename($this->root.'/'.$b->path, $this->root.'/'.$dir.'/b.png');
+            // a's partial copy on public, scanned first, reached only by the pass; b's on core's disk, found by the listing.
+            mkdir($publicRoot.'/'.$dir, 0777, true);
+            file_put_contents($publicRoot.'/'.$dir.'/a.png'.MediaBytes::PARTIAL, 'part');
+            file_put_contents($this->root.'/'.$dir.'/b.png'.MediaBytes::PARTIAL, 'part');
+            DB::table('media_files')->where('id', $a->getKey())->update(['path' => $dir.'//a.png']);
+            DB::table('media_files')->where('id', $b->getKey())->update(['path' => $dir.'/b.png']);
+            // x, read before every other row, names public and reaches core's disk's x.png; y names core's and reaches public's.
+            rename($this->root.'/'.$x->path, $this->root.'/'.$dir.'/x.png');
+            rename($this->root.'/'.$y->path, $publicRoot.'/'.$dir.'/y.png');
+            DB::table('media_files')->where('id', $x->getKey())->update(['disk' => 'public', 'visibility' => 'public', 'path' => $dir.'//x.png']);
+            DB::table('media_files')->where('id', $y->getKey())->update(['path' => $dir.'//y.png']);
+
+            Artisan::call('kitsune:media-prune');
+            $output = Artisan::output();
+            $first = strpos($output, '[public]  '.$dir.'/a.png'.MediaBytes::PARTIAL);
+            $spelt = strpos($output, '[public]  '.$dir.'/y.png —');
+
+            expect($output)->toContain('No orphaned media files.')
+                ->and($first)->not->toBeFalse()
+                ->and($first)->toBeLessThan((int) strpos($output, '['.MediaDisks::PRIVATE.']  '.$dir.'/b.png'.MediaBytes::PARTIAL))
+                ->and($spelt)->not->toBeFalse()
+                ->and($spelt)->toBeLessThan((int) strpos($output, '['.MediaDisks::PRIVATE.']  '.$dir.'/x.png —'));
+
+            RefusingDisk::forgetLog();
+            $exit = Artisan::call('kitsune:media-prune', ['--force' => true]);
+            $deletes = array_values(array_map(
+                static fn (array $event): string => $event['disk'].':'.$event['path'],
+                array_filter(RefusingDisk::$log, static fn (array $event): bool => $event['event'] === 'delete'),
+            ));
+
+            expect($deletes)->toBe(['public:'.$dir.'/a.png'.MediaBytes::PARTIAL, MediaDisks::PRIVATE.':'.$dir.'/b.png'.MediaBytes::PARTIAL])
+                ->and($exit)->toBe(0);
+        } finally {
+            exec('rm -rf '.escapeshellarg($publicRoot));
+        }
+    });
+
+    // ...and one a row's partial path reaches is that row's leftover partial copy, removed under its lock (Codex, #155).
+    it('lists a partial copy a row\'s partial path reaches under another spelling as that row\'s, and removes it', function (string $spelt): void {
+        $kept = storedApartForPrune($this->imageType);
+        $dir = dirname($kept->path);
+        rename($this->root.'/'.$kept->path, $this->root.'/'.$dir.'/keptphoto.png');
+        file_put_contents($this->root.'/'.$dir.'/keptphoto.png'.MediaBytes::PARTIAL, 'part');
+        $row = $spelt === 'fold' ? $dir.'/KeptPhoto.PNG' : $dir.'//keptphoto.png';
+
+        if ($spelt === 'fold' && @stat($this->root.'/'.$row.MediaBytes::PARTIAL) === false) {
+            test()->markTestSkipped('this volume does not fold case');
+        }
+
+        DB::table('media_files')->where('id', $kept->getKey())->update(['path' => $row]);
+
+        $exit = Artisan::call('kitsune:media-prune');
+        $output = Artisan::output();
+
+        expect($output)->toContain('Leftover partial copies')
+            ->and($output)->toContain('entry '.$kept->entry_id.'  ['.MediaDisks::PRIVATE.']  '.$dir.'/keptphoto.png'.MediaBytes::PARTIAL)
+            ->and($output)->toContain('No orphaned media files.')
+            ->and($exit)->toBe(0);
+
+        $exit = Artisan::call('kitsune:media-prune', ['--force' => true]);
+
+        expect(Artisan::output())->toContain('Removed 1 of 1 orphaned or leftover file')
+            ->and(file_exists($this->root.'/'.$dir.'/keptphoto.png'.MediaBytes::PARTIAL))->toBeFalse()
+            ->and(is_file($this->root.'/'.$dir.'/keptphoto.png'))->toBeTrue()
+            ->and($exit)->toBe(0);
+    })->with(['in another case' => 'fold', 'with a doubled slash' => 'slash']);
+
+    // ...and a row's own path wins over another disk's, and over a partial copy's, whichever row is read first — on a
+    // volume that folds, and, spelt with a doubled slash and a dot segment, on one that folds nothing (review of 5c).
+    it('takes a row\'s own path over another disk\'s row and over a partial copy\'s', function (string $case, bool $ownFirst, string $spelt): void {
+        // MySQL's and MariaDB's collations refuse two paths that differ only in case at the index.
+        if ($case === 'disk' && $spelt === 'fold' && in_array(DB::connection()->getDriverName(), ['mysql', 'mariadb'], true)) {
+            test()->markTestSkipped('the index refuses two paths the collation compares equal');
+        }
+
+        $first = storedForPrune($this->imageType);
+        $second = storedForPrune($this->imageType);
+        [$own, $weak] = $ownFirst ? [$first, $second] : [$second, $first];
+        $dir = dirname($first->path);
+        Storage::disk(MediaDisks::PRIVATE)->delete($weak->path);
+        $listed = $case === 'disk' ? $dir.'/keptphoto.png' : $dir.'/keep.png'.MediaBytes::PARTIAL;
+        rename($this->root.'/'.$own->path, $this->root.'/'.$listed);
+
+        if ($spelt === 'fold' && @stat($this->root.'/'.strtoupper($listed)) === false && @stat($this->root.'/'.$dir.'/KeptPhoto.PNG') === false) {
+            test()->markTestSkipped('this volume does not fold case');
+        }
+
+        // One row claims it less — another disk's spelling, or a partial path — and the other, its own, read first or last.
+        DB::table('media_files')->where('id', $weak->getKey())->update(match (true) {
+            $case === 'disk' => ['disk' => 'public', 'visibility' => 'public', 'path' => $spelt === 'fold' ? $dir.'/KEPTPHOTO.PNG' : $dir.'/./keptphoto.png'],
+            default => ['path' => $spelt === 'fold' ? $dir.'/KEEP.png' : $dir.'/./keep.png'],
+        });
+        DB::table('media_files')->where('id', $own->getKey())->update(['path' => match (true) {
+            $spelt === 'slash' => $dir.'//'.basename($listed),
+            $case === 'disk' => $dir.'/KeptPhoto.PNG',
+            default => $dir.'/KEEP.PNG'.strtoupper(MediaBytes::PARTIAL),
+        }]);
+
+        $exit = Artisan::call('kitsune:media-prune', ['--force' => true]);
+        $output = Artisan::output();
+
+        expect($output)->toContain('No orphaned media files.')
+            ->and($output)->not->toContain('Copies a row reaches')
+            ->and($output)->not->toContain('Leftover partial copies')
+            ->and(is_file($this->root.'/'.$listed))->toBeTrue()
+            ->and($exit)->toBe(0);
+    })->with([
+        'over another disk\'s row, read last' => ['disk', false, 'fold'],
+        'over another disk\'s row, read first' => ['disk', true, 'fold'],
+        'over a partial copy\'s, read last' => ['partial', false, 'fold'],
+        'over a partial copy\'s, read first' => ['partial', true, 'fold'],
+        'over another disk\'s row, read last, spelt with slashes' => ['disk', false, 'slash'],
+        'over another disk\'s row, read first, spelt with slashes' => ['disk', true, 'slash'],
+        'over a partial copy\'s, read last, spelt with slashes' => ['partial', false, 'slash'],
+        'over a partial copy\'s, read first, spelt with slashes' => ['partial', true, 'slash'],
+    ]);
+
+    // ...and a row naming another disk wins over a partial copy's, whichever is read first: kept, never removed as a partial
+    // — on a volume that folds, and on one that folds nothing (review of slice 5c).
+    it('takes another disk\'s row over a partial copy\'s', function (bool $otherFirst, string $spelt): void {
+        $first = storedForPrune($this->imageType);
+        $second = storedForPrune($this->imageType);
+        [$other, $partial] = $otherFirst ? [$first, $second] : [$second, $first];
+        $dir = dirname($first->path);
+        $listed = $dir.'/keepd.png'.MediaBytes::PARTIAL;
+        rename($this->root.'/'.$first->path, $this->root.'/'.$listed);
+        Storage::disk(MediaDisks::PRIVATE)->delete($second->path);
+
+        if ($spelt === 'fold' && @stat($this->root.'/'.$dir.'/KEEPD.PNG'.strtoupper(MediaBytes::PARTIAL)) === false) {
+            test()->markTestSkipped('this volume does not fold case');
+        }
+
+        DB::table('media_files')->where('id', $other->getKey())->update(['disk' => 'public', 'visibility' => 'public', 'path' => $spelt === 'fold'
+            ? $dir.'/KEEPD.PNG'.strtoupper(MediaBytes::PARTIAL)
+            : $dir.'//keepd.png'.MediaBytes::PARTIAL]);
+        DB::table('media_files')->where('id', $partial->getKey())->update(['path' => $spelt === 'fold' ? $dir.'/KEEPD.png' : $dir.'/./keepd.png']);
+
+        $exit = Artisan::call('kitsune:media-prune', ['--force' => true]);
+        $output = Artisan::output();
+
+        expect($output)->toContain('Copies a row reaches under another spelling')
+            ->and($output)->not->toContain('Leftover partial copies')
+            ->and(is_file($this->root.'/'.$listed))->toBeTrue()
+            ->and($exit)->toBe(0);
+    })->with([
+        'the other disk\'s row read first' => [true, 'fold'],
+        'the partial copy\'s row read first' => [false, 'fold'],
+        'the other disk\'s row read first, spelt with slashes' => [true, 'slash'],
+        'the partial copy\'s row read first, spelt with slashes' => [false, 'slash'],
+    ]);
+
+    // ...and a directory is the same directory by what the volume says, not by its spelling: a row naming the month's
+    // directory in another case reaches its file there, as does one spelt with a doubled slash under a disk root reached
+    // through a link — a release's `current`, which resolving the row's name, and not the listed one's, spells otherwise —
+    // while a hard link elsewhere is still another entry (review of slice 5c).
+    it('reaches a file through a directory spelt otherwise, and removes a hard link elsewhere', function (string $spelt): void {
+        $link = sys_get_temp_dir().'/kitsune-prune-current-'.bin2hex(random_bytes(4));
+
+        try {
+            if ($spelt === 'root') {
+                symlink($this->root, $link);
+                $this->private = RefusingDisk::install(MediaDisks::PRIVATE, $link);
+            }
+
+            $kept = storedForPrune($this->imageType);
+            $dir = dirname($kept->path);
+            rename($this->root.'/'.$kept->path, $this->root.'/'.$dir.'/sole.png');
+            $row = $spelt === 'fold' ? strtoupper($dir).'/sole.png' : $dir.'//sole.png';
+            $file = @stat($this->root.'/'.$dir.'/sole.png');
+            $reached = @stat($this->root.'/'.$row);
+
+            if (! is_array($file) || ! is_array($reached) || $file['ino'] !== $reached['ino']) {
+                test()->markTestSkipped('this volume does not fold case');
+            }
+
+            // Two hard links, listed before the file itself: its own name is the third of its inode's (review of 5c).
+            $hardLinks = ['media/'.$this->org->getKey().'/2026/01/sole-link.png', 'media/'.$this->org->getKey().'/2026/02/sole-link.png'];
+
+            foreach ($hardLinks as $hardLink) {
+                @mkdir(dirname($this->root.'/'.$hardLink), 0777, true);
+                link($this->root.'/'.$dir.'/sole.png', $this->root.'/'.$hardLink);
+            }
+
+            DB::table('media_files')->where('id', $kept->getKey())->update(['path' => $row]);
+
+            $exit = Artisan::call('kitsune:media-prune', ['--force' => true]);
+
+            expect(Artisan::output())->toContain('Removed 2 of 2 orphaned or leftover files')
+                ->and(hash_file('sha256', $this->root.'/'.$dir.'/sole.png'))->toBe(hash('sha256', pruneFixtureBytes()))
+                ->and(file_exists($this->root.'/'.$hardLinks[0]))->toBeFalse()
+                ->and(file_exists($this->root.'/'.$hardLinks[1]))->toBeFalse()
+                ->and($exit)->toBe(0);
+        } finally {
+            @unlink($link);
+        }
+    })->with(['in another case' => 'fold', 'with a doubled slash, under a linked root' => 'root']);
+
+    // ...and on a disk named with digits alone, whose name PHP would make an integer key (review of #155's fix).
+    it('asks a disk named with digits alone whether a row reaches a listed name', function (): void {
+        $root = sys_get_temp_dir().'/kitsune-prune-seven-'.bin2hex(random_bytes(4));
+        mkdir($root, 0777, true);
+
+        try {
+            config(['filesystems.disks.7' => ['driver' => 'local', 'root' => $root]]);
+            $kept = storedForPrune($this->imageType);
+            $dir = dirname($kept->path);
+            @mkdir($root.'/'.$dir, 0777, true);
+            rename($this->root.'/'.$kept->path, $root.'/'.$dir.'/keptphoto.png');
+            DB::table('media_files')->where('id', $kept->getKey())->update(['disk' => '7', 'path' => $dir.'//keptphoto.png']);
+
+            foreach ([[], ['--force' => true]] as $options) {
+                $exit = Artisan::call('kitsune:media-prune', $options);
+
+                expect(Artisan::output())->toContain('No orphaned media files.')->and($exit)->toBe(0);
+            }
+
+            expect(is_file($root.'/'.$dir.'/keptphoto.png'))->toBeTrue();
+        } finally {
+            exec('rm -rf '.escapeshellarg($root));
+        }
+    });
+
+    // ...and past the pass's first batch: a row read in its second batch still reaches its file (review of #155's fix).
+    it('lists nowhere a name only a row past the pass\'s first batch reaches', function (): void {
+        $template = storedForPrune($this->imageType);
+        pruneRows($template, MediaPruneCommand::BATCH, MediaDisks::PRIVATE, 'early');
+        [$late] = pruneRows($template, 1, MediaDisks::PRIVATE, 'late');
+        DB::table('media_files')->where('path', $late)->update(['path' => dirname($late).'//'.basename($late)]);
+        Storage::disk(MediaDisks::PRIVATE)->put($late, 'the late row\'s only file');
+
+        foreach ([[], ['--force' => true]] as $options) {
+            $exit = Artisan::call('kitsune:media-prune', $options);
+            $output = Artisan::output();
+
+            // Listed nowhere, not as another disk's row's copy (review of slice 5c).
+            expect($output)->toContain('No orphaned media files.')
+                ->and($output)->not->toContain('Copies a row reaches')
+                ->and($exit)->toBe(0);
+        }
+
+        expect(is_file($this->root.'/'.$late))->toBeTrue();
+    });
+
+    // ...and what the pass adds is listed in path order with what the listing found: partial copies, and copies under
+    // another spelling, whichever row the pass read first (review of #155's fix).
+    it('lists what the pass adds in path order', function (): void {
+        $b = storedForPrune($this->imageType);
+        $a = storedForPrune($this->imageType);
+        $z = storedForPrune($this->imageType);
+        $y = storedForPrune($this->imageType);
+        $dir = dirname($a->path);
+
+        foreach (['a' => $a, 'b' => $b, 'z' => $z, 'y' => $y] as $name => $file) {
+            rename($this->root.'/'.$file->path, $this->root.'/'.$dir.'/'.$name.'.png');
+        }
+
+        file_put_contents($this->root.'/'.$dir.'/a.png'.MediaBytes::PARTIAL, 'part');
+        file_put_contents($this->root.'/'.$dir.'/b.png'.MediaBytes::PARTIAL, 'part');
+        // a's partial reached only by the pass, b's by the listing; z and y copies under another spelling, z read first.
+        DB::table('media_files')->where('id', $a->getKey())->update(['path' => $dir.'//a.png']);
+        DB::table('media_files')->where('id', $b->getKey())->update(['path' => $dir.'/b.png']);
+        DB::table('media_files')->where('id', $z->getKey())->update(['disk' => 'public', 'visibility' => 'public', 'path' => $dir.'//z.png']);
+        DB::table('media_files')->where('id', $y->getKey())->update(['disk' => 'public', 'visibility' => 'public', 'path' => $dir.'//y.png']);
+
+        Artisan::call('kitsune:media-prune');
+        $output = Artisan::output();
+
+        $heading = strpos($output, 'Leftover partial copies');
+        $passAdded = strpos($output, $dir.'/a.png'.MediaBytes::PARTIAL);
+
+        // a's partial copy printed, among the partial copies, before b's (review of slice 5c).
+        expect($heading)->not->toBeFalse()
+            ->and($passAdded)->not->toBeFalse()
+            ->and($passAdded)->toBeGreaterThan((int) $heading)
+            ->and($passAdded)->toBeLessThan((int) strpos($output, $dir.'/b.png'.MediaBytes::PARTIAL))
+            ->and(strpos($output, $dir.'/y.png —'))->toBeLessThan((int) strpos($output, $dir.'/z.png —'))
+            ->and(strpos($output, $dir.'/y.png —'))->not->toBeFalse();
+    });
+
+    // ...and the rows the new list prints are read 500 at a time, and one gone since the pass is said so (review of #155's
+    // fix).
+    it('reads the rows of copies under another spelling in batches, and says so of one gone since', function (bool $gone): void {
+        $template = storedForPrune($this->imageType);
+        $count = $gone ? 1 : MediaPruneCommand::BATCH + 1;
+        $paths = pruneRows($template, $count, 'public', 'spelt', ['visibility' => 'public']);
+
+        foreach ($paths as $path) {
+            Storage::disk(MediaDisks::PRIVATE)->put($path, 'bytes');
+            DB::table('media_files')->where('path', $path)->update(['path' => dirname($path).'//'.basename($path)]);
+        }
+
+        $reads = [];
+        $deleted = false;
+        DB::listen(static function (QueryExecuted $query) use (&$reads, &$deleted, $gone): void {
+            if (preg_match('/where\W+media_files\W+\W*id\W+in\s*\(/i', $query->sql) === 1) {
+                $reads[] = count($query->bindings);
+            }
+
+            // The row gone once the pass has read it, before the list is printed.
+            if ($gone && ! $deleted && preg_match('/^select\W+id\W+,\W+entry_id\W+,\W+disk\W+,\W+path\W+from\W+media_files\W/i', $query->sql) === 1) {
+                $deleted = true;
+                DB::table('media_files')->where('path', 'like', '%//spelt%')->delete();
+            }
+        });
+
+        $exit = Artisan::call('kitsune:media-prune');
+        $output = Artisan::output();
+
+        if ($gone) {
+            expect($output)->toContain('  ['.MediaDisks::PRIVATE.']  '.$paths[0].' — its row is gone since the listing: the next run asks again');
+        } else {
+            expect(substr_count($output, ' — its row names [public] '))->toBe($count)
+                ->and($reads)->toBe([MediaPruneCommand::BATCH, 1]);
+        }
+
+        expect($exit)->toBe(0);
+    })->with(['more than a batch' => false, 'a row gone since the pass' => true]);
+
+    // ...and a failure of the pass's read fails the run, never read as "no row" — nor said to be a disk not listed.
+    it('fails the run, removing nothing, when the pass over the table fails', function (): void {
+        $kept = storedForPrune($this->imageType);
+        $orphan = dirname($kept->path).'/left-behind.png';
+        file_put_contents($this->root.'/'.$orphan, 'bytes');
+        DB::listen(static function (QueryExecuted $query): void {
+            if (preg_match('/^select\W+id\W+,\W+entry_id\W+,\W+disk\W+,\W+path\W+from\W+media_files\W/i', $query->sql) === 1) {
+                throw new RuntimeException('the pass could not read the table');
+            }
+        });
+
+        expect(fn () => Artisan::call('kitsune:media-prune', ['--force' => true]))->toThrow(RuntimeException::class, 'the pass could not read the table')
+            ->and(is_file($this->root.'/'.$orphan))->toBeTrue()
+            ->and(is_file($this->root.'/'.$kept->path))->toBeTrue();
+    });
+
+    // ...and a row's path no stat can take — one the disks refuse, or one that leaves the disk — reaches nothing, and stops
+    // nothing: the orphan beside it is removed.
+    it('asks nothing of a row path the disks refuse, and removes the orphan beside it', function (): void {
+        $kept = storedForPrune($this->imageType);
+        $other = storedForPrune($this->imageType);
+        $dir = dirname($kept->path);
+        DB::table('media_files')->where('id', $other->getKey())->update(['path' => $dir.'/zw'."\u{200b}".'.png']);
+        DB::table('media_files')->where('id', $kept->getKey())->update(['path' => 'media/../../outside.png']);
+        Storage::disk(MediaDisks::PRIVATE)->delete($other->path);
+        rename($this->root.'/'.$kept->path, $this->root.'/'.$dir.'/left-behind.png');
+
+        $exit = Artisan::call('kitsune:media-prune', ['--force' => true]);
+
+        expect(Artisan::output())->toContain('Removed 1 of 1 orphaned or leftover file')
+            ->and(file_exists($this->root.'/'.$dir.'/left-behind.png'))->toBeFalse()
+            ->and($exit)->toBe(0);
+    });
+
+    // ...and only a local disk is asked by stat: an object store compares keys byte for byte, and another spelling is another
+    // key — listed on every engine, and removed but where MySQL's and MariaDB's collation claims it under the lock; a row's
+    // path written in a form the disks read as the key itself still reaches it (review of #155's fix).
+    it('asks an object store by the key a row\'s path is read as, never by stat', function (string $spelt): void {
+        $kept = storedForPrune($this->imageType);
+        $dir = dirname($kept->path);
+        $store = sys_get_temp_dir().'/kitsune-prune-store-'.bin2hex(random_bytes(4));
+        mkdir($store.'/'.$dir, 0777, true);
+        // A store named with digits alone, whose name PHP makes an integer key (review of slice 5c).
+        $name = $spelt === 'digits' ? '7' : 'store';
+
+        try {
+            // The row's file on the store alone.
+            Storage::disk(MediaDisks::PRIVATE)->delete($kept->path);
+            file_put_contents($store.'/'.$dir.'/keptphoto.png', 'bytes');
+            // No local root, as a real object store's configuration names none: stat of a key it reads reaches nothing (5c).
+            $config = ['driver' => 's3', 'bucket' => 'b', 'endpoint' => 'e', 'url' => 'https://store.example.test'];
+            $adapter = new RefusingDisk($store, $name);
+            config(['filesystems.disks.'.$name => $config, 'kitsune.media.disks.public' => $name]);
+            Storage::set($name, new FilesystemAdapter(new Filesystem($adapter), $adapter, $config));
+            DB::table('media_files')->where('id', $kept->getKey())->update(['disk' => $name, 'visibility' => 'public', 'path' => $spelt === 'case' ? $dir.'/KeptPhoto.PNG' : $dir.'//keptphoto.png']);
+            $collates = $spelt === 'case' && in_array(DB::connection()->getDriverName(), ['mysql', 'mariadb'], true);
+
+            $exit = Artisan::call('kitsune:media-prune');
+            $output = Artisan::output();
+
+            // The store's own row's file, never another's copy under another spelling (review of slice 5c).
+            expect($output)->toContain($spelt === 'case' ? '1 orphaned file' : 'No orphaned media files.')
+                ->and($output)->not->toContain('Copies a row reaches')
+                ->and($exit)->toBe(0);
+
+            $exit = Artisan::call('kitsune:media-prune', ['--force' => true]);
+
+            expect(file_exists($store.'/'.$dir.'/keptphoto.png'))->toBe($spelt !== 'case' || $collates)->and($exit)->toBe(0);
+        } finally {
+            exec('rm -rf '.escapeshellarg($store));
+        }
+    })->with(['another case, another key' => 'case', 'a doubled slash, read as the key' => 'slash', 'a doubled slash, on a store named with digits' => 'digits']);
+
+    /*
+     * ...and by that key an object store's name is claimed as a row's own, as another disk's row's copy under another
+     * spelling, or as a row's partial copy, the lower kind winning whichever row is read first — and a row's path the
+     * disks refuse, elsewhere in the table, reaches nothing and stops nothing (review of slice 5c).
+     */
+    it('claims an object store\'s key as each kind of row reaches it', function (string $case): void {
+        $kept = storedForPrune($this->imageType);
+        $dir = dirname($kept->path);
+        $store = sys_get_temp_dir().'/kitsune-prune-store-'.bin2hex(random_bytes(4));
+        mkdir($store.'/'.$dir, 0777, true);
+
+        try {
+            // No local root, as a real object store's configuration names none: stat of a key it reads reaches nothing (5c).
+            $config = ['driver' => 's3', 'bucket' => 'b', 'endpoint' => 'e', 'url' => 'https://store.example.test'];
+            $adapter = new RefusingDisk($store, 'store');
+            config(['filesystems.disks.store' => $config, 'kitsune.media.disks.public' => 'store']);
+            Storage::set('store', new FilesystemAdapter(new Filesystem($adapter), $adapter, $config));
+            Storage::disk(MediaDisks::PRIVATE)->delete($kept->path);
+            file_put_contents($store.'/'.$dir.'/keptphoto.png', 'bytes');
+
+            if (in_array($case, ['store first', 'store last'], true)) {
+                // One row names the store, the other core's disk; both read as the store's key.
+                $other = storedForPrune($this->imageType);
+                Storage::disk(MediaDisks::PRIVATE)->delete($other->path);
+                [$storeRow, $privateRow] = $case === 'store first' ? [$kept, $other] : [$other, $kept];
+                DB::table('media_files')->where('id', $storeRow->getKey())->update(['disk' => 'store', 'visibility' => 'public', 'path' => $dir.'//keptphoto.png']);
+                DB::table('media_files')->where('id', $privateRow->getKey())->update(['path' => $dir.'/./keptphoto.png']);
+            } elseif ($case === 'partial') {
+                file_put_contents($store.'/'.$dir.'/keptphoto.png'.MediaBytes::PARTIAL, 'part');
+                DB::table('media_files')->where('id', $kept->getKey())->update(['disk' => 'store', 'visibility' => 'public', 'path' => $dir.'//keptphoto.png']);
+            } elseif ($case === 'exact') {
+                // A row's own partial copy, its path written as the disks read it: the listing's, which the pass never asks
+                // of a store — asked by key, a partial path took it from its row, and it was listed nowhere (review of 5c).
+                file_put_contents($store.'/'.$dir.'/keptphoto.png'.MediaBytes::PARTIAL, 'part');
+                DB::table('media_files')->where('id', $kept->getKey())->update(['disk' => 'store', 'visibility' => 'public', 'path' => $dir.'/keptphoto.png']);
+            } elseif ($case === 'refused') {
+                // An orphan on the store, and a row elsewhere whose path the disks refuse.
+                file_put_contents($store.'/'.$dir.'/orphan.png', 'bytes');
+                DB::table('media_files')->where('id', $kept->getKey())->update(['disk' => 'store', 'visibility' => 'public']);
+                rename($store.'/'.$dir.'/keptphoto.png', $store.'/'.$kept->path);
+                $refused = storedForPrune($this->imageType);
+                Storage::disk(MediaDisks::PRIVATE)->delete($refused->path);
+                DB::table('media_files')->where('id', $refused->getKey())->update(['path' => 'media/../../outside.png']);
+            } else {
+                // The row names core's disk; its path, read as the disks read it, is the store's key.
+                DB::table('media_files')->where('id', $kept->getKey())->update(['path' => $dir.'//keptphoto.png']);
+            }
+
+            $exit = Artisan::call('kitsune:media-prune');
+            $output = Artisan::output();
+
+            expect($exit)->toBe(0);
+
+            match ($case) {
+                'partial', 'exact' => expect($output)->toContain('No orphaned media files.')
+                    ->toContain('Leftover partial copies')
+                    ->toContain(sprintf('entry %d  [store]  %s/keptphoto.png%s', $kept->entry_id, $dir, MediaBytes::PARTIAL)),
+                'refused' => expect($output)->toContain('  [store]  '.$dir.'/orphan.png')->not->toContain('Copies a row reaches'),
+                'other disk' => expect($output)->toContain('No orphaned media files.')
+                    ->toContain(sprintf('entry %d  [store]  %s/keptphoto.png — its row names [%s] %s//keptphoto.png: its row\'s path is not written as the disks read it', $kept->entry_id, $dir, MediaDisks::PRIVATE, $dir)),
+                default => expect($output)->toContain('No orphaned media files.')->not->toContain('Copies a row reaches'),
+            };
+
+            $exit = Artisan::call('kitsune:media-prune', ['--force' => true]);
+
+            expect($exit)->toBe(0)
+                ->and(file_exists($store.'/'.$dir.'/keptphoto.png'.MediaBytes::PARTIAL))->toBeFalse()
+                ->and(file_exists($store.'/'.$dir.'/orphan.png'))->toBeFalse()
+                ->and(is_file($store.'/'.($case === 'refused' ? $kept->path : $dir.'/keptphoto.png')))->toBeTrue();
+        } finally {
+            exec('rm -rf '.escapeshellarg($store));
+        }
+    })->with([
+        'a row naming another disk' => 'other disk',
+        'a row\'s partial copy' => 'partial',
+        'a row\'s partial copy, its path as the disks read it' => 'exact',
+        'its own row read first, another disk\'s last' => 'store first',
+        'its own row read last, another disk\'s first' => 'store last',
+        'beside a row path the disks refuse' => 'refused',
+    ]);
+
+    // ...and another file whose name only looks like a row's claims nothing: the row must reach this very entry.
+    it('removes a file whose name only looks like another row\'s', function (): void {
+        $other = storedForPrune($this->imageType);
+        $dir = dirname($other->path);
+        rename($this->root.'/'.$other->path, $this->root.'/'.$dir.'/cafx.png');
+        DB::table('media_files')->where('id', $other->getKey())->update(['path' => $dir.'/cafx.png']);
+        file_put_contents($this->root.'/'.$dir.'/caf'."\u{e9}".'.png', 'another file');
+
+        $exit = Artisan::call('kitsune:media-prune', ['--force' => true]);
+
+        expect(Artisan::output())->toContain('Removed 1 of 1 orphaned or leftover file')
+            ->and(file_exists($this->root.'/'.$dir.'/caf'."\u{e9}".'.png'))->toBeFalse()
+            ->and(is_file($this->root.'/'.$dir.'/cafx.png'))->toBeTrue()
             ->and($exit)->toBe(0);
     });
 
@@ -2541,7 +4574,7 @@ describe('reading in batches', function (): void {
             $exit = Artisan::call('kitsune:media-prune', $force ? ['--force' => true] : []);
             $output = Artisan::output();
 
-            expect($output)->toContain('kept: the disk its row names does not hold the file')
+            expect($output)->toContain('kept: [private-rt] reaches the file at its row\'s path but does not list it under that name — a spelling the volume folds, a link its listing skips, or a read-through disk\'s fallback — so this copy cannot be told from the row\'s own: check by hand whether the two are one file before taking this one off')
                 ->and($output)->not->toContain('removed, once asked again under the lock')
                 ->and(is_file($this->root.'/'.$file->path))->toBeTrue()
                 ->and($exit)->toBe(0);
@@ -2619,6 +4652,60 @@ describe('reading in batches', function (): void {
         expect(Artisan::output())->toMatch('/^  entry '.$id.'  \['.preg_quote(MediaDisks::PRIVATE, '/').'\]  '.preg_quote($file->path, '/').' — live, its row names \[public\]/m')
             ->and($exit)->toBe(0);
     })->with(['zero' => 0, 'minus one' => -1, 'the smallest it holds' => -MediaPruneCommand::LARGEST_ENTRY - 1]);
+
+    /*
+     * ...and the pass holds each claim's row or entry whole, apart from its kind: packed beside it, an id past ±2^61 came
+     * back as another — a partial copy listed under an entry that does not exist and removed under that entry's lock, not
+     * its own, and a copy under another spelling said to have lost its row (review of slice 5c). Reached through a
+     * doubled slash, so every volume makes it.
+     */
+    it('reads back a claim\'s row or entry past what one integer beside its kind would hold', function (string $kind, int $id): void {
+        pruneWithoutKeptAutoIncrement();
+        $kept = storedForPrune($this->imageType);
+        $dir = dirname($kept->path);
+        rename($this->root.'/'.$kept->path, $this->root.'/'.$dir.'/keptphoto.png');
+
+        if ($kind === 'partial') {
+            $entry = (array) DB::table('entries')->where('id', $kept->entry_id)->first();
+            DB::table('entries')->insert([...$entry, 'id' => $id]);
+            DB::table('media_files')->where('id', $kept->getKey())->update(['entry_id' => $id, 'path' => $dir.'//keptphoto.png']);
+            file_put_contents($this->root.'/'.$dir.'/keptphoto.png'.MediaBytes::PARTIAL, 'part');
+        } else {
+            DB::table('media_files')->where('id', $kept->getKey())->update(['id' => $id, 'disk' => 'public', 'visibility' => 'public', 'path' => $dir.'//keptphoto.png']);
+        }
+
+        $exit = Artisan::call('kitsune:media-prune');
+        $output = Artisan::output();
+
+        if ($kind === 'spelt') {
+            expect($output)->toContain('entry '.$kept->entry_id.'  ['.MediaDisks::PRIVATE.']  '.$dir.'/keptphoto.png — its row names [public] '.$dir.'//keptphoto.png: ')
+                ->and($output)->not->toContain('gone since')
+                ->and($exit)->toBe(0);
+
+            return;
+        }
+
+        expect($output)->toContain('entry '.$id.'  ['.MediaDisks::PRIVATE.']  '.$dir.'/keptphoto.png'.MediaBytes::PARTIAL)->and($exit)->toBe(0);
+
+        $locked = [];
+        DB::listen(static function (QueryExecuted $query) use (&$locked): void {
+            if (preg_match('/from\W+entries\W+where\W+id\W/i', $query->sql) === 1) {
+                $locked[] = $query->bindings;
+            }
+        });
+
+        $exit = Artisan::call('kitsune:media-prune', ['--force' => true]);
+
+        expect(Artisan::output())->toContain('Removed 1 of 1 orphaned or leftover file')
+            ->and(array_map(static fn (array $bindings): int => (int) $bindings[0], $locked))->toContain($id)
+            ->and(file_exists($this->root.'/'.$dir.'/keptphoto.png'.MediaBytes::PARTIAL))->toBeFalse()
+            ->and($exit)->toBe(0);
+    })->with([
+        'a partial copy\'s entry past 2^61' => ['partial', (1 << 61) + 7],
+        'a partial copy\'s entry below -2^61' => ['partial', -(1 << 61) - 7],
+        'another disk\'s row past 2^61' => ['spelt', (1 << 61) + 7],
+        'another disk\'s row below -2^61' => ['spelt', -(1 << 61) - 7],
+    ]);
 
     // T161-T162: up to 256 disks among the rows of extra copies, each read back as itself; a 257th is refused, rather than
     // read back as another disk, and another entry (review of slice 5c).
@@ -2728,10 +4815,14 @@ describe('reading in batches', function (): void {
         DB::table('media_files')->where('id', $file->getKey())->update(['disk' => 'public', 'visibility' => 'public']);
         Storage::disk('public')->put($file->path, pruneFixtureBytes());
         $peak = function (int $settled) use ($file): int {
+            // put() answers false on a failed write and throws nothing: fewer files seeded would read as a flatter peak.
+            $written = 0;
+
             foreach (pruneRows($file, $settled, 'public', 'settled-'.$settled, ['visibility' => 'public']) as $path) {
-                Storage::disk('public')->put($path, 'x');
+                $written += (int) Storage::disk('public')->put($path, 'x');
             }
 
+            expect($written)->toBe($settled);
             gc_collect_cycles();
             $before = memory_get_usage();
             memory_reset_peak_usage();
@@ -2750,6 +4841,82 @@ describe('reading in batches', function (): void {
         expect($many - $few)->toBeLessThan(250_000);
     });
 
+    // ...and the pass that asks the volume (Codex, #155) holds no row it reads: one orphan sets it off over every row, and
+    // prune's peak does not grow with the rows it reads (review of slice 5c).
+    it('holds no row the pass reads, however many rows the table holds', function (): void {
+        $file = storedForPrune($this->imageType);
+        $stray = 'media/'.$this->org->getKey().'/2026/09/stray.bin';
+        Storage::disk(MediaDisks::PRIVATE)->put($stray, 'x');
+        // The pass's reads of the table, as the harness counts them: a peak that stays flat because the pass never ran
+        // would pass as one that held nothing (review of slice 5c).
+        $passed = 0;
+        DB::listen(static function (QueryExecuted $query) use (&$passed): void {
+            $passed += preg_match('/^select\W+id\W+,\W+entry_id\W+,\W+disk\W+,\W+path\W+from\W+media_files\W/i', $query->sql) === 1 ? 1 : 0;
+        });
+        $peak = function (int $rows) use ($file, &$passed): int {
+            // Rows whose files no disk holds: the pass alone reads them, and stats each path.
+            pruneRows($file, $rows, 'public', 'passed-'.$rows, ['visibility' => 'public']);
+            $passed = 0;
+            gc_collect_cycles();
+            $before = memory_get_usage();
+            memory_reset_peak_usage();
+            Artisan::call('kitsune:media-prune', [], new NullOutput);
+            $peak = memory_get_peak_usage() - $before;
+
+            // It read every row: a read a batch, and a last one short or empty.
+            expect($passed)->toBe(intdiv(DB::table('media_files')->count(), MediaPruneCommand::BATCH) + 1);
+
+            return $peak;
+        };
+
+        $peak(1);
+        $few = $peak(2_000);
+        $many = $peak(10_000);
+
+        // As built the difference reads about 0; a pass keeping each row it reads adds some 0.75 KB a row, 7.5 MB here.
+        expect($many - $few)->toBeLessThan(250_000);
+    });
+
+    /*
+     * ...and a listed name the pass claims as its row's own file costs it what an int does in its maps: one name of a file,
+     * as most are, is held as an int, never a list — measured on SQLite, some 237 B a name as built and 453 B were each a
+     * list, which would have taken (O')'s pass from about 20 MB to about 41 MB over 100,000 names (review of slice 5c).
+     */
+    it('holds a listed name the pass claims as an int, not a list', function (): void {
+        $file = storedForPrune($this->imageType);
+        $entry = (array) DB::table('entries')->where('id', $file->entry_id)->first();
+        $row = (array) DB::table('media_files')->where('id', $file->getKey())->first();
+        unset($entry['id'], $row['id']);
+        $peak = function (int $names, string $tag) use ($entry, $row): int {
+            foreach (range(1, $names) as $n) {
+                // Each row spelt with a doubled slash over its file: every listed name one the pass claims as its own.
+                $path = sprintf('media/%d/2027/%02d/%s-%05d.bin', $row['org_id'] ?? 1, $n % 100, $tag, $n);
+                $id = DB::table('entries')->insertGetId([...$entry, 'title' => "{$tag} {$n}"]);
+                DB::table('media_files')->insert([...$row, 'entry_id' => $id, 'disk' => MediaDisks::PRIVATE, 'path' => dirname($path).'//'.basename($path)]);
+                @mkdir($this->root.'/'.dirname($path), 0777, true);
+                file_put_contents($this->root.'/'.$path, 'x');
+            }
+
+            gc_collect_cycles();
+            $before = memory_get_usage();
+            memory_reset_peak_usage();
+            Artisan::call('kitsune:media-prune', [], new NullOutput);
+
+            return memory_get_peak_usage() - $before;
+        };
+
+        $peak(1, 'warm');
+        $few = $peak(2_000, 'few');
+        $many = $peak(8_000, 'many');
+
+        // 8,000 names more: some 1.9 MB as built, some 3.6 MB with each a list.
+        expect(($many - $few) / 8_000)->toBeLessThan(330);
+
+        Artisan::call('kitsune:media-prune');
+
+        expect(Artisan::output())->toContain('No orphaned media files.');
+    });
+
     /*
      * T169. What prune holds for an extra copy is its path and one integer, flags and all, whatever disk it is on: set by
      * key, on the last disk listed too — whose table the scan still shared — and looked for in the second listing by the
@@ -2761,11 +4928,15 @@ describe('reading in batches', function (): void {
         DB::table('media_files')->where('id', $file->getKey())->update(['disk' => 'public', 'visibility' => 'public']);
         Storage::disk('public')->put($file->path, pruneFixtureBytes());
         $peak = function (int $copies) use ($file): int {
+            // put() answers false on a failed write and throws nothing: fewer copies seeded would read as a lower slope.
+            $written = 0;
+
             foreach (pruneRows($file, $copies, 'public', 'extra-'.$copies, ['visibility' => 'public']) as $path) {
-                Storage::disk('public')->put($path, 'x');
-                Storage::disk(MediaDisks::PRIVATE)->put($path, 'x');
+                $written += (int) Storage::disk('public')->put($path, 'x');
+                $written += (int) Storage::disk(MediaDisks::PRIVATE)->put($path, 'x');
             }
 
+            expect($written)->toBe(2 * $copies);
             gc_collect_cycles();
             $before = memory_get_usage();
             memory_reset_peak_usage();
@@ -2780,6 +4951,11 @@ describe('reading in batches', function (): void {
         $many = $peak(8_000);
 
         expect(($many - $few) / 8_000)->toBeLessThan(220);
+
+        // ...and prune listed every copy seeded, outside the measure: a slope over copies it never listed means nothing.
+        Artisan::call('kitsune:media-prune');
+
+        expect(Artisan::output())->toContain('and 10002 removable extra copies listed and nothing removed');
     });
 
     // ...and on SQLite, which holds any bytes, a row naming such a path claims its file.

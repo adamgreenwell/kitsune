@@ -17,6 +17,7 @@ declare(strict_types=1);
  * runs only when it is the script; required, it defines its functions and returns.
  */
 
+use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Storage;
 use Kitsune\Core\Console\MediaPruneCommand;
@@ -208,19 +209,25 @@ it('verifies extra copies by entry, path and what --force would do with each', f
 });
 
 /*
- * A listing's figure is a pass at the floor's limit, and reconcile's over (I') one that opened each extra row's two copies
- * and no other row's: a child at another limit, or a seed reconcile calls `private copy` and opens nothing of, is no
- * figure — checks no test reached until they were drawn out of the run (review of slice 5c).
+ * A listing's figure is a pass at the floor's limit, and reconcile's over (I') one that opened a copy on the public disk and
+ * one on the served disk for each row held twice: a child at another limit, or a seed reconcile calls `private copy` and
+ * opens nothing of, is no figure — checks no test reached until they were drawn out of the run — and nor is one that read
+ * the target's copy twice and the served one never, which a total passed (review of slice 5c).
  */
-it('verifies a listing child by its limit and, for reconcile, the copies it opened', function (): void {
-    expect(withdrawalBenchChildVerified(['limit' => '128M', 'opened' => 2000], 'kitsune:media-reconcile', ['extra' => 1000]))->toBeTrue()
-        ->and(withdrawalBenchChildVerified(['limit' => '128M', 'opened' => 0], 'kitsune:media-reconcile', []))->toBeTrue()
+it('verifies a listing child by its limit and, for reconcile, the copies it opened on each disk', function (): void {
+    $each = static fn (int $public, int $served): array => ['public' => $public, 'bench-served' => $served];
+
+    expect(withdrawalBenchChildVerified(['limit' => '128M', 'opened' => $each(1000, 1000)], 'kitsune:media-reconcile', ['extra' => 1000]))->toBeTrue()
+        ->and(withdrawalBenchChildVerified(['limit' => '128M', 'opened' => $each(0, 0)], 'kitsune:media-reconcile', []))->toBeTrue()
         ->and(withdrawalBenchChildVerified(['limit' => '128M'], 'kitsune:media-prune', []))->toBeTrue()
-        ->and(withdrawalBenchChildVerified(['limit' => '-1', 'opened' => 2000], 'kitsune:media-reconcile', ['extra' => 1000]))->toBeFalse()
+        ->and(withdrawalBenchChildVerified(['limit' => '-1', 'opened' => $each(1000, 1000)], 'kitsune:media-reconcile', ['extra' => 1000]))->toBeFalse()
         ->and(withdrawalBenchChildVerified(['limit' => '-1'], 'kitsune:media-prune', []))->toBeFalse()
         ->and(withdrawalBenchChildVerified([], 'kitsune:media-prune', []))->toBeFalse()
-        ->and(withdrawalBenchChildVerified(['limit' => '128M', 'opened' => 0], 'kitsune:media-reconcile', ['extra' => 1000]))->toBeFalse()
-        ->and(withdrawalBenchChildVerified(['limit' => '128M', 'opened' => 1000], 'kitsune:media-reconcile', ['extra' => 1000]))->toBeFalse()
+        ->and(withdrawalBenchChildVerified(['limit' => '128M', 'opened' => $each(0, 0)], 'kitsune:media-reconcile', ['extra' => 1000]))->toBeFalse()
+        ->and(withdrawalBenchChildVerified(['limit' => '128M', 'opened' => $each(1000, 0)], 'kitsune:media-reconcile', ['extra' => 1000]))->toBeFalse()
+        // The target's copy read twice, the served one never; and a total, which cannot say which disk.
+        ->and(withdrawalBenchChildVerified(['limit' => '128M', 'opened' => $each(2000, 0)], 'kitsune:media-reconcile', ['extra' => 1000]))->toBeFalse()
+        ->and(withdrawalBenchChildVerified(['limit' => '128M', 'opened' => 2000], 'kitsune:media-reconcile', ['extra' => 1000]))->toBeFalse()
         ->and(withdrawalBenchChildVerified(['limit' => '128M'], 'kitsune:media-reconcile', ['extra' => 1000]))->toBeFalse();
 });
 
@@ -236,6 +243,174 @@ it('verifies prune\'s closing by no orphan and exactly the removable count', fun
         ->and(withdrawalBenchPruneClosing(["\e[32mNo orphaned media files.\e[39m"], null))->toBeFalse()
         ->and(withdrawalBenchPruneClosing(['No orphaned media files.', '0 orphaned files, 0 leftover partial copies and 1 removable extra copy listed and nothing removed.'], 1))->toBeTrue();
 });
+
+/*
+ * ...and a prune figure said to cost the pass over the table is one the pass ran in, and one said to cost nothing of it is
+ * one it did not: the pass's own statement, whatever each grammar quotes it with, and no other (review of #155's fix).
+ */
+it('verifies a prune listing by whether the pass over the table ran', function (): void {
+    expect(withdrawalBenchPassQuery('select "id", "entry_id", "disk", "path" from "media_files" where "id" > ? order by "id" asc limit 500'))->toBeTrue()
+        ->and(withdrawalBenchPassQuery('select `id`, `entry_id`, `disk`, `path` from `media_files` order by `id` asc limit 500'))->toBeTrue()
+        // rowDisks(), and the report's own read of the rows it prints, are not the pass.
+        ->and(withdrawalBenchPassQuery('select "id", "disk" from "media_files" order by "id" asc limit 500'))->toBeFalse()
+        ->and(withdrawalBenchPassQuery('select "media_files"."id", "media_files"."entry_id", "media_files"."disk", "media_files"."path" from "media_files" left join "entries"'))->toBeFalse()
+        ->and(withdrawalBenchPassVerified(['passed' => 3], 3))->toBeTrue()
+        // A pass that read only its first batch of three (review of slice 5c).
+        ->and(withdrawalBenchPassVerified(['passed' => 1], 3))->toBeFalse()
+        ->and(withdrawalBenchPassVerified(['passed' => 0], 3))->toBeFalse()
+        ->and(withdrawalBenchPassVerified(['passed' => 0], 0))->toBeTrue()
+        ->and(withdrawalBenchPassVerified(['passed' => 1], 0))->toBeFalse()
+        ->and(withdrawalBenchPassVerified([], 0))->toBeFalse();
+});
+
+/*
+ * ...and each group's seed settled before it is timed: on PostgreSQL vacuumed and analysed, so the dead rows the last
+ * group's delete left do not slow this one; elsewhere nothing is asked (review of #155's fix).
+ */
+it('settles the tables a group seeds before it is timed, on PostgreSQL alone', function (): void {
+    $asked = static function (string $driver, int $level): array {
+        $statements = [];
+        withdrawalBenchSettleTables($driver, $level, static function (string $sql) use (&$statements): bool {
+            $statements[] = $sql;
+
+            return true;
+        });
+
+        return $statements;
+    };
+
+    expect($asked('pgsql', 0))->toBe(['VACUUM ANALYZE media_files', 'VACUUM ANALYZE entries', 'VACUUM ANALYZE entry_relations'])
+        ->and($asked('pgsql', 1))->toBe([])
+        ->and($asked('sqlite', 0))->toBe([])
+        ->and($asked('mysql', 0))->toBe([])
+        ->and($asked('mariadb', 0))->toBe([]);
+});
+
+/* ...and that step run by each group's seed, after it and not after the group: the call reached, as well as its choice. */
+it('runs the settle step after each group\'s seed, and not after the group', function (): void {
+    Storage::fake('public');
+    Storage::fake(MediaDisks::PRIVATE);
+    config(['filesystems.disks.'.MediaDisks::PRIVATE.'.root' => Storage::disk(MediaDisks::PRIVATE)->path('')]);
+    withdrawalBenchSeed();
+    $bench = new WithdrawalBench('sqlite');
+    $seen = [];
+    (new ReflectionProperty($bench, 'settle'))->setValue($bench, static function () use (&$seen): void {
+        $seen[] = DB::table('media_files')->count();
+    });
+    $call = static fn (string $method, mixed ...$args): mixed => (new ReflectionMethod($bench, $method))->invoke($bench, ...$args);
+    [$before, $after] = $call('isolated', fn (): mixed => $call('seedRows', 150, 50, 16, 'spelt'));
+
+    $before();
+
+    // Once, with the seed's rows in the table: after the seed, not before the clear.
+    expect($seen)->toBe([200])->and(DB::table('media_files')->count())->toBe(200);
+
+    $after();
+
+    expect($seen)->toBe([200]);
+});
+
+/* ...and (O)'s, one that closed on exactly the seeded orphans and listed exactly them, and nothing else (Codex, #155). */
+it('verifies prune\'s orphans by exactly the count and the names seeded', function (): void {
+    $summary = static fn (int $orphans): string => sprintf('%d orphaned file%s, 0 leftover partial copies and 0 removable extra copies listed and nothing removed. Re-run with --force to delete them.', $orphans, $orphans === 1 ? '' : 's');
+    $heading = 'Orphaned media files — no row names their paths, on any disk:';
+    $paths = ['media/1/2027/00/orphan-1.bin', 'media/1/2027/01/orphan-2.bin'];
+    $lines = [$heading, '  [kitsune-private]  '.$paths[0], '  [kitsune-private]  '.$paths[1], $summary(2)];
+
+    expect(withdrawalBenchOrphansClosing($lines, 2))->toBeTrue()
+        ->and(withdrawalBenchOrphansClosing([$summary(12)], 2))->toBeFalse()
+        ->and(withdrawalBenchOrphansClosing([$summary(2)], 1))->toBeFalse()
+        ->and(withdrawalBenchOrphans($lines, 'kitsune-private', $paths))->toBeTrue()
+        ->and(withdrawalBenchOrphans($lines, 'kitsune-private', [$paths[0]]))->toBeFalse()
+        ->and(withdrawalBenchOrphans([$heading, '  [kitsune-private]  '.$paths[0]], 'kitsune-private', $paths))->toBeFalse()
+        ->and(withdrawalBenchOrphans([...$lines, $heading], 'kitsune-private', $paths))->toBeFalse()
+        ->and(withdrawalBenchOrphans($lines, 'public', $paths))->toBeFalse()
+        ->and(withdrawalBenchOrphans([], 'kitsune-private', []))->toBeFalse()
+        // A copy a row reaches under another spelling is a list of its own, which a run of orphans must not print.
+        ->and(withdrawalBenchOnlyList([...$lines, 'Copies a row reaches under another spelling, on a disk it does not name:'], 'Orphaned media files'))->toBeFalse()
+        ->and(withdrawalBenchOnlyList(['No orphaned media files.'], 'no list'))->toBeTrue();
+});
+
+/*
+ * (O) and (O'), the harness's own seeds at a small scale, through prune itself: the orphans listed and nothing else, and
+ * each row spelt as the disks read another path reaching its file, so nothing listed at all (Codex, #155).
+ */
+it('verifies the orphan and spelt seeds by what prune prints of them', function (string $kind): void {
+    Storage::fake('public');
+    Storage::fake(MediaDisks::PRIVATE);
+    config(['filesystems.disks.'.MediaDisks::PRIVATE.'.root' => Storage::disk(MediaDisks::PRIVATE)->path('')]);
+    withdrawalBenchSeed();
+    $bench = new WithdrawalBench('sqlite');
+    $call = static fn (string $method, mixed ...$args): mixed => (new ReflectionMethod($bench, $method))->invoke($bench, ...$args);
+    // Past the pass's second batch, so a pass that read only its first is seen (review of slice 5c).
+    [$before, $after] = $call('isolated', fn (): mixed => $call('seedRows', 1_150, $kind === 'none' ? 0 : 50, 16, $kind));
+    $report = tempnam(sys_get_temp_dir(), 'kitsune-bench-report-');
+    $passed = 0;
+    DB::listen(static function (QueryExecuted $query) use (&$passed): void {
+        $passed += withdrawalBenchPassQuery($query->sql) ? 1 : 0;
+    });
+
+    try {
+        $before();
+        $passed = 0;
+        $output = new BufferedOutput;
+        Artisan::call('kitsune:media-prune', [], $output);
+        $printed = $output->fetch();
+        file_put_contents($report, $printed);
+
+        // The pass read every row where the seed lists an orphan — 1,150 or 1,200 of them, three reads — and ran not at
+        // all where it lists none, as the child counts it.
+        expect($call('prunePrinted', $report))->toBeTrue()
+            ->and($passed)->toBe($kind === 'none' ? 0 : 3);
+
+        // ...and the listing's own verify reads it: the figure is verified by a child that ran the pass as the seed calls
+        // for, and not by one that ran it otherwise. The verify removes the report it read, so each reads a copy.
+        $verify = $call('listing', 'kitsune:media-prune', [])['verify'];
+        $state = static function (int $passed) use ($printed): array {
+            $copy = (string) tempnam(sys_get_temp_dir(), 'kitsune-bench-report-');
+            file_put_contents($copy, $printed);
+
+            return ['exit' => 0, 'file' => $copy, 'child' => ['limit' => WITHDRAWAL_BENCH_CHILD_LIMIT, 'passed' => $passed]];
+        };
+
+        expect($verify($state($passed)))->toBeTrue()
+            ->and($verify($state($kind === 'none' ? 1 : 0)))->toBeFalse()
+            // ...nor by one whose pass read only its first batch.
+            ->and($verify($state(1)))->toBeFalse();
+
+        if ($kind !== 'orphan') {
+            // A list printed where the seed leaves none, every count unchanged: not verified — (O') and (O'') list nothing at
+            // all (review of slice 5c).
+            $another = (string) preg_replace('/^(No orphaned media files\.)$/m', "\$1\nCopies a row reaches under another spelling, on a disk it does not name — kept:\n  entry 3  [kitsune-private]  media/1/2027/03/x.bin", $printed, 1);
+            file_put_contents($report, $another);
+
+            expect($another)->not->toBe($printed)->and($call('prunePrinted', $report))->toBeFalse();
+        }
+
+        if ($kind === 'orphan') {
+            // An orphan's line gone, the count unchanged: not verified — the names are read, not only counted.
+            file_put_contents($report, (string) preg_replace('/^  \[kitsune-private\]  [^\n]+\n/m', '', $printed, 1));
+
+            expect($call('prunePrinted', $report))->toBeFalse();
+
+            // The summary a count short of the names listed: not verified — the count is read as well as the names.
+            $miscounted = (string) preg_replace('/^50 orphaned files/m', '49 orphaned files', $printed, 1);
+            file_put_contents($report, $miscounted);
+
+            expect($miscounted)->not->toBe($printed)->and($call('prunePrinted', $report))->toBeFalse();
+
+            // Another list printed beside the orphans, every count unchanged: not verified — nothing else may be listed.
+            $another = (string) preg_replace('/^(50 orphaned files)/m', "Copies a row reaches under another spelling, on a disk it does not name — kept:\n  entry 3  [kitsune-private]  media/1/2027/03/x.bin\n\$1", $printed, 1);
+            file_put_contents($report, $another);
+
+            expect($another)->not->toBe($printed)->and($call('prunePrinted', $report))->toBeFalse();
+        }
+
+        $after();
+    } finally {
+        @unlink($report);
+    }
+})->with(['orphans, at a small scale' => 'orphan', 'rows spelt as the disks read another, at a small scale' => 'spelt', 'no orphan, the control' => 'none']);
 
 /*
  * (I'')'s served disk has the directories (I')'s misses walk, so (I') − (I'') is the copies held twice, not a path's

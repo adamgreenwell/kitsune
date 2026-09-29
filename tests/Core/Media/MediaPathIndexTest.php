@@ -11,6 +11,7 @@ declare(strict_types=1);
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
+use Kitsune\Core\Media\MediaBytes;
 use Kitsune\Core\Media\MediaDisks;
 use Kitsune\Core\Media\MediaLibrary;
 use Kitsune\Core\Models\EntryType;
@@ -214,6 +215,35 @@ describe('the model (T58)', function (): void {
         'backslashes' => ['media\\1\\x.png', 'every disk reads it as [media/1/x.png]'],
         'a parent segment' => ['media/2/../1/x.png', 'every disk reads it as [media/1/x.png]'],
         'a parent segment above the root' => ['../media/1/x.png', 'no disk can read it'],
+    ]);
+
+    // ...and never custody's scratch name, which a trash, a disposal, settle and prune remove as another path's partial
+    // copy — the row's only file (review of slice 5c) — in any spelling a volume that folds case reads as it: there the
+    // row's file is the very entry custody writes. A name that only holds the suffix is any other name.
+    it('refuses to create a row whose path ends in custody\'s partial suffix, and only there', function (string $suffix): void {
+        $statements = [];
+        DB::listen(function ($query) use (&$statements): void {
+            $statements[] = strtolower(ltrim($query->sql));
+        });
+        $path = 'media/1/2026/09/x.png'.$suffix;
+
+        expect(fn () => MediaFile::create([...$this->stored, 'path' => $path]))->toThrow(
+            RuntimeException::class,
+            "Refusing to store a media file at [{$path}]: a path ending in [".MediaBytes::PARTIAL.'], in any case a volume reads as it, is the name custody writes a copy under',
+        );
+
+        expect(array_filter($statements, static fn (string $sql): bool => ! str_starts_with($sql, 'select')))->toBe([])
+            ->and(DB::table('media_files')->where('entry_id', $this->stored['entry_id'])->exists())->toBeFalse();
+
+        MediaFile::create([...$this->stored, 'path' => 'media/1/2026/09/x'.MediaBytes::PARTIAL.'.png']);
+
+        expect(DB::table('media_files')->where('entry_id', $this->stored['entry_id'])->value('path'))->toBe('media/1/2026/09/x'.MediaBytes::PARTIAL.'.png');
+    })->with([
+        'as custody writes it' => MediaBytes::PARTIAL,
+        'in capitals' => '.KITSUNE-PARTIAL',
+        'in mixed case' => '.Kitsune-Partial',
+        'with the Kelvin sign for k' => ".\u{212A}itsune-partial",
+        'with the long s for s' => ".kit\u{017F}une-partial",
     ]);
 
     it('creates a row whose path is written as the disks read it', function (): void {

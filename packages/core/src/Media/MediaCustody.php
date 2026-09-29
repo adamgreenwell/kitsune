@@ -920,6 +920,19 @@ final class MediaCustody
      * the file is not locked, and `store()` writes an upload's bytes before its row: a row committed since the listing
      * claims a path no row named then, which the index cannot prevent. The recheck is a lookup under the index.
      *
+     * ⚠️ A ROW IN ANOTHER SPELLING IS ASKED IN THE LISTING, NOT HERE — Codex, #155. On a volume that folds names, a row may
+     * name this file in a spelling the directory does not hold — an import's `media/PHOTO.png` for `media/photo.png` —
+     * which no lookup by the listed name finds where the engine compares the two apart: on SQLite and PostgreSQL, which
+     * compare bytes, any such spelling; on MySQL and MariaDB, one the column's collation weighs apart. Their default
+     * collations find a case variant here; MariaDB 10.6's utf8mb4_general_ci finds no NFD spelling of an NFC name, and no
+     * `STRASSE` for `straße`, and a `_bin` collation finds none. Once every disk is listed, and before it removes anything, prune asks each local
+     * disk's volume whether any row's path reaches the very entry it listed, and any other disk by the key a row's path is
+     * read as (`MediaPruneCommand::reachedByRows()`), and never offers such a file here. A disk that folds names but is not
+     * local — SFTP or FTP onto such a server — is not asked. A row written in such a spelling between that pass and this
+     * lock — a write past `MediaFile`, an import run beside `--force` — is not seen where the engine compares that
+     * spelling apart from the listed name, as above, and its file is removed, as any file such an import writes before its
+     * row is.
+     *
      * ⚠️ NEVER INSIDE AN OPEN TRANSACTION — review of slice 5b. The recheck would read that transaction's own work: a
      * file an erasure not yet committed has freed reads as an orphan, and stays deleted when the erasure rolls back.
      *
@@ -937,25 +950,12 @@ final class MediaCustody
         $claimed = str_ends_with($path, MediaBytes::PARTIAL) ? substr($path, 0, -strlen(MediaBytes::PARTIAL)) : $path;
 
         return self::locked($connection, 0, static function () use ($connection, $disk, $path, $claimed): string {
-            if (self::whereStored($connection->table('media_files'), 'path', [$claimed])->exists()) {
+            // A partial copy's path, and its name itself, which a row written past `MediaFile` may give (review of 5c).
+            if (self::whereStored($connection->table('media_files'), 'path', array_values(array_unique([$claimed, $path])))->exists()) {
                 return self::CLAIMED;
             }
 
             MediaBytes::refuseUnnamable($disk, $path);
-
-            /*
-             * ⚠️ AND BY EVERY SPELLING THE VOLUME READS AS THIS FILE — review of slice 5c. The listing gives a file's name
-             * as the disk holds it, and on a volume that folds case or Unicode normalization that may not be how its row
-             * spells it: a lookup that compares bytes, as SQLite's and PostgreSQL's do, found no row, and the row's own
-             * file was removed. Each spelling that reaches this very file is asked too, a lookup under the index each.
-             */
-            foreach (MediaBytes::spellingsOf($disk, $path) as $spelling) {
-                $row = str_ends_with($spelling, MediaBytes::PARTIAL) ? substr($spelling, 0, -strlen(MediaBytes::PARTIAL)) : $spelling;
-
-                if (self::whereStored($connection->table('media_files'), 'path', [$row])->exists()) {
-                    return self::CLAIMED;
-                }
-            }
 
             if (! MediaBytes::held($disk, $path)) {
                 throw new MediaCustodyFailure('unheld', $disk, $path);
@@ -974,7 +974,8 @@ final class MediaCustody
 
     /**
      * Remove a partial copy custody left beside an entry's file, with the entry locked — outside any transaction, as an
-     * orphan is, and only one the disk holds under the name it was listed by, as an orphan is.
+     * orphan is, and only one the disk holds under the name it was listed by, as an orphan is. One a row names byte for
+     * byte is that row's, and is kept: `CLAIMED` (review of slice 5c).
      *
      * @throws LogicException inside an open transaction
      * @throws MediaCustodyFailure when the disk does not hold the file under that name, or refuses to remove it
@@ -983,8 +984,14 @@ final class MediaCustody
     {
         self::refuseInsideTransaction($connection, sprintf('entry %d\'s partial copy, [%s:%s],', $entryId, $disk, $partial));
 
-        return self::locked($connection, $entryId, static function () use ($disk, $partial): string {
+        return self::locked($connection, $entryId, static function () use ($connection, $disk, $partial): string {
             MediaBytes::refuseUnnamable($disk, $partial);
+
+            // A row naming this very name — one written past `MediaFile`, or since the listing — makes it that row's
+            // file, never another row's partial copy (review of slice 5c).
+            if (self::whereStored($connection->table('media_files'), 'path', [$partial])->exists()) {
+                return self::CLAIMED;
+            }
 
             if (! MediaBytes::held($disk, $partial)) {
                 throw new MediaCustodyFailure('unheld', $disk, $partial);

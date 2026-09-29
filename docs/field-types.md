@@ -692,6 +692,13 @@ media_files
 > can no longer mean two rows sharing one file: an import that shares one file between entries gives each its own copy,
 > and writes each path as the disks read it.
 
+> ⚠️ **Amended 2026-09-28 by ADR-042 decision 5, slice 5c:** `MediaFile` also refuses to create a row whose `path` ends
+> in custody's partial suffix, `.kitsune-partial`, in any case a volume reads as it — compared after a full Unicode case
+> fold, so `.KITSUNE-PARTIAL`, the Kelvin sign for `k` and the long s for `s` are refused too. That name is the one
+> custody writes a copy under beside another path, and a row written there past the model loses its file to a trash, an
+> erasure's disposal, settle or prune acting for the row at the path without the suffix. The migration does not check
+> it, so an import writes no path ending in that suffix.
+
 A "media picker" field is therefore just **`relation` constrained to media entry types**. No new storage strategy, no second permission model, no parallel search index.
 
 Three things fall out of this for free, and they're the reason it's worth doing:

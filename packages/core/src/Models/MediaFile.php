@@ -13,6 +13,7 @@ namespace Kitsune\Core\Models;
 use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Kitsune\Core\Media\MediaBytes;
 use Kitsune\Core\Tenancy\Attributes\Unscoped;
 use Kitsune\Core\Tenancy\Concerns\EnforcesScope;
 use Kitsune\Core\Tenancy\Contracts\FixesColumnsAtCreation;
@@ -45,6 +46,12 @@ use Throwable;
  * at `media/x` — a row is refused here, before anything reaches the engine, unless its path is already in the form the
  * disks read. `path` is fixed after creation, so creation is the only model door. A mass or raw insert passes neither
  * the model nor this check: ADR-042 records that insert path as not yet guarded.
+ *
+ * ⚠️ AND NEVER CUSTODY'S SCRATCH NAME (review of slice 5c). A path ending in `MediaBytes::PARTIAL` is the name custody
+ * writes a copy under beside another path: a trash, a disposal, settle and prune remove it as that path's partial copy,
+ * and a row there would lose its only file to a step acting for another row. So is one ending in any spelling a volume
+ * that folds case reads as it — `.KITSUNE-PARTIAL`, the Kelvin sign for `k`, the long s for `s` — compared after a full
+ * Unicode case fold: on APFS, NTFS or SMB such a row's file is the very entry custody writes and removes (review of 5c).
  *
  * @property int $id
  * @property int $entry_id
@@ -93,6 +100,16 @@ class MediaFile extends Model implements FixesColumnsAtCreation
                 $read = (new WhitespacePathNormalizer)->normalizePath($path);
             } catch (Throwable) {
                 $read = null;
+            }
+
+            if ($read === $path && str_ends_with(mb_convert_case($path, MB_CASE_FOLD, 'UTF-8'), MediaBytes::PARTIAL)) {
+                throw new RuntimeException(sprintf(
+                    'Refusing to store a media file at [%s]: a path ending in [%s], in any case a volume reads as it, is the '
+                    .'name custody writes a copy under beside another path, and removes as that path\'s partial copy (ADR-042 '
+                    .'decision 5). Nothing was written.',
+                    $path,
+                    MediaBytes::PARTIAL,
+                ));
             }
 
             if ($read !== $path) {

@@ -16,6 +16,7 @@ use Illuminate\Console\Command;
 use Illuminate\Contracts\Config\Repository;
 use Illuminate\Database\Connection;
 use Illuminate\Database\Query\Builder;
+use Illuminate\Filesystem\FilesystemAdapter;
 use Illuminate\Filesystem\ReadThroughFilesystem;
 use Illuminate\Log\Events\MessageLogged;
 use Illuminate\Support\Collection;
@@ -28,8 +29,11 @@ use Kitsune\Core\Media\MediaDisks;
 use Kitsune\Core\Media\ReadThroughCycle;
 use Kitsune\Core\Models\MediaFile;
 use League\Flysystem\StorageAttributes;
+use League\Flysystem\WhitespacePathNormalizer;
 use RuntimeException;
 use stdClass;
+use Symfony\Component\Console\Formatter\OutputFormatter;
+use Symfony\Component\Console\Output\OutputInterface;
 use Throwable;
 
 /**
@@ -51,7 +55,11 @@ use Throwable;
  * a restore keeps, a publication that could not commit, a copy a move-off could not remove — and every one of them
  * may be the only good copy, so each is listed ~~as kept and none is ever deleted here~~ as an extra copy. A partial
  * copy custody was writing beside a path (`MediaBytes::PARTIAL`) is decided by the path it was written for: the table
- * decides every delete, and the suffix only chooses which row's lock to take. ~~Nothing is hashed.~~
+ * decides every delete, and the suffix only chooses which row's lock to take. And a name no row gives byte for byte — an
+ * orphan's, or on a local disk a partial copy's — is asked again once every disk is listed: on a local disk, of the
+ * volume, which may reach it by a row's path in another spelling; on any other, by the key each row's path is read as,
+ * with nothing asked of the disk (Codex, #155; `reachedByRows()`; review of slice 5c).
+ * ~~Nothing is hashed.~~
  *
  * ⚠️ AN EXTRA COPY GOES ONLY UNDER ITS ROW'S LOCK, ONCE ITS OWN DISK HOLDS THE COPY KEPT — ADR-042 decision 5, slice 5b.
  * With `--force`, a copy at a path a row names, on a disk it does not, is handed to `MediaCustody::removeExtra()`
@@ -164,8 +172,28 @@ final class MediaPruneCommand extends Command
          */
         $kitsune = array_values(array_unique([$public, $private]));
 
+        // ...but not core's private disk where it is the configured private disk under another name — one place, as custody
+        // takes it: its listing is that disk's, and every private file would be listed twice, an orphan removed and then
+        // failing as unheld, a copy of itself offered as extra and kept (review of slice 5c). One that cannot be told from
+        // it, a read-through private disk reaching it through a half among them, is scanned, and its copies listed.
         if (! in_array(MediaDisks::PRIVATE, $kitsune, true) && MediaDisks::mayHold($config, MediaDisks::PRIVATE)) {
-            $kitsune[] = MediaDisks::PRIVATE;
+            try {
+                $same = is_array($config->get("filesystems.disks.{$private}")) && MediaDisks::mayHold($config, $private)
+                    && ! MediaDisks::nested($config, MediaDisks::PRIVATE, $private)
+                    && MediaDisks::onePlace($config, MediaDisks::PRIVATE, $private) === true;
+            } catch (Throwable) {
+                $same = false;
+            }
+
+            if ($same) {
+                $this->warn(sprintf(
+                    'Not scanning [%s]: it is [%s], the private disk, under another name, so a file there is the file itself.',
+                    MediaDisks::PRIVATE,
+                    OutputFormatter::escape($private),
+                ));
+            } else {
+                $kitsune[] = MediaDisks::PRIVATE;
+            }
         }
 
         /*
@@ -203,10 +231,10 @@ final class MediaPruneCommand extends Command
                 'Refusing to list: the media directory of [%s] is inside [%s]\'s, so a file of [%s] would be listed as an '
                 .'orphan of [%s], and removing it would remove the file (ADR-042 decision 5). Point them at media '
                 .'directories that do not nest. Nothing was listed or removed.',
-                $nesting[0],
-                $nesting[1],
-                $nesting[0],
-                $nesting[1],
+                OutputFormatter::escape($nesting[0]),
+                OutputFormatter::escape($nesting[1]),
+                OutputFormatter::escape($nesting[0]),
+                OutputFormatter::escape($nesting[1]),
             ));
 
             return self::FAILURE;
@@ -235,8 +263,8 @@ final class MediaPruneCommand extends Command
                 $this->warn(sprintf(
                     'Not scanning [%s]: it is, or cannot be told apart from, [%s] — one place, one bucket or host through two '
                     .'endpoints, or a read-through disk reaching it through a half — so a file there could be the file itself.%s',
-                    $disk,
-                    $other,
+                    OutputFormatter::escape($disk),
+                    OutputFormatter::escape($other),
                     // Reconcile refuses a private disk the web serves; an unserved alias it repoints like any row.
                     $other === $private && in_array($disk, $servedDisks, true)
                         ? ' kitsune:media-reconcile --force refuses while the private disk is one of them.'
@@ -262,21 +290,32 @@ final class MediaPruneCommand extends Command
         $partials = [];
         $extras = [];
         $unlisted = [];
+        $unbuilt = [];
         $failed = 0;
 
-        foreach ([...$kitsune, ...$served] as $disk) {
+        $scanned = [...$kitsune, ...$served];
+
+        foreach ($scanned as $disk) {
             $found = ['orphans' => [], 'partials' => [], 'extras' => []];
             $failure = null;
+            $built = false;
 
-            foreach ($this->listing($disk, $failure) as $paths) {
+            foreach ($this->listing($disk, $failure, $built) as $paths) {
                 $this->classify($connection, $disk, in_array($disk, $kitsune, true), $public, $paths, $found);
             }
 
             // ⚠️ A LISTING THAT FAILS PART-WAY CONTRIBUTES NOTHING, as `allFiles()`, which returned all or threw, did.
             if ($failure !== null) {
-                $this->error(sprintf('Could not list [%s]: %s', $disk, $failure));
+                $this->error(sprintf('Could not list [%s]: %s', OutputFormatter::escape($disk), OutputFormatter::escape($failure)));
                 $unlisted[] = $disk;
                 $failed++;
+
+                // One that could not be built — not configured, a read-through cycle, a root that cannot be created — is
+                // one reconcile cannot ask either; one built whose listing failed — a link under Laravel's default link
+                // handling, a store that lists nothing but reads — it asks as any other (review of slice 5c).
+                if (! $built) {
+                    $unbuilt[] = $disk;
+                }
 
                 continue;
             }
@@ -300,6 +339,19 @@ final class MediaPruneCommand extends Command
 
         // The last disk's tables are still shared with it: the flags written below would copy them, and keep both.
         unset($found);
+
+        // A listed name the volume reaches by a row's path in another spelling is that row's, not an orphan (Codex, #155).
+        $spelt = [];
+        $shared = [];
+
+        if ($rowDisks !== []) {
+            $this->reachedByRows($connection, $orphans, $partials, $spelt, $shared);
+
+            // The pass adds a disk the listing found no partial copy on after every other: each list goes back into the
+            // order the disks were scanned, as its lines and --force's removals promise (review of slice 5c).
+            $partials = self::inScanOrder($scanned, $partials);
+            $spelt = self::inScanOrder($scanned, $spelt);
+        }
 
         /*
          * Removable when the row names the disk its state says, and that disk's listing holds the path: the lock asks again.
@@ -339,7 +391,7 @@ final class MediaPruneCommand extends Command
             }
 
             if ($failure !== null) {
-                $this->error(sprintf('Could not list [%s] again, to ask whether it holds the extra copies whose rows name it: %s', $target, $failure));
+                $this->error(sprintf('Could not list [%s] again, to ask whether it holds the extra copies whose rows name it: %s', OutputFormatter::escape($target), OutputFormatter::escape($failure)));
                 $unlisted[] = $target;
                 $failed++;
             }
@@ -381,7 +433,7 @@ final class MediaPruneCommand extends Command
             }
         }
 
-        $this->report($connection, $orphans, $partials, $extras, $public, $private, $config, $unlisted);
+        $this->report($connection, $orphans, $partials, $spelt, $shared, $extras, $public, $private, $config, $unlisted, $unbuilt);
 
         if ($orphanCount === 0 && $partialCount === 0 && $removableCount === 0) {
             return $failed === 0 ? self::SUCCESS : self::FAILURE;
@@ -416,7 +468,7 @@ final class MediaPruneCommand extends Command
         try {
             MediaDisks::refuseUnsafeMediaDisks($config);
         } catch (RuntimeException $refused) {
-            $this->error($refused->getMessage());
+            $this->error(OutputFormatter::escape($refused->getMessage()));
 
             return self::FAILURE;
         }
@@ -452,7 +504,7 @@ final class MediaPruneCommand extends Command
                         ? $removed++
                         : $reclaimed++;
                 } catch (Throwable $failure) {
-                    $this->error(sprintf('Could not remove [%s:%s]: %s', $disk, $path, $failure->getMessage()));
+                    $this->error(sprintf('Could not remove [%s:%s]: %s', OutputFormatter::escape($disk), OutputFormatter::escape($path), OutputFormatter::escape($failure->getMessage())));
                     $failed++;
                 }
             }
@@ -463,10 +515,11 @@ final class MediaPruneCommand extends Command
 
             foreach ($copies as $path => $entryId) {
                 try {
-                    MediaCustody::removeTemp($connection, $entryId, $disk, $path);
-                    $removed++;
+                    MediaCustody::removeTemp($connection, $entryId, $disk, $path) === MediaCustody::REMOVED
+                        ? $removed++
+                        : $reclaimed++;
                 } catch (Throwable $failure) {
-                    $this->error(sprintf('Could not remove [%s:%s]: %s', $disk, $path, $failure->getMessage()));
+                    $this->error(sprintf('Could not remove [%s:%s]: %s', OutputFormatter::escape($disk), OutputFormatter::escape($path), OutputFormatter::escape($failure->getMessage())));
                     $failed++;
                 }
             }
@@ -521,14 +574,14 @@ final class MediaPruneCommand extends Command
 
                 match (true) {
                     $outcome instanceof Throwable => (function () use ($disk, $path, $outcome, &$failed): void {
-                        $this->error(sprintf('Could not remove [%s:%s]: %s', $disk, $path, $outcome->getMessage()));
+                        $this->error(sprintf('Could not remove [%s:%s]: %s', OutputFormatter::escape($disk), OutputFormatter::escape($path), OutputFormatter::escape($outcome->getMessage())));
                         $failed++;
                     })(),
                     $outcome === MediaCustody::SETTLED => $extraRemoved++,
                     $outcome === MediaCustody::GONE => $extraErased++,
                     $outcome === MediaCustody::UNSETTLED => (function () use ($disk, $path, $entryId, &$extraKept): void {
                         $extraKept++;
-                        $this->line(sprintf(
+                        $this->raw(sprintf(
                             'Kept [%s:%s], entry %d — %s',
                             $disk,
                             $path,
@@ -544,7 +597,7 @@ final class MediaPruneCommand extends Command
 
                 // What custody logged for this copy — a differing copy's two hashes, or why it was kept — as reconcile prints it.
                 foreach ($this->warnings as $warning) {
-                    $this->line('    '.$warning);
+                    $this->raw('    '.$warning);
                 }
 
                 $this->warnings = [];
@@ -561,16 +614,17 @@ final class MediaPruneCommand extends Command
             $extraRemoved,
             $removableCount,
             $removableCount === 1 ? 'y' : 'ies',
-            // Asked under the lock as the database compares paths, and as a local disk reaches them: a row committed
-            // since the listing; on MySQL and MariaDB one the collation compares equal — among them a path differing
-            // only in case or accents, in trailing spaces under a PAD SPACE collation, in characters a UCA collation
-            // gives no weight or in compatibility forms (² for 2, ß for ss), and under utf8mb4_unicode_ci and
-            // utf8mb4_general_ci in which character above U+FFFF it holds; on PostgreSQL one naming what a listed name
-            // holds before a NUL, since the driver cuts a bound value short there; and on any engine one the volume
-            // reaches as this very file, under another case or Unicode normalization (`MediaBytes::spellingsOf()`). A
-            // case variant is its own file on a volume that folds case; the rest are others, kept on every run and
-            // removed by hand (ADR-042, *What it leaves*).
-            $reclaimed === 0 ? '' : sprintf(' %d kept: under the lock a row claimed %s — one committed since the listing, or one the database, or the disk, takes for the same path.', $reclaimed, $reclaimed === 1 ? 'its path' : 'their paths'),
+            // Asked under the lock as the database compares paths: a row committed since the listing; on MySQL and
+            // MariaDB one the collation compares equal — among them a path differing only in case or accents, in
+            // trailing spaces under a PAD SPACE collation, in characters a UCA collation gives no weight or in
+            // compatibility forms (² for 2, ß for ss), and under utf8mb4_unicode_ci and utf8mb4_general_ci in which
+            // character above U+FFFF it holds; on PostgreSQL one naming what a listed name holds before a NUL, since the
+            // driver cuts a bound value short there. A case variant is its own file on a volume that folds case; the rest
+            // are others, kept on every run and removed by hand (ADR-042, *What it leaves*); under a UCA collation ß for
+            // ss and ﬁ for fi too are a volume's own file where it folds case fully, as APFS does. A row the volume reaches
+            // the file by, in another spelling, was asked once every disk was listed, before any orphan, partial or extra
+            // copy was printed and before anything was removed (`reachedByRows()`).
+            $reclaimed === 0 ? '' : sprintf(' %d kept: under the lock a row claimed %s — one committed since the listing, or one the database takes for the same path.', $reclaimed, $reclaimed === 1 ? 'its path' : 'their paths'),
             $noLongerExtra === 0 ? '' : sprintf(
                 ' %d no longer an extra copy under the lock — now the copy %s row names.',
                 $noLongerExtra,
@@ -588,6 +642,379 @@ final class MediaPruneCommand extends Command
 
         /* A disk that refused is reported by the count disagreeing, rather than by silence. */
         return $failed === 0 ? self::SUCCESS : self::FAILURE;
+    }
+
+    /**
+     * Take out of the orphans every name on a local disk that some row's path — or the partial copy custody writes
+     * beside it — reaches as the very same directory entry. The volume decides, by stat, not the names: APFS, NTFS, SMB
+     * and ext4's casefold fold case and Unicode normalization by rules of their own, which no spelling made from the
+     * listed name, and no pattern over the table, reproduces (Codex, #155; review of the fix). A name the row's own
+     * disk reaches is that row's file, and is not listed; one a row naming another disk reaches is listed as a copy
+     * under another spelling, and kept; one a row's partial path reaches is that row's leftover partial copy, removed
+     * under its lock. A hard link is another entry, and stays an orphan — unless it shares a directory with another
+     * spelling of the row's path, where which entry the row reaches cannot be told: both are taken for the row's, and
+     * for a row naming that disk neither is listed (`MediaBytes::reaches()`), and for a row naming another disk both
+     * are listed as copies under another spelling, of which settle removes only the one the row's path reaches, and the
+     * line says so; beside a row's partial path only a name ending in the partial suffix is taken for its partial copy,
+     * and a hard link under any other name stays an orphan (review of slice 5c). A partial copy the listing found on a
+     * local disk is asked too, of a row's own path alone: one it reaches is that row's file, listed nowhere or as its
+     * copy under another spelling, never removed under another row's lock (review of slice 5c). On a disk that is not
+     * local, which compares keys byte for byte, a row reaches only the key its path is read as — a doubled slash, say —
+     * and is asked by that key, with no stat.
+     *
+     * ⚠️ ONE MORE PASS OVER THE TABLE, OUTSIDE ANY LOCK, ON EVERY VOLUME — whether a volume folds is per directory on
+     * ext4 and NTFS, and every probe of a name missed some. Wherever a disk listed an orphan the disks can name, or a
+     * local disk a partial copy; 500 rows at a time. On each local disk that listed one — or read-through disk whose
+     * primary is local — a stat of each row's path, and of its partial path where the disk listed a partial copy no row's
+     * path was written for, and a posix_access() of each the stat finds absent,
+     * asking why — an lstat of the name, and of each missing directory above it, before its access(2); a partial path
+     * the volume refuses as too long is absent (`MediaBytes::statOf()`, `tooLong()`) — and, where a row's path stats to
+     * a file listed names are other links of, a stat of each such name not yet claimed, and of its directory, wherever
+     * it lies, and, where one shares the row's directory under another name, one read of that directory until the row's
+     * name is found: a plain hard link beside the row's own file included, with no other spelling
+     * (`MediaBytes::reachedAmong()`). On a disk that is not local, each row's path read as the disks read it and looked up
+     * among that disk's listed keys, with nothing asked of the disk. What it holds is a key, a claim and an id a listed
+     * orphan (review of slice 5c). A failure of the table's read fails the run, as a batch's does, never read as "no row".
+     *
+     * @param  array<string, list<string>>  $orphans
+     * @param  array<string, array<string, int>>  $partials
+     * @param  array<string, array<string, int>>  $spelt  by disk, listed name => the media_files id of the row that reaches it
+     * @param  array<string, array<string, true>>  $shared  by disk, the names of one file a row naming another disk reaches
+     *                                                      beside each other, the volume not saying which: settle removes
+     *                                                      only the one it does
+     */
+    private function reachedByRows(Connection $connection, array &$orphans, array &$partials, array &$spelt, array &$shared): void
+    {
+        $inodes = [];
+        $keyed = [];
+        $partial = [];
+        $filesystems = [];
+
+        /*
+         * The listing's partial copies on a local disk are asked too, after its orphans, and taken back out below: a row's
+         * own path that reaches one — through a link the listing skips, or in a spelling written past `MediaFile` — makes
+         * it that row's file, never another row's partial copy. No row's partial path takes one from the row the listing
+         * gave it (review of slice 5c).
+         */
+        $fromPartial = [];
+
+        foreach ($partials as $disk => $names) {
+            $disk = (string) $disk;
+
+            try {
+                if (! MediaBytes::listsLocally($disk)) {
+                    continue;
+                }
+            } catch (Throwable) {
+                continue;
+            }
+
+            foreach (array_keys($names) as $name) {
+                $orphans[$disk][] = (string) $name;
+                $fromPartial[$disk][array_key_last($orphans[$disk])] = true;
+            }
+        }
+
+        foreach (array_keys($orphans) as $disk) {
+            $disk = (string) $disk;
+
+            try {
+                $local = MediaBytes::listsLocally($disk);
+                $filesystem = Storage::disk($disk);
+            } catch (Throwable) {
+                continue;
+            }
+
+            foreach ($orphans[$disk] as $i => $path) {
+                // A name the disks read as another path, or refuse, is asked nothing: it stays an orphan, refused under the
+                // lock as before.
+                try {
+                    MediaBytes::refuseUnnamable($disk, $path);
+                } catch (MediaCustodyFailure) {
+                    continue;
+                }
+
+                // A disk that is not local compares keys byte for byte: only a row's path written in a form the disks read
+                // as this very key — a doubled slash, say — reaches it, and is asked by that form (review of the fix).
+                if (! $local) {
+                    $keyed[$disk][$path] = $i;
+
+                    continue;
+                }
+
+                $filesystems[$disk] = $filesystem;
+                $inode = self::inodeOf($disk, $filesystem, $path);
+
+                if ($inode === null) {
+                    continue;
+                }
+
+                // One name an int, as most are; the names of one file a list, appended to, never copied (review of 5c).
+                if (! isset($inodes[$disk][$inode])) {
+                    $inodes[$disk][$inode] = $i;
+                } elseif (is_int($inodes[$disk][$inode])) {
+                    $inodes[$disk][$inode] = [$inodes[$disk][$inode], $i];
+                } else {
+                    $inodes[$disk][$inode][] = $i;
+                }
+
+                if (! isset($fromPartial[$disk][$i]) && str_ends_with($path, MediaBytes::PARTIAL)) {
+                    $partial[$disk] = true;
+                }
+            }
+        }
+
+        if ($inodes === [] && $keyed === []) {
+            self::withdrawAsked($orphans, [], $fromPartial);
+
+            return;
+        }
+
+        // A claim a listed name: its kind — 1 the row's own file on this disk, final; 2 a row naming another disk; 3 a
+        // partial copy; the lower wins — and, apart, the row's id for 2 or its entry for 3, held whole as PHP's integer
+        // holds it: SQLite's and PostgreSQL's signed ids always; MySQL's and MariaDB's unsigned ids of 2^63 or more PHP
+        // reads as PHP_INT_MAX, here as everywhere prune and custody take an id.
+        $claims = [];
+        $ids = [];
+
+        foreach ($connection->table('media_files')->select(['id', 'entry_id', 'disk', 'path'])->lazyById(self::BATCH, 'id') as $row) {
+            $path = (string) $row->path;
+
+            if ($keyed !== []) {
+                try {
+                    $read = (new WhitespacePathNormalizer)->normalizePath($path);
+                } catch (Throwable) {
+                    $read = null;
+                }
+
+                foreach ($read === null ? [] : array_keys($keyed) as $disk) {
+                    $disk = (string) $disk;
+
+                    foreach ([$read => (string) $row->disk === $disk ? 1 : 2, $read.MediaBytes::PARTIAL => 3] as $name => $kind) {
+                        if (isset($keyed[$disk][$name])) {
+                            self::claim($claims, $ids, $disk, $keyed[$disk][$name], $kind, $row);
+                        }
+                    }
+                }
+            }
+
+            foreach (array_keys($inodes) as $disk) {
+                $disk = (string) $disk;
+
+                foreach (isset($partial[$disk]) ? [$path, $path.MediaBytes::PARTIAL] : [$path] as $k => $name) {
+                    $inode = self::inodeOf($disk, $filesystems[$disk], $name, $k === 1);
+
+                    if ($inode === null || ! isset($inodes[$disk][$inode])) {
+                        continue;
+                    }
+
+                    $kind = $k === 1 ? 3 : ((string) $row->disk === $disk ? 1 : 2);
+                    $asked = [];
+
+                    foreach ((array) $inodes[$disk][$inode] as $i) {
+                        // Only a name custody could have written beside the row's path is its partial copy: a hard link
+                        // under another name, which the volume cannot tell from the entry the partial path reaches, stays
+                        // an orphan, asked again under the lock by its own name (review of slice 5c).
+                        if ($kind === 3 && (isset($fromPartial[$disk][$i]) || ! str_ends_with($orphans[$disk][$i], MediaBytes::PARTIAL))) {
+                            continue;
+                        }
+
+                        if (! isset($claims[$disk][$i]) || $claims[$disk][$i] > $kind) {
+                            $asked[$i] = $orphans[$disk][$i];
+                        }
+                    }
+
+                    // Every listed name of the file this name reaches, asked at once (`MediaBytes::reachedAmong()`).
+                    $reached = $asked === [] ? [] : MediaBytes::reachedAmong($disk, $name, $asked);
+
+                    // Names of one file beside each other, which the volume does not say the row's path reaches which of:
+                    // for a row naming another disk, settle removes only the one it reaches (review of slice 5c).
+                    if ($kind === 2 && count($reached) > 1) {
+                        foreach ($reached as $i) {
+                            $shared[$disk][$orphans[$disk][$i]] = true;
+                        }
+                    }
+
+                    foreach ($reached as $i) {
+                        self::claim($claims, $ids, $disk, $i, $kind, $row);
+                    }
+                }
+            }
+        }
+
+        foreach ($claims as $disk => $byIndex) {
+            $disk = (string) $disk;
+
+            foreach ($byIndex as $i => $kind) {
+                $listed = $orphans[$disk][$i];
+
+                // A partial copy the listing found that a row's own path reaches: that row's, listed nowhere or as its
+                // copy under another spelling — never the partial copy removed under another row's lock.
+                if (isset($fromPartial[$disk][$i])) {
+                    unset($partials[$disk][$listed]);
+
+                    if ($kind === 2) {
+                        $spelt[$disk][$listed] = $ids[$disk][$i];
+                    }
+
+                    continue;
+                }
+
+                match ($kind) {
+                    // The row's own file, under another spelling: not listed at all.
+                    1 => null,
+                    2 => $spelt[$disk][$listed] = $ids[$disk][$i],
+                    default => $partials[$disk][$listed] = $ids[$disk][$i],
+                };
+            }
+
+            if (($partials[$disk] ?? null) === []) {
+                unset($partials[$disk]);
+            } elseif (isset($partials[$disk])) {
+                ksort($partials[$disk], SORT_STRING);
+            }
+
+            if (isset($spelt[$disk])) {
+                ksort($spelt[$disk], SORT_STRING);
+            }
+        }
+
+        self::withdrawAsked($orphans, $claims, $fromPartial);
+    }
+
+    /**
+     * Take out of the orphans each name the pass claimed, and each partial copy it asked on its own account: what is left
+     * of a disk's orphans, in the order listed, or no entry for a disk with none.
+     *
+     * @param  array<string, list<string>>  $orphans
+     * @param  array<array-key, array<int, int>>  $claims
+     * @param  array<array-key, array<int, true>>  $fromPartial
+     */
+    private static function withdrawAsked(array &$orphans, array $claims, array $fromPartial): void
+    {
+        foreach (array_keys($claims + $fromPartial) as $disk) {
+            $disk = (string) $disk;
+            $rest = array_values(array_diff_key($orphans[$disk] ?? [], $claims[$disk] ?? [], $fromPartial[$disk] ?? []));
+
+            if ($rest === []) {
+                unset($orphans[$disk]);
+            } else {
+                $orphans[$disk] = $rest;
+            }
+        }
+    }
+
+    /**
+     * A list by disk, in the order the disks were scanned.
+     *
+     * @template T
+     *
+     * @param  list<string>  $scanned
+     * @param  array<array-key, T>  $byDisk
+     * @return array<array-key, T>
+     */
+    private static function inScanOrder(array $scanned, array $byDisk): array
+    {
+        $ordered = [];
+
+        foreach ($scanned as $disk) {
+            if (isset($byDisk[$disk])) {
+                $ordered[$disk] = $byDisk[$disk];
+            }
+        }
+
+        return $ordered;
+    }
+
+    /**
+     * Whether a disk reaches a path, as custody asks it — through a fold, a link its listing skips, a read-through disk's
+     * fallback — asked only to choose a line; one that cannot say, no. One presence check a copy, a HEAD on an object
+     * store, in a read-only run too (review of slice 5c).
+     */
+    private static function holds(string $disk, string $path): bool
+    {
+        try {
+            return MediaBytes::present($disk, $path);
+        } catch (Throwable) {
+            return false;
+        }
+    }
+
+    /**
+     * What a forced reconcile does with a copy under another spelling where settle removes the row's copies on its disk:
+     * the name the row's path reaches there — through the fold, a directory link — goes, unless it is the very file the
+     * target holds, which custody refuses as coinciding; where that name is a link to the copy, only the link goes; where
+     * the copy has another name beside it, which the row's path may reach instead, only that one (review of slice 5c).
+     */
+    private static function settledBy(bool $linked, bool $beside, string $removes, string $label, string $stays): string
+    {
+        $coinciding = 'or refuses it as coinciding where the two are one file, left for a hand';
+
+        return match (true) {
+            $linked => sprintf('its row\'s path on this disk is a link to this copy, so kitsune:media-reconcile --force removes the link, not this copy, %s, and the check lists the row %s; the next run lists this copy as an orphan, which --force removes', $coinciding, $label),
+            $beside => sprintf('this file has another name beside it here, and the volume does not say which of them its row\'s path reaches: kitsune:media-reconcile --force removes that one, %s, and the check lists the row %s; where it is not this one, this copy %s, and the next run lists it as an orphan, which --force removes', $coinciding, $label, $stays),
+            default => sprintf('kitsune:media-reconcile --force %s, %s, and the check lists the row %s', $removes, $coinciding, $label),
+        };
+    }
+
+    /** Whether a local disk holds a link at a name's last component — asked only to choose a line; one that cannot say, no. */
+    private static function linkAt(string $disk, string $path): bool
+    {
+        try {
+            return MediaBytes::local($disk) && is_link(Storage::disk($disk)->path($path));
+        } catch (Throwable) {
+            return false;
+        }
+    }
+
+    /**
+     * A row's claim on a listed name, where no stronger one is held: 1 the row's own file, 2 with the row's id a row naming
+     * another disk, 3 with its entry a partial copy — the lower kind wins.
+     *
+     * ⚠️ THE KIND AND THE ID APART, NOT PACKED INTO ONE INTEGER — review of slice 5c. Shifted beside the kind, an id past
+     * ±2^61 came back as another: a partial copy was listed under an entry that does not exist and removed under that
+     * entry's lock, not its own, and a copy under another spelling was said to have lost its row.
+     *
+     * @param  array<string, array<int, int>>  $claims
+     * @param  array<string, array<int, int>>  $ids
+     */
+    private static function claim(array &$claims, array &$ids, string $disk, int $i, int $kind, stdClass $row): void
+    {
+        if (! isset($claims[$disk][$i]) || $claims[$disk][$i] > $kind) {
+            $claims[$disk][$i] = $kind;
+
+            // A row's own file is listed nowhere, and needs no id: a table of them holds a kind a name, as before.
+            if ($kind !== 1) {
+                $ids[$disk][$i] = $kind === 2 ? (int) $row->id : (int) $row->entry_id;
+            }
+        }
+    }
+
+    /**
+     * The inode a local disk reaches at a name, as the disk reads the name — or null: nothing there, or a name no stat
+     * takes. A stat the volume refuses for another reason fails the run before anything is removed, never read as "nothing
+     * there" (`MediaBytes::statOf()`; review of slice 5c) — but for a row's partial path, the pass's own name, which one a
+     * volume refuses as too long custody never wrote: a row whose path is long enough failed every run (review of 5c).
+     */
+    private static function inodeOf(string $disk, FilesystemAdapter $filesystem, string $name, bool $partial = false): ?int
+    {
+        try {
+            $at = $filesystem->path($name);
+        } catch (Throwable) {
+            return null;
+        }
+
+        try {
+            $file = MediaBytes::statOf($disk, $name, $at);
+        } catch (MediaCustodyFailure $failure) {
+            if ($partial && MediaBytes::tooLong($at)) {
+                return null;
+            }
+
+            throw $failure;
+        }
+
+        return $file === null ? null : (int) $file['ino'];
     }
 
     /**
@@ -621,9 +1048,10 @@ final class MediaPruneCommand extends Command
      *
      * @return Generator<int, list<string>>
      */
-    private function listing(string $disk, ?string &$failure): Generator
+    private function listing(string $disk, ?string &$failure, bool &$built = false): Generator
     {
         $batch = [];
+        $built = false;
 
         try {
             // Never built: Laravel would recurse through its halves until memory ran out (review of slice 5c).
@@ -631,8 +1059,11 @@ final class MediaPruneCommand extends Command
                 throw new ReadThroughCycle(sprintf('Refusing to build the [%s] disk: its read-through disks form a cycle.', $disk));
             }
 
+            $filesystem = Storage::disk($disk);
+            $built = true;
+
             /** @var iterable<StorageAttributes> $items */
-            $items = Storage::disk($disk)->listContents('media', true);
+            $items = $filesystem->listContents('media', true);
 
             foreach ($items as $item) {
                 if (! $item->isFile()) {
@@ -723,6 +1154,15 @@ final class MediaPruneCommand extends Command
                 continue;
             }
 
+            // A path a row gives byte for byte is that row's copy before it is any row's partial copy: the suffix chooses a
+            // lock only where no row names the name itself — a row written past `MediaFile` may — and, on a local disk, where
+            // no row's own path reaches it, which the pass asks once every disk is listed (review of slice 5c).
+            if (isset($byPath[$path])) {
+                $found['extras'][$path] = $this->extra($byPath[$path], $public);
+
+                continue;
+            }
+
             if (str_ends_with($path, MediaBytes::PARTIAL)) {
                 $row = $byPath[substr($path, 0, -strlen(MediaBytes::PARTIAL))] ?? null;
 
@@ -735,9 +1175,7 @@ final class MediaPruneCommand extends Command
                 continue;
             }
 
-            if (isset($byPath[$path])) {
-                $found['extras'][$path] = $this->extra($byPath[$path], $public);
-            } elseif ($ours) {
+            if ($ours) {
                 $found['orphans'][] = $path;
             }
         }
@@ -925,11 +1363,14 @@ final class MediaPruneCommand extends Command
      *
      * @param  array<string, list<string>>  $orphans
      * @param  array<string, array<string, int>>  $partials
+     * @param  array<string, array<string, int>>  $spelt  by disk, listed name => the media_files id of the row that reaches it
+     * @param  array<string, array<string, true>>  $shared  by disk, the spelt names of one file beside each other
      * @param  array<string, array<string, int>>  $extras
      * @param  list<string>  $unlisted  the disks a listing failed on: the first, after which what they hold was not asked,
      *                                  or the second, after which whether they hold an extra copy's path was not
+     * @param  list<string>  $unbuilt  those of them that could not be built at all, which no command can ask
      */
-    private function report(Connection $connection, array $orphans, array $partials, array $extras, string $public, string $private, Repository $config, array $unlisted): void
+    private function report(Connection $connection, array $orphans, array $partials, array $spelt, array $shared, array $extras, string $public, string $private, Repository $config, array $unlisted, array $unbuilt): void
     {
         if ($orphans === []) {
             $this->info('No orphaned media files.');
@@ -938,7 +1379,7 @@ final class MediaPruneCommand extends Command
 
             foreach ($orphans as $disk => $paths) {
                 foreach ($paths as $path) {
-                    $this->line(sprintf('  [%s]  %s', $disk, $path));
+                    $this->raw(sprintf('  [%s]  %s', $disk, $path));
                 }
             }
         }
@@ -948,12 +1389,108 @@ final class MediaPruneCommand extends Command
 
             foreach ($partials as $disk => $copies) {
                 foreach ($copies as $path => $entryId) {
-                    $this->line(self::rowLine((object) ['entry_id' => $entryId, 'disk' => $disk, 'path' => $path]));
+                    $this->raw(self::rowLine((object) ['entry_id' => $entryId, 'disk' => $disk, 'path' => $path]));
                 }
             }
         }
 
         $servedDisks = MediaDisks::servedDisks($config);
+
+        if ($spelt !== []) {
+            $this->line('Copies a row reaches under another spelling, on a disk it does not name — the disk holds each under a name no row gives, which the row\'s path reaches as this very file. Kept, each line saying what settles it:');
+
+            foreach ($spelt as $disk => $copies) {
+                $disk = (string) $disk;
+
+                // The rows read 500 at a time, never held beyond the lines they print.
+                foreach (array_chunk($copies, self::BATCH, true) as $chunk) {
+                    $rows = $connection->table('media_files')->leftJoin('entries', 'entries.id', '=', 'media_files.entry_id')
+                        ->whereIn('media_files.id', array_values($chunk))
+                        ->get(['media_files.id', 'media_files.entry_id', 'media_files.disk', 'media_files.path', 'media_files.visibility', 'entries.deleted_at'])
+                        ->keyBy('id');
+
+                    foreach ($chunk as $listed => $id) {
+                        $row = $rows->get($id);
+
+                        if ($row === null) {
+                            $this->raw(sprintf('  [%s]  %s — its row is gone since the listing: the next run asks again', $disk, $listed));
+
+                            continue;
+                        }
+
+                        $target = MediaCustody::target($row, $row);
+                        $named = (string) $row->disk;
+                        // Where settle removes the row's copies on this disk: a served one under a private target, a
+                        // private one under a public target — and refuses one on a read-through disk, which it cannot remove.
+                        $settled = ($target !== $public && $disk !== $target && in_array($disk, $servedDisks, true))
+                            || ($target === $public && in_array($disk, [$private, MediaDisks::PRIVATE], true));
+                        // Settle removes the row's own name here: where that name is a link to this copy, it removes the
+                        // link, not the copy (review of slice 5c). Only the last component: through a directory link, the
+                        // unlink reaches the entry.
+                        $linked = $settled && self::linkAt($disk, (string) $row->path);
+                        // Another name of this file beside it, which the row's path may reach instead: settle removes only
+                        // the one it reaches (review of slice 5c).
+                        $beside = ! $linked && isset($shared[$disk][(string) $listed]);
+
+                        $this->raw(sprintf('%s — its row names [%s] %s: %s', self::rowLine((object) ['entry_id' => $row->entry_id, 'disk' => $disk, 'path' => (string) $listed]), $named, (string) $row->path, match (true) {
+                            // Settle refuses such a row before it asks any disk, so only the row's path settles it (review of #155's fix).
+                            self::misnamed((string) $row->path) => 'its row\'s path is not written as the disks read it — correct media_files.path to the path its file is under, as the disks read it',
+                            /*
+                             * Reconcile settles the row only once the disk it names can be built, reaches none of the target's
+                             * files and reads through nothing: otherwise its --force refuses the row, and the line says what
+                             * stands in the way, as an extra copy's does. One built whose listing alone failed it asks as any
+                             * other (review of slice 5c).
+                             */
+                            $settled && in_array($named, $unbuilt, true) => sprintf(
+                                'kept: [%s], which its row names, could not be built — kitsune:media-reconcile --force settles its row only once that disk can be asked: run kitsune:media-prune again once it can be',
+                                $named,
+                            ),
+                            $settled && MediaCustody::overlapsTarget($config, $target, $named, (string) $row->path) => sprintf(
+                                'kept: its row names [%1$s], which reaches [%2$s]\'s files or cannot be told apart from it — kitsune:media-reconcile --force moves no row off it, and removes no copy through it: copy the file to [%2$s] by hand if it is not there, checking it against the recorded checksum, then correct media_files.disk to [%2$s], or point [%1$s] at a place that does not overlap it; the next run says what settles this copy',
+                                $named,
+                                $target,
+                            ),
+                            $settled && $named !== $target && ! in_array($named, [$private, MediaDisks::PRIVATE], true) && (MediaDisks::readsThrough($config, $named) || MediaDisks::builtReadThrough($config, $named)) => sprintf(
+                                'kept: its row names [%1$s], a read-through disk, which custody neither reads nor removes a copy through — while [%1$s] holds the file, kitsune:media-reconcile --force cannot move its row: copy the file to [%2$s] by hand if it is not there, checking it against the recorded checksum, then take [%1$s]\'s copy off through the disk each half is; the next run says what settles this copy',
+                                $named,
+                                $target,
+                            ),
+                            // Custody neither reads nor removes a copy through a read-through disk: where settle removes the
+                            // row's copies on this one, every forced reconcile of the row fails on this copy until a person
+                            // takes it off, as an extra copy's line says (review of slice 5c).
+                            $settled && $this->readsThrough($disk) => sprintf(
+                                'kept: [%1$s] is a read-through disk, which custody neither reads nor removes a copy through, and %3$s — every kitsune:media-reconcile --force of its row fails on this copy until it is gone, and the check lists the row %4$s: copy the file to [%2$s] by hand if it is not there, checking it against the recorded checksum, then compare this copy with it and take it off through the disk each half is',
+                                $disk,
+                                $target,
+                                $target !== $public ? 'the web serves it, and its file belongs off it' : 'its file belongs on the web, off this disk',
+                                $target !== $public ? 'exposed' : match (true) {
+                                    $named !== $public => 'awaiting publication',
+                                    self::holds($public, (string) $row->path) => 'private copy',
+                                    default => 'absent',
+                                },
+                            ),
+                            // Where settle removes the row's copies, it removes this one through the volume's fold or a
+                            // directory link: said so, and that a file kept off the web is on it (review of #155's fix).
+                            // Refused as coinciding where the copy is the very file the target holds at the row's path, as an
+                            // extra copy's line says (review of slice 5c).
+                            $target !== $public && $disk !== $target && in_array($disk, $servedDisks, true) => 'on the web, and its file belongs off it — '.self::settledBy($linked, $beside, 'takes it off', 'exposed', 'stays on the web'),
+                            // The label is the one reconcile gives, in its order: a row naming another disk awaits publication,
+                            // and one whose disk does not hold its file is absent, before either is a private copy (review of 5c).
+                            $target === $public && in_array($disk, [$private, MediaDisks::PRIVATE], true) => self::settledBy($linked, $beside, 'removes it', match (true) {
+                                $named !== $public => 'awaiting publication',
+                                self::holds($public, (string) $row->path) => 'private copy',
+                                default => 'absent',
+                            }, 'stays'),
+                            // The disk the row names may hold nothing: the name it holds the file under is one to spell alike
+                            // only where it holds one. Where this is the disk the file belongs on, a forced reconcile would
+                            // point the row at it under a name other than its path, which no run then shows (review of 5c).
+                            default => sprintf('make the row\'s path and this name one spelling, with the name [%s] holds its file under where it holds one — rename the files, or correct media_files.path — and the next run lists this one as an extra copy%s', $named, $beside ? '; any other name of this file here the next run lists as an orphan' : ''),
+                        }));
+                    }
+                }
+            }
+        }
+
         $asked = [];
 
         if ($extras !== []) {
@@ -965,7 +1502,7 @@ final class MediaPruneCommand extends Command
 
                 foreach ($copies as $path => $extra) {
                     [$entryId, $named, $target] = $this->unpack($extra, $public, $private);
-                    $this->line(sprintf(
+                    $this->raw(sprintf(
                         '%s — %s, its row names [%s], it belongs on [%s]: %s',
                         self::rowLine((object) ['entry_id' => $entryId, 'disk' => $disk, 'path' => $path]),
                         $extra & self::TRASHED ? 'trashed' : 'live',
@@ -975,11 +1512,12 @@ final class MediaPruneCommand extends Command
                             // First, whatever disk the row names: settle refuses the row before any disk is asked (5c).
                             self::misnamed((string) $path) => 'kept: its row\'s path is not written as the disks read it, and this copy is under that literal name, which no disk reads or removes — move it by hand on the disk the row names to a path the disks read as itself, one no other row names, checked against the recorded checksum, then correct media_files.path to that path; kitsune:media-reconcile lists the row as misnamed',
                             ($extra & self::REMOVABLE) !== 0 => 'removed, once asked again under the lock',
-                            // Reconcile moves a row only once the disk it names can be asked. First: a read-through cycle
+                            // Reconcile moves a row only once the disk it names can be built. First: a read-through cycle
                             // is configured as read-through, and the arms below would claim it, and advise taking a copy
                             // off through halves that are never built, of a disk that holds nothing (review of slice 5c).
-                            $named !== $target && in_array($named, $unlisted, true) => sprintf(
-                                'kept: [%s], which its row names, could not be listed — kitsune:media-reconcile --force moves its row only once that disk can be asked',
+                            // One built whose listing alone failed reconcile asks, and moves the row first, as below.
+                            $named !== $target && in_array($named, $unbuilt, true) => sprintf(
+                                'kept: [%s], which its row names, could not be built — kitsune:media-reconcile --force moves its row only once that disk can be asked',
                                 $named,
                             ),
                             /*
@@ -1043,6 +1581,20 @@ final class MediaPruneCommand extends Command
                                     : 'kept: its media directory nests with [%1$s]\'s, which does not list the file — copy it over by hand',
                                 $target,
                             ),
+                            /*
+                             * The disk the row names reaches its path, but lists the file under another name — a spelling the
+                             * volume folds, a link its listing skips, a read-through disk's fallback — so prune cannot tell
+                             * this copy from the row's own, which it may be (review of #155's fix). Where settle removes the
+                             * row's copies on this disk — a served one under a private target, a private one under a public
+                             * target — reconcile finds the row's own through the fold, and its --force takes this one off,
+                             * refusing where the two are one file: said so, and that a file kept off the web is on it
+                             * (review of slice 5c).
+                             */
+                            self::holds($target, (string) $path) => sprintf('kept: [%s] reaches the file at its row\'s path but does not list it under that name — a spelling the volume folds, a link its listing skips, or a read-through disk\'s fallback — so this copy cannot be told from the row\'s own: %s', $target, match (true) {
+                                $target !== $public && in_array($disk, $servedDisks, true) => 'it is on the web, and its file belongs off it — the check lists the row exposed, and kitsune:media-reconcile --force takes it off, or refuses it as coinciding where the two are one file, left for a hand',
+                                $target === $public && in_array($disk, [$private, MediaDisks::PRIVATE], true) => 'the check lists the row private copy, and kitsune:media-reconcile --force removes it, or refuses it as coinciding where the two are one file, left for a hand',
+                                default => 'check by hand whether the two are one file before taking this one off',
+                            }),
                             /*
                              * Reconcile settles the row from the copies on the disks custody asks; one on a disk it does not
                              * ask — one prune scans only because another row names it — it never sees, and lists the row as
@@ -1109,18 +1661,11 @@ final class MediaPruneCommand extends Command
                         $said = true;
                     }
 
-                    $this->line(self::rowLine($row));
+                    $this->raw(self::rowLine($row));
                 }
             }, 'media_files.id', 'id');
     }
 
-    /**
-     * An entry's line in the lists, as the listing prints it and the benchmark harness reads it back.
-     *
-     * ⚠️ `\sprintf`, QUALIFIED, ON PURPOSE — review of slice 5c. Resolved at compile time, it builds a string of the exact
-     * size; unqualified in this namespace it keeps the 240-byte buffer it starts with, a 320-byte block for a 70-byte
-     * line, and the benchmark holds a hundred thousand of these: some 22 MB more at the floor's 128 MB.
-     */
     /**
      * The disks custody asks for a file that belongs on the target, or false where they cannot be told: `asked()` reads
      * every served disk's configuration, and a configured media disk that is not configured stops it.
@@ -1136,6 +1681,23 @@ final class MediaPruneCommand extends Command
         }
     }
 
+    /**
+     * A line naming a disk, a path or what custody said, written as it is: a name may hold what the console reads as a
+     * style — `<error>`, `<fg=red>`, `</>` — which it would strip, and the line would name another file than the one it
+     * listed, or than `--force` removes (review of slice 5c).
+     */
+    private function raw(string $line): void
+    {
+        $this->output->writeln($line, OutputInterface::OUTPUT_RAW);
+    }
+
+    /**
+     * An entry's line in the lists, as the listing prints it and the benchmark harness reads it back.
+     *
+     * ⚠️ `\sprintf`, QUALIFIED, ON PURPOSE — review of slice 5c. Resolved at compile time, it builds a string of the exact
+     * size; unqualified in this namespace it keeps the 240-byte buffer it starts with, a 320-byte block for a 70-byte
+     * line, and the benchmark holds a hundred thousand of these: some 22 MB more at the floor's 128 MB.
+     */
     public static function rowLine(stdClass $row): string
     {
         return \sprintf('  entry %d  [%s]  %s', (int) $row->entry_id, (string) $row->disk, (string) $row->path);

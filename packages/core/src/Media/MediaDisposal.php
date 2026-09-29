@@ -33,8 +33,12 @@ use Throwable;
  * force-delete withdraws every copy the web could serve before it commits, keeping a verified one on the private
  * disk; this removes what is left, only once nothing on the connection is left to commit, and for each file it asks
  * again with the entry locked — a delete that did not commit, or a path a row has claimed since the erasure, keeps its
- * bytes. Paths are unique (Adam, decision 8, 2026-09-25), so while the erased row existed no other could name its path;
- * the check guards a row written after the erasure committed, naming the path it freed.
+ * bytes. Paths are unique (Adam, decision 8, 2026-09-25), so while the erased row existed no other could name its path
+ * byte for byte; the check guards a row written after the erasure committed, naming the path it freed. A row naming it
+ * in a spelling a volume folds to it and the engine compares apart — on SQLite and PostgreSQL `media/PHOTO.png` beside
+ * `media/photo.png`; under MariaDB's utf8mb4_general_ci an NFD spelling beside the NFC, or `STRASSE` beside `straße` —
+ * is another row, and on such a volume the same file: whether paths should be unique as the volumes fold them is open,
+ * for Adam (ADR-042 decision 8; Codex, #155).
  *
  * ⚠️ EVERY DISK THAT COULD HOLD THE PATH, not only the one the row named: the private copy withdrawal kept, a stray
  * copy on a served disk, a partial copy beside any of them.

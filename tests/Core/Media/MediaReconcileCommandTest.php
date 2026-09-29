@@ -12,6 +12,7 @@ use Illuminate\Database\Events\TransactionBeginning;
 use Illuminate\Database\Events\TransactionCommitted;
 use Illuminate\Filesystem\FilesystemAdapter;
 use Illuminate\Filesystem\ReadThroughFilesystem;
+use Illuminate\Log\Events\MessageLogged;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
@@ -386,6 +387,88 @@ describe('a forced run', function (): void {
             ->and($exit)->toBe(1);
     });
 
+    // ...and for a path that holds `]`, which ended the name the line's pattern took: the disk set aside, and that the row
+    // still names it, are said all the same (review of slice 5c).
+    it('names the disk set aside, and that the row still names it, for a path that holds a bracket', function (): void {
+        reconcileDisk('local');
+        [$id, $path] = reconcileFile('local', [], trashed: true);
+        $bracketed = dirname($path).'/photo [1].png';
+        DB::table('media_files')->where('entry_id', $id)->update(['path' => $bracketed]);
+        Storage::disk('local')->put($bracketed, 'stale');
+        Storage::disk('public')->put($bracketed, RECONCILE_PNG);
+        $this->disks['local']->unreadable = [$bracketed];
+
+        [$exit, $output] = reconcileRun(['--force' => true]);
+
+        expect(reconcileLine($output, $id))->toContain('→ set aside: [local] cannot be read')
+            ->and(reconcileLine($output, $id))->toContain('; the row still names [local]')
+            ->and($exit)->toBe(1);
+    });
+
+    // ...and where the row is gone by the time the line is written — erased beside the run — the disk set aside is named
+    // all the same, from custody's own words (review of slice 5c).
+    it('names the disk set aside where the row is gone before the line is written', function (): void {
+        reconcileDisk('local');
+        [$id, $path] = reconcileFile('local', ['local' => 'stale', 'public' => RECONCILE_PNG], trashed: true);
+        $this->disks['local']->unreadable = [$path];
+        Event::listen(MessageLogged::class, static function (MessageLogged $logged) use ($id): void {
+            if (str_contains($logged->message, 'exists and cannot be read, so it was left')) {
+                DB::table('media_files')->where('entry_id', $id)->delete();
+            }
+        });
+
+        [, $output] = reconcileRun(['--force' => true]);
+
+        expect(reconcileLine($output, $id))->toContain('→ set aside: [local] cannot be read')
+            ->and(reconcileLine($output, $id))->not->toContain('the row still names');
+    });
+
+    /*
+     * ...and a copy the command cannot reach — in a directory its user may not search, as a private disk's are where the
+     * web server wrote them — is one whose presence cannot be told, never an absent one: the check passed on a trashed
+     * file's copy left on the web, and called a file missing that is there, advising its entry erased (review of 5c).
+     */
+    it('lists a row unknown where a copy it holds cannot be reached, never absent or missing', function (string $case): void {
+        if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
+            test()->markTestSkipped('root searches a directory whatever its mode');
+        }
+
+        reconcileDisk('host-private');
+        config(['kitsune.media.disks.private' => 'host-private']);
+
+        // A served read-through disk answers by its local halves' `is_file()`, which reads a refused stat as absence too.
+        if (str_starts_with($case, 's-')) {
+            reconcileDisk('s-primary');
+            reconcileDisk('s-fallback');
+            config(['filesystems.disks.s' => ['driver' => 'read-through', 'primary' => 's-primary', 'fallback' => 's-fallback', 'url' => 'https://s.example.test']]);
+        }
+
+        $served = $case === 'only' ? [] : [($case === 'on the web' ? 'public' : $case) => RECONCILE_PNG];
+        [$id, $path] = reconcileFile('host-private', ['host-private' => RECONCILE_PNG, ...$served], trashed: true);
+        $locked = $this->disks[$case === 'only' ? 'host-private' : array_key_first($served)]->root().'/'.dirname($path);
+        chmod($locked, 0000);
+
+        try {
+            foreach ([[], ['--force' => true]] as $options) {
+                [$exit, $output] = reconcileRun($options);
+
+                expect(reconcileLine($output, $id))->toStartWith('unknown ')
+                    ->and(reconcileLine($output, $id))->toContain('whether it exists cannot be told')
+                    ->and($output)->not->toContain('erase the entry')
+                    ->and($exit)->toBe(1);
+            }
+        } finally {
+            chmod($locked, 0755);
+        }
+
+        expect(is_file($locked.'/'.basename($path)))->toBeTrue();
+    })->with([
+        'a trashed file\'s copy on the web' => 'on the web',
+        'its only copy' => 'only',
+        'a trashed file\'s copy on a served read-through disk\'s primary' => 's-primary',
+        '...and on its fallback' => 's-fallback',
+    ]);
+
     it('leaves a row on a named disk it cannot read, and fails every run until it can be read', function (): void {
         reconcileDisk('local');
         [$id, $path] = reconcileFile('local', ['local' => 'stale', 'public' => RECONCILE_PNG], trashed: true);
@@ -620,6 +703,31 @@ describe('refusals', function (): void {
  * disk that is not configured fails on its own; a file no disk holds is missing. Each fails the run.
  */
 describe('failures', function (): void {
+    // A disk named with what the console reads as a style is named as it is, in the refusal, the read-only warning and the
+    // header, by prune's refusal too: stripped, the line named another disk than the one to fix (review of slice 5c).
+    it('names a styled private disk the web serves as it is, read-only, forced and in prune', function (): void {
+        reconcileDisk('v<info>ault', ['url' => 'https://v.example.test']);
+        config(['kitsune.media.disks.private' => 'v<info>ault']);
+        Storage::disk('public')->put('media/orphan.png', 'bytes');
+
+        [$exit, $output] = reconcileRun();
+
+        expect($output)->toContain('kitsune.media.disks.private names [v<info>ault], which the web serves')
+            ->and($output)->toContain('on [v<info>ault] otherwise. Asking')
+            ->and($exit)->toBe(0);
+
+        [$exit, $output] = reconcileRun(['--force' => true]);
+
+        expect($output)->toContain('kitsune.media.disks.private names [v<info>ault], which the web serves')
+            ->and($exit)->toBe(1);
+
+        $exit = Artisan::call('kitsune:media-prune', ['--force' => true]);
+
+        expect(Artisan::output())->toContain('kitsune.media.disks.private names [v<info>ault], which the web serves')
+            ->and($exit)->toBe(1)
+            ->and(Storage::disk('public')->exists('media/orphan.png'))->toBeTrue();
+    });
+
     it('reports a row that fails and goes on to the next', function (): void {
         [$failing, $failingPath] = reconcileFile('public', ['public' => RECONCILE_PNG], trashed: true);
         [$next, $nextPath] = reconcileFile('public', ['public' => RECONCILE_PNG], trashed: true);
@@ -1259,6 +1367,30 @@ it('refuses, and repoints nothing, when the named copy is a hard link to the tar
  * a row behind (review of slice 5b).
  */
 describe('the disks a run moves the last rows off', function (): void {
+    // A disk named with what the console reads as a style is named as it is: stripped, the warning told the operator to
+    // prune a disk that does not exist (review of slice 5c).
+    it('names a styled disk the last rows leave as it is', function (): void {
+        reconcileDisk('le<info>gacy');
+        [$id] = reconcileFile('le<info>gacy', ['le<info>gacy' => RECONCILE_PNG], visibility: 'private');
+
+        expect(reconcileRun()[1])->toContain('1 row names [le<info>gacy], which kitsune:media-prune sweeps')
+            ->and(reconcileRun(['--entry' => [(string) $id]])[1])->toContain('The one row naming [le<info>gacy] is among these entries: kitsune:media-prune sweeps [le<info>gacy]')
+            ->and(reconcileRun(['--force' => true, '--entry' => [(string) $id]])[1])->toContain('The one row naming [le<info>gacy] is among these entries: this run moves the row off it');
+    });
+
+    // ...and so is the disk its media directory nests with, which prune never lists it through.
+    it('names a styled disk the last rows leave, and the one it nests with, as they are', function (): void {
+        $vault = reconcileDisk('v<info>ault');
+        config(['kitsune.media.disks.private' => 'v<info>ault']);
+        $inner = $vault->root().'/media/x';
+        mkdir($inner, 0777, true);
+        config(['filesystems.disks.le<info>gacy' => ['driver' => 'local', 'root' => $inner]]);
+        $this->disks['le<info>gacy'] = RefusingDisk::install('le<info>gacy', $inner);
+        reconcileFile('le<info>gacy', ['le<info>gacy' => RECONCILE_PNG], visibility: 'private');
+
+        expect(reconcileRun()[1])->toContain('[le<info>gacy]\'s media directory nests with [v<info>ault]\'s');
+    });
+
     it('warns of a served disk, which prune scans for extra copies only once no row names it', function (): void {
         reconcileFile('old-cdn', ['old-cdn' => RECONCILE_PNG]);
 
@@ -1360,6 +1492,48 @@ describe('the disks a run moves the last rows off', function (): void {
  * the recorded checksum; nowhere else, since there it may be the only copy that matches (T167, and the tests after T179).
  */
 describe('a copy that cannot be read', function (): void {
+    /*
+     * ...and where the private disk is core's own under another name — its directory, through a prefix — the file is one
+     * copy, not two: counted twice, every private row read `extra`, an unreadable copy failed the check while a forced
+     * prune passed and removed nothing, and every private orphan was listed twice, the second removal failing as unheld
+     * (review of slice 5c). The check, a forced reconcile and a forced prune agree, and the orphan goes once.
+     */
+    it('counts a file once where the private disk is core\'s own under another name', function (): void {
+        require_once dirname(__DIR__).'/Fixtures/PathPrefixedAdapter.php';
+        $root = $this->disks[MediaDisks::PRIVATE]->root();
+        config([
+            'filesystems.disks.hp' => ['driver' => 'local', 'root' => dirname($root), 'prefix' => basename($root)],
+            'kitsune.media.disks.private' => 'hp',
+        ]);
+        [$id, $path] = reconcileFile(MediaDisks::PRIVATE, [MediaDisks::PRIVATE => RECONCILE_PNG], trashed: true);
+        DB::table('media_files')->where('entry_id', $id)->update(['disk' => 'hp']);
+        $orphan = dirname($path).'/orphan.png';
+        file_put_contents($root.'/'.$orphan, 'bytes');
+        $this->disks[MediaDisks::PRIVATE]->unreadable = [$path];
+
+        foreach ([[], ['--force' => true]] as $options) {
+            [$exit, $output] = reconcileRun($options);
+
+            expect(reconcileLine($output, $id))->toBeNull()
+                ->and($exit)->toBe(0);
+        }
+
+        $exit = Artisan::call('kitsune:media-prune');
+        $output = Artisan::output();
+
+        expect(substr_count($output, $orphan))->toBe(1)
+            ->and($output)->not->toContain('Extra copies')
+            ->and($output)->toContain('Not scanning ['.MediaDisks::PRIVATE.']: it is [hp], the private disk, under another name')
+            ->and($exit)->toBe(0);
+
+        $exit = Artisan::call('kitsune:media-prune', ['--force' => true]);
+
+        expect(Artisan::output())->toContain('Removed 1 of 1 orphaned or leftover file and 0 of 0 extra copies.')
+            ->and(is_file($root.'/'.$orphan))->toBeFalse()
+            ->and(is_file($root.'/'.$path))->toBeTrue()
+            ->and($exit)->toBe(0);
+    });
+
     // T129: an unreadable copy on core's private disk beside a file settled on the host's private disk that matches.
     it('fails read-only, forced reconcile and forced prune alike, and none of them once it can be read', function (): void {
         reconcileDisk('host-private');
@@ -2598,13 +2772,129 @@ describe('a copy that cannot be read', function (): void {
     });
 
     /*
+     * ...but a row naming core's private disk under that alias is `elsewhere`: the disk it names is asked, its copy opened —
+     * one file, which cannot be read, fails the check, as every --force fails on it — and once readable, --force repoints
+     * the row, after which the file is counted once. Skipped as the private disk, the check sent it to a --force that
+     * failed without repointing it (review of slice 5c).
+     */
+    it('asks core\'s private disk where a row names it under the private disk\'s alias', function (): void {
+        if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
+            test()->markTestSkipped('root reads a file whatever its mode');
+        }
+
+        require_once dirname(__DIR__).'/Fixtures/PathPrefixedAdapter.php';
+        $root = $this->disks[MediaDisks::PRIVATE]->root();
+        config([
+            'filesystems.disks.hp' => ['driver' => 'local', 'root' => dirname($root), 'prefix' => basename($root)],
+            'kitsune.media.disks.private' => 'hp',
+        ]);
+        [$id, $path] = reconcileFile(MediaDisks::PRIVATE, [MediaDisks::PRIVATE => RECONCILE_PNG], trashed: true);
+        chmod($root.'/'.$path, 0000);
+
+        try {
+            [$exit, $output] = reconcileRun();
+
+            expect(reconcileLine($output, $id))->toStartWith('elsewhere ')
+                ->and(reconcileLine($output, $id))->toEndWith('— ['.MediaDisks::PRIVATE.'] cannot be read')
+                ->and($output)->toContain('make it readable')
+                ->and($output)->not->toContain('Re-run with --force')
+                ->and($exit)->toBe(1);
+
+            [$exit] = reconcileRun(['--force' => true]);
+
+            expect(reconcileNamed($id))->toBe(MediaDisks::PRIVATE)->and($exit)->toBe(1);
+        } finally {
+            chmod($root.'/'.$path, 0644);
+        }
+
+        [$exit] = reconcileRun(['--force' => true]);
+
+        expect(reconcileNamed($id))->toBe('hp')->and($exit)->toBe(0);
+
+        [$exit, $output] = reconcileRun();
+
+        expect(reconcileLine($output, $id))->toBeNull()->and($exit)->toBe(0);
+    });
+
+    /*
+     * ...and where the two nest — one's media directory inside the other's, which `onePlace()` also reads as one place —
+     * they are two directories, and a copy on core's disk at the row's path is another file: asked and counted, never
+     * skipped as the private disk under another name; and prune refuses to list while they nest (review of slice 5c).
+     */
+    it('asks core\'s private disk where its media directory nests with the private disk\'s', function (string $inside): void {
+        require_once dirname(__DIR__).'/Fixtures/PathPrefixedAdapter.php';
+        $root = $this->disks[MediaDisks::PRIVATE]->root();
+
+        if ($inside === 'the private disk inside core\'s') {
+            config([
+                'filesystems.disks.hp' => ['driver' => 'local', 'root' => dirname($root), 'prefix' => basename($root).'/media/h'],
+                'kitsune.media.disks.private' => 'hp',
+            ]);
+            [$id, $path] = reconcileFile('hp', ['hp' => RECONCILE_PNG, MediaDisks::PRIVATE => 'a stale copy'], trashed: true);
+            [$private, $inner, $outer] = ['hp', 'hp', MediaDisks::PRIVATE];
+        } else {
+            $vault = reconcileDisk('vault');
+            $core = $vault->root().'/media/k';
+            mkdir($core, 0777, true);
+            config(['kitsune.media.disks.private' => 'vault', 'filesystems.disks.'.MediaDisks::PRIVATE.'.root' => $core]);
+            $this->disks[MediaDisks::PRIVATE] = RefusingDisk::install(MediaDisks::PRIVATE, $core);
+            [$id, $path] = reconcileFile('vault', ['vault' => RECONCILE_PNG, MediaDisks::PRIVATE => 'a stale copy'], trashed: true);
+            [$private, $inner, $outer] = ['vault', MediaDisks::PRIVATE, 'vault'];
+        }
+
+        expect(MediaDisks::onePlace(app('config'), $private, MediaDisks::PRIVATE))->toBeTrue()
+            ->and(MediaDisks::nested(app('config'), $private, MediaDisks::PRIVATE))->toBeTrue();
+
+        [, $output] = reconcileRun();
+
+        expect(reconcileLine($output, $id))->toStartWith('extra ')
+            ->and(reconcileLine($output, $id))->toEndWith('held by '.$private.', '.MediaDisks::PRIVATE);
+
+        $exit = Artisan::call('kitsune:media-prune');
+
+        expect(Artisan::output())->toContain('Refusing to list: the media directory of ['.$inner.'] is inside ['.$outer.']\'s')
+            ->and(Artisan::output())->not->toContain('Not scanning ['.MediaDisks::PRIVATE.']')
+            ->and($exit)->toBe(1);
+    })->with(['the private disk inside core\'s', 'core\'s inside the private disk']);
+
+    /*
+     * ...and where the private disk cannot be told from core's — a read-through one reaching it through a half — core's is
+     * asked as a disk of its own, as prune scans it (T154): its copy counted and opened, and an unreadable one failing the
+     * check (review of slice 5c).
+     */
+    it('counts core\'s private disk apart where a read-through private disk reaches it through a half', function (bool $readable): void {
+        $primary = sys_get_temp_dir().'/kitsune-reconcile-rt-primary-'.bin2hex(random_bytes(4));
+        mkdir($primary, 0777, true);
+        $this->roots[] = $primary;
+        config([
+            'filesystems.disks.primary' => ['driver' => 'local', 'root' => $primary],
+            'filesystems.disks.private-rt' => ['driver' => 'read-through', 'primary' => 'primary', 'fallback' => MediaDisks::PRIVATE, 'copy' => false],
+            'kitsune.media.disks.private' => 'private-rt',
+        ]);
+        [$id, $path] = reconcileFile(MediaDisks::PRIVATE, [MediaDisks::PRIVATE => RECONCILE_PNG], trashed: true);
+        DB::table('media_files')->where('entry_id', $id)->update(['disk' => 'private-rt']);
+
+        expect(MediaDisks::onePlace(app('config'), 'private-rt', MediaDisks::PRIVATE))->toBeNull();
+
+        if (! $readable) {
+            $this->disks[MediaDisks::PRIVATE]->unreadable = [$path];
+        }
+
+        [$exit, $output] = reconcileRun();
+
+        expect(reconcileLine($output, $id))->toStartWith($readable ? 'extra ' : 'unreadable ')
+            ->and(reconcileLine($output, $id))->toEndWith('held by private-rt, '.MediaDisks::PRIVATE.($readable ? '' : ' — ['.MediaDisks::PRIVATE.'] cannot be read'))
+            ->and($exit)->toBe($readable ? 0 : 1);
+    })->with(['readable' => true, 'unreadable' => false]);
+
+    /*
      * ...and under a public target, a served disk that cannot be told apart from the public disk — one bucket through two
      * endpoints — is asked by the check only whether it holds the path, as every forced run's keeper asks it, and read by
      * neither the check nor prune; the keeper reads it only when the target's copy does not match, and then every forced
-     * reconcile fails on it while it cannot be read, or while it is the copy the
-     * keeper keeps; a readable copy there that does not match — the target's own stale one, reached through the other
-     * endpoint — is passed over, and the row settled from another disk that holds a match (the residue ADR-042 records;
-     * review of slice 5c).
+     * reconcile of a row it settles — here one listed `extra`, because cdn2 holds the file too — fails on it while it
+     * cannot be read, or while it is the copy the keeper keeps; a readable copy there that does not match — the target's
+     * own stale one, reached through the other endpoint — is passed over, and the row settled from another disk that
+     * holds a match (the residue ADR-042 records; review of slice 5c).
      */
     it('fails only forced reconcile on a disk it cannot tell from a stale public disk, while the keeper would keep it', function (string $alias): void {
         foreach (['pubs' => 'e', 'alias' => 'f'] as $name => $endpoint) {
@@ -2618,7 +2908,8 @@ describe('a copy that cannot be read', function (): void {
             $this->disks[$name] = $adapter;
         }
 
-        // Configured after the disk it cannot tell from the public one, so the keeper reaches that one first.
+        // Configured after the disk it cannot tell from the public one, so the keeper reaches that one first — and holding
+        // the file too, so the row is `extra`, and a forced reconcile settles it at all.
         reconcileDisk('cdn2', ['url' => 'https://cdn2.example.test']);
         [$id, $path] = reconcileFile('public', ['alias' => $alias === 'stale' ? 'stale' : RECONCILE_PNG, 'cdn2' => RECONCILE_PNG]);
         Storage::disk('pubs')->put($path, 'stale');
@@ -2658,6 +2949,37 @@ describe('a copy that cannot be read', function (): void {
             ->and(Storage::disk('pubs')->get($path))->toBe('stale')
             ->and(reconcileHeld($path, ['cdn2']))->toBe(['cdn2' => $this->checksum]);
     })->with(['its copy readable, and the one that matches' => 'matching', 'its copy unreadable' => 'unreadable', 'its copy readable and stale' => 'stale']);
+
+    // ...and a row whose file only the public disk and that disk hold is settled for the check, which does not hash the
+    // target's copy: no command reads the copy there, and the check, a forced reconcile and a forced prune all pass, the
+    // stale target and all (review of slice 5c).
+    it('reads no copy of a row only the public disk and a disk it cannot tell from it hold', function (): void {
+        foreach (['pubs' => 'e', 'alias' => 'f'] as $name => $endpoint) {
+            $root = sys_get_temp_dir().'/kitsune-reconcile-'.$name.'-'.bin2hex(random_bytes(4));
+            mkdir($root, 0777, true);
+            $this->roots[] = $root;
+            $config = ['driver' => 's3', 'bucket' => 'b', 'endpoint' => $endpoint, 'prefix' => 'site', 'url' => "https://{$name}.example.test"];
+            config(["filesystems.disks.{$name}" => $config]);
+            $adapter = new RefusingDisk($root, $name);
+            Storage::set($name, new FilesystemAdapter(new Filesystem($adapter), $adapter, $config));
+            $this->disks[$name] = $adapter;
+        }
+
+        [$id, $path] = reconcileFile('public', ['alias' => RECONCILE_PNG]);
+        Storage::disk('pubs')->put($path, 'stale');
+        DB::table('media_files')->where('entry_id', $id)->update(['disk' => 'pubs']);
+        config(['kitsune.media.disks.public' => 'pubs']);
+        $this->disks['alias']->unreadable = [$path];
+
+        foreach ([[], ['--force' => true], ['--force' => true, '--entry' => [(string) $id]]] as $options) {
+            [$exit, $output] = reconcileRun($options);
+
+            expect(reconcileLine($output, $id))->toBeNull()->and($exit)->toBe(0);
+        }
+
+        expect(Artisan::call('kitsune:media-prune', ['--force' => true]))->toBe(0)
+            ->and(Storage::disk('pubs')->get($path))->toBe('stale');
+    });
 
     // T133: a row with one copy where it belongs is not settled and not opened — so prune alone meets an unreadable copy
     // of it, when it finds another at its path on a disk only other rows name (the residue ADR-042 records).

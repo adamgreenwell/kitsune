@@ -26,6 +26,8 @@ use Kitsune\Core\Media\MediaDisks;
 use Kitsune\Core\Models\MediaFile;
 use RuntimeException;
 use stdClass;
+use Symfony\Component\Console\Formatter\OutputFormatter;
+use Symfony\Component\Console\Output\OutputInterface;
 use Throwable;
 
 /**
@@ -60,8 +62,12 @@ use Throwable;
  * any finding is still there when the rows are asked again at the end; forced, while any row failed, is missing or was
  * kept. A file with no bytes anywhere keeps it failing until its entry is erased or the file restored from a backup; a
  * copy the listing opens, or a forced row's second look, and cannot read keeps both failing until it can be read (Adam,
- * decision 12, 2026-09-26) — not one on a disk nesting with the target, which prune keeps for a hand, nor a file's lone
- * copy, which only a forced prune reads (ADR-042 decision 5, *What it leaves*).
+ * decision 12, 2026-09-26) — not one on a disk nesting with the target, which prune keeps for a hand, nor the lone copy
+ * of a file where its row belongs, which only a forced prune reads, and only when it removes a copy at the row's path on
+ * a disk only other rows name (T133). A lone copy anywhere else on a disk custody asks — an `absent`, `awaiting
+ * publication`, `elsewhere` or `exposed` row's — is a finding already, and fails every --force, whose keeper hashes it;
+ * one on a disk custody does not ask leaves its row `missing`, which every --force fails without reading it; a forced
+ * prune keeps either or does not list it (ADR-042 decision 5, decision 12's consequences and *What it leaves*).
  *
  * ⚠️ ON SQLITE A FORCED RUN HOLDS THE DATABASE'S WRITE LOCK, row by row, while bytes move, and a save or an upload that
  * reads before it writes fails during each hold. The lever is Adam's (ADR-042, *Measured — decision 5, slice 5b*): the
@@ -88,6 +94,9 @@ final class MediaReconcileCommand extends Command
     /** @var array<string, bool> whether each disk nests with a target, asked once a pair and run, as prune remembers it */
     private array $nests = [];
 
+    /** @var array<string, bool> whether core's private disk is the private disk under another name, asked once a run */
+    private array $corePrivateAlias = [];
+
     /**
      * Whether a forced run is collecting them now, and whether this instance has registered its listener.
      *
@@ -105,6 +114,7 @@ final class MediaReconcileCommand extends Command
     {
         // Artisan reuses a command in a process: nothing is remembered from a run before.
         $this->nests = [];
+        $this->corePrivateAlias = [];
         $config = app('config');
         $connection = (new MediaFile)->getConnection();
         $force = (bool) $this->option('force');
@@ -133,7 +143,7 @@ final class MediaReconcileCommand extends Command
             };
 
             if ($refusal !== null) {
-                $this->error($refusal);
+                $this->error(OutputFormatter::escape($refusal));
 
                 return self::FAILURE;
             }
@@ -156,9 +166,9 @@ final class MediaReconcileCommand extends Command
             .'otherwise. Asking %s.',
             $force ? 'Reconciling' : 'Listing, read-only,',
             $entries === null ? 'every media row' : 'these entries\' media rows',
-            $public,
-            $private,
-            $this->asking($config),
+            OutputFormatter::escape($public),
+            OutputFormatter::escape($private),
+            OutputFormatter::escape($this->asking($config)),
         ));
 
         if ($force && $connection->getDriverName() === 'sqlite') {
@@ -170,7 +180,7 @@ final class MediaReconcileCommand extends Command
         }
 
         if (! $force && $unsafe !== null) {
-            $this->warn($unsafe.' kitsune:media-reconcile --force refuses until this is fixed.');
+            $this->warn(OutputFormatter::escape($unsafe).' kitsune:media-reconcile --force refuses until this is fixed.');
         }
 
         if (! $force && ! $unique) {
@@ -371,7 +381,7 @@ final class MediaReconcileCommand extends Command
 
                 if (! $force) {
                     $counts[$survey['label']]['listed'] = ($counts[$survey['label']]['listed'] ?? 0) + 1;
-                    $this->line($line);
+                    $this->raw($line);
 
                     continue;
                 }
@@ -381,10 +391,10 @@ final class MediaReconcileCommand extends Command
                 $counts[$survey['label']][$bucket] = ($counts[$survey['label']][$bucket] ?? 0) + 1;
                 $bad += in_array($bucket, self::FAILING, true) ? 1 : 0;
 
-                $this->line($line.'  → '.$outcome);
+                $this->raw($line.'  → '.$outcome);
 
                 foreach ($this->warnings as $warning) {
-                    $this->line('    '.$warning);
+                    $this->raw('    '.$warning);
                 }
 
                 $this->warnings = [];
@@ -415,7 +425,7 @@ final class MediaReconcileCommand extends Command
             $written = preg_replace('/\A(-?)0+(?=\d)/', '$1', $text);
 
             if (preg_match('/\A-?\d+\z/', $text) !== 1 || (string) (int) $text !== $written) {
-                $this->error(sprintf('--entry takes an entry id, a whole number: [%s] is not one. Nothing was listed.', $value));
+                $this->error(sprintf('--entry takes an entry id, a whole number: [%s] is not one. Nothing was listed.', OutputFormatter::escape((string) $value)));
 
                 return false;
             }
@@ -532,9 +542,11 @@ final class MediaReconcileCommand extends Command
                 continue;
             }
 
+            // Named as it is, whatever the console would read in it as a style (review of slice 5c).
+            $name = OutputFormatter::escape($disk);
             $subject = $moving === null
-                ? sprintf('%d row%s [%s]', $rows, $rows === 1 ? ' names' : 's name', $disk)
-                : sprintf('%s [%s] %s among these entries', $rows === 1 ? 'The one row naming' : "All {$rows} rows naming", $disk, $rows === 1 ? 'is' : 'are');
+                ? sprintf('%d row%s [%s]', $rows, $rows === 1 ? ' names' : 's name', $name)
+                : sprintf('%s [%s] %s among these entries', $rows === 1 ? 'The one row naming' : "All {$rows} rows naming", $name, $rows === 1 ? 'is' : 'are');
             $them = $rows === 1 ? 'the row' : 'them';
 
             $this->warn(match (true) {
@@ -542,8 +554,8 @@ final class MediaReconcileCommand extends Command
                     '[%s]\'s media directory nests with [%s]\'s: kitsune:media-prune never lists its orphans while the two '
                     .'nest — it refuses to list, or scans it for extra copies only — so move one of them, or remove its '
                     .'leftovers by hand.',
-                    $disk,
-                    $swept,
+                    $name,
+                    OutputFormatter::escape($swept),
                 ),
                 $force => sprintf(
                     '%s: this run moves %s off it, after which kitsune:media-prune no longer sweeps it for orphans — stop '
@@ -561,7 +573,7 @@ final class MediaReconcileCommand extends Command
                     '%s: kitsune:media-prune sweeps [%s] for orphans only while a row names it, so run kitsune:media-prune '
                     .'--force before kitsune:media-reconcile --force moves %s off it.',
                     $subject,
-                    $disk,
+                    $name,
                     $them,
                 ),
             });
@@ -741,6 +753,16 @@ final class MediaReconcileCommand extends Command
                     && ! MediaDisks::nested($config, $public, $disk)) {
                     $skipped[] = $disk;
 
+                    continue;
+                }
+
+                // Under a private target, core's private disk where it is that disk under another name is the private disk
+                // itself, as custody's settle takes it: counted again, every private file read as `extra`. Not where the row
+                // names it: it is `elsewhere`, its copy opened, and repointed by --force (review of slice 5c). Asked once a
+                // run: the pair is fixed, and asking resolves both directories, some 40-120 µs a row on the laptop.
+                if ($target === $private && $disk === MediaDisks::PRIVATE && $disk !== $named && $private !== MediaDisks::PRIVATE
+                    && ($this->corePrivateAlias[$private] ??= MediaDisks::onePlace($config, $private, $disk) === true
+                        && ! MediaDisks::nested($config, $private, $disk))) {
                     continue;
                 }
 
@@ -996,6 +1018,15 @@ final class MediaReconcileCommand extends Command
         })();
     }
 
+    /**
+     * A line naming a path or what custody said, written as it is: a name may hold what the console reads as a style,
+     * which it would strip, and the line would name another file (review of slice 5c).
+     */
+    private function raw(string $line): void
+    {
+        $this->output->writeln($line, OutputInterface::OUTPUT_RAW);
+    }
+
     /** @param array{label: ?string, target: string, held: list<string>, failure: ?string, unreadable: list<string>} $survey */
     private function describe(stdClass $row, array $survey): string
     {
@@ -1116,8 +1147,11 @@ final class MediaReconcileCommand extends Command
     {
         $disks = [];
 
+        // The disk from custody's own words, whatever the path holds: a greedy path runs to the last `] on [` the fixed
+        // phrase follows, so a `]` in it — which ended the name a narrower pattern took — does not stop it, and neither does
+        // the row's being gone since (review of slice 5c).
         foreach ($this->warnings as $warning) {
-            if (preg_match('/^Media custody, entry '.$entryId.': the copy of \[[^\]]*\] on \[([^\]]+)\] exists and cannot be read, so it was left/', $warning, $match) === 1) {
+            if (preg_match('/^Media custody, entry '.$entryId.': the copy of \[.*\] on \[([^\]]+)\] exists and cannot be read, so it was left/s', $warning, $match) === 1) {
                 $disks[] = $match[1];
             }
         }

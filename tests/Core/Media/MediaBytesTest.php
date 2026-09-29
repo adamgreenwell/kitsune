@@ -169,6 +169,177 @@ it('confirms a delete by looking again, and refuses one the disk would not do', 
 });
 
 /*
+ * A name reaches the very entry a disk listed only where the volume says so, by stat: the entry itself, or a link to it;
+ * never another file, nor a hard link — another entry for the same file — which removing the listed name leaves (Codex,
+ * #155, and review of the fix).
+ */
+it('reaches only the very entry a disk listed', function (): void {
+    $root = Storage::disk('bytes-source')->path('');
+    $dir = 'media/1/2026/09';
+    @mkdir($root.$dir, 0777, true);
+    file_put_contents($root.$dir.'/listed.png', 'this file');
+    file_put_contents($root.$dir.'/another.png', 'another file');
+    // One entry alone: the name that reaches it needs no more asking — but only a name that reaches it.
+    file_put_contents($root.$dir.'/sole.png', 'a file of one entry');
+    link($root.$dir.'/listed.png', $root.$dir.'/linked.png');
+    symlink($root.$dir.'/listed.png', $root.$dir.'/pointer.png');
+
+    expect(MediaBytes::reaches('bytes-source', $dir.'/listed.png', $dir.'/listed.png'))->toBeTrue()
+        ->and(MediaBytes::reaches('bytes-source', $dir.'/listed.png', $dir.'/pointer.png'))->toBeTrue()
+        ->and(MediaBytes::reaches('bytes-source', $dir.'/listed.png', $dir.'/another.png'))->toBeFalse()
+        ->and(MediaBytes::reaches('bytes-source', $dir.'/listed.png', $dir.'/linked.png'))->toBeFalse()
+        ->and(MediaBytes::reaches('bytes-source', $dir.'/listed.png', $dir.'/missing.png'))->toBeFalse()
+        ->and(MediaBytes::reaches('bytes-source', $dir.'/sole.png', $dir.'/sole.png'))->toBeTrue()
+        ->and(MediaBytes::reaches('bytes-source', $dir.'/sole.png', $dir.'/another.png'))->toBeFalse();
+});
+
+/*
+ * ...and one inode on one device, not one inode number on two: a disk whose media tree spans two devices — a mount below
+ * `media/` — may hold two files with one inode number, which only the device tells apart (review of slice 5c). A stream
+ * wrapper stands in for the two devices: no test can choose the inode numbers of real files.
+ */
+it('reaches no entry of another device with the same inode number', function (): void {
+    if (! in_array('kitsunestat', stream_get_wrappers(), true)) {
+        stream_wrapper_register('kitsunestat', MediaBytesStatWrapper::class);
+    }
+
+    MediaBytesStatWrapper::$stats = [
+        'kitsunestat://root/media/a.png' => ['dev' => 1, 'ino' => 77, 'nlink' => 1, 'mode' => 0100644],
+        'kitsunestat://root/media/b.png' => ['dev' => 2, 'ino' => 77, 'nlink' => 1, 'mode' => 0100644],
+        'kitsunestat://root/media/c.png' => ['dev' => 1, 'ino' => 77, 'nlink' => 1, 'mode' => 0100644],
+    ];
+    config(['filesystems.disks.bytes-stat' => ['driver' => 'local', 'root' => 'kitsunestat://root']]);
+    Storage::set('bytes-stat', new FilesystemAdapter(new Filesystem($this->source), $this->source, ['driver' => 'local', 'root' => 'kitsunestat://root']));
+
+    // One device and one inode: reached — so the test does not pass because the wrapper answered nothing.
+    expect(MediaBytes::reaches('bytes-stat', 'media/a.png', 'media/c.png'))->toBeTrue()
+        ->and(MediaBytes::reaches('bytes-stat', 'media/a.png', 'media/b.png'))->toBeFalse();
+});
+
+/*
+ * ...and where the volume cannot say which entry a name ends at — realpath() fails, or a directory cannot be stat'ed, as a
+ * rename between the stat and realpath() or a resolved path past MAXPATHLEN does — a listed name of the same file with a
+ * hard link is taken for the row's own, and kept (review of slice 5c). realpath() answers false for a stream wrapper's
+ * path, which is how this reaches the branch.
+ */
+it('keeps a listed name where the entry the name ends at cannot be told', function (): void {
+    if (! in_array('kitsunestat', stream_get_wrappers(), true)) {
+        stream_wrapper_register('kitsunestat', MediaBytesStatWrapper::class);
+    }
+
+    MediaBytesStatWrapper::$stats = [
+        'kitsunestat://root/media/a.png' => ['dev' => 1, 'ino' => 78, 'nlink' => 2, 'mode' => 0100644],
+        'kitsunestat://root/media/c.png' => ['dev' => 1, 'ino' => 78, 'nlink' => 2, 'mode' => 0100644],
+        'kitsunestat://root/media/d.png' => ['dev' => 1, 'ino' => 79, 'nlink' => 2, 'mode' => 0100644],
+    ];
+    config(['filesystems.disks.bytes-stat' => ['driver' => 'local', 'root' => 'kitsunestat://root']]);
+    Storage::set('bytes-stat', new FilesystemAdapter(new Filesystem($this->source), $this->source, ['driver' => 'local', 'root' => 'kitsunestat://root']));
+
+    // Another file is still not reached, so the test does not pass because every name is kept.
+    expect(MediaBytes::reaches('bytes-stat', 'media/a.png', 'media/d.png'))->toBeFalse()
+        ->and(MediaBytes::reaches('bytes-stat', 'media/a.png', 'media/c.png'))->toBeTrue();
+});
+
+/*
+ * ...and a name the volume cannot reach is no absent one: a stat refused for a reason other than absence — a directory
+ * the command's user may not search — fails, where one below a file, or in a directory that is not there, is absent
+ * (review of slice 5c). PHP reports a directory above the name that is not one as EIO, not ENOTDIR: the directory above
+ * is asked.
+ */
+it('tells a name that is absent from one that cannot be reached', function (): void {
+    $root = Storage::disk('bytes-source')->path('');
+    $dir = 'media/1/2026/09';
+    file_put_contents($root.$dir.'/file.png', 'a file');
+
+    expect(MediaBytes::present('bytes-source', $dir.'/missing.png'))->toBeFalse()
+        ->and(MediaBytes::statOf('bytes-source', $dir.'/file.png/x.png', $root.$dir.'/file.png/x.png'))->toBeNull()
+        ->and(MediaBytes::statOf('bytes-source', $dir.'/file.png/sub/x.png', $root.$dir.'/file.png/sub/x.png'))->toBeNull()
+        ->and(MediaBytes::statOf('bytes-source', 'media/9/x.png', $root.'media/9/x.png'))->toBeNull();
+
+    if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
+        return;
+    }
+
+    chmod($root.$dir, 0000);
+
+    try {
+        expect(fn () => MediaBytes::present('bytes-source', $dir.'/photo.png'))->toThrow(MediaCustodyFailure::class, 'whether it exists cannot be told');
+    } finally {
+        chmod($root.$dir, 0755);
+    }
+});
+
+/*
+ * ...but custody's own partial name, which the volume refuses as too long — or PHP does, a path of `PHP_MAXPATHLEN - 1`
+ * bytes or more, which it reports as EIO — is absent: custody writes a copy under that name first, so none is there, and a
+ * legal name 240-255 bytes long failed every trash, erasure and removal beside it. A row's own name so refused still fails
+ * (review of slice 5c).
+ */
+it('reads custody\'s partial name refused as too long as absent, and no other name', function (string $case): void {
+    $root = Storage::disk('bytes-source')->path('');
+    $dir = 'media/1/2026/09';
+
+    if ($case === 'path') {
+        while (strlen($root.$dir) < PHP_MAXPATHLEN - 200) {
+            $dir .= '/'.str_repeat('d', 150);
+        }
+
+        mkdir($root.$dir, 0777, true);
+        $name = $dir.'/'.str_repeat('f', PHP_MAXPATHLEN - 2 - strlen($root.$dir));
+    } else {
+        $name = $dir.'/'.str_repeat('a', 260).'.png';
+    }
+
+    expect(MediaBytes::present('bytes-source', $name.MediaBytes::PARTIAL))->toBeFalse()
+        ->and(fn () => MediaBytes::present('bytes-source', $name))->toThrow(MediaCustodyFailure::class, 'whether it exists cannot be told');
+})->with(['a name longer than the volume takes' => 'name', 'a path as long as PHP takes' => 'path']);
+
+/*
+ * ...and so is a read-through disk's, which answers by its local halves' `is_file()`: a copy on either half that the
+ * command cannot reach — under the disk's own prefix, and below a read-through primary — fails, never absent, where the
+ * check passed on a trashed file's copy left on a served one (review of slice 5c).
+ */
+it('tells a name a read-through disk does not hold from one a half of it cannot reach', function (string $locked, array $rt): void {
+    require_once dirname(__DIR__).'/Fixtures/PathPrefixedAdapter.php';
+    $halves = [];
+
+    foreach (['rt-primary', 'rt-fallback', 'rt-outer'] as $name) {
+        $halves[$name] = RefusingDisk::install($name, ($this->root)($name))->root();
+    }
+
+    $nested = (bool) ($rt['nested'] ?? false);
+    unset($rt['nested']);
+    config(['filesystems.disks.rt-inner' => ['driver' => 'read-through', 'primary' => 'rt-primary', 'fallback' => 'rt-fallback']]);
+    config(['filesystems.disks.rt' => $nested
+        ? ['driver' => 'read-through', 'primary' => 'rt-inner', 'fallback' => 'rt-outer']
+        : ['driver' => 'read-through', 'primary' => 'rt-primary', 'fallback' => 'rt-fallback', ...$rt]]);
+    $dir = (isset($rt['prefix']) ? $rt['prefix'].'/' : '').'media/1/2026/09';
+
+    foreach ($halves as $root) {
+        mkdir($root.'/'.$dir, 0755, true);
+    }
+
+    expect(MediaBytes::present('rt', 'media/1/2026/09/photo.png'))->toBeFalse();
+
+    if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
+        return;
+    }
+
+    chmod($halves[$locked].'/'.$dir, 0000);
+
+    try {
+        expect(fn () => MediaBytes::present('rt', 'media/1/2026/09/photo.png'))->toThrow(MediaCustodyFailure::class, 'whether it exists cannot be told');
+    } finally {
+        chmod($halves[$locked].'/'.$dir, 0755);
+    }
+})->with([
+    'its primary' => ['rt-primary', []],
+    'its fallback' => ['rt-fallback', []],
+    'its fallback, under the disk\'s own prefix' => ['rt-fallback', ['prefix' => 'layer']],
+    'the fallback of its read-through primary' => ['rt-fallback', ['nested' => true]],
+]);
+
+/*
  * ...and never a name every disk reads as another path: Flysystem normalizes a path before it deletes it, so deleting the
  * name deleted that path — here, the photo (review of slice 5c).
  */
@@ -229,3 +400,19 @@ it('refuses a delete the disk reported and did not do', function (): void {
 
     expect(Storage::disk('bytes-source')->exists('media/1/2026/09/photo.png'))->toBeTrue();
 });
+
+/** Answers `stat()` from a table, for the two devices a test cannot make (review of slice 5c). */
+final class MediaBytesStatWrapper
+{
+    /** @var array<string, array<string, int>> */
+    public static array $stats = [];
+
+    /** @var resource|null */
+    public $context;
+
+    /** @return array<string, int>|false */
+    public function url_stat(string $path, int $flags): array|false
+    {
+        return self::$stats[$path] ?? false;
+    }
+}
