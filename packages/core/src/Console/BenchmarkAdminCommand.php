@@ -95,9 +95,10 @@ final class BenchmarkAdminCommand extends Command
         [$site, $type] = $this->fixture($user);
 
         if ($site === null || $type === null) {
-            $this->error('That user reaches no site with an entry type they may view, so there is no admin '
-                .'to measure. Either they belong to no site, or they hold no `view` grant on any type '
-                .'enabled there.');
+            $this->error('That user reaches no site with an entry type this command can measure, so there is no '
+                .'admin to measure. Either they belong to no site, they hold no `view` grant on any type enabled '
+                .'there, or every type they may view there is a media type, whose create page does not exist '
+                .'(ADR-042 decision 3).');
 
             return self::FAILURE;
         }
@@ -420,12 +421,23 @@ final class BenchmarkAdminCommand extends Command
          * signed-in user holds no `view` grant on renders a 403, so the command would seed a hundred
          * thousand rows and then measure the cost of a refusal on every page shape.
          */
-        $type = EntryType::visibleFor($site)
-            ->first(fn (EntryType $candidate): bool => Permissions::allows(
-                $user, Permissions::forEntryType($candidate->handle, 'view'),
-            ));
+        $type = EntryType::visibleFor($site)->first(fn (EntryType $candidate): bool => self::measurable($candidate, $user));
 
         return [$site, $type instanceof EntryType ? $type : null];
+    }
+
+    /**
+     * Whether a type's pages can be measured for this user: one they may view, and not a media type.
+     *
+     * @internal
+     *
+     * ⚠️ NOT A MEDIA TYPE, whose create page answers 404 (ADR-042 decision 3): its files arrive through the list's Upload
+     * action, so the create page this command times does not exist for it, and the command would time a refusal.
+     */
+    public static function measurable(EntryType $candidate, Authenticatable $user): bool
+    {
+        return $candidate->is_media !== true
+            && Permissions::allows($user, Permissions::forEntryType($candidate->handle, 'view'));
     }
 
     /**

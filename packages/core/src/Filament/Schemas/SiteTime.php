@@ -11,12 +11,13 @@ declare(strict_types=1);
 namespace Kitsune\Core\Filament\Schemas;
 
 use Filament\Forms\Components\DateTimePicker;
+use Filament\Infolists\Components\TextEntry;
 use Filament\Tables\Columns\TextColumn;
 use Kitsune\Core\Settings\SiteTimezone;
 
 /**
- * The admin's only constructors for an instant — a column that lists one and a picker that enters one — both in the
- * current site's timezone.
+ * The admin's only constructors for an instant — a column that lists one, an entry that shows one and a picker that
+ * enters one — all in the current site's timezone.
  *
  * ⚠️ ONE PLACE, FOR THE REASON `FieldValueRenderer` IS ONE PLACE. Issue #39 put `dir="auto"` on one title column, then
  * on three more found in review, because every screen decided for itself; a timezone applied screen by screen would
@@ -40,6 +41,12 @@ final class SiteTime
     public static function column(string $name): TextColumn
     {
         return TextColumn::make($name)->dateTime()->timezone(SiteTimezone::current(...));
+    }
+
+    /** A read-only entry showing an instant, formatted in the site's timezone. */
+    public static function entry(string $name): TextEntry
+    {
+        return TextEntry::make($name)->dateTime()->timezone(SiteTimezone::current(...));
     }
 
     /**

@@ -197,6 +197,14 @@ test.describe('what may be staged', () => {
     /**
      * No scheduler runs here, and none needs to: the sweep follows every accepted upload. A refused one sweeps
      * nothing, which is the control that the accepted one is what swept.
+     *
+     * ⚠️ THE REFUSED ONE UP TO THREE TIMES, BECAUSE THE UPLOAD IS NOT THE ONLY THING THAT SWEEPS. Any request may draw
+     * the sweep after its response — `HoldMediaStaging`, 2 in 100 (Codex, #152) — so a stale file missing after one
+     * refused upload does not say the refusal swept it. CI drew it on both tries of one run (#157), with the stale pair
+     * written before the dashboard loaded: measured, five draws reached it (the page, `livewire.js`, the favicon, the
+     * mint and the refusal), near one try in ten. It is written now just before each refused upload, once the URL is
+     * minted, and measured, the refusal's own draw is the only one that reaches it. A refusal that sweeps removes it on
+     * every try; the lottery removes it three tries running at 8 in a million.
      */
     test('sweeps a stale staged file on the next accepted upload, and not on a refused one', async ({ page }) => {
         const dir = path.join(media().intakePath, 'livewire-tmp');
@@ -205,16 +213,31 @@ test.describe('what may be staged', () => {
         const dayAndAnHourAgo = new Date(Date.now() - 25 * 3600 * 1000);
         const anHourAgo = new Date(Date.now() - 3600 * 1000);
 
-        for (const [name, when] of [['stale-e2e.png', dayAndAnHourAgo], ['stale-e2e.png.json', dayAndAnHourAgo], ['fresh-e2e.png', anHourAgo], ['fresh-e2e.png.json', anHourAgo]]) {
-            fs.writeFileSync(path.join(dir, name), 'x');
-            fs.utimesSync(path.join(dir, name), when, when);
-        }
+        const write = (names, when) => {
+            for (const name of names) {
+                fs.writeFileSync(path.join(dir, name), 'x');
+                fs.utimesSync(path.join(dir, name), when, when);
+            }
+        };
+
+        write(['fresh-e2e.png', 'fresh-e2e.png.json'], anHourAgo);
 
         try {
             await page.goto('/admin/golfdom');
 
-            await stage(page, await mintUploadUrl(page), [{ bytes: bytesOf('<?php echo 1;'), name: 'evil.php', type: 'image/png' }]);
-            expect(intake()).toContain(path.join('livewire-tmp', 'stale-e2e.png'));
+            let survived = false;
+
+            for (let attempt = 0; attempt < 3 && ! survived; attempt++) {
+                const url = await mintUploadUrl(page);
+                write(['stale-e2e.png', 'stale-e2e.png.json'], dayAndAnHourAgo);
+
+                const refused = await stage(page, url, [{ bytes: bytesOf('<?php echo 1;'), name: 'evil.php', type: 'image/png' }]);
+                expect(refused.status).toBe(422);
+
+                survived = intake().includes(path.join('livewire-tmp', 'stale-e2e.png'));
+            }
+
+            expect(survived, 'a refused upload removed the stale file on three tries running').toBe(true);
 
             expect((await stage(page, await mintUploadUrl(page), [png])).status).toBe(200);
 
@@ -254,8 +277,9 @@ const probeUpload = ['probe', [{ name: 'photo.png', size: 67, type: 'image/png' 
 test.describe('where an upload may start', () => {
     /*
      * ⚠️ EVERY KITSUNE COMPONENT ON EVERY KITSUNE PAGE, AND FILAMENT'S TOPBAR AS THE CONTROL. The restriction refuses an
-     * upload to any property that is not a schema upload field, and no Kitsune page has one yet; the topbar is not
-     * Kitsune's, still mints, and shows that the refusal is the restriction's rather than the endpoint's.
+     * upload to any property that is not a schema upload field — the only one a Kitsune page holds is the media list's
+     * Upload modal, and only while it is mounted, so `probe` is never one; the topbar is not Kitsune's, still mints, and
+     * shows that the refusal is the restriction's rather than the endpoint's.
      */
     test('refuses an upload to anything but a schema upload field, on each of Kitsune\'s pages', async ({ page }) => {
         const ids = JSON.parse(tinker(

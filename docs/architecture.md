@@ -67,7 +67,7 @@ One `EntryResource`, with the type as a path segment:
 
 ```
 admin/{tenant}/c/{type}                  → entries.index
-admin/{tenant}/c/{type}/create           → entries.create
+admin/{tenant}/c/{type}/create           → entries.create   (404 for a media type: its files arrive through the list's Upload action, ADR-042 decision 3)
 admin/{tenant}/c/{type}/{record}         → entries.view
 admin/{tenant}/c/{type}/{record}/edit    → entries.edit
 ```

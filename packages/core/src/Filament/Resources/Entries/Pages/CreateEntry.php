@@ -65,6 +65,19 @@ class CreateEntry extends CreateRecord
         return $data;
     }
 
+    /**
+     * ⚠️ A MEDIA TYPE HAS NO CREATE PAGE — ADR-042 decision 3. A media entry without bytes is the broken state the design
+     * avoids, and its files arrive through the list's Upload action. 404 rather than 403, and before the permission is
+     * asked, because the page does not exist for the type whoever asks. Filament asks this on mount, on every Livewire
+     * request and on create, so a request built by hand meets it too.
+     */
+    protected function authorizeAccess(): void
+    {
+        abort_if(EntryResource::listsMedia(), 404);
+
+        parent::authorizeAccess();
+    }
+
     /** @return array<int, mixed> */
     protected function getHeaderActions(): array
     {
