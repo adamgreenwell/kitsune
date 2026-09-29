@@ -197,26 +197,59 @@ test.describe('what may be staged', () => {
     /**
      * No scheduler runs here, and none needs to: the sweep follows every accepted upload. A refused one sweeps
      * nothing, which is the control that the accepted one is what swept.
+     *
+     * ⚠️ BY SURVIVAL, AND RETRIED, BECAUSE ANY REQUEST MAY DRAW THE SAME SWEEP. `HoldMediaStaging` sweeps this disk after
+     * any response at 2 in 100 (`MediaStaging::SWEEP_ODDS`), the refused upload's own included, and removes exactly
+     * what the gate's sweep does — so a stale file gone after a refused upload cannot say which of them took it. Checked
+     * once, this failed a full run on 2026-09-29 and passed alone. But the lottery only ever takes a file away, so a
+     * stale file that outlives a refused upload is proof that upload swept nothing: it is planted again before each
+     * try, one URL serves every try, and the first survivor settles it. Measured with the odds raised to 25 in 100, the
+     * check made once failed ten runs in ten and this passed ten in ten, with 7 of its 17 tries swept — the page's own
+     * requests draw as well, so nearer two draws a try than one. At 2 in 100 that puts five swept tries in a row on the
+     * order of one in ten million. A gate made to sweep on refusal failed all five, as it must.
+     *
+     * ⚠️ NOT BY SWITCHING THE LOTTERY OFF FOR THIS SERVER, which would be deterministic outright. It takes a switch in
+     * core that stops a sweep, and a host can set whatever this suite sets — the kind of setting `HoldMediaStaging` is
+     * there to hold. The server under test would no longer be the one that ships, and locally, where Playwright reuses
+     * a server already on the port, the switch would be missing without a sound.
+     *
+     * The accepted upload goes straight after the survivor, so a lottery can pass for the gate's sweep only while that
+     * one request is in flight — a narrower window than a refusal checked once left it, which also spanned a mint.
      */
     test('sweeps a stale staged file on the next accepted upload, and not on a refused one', async ({ page }) => {
         const dir = path.join(media().intakePath, 'livewire-tmp');
         fs.mkdirSync(dir, { recursive: true });
 
-        const dayAndAnHourAgo = new Date(Date.now() - 25 * 3600 * 1000);
-        const anHourAgo = new Date(Date.now() - 3600 * 1000);
+        const plant = (names, when) => {
+            for (const name of names) {
+                fs.writeFileSync(path.join(dir, name), 'x');
+                fs.utimesSync(path.join(dir, name), when, when);
+            }
+        };
 
-        for (const [name, when] of [['stale-e2e.png', dayAndAnHourAgo], ['stale-e2e.png.json', dayAndAnHourAgo], ['fresh-e2e.png', anHourAgo], ['fresh-e2e.png.json', anHourAgo]]) {
-            fs.writeFileSync(path.join(dir, name), 'x');
-            fs.utimesSync(path.join(dir, name), when, when);
-        }
+        const stale = ['stale-e2e.png', 'stale-e2e.png.json'];
+        const dayAndAnHourAgo = new Date(Date.now() - 25 * 3600 * 1000);
+        plant(['fresh-e2e.png', 'fresh-e2e.png.json'], new Date(Date.now() - 3600 * 1000));
 
         try {
             await page.goto('/admin/golfdom');
+            const url = await mintUploadUrl(page);
 
-            await stage(page, await mintUploadUrl(page), [{ bytes: bytesOf('<?php echo 1;'), name: 'evil.php', type: 'image/png' }]);
-            expect(intake()).toContain(path.join('livewire-tmp', 'stale-e2e.png'));
+            let survived = false;
 
-            expect((await stage(page, await mintUploadUrl(page), [png])).status).toBe(200);
+            for (let attempt = 0; attempt < 5 && ! survived; attempt++) {
+                plant(stale, dayAndAnHourAgo);
+
+                const refused = await stage(page, url, [{ bytes: bytesOf('<?php echo 1;'), name: 'evil.php', type: 'image/png' }]);
+                expect(refused.status).toBe(422);
+                expect(refused.body?.errors?.['files.0']?.[0]).toContain('Refusing [evil.php]: [php] is not an accepted file type.');
+
+                survived = stale.every((name) => intake().includes(path.join('livewire-tmp', name)));
+            }
+
+            expect(survived, 'the stale file outlived none of five refused uploads').toBe(true);
+
+            expect((await stage(page, url, [png])).status).toBe(200);
 
             expect(intake()).not.toContain(path.join('livewire-tmp', 'stale-e2e.png'));
             expect(intake()).not.toContain(path.join('livewire-tmp', 'stale-e2e.png.json'));
