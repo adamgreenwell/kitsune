@@ -254,8 +254,9 @@ const probeUpload = ['probe', [{ name: 'photo.png', size: 67, type: 'image/png' 
 test.describe('where an upload may start', () => {
     /*
      * ⚠️ EVERY KITSUNE COMPONENT ON EVERY KITSUNE PAGE, AND FILAMENT'S TOPBAR AS THE CONTROL. The restriction refuses an
-     * upload to any property that is not a schema upload field, and no Kitsune page has one yet; the topbar is not
-     * Kitsune's, still mints, and shows that the refusal is the restriction's rather than the endpoint's.
+     * upload to any property that is not a schema upload field — the only one a Kitsune page holds is the media list's
+     * Upload modal, and only while it is mounted, so `probe` is never one; the topbar is not Kitsune's, still mints, and
+     * shows that the refusal is the restriction's rather than the endpoint's.
      */
     test('refuses an upload to anything but a schema upload field, on each of Kitsune\'s pages', async ({ page }) => {
         const ids = JSON.parse(tinker(

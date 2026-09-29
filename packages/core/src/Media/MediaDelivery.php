@@ -98,10 +98,12 @@ final class MediaDelivery
     {
         $file = self::fileFor($entry);
 
-        if ($file === null) {
-            return null;
-        }
+        return $file === null ? null : self::urlForFile($entry, $file);
+    }
 
+    /** The same answer as `urlFor()`, for a row the caller has already read — so the File section does not read it again. */
+    public static function urlForFile(Entry $entry, MediaFile $file): ?string
+    {
         /*
          * ⚠️ THE DISK DECIDES, NOT THE VISIBILITY — ADR-042 decision 5. A direct URL is the public disk's, and only a
          * row naming it has its bytes there: a public file awaiting publication still names the private disk, and a

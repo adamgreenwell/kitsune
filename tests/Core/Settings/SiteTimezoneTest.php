@@ -25,6 +25,7 @@ use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Filament\Resources\Entries\EntryResource;
 use Kitsune\Core\Filament\Resources\Entries\RelationManagers\RevisionsRelationManager;
 use Kitsune\Core\Filament\Schemas\FieldValueRenderer;
+use Kitsune\Core\Filament\Schemas\SiteTime;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryRevision;
 use Kitsune\Core\Models\EntryType;
@@ -286,6 +287,12 @@ describe('an instant', function (): void {
 
         expect($updated?->formatState('2026-09-18 13:00:00'))->toBe('Sep 18, 2026 09:00:00')
             ->and($saved?->formatState('2026-09-18 13:00:00'))->toBe('Sep 18, 2026 09:00:00');
+    });
+
+    it('is shown in the site\'s timezone by SiteTime::entry(), which a media entry\'s File section uses', function (): void {
+        $stored = SiteTime::entry('media_file_stored')->container(Schema::make(timezoneHost()));
+
+        expect($stored->formatState('2026-09-18 13:00:00'))->toBe('Sep 18, 2026 09:00:00');
     });
 
     it('is shown in the platform default with no site in context', function (): void {

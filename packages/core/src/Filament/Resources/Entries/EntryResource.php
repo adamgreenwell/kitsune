@@ -18,9 +18,11 @@ use Filament\Actions\ViewAction;
 use Filament\Facades\Filament;
 use Filament\Forms\Components\Select;
 use Filament\Forms\Components\TextInput;
+use Filament\Infolists\Components\TextEntry;
 use Filament\Panel;
 use Filament\Resources\Resource;
 use Filament\Schemas\Components\Component;
+use Filament\Schemas\Components\Section;
 use Filament\Schemas\Schema;
 use Filament\Support\Icons\Heroicon;
 
@@ -34,6 +36,7 @@ use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Support\Number;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Fields\FieldConfig;
 use Kitsune\Core\Filament\MediaDeletionNotice;
@@ -44,6 +47,7 @@ use Kitsune\Core\Filament\Resources\Entries\Pages\ManageEntryRelations;
 use Kitsune\Core\Filament\Resources\Entries\Pages\ViewEntry;
 use Kitsune\Core\Filament\Schemas\FieldValueRenderer;
 use Kitsune\Core\Filament\Schemas\SiteTime;
+use Kitsune\Core\Media\MediaDelivery;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\EntryTypeAvailability;
@@ -191,6 +195,12 @@ class EntryResource extends Resource
              */
             Select::make('status')
                 ->options(fn (?Entry $record): array => self::statusOptionsFor(Permissions::currentUser(), $record))
+                /*
+                 * ⚠️ WITHHELD FOR A MEDIA TYPE — ADR-042 decision 3. `MediaLibrary::store()` creates media entries
+                 * published, delivery never reads status, and a media file's gate is its visibility. A hidden control
+                 * is neither validated nor sent, so a save of a media entry never names the column.
+                 */
+                ->hidden(static fn (): bool => self::listsMedia())
                 ->default('draft')
                 // A string rule rather than `Illuminate\Validation\Rule::in()`, because `Rule` in this
                 // file is Kitsune's own — the one that goes through Eloquent so global scopes apply.
@@ -198,8 +208,72 @@ class EntryResource extends Resource
                     self::statusOptionsFor(Permissions::currentUser(), $record),
                 )))
                 ->required(),
+            self::fileSection(),
             ...self::fieldControls(),
         ]);
+    }
+
+    /**
+     * Whether the page being built is a media type's — ADR-042 decision 3.
+     *
+     * Read off the type `IdentifyEntryType` bound, whose flag it read from the database this request, unlocked. The flag
+     * is fixed at creation (decision 1) but for `kitsune:media-types --force`; the middleware is persistent, so a page
+     * mounted before a change meets the new value on its next request. False outside `/c/{type}`, where nothing is bound.
+     */
+    public static function listsMedia(): bool
+    {
+        return app()->bound(EntryType::class) && app(EntryType::class)->is_media === true;
+    }
+
+    /**
+     * What a media entry's file is: the stored facts, and a link to open it — ADR-042 decision 3 (Adam, 2026-09-29).
+     *
+     * ⚠️ NO PREVIEW, AND NO `ImageEntry` OR `temporaryUrl()`. A preview of a private file is decision 6's tile, which is
+     * its own slice; `ImageEntry` hands its state to a disk as a path and mints a temporary URL that skips `EntryPolicy`
+     * on `local` (decision 4), and `UploadSurfaceTest` fails the build on either. The link is `MediaDelivery`'s: the
+     * direct URL for a file on the public disk, the route that authorises first for everything else.
+     *
+     * ⚠️ ON THE VIEW PAGE TOO, which renders this form. The row is read once each time the section's contents are built,
+     * and only on a media type's page for a saved entry: every other type's edit and view pages ask nothing of
+     * `media_files`. Filament builds them twice in a request — when the form is filled or validated, and again when the
+     * section renders, since `getChildSchema()` never caches — so a media entry's page reads the row twice.
+     */
+    private static function fileSection(): Section
+    {
+        return Section::make(__('kitsune::media.file.heading'))
+            ->visible(static fn (?Entry $record): bool => self::listsMedia() && $record?->exists === true)
+            ->schema(static function (?Entry $record): array {
+                if (! self::listsMedia() || $record?->exists !== true) {
+                    return [];
+                }
+
+                $file = MediaDelivery::fileFor($record);
+
+                if ($file === null) {
+                    return [TextEntry::make('media_file_missing')->hiddenLabel()->state(__('kitsune::media.file.missing'))];
+                }
+
+                $url = MediaDelivery::urlForFile($record, $file);
+
+                return [
+                    TextEntry::make('media_file_type')->label(__('kitsune::media.file.type'))->state($file->mime),
+                    TextEntry::make('media_file_size')->label(__('kitsune::media.file.size'))->state(Number::fileSize($file->size_bytes)),
+                    TextEntry::make('media_file_dimensions')->label(__('kitsune::media.file.dimensions'))
+                        ->state($file->width !== null && $file->height !== null
+                            ? __('kitsune::media.file.dimensions_value', ['width' => $file->width, 'height' => $file->height])
+                            : null)
+                        ->hidden($file->width === null || $file->height === null),
+                    TextEntry::make('media_file_visibility')->label(__('kitsune::media.file.visibility'))
+                        ->state(__($file->isPublic() ? 'kitsune::media.file.public' : 'kitsune::media.file.private')),
+                    TextEntry::make('media_file_sharing')->label(__('kitsune::media.file.sharing'))
+                        ->state(__($record->site_id === null ? 'kitsune::media.file.shared' : 'kitsune::media.file.site_only')),
+                    SiteTime::entry('media_file_stored')->label(__('kitsune::media.file.stored'))->state($file->created_at),
+                    TextEntry::make('media_file_link')->hiddenLabel()->state(__('kitsune::media.file.open'))
+                        ->url($url, shouldOpenInNewTab: true)
+                        ->hidden($url === null),
+                ];
+            })
+            ->columns(2);
     }
 
     /**
@@ -368,7 +442,10 @@ class EntryResource extends Resource
                 TextColumn::make('title')->searchable()->sortable()
                     ->extraAttributes(['dir' => 'auto']),
                 TextColumn::make('type_handle')->badge()->label('Type'),
-                TextColumn::make('status')->badge()->sortable(),
+                // Withheld for a media type, as its control is (ADR-042 decision 3): `store()` creates media entries published
+                // and delivery never reads status. A status set before this, or restored from a revision saved then, stays
+                // stored and has no effect.
+                TextColumn::make('status')->badge()->sortable()->hidden(static fn (): bool => self::listsMedia()),
                 SiteTime::column('updated_at')->sortable()->toggleable(isToggledHiddenByDefault: true),
                 ...self::fieldColumns(),
             ])

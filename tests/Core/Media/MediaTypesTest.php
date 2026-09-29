@@ -14,6 +14,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Kitsune\Core\Media\MediaDisks;
 use Kitsune\Core\Media\MediaLibrary;
+use Kitsune\Core\Media\MediaRefused;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
 use Kitsune\Core\Models\MediaFile;
@@ -425,7 +426,8 @@ describe('storing into a type', function (): void {
     /**
      * ⚠️ THE FLAG CAN CHANGE BETWEEN THE CHECK AND THE WRITE — `kitsune:media-types --force` is the one write that
      * changes it after creation. The bytes are written between the two, so a disk whose write clears the flag puts
-     * that change exactly in the window, deterministically; the check inside the row transaction has to catch it.
+     * that change exactly in the window, deterministically; the check inside the row transaction has to catch it. And
+     * as `MediaRefused`, the uploader's to read (ADR-042 decision 7).
      */
     it('refuses a type that stops being a media type while its file is written', function (): void {
         $fake = Storage::disk(MediaDisks::PRIVATE);
@@ -441,7 +443,7 @@ describe('storing into a type', function (): void {
         });
 
         expect(fn () => MediaLibrary::store(aPngForTypes(), 'logo.png', $this->imageType))
-            ->toThrow(RuntimeException::class, 'Refusing [logo.png]: [image] stopped being a media type while it was being stored');
+            ->toThrow(MediaRefused::class, 'Refusing [logo.png]: [image] stopped being a media type while it was being stored');
 
         expect(DB::table('entries')->count())->toBe(0)
             ->and(DB::table('media_files')->count())->toBe(0)
