@@ -37,8 +37,10 @@ use RuntimeException;
  * ⚠️ UNDER THE LOCKS THE OTHER WRITERS TAKE. The type's row is locked for update and its entries with it, then
  * counted, then written, in one transaction. `MediaLibrary::store()` reads the flag under a shared lock inside its
  * own transaction and the retype boundary reads the destination's the same way, so neither can act on the value
- * this is about to change. What no lock covers is the create page, which still makes a file-less entry of a media
- * type until ADR-042 decision 3 closes it; this command is how that state is found.
+ * this is about to change. What no lock covers is the create page. Since ADR-042 decision 3 it answers 404 for a media
+ * type, but it asks the flag `IdentifyEntryType` read at the start of the request, unlocked, and `CreateEntry` inserts
+ * without reading it again — so a `--force` that marks the type between that read and the insert still leaves a
+ * file-less entry on a media type, and this command is how that state is found.
  */
 final class MediaTypesCommand extends Command
 {

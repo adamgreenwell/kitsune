@@ -10,8 +10,6 @@ declare(strict_types=1);
 
 namespace Kitsune\Core\Media;
 
-use RuntimeException;
-
 /**
  * What core will accept as an uploaded file, and what it refuses — ADR-041.
  *
@@ -129,7 +127,7 @@ final class MediaIntake
      *
      * @return array{extension: string, mime: string}
      *
-     * @throws RuntimeException naming which rule refused it
+     * @throws MediaRefused naming which rule refused it
      */
     public static function accept(string $originalName, string $absolutePath, int $sizeBytes): array
     {
@@ -155,7 +153,7 @@ final class MediaIntake
              * different file. Saying so is the difference between a refusal and a dead end.
              */
             if (self::isGuarded($extension)) {
-                throw new RuntimeException(sprintf(
+                throw new MediaRefused(sprintf(
                     'Refusing [%s]: .%s is accepted only when a sanitiser is installed to make it safe first '
                     .'(ADR-041), and nothing in this installation implements [%s]. The first-party module '
                     .'`kitsune/svg-sanitizer` provides one. Installing is not enabling, so it takes both: '
@@ -168,7 +166,7 @@ final class MediaIntake
                 ));
             }
 
-            throw new RuntimeException(sprintf(
+            throw new MediaRefused(sprintf(
                 'Refusing [%s]: [%s] is not an accepted file type. The list is an allowlist core owns — a '
                 .'denylist is a list of the attacks somebody thought of — and an org cannot widen it.',
                 $originalName,
@@ -179,7 +177,7 @@ final class MediaIntake
         $sniffed = self::sniff($absolutePath);
 
         if (! in_array($sniffed, $accepted[$extension], true)) {
-            throw new RuntimeException(sprintf(
+            throw new MediaRefused(sprintf(
                 'Refusing [%s]: it is named .%s but its contents are [%s]. The type is read from the file\'s '
                 .'own bytes and never from what the upload claimed, because a claimed type is a claim by '
                 .'whoever is uploading — and this value decides the Content-Type a browser is later handed.',
@@ -199,7 +197,7 @@ final class MediaIntake
      * `accept()`. Sanitising can GROW a file, so the size that arrived and the size that would be stored are
      * two different numbers, and `MAX_BYTES` is a promise about the second one.
      *
-     * @throws RuntimeException
+     * @throws MediaRefused
      */
     public static function refuseIfTooLarge(int $sizeBytes, string $originalName, ?int $ceiling = null): void
     {
@@ -209,7 +207,7 @@ final class MediaIntake
             return;
         }
 
-        throw new RuntimeException(sprintf(
+        throw new MediaRefused(sprintf(
             'Refusing [%s]: it is %d bytes and the ceiling is %d. The limit is checked before anything is '
             .'written, so nothing was stored.',
             $originalName,
@@ -263,7 +261,7 @@ final class MediaIntake
     private static function sniff(string $absolutePath): string
     {
         if (! class_exists(\finfo::class)) {
-            throw new RuntimeException(
+            throw new MediaRefused(
                 'Refusing this upload: ext-fileinfo is not available, so the file type cannot be read from its '
                 .'own bytes. Uploads are refused rather than trusting the type the client declared.'
             );
@@ -273,7 +271,7 @@ final class MediaIntake
         $mime = $info->file($absolutePath);
 
         if (! is_string($mime) || $mime === '') {
-            throw new RuntimeException('Refusing this upload: its content type could not be determined.');
+            throw new MediaRefused('Refusing this upload: its content type could not be determined.');
         }
 
         return $mime;

@@ -376,7 +376,7 @@ Drupal spent ~a decade proving a runtime schema engine *without* opinionated sta
 
 - [ ] Blueprint format: a bundle of entry types with their fields, roles with their grants, entry type availability, and content — **four keys, not six, and amended from "portable bundle of entity types, fields, roles, permissions, settings, seed content" by [ADR-039](decision-log.md)**. `permissions` is not separable from roles and `settings` is `entry_type_availability` wearing another name; "portable" means applies to any installation, not language-neutral, because the v1.0 format is a PHP class
 - [ ] Apply flow, **idempotent in the additive sense and reversible only as a refusal** — amended by [ADR-039](decision-log.md), which records why the engine cannot offer more: `is_locked` never clears, so a re-apply may add but may never reshape a field holding data, and a reverse with content present is refused rather than rolled back
-- [ ] First-party: **Blog**, **Marketing Site**. ⚠️ **DAM Starter was deferred by [ADR-039](decision-log.md) "until media storage exists"**, citing the missing upload path as well. Storage landed in #145–#148 — storage, delivery, disposal and SVG through `kitsune/svg-sanitizer` — and the starter now waits on the admin upload path, [ADR-042](decision-log.md), when it will widen `EntryTypeDeclaration` to declare its own media type. *(Originally: `media_files` is published in ADR-016 and `field-types.md` §5 and does not exist, and core has no upload path, so a DAM Starter today is an `image` type with nothing to attach bytes to)*
+- [ ] First-party: **Blog**, **Marketing Site**. ⚠️ **DAM Starter was deferred by [ADR-039](decision-log.md) "until media storage exists"**, citing the missing upload path as well. Storage landed in #145–#148 — storage, delivery, disposal and SVG through `kitsune/svg-sanitizer` — and the admin upload path, [ADR-042](decision-log.md), has landed too — core owns the staging (decision 4) and a media type's list uploads through `EntryResource` (decision 3) — so the starter now waits on widening `EntryTypeDeclaration` to declare its own media type. *(Originally: `media_files` is published in ADR-016 and `field-types.md` §5 and does not exist, and core has no upload path, so a DAM Starter today is an `image` type with nothing to attach bytes to)*
 
   The **Marketing Site** blueprint has a named first user: `kitsunecms.org` itself, per [ADR-030](decision-log.md). The project's site waits for that blueprint rather than being stood up on a static generator, so its gaps land on the maintainer before they land on anyone else. **This line is the trigger, not a tag:** ADR-030 moves the site when the blueprint applies cleanly and idempotently to a fresh install at the floor, and the result is editable through the admin. The site is also the first thing to stand on ADR-027's resource floor for real, and it runs the **self-host** path rather than KaaS deliberately.
 - [ ] Blueprints are a **kernel primitive**, not a module — narrowed by [ADR-039](decision-log.md) to the only sense the log defines: the mechanism is core and unreplaceable, the payload may live anywhere
@@ -409,14 +409,17 @@ this date.* Deferring it to v1.1 would ship a v1.0 whose four named use cases ar
 **Not in it:** subscriptions. Recurring billing — renewals, proration, dunning, involuntary churn — is a second
 workstream of comparable size, and one-time payment already serves all four consumers' first cut.
 
-⚠️ **Blocked on media.** A product without an image is not a product. ADR-016 designed the shape — media are
+⚠️ ~~**Blocked on media.**~~ **No longer blocked on media, 2026-09-29.** A product without an image is not a product. ADR-016 designed the shape — media are
 entries, a picker is a `relation` — and [ADR-041](decision-log.md) decides delivery, upload safety and
 disposal: private by default, no derivatives in v1.0, admin-only upload, and SVG sanitised on upload — by
 `kitsune/svg-sanitizer` rather than by core, because the only library with the maintainer population ADR-041
-was buying is GPL-2.0-or-later (Standing Principle #11). The bytes landed in #145–#148. What is still missing
-is the way an editor puts a file in, which [ADR-042](decision-log.md) decides: shared by default as ADR-021
-said, uploaded through `EntryResource` with core owning the staging, and withdrawn from the web on delete.
-The same work releases the **DAM** starter.
+was buying is GPL-2.0-or-later (Standing Principle #11). The bytes landed in #145–#148, and the way an editor
+puts a file in with [ADR-042](decision-log.md): shared by default as ADR-021 said, uploaded through
+`EntryResource` with core owning the staging, and withdrawn from the web on delete. A product's image is a `relation`
+to a media entry an editor has uploaded, which is all [ADR-040](decision-log.md) asked of media ("the only thing
+missing is the bytes"). What ADR-042 still owes — the media list's tiles (decision 6) and the measurement behind
+them — changes how the list shows files, not whether a product can have one. The **DAM** starter is Phase 5's, and
+waits on widening `EntryTypeDeclaration` (above).
 
 ## Phase 6 — v1.0 hardening
 

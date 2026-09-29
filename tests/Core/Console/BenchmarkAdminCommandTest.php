@@ -8,13 +8,24 @@
 
 declare(strict_types=1);
 
+use Illuminate\Support\Facades\DB;
+use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Console\BenchmarkAdminCommand;
+use Kitsune\Core\Models\EntryType;
+use Kitsune\Core\Models\Org;
+use Kitsune\Core\Models\Role;
+use Kitsune\Core\Models\Site;
+use Kitsune\Core\Tenancy\Context;
+use Kitsune\Core\Tests\Fixtures\PanelTenancy;
+use Kitsune\Core\Tests\Fixtures\PanelUser;
+use Kitsune\Core\Tests\Fixtures\TestUser;
 
 /*
- * ⚠️ THE COMMAND ITSELF IS NOT EXERCISED HERE, AND THAT IS A LIMIT RATHER THAN A CHOICE. It issues real
- * requests to a Filament panel, and the package test harness stands up no panel — which is ADR-024's
- * division of labour: this layer cannot see anything that only exists once a page renders. What IS here is
- * the piece with logic worth guarding, and it is here because that logic was wrong first.
+ * ⚠️ THE COMMAND'S REQUESTS ARE NOT EXERCISED HERE, AND THAT IS A LIMIT RATHER THAN A CHOICE. It issues real
+ * requests to a Filament panel, and this layer cannot see anything that only exists once a page renders —
+ * ADR-024's division of labour. What IS here is the logic worth guarding, and it is here because that logic was
+ * wrong first: how a page's summary is read, and — under `PanelTenancy`, which registers the panel — which type
+ * the command chooses to measure.
  *
  * The first version calculated the deep page as `seeded / 25`. Both halves were wrong — the list is scoped
  * to one entry type, so the corpus is smaller than the seed, and Filament's table pages at TEN. It
@@ -49,4 +60,63 @@ it('reports nothing rather than a guess when the summary is absent', function ()
 it('reports nothing when the range is impossible', function (): void {
     // `to` before `from` yields a page size of zero or less, which would make the last page infinite.
     expect(BenchmarkAdminCommand::paginationSummary('Showing 10 to 1 of 400 results'))->toBeNull();
+});
+
+/*
+ * ⚠️ AND NEVER A MEDIA TYPE, whose create page answers 404 (ADR-042 decision 3): the command would seed its rows and time a
+ * refusal as the create page. Asked of the predicate here, and of the choice the command makes with it below.
+ */
+it('measures a type the user may view, and never a media type', function (): void {
+    config(['auth.providers.users.model' => TestUser::class]);
+    $org = Org::create(['slug' => 'bench', 'name' => 'Bench']);
+    app(Context::class)->setOrg($org);
+    $user = TestUser::create(['email' => 'bench@kitsune.test']);
+    DB::table('org_user')->insert(['org_id' => $org->getKey(), 'user_id' => $user->getKey()]);
+    $role = Role::create(['handle' => 'bench', 'name' => 'Bench']);
+    DB::table('role_user')->insert(['role_id' => $role->getKey(), 'user_id' => $user->getKey()]);
+    $role->grant(Permissions::forEntryType('image', 'view'));
+    $role->grant(Permissions::forEntryType('article', 'view'));
+
+    $image = EntryType::create(['org_id' => $org->id, 'handle' => 'image', 'name' => 'Image', 'plural_name' => 'Images', 'is_media' => true]);
+    $article = EntryType::create(['org_id' => $org->id, 'handle' => 'article', 'name' => 'Article', 'plural_name' => 'Articles']);
+    $page = EntryType::create(['org_id' => $org->id, 'handle' => 'page', 'name' => 'Page', 'plural_name' => 'Pages']);
+
+    try {
+        expect(BenchmarkAdminCommand::measurable($image, $user))->toBeFalse()
+            ->and(BenchmarkAdminCommand::measurable($article, $user))->toBeTrue()
+            // The control on the other half: a type the user may not view.
+            ->and(BenchmarkAdminCommand::measurable($page, $user))->toBeFalse();
+    } finally {
+        app(Context::class)->forget();
+    }
+});
+
+/* The choice itself: a media type the user may view, listed first, is passed over for the type after it. */
+it('chooses a type it can measure when a media type the user may view is listed first', function (): void {
+    config(['auth.providers.users.model' => PanelUser::class]);
+    $org = Org::create(['slug' => 'bench', 'name' => 'Bench']);
+    app(Context::class)->setOrg($org);
+    $site = Site::create(['handle' => 'main', 'slug' => 'bench-main', 'name' => 'Main', 'locale' => 'en']);
+    $user = PanelUser::create(['email' => 'bench@kitsune.test']);
+    $user->reachableSiteIds = [(int) $site->getKey()];
+    DB::table('org_user')->insert(['org_id' => $org->getKey(), 'user_id' => $user->getKey()]);
+    $role = Role::create(['handle' => 'bench', 'name' => 'Bench']);
+    DB::table('role_user')->insert(['role_id' => $role->getKey(), 'user_id' => $user->getKey()]);
+    $role->grant(Permissions::forEntryType('image', 'view'));
+    $role->grant(Permissions::forEntryType('article', 'view'));
+    EntryType::create(['org_id' => $org->id, 'handle' => 'image', 'name' => 'Image', 'plural_name' => 'Images', 'is_media' => true, 'ordering' => 0]);
+    EntryType::create(['org_id' => $org->id, 'handle' => 'article', 'name' => 'Article', 'plural_name' => 'Articles', 'ordering' => 1]);
+    // `siteFor()` asks for the default panel, which the registered one must be marked as.
+    PanelTenancy::enter($site)->default();
+
+    try {
+        [$chosen, $type] = (new ReflectionMethod(BenchmarkAdminCommand::class, 'fixture'))->invoke(app(BenchmarkAdminCommand::class), $user);
+
+        // The control: the media type really is the first the user may view.
+        expect(EntryType::visibleFor($site)->first()?->handle)->toBe('image')
+            ->and($chosen?->getKey())->toBe($site->getKey())
+            ->and($type?->handle)->toBe('article');
+    } finally {
+        app(Context::class)->forget();
+    }
 });

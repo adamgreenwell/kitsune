@@ -55,6 +55,12 @@ class RefusingDisk extends LocalFilesystemAdapter
     /** Write only this many bytes of anything written, as an interrupted copy leaves it. */
     public ?int $truncateWritesTo = null;
 
+    /**
+     * Write part of a stream and then fail, as a full disk does: Flysystem's local adapter reports the failure only after
+     * `file_put_contents()` has created the file and copied what fitted. As many bytes as `truncateWritesTo`, or one.
+     */
+    public bool $failAfterWriting = false;
+
     /** @var list<string> Paths that exist but cannot be read. */
     public array $unreadable = [];
 
@@ -171,6 +177,12 @@ class RefusingDisk extends LocalFilesystemAdapter
 
         if ($this->failWrites) {
             throw UnableToWriteFile::atLocation($path, 'refused by the test');
+        }
+
+        if ($this->failAfterWriting) {
+            parent::write($path, (string) fread($contents, max(1, $this->truncateWritesTo ?? 1)), $config);
+
+            throw UnableToWriteFile::atLocation($path, 'refused by the test after writing');
         }
 
         if ($this->truncateWritesTo !== null) {

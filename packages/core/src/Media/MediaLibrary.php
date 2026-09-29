@@ -28,7 +28,8 @@ use Throwable;
  * question is which residue is recoverable. Rows first leaves a media entry pointing at a file that does not
  * exist — a broken asset an operator sees and cannot explain. Bytes first leaves an unreferenced file, which
  * costs disk and nothing else, and which a sweep can find by asking the table what it knows about. So the
- * bytes are written, the rows are committed, and a failure in between removes the bytes it just wrote.
+ * bytes are written, the rows are committed, and a failure in between removes the bytes it just wrote — as does a
+ * write that failed part-way.
  *
  * ⚠️ THE CLEANUP IS BEST EFFORT AND SAYS SO. A crash between writing bytes and rolling back leaves the file,
  * because a process that has stopped cannot tidy up after itself. That is the residual cost of the order
@@ -57,7 +58,8 @@ final class MediaLibrary
      *                                console command is importing
      * @param  string  $originalName  what the caller called it. Used for the title, never for the location.
      *
-     * @throws RuntimeException
+     * @throws MediaRefused for a file, visibility or type the library refuses, in words an uploader is shown (decision 7)
+     * @throws RuntimeException for any other failure, whose message is not for an uploader
      */
     public static function store(
         string $absolutePath,
@@ -68,7 +70,7 @@ final class MediaLibrary
         bool $siteOnly = false,
     ): Entry {
         if (! in_array($visibility, MediaFile::VISIBILITIES, true)) {
-            throw new RuntimeException(sprintf(
+            throw new MediaRefused(sprintf(
                 'Refusing to store media with visibility [%s]. It is one of: %s — and ADR-041 makes private '
                 .'the default, so an unrecognised value is refused rather than resolved to something.',
                 $visibility,
@@ -85,7 +87,7 @@ final class MediaLibrary
             && (bool) EntryType::query()->whereKey($type->getKey())->value('is_media');
 
         if (! $isMedia) {
-            throw new RuntimeException(sprintf(
+            throw new MediaRefused(sprintf(
                 'Refusing [%s]: [%s] is not a media type, so it has no way to show a file. Files are uploaded '
                 .'into a type that was created to hold them, and an existing type cannot be switched to one '
                 .'(ADR-042). Nothing was stored.',
@@ -194,14 +196,30 @@ final class MediaLibrary
             throw new RuntimeException("Cannot store media: [{$source}] could not be opened.");
         }
 
-        /* Streamed rather than read into memory: the ceiling is 64 MiB and the floor is 1 GB of RAM. */
-        $written = Storage::disk($disk)->writeStream($path, $stream);
+        /*
+         * Streamed rather than read into memory: the ceiling is 64 MiB and the floor is 1 GB of RAM.
+         *
+         * ⚠️ A FAILED WRITE CAN STILL HAVE WRITTEN, so the path goes on every failure, best effort, as it does when the
+         * row write fails (review of decision 3). Flysystem's local adapter reports a failure only after
+         * `file_put_contents()` has created the file and copied what fitted — a full disk, a quota — and a failed chmod
+         * on a public disk answers false once the whole file is there. A disk configured to throw, as a host's `public`
+         * may be, leaves the same residue by an exception instead of a `false`.
+         */
+        try {
+            $written = Storage::disk($disk)->writeStream($path, $stream);
+        } catch (Throwable $e) {
+            self::removeWritten($disk, $path);
 
-        if (is_resource($stream)) {
-            fclose($stream);
+            throw $e;
+        } finally {
+            if (is_resource($stream)) {
+                fclose($stream);
+            }
         }
 
         if ($written === false) {
+            self::removeWritten($disk, $path);
+
             throw new RuntimeException("Cannot store media: writing to [{$disk}:{$path}] failed.");
         }
 
@@ -215,7 +233,7 @@ final class MediaLibrary
                      * is taking out of media cannot receive a file in between.
                      */
                     if (! (bool) EntryType::query()->whereKey($type->getKey())->sharedLock()->value('is_media')) {
-                        throw new RuntimeException(sprintf(
+                        throw new MediaRefused(sprintf(
                             'Refusing [%s]: [%s] stopped being a media type while it was being stored (ADR-042). '
                             .'Nothing was stored.',
                             $originalName,
@@ -268,9 +286,22 @@ final class MediaLibrary
             );
         } catch (Throwable $e) {
             /* Best effort, as the docblock says: the bytes this call wrote go, and a crash leaves them. */
-            Storage::disk($disk)->delete($path);
+            self::removeWritten($disk, $path);
 
             throw $e;
+        }
+    }
+
+    /**
+     * Remove what a failed store wrote at its own path. Best effort, and never in the way of the failure being
+     * reported: what stays is a file no row claims, which `kitsune:media-prune` lists.
+     */
+    private static function removeWritten(string $disk, string $path): void
+    {
+        try {
+            Storage::disk($disk)->delete($path);
+        } catch (Throwable) {
+            // The failure that brought us here is the one to report; this one leaves an orphan for prune.
         }
     }
 
