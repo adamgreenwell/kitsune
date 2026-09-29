@@ -204,7 +204,13 @@ test.describe('what may be staged', () => {
      * written before the dashboard loaded: measured, five draws reached it (the page, `livewire.js`, the favicon, the
      * mint and the refusal), near one try in ten. It is written now just before each refused upload, once the URL is
      * minted, and measured, the refusal's own draw is the only one that reaches it. A refusal that sweeps removes it on
-     * every try; the lottery removes it three tries running at 8 in a million.
+     * every try; the lottery removes it three tries running at 8 in a million. What survives is the pair — the file and
+     * the sidecar the sweep takes with it — and each refusal is asked for `MediaIntake`'s words as well as its status.
+     *
+     * ⚠️ NOT BY SWITCHING THE LOTTERY OFF FOR THIS SERVER, which would be deterministic outright. It takes a switch in
+     * core that stops a sweep, and a host can set whatever this suite sets — the kind of setting `HoldMediaStaging` is
+     * there to hold. The server under test would no longer be the one that ships, and locally, where Playwright reuses
+     * a server already on the port, the switch would be missing without a sound.
      */
     test('sweeps a stale staged file on the next accepted upload, and not on a refused one', async ({ page }) => {
         const dir = path.join(media().intakePath, 'livewire-tmp');
@@ -220,6 +226,7 @@ test.describe('what may be staged', () => {
             }
         };
 
+        const stale = ['stale-e2e.png', 'stale-e2e.png.json'];
         write(['fresh-e2e.png', 'fresh-e2e.png.json'], anHourAgo);
 
         try {
@@ -229,15 +236,16 @@ test.describe('what may be staged', () => {
 
             for (let attempt = 0; attempt < 3 && ! survived; attempt++) {
                 const url = await mintUploadUrl(page);
-                write(['stale-e2e.png', 'stale-e2e.png.json'], dayAndAnHourAgo);
+                write(stale, dayAndAnHourAgo);
 
                 const refused = await stage(page, url, [{ bytes: bytesOf('<?php echo 1;'), name: 'evil.php', type: 'image/png' }]);
                 expect(refused.status).toBe(422);
+                expect(refused.body?.errors?.['files.0']?.[0]).toContain('Refusing [evil.php]: [php] is not an accepted file type.');
 
-                survived = intake().includes(path.join('livewire-tmp', 'stale-e2e.png'));
+                survived = stale.every((name) => intake().includes(path.join('livewire-tmp', name)));
             }
 
-            expect(survived, 'a refused upload removed the stale file on three tries running').toBe(true);
+            expect(survived, 'a refused upload removed the stale file or its sidecar on three tries running').toBe(true);
 
             expect((await stage(page, await mintUploadUrl(page), [png])).status).toBe(200);
 
