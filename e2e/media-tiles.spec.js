@@ -62,6 +62,9 @@ const row = (page, title) => page.locator('.fi-ta-row').filter({ hasText: title 
 /** A private tile's placeholder, by the name it gives itself. */
 const placeholder = (page, title) => page.getByRole('button', { name: `Show the file ${title}`, exact: true });
 
+/** The same tile once its file is shown: its name says so, whether it was clicked or made anew from what the page kept. */
+const shown = (page, title) => page.getByRole('button', { name: `Showing the file ${title}`, exact: true });
+
 /** Whether the image in a row has loaded. */
 const loaded = (page, title) => row(page, title).locator('img').first()
     .evaluate((img) => img instanceof HTMLImageElement && img.complete && img.naturalWidth > 0)
@@ -208,11 +211,11 @@ test.describe('the media list\'s tiles', () => {
             expect(hits).toHaveLength(1);
             // Said to a screen reader, and the button marked done: there is nothing left for it to do.
             await expect(row(page, 'Course map').getByRole('status')).toHaveText('Shown.');
-            await expect(placeholder(page, 'Course map')).toHaveAttribute('aria-disabled', 'true');
+            await expect(shown(page, 'Course map')).toHaveAttribute('aria-disabled', 'true');
 
             // Pressed again once shown, or double-clicked, it asks nothing more: the page has it.
-            await placeholder(page, 'Course map').click({ force: true });
-            await placeholder(page, 'Course map').dblclick({ force: true });
+            await shown(page, 'Course map').click({ force: true });
+            await shown(page, 'Course map').dblclick({ force: true });
             await page.waitForTimeout(500);
             expect(hits).toHaveLength(1);
 
@@ -226,7 +229,8 @@ test.describe('the media list\'s tiles', () => {
             // The sort moved its row — from first by title to last — so the row, and its tile, were made anew.
             await expect(page.locator('.fi-ta-row').last()).toContainText('Course map');
             await expect.poll(() => loaded(page, 'Course map')).toBe(true);
-            await expect(placeholder(page, 'Course map')).toHaveAttribute('aria-disabled', 'true');
+            // Made anew from what the page kept, and still named as shown: not an inert "Show the file" (Codex, #158).
+            await expect(shown(page, 'Course map')).toHaveAttribute('aria-disabled', 'true');
             await Promise.all([rerendered(page), page.locator('.fi-ta-search-field input').fill('no file is called this')]);
             await expect(row(page, 'Course map')).toHaveCount(0);
             await Promise.all([rerendered(page), page.locator('.fi-ta-search-field input').fill('')]);

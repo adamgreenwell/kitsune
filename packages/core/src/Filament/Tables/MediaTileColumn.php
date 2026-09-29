@@ -133,7 +133,9 @@ final class MediaTileColumn extends Column implements HasEmbeddedView
             'refused' => __('kitsune::media.tile.refused'),
             'missing' => __('kitsune::media.tile.missing'),
             'failed' => __('kitsune::media.tile.failed'),
+            'show' => __('kitsune::media.tile.show'),
             'shown' => __('kitsune::media.tile.shown'),
+            'showing' => __('kitsune::media.tile.showing'),
         ]);
         $target = Js::from($url);
         // The types a tile may show (Adam, decision 18): what arrives must be one, whatever answered.
@@ -255,7 +257,13 @@ final class MediaTileColumn extends Column implements HasEmbeddedView
             // Once shown there is nothing left to do: a second press is announced as unavailable, not met with silence.
             .' x-bind:aria-disabled="state === \'loaded\'"'
             .' style="'.$size.' padding: 0; overflow: hidden; border-radius: 0.25rem;">'
-            .'<span class="fi-sr-only">'.e(__('kitsune::media.tile.show')).' <bdi dir="auto">'.e((string) $record->title).'</bdi></span>'
+            /*
+             * ⚠️ THE BUTTON'S NAME SAYS WHETHER THE FILE IS SHOWN, for a tile made anew from what the page kept as much as for
+             * the one clicked (Codex, #158). The image is decorative, and a restored tile announces nothing — a sort would
+             * otherwise announce every one — so without this a screen reader meets an inert "Show the file" button.
+             */
+            .'<span class="fi-sr-only"><span x-text="state === \'loaded\' ? labels.showing : labels.show">'.e(__('kitsune::media.tile.show')).'</span>'
+            .' <bdi dir="auto">'.e((string) $record->title).'</bdi></span>'
             .'<template x-if="src"><img x-bind:src="src" alt="" x-on:error="fail(\'failed\')" style="'.$size.' object-fit: cover;"></template>'
             .'<span x-show="! src">'.self::icon(null).'</span>'
             .'</button>'

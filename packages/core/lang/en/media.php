@@ -83,6 +83,7 @@ return [
         'missing' => 'This file could not be found.',
         'failed' => 'This file could not be shown.',
         'shown' => 'Shown.',
+        'showing' => 'Showing the file',
         'unavailable' => 'This file is not available here.',
         'no_preview' => 'No preview: :type',
     ],

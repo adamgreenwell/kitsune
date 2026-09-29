@@ -140,6 +140,8 @@ it('shows a private image as a placeholder that fetches through the route only w
         ->and($tile['html'])->toContain('x-on:click="load()"')
         ->and($tile['html'])->toContain('\/admin\/tiles-main\/media\/'.$entry->getKey())
         ->and($tile['html'])->toContain('X-Requested-With')
+        // Its name says whether the file is shown — for a tile made anew from what the page kept, too (Codex, #158).
+        ->and($tile['html'])->toContain('x-text="state === \'loaded\' ? labels.showing : labels.show">Show the file</span>')
         // Nothing starts it but the click: no `x-init`, and an `init()` that only shows what the page already asked for.
         ->and($tile['html'])->not->toContain('x-init')
         ->and(str($tile['html'])->between('init() {', 'load() {')->toString())->not->toContain('this.load(')

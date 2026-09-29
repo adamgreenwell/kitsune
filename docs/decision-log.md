@@ -5311,7 +5311,9 @@ automatically waits for the measurement below.
 >   kept. A public tile shows its type if its image will not load — a file trashed after the page rendered, or one
 >   whose bytes are not where its row says, the same request — including when it failed before Alpine started and
 >   nobody was listening. A shown private tile says so to a screen reader, in its status line, and its button is marked
->   done (`aria-disabled`), so a second press is announced rather than met with silence. What arrives must be one of
+>   done (`aria-disabled`), so a second press is announced rather than met with silence; its name says it is showing
+>   the file — a tile made anew from what the page kept too, which announces nothing, since a sort would otherwise
+>   announce every one (Codex, #158). What arrives must be one of
 >   `INLINE`'s types, and a redirect is not followed.
 > - **Found on the way, unconfirmed, for the measurement.** Under a browser mutation that loads every private tile
 >   with the page, one upload on that page did not complete — but that run's upload helper was later found to take no
@@ -6491,7 +6493,7 @@ When it lands:
 > (decision 1 records it; that command reports what it leaves).
 
 > ⚠️ **Amended 2026-09-29 — decision 6 landed**, and each guard was removed in turn and its test watched fail, beside a
-> run of the same tests passing unmutated: 53 mutations, 38 on SQLite and fifteen in the browser. By family:
+> run of the same tests passing unmutated: 54 mutations, 38 on SQLite and sixteen in the browser. By family:
 > - **The helper** (15: `MediaDeliveryTest`) — a directly served file's path on the admin's own host, never absolute,
 >   keeping a subdirectory's prefix, with either scheme's own port named and a scheme or host in capitals; none for a
 >   CDN, another port or scheme, a protocol-relative URL, a path the browser would read as another host's (`//…`, or
@@ -6517,7 +6519,7 @@ When it lands:
 > asks the private route for nothing (a tile loading with the page, failing at that first check), nor do pointing,
 > focus, a sort, a search, Upload opened and cancelled, and an upload (a tile that asks when pointed at or focused) —
 > and, once a tile is clicked, the file is asked for once, a 200 `image/png` shown, said to a screen reader and the
-> button marked done, and not again when pressed again or double-clicked, after an upload, through a
+> button marked done and named as showing it — made anew, too (a name that never says so) — and not again when pressed again or double-clicked, after an upload, through a
 > sort that moves its row, a search that drops it and brings it back, or a page change there and back (the page
 > forgetting what it fetched; a tile that asks on every click); a tile made anew while its file is still arriving
 > shows it without asking again (a new tile forgetting the open request); a file the reader may no longer see, and one
