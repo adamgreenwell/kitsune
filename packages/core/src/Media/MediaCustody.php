@@ -15,7 +15,9 @@ use Illuminate\Contracts\Config\Repository;
 use Illuminate\Database\Connection;
 use Illuminate\Database\DatabaseTransactionRecord;
 use Illuminate\Database\DatabaseTransactionsManager;
+use Illuminate\Database\Query\Builder;
 use Illuminate\Database\Query\Expression;
+use Illuminate\Database\Query\Grammars\SQLiteGrammar;
 use Illuminate\Support\Facades\Log;
 use Kitsune\Core\Database\TransactionRecovery;
 use Kitsune\Core\Models\MediaFile;
@@ -121,6 +123,73 @@ final class MediaCustody
         });
     }
 
+    /**
+     * Whether settle's move-off refuses a row naming this disk on every run while a disk custody asks holds its file: a
+     * disk that reaches the one its file belongs on, or cannot be told apart from it — a read-through disk whose half it
+     * is, above all, which is what a host that pointed `kitsune.media.disks.public` at a read-through disk's primary
+     * leaves its rows naming — where `removeCopy()` refuses to remove a copy that could be the file itself; unless the
+     * two are one media directory under two names, where only the row moves. So the check and prune send such a row to
+     * a person, not to `--force` (review of slice 5c). Asked of the configuration, of two local disks' directories where
+     * both roots exist, and of a read-through disk a driver of the host's own builds, which only the instance can say is
+     * one — the disk the row names, which custody's own steps build anyway, and with it its halves.
+     */
+    public static function overlapsTarget(Repository $config, string $target, string $named, string $path): bool
+    {
+        if ($named === $target || in_array($named, [MediaDisks::configured($config, 'private'), MediaDisks::PRIVATE], true)) {
+            return false;
+        }
+
+        try {
+            // One that holds nothing — a local disk whose root does not exist — is never built to be compared.
+            if (! MediaDisks::mayHold($config, $target) || ! MediaDisks::mayHold($config, $named)) {
+                return false;
+            }
+
+            if (MediaDisks::onePlace($config, $target, $named) === false) {
+                return false;
+            }
+
+            $local = static fn (string $disk): bool => MediaDisks::resolved($config, $disk)['driver'] === 'local';
+
+            /*
+             * Two names for one media directory are one entry at the path once settle's copy has written it there, as it
+             * does before the move-off — whether or not the path's directory exists yet: only the row moves (T107; review
+             * of slice 5c). A symlinked directory under two media directories that are not one is one entry too.
+             */
+            return ! ($local($target) && $local($named)
+                && (MediaBytes::sameEntry($target, $named, $path) || ! MediaDisks::nested($config, $target, $named)));
+        } catch (Throwable) {
+            // One that cannot be compared is one the row cannot be asked about: `unknown`, said where it is asked.
+            return false;
+        }
+    }
+
+    /**
+     * Where a text column holds one of these values, as the column holds them — on SQLite as TEXT or as a BLOB.
+     *
+     * ⚠️ SQLITE COMPARES BYTES ONLY WITHIN A STORAGE CLASS — review of slice 5c. A BLOB never equals a TEXT parameter, and
+     * a column's TEXT affinity converts none: a row written past `MediaFile` whose path, disk or visibility was bound as
+     * bytes — an import's blob, a `CAST(… AS BLOB)` — was matched by no query, so prune listed the row's own file as an
+     * orphan and removed it, where reading every row and comparing in PHP, as before 5c, kept it. Each value is asked as
+     * both; the unique index on `path` still serves the lookup.
+     *
+     * @param  list<string>  $values
+     */
+    public static function whereStored(Builder $query, string $column, array $values): Builder
+    {
+        if (! $query->getGrammar() instanceof SQLiteGrammar) {
+            return $query->whereIn($column, $values);
+        }
+
+        if ($values === []) {
+            return $query->whereRaw('0 = 1');
+        }
+
+        $marks = implode(', ', [...array_fill(0, count($values), '?'), ...array_fill(0, count($values), 'cast(? as blob)')]);
+
+        return $query->whereRaw($query->getGrammar()->wrap($column).' in ('.$marks.')', [...$values, ...$values]);
+    }
+
     /** The disk a file belongs on: public while its entry is live and it is public, private otherwise. */
     public static function target(stdClass $entry, stdClass $file): string
     {
@@ -216,8 +285,9 @@ final class MediaCustody
             }
         }
 
-        // Every present copy has been hashed by now; one gone since it was seen is not a copy.
-        $held = array_keys(array_filter($hashes, static fn (?string $hash): bool => $hash !== null));
+        // Every present copy has been hashed by now; one gone since it was seen is not a copy. A disk named with digits
+        // alone came back an integer key, and is compared with names below (review of slice 5c).
+        $held = array_map('strval', array_keys(array_filter($hashes, static fn (?string $hash): bool => $hash !== null)));
 
         // Set aside to take a file off the web, and no copy on a disk the web serves could be read after all.
         if ($setAside !== [] && array_intersect($held, $served) === []) {
@@ -311,6 +381,8 @@ final class MediaCustody
             MediaDisks::refuseUnsafeMediaDisks($config);
 
             $path = (string) $file->path;
+            // Before any disk is asked: copied or removed, a path the disks read as another would be that one (review of 5c).
+            MediaBytes::refuseMisnamed($target, $path);
             $named = (string) $file->disk;
             $asked = self::asked($config, $target, $named);
             $served = MediaDisks::servedDisks($config);
@@ -417,7 +489,8 @@ final class MediaCustody
                 $changed = true;
             }
 
-            foreach (array_keys($setAside) as $disk) {
+            // A disk named with digits alone came back an integer key (review of slice 5c).
+            foreach (array_map('strval', array_keys($setAside)) as $disk) {
                 Log::warning(sprintf(
                     'Media custody, entry %d: the copy of [%s] on [%s] exists and cannot be read, so it was left where it '
                     .'is — not chosen, overwritten or removed — and the file was taken off every disk the web serves from '
@@ -622,6 +695,8 @@ final class MediaCustody
     private static function removeBeside(Repository $config, stdClass $file, string $target, array $disks): string
     {
         $path = (string) $file->path;
+        // Before any disk is asked: removed, a path the disks read as another would be that one (review of slice 5c).
+        MediaBytes::refuseMisnamed($target, $path);
         $checksum = is_string($file->checksum) && $file->checksum !== '' ? $file->checksum : null;
         $others = [];
 
@@ -707,7 +782,8 @@ final class MediaCustody
         $keeper = new MediaKeeper($keeper->disk, $keeper->expected, $keeper->mode, $keeper->targetHolds, [...$keeper->hashes, ...$hashes], checksum: $keeper->checksum);
 
         foreach (array_keys($hashes) as $disk) {
-            self::removeCopy($config, $target, $disk, $path, $keeper);
+            // A disk named with digits alone came back an integer key (review of slice 5c).
+            self::removeCopy($config, $target, (string) $disk, $path, $keeper);
         }
 
         return $hashes === [] ? self::UNCHANGED : self::SETTLED;
@@ -844,10 +920,29 @@ final class MediaCustody
      * the file is not locked, and `store()` writes an upload's bytes before its row: a row committed since the listing
      * claims a path no row named then, which the index cannot prevent. The recheck is a lookup under the index.
      *
+     * ⚠️ A ROW IN ANOTHER SPELLING IS ASKED IN THE LISTING, NOT HERE — Codex, #155. On a volume that folds names, a row may
+     * name this file in a spelling the directory does not hold — an import's `media/PHOTO.png` for `media/photo.png` —
+     * which no lookup by the listed name finds where the engine compares the two apart: on SQLite and PostgreSQL, which
+     * compare bytes, any such spelling; on MySQL and MariaDB, one the column's collation weighs apart. Their default
+     * collations find a case variant here; MariaDB 10.6's utf8mb4_general_ci finds no NFD spelling of an NFC name, and no
+     * `STRASSE` for `straße`, and a `_bin` collation finds none. Once every disk is listed, and before it removes anything, prune asks each local
+     * disk's volume whether any row's path reaches the very entry it listed, and any other disk by the key a row's path is
+     * read as (`MediaPruneCommand::reachedByRows()`), and never offers such a file here. A disk that folds names but is not
+     * local — SFTP or FTP onto such a server — is not asked. A row written in such a spelling between that pass and this
+     * lock — a write past `MediaFile`, an import run beside `--force` — is not seen where the engine compares that
+     * spelling apart from the listed name, as above, and its file is removed, as any file such an import writes before its
+     * row is.
+     *
      * ⚠️ NEVER INSIDE AN OPEN TRANSACTION — review of slice 5b. The recheck would read that transaction's own work: a
      * file an erasure not yet committed has freed reads as an orphan, and stays deleted when the erasure rolls back.
      *
+     * ⚠️ ONLY A FILE THE DISK HOLDS UNDER THE NAME IT WAS LISTED BY — review of slice 5c. One gone since the listing, or
+     * listed under a name that holds nothing or a link (`MediaBytes::held()`), fails as `unheld`: removing the name
+     * removed nothing and said it had, or removed what the listing had left out.
+     *
      * @throws LogicException inside an open transaction
+     * @throws MediaCustodyFailure when no disk can name it as itself, the disk does not hold the file under that name, or
+     *                             refuses to remove it
      */
     public static function removeOrphan(Connection $connection, string $disk, string $path): string
     {
@@ -855,8 +950,20 @@ final class MediaCustody
         $claimed = str_ends_with($path, MediaBytes::PARTIAL) ? substr($path, 0, -strlen(MediaBytes::PARTIAL)) : $path;
 
         return self::locked($connection, 0, static function () use ($connection, $disk, $path, $claimed): string {
-            if ($connection->table('media_files')->where('path', $claimed)->exists()) {
+            // A partial copy's path, and its name itself, which a row written past `MediaFile` may give (review of 5c).
+            if (self::whereStored($connection->table('media_files'), 'path', array_values(array_unique([$claimed, $path])))->exists()) {
                 return self::CLAIMED;
+            }
+
+            MediaBytes::refuseUnnamable($disk, $path);
+
+            if (! MediaBytes::held($disk, $path)) {
+                throw new MediaCustodyFailure('unheld', $disk, $path);
+            }
+
+            // No row keeps it, so there is no copy to compare it with: said so, rather than delete()'s word (review of 5c).
+            if (MediaBytes::readsThrough($disk)) {
+                throw new MediaCustodyFailure('read-through-unclaimed', $disk, $path);
             }
 
             MediaBytes::delete($disk, $path);
@@ -867,15 +974,33 @@ final class MediaCustody
 
     /**
      * Remove a partial copy custody left beside an entry's file, with the entry locked — outside any transaction, as an
-     * orphan is.
+     * orphan is, and only one the disk holds under the name it was listed by, as an orphan is. One a row names byte for
+     * byte is that row's, and is kept: `CLAIMED` (review of slice 5c).
      *
      * @throws LogicException inside an open transaction
+     * @throws MediaCustodyFailure when the disk does not hold the file under that name, or refuses to remove it
      */
     public static function removeTemp(Connection $connection, int $entryId, string $disk, string $partial): string
     {
         self::refuseInsideTransaction($connection, sprintf('entry %d\'s partial copy, [%s:%s],', $entryId, $disk, $partial));
 
-        return self::locked($connection, $entryId, static function () use ($disk, $partial): string {
+        return self::locked($connection, $entryId, static function () use ($connection, $disk, $partial): string {
+            MediaBytes::refuseUnnamable($disk, $partial);
+
+            // A row naming this very name — one written past `MediaFile`, or since the listing — makes it that row's
+            // file, never another row's partial copy (review of slice 5c).
+            if (self::whereStored($connection->table('media_files'), 'path', [$partial])->exists()) {
+                return self::CLAIMED;
+            }
+
+            if (! MediaBytes::held($disk, $partial)) {
+                throw new MediaCustodyFailure('unheld', $disk, $partial);
+            }
+
+            if (MediaBytes::readsThrough($disk)) {
+                throw new MediaCustodyFailure('read-through-unclaimed', $disk, $partial);
+            }
+
             MediaBytes::delete($disk, $partial);
 
             return self::REMOVED;

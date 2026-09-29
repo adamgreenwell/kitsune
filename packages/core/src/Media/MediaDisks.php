@@ -12,8 +12,10 @@ namespace Kitsune\Core\Media;
 
 use Illuminate\Config\Repository as ConfigRepository;
 use Illuminate\Contracts\Config\Repository;
+use Illuminate\Filesystem\ReadThroughFilesystem;
 use Illuminate\Support\Facades\Storage;
 use RuntimeException;
+use Throwable;
 
 /**
  * The disks core defines for itself — ADR-042 decisions 4 and 4a.
@@ -247,32 +249,21 @@ final class MediaDisks
      * is its root with the joined prefix under it; an object store's `prefix` is the key prefix its objects sit under —
      * its own `root`, then the joined prefix.
      *
-     * @return array{driver: string, root: ?string, url: ?string, bucket: ?string, endpoint: ?string, prefix: string, visibility: ?string, serve: bool}
+     * @return array{driver: string, root: ?string, url: ?string, bucket: ?string, endpoint: ?string, host: ?string, prefix: string, visibility: ?string, serve: bool}
      */
     public static function resolved(Repository $config, string $disk): array
     {
-        $entry = $config->get("filesystems.disks.{$disk}");
-        $prefix = '';
-        $visibility = null;
-        $seen = [];
+        return self::resolvedEntry($config, $config->get("filesystems.disks.{$disk}"), $disk);
+    }
 
-        while (is_array($entry) && ($entry['driver'] ?? null) === 'scoped') {
-            $parent = $entry['disk'] ?? null;
-
-            if (is_string($parent) && (isset($seen[$parent]) || count($seen) >= 8)) {
-                throw new RuntimeException(sprintf('Refusing to read the [%s] disk: its scoped disks form a cycle.', $disk));
-            }
-
-            $own = trim((string) ($entry['prefix'] ?? ''), '/');
-            $prefix = $own === '' ? $prefix : ($prefix === '' ? $own : $own.'/'.$prefix);
-            $visibility ??= is_string($entry['visibility'] ?? null) ? $entry['visibility'] : null;
-
-            if (is_string($parent)) {
-                $seen[$parent] = true;
-            }
-
-            $entry = is_string($parent) ? $config->get("filesystems.disks.{$parent}") : $parent;
-        }
+    /**
+     * `resolved()` of an entry — a disk's, or a `read-through` disk's half, which may be written inline.
+     *
+     * @return array{driver: string, root: ?string, url: ?string, bucket: ?string, endpoint: ?string, host: ?string, prefix: string, visibility: ?string, serve: bool}
+     */
+    private static function resolvedEntry(Repository $config, mixed $entry, string $disk): array
+    {
+        [$entry, $prefix, $visibility] = self::unscoped($config, $entry, $disk);
 
         if (! is_array($entry) || ! is_string($entry['driver'] ?? null)) {
             throw new RuntimeException(sprintf('Refusing to read the [%s] disk: it, or a disk it is scoped over, is not configured.', $disk));
@@ -298,10 +289,45 @@ final class MediaDisks
             'url' => is_string($entry['url'] ?? null) && $entry['url'] !== '' ? $entry['url'] : null,
             'bucket' => is_string($entry['bucket'] ?? $entry['container'] ?? null) ? ($entry['bucket'] ?? $entry['container']) : null,
             'endpoint' => is_string($entry['endpoint'] ?? null) ? $entry['endpoint'] : null,
+            // An SFTP or FTP server's, which names the store as a bucket does an object store's (review of slice 5c).
+            'host' => is_string($entry['host'] ?? null) ? $entry['host'] : null,
             'prefix' => $prefix,
             'visibility' => $visibility ?? (is_string($entry['visibility'] ?? null) ? $entry['visibility'] : null),
             'serve' => (bool) ($entry['serve'] ?? false),
         ];
+    }
+
+    /**
+     * The entry under every `scoped` layer over a disk's entry, and what those layers add: their prefixes joined, the
+     * outermost last, and the outermost visibility one sets — as `FilesystemManager::createScopedDriver()` builds them.
+     *
+     * @return array{0: mixed, 1: string, 2: ?string}
+     */
+    public static function unscoped(Repository $config, mixed $entry, string $disk): array
+    {
+        $prefix = '';
+        $visibility = null;
+        $seen = [];
+
+        while (is_array($entry) && ($entry['driver'] ?? null) === 'scoped') {
+            $parent = $entry['disk'] ?? null;
+
+            if (is_string($parent) && (isset($seen[$parent]) || count($seen) >= 8)) {
+                throw new RuntimeException(sprintf('Refusing to read the [%s] disk: its scoped disks form a cycle.', $disk));
+            }
+
+            $own = trim((string) ($entry['prefix'] ?? ''), '/');
+            $prefix = $own === '' ? $prefix : ($prefix === '' ? $own : $own.'/'.$prefix);
+            $visibility ??= is_string($entry['visibility'] ?? null) ? $entry['visibility'] : null;
+
+            if (is_string($parent)) {
+                $seen[$parent] = true;
+            }
+
+            $entry = is_string($parent) ? $config->get("filesystems.disks.{$parent}") : $parent;
+        }
+
+        return [$entry, $prefix, $visibility];
     }
 
     /**
@@ -312,7 +338,9 @@ final class MediaDisks
      * signature; or when its media directory meets the document root, a directory a public link exposes, or such a
      * disk's root. A local disk
      * served only to signatures is not, because Kitsune mints none (finding 4). An object store with no url that is
-     * public by its own policy cannot be seen from here — a recorded limit. Core's private and intake disks, and the
+     * public by its own policy cannot be seen from here — a recorded limit; nor can a `read-through` disk a driver of the
+     * host's own builds, with no url of its own and served only through a half, since only building it could say what
+     * its halves are, and a disk nothing uses is not built to be asked (review of slice 5c). Core's private and intake disks, and the
      * configured private disk, are never listed: `refuseUnsafeMediaDisks()` refuses a private disk that is served.
      *
      * @return list<string>
@@ -347,22 +375,47 @@ final class MediaDisks
             return false;
         }
 
-        $resolved = self::resolved($config, $disk);
-
-        // A local disk served with `serve` and public visibility is found below: its own root is one of the web's.
-        if ($resolved['url'] !== null) {
-            return true;
-        }
-
-        if ($resolved['root'] === null) {
+        // One Laravel never finishes building serves nothing, whatever url it carries (review of slice 5c).
+        if (self::cycles($config, $disk)) {
             return false;
         }
 
-        $media = $resolved['root'].'media/';
+        // A local disk served with `serve` and public visibility is found below: its own root is one of the web's.
+        if (self::resolved($config, $disk)['url'] !== null) {
+            return true;
+        }
 
-        foreach (self::webRoots($config) as $web) {
-            if (str_starts_with($media, $web) || str_starts_with($web, $media)) {
+        /*
+         * ⚠️ AND A `read-through` DISK WHERE ANY HALF IS — review of slice 5c. It answers `url()` from the half that holds
+         * the file, and Laravel builds it with its primary's configuration: a half written inline with a url of its own
+         * served the disk's files while nothing here said so. Of any other disk, the one place is the disk itself.
+         */
+        $webRoots = null;
+
+        try {
+            // Read by configuration: a disk nothing names or serves is not built to be asked (review of slice 5c).
+            $places = self::places($config, $disk, false);
+        } catch (RuntimeException) {
+            // A half that is not configured, or halves that name each other: Laravel cannot build the disk, and the web
+            // serves nothing through it — and a disk nothing uses must not stop every step that asks (review of 5c).
+            return false;
+        }
+
+        foreach ($places as $place) {
+            if ($place['resolved']['url'] !== null) {
                 return true;
+            }
+
+            if ($place['resolved']['root'] === null) {
+                continue;
+            }
+
+            $media = $place['resolved']['root'].self::joined($place['under'], 'media').'/';
+
+            foreach ($webRoots ??= self::webRoots($config) as $web) {
+                if (str_starts_with($media, $web) || str_starts_with($web, $media)) {
+                    return true;
+                }
             }
         }
 
@@ -388,21 +441,16 @@ final class MediaDisks
     {
         $resolved = self::resolved($config, $disk);
 
+        // A read-through disk whose halves name each other is never built, and holds nothing (review of slice 5c).
+        if ($resolved['driver'] === 'read-through' && self::cycles($config, $disk)) {
+            return false;
+        }
+
         if ($resolved['driver'] === 'local') {
             return $resolved['root'] !== null && is_dir($resolved['root']);
         }
 
         return true;
-    }
-
-    /**
-     * A disk's `media/` directory as the filesystem resolves it, when the disk is local; null when it is not.
-     *
-     * It builds the disk, so it is asked only of a disk configured as local.
-     */
-    public static function mediaRoot(string $disk): ?string
-    {
-        return MediaBytes::local($disk) ? self::normalised(Storage::disk($disk)->path('media')) : null;
     }
 
     /**
@@ -421,6 +469,25 @@ final class MediaDisks
     {
         $public = self::configured($config, 'public');
         $private = self::configured($config, 'private');
+
+        /*
+         * ⚠️ AND NEITHER IS A `read-through` DISK — review of slice 5c. Custody writes, reads and removes a file on the
+         * configured disks, and on a read-through disk a read copies the file into its primary, a delete removes it from
+         * both halves, only one of which was read, and its listing is its primary's: a half of it can be core's private
+         * disk, or another custody asks, so one file was counted as two copies, and removing either failed. Custody does
+         * not hold one (ADR-042 decision 5, open for Adam).
+         */
+        foreach ([$public, $private] as $disk) {
+            if (self::readsThroughAtAll($config, $disk)) {
+                throw new RuntimeException(sprintf(
+                    'Refusing: kitsune.media.disks.%s names [%s], a read-through disk — its reads copy a file into its '
+                    .'primary, its deletes remove it from both halves, and its listing is its primary\'s — which custody does '
+                    .'not hold (ADR-042 decision 5). Point it at the disk the files should live on. Nothing was moved.',
+                    $disk === $public ? 'public' : 'private',
+                    $disk,
+                ));
+            }
+        }
 
         self::refuseCoincidingMediaDisks($config, $public, $private);
 
@@ -449,9 +516,13 @@ final class MediaDisks
                     .'objects — %s — so a withdrawn file would stay public (ADR-042 decision 5). Nothing was moved.',
                     $private,
                     $served,
-                    $place === true
-                        ? 'one bucket and key prefix'
-                        : 'one bucket through two endpoints with nesting key prefixes, which cannot be told apart from one',
+                    match (true) {
+                        self::readsThroughAtAll($config, $private) || self::readsThroughAtAll($config, $served) => $place === true
+                            ? 'the same places, through a read-through disk'
+                            : 'a read-through disk whose halves reach them, which cannot be told apart from one',
+                        $place === true => 'one bucket and key prefix',
+                        default => 'one bucket through two endpoints with nesting key prefixes, which cannot be told apart from one',
+                    },
                 ));
             }
         }
@@ -464,7 +535,9 @@ final class MediaDisks
      * Two names, one place: a "copy" from one to the other is the file itself, and deleting "the other copy" deletes the
      * only one. Local disks are compared by their media directories as the filesystem resolves them, and a nest counts;
      * others by driver, bucket, endpoint and prefix — and one bucket through two endpoints is refused too, because
-     * whether that is one store cannot be told (slice 5b).
+     * whether that is one store cannot be told (slice 5b); a `read-through` disk by the places its halves reach, and one
+     * that reaches the other's files through a half, or more than the other reaches, is refused as one that cannot be
+     * told apart from it (slice 5c).
      */
     public static function refuseCoincidingMediaDisks(Repository $config, string $disk, string ...$others): void
     {
@@ -473,6 +546,16 @@ final class MediaDisks
 
             if ($place === false) {
                 continue;
+            }
+
+            if ($place === null && (self::readsThroughAtAll($config, $disk) || self::readsThroughAtAll($config, $other))) {
+                throw new RuntimeException(sprintf(
+                    'Refusing: the [%s] and [%s] disks cannot be told apart — a read-through disk reaches the other\'s files '
+                    .'through a half, or reaches more than the other does — so a copy from one to the other could be the file '
+                    .'itself (ADR-042 decision 5). Point them at places that do not overlap. Nothing was moved.',
+                    $disk,
+                    $other,
+                ));
             }
 
             if ($place === null) {
@@ -502,7 +585,15 @@ final class MediaDisks
      * ⚠️ TWO ENDPOINTS MAY NAME ONE STORE. A region's endpoint and a custom domain, or a path-style and a virtual-host
      * address, reach the same objects under different names, and nothing in the configuration says which. The earlier
      * comparison read them as two places, which let a step take the file itself for another copy and delete it; review
-     * of slice 5b found it. Every caller refuses the uncertain answer as it refuses one place.
+     * of slice 5b found it. Every caller refuses the uncertain answer as it refuses one place. So do two hosts, for a
+     * store named by its server's host rather than a bucket (review of slice 5c).
+     *
+     * ⚠️ A `read-through` DISK IS THE PLACES ITS HALVES REACH — review of slice 5c. Compared as one object store with no
+     * bucket, any two were one place, so prune never scanned the second; and one whose half was the public disk was
+     * another place, so prune listed the public disk's files through it as extra copies, and removing one removed the
+     * public file. Each is compared place by place (`places()`): two places when every pair is two, one when each place
+     * of either is one with a place of the other, and otherwise — a half that is the other disk, or reaches it — one that
+     * cannot be told apart from it.
      *
      * It builds a local disk to resolve its media directory, so it is asked only of a disk that can hold something.
      */
@@ -512,19 +603,99 @@ final class MediaDisks
             return true;
         }
 
-        $media = self::mediaDirectories($config, $a, $b);
+        $first = self::places($config, $a);
+        $second = self::places($config, $b);
+        $answers = [];
 
-        if ($media === null) {
+        foreach ($first as $i => $one) {
+            foreach ($second as $j => $two) {
+                $answers[$i][$j] = self::placeOf($config, $one, $two);
+            }
+        }
+
+        if (count($first) === 1 && count($second) === 1) {
+            return $answers[0][0];
+        }
+
+        $all = array_merge(...$answers);
+
+        if (! in_array(true, $all, true) && ! in_array(null, $all, true)) {
             return false;
         }
 
-        [$first, $second, $sameEndpoint] = $media;
+        foreach ($answers as $row) {
+            if (! in_array(true, $row, true)) {
+                return null;
+            }
+        }
 
-        if (! str_starts_with($first, $second) && ! str_starts_with($second, $first)) {
+        foreach (array_keys($second) as $j) {
+            if (! in_array(true, array_column($answers, $j), true)) {
+                return null;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * Whether a disk is a `read-through` one by its configuration, or scoped over one, or built as one by a driver of the
+     * host's own — for the words a refusal gives (review of slice 5c).
+     */
+    private static function readsThroughAtAll(Repository $config, string $disk): bool
+    {
+        return self::readsThrough($config, $disk) || self::builtReadThrough($config, $disk);
+    }
+
+    /**
+     * Whether a disk is a `read-through` one, or scoped over one: compared by the places its halves reach.
+     */
+    public static function readsThrough(Repository $config, string $disk): bool
+    {
+        [$entry] = self::unscoped($config, $config->get("filesystems.disks.{$disk}"), $disk);
+
+        return is_array($entry) && ($entry['driver'] ?? null) === 'read-through';
+    }
+
+    /**
+     * Whether a disk is a `read-through` one whose halves name each other — one Laravel never finishes building, so it is
+     * never built here: it holds nothing and serves nothing (`ReadThroughCycle`, review of slice 5c).
+     */
+    public static function cycles(Repository $config, string $disk): bool
+    {
+        try {
+            if (! self::readsThrough($config, $disk)) {
+                return false;
+            }
+
+            self::places($config, $disk, false);
+        } catch (ReadThroughCycle) {
+            return true;
+        } catch (RuntimeException) {
             return false;
         }
 
-        return $sameEndpoint ? true : null;
+        return false;
+    }
+
+    /**
+     * Whether a disk a driver of the host's own builds is a read-through one — only the instance can say, so it is built;
+     * a disk of the framework's own drivers says what it is in its configuration, and is not (review of slice 5c).
+     */
+    public static function builtReadThrough(Repository $config, string $disk): bool
+    {
+        [$entry] = self::unscoped($config, $config->get("filesystems.disks.{$disk}"), $disk);
+
+        if (! is_array($entry) || in_array($entry['driver'] ?? null, ['local', 'ftp', 'sftp', 's3', 'scoped', 'read-through'], true)) {
+            return false;
+        }
+
+        try {
+            return Storage::disk($disk) instanceof ReadThroughFilesystem;
+        } catch (Throwable) {
+            // One that cannot be built fails where custody first uses it.
+            return false;
+        }
     }
 
     /**
@@ -543,7 +714,8 @@ final class MediaDisks
     }
 
     /**
-     * Whether the first disk's media directory lies inside the second's — nested, and the inner of the two.
+     * Whether the first disk's media directory lies inside the second's — nested, and the inner of the two. Of a
+     * `read-through` disk, whether any place it reaches does (review of slice 5c).
      *
      * With `$build` false the inner disk is read from its configuration alone, as a scoped disk always is: a host's disk
      * that nothing here would otherwise touch is not built to be asked — building one may need a package the install
@@ -551,58 +723,179 @@ final class MediaDisks
      */
     public static function within(Repository $config, string $inner, string $outer, bool $build = true): bool
     {
-        $media = $inner === $outer ? null : self::mediaDirectories($config, $inner, $outer, $build);
+        if ($inner === $outer) {
+            return false;
+        }
+
+        foreach (self::places($config, $inner, $build) as $one) {
+            foreach (self::places($config, $outer) as $two) {
+                $media = self::mediaDirectories($config, $one, $two, $build);
+
+                if ($media !== null && $media[0] !== $media[1] && str_starts_with($media[0], $media[1])) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * The places a disk reaches: the disk itself, or — for a `read-through` disk, or one scoped over one — the places
+     * each of its halves reaches, with the prefix that layer sends its halves under each one's own, as Laravel sends a
+     * path through it: its entry's own prefix, then every scoped disk's over it (review of slice 5c).
+     *
+     * @return list<array{disk: ?string, resolved: array{driver: string, root: ?string, url: ?string, bucket: ?string, endpoint: ?string, host: ?string, prefix: string, visibility: ?string, serve: bool}, under: string, half: bool}>
+     */
+    private static function places(Repository $config, string $disk, bool $build = true): array
+    {
+        return self::placesOf($config, $config->get("filesystems.disks.{$disk}"), $disk, $disk, '', 0, $build);
+    }
+
+    /**
+     * @param  ?string  $name  the disk name the entry was read by, so a local one is built by it; null for an inline half
+     * @param  string  $under  the prefix the read-through layers above send it, the outermost last
+     * @param  bool  $build  whether a disk a driver of the host's own builds may be built to read its halves
+     * @return list<array{disk: ?string, resolved: array{driver: string, root: ?string, url: ?string, bucket: ?string, endpoint: ?string, host: ?string, prefix: string, visibility: ?string, serve: bool}, under: string, half: bool}>
+     */
+    private static function placesOf(Repository $config, mixed $entry, ?string $name, string $disk, string $under, int $depth, bool $build = true): array
+    {
+        [$base, $scoped] = self::unscoped($config, $entry, $disk);
+
+        /*
+         * ⚠️ ONE A DRIVER OF THE HOST'S OWN BUILDS NAMES ITS HALVES IN ITS INSTANCE ALONE — review of slice 5c. Read by its
+         * configuration, it was one place of a driver nothing here knows, and so two places with every disk: its half the
+         * private disk, served, it was not refused, and a trash left the file on the web through it; its half the public
+         * disk, a person was told to take the public file off through it — each step that compared disks had to be taught
+         * it in turn. Laravel builds one only from a `primary` and a `fallback`, and the instance's configuration keeps
+         * both. Its own prefix is not read — merged over its primary's configuration, it cannot be told from the
+         * primary's — so it is taken to reach its halves' media directories whole: a disk it may not reach is taken for
+         * one it may, which keeps it from any step that would remove a copy there, the safe side.
+         *
+         * ⚠️ ONLY WHERE THE STEP BUILDS IT ANYWAY — review of slice 5c, twice. Built to be asked, a host's disk nothing
+         * names or serves was built by every listing of the served disks — every trash, and a read-only check — which
+         * created its root, and where its halves led back to it recursed until memory ran out, a fatal error no catch
+         * can answer. So whether a disk is served, whether it forms a cycle, and the inner disk of a nesting read from its
+         * configuration alone (`$build` false), and such a disk is one place there: one served only through a half, with
+         * no url of its own, is not counted as served.
+         */
+        if ($build && $name !== null && $scoped === '' && is_array($base) && self::builtReadThrough($config, $name)) {
+            $built = Storage::disk($name)->getConfig();
+            $base = ['driver' => 'read-through', 'primary' => $built['primary'] ?? null, 'fallback' => $built['fallback'] ?? null];
+        }
+
+        if (! is_array($base) || ($base['driver'] ?? null) !== 'read-through') {
+            return [['disk' => $name, 'resolved' => self::resolvedEntry($config, $entry, $disk), 'under' => $under, 'half' => $depth > 0]];
+        }
+
+        if ($depth >= 8) {
+            throw new ReadThroughCycle(sprintf('Refusing to read the [%s] disk: its read-through disks form a cycle.', $disk));
+        }
+
+        $layer = self::joined(trim((string) ($base['prefix'] ?? ''), '/'), $scoped);
+        $places = [];
+
+        foreach (['primary', 'fallback'] as $key) {
+            $half = $base[$key] ?? null;
+            $places = [...$places, ...self::placesOf(
+                $config,
+                is_string($half) ? $config->get("filesystems.disks.{$half}") : $half,
+                is_string($half) ? $half : null,
+                $disk,
+                self::joined($layer, $under),
+                $depth + 1,
+                $build,
+            )];
+        }
+
+        return $places;
+    }
+
+    /** Two prefixes, the first outermost in the path, either empty. */
+    private static function joined(string $first, string $second): string
+    {
+        return $first === '' ? $second : ($second === '' ? $first : $first.'/'.$second);
+    }
+
+    /**
+     * Whether two places are one — `onePlace()` of two disks that are not `read-through` ones.
+     *
+     * @param  array{disk: ?string, resolved: array{driver: string, root: ?string, url: ?string, bucket: ?string, endpoint: ?string, host: ?string, prefix: string, visibility: ?string, serve: bool}, under: string, half: bool}  $one
+     * @param  array{disk: ?string, resolved: array{driver: string, root: ?string, url: ?string, bucket: ?string, endpoint: ?string, host: ?string, prefix: string, visibility: ?string, serve: bool}, under: string, half: bool}  $two
+     */
+    private static function placeOf(Repository $config, array $one, array $two): ?bool
+    {
+        $media = self::mediaDirectories($config, $one, $two);
 
         if ($media === null) {
             return false;
         }
 
-        [$first, $second] = $media;
+        [$first, $second, $sameEndpoint] = $media;
 
-        return $first !== $second && str_starts_with($first, $second);
+        if (! str_starts_with($first, $second) && ! str_starts_with($second, $first)) {
+            return false;
+        }
+
+        return $sameEndpoint ? true : null;
     }
 
     /**
-     * Two disks' media directories, comparable: local ones as the filesystem resolves them, or object stores' key
-     * prefixes in one bucket, with whether their endpoints are the same; null when they are not in one namespace.
+     * Two places' media directories, comparable: local ones as the filesystem resolves them, or stores' key prefixes in
+     * one bucket, with whether their endpoints and hosts are the same; null when they are not in one namespace.
      *
+     * @param  array{disk: ?string, resolved: array{driver: string, root: ?string, url: ?string, bucket: ?string, endpoint: ?string, host: ?string, prefix: string, visibility: ?string, serve: bool}, under: string, half: bool}  $one
+     * @param  array{disk: ?string, resolved: array{driver: string, root: ?string, url: ?string, bucket: ?string, endpoint: ?string, host: ?string, prefix: string, visibility: ?string, serve: bool}, under: string, half: bool}  $two
      * @return array{0: string, 1: string, 2: bool}|null
      */
-    private static function mediaDirectories(Repository $config, string $a, string $b, bool $buildA = true): ?array
+    private static function mediaDirectories(Repository $config, array $one, array $two, bool $buildOne = true): ?array
     {
-        $one = self::resolved($config, $a);
-        $two = self::resolved($config, $b);
+        [$a, $b] = [$one['resolved'], $two['resolved']];
 
         /*
          * Local disks by their media directories as the filesystem resolves them — the instance's, so a faked disk counts
          * at its own root. Only a disk configured as local is built here: building an object store needs its SDK.
          */
-        if ($one['driver'] === 'local' && $two['driver'] === 'local') {
-            return [self::localMediaRoot($config, $a, $one, $buildA), self::localMediaRoot($config, $b, $two), true];
+        if ($a['driver'] === 'local' && $b['driver'] === 'local') {
+            return [self::localMediaRoot($config, $one, $buildOne), self::localMediaRoot($config, $two), true];
         }
 
-        if ($one['driver'] !== $two['driver'] || $one['bucket'] !== $two['bucket']) {
+        if ($a['driver'] !== $b['driver'] || $a['bucket'] !== $b['bucket']) {
             return null;
         }
 
         return [
-            ($one['prefix'] === '' ? '' : $one['prefix'].'/').'media/',
-            ($two['prefix'] === '' ? '' : $two['prefix'].'/').'media/',
-            $one['endpoint'] === $two['endpoint'],
+            self::joined(self::joined($a['prefix'], $one['under']), 'media').'/',
+            self::joined(self::joined($b['prefix'], $two['under']), 'media').'/',
+            $a['endpoint'] === $b['endpoint'] && $a['host'] === $b['host'],
         ];
     }
 
     /**
-     * A local disk's media directory: its instance's, so a faked disk counts at its own root — except a scoped disk,
-     * which is not built here (it needs Flysystem's path-prefixing package) and is rooted as the framework would root it.
+     * A local place's media directory: its disk instance's, so a faked disk counts at its own root — except a scoped disk,
+     * which is not built here (it needs Flysystem's path-prefixing package) and is rooted as the framework would root it,
+     * and a `read-through` disk's half written inline, which has no name to build.
      *
-     * @param  array{root: ?string}  $resolved
+     * @param  array{disk: ?string, resolved: array{root: ?string}, under: string, half: bool}  $place
      */
-    private static function localMediaRoot(Repository $config, string $disk, array $resolved, bool $build = true): string
+    private static function localMediaRoot(Repository $config, array $place, bool $build = true): string
     {
-        $scoped = ($config->get("filesystems.disks.{$disk}.driver") ?? null) === 'scoped';
+        $disk = $place['disk'];
+        $root = $place['resolved']['root'];
+        $media = self::joined($place['under'], 'media');
+        /*
+         * Building a local disk creates its root, and one with no root cannot be built: a read-through disk's half is
+         * built only where its root exists already, since nothing may build the read-through disk itself — prune does not
+         * scan one it cannot tell from a scanned disk, and reconcile skips one it reads as the public disk (review of
+         * slice 5c). A disk asked for itself is asked once `mayHold()` says it can hold something, and is built, so a
+         * faked one counts at its own root.
+         */
+        $built = $disk === null || ! $build || ($place['half'] && ($root === null || ! is_dir($root)))
+            || ($config->get("filesystems.disks.{$disk}.driver") ?? null) === 'scoped' || ! MediaBytes::local($disk)
+            ? null
+            : self::normalised(Storage::disk($disk)->path($media));
 
-        return ($scoped || ! $build ? null : self::mediaRoot($disk)) ?? ($resolved['root'] ?? '').'media/';
+        return $built ?? ($root ?? '').$media.'/';
     }
 
     /** @param  array<string, mixed>  $entry */
@@ -651,6 +944,19 @@ final class MediaDisks
 
             if ($resolved['root'] !== null && ($resolved['url'] !== null || self::servesPublicly($entry))) {
                 $roots[] = $resolved['root'];
+            }
+
+            // A read-through disk's half written inline, with a url of its own: named halves are found by name above.
+            try {
+                $places = $resolved['driver'] === 'read-through' ? self::places($config, (string) $name, false) : [];
+            } catch (RuntimeException) {
+                $places = [];
+            }
+
+            foreach ($places as $place) {
+                if ($place['disk'] === null && $place['resolved']['root'] !== null && $place['resolved']['url'] !== null) {
+                    $roots[] = $place['resolved']['root'];
+                }
             }
         }
 

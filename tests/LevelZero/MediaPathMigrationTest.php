@@ -186,3 +186,56 @@ it('refuses a forced prune while media_files.path is not unique, and removes not
         ->and(Artisan::output())->toContain('Refusing: media_files.path is not unique on this database')
         ->and(Storage::disk(MediaDisks::PRIVATE)->exists($orphan))->toBeTrue();
 });
+
+/*
+ * T143. Read-only prune runs on a table the migration refused: each row still claims its own disk's copy, so of two rows
+ * naming one path, neither's file is listed as the other's extra copy — the table an operator is looking at while fixing
+ * the rows the refusal named (review of slice 5c).
+ */
+it('lists neither file of two rows naming one path as the other\'s extra copy, read-only', function (): void {
+    [$a, $path] = pathMigrationStored($this->image);
+    [$b] = pathMigrationStored($this->image);
+
+    $this->migration->down();
+    DB::table('media_files')->where('entry_id', $b)->update(['path' => $path, 'disk' => MediaDisks::PRIVATE]);
+    DB::table('entries')->where('id', $b)->update(['deleted_at' => now()]);
+    Storage::disk(MediaDisks::PRIVATE)->put($path, 'the other entry\'s only copy');
+
+    $exit = Artisan::call('kitsune:media-prune');
+    $output = Artisan::output();
+
+    expect($output)->not->toContain('Extra copies')
+        ->and($output)->not->toContain($path)
+        // ...and says first that every forced command refuses on this table (review of slice 5c).
+        ->and($output)->toContain('media_files.path is not unique on this database: kitsune:media-prune --force and kitsune:media-reconcile --force refuse until the migration')
+        ->and($exit)->toBe(0)
+        ->and(Storage::disk('public')->exists($path))->toBeTrue()
+        ->and(Storage::disk(MediaDisks::PRIVATE)->get($path))->toBe('the other entry\'s only copy');
+});
+
+/*
+ * T170. ...and a copy on a third disk is kept as one the disk its row names does not hold: whether that disk holds the
+ * path is read from its own listing, where before 5c any disk that listed the path for another row answered for it, and
+ * the copy was called removable, only for --force to refuse at the unique-path check (review of slice 5c).
+ */
+it('keeps a third disk\'s copy of a path two rows name, as one the disk its row names does not hold', function (): void {
+    Storage::fake('old-cdn');
+    config(['filesystems.disks.old-cdn' => ['driver' => 'local', 'root' => Storage::disk('old-cdn')->path(''), 'url' => 'https://cdn.example.test']]);
+    [$a, $path] = pathMigrationStored($this->image);
+    [$b] = pathMigrationStored($this->image);
+
+    $this->migration->down();
+    DB::table('media_files')->where('entry_id', $b)->update(['path' => $path, 'disk' => MediaDisks::PRIVATE, 'visibility' => 'private']);
+    Storage::disk(MediaDisks::PRIVATE)->delete($path);
+    Storage::disk('old-cdn')->put($path, 'bytes');
+
+    $exit = Artisan::call('kitsune:media-prune');
+    $output = Artisan::output();
+
+    expect($output)->toMatch('/\[old-cdn\]  '.preg_quote($path, '/').' — .*: kept: the disk its row names does not hold the file — kitsune:media-reconcile --force settles it from the copies on the disks it asks, \[old-cdn\] among them$/m')
+        ->and($output)->not->toContain('removed, once asked again under the lock')
+        // ...a line naming reconcile --force, which refuses on this table, as the warning above it says.
+        ->and($output)->toContain('media_files.path is not unique on this database: kitsune:media-prune --force and kitsune:media-reconcile --force refuse until the migration')
+        ->and($exit)->toBe(0)
+        ->and(Storage::disk('old-cdn')->exists($path))->toBeTrue();
+});

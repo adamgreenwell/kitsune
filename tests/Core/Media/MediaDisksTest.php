@@ -404,6 +404,104 @@ describe('the disks the web serves', function (): void {
             ->toEqualCanonicalizing(['public', 's3-cdn', 'media-cdn', 'public-scoped', 'under-public', 'pub-serve', 'in-docroot']);
     });
 
+    /*
+     * ...and a read-through disk wherever a half of it is served: it answers `url()` from the half that holds the file,
+     * so a half written inline with a url of its own — with a root or none — or rooted in the document root, under the
+     * read-through layer's prefix, serves the disk's files, and a disk rooted inside such a half is served by it (review
+     * of slice 5c). Its url written on the disk is found as ever.
+     */
+    it('lists a read-through disk a half of which the web serves', function (): void {
+        $config = servedConfiguration([
+            'rt-quiet' => ['driver' => 'read-through', 'primary' => ['driver' => 'local', 'root' => storage_path('app/quiet')], 'fallback' => 'local'],
+            'rt-url-half' => ['driver' => 'read-through', 'primary' => ['driver' => 'local', 'root' => storage_path('app/half'), 'url' => 'https://half.example.test'], 'fallback' => 'local'],
+            'rt-docroot-half' => ['driver' => 'read-through', 'primary' => ['driver' => 'local', 'root' => public_path('half')], 'fallback' => 'local'],
+            'inside-url-half' => ['driver' => 'local', 'root' => storage_path('app/half/inner')],
+            // A half with no root but a url of its own: only its url says it is served.
+            'rt-store-half' => ['driver' => 'read-through', 'primary' => ['driver' => 's3', 'bucket' => 'cdn', 'url' => 'https://cdn-half.example.test'], 'fallback' => 'local'],
+            // A half rooted above the document root, and the read-through prefix that puts its media/ inside it.
+            'app-root' => ['driver' => 'local', 'root' => dirname(public_path())],
+            'rt-prefixed' => ['driver' => 'read-through', 'primary' => 'app-root', 'fallback' => 'local', 'prefix' => basename(public_path())],
+        ]);
+
+        expect(MediaDisks::servedDisks($config))->toContain('rt-url-half', 'rt-docroot-half', 'inside-url-half', 'rt-store-half', 'rt-prefixed')
+            ->and(MediaDisks::servedBy($config, 'rt-store-half'))->toBeTrue()
+            ->and(MediaDisks::servedBy($config, 'rt-prefixed'))->toBeTrue()
+            ->and(MediaDisks::servedBy($config, 'app-root'))->toBeFalse()
+            ->and(MediaDisks::servedBy($config, 'rt-quiet'))->toBeFalse()
+            ->and(MediaDisks::servedBy($config, 'rt-url-half'))->toBeTrue()
+            ->and(MediaDisks::servedBy($config, 'rt-docroot-half'))->toBeTrue()
+            ->and(MediaDisks::servedBy($config, 'inside-url-half'))->toBeTrue();
+    });
+
+    // ...and one Laravel could not build — a half not configured, or halves naming each other — serves nothing, and stops
+    // nothing that asks what is served: a disk nothing uses is never built (review of slice 5c).
+    it('serves nothing through a read-through disk Laravel could not build', function (): void {
+        $config = servedConfiguration([
+            'rt-gone' => ['driver' => 'read-through', 'primary' => 'local', 'fallback' => 'gone'],
+            'loop-a' => ['driver' => 'read-through', 'primary' => 'loop-b', 'fallback' => 'local'],
+            'loop-b' => ['driver' => 'read-through', 'primary' => 'loop-a', 'fallback' => 'local'],
+        ]);
+
+        $limit = ini_get('memory_limit');
+        // A missing cycle guard fails here, not by growing into a laptop's unlimited memory: this file runs before the
+        // prune test that caps the same cycle (review of slice 5c).
+        ini_set('memory_limit', (string) (memory_get_usage(true) + 128 * 1024 * 1024));
+
+        try {
+            expect(MediaDisks::servedBy($config, 'rt-gone'))->toBeFalse()
+                ->and(MediaDisks::servedBy($config, 'loop-a'))->toBeFalse()
+                ->and(MediaDisks::servedBy($config, 'loop-b'))->toBeFalse()
+                // Not `not->toContain(a, b, …)`, which passes as soon as any one of them is missing (see above).
+                ->and(array_intersect(['rt-gone', 'loop-a', 'loop-b'], MediaDisks::servedDisks($config)))->toBe([]);
+        } finally {
+            ini_set('memory_limit', $limit);
+        }
+    });
+
+    /*
+     * A disk of a host's own driver that nothing names or serves is never built to be asked whether it is served, whether
+     * it forms a cycle, or whether it nests inside a disk that lists: built so, every trash and read-only check created its
+     * root, and one whose halves led back to it recursed until memory ran out (review of slice 5c, twice).
+     */
+    it('builds no disk of a host\'s own driver that nothing uses', function (string $setup): void {
+        $built = 0;
+        $root = sys_get_temp_dir().'/kitsune-host-unused-'.bin2hex(random_bytes(4));
+        Storage::extend('counting', static function ($app, array $config) use (&$built) {
+            $built++;
+
+            return $app['filesystem']->createLocalDriver($config);
+        });
+        // Its build recurses — over itself, or through a read-through disk configured over it.
+        // Built under the manager's own name: named after its half, Laravel refuses it before building anything.
+        Storage::extend('mirror-self', static fn ($app) => $app['filesystem']->createReadThroughDriver(['driver' => 'read-through', 'primary' => 'host-self', 'fallback' => 'local']));
+        Storage::extend('mirror-y', static fn ($app) => $app['filesystem']->createReadThroughDriver(['driver' => 'read-through', 'primary' => 'loop-y', 'fallback' => 'local'], 'host-x'));
+        config(match ($setup) {
+            'counting' => ['filesystems.disks.host-archive' => ['driver' => 'counting', 'root' => $root]],
+            'self' => ['filesystems.disks.host-self' => ['driver' => 'mirror-self']],
+            default => [
+                'filesystems.disks.host-x' => ['driver' => 'mirror-y'],
+                'filesystems.disks.loop-y' => ['driver' => 'read-through', 'primary' => 'host-x', 'fallback' => 'local'],
+            ],
+        });
+        $limit = ini_get('memory_limit');
+        // A missing guard fails the test, not by growing into a laptop's unlimited memory.
+        ini_set('memory_limit', (string) (memory_get_usage(true) + 128 * 1024 * 1024));
+
+        try {
+            $served = MediaDisks::servedDisks(config());
+            $disk = ['counting' => 'host-archive', 'self' => 'host-self', 'cycle' => 'host-x'][$setup];
+
+            expect($served)->not->toContain($disk)
+                ->and(MediaDisks::within(config(), $disk, 'public', build: false))->toBeFalse()
+                ->and(MediaDisks::cycles(config(), $setup === 'cycle' ? 'loop-y' : $disk))->toBeFalse()
+                ->and($built)->toBe(0)
+                ->and(is_dir($root))->toBeFalse();
+        } finally {
+            ini_set('memory_limit', $limit);
+            exec('rm -rf '.escapeshellarg($root));
+        }
+    })->with(['one that would create its root' => 'counting', 'one built over itself' => 'self', 'one a configured read-through disk reads through' => 'cycle']);
+
     it('refuses a scoped cycle, naming the disk', function (): void {
         $config = servedConfiguration([
             'loop-a' => ['driver' => 'scoped', 'disk' => 'loop-b', 'prefix' => 'a'],
@@ -482,6 +580,284 @@ describe('unsafe and coinciding media disks', function (): void {
         'two endpoints, two buckets' => [['driver' => 's3', 'bucket' => 'b', 'endpoint' => 'e', 'prefix' => 'a'], ['driver' => 's3', 'bucket' => 'c', 'endpoint' => 'f', 'prefix' => 'a'], false],
         'a local disk and a store' => [['driver' => 'local', 'root' => '/nowhere/kitsune-t60'], ['driver' => 's3', 'bucket' => 'b', 'endpoint' => 'e'], false],
     ]);
+
+    /*
+     * T173. A read-through disk is the places its halves reach, each under the prefix the read-through layer sends it:
+     * compared as one object store with no bucket, any two were one place, so prune never scanned the second, and one
+     * whose half was the public disk was another place, so prune removed the public file through it (review of 5c).
+     */
+    it('compares a read-through disk by the places its halves reach', function (array $a, array $b, ?bool $answer): void {
+        config([
+            'filesystems.disks.half-1' => ['driver' => 's3', 'bucket' => 'one', 'endpoint' => 'e', 'prefix' => 'site'],
+            'filesystems.disks.half-2' => ['driver' => 's3', 'bucket' => 'two', 'endpoint' => 'e'],
+            'filesystems.disks.half-3' => ['driver' => 's3', 'bucket' => 'three', 'endpoint' => 'e'],
+            'filesystems.disks.store-a' => $a,
+            'filesystems.disks.store-b' => $b,
+        ]);
+
+        expect(MediaDisks::onePlace(config(), 'store-a', 'store-b'))->toBe($answer)
+            ->and(MediaDisks::onePlace(config(), 'store-b', 'store-a'))->toBe($answer);
+    })->with([
+        'two over distinct stores' => [
+            ['driver' => 'read-through', 'primary' => 'half-1', 'fallback' => 'half-2'],
+            ['driver' => 'read-through', 'primary' => 'half-3', 'fallback' => ['driver' => 's3', 'bucket' => 'four', 'endpoint' => 'e']],
+            false,
+        ],
+        'two names over the same halves' => [
+            ['driver' => 'read-through', 'primary' => 'half-1', 'fallback' => 'half-2'],
+            ['driver' => 'read-through', 'primary' => 'half-1', 'fallback' => 'half-2'],
+            true,
+        ],
+        'one and a disk inside its half\'s media/' => [['driver' => 'read-through', 'primary' => 'half-1', 'fallback' => 'half-2'], ['driver' => 'scoped', 'disk' => 'half-1', 'prefix' => 'media/x'], null],
+        'one and a disk beside its half' => [['driver' => 'read-through', 'primary' => 'half-1', 'fallback' => 'half-2'], ['driver' => 'scoped', 'disk' => 'half-1', 'prefix' => 'x'], false],
+        'one and a disk its half is' => [['driver' => 'read-through', 'primary' => 'half-1', 'fallback' => 'half-2'], ['driver' => 's3', 'bucket' => 'one', 'endpoint' => 'e', 'prefix' => 'site'], null],
+        // Its only pair that is not two places cannot be told — one bucket through another endpoint — so neither can the
+        // disks (review of slice 5c).
+        'one whose half reaches a disk through another endpoint' => [['driver' => 'read-through', 'primary' => ['driver' => 's3', 'bucket' => 'one', 'endpoint' => 'f', 'prefix' => 'site'], 'fallback' => 'half-2'], ['driver' => 's3', 'bucket' => 'one', 'endpoint' => 'e', 'prefix' => 'site'], null],
+        'two sharing one half' => [
+            ['driver' => 'read-through', 'primary' => 'half-1', 'fallback' => 'half-2'],
+            ['driver' => 'read-through', 'primary' => 'half-1', 'fallback' => 'half-3'],
+            null,
+        ],
+        // Laravel sends a path under the read-through disk's prefix, then its half adds its own: site/p/media/.
+        'its prefix beneath its half\'s' => [
+            ['driver' => 'read-through', 'primary' => 'half-1', 'fallback' => 'half-2', 'prefix' => 'p'],
+            ['driver' => 'read-through', 'primary' => ['driver' => 's3', 'bucket' => 'one', 'endpoint' => 'e', 'prefix' => 'site/p'], 'fallback' => ['driver' => 's3', 'bucket' => 'two', 'endpoint' => 'e', 'prefix' => 'p']],
+            true,
+        ],
+        // A scoped disk over one sends its prefix to each half beneath the read-through layer's own: site/q/p/media/.
+        'scoped over one, and a disk its half reaches under the scoped prefix' => [
+            ['driver' => 'scoped', 'disk' => ['driver' => 'read-through', 'primary' => 'half-1', 'fallback' => 'half-2'], 'prefix' => 'p'],
+            ['driver' => 's3', 'bucket' => 'one', 'endpoint' => 'e', 'prefix' => 'site/p'],
+            null,
+        ],
+        'scoped over one, and its half without the scoped prefix' => [
+            ['driver' => 'scoped', 'disk' => ['driver' => 'read-through', 'primary' => 'half-1', 'fallback' => 'half-2'], 'prefix' => 'p'],
+            ['driver' => 's3', 'bucket' => 'one', 'endpoint' => 'e', 'prefix' => 'site'],
+            false,
+        ],
+        'scoped over one with a prefix of its own' => [
+            ['driver' => 'scoped', 'disk' => ['driver' => 'read-through', 'primary' => 'half-1', 'fallback' => 'half-2', 'prefix' => 'q'], 'prefix' => 'p'],
+            ['driver' => 's3', 'bucket' => 'one', 'endpoint' => 'e', 'prefix' => 'site/q/p'],
+            null,
+        ],
+        'the prefixes the other way round' => [
+            ['driver' => 'read-through', 'primary' => 'half-1', 'fallback' => 'half-2', 'prefix' => 'p'],
+            ['driver' => 'read-through', 'primary' => ['driver' => 's3', 'bucket' => 'one', 'endpoint' => 'e', 'prefix' => 'p/site'], 'fallback' => ['driver' => 's3', 'bucket' => 'two', 'endpoint' => 'e', 'prefix' => 'p']],
+            null,
+        ],
+        // A store named by its server's host, as a bucket names an object store's: two hosts may be one server.
+        'two hosts, one root' => [['driver' => 'sftp', 'host' => 'a.example.test', 'root' => '/srv'], ['driver' => 'sftp', 'host' => 'b.example.test', 'root' => '/srv'], null],
+        'one host, one root' => [['driver' => 'sftp', 'host' => 'a.example.test', 'root' => '/srv'], ['driver' => 'sftp', 'host' => 'a.example.test', 'root' => '/srv'], true],
+    ]);
+
+    // ...its prefix beneath a local half's root, as beneath an object store's key prefix, and one layer's beneath the next.
+    it('compares a read-through disk over local halves under its prefix', function (): void {
+        $root = sys_get_temp_dir().'/kitsune-t173-'.bin2hex(random_bytes(4));
+        mkdir($root.'/base/site', 0777, true);
+        mkdir($root.'/fb', 0777, true);
+
+        try {
+            config([
+                'filesystems.disks.base' => ['driver' => 'local', 'root' => $root.'/base'],
+                'filesystems.disks.fb' => ['driver' => 'local', 'root' => $root.'/fb'],
+                'filesystems.disks.site' => ['driver' => 'local', 'root' => $root.'/base/site'],
+                'filesystems.disks.rt-named' => ['driver' => 'read-through', 'primary' => 'base', 'fallback' => 'fb', 'prefix' => 'site'],
+                'filesystems.disks.rt-inline' => ['driver' => 'read-through', 'primary' => ['driver' => 'local', 'root' => $root.'/base'], 'fallback' => ['driver' => 'local', 'root' => $root.'/fb'], 'prefix' => 'site'],
+                'filesystems.disks.rt-bare' => ['driver' => 'read-through', 'primary' => 'base', 'fallback' => 'fb'],
+            ]);
+
+            foreach (['rt-named', 'rt-inline'] as $rt) {
+                expect(MediaDisks::onePlace(config(), $rt, 'site'))->toBeNull()
+                    ->and(MediaDisks::onePlace(config(), 'site', $rt))->toBeNull();
+            }
+
+            // The control: without the prefix, base's media/ and site's lie apart.
+            expect(MediaDisks::onePlace(config(), 'rt-bare', 'site'))->toBeFalse();
+        } finally {
+            exec('rm -rf '.escapeshellarg($root));
+        }
+    });
+
+    it('lays each read-through layer\'s prefix beneath the next one\'s', function (string $prefix, ?bool $answer): void {
+        config([
+            'filesystems.disks.half-1' => ['driver' => 's3', 'bucket' => 'one', 'endpoint' => 'e', 'prefix' => 'site'],
+            'filesystems.disks.half-2' => ['driver' => 's3', 'bucket' => 'two', 'endpoint' => 'e'],
+            'filesystems.disks.half-3' => ['driver' => 's3', 'bucket' => 'three', 'endpoint' => 'e'],
+            'filesystems.disks.inner-rt' => ['driver' => 'read-through', 'primary' => 'half-1', 'fallback' => 'half-2', 'prefix' => 'inner'],
+            'filesystems.disks.outer-rt' => ['driver' => 'read-through', 'primary' => 'inner-rt', 'fallback' => 'half-3', 'prefix' => 'outer'],
+            'filesystems.disks.store' => ['driver' => 's3', 'bucket' => 'one', 'endpoint' => 'e', 'prefix' => $prefix],
+        ]);
+
+        expect(MediaDisks::onePlace(config(), 'outer-rt', 'store'))->toBe($answer);
+    })->with(['where Laravel puts it' => ['site/inner/outer', null], 'the layers the other way round' => ['site/outer/inner', false]]);
+
+    // ...and each scoped layer's beneath the next one's, as `createScopedDriver()` joins them: the inner prefix first.
+    it('lays each scoped layer\'s prefix beneath the next one\'s', function (string $prefix, bool $answer): void {
+        config([
+            'filesystems.disks.half-1' => ['driver' => 's3', 'bucket' => 'one', 'endpoint' => 'e', 'prefix' => 'site'],
+            'filesystems.disks.inner-scoped' => ['driver' => 'scoped', 'disk' => 'half-1', 'prefix' => 'inner'],
+            'filesystems.disks.outer-scoped' => ['driver' => 'scoped', 'disk' => 'inner-scoped', 'prefix' => 'outer'],
+            'filesystems.disks.store' => ['driver' => 's3', 'bucket' => 'one', 'endpoint' => 'e', 'prefix' => $prefix],
+        ]);
+
+        expect(MediaDisks::onePlace(config(), 'outer-scoped', 'store'))->toBe($answer)
+            ->and(MediaDisks::resolved(config(), 'outer-scoped')['prefix'])->toBe('site/inner/outer');
+    })->with(['where Laravel puts it' => ['site/inner/outer', true], 'the layers the other way round' => ['site/outer/inner', false]]);
+
+    it('sees a read-through disk whose half lies inside another\'s media/ as nested in it', function (): void {
+        config([
+            'filesystems.disks.store-a' => ['driver' => 's3', 'bucket' => 'one', 'endpoint' => 'e', 'prefix' => 'a'],
+            'filesystems.disks.store-b' => ['driver' => 'read-through', 'primary' => ['driver' => 's3', 'bucket' => 'one', 'endpoint' => 'e', 'prefix' => 'a/media/x'], 'fallback' => ['driver' => 's3', 'bucket' => 'two', 'endpoint' => 'e']],
+        ]);
+
+        expect(MediaDisks::within(config(), 'store-b', 'store-a'))->toBeTrue()
+            ->and(MediaDisks::within(config(), 'store-a', 'store-b'))->toBeFalse()
+            ->and(MediaDisks::nested(config(), 'store-a', 'store-b'))->toBeTrue();
+    });
+
+    // ...wherever any of its places lies, the fallback's included, inner or outer: asked of its first place alone, prune
+    // listed an inline fallback's files as the public disk's orphans, and removed them (review of slice 5c).
+    it('sees a read-through disk as nested wherever any of its places lies, not only its primary', function (string $inner, string $outer): void {
+        config([
+            'filesystems.disks.store-a' => ['driver' => 's3', 'bucket' => 'one', 'endpoint' => 'e', 'prefix' => 'a'],
+            'filesystems.disks.store-x' => ['driver' => 's3', 'bucket' => 'one', 'endpoint' => 'e', 'prefix' => 'a/media/x'],
+            'filesystems.disks.store-two' => ['driver' => 's3', 'bucket' => 'two', 'endpoint' => 'e'],
+            'filesystems.disks.rt-inline-fallback' => ['driver' => 'read-through', 'primary' => 'store-two', 'fallback' => ['driver' => 's3', 'bucket' => 'one', 'endpoint' => 'e', 'prefix' => 'a/media/x']],
+            'filesystems.disks.rt-named-fallback' => ['driver' => 'read-through', 'primary' => 'store-two', 'fallback' => 'store-x'],
+            'filesystems.disks.rt-outer' => ['driver' => 'read-through', 'primary' => 'store-two', 'fallback' => 'store-a'],
+        ]);
+
+        expect(MediaDisks::within(config(), $inner, $outer))->toBeTrue()
+            ->and(MediaDisks::within(config(), $outer, $inner))->toBeFalse()
+            ->and(MediaDisks::nested(config(), $outer, $inner))->toBeTrue();
+    })->with([
+        'the inner disk\'s fallback, inline' => ['rt-inline-fallback', 'store-a'],
+        'the inner disk\'s fallback, named' => ['rt-named-fallback', 'store-a'],
+        'the outer disk\'s fallback' => ['store-x', 'rt-outer'],
+    ]);
+
+    // ...and one served beside a private disk is refused only where its places reach the private disk's.
+    it('refuses a served read-through disk only where its places reach the private disk\'s', function (string $cdnPrimary, string $cdnFallback, ?string $refusal): void {
+        config([
+            'filesystems.disks.half-1' => ['driver' => 's3', 'bucket' => 'one', 'endpoint' => 'e'],
+            'filesystems.disks.half-2' => ['driver' => 's3', 'bucket' => 'two', 'endpoint' => 'e'],
+            'filesystems.disks.half-3' => ['driver' => 's3', 'bucket' => 'three', 'endpoint' => 'e'],
+            'filesystems.disks.half-1-elsewhere' => ['driver' => 's3', 'bucket' => 'one', 'endpoint' => 'f'],
+            'filesystems.disks.store-cdn' => ['driver' => 'read-through', 'primary' => $cdnPrimary, 'fallback' => $cdnFallback, 'url' => 'https://cdn.example.test'],
+            'kitsune.media.disks.private' => 'half-1',
+        ]);
+
+        $check = fn () => MediaDisks::refuseUnsafeMediaDisks(config());
+
+        $refusal === null
+            ? expect($check)->not->toThrow(RuntimeException::class)
+            : expect($check)->toThrow(RuntimeException::class, "and [store-cdn], which the web serves, reaches the same objects — {$refusal}");
+    })->with([
+        'over two other stores' => ['half-2', 'half-3', null],
+        'through one of its halves' => ['half-2', 'half-1', 'a read-through disk whose halves reach them'],
+        'over it alone' => ['half-1', 'half-1', 'the same places, through a read-through disk'],
+        // Every pair two places but one that cannot be told: through another endpoint (review of slice 5c).
+        'through a half at another endpoint' => ['half-1-elsewhere', 'half-2', 'a read-through disk whose halves reach them'],
+    ]);
+
+    /*
+     * T179. Custody does not hold a read-through disk as a configured media disk: a read copies the file into its
+     * primary, a delete removes it from both halves, only one of which was read, and its listing is its primary's — so
+     * the configuration is refused, as an unsafe one is (review of slice 5c; ADR-042 decision 5, open for Adam).
+     */
+    it('refuses a read-through disk as the public or the private disk', function (string $which, string $disk): void {
+        $root = sys_get_temp_dir().'/kitsune-t179-'.bin2hex(random_bytes(4));
+        mkdir($root.'/p', 0777, true);
+        mkdir($root.'/f', 0777, true);
+
+        try {
+            config([
+                'filesystems.disks.half-1' => ['driver' => 'local', 'root' => $root.'/p'],
+                'filesystems.disks.half-2' => ['driver' => 'local', 'root' => $root.'/f'],
+                'filesystems.disks.store-rt' => ['driver' => 'read-through', 'primary' => 'half-1', 'fallback' => 'half-2'],
+                'filesystems.disks.store-scoped' => ['driver' => 'scoped', 'disk' => 'store-rt', 'prefix' => 'site'],
+                // Built as one by a driver of the host's own: only the instance can say so.
+                'filesystems.disks.store-mirror' => ['driver' => 'mirror'],
+                "kitsune.media.disks.{$which}" => $disk,
+            ]);
+            Storage::extend('mirror', static fn ($app) => $app['filesystem']->createReadThroughDriver(['driver' => 'read-through', 'primary' => 'half-1', 'fallback' => 'half-2'], 'store-mirror'));
+
+            expect(fn () => MediaDisks::refuseUnsafeMediaDisks(config()))->toThrow(
+                RuntimeException::class,
+                sprintf('Refusing: kitsune.media.disks.%s names [%s], a read-through disk', $which, $disk),
+            );
+        } finally {
+            Storage::forgetDisk(['store-rt', 'store-scoped', 'store-mirror', 'half-1', 'half-2']);
+            exec('rm -rf '.escapeshellarg($root));
+        }
+    })->with([
+        'the public disk' => ['public', 'store-rt'],
+        'the private disk, scoped over one' => ['private', 'store-scoped'],
+        'the public disk, built by a driver of the host\'s own' => ['public', 'store-mirror'],
+        'the private disk, built by a driver of the host\'s own' => ['private', 'store-mirror'],
+    ]);
+
+    /*
+     * ...and one whose driver cannot be built is not refused here: it fails where custody first uses it. Asked to build it,
+     * Laravel throws an InvalidArgumentException — a LogicException, which no caller's catch of a RuntimeException takes —
+     * and read-only reconcile, a trash and an erasure would each die on it (review of slice 5c).
+     */
+    it('refuses no configured media disk whose driver cannot be built', function (string $which): void {
+        config([
+            'filesystems.disks.store-missing' => ['driver' => 'not-installed'],
+            "kitsune.media.disks.{$which}" => 'store-missing',
+        ]);
+
+        // Called, not `not->toThrow(Throwable::class)`: Pest reads an interface as a message to match, and passes (see
+        // RoleIsolationTest).
+        MediaDisks::refuseUnsafeMediaDisks(config());
+    })->with(['the public disk' => 'public', 'the private disk' => 'private'])->throwsNoExceptions();
+
+    // In either order: the move-off names the target first, the read-through disk second (review of slice 5c).
+    it('refuses a read-through disk whose half is the other disk as one that cannot be told apart from it', function (string $a, string $b): void {
+        config([
+            'filesystems.disks.store-private' => ['driver' => 's3', 'bucket' => 'p', 'endpoint' => 'e'],
+            'filesystems.disks.rt-other' => ['driver' => 's3', 'bucket' => 'o', 'endpoint' => 'e'],
+            'filesystems.disks.store-rt' => ['driver' => 'read-through', 'primary' => 'rt-other', 'fallback' => 'store-private'],
+        ]);
+
+        expect(fn () => MediaDisks::refuseCoincidingMediaDisks(config(), $a, $b))->toThrow(
+            RuntimeException::class,
+            "Refusing: the [{$a}] and [{$b}] disks cannot be told apart — a read-through disk reaches the other's files through a half",
+        );
+    })->with([
+        'the read-through disk first' => ['store-rt', 'store-private'],
+        'the read-through disk second, as the move-off asks' => ['store-private', 'store-rt'],
+    ]);
+
+    /*
+     * ...and one a driver of the host's own builds, served, whose half is the private disk: its halves are its instance's,
+     * so it is compared by them — read by its configuration alone it was two places with every disk, and a trash left the
+     * file on the web through it. Over stores of its own, it is not refused (review of slice 5c).
+     */
+    it('refuses a served read-through disk a driver of the host\'s own builds over the private disk', function (string $primary, bool $refused): void {
+        $root = sys_get_temp_dir().'/kitsune-built-rt-'.bin2hex(random_bytes(4));
+
+        foreach (['vault', 'kp', 'kf'] as $name) {
+            mkdir($root.'/'.$name, 0777, true);
+            config(["filesystems.disks.{$name}" => ['driver' => 'local', 'root' => $root.'/'.$name]]);
+        }
+
+        try {
+            config(['kitsune.media.disks.private' => 'vault', 'filesystems.disks.store-mirror' => ['driver' => 'mirror', 'url' => 'https://cdn.example.test']]);
+            Storage::extend('mirror', static fn ($app) => $app['filesystem']->createReadThroughDriver(['driver' => 'read-through', 'primary' => $primary, 'fallback' => 'kf'], 'store-mirror'));
+
+            $check = fn () => MediaDisks::refuseUnsafeMediaDisks(config());
+
+            $refused
+                ? expect($check)->toThrow(RuntimeException::class, 'and [store-mirror], which the web serves, reaches the same objects — a read-through disk whose halves reach them')
+                : expect($check)->not->toThrow(RuntimeException::class);
+        } finally {
+            Storage::forgetDisk(['store-mirror', 'vault', 'kp', 'kf']);
+            exec('rm -rf '.escapeshellarg($root));
+        }
+    })->with(['its primary the private disk' => ['vault', true], 'over stores of its own' => ['kp', false]]);
 
     it('refuses one bucket through two endpoints, naming them', function (): void {
         config([

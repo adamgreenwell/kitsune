@@ -14,15 +14,19 @@ use Closure;
 use Illuminate\Filesystem\LocalFilesystemAdapter as LaravelLocalAdapter;
 use Illuminate\Support\Facades\Storage;
 use League\Flysystem\Config;
+use League\Flysystem\FileAttributes;
 use League\Flysystem\Filesystem;
 use League\Flysystem\Local\LocalFilesystemAdapter;
+use League\Flysystem\StorageAttributes;
 use League\Flysystem\UnableToCheckFileExistence;
 use League\Flysystem\UnableToCopyFile;
 use League\Flysystem\UnableToDeleteFile;
+use League\Flysystem\UnableToListContents;
 use League\Flysystem\UnableToMoveFile;
 use League\Flysystem\UnableToProvideChecksum;
 use League\Flysystem\UnableToReadFile;
 use League\Flysystem\UnableToWriteFile;
+use RuntimeException;
 
 /**
  * A local disk that fails on command, and says what was done to it — ADR-042 decision 5's test harness.
@@ -62,6 +66,36 @@ class RefusingDisk extends LocalFilesystemAdapter
 
     /** @var list<string> Paths whose presence cannot be told: asking whether one exists throws, as a store's failure does. */
     public array $unknown = [];
+
+    /** @var list<string> Paths the disk answers absent for while the file stays: an object store's momentary 404. */
+    public array $hidden = [];
+
+    /**
+     * @var list<string> Paths that open and then fail on the first read, as a failing sector or mount does: a stream
+     *                   opens (the file's directory) and its first read fails; a whole-file read or checksum fails as
+     *                   `$unreadable` does.
+     */
+    public array $failReads = [];
+
+    /** Fail a listing once it has listed this many files, as a store that fails part-way through does. */
+    public ?int $failListingAfter = null;
+
+    /** The listing `$failListingAfter` fails (1 for the first); every listing when null. */
+    public ?int $failListingAfterOn = null;
+
+    /** How many times the disk has been listed — and, set, the listing that fails at once (1 for the first). */
+    public int $listings = 0;
+
+    public ?int $failListing = null;
+
+    /** List in descending path order — an order no sort can have come from. */
+    public bool $reverseListing = false;
+
+    /** Log each file listed as `list`, so a test can see how far a listing ran before something else happened. */
+    public bool $logListing = false;
+
+    /** @var list<string> Names listed as files, first, that are not on the disk — ones the test's filesystem cannot hold. */
+    public array $phantoms = [];
 
     /** @var list<array{n: int, kind: string, callback: Closure(string, ?string): void}> */
     private array $triggers = [];
@@ -201,7 +235,7 @@ class RefusingDisk extends LocalFilesystemAdapter
     {
         $this->operation('read', $path, false);
 
-        if (in_array($path, $this->unreadable, true)) {
+        if (in_array($path, $this->unreadable, true) || in_array($path, $this->failReads, true)) {
             throw UnableToReadFile::fromLocation($path, 'unreadable by the test');
         }
 
@@ -216,14 +250,15 @@ class RefusingDisk extends LocalFilesystemAdapter
             throw UnableToReadFile::fromLocation($path, 'unreadable by the test');
         }
 
-        return parent::readStream($path);
+        // The file's directory opens, and its first read fails (EISDIR) on macOS and Linux alike.
+        return parent::readStream(in_array($path, $this->failReads, true) ? dirname($path) : $path);
     }
 
     public function checksum(string $path, Config $config): string
     {
         $this->operation('checksum', $path, false);
 
-        if (in_array($path, $this->unreadable, true)) {
+        if (in_array($path, $this->unreadable, true) || in_array($path, $this->failReads, true)) {
             throw new UnableToProvideChecksum('unreadable by the test', $path);
         }
 
@@ -238,7 +273,55 @@ class RefusingDisk extends LocalFilesystemAdapter
             throw UnableToCheckFileExistence::forLocation($location);
         }
 
+        if (in_array($location, $this->hidden, true)) {
+            return false;
+        }
+
         return parent::fileExists($location);
+    }
+
+    public function listContents(string $path, bool $deep): iterable
+    {
+        $listing = ++$this->listings;
+        $failAfter = $this->failListingAfterOn === null || $this->failListingAfterOn === $listing ? $this->failListingAfter : null;
+
+        if ($listing === $this->failListing) {
+            throw UnableToListContents::atLocation($path, $deep, new RuntimeException('the store could not be listed'));
+        }
+
+        $items = parent::listContents($path, $deep);
+
+        if ($this->reverseListing) {
+            $items = iterator_to_array($items, false);
+            usort($items, static fn (StorageAttributes $a, StorageAttributes $b): int => strcmp($b->path(), $a->path()));
+        }
+
+        $files = 0;
+
+        // Lazily, as the parent lists: a test that watches how far a listing ran must not see this one run ahead.
+        $listed = (function () use ($items): iterable {
+            foreach ($this->phantoms as $phantom) {
+                yield new FileAttributes($phantom);
+            }
+
+            yield from $items;
+        })();
+
+        foreach ($listed as $item) {
+            if ($item->isFile()) {
+                if ($files === $failAfter) {
+                    throw UnableToListContents::atLocation($path, $deep, new RuntimeException('the store failed part-way'));
+                }
+
+                $files++;
+
+                if ($this->logListing) {
+                    self::$log[] = ['event' => 'list', 'path' => $item->path(), 'bytes' => false, 'disk' => $this->name];
+                }
+            }
+
+            yield $item;
+        }
     }
 
     public function root(): string

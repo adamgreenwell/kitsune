@@ -252,6 +252,27 @@ describe('whenOutermost', function (): void {
 });
 
 /*
+ * The lookups prune and custody make by path, disk and visibility: every value as stored — on SQLite, as text and as a
+ * BLOB, which never equal each other there — and no row at all for no values, whatever the engine (review of slice 5c).
+ */
+it('matches each value however it is stored, and nothing for no values', function (): void {
+    [, $path] = custodyFile('public', ['public' => CUSTODY_PNG]);
+    $rows = static fn (array $values): int => MediaCustody::whereStored(DB::table('media_files'), 'path', $values)->count();
+
+    expect($rows([$path]))->toBe(1)
+        ->and($rows([]))->toBe(0)
+        ->and($rows([$path.'x']))->toBe(0);
+
+    if (DB::connection()->getDriverName() === 'sqlite') {
+        DB::update('update media_files set path = cast(path as blob) where path = ?', [$path]);
+
+        expect($rows([$path]))->toBe(1)
+            ->and($rows([]))->toBe(0)
+            ->and(DB::table('media_files')->where('path', $path)->count())->toBe(0);
+    }
+});
+
+/*
  * T15. Bytes moved inside a transaction would stay moved when it rolled back.
  */
 it('refuses to settle inside an open transaction, before asking any disk anything', function (): void {
@@ -335,6 +356,22 @@ describe('the keeper', function (): void {
             ->and($keeper->disk)->toBe('old-cdn')
             ->and($keeper->expected)->toBe(hash('sha256', 'changed by hand'))
             ->and($keeper->targetHolds)->toBeFalse();
+    });
+
+    // ...on a disk named with digits alone too, which came back an integer key and missed the named rule (review of 5c).
+    it('keeps the named copy when none matches, on a disk named with digits alone', function (): void {
+        $root = sys_get_temp_dir().'/kitsune-custody-7-'.bin2hex(random_bytes(4));
+        mkdir($root, 0777, true);
+        $this->roots[] = $root;
+        config(['filesystems.disks.7' => ['driver' => 'local', 'root' => $root]]);
+        RefusingDisk::install('7', $root);
+        [$id] = custodyFile('7', ['7' => 'changed by hand', 'public' => 'changed again']);
+
+        $keeper = MediaCustody::keeper(custodyRow($id), MediaDisks::PRIVATE, '7', [MediaDisks::PRIVATE, '7', 'public']);
+
+        expect($keeper->mode)->toBe(MediaKeeper::NAMED)
+            ->and($keeper->disk)->toBe('7')
+            ->and($keeper->expected)->toBe(hash('sha256', 'changed by hand'));
     });
 
     it('keeps the first copy in the configured order when the named disk holds none, and the copies agree', function (): void {
@@ -668,6 +705,19 @@ describe('removeExtra', function (): void {
         expect(fn () => MediaCustody::removeExtra(DB::connection(), $id, 'old-cdn'))->toThrow(MediaCustodyFailure::class, 'exists and cannot be read');
 
         expect(custodyByteOperations())->toBe([]);
+    });
+
+    // A row path the disks read as another is refused before any disk is asked: removed, the path would be that one
+    // (review of slice 5c).
+    it('refuses a row whose path the disks read as another, asking no disk', function (): void {
+        [$id, $path] = custodyFile('public', ['public' => CUSTODY_PNG, 'old-cdn' => CUSTODY_PNG]);
+        DB::table('media_files')->where('entry_id', $id)->update(['path' => dirname($path).'//'.basename($path)]);
+        RefusingDisk::forgetLog();
+
+        expect(fn () => MediaCustody::removeExtra(DB::connection(), $id, 'old-cdn'))->toThrow(MediaCustodyFailure::class, 'its row\'s path is not written as the disks read it');
+
+        expect(RefusingDisk::$log)->toBe([])
+            ->and(custodyCopies($path))->toBe(['public' => $this->checksum, MediaDisks::PRIVATE => null, 'old-cdn' => $this->checksum]);
     });
 
     it('refuses inside an open transaction', function (): void {

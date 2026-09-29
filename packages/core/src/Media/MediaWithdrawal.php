@@ -76,6 +76,12 @@ final class MediaWithdrawal
         // In key order, so a bulk write withdraws — and locks — its files in the order every other write takes them.
         $files = $this->connection->table('media_files')->whereIntegerInRaw('entry_id', $ids)->orderBy('entry_id')->lockForUpdate()->get()->all();
 
+        // An entry with no media file has nothing to withdraw or publish: no disk, and no configuration of one, is asked
+        // — one a host configured and nothing uses may not resolve (review of slice 5c).
+        if ($files === []) {
+            return;
+        }
+
         $config = self::config();
         $public = MediaDisks::configured($config, 'public');
         $private = MediaDisks::configured($config, 'private');
@@ -216,6 +222,13 @@ final class MediaWithdrawal
         $holding = array_values(array_filter($served, static fn (string $disk): bool => MediaDisks::mayHold($config, $disk)));
         $surfaces = array_values(array_diff(array_unique($reachable ? [$public, ...$holding, $named] : [$public]), [$target]));
 
+        // A row path the disks read as another: copied or removed, it would be that path, another row's file among them.
+        try {
+            MediaBytes::refuseMisnamed($target, $path);
+        } catch (MediaCustodyFailure $failure) {
+            throw $this->refused($id, MediaWithdrawalRefused::MISNAMED, $failure);
+        }
+
         try {
             $held = array_values(array_filter($surfaces, static fn (string $disk): bool => MediaBytes::present($disk, $path)));
             $partials = array_values(array_filter($surfaces, static fn (string $disk): bool => MediaBytes::present($disk, MediaBytes::partial($path))));
@@ -238,7 +251,7 @@ final class MediaWithdrawal
             try {
                 $keeper = MediaCustody::keeper($file, $target, $named, array_values(array_unique([$target, $named, $public, ...$holding])));
             } catch (MediaCustodyFailure $failure) {
-                throw $this->refused($id, MediaWithdrawalRefused::UNREADABLE, $failure);
+                throw $this->refused($id, $failure->reason === 'read-through' ? MediaWithdrawalRefused::READ_THROUGH : MediaWithdrawalRefused::UNREADABLE, $failure);
             }
 
             /*
@@ -263,6 +276,7 @@ final class MediaWithdrawal
                         'coinciding' => MediaWithdrawalRefused::COINCIDING,
                         'matches' => MediaWithdrawalRefused::CHANGED,
                         'unreadable', 'unknown' => MediaWithdrawalRefused::UNREADABLE,
+                        'read-through' => MediaWithdrawalRefused::READ_THROUGH,
                         default => MediaWithdrawalRefused::COPY_FAILED,
                     }, $failure);
                 }
@@ -281,7 +295,11 @@ final class MediaWithdrawal
                     $hash = $keeper->hashes[$disk] ?? MediaBytes::hash($disk, $path);
                     $keeper->refuseToLose($disk, $path, $hash);
                 } catch (MediaCustodyFailure $failure) {
-                    throw $this->refused($id, $failure->reason === 'matches' ? MediaWithdrawalRefused::CHANGED : MediaWithdrawalRefused::UNREADABLE, $failure);
+                    throw $this->refused($id, match ($failure->reason) {
+                        'matches' => MediaWithdrawalRefused::CHANGED,
+                        'read-through' => MediaWithdrawalRefused::READ_THROUGH,
+                        default => MediaWithdrawalRefused::UNREADABLE,
+                    }, $failure);
                 }
 
                 MediaCustody::noteDiffering($disk, $path, $hash, $keeper, 'removing', $target);
@@ -289,7 +307,7 @@ final class MediaWithdrawal
                 try {
                     MediaBytes::delete($disk, $path);
                 } catch (MediaCustodyFailure $failure) {
-                    throw $this->refused($id, MediaWithdrawalRefused::DELETE_FAILED, $failure);
+                    throw $this->refused($id, $failure->reason === 'read-through' ? MediaWithdrawalRefused::READ_THROUGH : MediaWithdrawalRefused::DELETE_FAILED, $failure);
                 }
             }
         } elseif ($partials === [] && self::nowhere($path, $target, $named)) {
@@ -307,7 +325,8 @@ final class MediaWithdrawal
             try {
                 MediaBytes::delete($disk, MediaBytes::partial($path));
             } catch (MediaCustodyFailure $failure) {
-                throw $this->refused($id, MediaWithdrawalRefused::DELETE_FAILED, $failure);
+                // A partial copy a read-through disk reaches through a half is not taken off by a retry (review of 5c).
+                throw $this->refused($id, $failure->reason === 'read-through' ? MediaWithdrawalRefused::READ_THROUGH : MediaWithdrawalRefused::DELETE_FAILED, $failure);
             }
         }
     }

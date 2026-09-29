@@ -8,6 +8,7 @@
 
 declare(strict_types=1);
 
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
@@ -160,6 +161,126 @@ it('completes the force-delete even when the bytes cannot be removed', function 
         Log::shouldHaveReceived('warning')->withArgs(fn (string $message): bool => str_contains($message, $media->path))->atLeast()->once();
     } finally {
         exec('rm -rf '.escapeshellarg($root));
+    }
+});
+
+/*
+ * A served read-through disk is asked only whether it holds the file: one that holds nothing is passed, with nothing said
+ * — every erasure logged it as a copy still on the web — and one whose half holds the file keeps it, and says so, since
+ * custody removes no copy through such a disk (review of slice 5c).
+ */
+it('asks a served read-through disk only whether it holds the file', function (bool $holds): void {
+    $roots = [sys_get_temp_dir().'/kitsune-disp-rtp-'.bin2hex(random_bytes(4)), sys_get_temp_dir().'/kitsune-disp-rtf-'.bin2hex(random_bytes(4))];
+
+    foreach ($roots as $root) {
+        mkdir($root, 0777, true);
+    }
+
+    try {
+        config([
+            'filesystems.disks.rtp' => ['driver' => 'local', 'root' => $roots[0]],
+            'filesystems.disks.rtf' => ['driver' => 'local', 'root' => $roots[1]],
+            'filesystems.disks.rt' => ['driver' => 'read-through', 'primary' => 'rtp', 'fallback' => 'rtf', 'url' => 'https://rt.example.test'],
+        ]);
+        $path = 'media/1/2026/09/gone.png';
+
+        if ($holds) {
+            Storage::disk('rtp')->put($path, 'a copy');
+        }
+
+        Log::spy();
+
+        expect(MediaDisposal::remove(DB::connection(), [['entry_id' => 999999, 'disk' => MediaDisks::PRIVATE, 'path' => $path]]))->toBe($holds ? 0 : 1)
+            ->and(is_file($roots[0].'/'.$path))->toBe($holds);
+
+        $holds
+            ? Log::shouldHaveReceived('warning')->withArgs(fn (string $message): bool => str_contains($message, '[rt:'.$path.']') && str_contains($message, 'it is on a read-through disk'))->once()
+            : Log::shouldNotHaveReceived('warning');
+    } finally {
+        foreach ($roots as $root) {
+            exec('rm -rf '.escapeshellarg($root));
+        }
+    }
+})->with(['one that holds nothing' => false, 'one whose half holds the file' => true]);
+
+/*
+ * An erasure whose row names a read-through disk whose halves name each other never builds it: disposal ran after the
+ * commit and built it, and Laravel's builder recursed until memory ran out — a fatal error no catch can answer, the
+ * request dead and nothing said. The rest is disposed of, and a warning names the disk, sending no one to prune, which
+ * refuses it too (review of slice 5c).
+ */
+it('erases an entry whose row names a read-through cycle without building it, and says so', function (): void {
+    config([
+        'filesystems.disks.loop-a' => ['driver' => 'read-through', 'primary' => 'loop-b', 'fallback' => 'public'],
+        'filesystems.disks.loop-b' => ['driver' => 'read-through', 'primary' => 'loop-a', 'fallback' => 'public'],
+    ]);
+    $entry = aStoredImage($this->imageType);
+    $media = MediaFile::query()->where('entry_id', $entry->getKey())->firstOrFail();
+    DB::table('media_files')->where('id', $media->getKey())->update(['disk' => 'loop-a', 'visibility' => 'private']);
+    Log::spy();
+    $limit = ini_get('memory_limit');
+    // A missing guard fails the test, not by growing into a laptop's unlimited memory.
+    ini_set('memory_limit', (string) (memory_get_usage(true) + 128 * 1024 * 1024));
+
+    try {
+        $entry->forceDelete();
+    } finally {
+        ini_set('memory_limit', $limit);
+    }
+
+    expect(DB::table('entries')->count())->toBe(0)
+        ->and(DB::table('media_files')->count())->toBe(0);
+    Storage::disk(MediaDisks::PRIVATE)->assertMissing($media->path);
+    Log::shouldHaveReceived('warning')->withArgs(fn (string $message): bool => str_contains($message, 'did not ask [loop-a] for ['.$media->path.']')
+        && str_contains($message, 'its read-through disks name each other')
+        && ! str_contains($message, 'kitsune:media-prune removes'))->once();
+});
+
+/*
+ * ...and one the web does not serve, which the erased row named: its row is gone, so the warning points at no copy to
+ * compare it with, and at no prune, which refuses every orphan on a read-through disk — it says to remove the file by
+ * hand through the half that holds it, as prune then does (review of slice 5c).
+ */
+it('says an erased row\'s copy on a read-through disk is removed by hand, not by prune', function (): void {
+    $roots = [sys_get_temp_dir().'/kitsune-disp-rtp-'.bin2hex(random_bytes(4)), sys_get_temp_dir().'/kitsune-disp-rtf-'.bin2hex(random_bytes(4))];
+
+    foreach ($roots as $root) {
+        mkdir($root, 0777, true);
+    }
+
+    try {
+        config([
+            'filesystems.disks.rtp' => ['driver' => 'local', 'root' => $roots[0]],
+            'filesystems.disks.rtf' => ['driver' => 'local', 'root' => $roots[1]],
+            'filesystems.disks.rt' => ['driver' => 'read-through', 'primary' => 'rtp', 'fallback' => 'rtf'],
+        ]);
+        $erased = aStoredImage($this->imageType, 'erased.png');
+        $kept = aStoredImage($this->imageType, 'kept.png');
+        $media = MediaFile::query()->where('entry_id', $erased->getKey())->firstOrFail();
+        Storage::disk('rtp')->put($media->path, Storage::disk(MediaDisks::PRIVATE)->get($media->path));
+        Storage::disk(MediaDisks::PRIVATE)->delete($media->path);
+        // A second row names the disk, so prune still sweeps it.
+        DB::table('media_files')->whereIn('entry_id', [$erased->getKey(), $kept->getKey()])->update(['disk' => 'rt', 'visibility' => 'private']);
+        Log::spy();
+
+        $erased->forceDelete();
+
+        expect(DB::table('entries')->where('id', $erased->getKey())->exists())->toBeFalse();
+        Log::shouldHaveReceived('warning')->withArgs(fn (string $message): bool => str_contains($message, '[rt:'.$media->path.']')
+            && str_contains($message, 'no row keeps it')
+            && str_contains($message, 'refuses it too')
+            && ! str_contains($message, 'kitsune:media-prune` removes it')
+            && ! str_contains($message, 'where the row belongs'))->once();
+
+        $pruned = Artisan::call('kitsune:media-prune', ['--force' => true]);
+
+        expect(Artisan::output())->toContain('Could not remove [rt:'.$media->path.']')
+            ->and($pruned)->toBe(1)
+            ->and(is_file($roots[0].'/'.$media->path))->toBeTrue();
+    } finally {
+        foreach ($roots as $root) {
+            exec('rm -rf '.escapeshellarg($root));
+        }
     }
 });
 

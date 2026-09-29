@@ -42,6 +42,18 @@ final class MediaWithdrawalRefused extends RuntimeException
      */
     public const CHANGED = 'changed';
 
+    /**
+     * A copy is on a read-through disk, which custody neither reads nor removes a copy through (ADR-042 decision 5, open
+     * for Adam): a retry fails the same way until that copy is dealt with by hand (review of slice 5c).
+     */
+    public const READ_THROUGH = 'read_through';
+
+    /**
+     * The row's path is not written as the disks read it — written past `MediaFile`, by a direct insert or an import — so a
+     * copy or removal would act on another path: the row is corrected, and a retry fails the same way until then.
+     */
+    public const MISNAMED = 'misnamed';
+
     public function __construct(
         public readonly int $entryId,
         public readonly string $reason,
@@ -64,7 +76,7 @@ final class MediaWithdrawalRefused extends RuntimeException
 
         parent::__construct(sprintf(
             'Refusing to %s entry %d: its file could not be withdrawn from the web — %s [%s] — so the entry and its file '
-            .'stay as they were (ADR-042 decision 5). The log names the file; retry once the disk answers.',
+            .'stay as they were (ADR-042 decision 5). %s',
             $operation,
             $entryId,
             match ($reason) {
@@ -72,9 +84,16 @@ final class MediaWithdrawalRefused extends RuntimeException
                 self::DELETE_FAILED => 'a copy could not be removed from',
                 self::UNREADABLE => 'a copy could not be read on',
                 self::CHANGED => 'a copy changed while it was read, on',
+                self::READ_THROUGH => 'a copy is on a read-through disk, which custody neither reads nor removes a copy through:',
+                self::MISNAMED => 'its row\'s path is not written as the disks read it, on',
                 default => 'the private disk and the disk holding the file are one place:',
             },
             $disk,
+            match ($reason) {
+                self::READ_THROUGH => 'The log names the file: compare that copy with the others by hand (a partial copy, one custody did not finish writing, needs none), and take it off the read-through disk through the disk each half is — a retry fails the same way until then.',
+                self::MISNAMED => 'The log names the row: correct media_files.path to the path its file is under, as the disks read it, unless another row names that path — a file under the row\'s literal name moved by hand to such a path first — and a retry fails the same way until then.',
+                default => 'The log names the file; retry once the disk answers.',
+            },
         ), 0, $previous);
     }
 }
