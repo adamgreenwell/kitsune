@@ -417,8 +417,14 @@ was buying is GPL-2.0-or-later (Standing Principle #11). The bytes landed in #14
 puts a file in with [ADR-042](decision-log.md): shared by default as ADR-021 said, uploaded through
 `EntryResource` with core owning the staging, and withdrawn from the web on delete. A product's image is a `relation`
 to a media entry an editor has uploaded, which is all [ADR-040](decision-log.md) asked of media ("the only thing
-missing is the bytes"). What ADR-042 still owes — the media list's tiles (decision 6) and the measurement behind
-them — changes how the list shows files, not whether a product can have one. The **DAM** starter is Phase 5's, and
+missing is the bytes"). The media list's tiles have landed too (decision 6): a public image — one of
+`MediaDelivery::INLINE`'s types, on a local public disk served from `APP_URL`'s origin — loads with the page, from the
+admin's own host; a private image, or a public one not yet on the public disk, loads when clicked; and every other
+file — SVG, any non-image, a public file on an object store or a CDN — shows its type and requests nothing. What
+ADR-042 still owes for the media list and the upload is the stage measurement: its tile half, which loading private tiles
+by themselves waits on, and its upload half — the ceiling, submit time and memory. It changes how the list shows files
+and what stage accepts, not whether a product can have one. The rest ADR-042 records as open — decision 3's and slice
+5b's *Not yet*, and decision 5's open questions — is recorded there, and does not bear on it either. The **DAM** starter is Phase 5's, and
 waits on widening `EntryTypeDeclaration` (above).
 
 ## Phase 6 — v1.0 hardening

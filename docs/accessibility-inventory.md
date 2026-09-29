@@ -28,13 +28,13 @@ Half of this spike sat behind an imaginary blocker for a day because nobody ran 
 The honest starting point, and it reframes everything below:
 
 ```bash
-find packages/core/src skeleton/app skeleton/resources -name "*.blade.php"              # 1 file
-find packages/core/src skeleton/app skeleton/resources \( -name "*.css" -o -name "*.js" \)  # 0 files
+find packages/core/src packages/core/resources skeleton/app skeleton/resources -name "*.blade.php"              # 1 file
+find packages/core/src packages/core/resources skeleton/app skeleton/resources \( -name "*.css" -o -name "*.js" \)  # 1 file
 ```
 
-⚠️ **Named source roots, not `find packages skeleton` minus `vendor`** — which is what this section said first, and it reported 30 CSS/JS files and 2 views rather than 0 and 1. Neither figure was wrong about *authored* code: the 30 are Filament's stylesheet and scripts published into `skeleton/public` by `filament:assets`, and the extra view is a compiled Blade cache in `skeleton/storage`. Both are generated, and an exclusion list that has to name every generated tree rots the moment one is added. Listing the roots where code is written cannot drift the same way. The CSS/JS half was caught in review; the view count had the same defect and was not reported, which is the argument for fixing the command rather than the number.
+⚠️ **Named source roots, not `find packages skeleton` minus `vendor`** — which is what this section said first, and it reported 30 CSS/JS files and 2 views rather than 0 and 1 (the figures when #12 was written; `packages/core/resources` joined the roots when review of ADR-042 decision 6 found its script uncounted). Neither figure was wrong about *authored* code: the 30 are Filament's stylesheet and scripts published into `skeleton/public` by `filament:assets`, and the extra view is a compiled Blade cache in `skeleton/storage`. Both are generated, and an exclusion list that has to name every generated tree rots the moment one is added. Listing the roots where code is written cannot drift the same way. The CSS/JS half was caught in review; the view count had the same defect and was not reported, which is the argument for fixing the command rather than the number.
 
-Kitsune authors **one** Blade view and **zero** lines of CSS or JavaScript. The admin is Filament's markup, Filament's stylesheet and Filament's components, configured through PHP. So today the inherited share of the accessible surface is very close to all of it, and the "must build" column is mostly *future* obligations created by features not yet written — not a backlog of broken markup.
+Kitsune authors **one** Blade view, **one** file of JavaScript — `packages/core/resources/js/rich-editor-direction.js`, the editor half of per-block direction — and none of CSS; and, since ADR-042 decision 6, one column whose markup and inline Alpine script are written in a PHP class, which neither command counts: the media list's tiles (`MediaTileColumn`). It carries its own conformance: a private tile is a button named by the file's title, a `role="status"` line says why a file could not be shown, the image is decorative beside the title that names it, and no tile is a link — an image alone in the row's link was axe's `link-name`, measured on that list before it shipped. The admin is Filament's markup, Filament's stylesheet and Filament's components, configured through PHP. So today the inherited share of the accessible surface is very close to all of it, and the "must build" column is mostly *future* obligations created by features not yet written — not a backlog of broken markup.
 
 That will change. Every custom Filament component, every published view and every line of project CSS moves surface from the first column to the second, and each one has to carry its own conformance rather than inheriting it.
 
@@ -44,7 +44,7 @@ That will change. Every custom Filament component, every published view and ever
 
 ### What was measured
 
-`e2e/accessibility.spec.js` runs `@axe-core/playwright` with tags `wcag2a`, `wcag2aa`, `wcag21a`, `wcag21aa` across the five page shapes the admin has — dashboard, entry list, entry create, entry edit, related records. `e2e/rtl.spec.js` runs the same scan again against a server in an RTL locale.
+`e2e/accessibility.spec.js` runs `@axe-core/playwright` with tags `wcag2a`, `wcag2aa`, `wcag21a`, `wcag21aa` across the six page shapes the admin has — dashboard, entry list, entry create, entry edit, related records, and the media list with its tiles. `e2e/rtl.spec.js` runs the same scan again on the same server, signed in as the editor whose saved locale is Arabic (the `admin-rtl` project), so the admin renders RTL per request (ADR-018 rule 2, #38).
 
 **Result: zero violations at any impact level, on every page shape, in both directions**, plus zero at a 390px mobile viewport under RTL.
 
@@ -57,7 +57,7 @@ That is a real result and it is a *narrow* one. Axe evaluates machine-detectable
 | | Evidence |
 |---|---|
 | Document language on every admin page | `lang` asserted non-empty; `ar` under the RTL locale |
-| No detectable WCAG 2.1 A/AA failures in admin chrome | 5 page shapes × 2 directions, 0 violations |
+| No detectable WCAG 2.1 A/AA failures in admin chrome | 6 page shapes × 2 directions, 0 violations |
 | Landmark structure, ARIA validity, label association | Axe rule families, all passing |
 | Contrast in the default theme | Axe contrast rules, passing |
 
@@ -86,7 +86,7 @@ Sixty-four locales, and **six** carry `direction => 'rtl'`: `ar`, `ckb`, `fa`, `
 
 ### The layout mirrors, and here is the proof
 
-`e2e/rtl.spec.js` renders the admin under `APP_LOCALE=ar` on a second server and compares geometry against the LTR render of the same page. The assertion is a **relation**: an element `n` pixels from the left edge in LTR must sit `n` pixels from the *right* edge in RTL.
+`e2e/rtl.spec.js` renders the admin as the Arabic-preferring editor on the same server and compares geometry against the LTR render of the same page. The assertion is a **relation**: an element `n` pixels from the left edge in LTR must sit `n` pixels from the *right* edge in RTL.
 
 At 1280px, across three page shapes, drift was **0 on every landmark** — `.fi-sidebar`, `.fi-main`, `.fi-topbar`, `.fi-sidebar-nav`, `.fi-topbar-end`. The sidebar moves from `[0,320]` to `[960,1280]`; main moves from `[320,1280]` to `[0,960]`.
 
@@ -105,9 +105,9 @@ Logical inset properties, so the browser does the mirroring. Consistent with the
 
 | | Evidence |
 |---|---|
-| `dir` on `<html>` from the app locale | `dir="rtl"`, `lang="ar"`, all five page shapes |
+| `dir` on `<html>` from the app locale | `dir="rtl"`, `lang="ar"`, all six page shapes |
 | Admin layout mirrors exactly | Drift 0 on 5 landmarks × 3 page shapes at 1280px |
-| No horizontal overflow under RTL | `scrollWidth <= clientWidth`, all five shapes |
+| No horizontal overflow under RTL | `scrollWidth <= clientWidth`, all six shapes |
 | Off-canvas drawer parks on the correct side | At 390px the sidebar sits at `left: 406` — beyond the right edge, mirroring LTR's negative offset |
 | No new WCAG failures introduced by mirroring | Axe re-run under RTL, 0 violations |
 | An unknown locale degrades safely | `APP_LOCALE=xx` yields `dir="ltr"`: Laravel resolves the fallback locale before returning a missing key, so Filament's `?? 'ltr'` is dead code rather than a latent bug. Checked because it looked like one |
@@ -216,11 +216,12 @@ Mirrored geometry is not the same as comprehensible reading order. This folds in
 
 | Job | Covers |
 |---|---|
-| `e2e/accessibility.spec.js` | Axe WCAG 2.1 A/AA on five page shapes, LTR; document language; logical-vs-physical CSS ratio as a regression guard |
-| `e2e/rtl.spec.js` (`admin-rtl` project) | `dir`/`lang`, axe under RTL on five page shapes **and again at 390px**, no overflow, **the mirror assertion**, mobile drawer side, and Kitsune's own public page |
+| `e2e/accessibility.spec.js` | Axe WCAG 2.1 A/AA on six page shapes, LTR; document language; logical-vs-physical CSS ratio as a regression guard |
+| `e2e/rtl.spec.js` (`admin-rtl` project) | `dir`/`lang`, axe under RTL on six page shapes **and again at 390px**, no overflow, **the mirror assertion**, mobile drawer side |
+| `tests/Core/PublicDirectionTest.php` | Kitsune's own public layout emits `dir`/`lang` from `Kitsune::textDirection()` under an RTL app locale — moved from `rtl.spec.js`, which it needed a second server for |
 | `tests/Core/TextDirectionTest.php` | `Kitsune::textDirection()` across the six RTL languages, LTR languages, `ar_EG`/`ar-EG`/`AR` subtag forms, and the unknown-locale fallback |
 
-The RTL project needs a second server, which `playwright.config.js` starts itself — so CI needs no orchestration beyond what the browser job already does, and invariant 11 is untouched: none of this reaches the bare-clone Pest suite except the direction unit test, which needs nothing.
+The RTL project needs only a second saved session (`setup-rtl`) on the one server `playwright.config.js` starts itself — so CI needs no orchestration beyond what the browser job already does, and invariant 11 is untouched: none of this reaches the bare-clone Pest suite except the direction unit test, which needs nothing.
 
 ---
 

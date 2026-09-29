@@ -54,6 +54,8 @@ const PAGES = [
     ['entry create', `/admin/${SITE}/c/article/create`],
     ['entry edit', `/admin/${SITE}/c/article/1/edit`],
     ['related records', `/admin/${SITE}/c/article/1/related`],
+    // The media list, whose tiles are Kitsune's own column markup (ADR-042 decision 6).
+    ['media list', `/admin/${SITE}/c/image`],
 ];
 
 /** Layout landmarks, and every one of them is direction-sensitive. */

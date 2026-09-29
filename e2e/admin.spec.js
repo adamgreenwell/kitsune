@@ -33,14 +33,20 @@ test.describe('admin', () => {
          * screen looked wrong.
          */
         const requested = [];
+        const answered = [];
         page.on('request', (request) => requested.push(request.url()));
+        page.on('response', (response) => answered.push({ url: new URL(response.url()), status: response.status() }));
 
-        for (const path of [`/admin/${SITE}`, `/admin/${SITE}/c/article`, `/admin/${SITE}/c/article/1/edit`]) {
+        // The image list too, whose public tiles load files (ADR-042 decision 6) — from this host, never APP_URL's.
+        for (const path of [`/admin/${SITE}`, `/admin/${SITE}/c/article`, `/admin/${SITE}/c/article/1/edit`, `/admin/${SITE}/c/image`]) {
             await page.goto(path);
             await page.waitForLoadState('networkidle');
         }
 
         const own = new URL(page.url()).host;
+
+        // Not vacuous for the tiles: a public one loaded, from here.
+        expect(answered.some(({ url, status }) => url.host === own && url.pathname.startsWith('/storage/media/') && status === 200)).toBe(true);
         const foreign = requested
             .map((url) => new URL(url))
             // A data: URI never leaves the page, which is how the avatars are drawn now.

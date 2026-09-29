@@ -17,6 +17,7 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
@@ -2008,6 +2009,26 @@ class Entry extends Model implements RequiresModelSave
     public function site(): BelongsTo
     {
         return $this->belongsTo(Site::class);
+    }
+
+    /**
+     * A media entry's file row, for display only — the media list's tiles eager-load it, one statement a page (ADR-042
+     * decision 6).
+     *
+     * ⚠️ NOT FOR CUSTODY OR DELIVERY, which read the row again when they act: delivery through `MediaDelivery::fileFor()`,
+     * custody under its own lock (`MediaCustody`, `MediaWithdrawal` take `media_files` for update after `entries`). A
+     * loaded copy is as old as the page: the one column that moves after creation, `disk`, moves under custody's lock
+     * (`MediaFile`), and a decision made on a stale `disk` is the kind decision 5 exists to prevent. A tile that shows a
+     * moment-old answer decides nothing that authorises: a private tile asks the route, which reads the row again and
+     * authorises; a public tile asks the web server for the public disk's path, where a stale answer can find only what
+     * the web still serves to anyone — withdrawal and trash take a file off every served disk under custody's lock, and
+     * paths are unique (decision 5) — or nothing, and then shows its type; every other tile asks nothing.
+     *
+     * @return HasOne<MediaFile, $this>
+     */
+    public function mediaFile(): HasOne
+    {
+        return $this->hasOne(MediaFile::class);
     }
 
     /**

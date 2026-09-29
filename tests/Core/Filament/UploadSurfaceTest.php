@@ -173,8 +173,10 @@ it('mints no temporary URL anywhere in the packages', function () use ($withoutC
         }
     }
 
-    // Not vacuous: the files that deliver and store media are among those read.
-    expect(implode("\n", $files))->toContain('Media/MediaDelivery.php', 'Media/MediaDisks.php');
+    // Not vacuous: the files that deliver and store media, and the tiles that show it, are among those read.
+    expect(implode("\n", $files))->toContain('Media/MediaDelivery.php')
+        ->and(implode("\n", $files))->toContain('Media/MediaDisks.php')
+        ->and(implode("\n", $files))->toContain('Filament/Tables/MediaTileColumn.php');
 
     $offenders = array_values(array_filter($files, static fn (string $file): bool => preg_match(TEMPORARY_URL_CONSTRUCTS, $withoutComments($file)) === 1));
 

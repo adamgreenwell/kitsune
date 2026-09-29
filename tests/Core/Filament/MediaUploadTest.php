@@ -22,6 +22,7 @@ use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Exceptions;
+use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Facades\Storage;
 use Kitsune\Core\Auth\Permissions;
 use Kitsune\Core\Filament\MediaUpload;
@@ -29,6 +30,7 @@ use Kitsune\Core\Filament\Resources\Entries\EntryResource;
 use Kitsune\Core\Filament\Resources\Entries\Pages\CreateEntry;
 use Kitsune\Core\Filament\Resources\Entries\Pages\EditEntry;
 use Kitsune\Core\Filament\Resources\Entries\Pages\ListEntries;
+use Kitsune\Core\Http\Controllers\MediaDownloadController;
 use Kitsune\Core\Media\MediaCustodyFailure;
 use Kitsune\Core\Media\MediaDisks;
 use Kitsune\Core\Media\MediaIntake;
@@ -578,7 +580,13 @@ describe('a media type\'s pages', function (): void {
     });
 
     /* Decision 16's other half: whether a file is served to anyone with its link, and where that link goes. */
-    it('shows a public, shared file as public, shared, and linked to the public disk\'s direct URL', function (): void {
+    /*
+     * Its link is the path on the admin's own host (ADR-042 decision 6; Adam, decision 20) — with the disk's URL made
+     * absolute on `APP_URL` first, as a real install's is, since the suite's is relative already.
+     */
+    it('shows a public, shared file as public, shared, and linked to its path on the admin\'s own host', function (): void {
+        config(['app.url' => 'http://localhost']);
+        Storage::fake('public', ['url' => 'http://localhost/storage']);
         $entry = storedMedia(UPLOAD_ACTION_PNG, 'photo.png', $this->type, 'public', siteOnly: false);
         $path = MediaFile::query()->where('entry_id', $entry->id)->value('path');
 
@@ -586,8 +594,41 @@ describe('a media type\'s pages', function (): void {
 
         expect($components['media_file_visibility']->getState())->toBe('Public')
             ->and($components['media_file_sharing']->getState())->toBe('Every site in the organisation')
-            ->and($components['media_file_link']->getUrl())->toBe(Storage::disk('public')->url($path));
+            ->and($components['media_file_link']->getUrl())->toBe('/storage/'.$path);
     });
+
+    /* Decision 20's "otherwise": a public file this application's web server does not serve is opened where it is served. */
+    it('links a public file on a CDN to its absolute URL there', function (): void {
+        config(['app.url' => 'https://example.test']);
+        Storage::fake('public', ['url' => 'https://cdn.example.test/storage']);
+        $entry = storedMedia(UPLOAD_ACTION_PNG, 'photo.png', $this->type, 'public', siteOnly: false);
+        $path = MediaFile::query()->where('entry_id', $entry->id)->value('path');
+
+        $components = fileSection($entry);
+
+        expect($components['media_file_link']->getUrl())->toBe('https://cdn.example.test/storage/'.$path)
+            ->and($components['media_file_link']->isHidden())->toBeFalse();
+    });
+
+    /*
+     * And for everything not served directly — a private file, or a public one still on the private disk — the route that
+     * authorises first, inside the panel where it is registered.
+     */
+    it('links a file not served directly to the route that authorises first', function (string $visibility): void {
+        PanelTenancy::enter($this->site);
+        Route::get('/admin/{tenant}/media/{media}', MediaDownloadController::class)->where('media', '[0-9]+')->name('filament.admin.media.download');
+        app('router')->getRoutes()->refreshNameLookups();
+        $entry = storedMedia(UPLOAD_ACTION_PNG, 'photo.png', $this->type, $visibility);
+
+        if ($visibility === 'public') {
+            DB::table('media_files')->where('entry_id', $entry->id)->update(['disk' => MediaDisks::PRIVATE]);
+        }
+
+        $link = fileSection($entry->fresh())['media_file_link'];
+
+        expect($link->getUrl())->toBe(route('filament.admin.media.download', ['tenant' => $this->site, 'media' => $entry->getKey()]))
+            ->and($link->isHidden())->toBeFalse();
+    })->with(['a private file' => 'private', 'a public file awaiting publication' => 'public']);
 
     /*
      * ⚠️ A HIDDEN SECTION STILL BUILDS ITS CONTENTS: filling a form walks a hidden component's children (validation

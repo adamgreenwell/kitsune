@@ -30,6 +30,8 @@ const PAGES = [
     ['entry create', `/admin/${SITE}/c/article/create`],
     ['entry edit', `/admin/${SITE}/c/article/1/edit`],
     ['related records', `/admin/${SITE}/c/article/1/related`],
+    // The media list, whose tiles are Kitsune's own column markup (ADR-042 decision 6).
+    ['media list', `/admin/${SITE}/c/image`],
 ];
 
 test.describe('accessibility (automated half of #12)', () => {
@@ -80,8 +82,10 @@ test.describe('RTL readiness (ADR-018)', () => {
      * which would stay green even if every RTL layout in the admin were
      * broken. Caught in review.
      *
-     * The real render check now lives in `rtl.spec.js`, against a second
-     * server running under APP_LOCALE=ar.
+     * The real render check now lives in `rtl.spec.js`, on the same server,
+     * signed in as the editor whose saved locale is Arabic (the `admin-rtl`
+     * project, via `setup-rtl`), so the admin renders RTL per request
+     * (ADR-018 rule 2, #38) rather than per process.
      *
      * ⚠️ This block used to claim that check "needs the locale switcher that
      * does not exist yet". THAT WAS WRONG, and one command disproved it:
