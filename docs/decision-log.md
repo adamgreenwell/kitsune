@@ -3768,7 +3768,7 @@ every row, asserted so that a later change to populate it is a visible decision 
 
 ## ADR-042 — The media admin: shared by default, uploaded through one path, and withdrawn from the web when deleted
 
-**Status:** Decided · 2026-09-23 · **Amended 2026-09-23** — *Enforced by* reports the slice declaring media types, which landed, the slice making media shared by default, and the slice owning the upload staging, whose decision 4 records what was built and corrects its reason for not relying on Livewire's own sweep; decision 2 records how the widening was built, the three changes its measurement led Adam to make and the three costs Adam accepted, and AGENTS.md §4 is amended for an org-leading index · **Amended 2026-09-24** — decision 5 records what slice 5a built, Adam's decisions on the lock, rule 2's fallbacks, durability and reconcile's reach, and the 5a/5b split; it corrects its own orders for a trash and an erasure and the residue each leaves, and *Measured — decision 5* replaces the lock time this entry owed · **Amended 2026-09-25** — decision 5 records what slice 5b built — `kitsune:media-reconcile`, prune's removal of extra copies, the third write under 2b, and `media_files.path` unique and written as the disks read it — Adam's decisions on the keeper's order and reach, unreadable copies against exposure, reconcile's exit codes and unique paths, and *Measured — decision 5, slice 5b* · **Amended 2026-09-26** — decision 5 records Adam's answers to the four questions slice 5b left — no copy whose presence cannot be told is set aside, the unique-path migration sets no lock timeout, prune reads rows in batches, and a copy that cannot be read fails the read-only check — and what slice 5c built, and leaves one question open, for Adam: whether custody should hold a read-through disk · **Amended 2026-09-28** — *Measured — decision 5, slice 5c* records what slice 5c measured, and *Enforced by* reports slice 5c, which landed; decision 5 records how prune asks the volume whether a row reaches a listed name in another spelling (Codex, #155), decision 8 leaves a second question open, for Adam: whether paths should be unique as the volumes fold them, and decision 9 a third: whether a local disk's root whose stat is refused should fail the step that asks it, where `MediaDisks::mayHold()` takes it to hold nothing; and `MediaFile` refuses a path ending in custody's partial suffix, in any case a volume reads as it (decision 8, as built) · **Amended 2026-09-29** — decision 3 records what was built and Adam's answers to the four questions it left open — tiles as a slice of their own, one visibility and one sharing choice for each upload, an acknowledgement for *public*, and the File section's facts and link — and *Enforced by* reports it; a submitted upload Filament stops before the handler is left to the intake sweep, a default for Adam to overrule, which narrows the *Staging* criterion and decision 4's *What it keeps, exactly* to the staged files the handler receives and removes; decision 4's *What this costs* is corrected on what a full disk hands the handler; and decision 1's note that the create page still makes a file-less media entry is replaced by the 404 and the unlocked read it leaves · **Amends `field-types.md` §5's published `media_files` shape** (`path` becomes unique, with its migration, and never ends in custody's partial suffix, amended 2026-09-28) · **Delivers ADR-021's "the media library defaults to shared"**, which the store path shipped in #145 contradicts, and **amends ADR-021** — for media types, the admin's tenant scope admits the org's shared rows, and the org-shared slug rule becomes a guard · **Amends ADR-016 and `field-types.md` §5** — a media type is any type declared as one, not a system type · **Amends ADR-041** — moves private files to a disk that is never served, decides that a soft-deleted public file's bytes leave the public disk and that a force-delete withdraws a public file before its rows go and then disposes of the path on both media disks — amended 2026-09-24: a force-delete locks its rows and files, deletes the rows, withdraws every served copy, commits, and then disposes of the path on every disk that could hold it — records that Livewire's staging was never under the upload rules as shipped, and brings its *Enforced by* up to date · **Amends `architecture.md`'s published `entry_types` shape** (gains `is_media`, with its migration) · **Phase 5 (ADR-011, v1.0)** — the admin half ADR-041 left, and the half the DAM starter waits on
+**Status:** Decided · 2026-09-23 · **Amended 2026-09-23** — *Enforced by* reports the slice declaring media types, which landed, the slice making media shared by default, and the slice owning the upload staging, whose decision 4 records what was built and corrects its reason for not relying on Livewire's own sweep; decision 2 records how the widening was built, the three changes its measurement led Adam to make and the three costs Adam accepted, and AGENTS.md §4 is amended for an org-leading index · **Amended 2026-09-24** — decision 5 records what slice 5a built, Adam's decisions on the lock, rule 2's fallbacks, durability and reconcile's reach, and the 5a/5b split; it corrects its own orders for a trash and an erasure and the residue each leaves, and *Measured — decision 5* replaces the lock time this entry owed · **Amended 2026-09-25** — decision 5 records what slice 5b built — `kitsune:media-reconcile`, prune's removal of extra copies, the third write under 2b, and `media_files.path` unique and written as the disks read it — Adam's decisions on the keeper's order and reach, unreadable copies against exposure, reconcile's exit codes and unique paths, and *Measured — decision 5, slice 5b* · **Amended 2026-09-26** — decision 5 records Adam's answers to the four questions slice 5b left — no copy whose presence cannot be told is set aside, the unique-path migration sets no lock timeout, prune reads rows in batches, and a copy that cannot be read fails the read-only check — and what slice 5c built, and leaves one question open, for Adam: whether custody should hold a read-through disk · **Amended 2026-09-28** — *Measured — decision 5, slice 5c* records what slice 5c measured, and *Enforced by* reports slice 5c, which landed; decision 5 records how prune asks the volume whether a row reaches a listed name in another spelling (Codex, #155), decision 8 leaves a second question open, for Adam: whether paths should be unique as the volumes fold them, and decision 9 a third: whether a local disk's root whose stat is refused should fail the step that asks it, where `MediaDisks::mayHold()` takes it to hold nothing; and `MediaFile` refuses a path ending in custody's partial suffix, in any case a volume reads as it (decision 8, as built) · **Amended 2026-09-29** — decision 3 records what was built and Adam's answers to the four questions it left open — tiles as a slice of their own, one visibility and one sharing choice for each upload, an acknowledgement for *public*, and the File section's facts and link — and *Enforced by* reports it; a submitted upload Filament stops before the handler is left to the intake sweep, a default for Adam to overrule, which narrows the *Staging* criterion and decision 4's *What it keeps, exactly* to the staged files the handler receives and removes; decision 4's *What this costs* is corrected on what a full disk hands the handler; and decision 1's note that the create page still makes a file-less media entry is replaced by the 404 and the unlocked read it leaves; decision 6 records what was built and Adam's answers to what it left open — a click fetches as an Ajax request, only the inline types show as images, a same-origin path only for a local disk on `APP_URL`'s origin, and *Open file* on the helper — reads the measurement's "constant rather than one per row" as the tiles' one statement a page, and *Enforced by* reports it · **Amends `field-types.md` §5's published `media_files` shape** (`path` becomes unique, with its migration, and never ends in custody's partial suffix, amended 2026-09-28) · **Delivers ADR-021's "the media library defaults to shared"**, which the store path shipped in #145 contradicts, and **amends ADR-021** — for media types, the admin's tenant scope admits the org's shared rows, and the org-shared slug rule becomes a guard · **Amends ADR-016 and `field-types.md` §5** — a media type is any type declared as one, not a system type · **Amends ADR-041** — moves private files to a disk that is never served, decides that a soft-deleted public file's bytes leave the public disk and that a force-delete withdraws a public file before its rows go and then disposes of the path on both media disks — amended 2026-09-24: a force-delete locks its rows and files, deletes the rows, withdraws every served copy, commits, and then disposes of the path on every disk that could hold it — records that Livewire's staging was never under the upload rules as shipped, and brings its *Enforced by* up to date · **Amends `architecture.md`'s published `entry_types` shape** (gains `is_media`, with its migration) · **Phase 5 (ADR-011, v1.0)** — the admin half ADR-041 left, and the half the DAM starter waits on
 
 ADR-041 decided how media bytes are stored, delivered, sanitised and disposed of, and #145–#148 built all of it:
 `MediaLibrary::store()`, `MediaIntake`, the panel route that authorises private files, disposal, prune, and SVG
@@ -3985,11 +3985,15 @@ of the admin (see *Open questions*).
 >   result says so.
 > - **The File section shows what is stored and a link (Adam, decision 16, 2026-09-29):** the file's type, size,
 >   dimensions where known, visibility, whether it is shared or this site's only, when it was stored — in the site's
->   timezone — and *Open file* through `MediaDelivery::urlFor()`'s answer — the direct URL for a file on the public
->   disk, the route that authorises first for everything else. The direct URL is absolute and on `APP_URL`'s host
->   (decision 6), so where the admin is served on another host — a site's own, or the browser suite's server against
->   `APP_URL=http://localhost` — the link names `APP_URL`'s until decision 6's same-origin helper exists. No preview
->   until tiles, and no `ImageEntry` or `temporaryUrl()`. The view page renders the same form, so it shows the section
+>   timezone — and *Open file* through ~~`MediaDelivery::urlFor()`'s answer~~ `MediaDelivery::adminUrlFor()` since
+>   decision 6 (Adam, decision 20, below), `urlFor()`'s answer where there is no same-origin path — the direct URL for a file on the public
+>   disk, the route that authorises first for everything else. On the default public disk the direct URL is absolute
+>   and built from `APP_URL` (decision 6), so where the admin is served on another host — a site's own, or the browser
+>   suite's server against `APP_URL=http://localhost` — ~~the link names `APP_URL`'s until decision 6's same-origin
+>   helper exists~~ the link takes the same-origin path since decision 6 (Adam, decision 20, below). Where there is none,
+>   the link is the disk's own URL as `urlFor()` gives it: absolute on the host that serves the file, for a disk served
+>   elsewhere such as a CDN. No preview
+>   ~~until tiles~~ in the section, with tiles as without them (decision 20), and no `ImageEntry` or `temporaryUrl()`. The view page renders the same form, so it shows the section
 >   too. Filament builds a hidden section's contents all the same, so the section builds nothing on any other type's
 >   page; on a media entry's it is built twice in a request — when the form is filled or validated, and again when it
 >   renders — and reads the row once each time.
@@ -5267,6 +5271,57 @@ the browser suite, where `APP_URL` is `http://localhost` while the admin is serv
 tile shows a placeholder and fetches through the authorised route when clicked. Loading private tiles
 automatically waits for the measurement below.
 
+> ⚠️ **Amended 2026-09-29 — decision 6 as built, and Adam's answers to what it left open.**
+>
+> - **A click fetches the file as an Ajax request, and shows it as an image (Adam, decision 17, 2026-09-29).** The
+>   placeholder is a button naming the file; clicked, it asks the route with `X-Requested-With`, so an expired session
+>   answers 401 rather than a redirect that would record the file as where to land after signing in, and each refusal
+>   says what it was — signed out, no longer allowed (403), or gone (404) — in a status line beside the tile. The bytes
+>   are shown from a `blob:` URL. What the page has asked for it keeps until it unloads — the request, and once it has
+>   answered the file — keyed by the route's URL: Livewire makes a row anew when a sort, a search, an upload or a page
+>   change moves it, and the tile would otherwise ask again for a file this page has already shown, or is still
+>   fetching. A second click or a double-click asks nothing more; a refusal is not kept, so the next click asks again.
+>   Nothing is kept past the page, which is what `no-store` asks of the browser.
+> - **A tile shows an image only for `MediaDelivery::INLINE`'s types (Adam, decision 18, 2026-09-29)** — PNG, JPEG,
+>   GIF, WebP and AVIF, public or private: the list a private response is sent inline for, so a tile and the route
+>   never disagree. Everything else, SVG included, is its type as an icon, and requests nothing.
+> - **The helper gives a path only for a local disk whose URL is relative or on `APP_URL`'s origin (Adam, decision 19,
+>   2026-09-29):** `MediaDelivery::sameOriginUrlFor()`, the path of the disk's own URL, keeping a subdirectory's
+>   prefix. An object store, or a local disk whose URL names a CDN or another host, gets none, and its public tiles show
+>   their type and request nothing — as does a path the browser would read as another host's or resolve against the
+>   page: one starting `//`, one holding a `\` (a browser reads it as `/` in an http(s) URL, so `/\host` is a host), or
+>   one without a leading slash. It shares `urlForFile()`'s test of what is served directly
+>   (`MediaDelivery::servesDirectly()`): a file is served directly only when its row is public and names the public
+>   disk. A public row on another disk, or a private row on any disk, the public one included, is delivered as private.
+> - **The File section's *Open file* moves to the helper (Adam, decision 20, 2026-09-29)**
+>   (`MediaDelivery::adminUrlFor()`): the path on the admin's own host where there is one, the absolute answer
+>   otherwise — a public file on a CDN is still opened there — and the route for everything else. No preview in the
+>   section.
+> - **As built** (`MediaTileColumn`). The tile is the media list's first column, Kitsune's own markup
+>   (`HasEmbeddedView`), hidden on every other type's list, never sortable or searchable. The table eager-loads the
+>   page's files in one statement against `media_files`' unique `entry_id` — on the table's query, not
+>   `getEloquentQuery()`, whose plan decision 2 measured, and not when Filament resolves a single record for an
+>   action — through `Entry::mediaFile()`, a relation for display only: delivery keeps reading the row through
+>   `fileFor()` when it acts, and custody under its own lock (`MediaCustody`, `MediaWithdrawal`); neither reads the
+>   loaded relation. The column reads the relation only when it is loaded, and never asks for it. No
+>   tile is a link — the row's title is: wrapped in the row's link, a placeholder's button is a control inside a link,
+>   and an image with no words of its own is a link with no name (axe's `link-name`, measured on this list); the image
+>   is decorative beside the title. The placeholder's root is `wire:ignore`, so a row that keeps its place is not
+>   touched by a re-render, and its route URL is the same on every render, so a tile made anew finds what the page
+>   kept. A public tile shows its type if its image will not load — a file trashed after the page rendered, or one
+>   whose bytes are not where its row says, the same request — including when it failed before Alpine started and
+>   nobody was listening. A shown private tile says so to a screen reader, in its status line, and its button is marked
+>   done (`aria-disabled`), so a second press is announced rather than met with silence; its name says it is showing
+>   the file — a tile made anew from what the page kept too, which announces nothing, since a sort would otherwise
+>   announce every one (Codex, #158). What arrives must be one of
+>   `INLINE`'s types, and a redirect is not followed.
+> - **Found on the way, unconfirmed, for the measurement.** Under a browser mutation that loads every private tile
+>   with the page, one upload on that page did not complete — but that run's upload helper was later found to take no
+>   file on a reopened modal by itself — and, re-run with the helper fixed, the long browser test timed out in two of
+>   four runs after its first upload had completed, at a step not recorded. With click-to-load, uploads complete before
+>   and after a click (the browser suite). Whether an upload suffers while private tiles load by themselves is for the
+>   stage measurement to answer.
+
 **7. A refusal Kitsune makes is shown as Kitsune wrote it, escaped as text, and nothing else is.** `MediaIntake`'s
 refusals — they name the rule and, for SVG, the commands that enable it — and `MediaLibrary`'s refusals of a
 visibility and of a file over the ceiling after sanitising are shown verbatim, thrown as a dedicated exception
@@ -5287,7 +5342,13 @@ something: on the stage server, with PHP-FPM and nginx limited to ADR-027's floo
 limits its container, from `Kitsune::FLOOR_*`, and the limits recorded with the numbers. Before private tiles load
 automatically, record here: the cost of one private tile at p50 and p95 for an owner and for a non-owner holding
 the grant, with a small PNG, a 200 KB JPEG and a 4 MB JPEG; how many tile requests a sort, a page change and an
-upload each trigger under `no-store`; and whether the list's query count is constant rather than one per row.
+upload each trigger under `no-store`; and whether the list's query count is constant rather than one per row ~~.~~
+— which the tiles keep, adding one statement a page whatever its size (decision 6, as built); the list already reads
+each row's stored scope once for the policy, the measured cost `EntryPolicyScopeCostTest` pins, and that is not the
+tiles' to change. With click-to-load, the page, a sort, a search, an upload and a page change each ask the route for
+nothing, and a clicked file is asked for once in the page — not again when clicked again or double-clicked, after an
+upload, through a sort that moves its row or a search that drops it and brings it back, or through a page change
+there and back, nor when its row is made anew while the file is still arriving (the browser suite measures each).
 Then, for the upload half: the effective upload ceiling on stage, confirmed with a real 4 MB upload, and submit
 time and peak memory for several files at that ceiling, against PHP-FPM's `max_execution_time`.
 
@@ -6399,7 +6460,8 @@ When it lands:
 >   column withheld; the File section only on a media entry — building nothing on any other type's page, and reading
 >   a media entry's row once each time it is built, at fill and at render — with its type, size, dimensions only
 >   where known, a missing file said so, visibility, sharing, when it was stored — the instant the row records, in
->   the site's timezone — and a link: the public disk's direct URL for a public file, none where no route is
+>   the site's timezone — and a link: ~~the public disk's direct URL~~ its path on the admin's own host since decision
+>   6 (Adam, decision 20; *Amended 2026-09-29 — decision 6 landed*, below) for a public file, none where no route is
 >   registered, and no image.
 > - **Decision 7** (9: `MediaUploadTest`, one `MediaTypesTest`) — `MediaIntake`'s refusals of a type, of contents
 >   that are not what the name says, of an SVG with no sanitiser and of a file over the ceiling, and `MediaLibrary`'s
@@ -6412,8 +6474,9 @@ When it lands:
 > In the browser besides, `media-upload.spec.js`: the owner uploads through FilePond, and the file is stored private,
 > shared and published, listed, with nothing left staged; *public* without the confirmation is stored private and says
 > so, in a warning titled as uploaded; *public* confirmed lands on the public disk, its File section says *Public* and
-> links to the public disk's direct URL, whose path the suite fetches and is served with no PHP in the path (the
-> host is `APP_URL`'s), and the modal opens private again; two files each report their own result; a media
+> links to ~~the public disk's direct URL, whose path the suite fetches and is served with no PHP in the path (the
+> host is `APP_URL`'s)~~ its path on the admin's own host since decision 6 (Adam, decision 20) — a path with no host,
+> which the suite fetches and is served with no PHP in the path — and the modal opens private again; two files each report their own result; a media
 > list offers Upload and no create page, which answers 404, beside an article list keeping both; a media entry's edit
 > and view pages show its type, visibility, sharing and an *Open file* link to the route that authorises first, and
 > no status, beside an article's. And decision 2's browser half, with files uploaded here: a shared upload is listed,
@@ -6422,11 +6485,58 @@ When it lands:
 > as the control; on another org's site it is refused and not offered, beside the rival's own file; one kept to this
 > site is not listed or offered there and answers 404, and is served where it was kept.
 >
-> **Not yet, and not decision 3's to close:** the upload half of the stage measurement; tiles (decision 6); two
+> **Not yet, and not decision 3's to close:** the upload half of the stage measurement; ~~tiles (decision 6)~~ —
+> built with decision 6 (*Amended 2026-09-29 — decision 6 landed*, below); two
 > refusals thrown as `MediaRefused` that no case reaches — `ext-fileinfo` missing and a content type that cannot be
 > read; `getUploadedFileUsing()`, which nothing observable tells
 > apart; and the create page's unlocked read of the flag, which a create racing `kitsune:media-types --force` can pass
 > (decision 1 records it; that command reports what it leaves).
+
+> ⚠️ **Amended 2026-09-29 — decision 6 landed**, and each guard was removed in turn and its test watched fail, beside a
+> run of the same tests passing unmutated: 54 mutations, 38 on SQLite and sixteen in the browser. By family:
+> - **The helper** (15: `MediaDeliveryTest`) — a directly served file's path on the admin's own host, never absolute,
+>   keeping a subdirectory's prefix, with either scheme's own port named and a scheme or host in capitals; none for a
+>   CDN, another port or scheme, a protocol-relative URL, a path the browser would read as another host's (`//…`, or
+>   one holding a `\`) or resolve against the page (no leading slash, or no scheme), an object store, a public file on
+>   the private disk or on `local`, or a private file, on the private disk or on the public one — the disk and the
+>   visibility deciding together; and `urlFor()` still absolute beside it.
+> - **The column** (20: `MediaTileTest`) — the page's files read in one statement and nothing at all while the tiles
+>   render, none for a single record resolved for an action, none for a row not given its file and none on any other
+>   type's list, where the column is hidden and the eager load asks nothing; a public image at its same-origin path and no host, its type in its place
+>   if it will not load, noticed when it failed before anybody listened; a private one a placeholder with no `src` and
+>   nothing but a click to start it, `wire:ignore`, fetching through the route; a public file still on the private disk,
+>   and a private one on the public disk, shown as private; each row its own file, whatever the ids; everything else —
+>   text, SVG public or private, a public image on a CDN, a private image in a panel with no media route — its type,
+>   naming no URL; no tile a link; a title escaped; the same markup on every render, minutes apart.
+> - **The File section** (3: `MediaUploadTest`) — *Open file* for a public file is its path on the admin's own host,
+>   for a public file on a CDN its absolute URL there, and for a private file, or a public one still on the private
+>   disk, the route that authorises first.
+>
+> In the browser, `media-tiles.spec.js`, each with a browser mutation watched failing it — at a run spaced from the last
+> by a minute, since Filament allows five sign-ins a minute and a throttled setup reads as a failure; counted only
+> where no setup failed and the failure was not inside the upload helper; after an unmutated run of the same specs
+> passed, without which nothing is counted: a public tile loads from the admin's own host, never `APP_URL`'s (the helper made absolute); the page
+> asks the private route for nothing (a tile loading with the page, failing at that first check), nor do pointing,
+> focus, a sort, a search, Upload opened and cancelled, and an upload (a tile that asks when pointed at or focused) —
+> and, once a tile is clicked, the file is asked for once, a 200 `image/png` shown, said to a screen reader and the
+> button marked done and named as showing it — made anew, too (a name that never says so) — and not again when pressed again or double-clicked, after an upload, through a
+> sort that moves its row, a search that drops it and brings it back, or a page change there and back (the page
+> forgetting what it fetched; a tile that asks on every click); a tile made anew while its file is still arriving
+> shows it without asking again (a new tile forgetting the open request); a file the reader may no longer see, and one
+> whose bytes are gone, each say so (every refusal one message), and once the reader's grant is back the next click
+> asks again and shows it (a refusal kept); a file that arrives but will not show says so, and the next click asks
+> again (a broken file kept); what arrives as a type a tile may not show — real PNG bytes sent as `text/html` — is not
+> shown (the type left unasked); a redirect is not followed, and reads as signed out (a redirect followed); a signed-out
+> editor is told so by a 401 that records
+> nothing to land on (the request made without `X-Requested-With`); a text file, public or private, is its type, with
+> nothing to click or load, and asks for nothing (every type shown as an image); a public file whose bytes are not there shows its type (the image's failure left
+> unheard). `accessibility.spec.js` and `rtl.spec.js` scan the media list and fail on a critical or serious violation
+> in either direction (a tile made a link again, watched failing both); the run that landed this logged none at any
+> level. `admin.spec.js` visits it among the pages that request nothing from another host, and sees a public tile load
+> there with a 200.
+>
+> **Not yet, and not decision 6's to close:** loading private tiles by themselves, which waits for the stage
+> measurement above; and that measurement.
 
 ---
 

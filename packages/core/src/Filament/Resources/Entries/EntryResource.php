@@ -47,6 +47,7 @@ use Kitsune\Core\Filament\Resources\Entries\Pages\ManageEntryRelations;
 use Kitsune\Core\Filament\Resources\Entries\Pages\ViewEntry;
 use Kitsune\Core\Filament\Schemas\FieldValueRenderer;
 use Kitsune\Core\Filament\Schemas\SiteTime;
+use Kitsune\Core\Filament\Tables\MediaTileColumn;
 use Kitsune\Core\Media\MediaDelivery;
 use Kitsune\Core\Models\Entry;
 use Kitsune\Core\Models\EntryType;
@@ -230,8 +231,10 @@ class EntryResource extends Resource
      *
      * ⚠️ NO PREVIEW, AND NO `ImageEntry` OR `temporaryUrl()`. A preview of a private file is decision 6's tile, which is
      * its own slice; `ImageEntry` hands its state to a disk as a path and mints a temporary URL that skips `EntryPolicy`
-     * on `local` (decision 4), and `UploadSurfaceTest` fails the build on either. The link is `MediaDelivery`'s: the
-     * direct URL for a file on the public disk, the route that authorises first for everything else.
+     * on `local` (decision 4), and `UploadSurfaceTest` fails the build on either. The link is
+     * `MediaDelivery::adminUrlFor()`'s (decision 20): for a file on the public disk, the path on the admin's own host where
+     * `sameOriginUrlFor()` gives one, otherwise the disk's own URL as `urlFor()` gives it (absolute on its own host for a
+     * disk served elsewhere, such as a CDN); for everything else, the route that authorises first.
      *
      * ⚠️ ON THE VIEW PAGE TOO, which renders this form. The row is read once each time the section's contents are built,
      * and only on a media type's page for a saved entry: every other type's edit and view pages ask nothing of
@@ -253,7 +256,8 @@ class EntryResource extends Resource
                     return [TextEntry::make('media_file_missing')->hiddenLabel()->state(__('kitsune::media.file.missing'))];
                 }
 
-                $url = MediaDelivery::urlForFile($record, $file);
+                // On the admin's own host where the file has a path there (ADR-042 decision 6; Adam, decision 20).
+                $url = MediaDelivery::adminUrlFor($record, $file);
 
                 return [
                     TextEntry::make('media_file_type')->label(__('kitsune::media.file.type'))->state($file->mime),
@@ -436,6 +440,8 @@ class EntryResource extends Resource
     {
         return $table
             ->columns([
+                // A media type's tiles (ADR-042 decision 6): an image where one may be shown, the file's type where not.
+                MediaTileColumn::make('media_tile')->hidden(static fn (): bool => ! self::listsMedia()),
                 // The same reasoning as the form input: a list of entry titles in one
                 // org can hold several scripts, and the cell has to resolve each on its
                 // own content rather than on the panel's direction.
@@ -455,6 +461,15 @@ class EntryResource extends Resource
             ->toolbarActions([BulkActionGroup::make([
                 DeleteBulkAction::make()->using(MediaDeletionNotice::deleteEach(...)),
             ])])
+            /*
+             * ⚠️ A MEDIA LIST READS ITS ROWS' FILES IN ONE STATEMENT, for the tiles — the page's own keys, against
+             * `media_files`' unique `entry_id`. On the table's query, not `getEloquentQuery()`: that is the statement whose
+             * plan decision 2 measured and `MediaListPlanTest` pins, and every edit and view page reads a record through
+             * it. And not when Filament resolves a single record for an action, which shows no tile.
+             */
+            ->modifyQueryUsing(static fn (Builder $query, bool $isResolvingRecord): Builder => self::listsMedia() && ! $isResolvingRecord
+                ? $query->with('mediaFile')
+                : $query)
             ->defaultSort(self::DEFAULT_SORT, 'desc')
             ->paginationMode(static fn (): PaginationMode => self::paginationModeFor(
                 app()->bound(EntryType::class) ? app(EntryType::class) : null,

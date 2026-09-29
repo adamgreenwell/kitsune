@@ -262,16 +262,16 @@ test.describe('uploading through the media list', () => {
             expect(row?.disk).toBe('public');
 
             /*
-             * Its File section says so, and links to the public disk's direct URL rather than the panel's route — served,
-             * with no PHP in the path. The URL is absolute on APP_URL's host (`http://localhost` here, not the suite's
-             * server — decision 6), so its path is fetched at ours.
+             * Its File section says so, and links to the public disk's file rather than the panel's route — served, with no
+             * PHP in the path, on the admin's own host: a path with no host, not APP_URL's `http://localhost`, which no
+             * server here answers (ADR-042 decision 6; Adam, decision 20).
              */
             await page.goto(`/admin/golfdom/c/image/${row.id}/edit`);
             const section = page.locator('.fi-section').filter({ hasText: 'File' }).first();
             await expect(section).toContainText('Public');
-            const href = new URL(String(await section.getByRole('link', { name: 'Open file' }).getAttribute('href')));
-            expect(href.pathname).toBe(`/storage/${row.path}`);
-            const served = await page.request.get(href.pathname);
+            const href = await section.getByRole('link', { name: 'Open file' }).getAttribute('href');
+            expect(href).toBe(`/storage/${row.path}`);
+            const served = await page.request.get(String(href));
             expect(served.status()).toBe(200);
             expect(served.headers()['content-type']).toContain('image/png');
             expect(served.headers()['content-disposition']).toBeUndefined();

@@ -72,4 +72,19 @@ return [
         'open' => 'Open file',
         'missing' => 'No file is recorded for this entry.',
     ],
+
+    // The media list's tiles — ADR-042 decision 6.
+    'tile' => [
+        'column' => 'Preview',
+        'show' => 'Show the file',
+        'loading' => 'Loading…',
+        'signed_out' => 'Signed out — sign in again to see this file.',
+        'refused' => 'You may no longer see this file.',
+        'missing' => 'This file could not be found.',
+        'failed' => 'This file could not be shown.',
+        'shown' => 'Shown.',
+        'showing' => 'Showing the file',
+        'unavailable' => 'This file is not available here.',
+        'no_preview' => 'No preview: :type',
+    ],
 ];

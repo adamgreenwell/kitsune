@@ -8,6 +8,7 @@
 
 declare(strict_types=1);
 
+use Illuminate\Filesystem\FilesystemAdapter;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Route;
@@ -137,6 +138,103 @@ it('gives no direct URL to a public file its row places on another disk', functi
 
     expect(MediaDelivery::urlFor($entry))->toBeNull();
 })->with(['awaiting publication on the private disk' => MediaDisks::PRIVATE, 'a legacy row on local' => 'local']);
+
+/*
+ * ────────────────────────────────  The admin's own path — ADR-042 decision 6  ────────────────────────────────
+ */
+
+/**
+ * A public tile's URL carries no scheme or host (decision 6's *Tiles*): the path the web server serving the admin serves
+ * the file at, whatever host `APP_URL` names — while `urlFor()` stays absolute for everything that is not the admin.
+ *
+ * ⚠️ WITH THE DISK'S URL MADE ABSOLUTE FIRST. The suite's `APP_URL` gives the faked disk a relative URL already, so a
+ * "no host" assertion on it would hold with no helper at all.
+ */
+it('gives a directly served file a path on the admin\'s own host, keeping any prefix', function (string $appUrl, string $diskUrl, string $prefix): void {
+    config(['app.url' => $appUrl]);
+    Storage::fake('public', ['url' => $diskUrl]);
+    $entry = aDeliverableImage($this->imageType, 'public', 'logo.png');
+    $file = MediaFile::query()->where('entry_id', $entry->getKey())->firstOrFail();
+
+    expect(MediaDelivery::sameOriginUrlFor($file))->toBe($prefix.'/storage/'.$file->path);
+})->with([
+    "on APP_URL's host" => ['http://localhost', 'http://localhost/storage', ''],
+    'a relative URL' => ['http://localhost', '/storage', ''],
+    'under a subdirectory' => ['https://example.test/cms', 'https://example.test/cms/storage', '/cms'],
+    "the scheme's own port, named" => ['https://example.test', 'https://example.test:443/storage', ''],
+    'a host in capitals' => ['https://example.test', 'https://EXAMPLE.test/storage', ''],
+    "http's own port, named" => ['http://localhost', 'http://localhost:80/storage', ''],
+    'a scheme in capitals' => ['https://example.test', 'HTTPS://example.test/storage', ''],
+]);
+
+it('leaves urlFor() absolute beside it, for everything that is not the admin', function (): void {
+    config(['app.url' => 'http://localhost']);
+    Storage::fake('public', ['url' => 'http://localhost/storage']);
+    $entry = aDeliverableImage($this->imageType, 'public', 'logo.png');
+    $file = MediaFile::query()->where('entry_id', $entry->getKey())->firstOrFail();
+
+    expect(MediaDelivery::urlFor($entry))->toBe('http://localhost/storage/'.$file->path)
+        ->and(MediaDelivery::sameOriginUrlFor($file))->toBe('/storage/'.$file->path);
+});
+
+/**
+ * ⚠️ NO PATH WHERE THIS APPLICATION'S WEB SERVER DOES NOT SERVE THE FILE (Adam, decision 19): a CDN or another host, an
+ * object store — and none for a file that is not served directly at all, whatever its visibility says.
+ */
+it('has no same-origin path for a file this application does not serve directly', function (string $case): void {
+    config(['app.url' => 'https://example.test']);
+    Storage::fake('public', ['url' => match ($case) {
+        'a CDN' => 'https://cdn.example.test/storage',
+        'another port' => 'https://example.test:8443/storage',
+        // The port named so that only the scheme differs: `https://example.test` is port 443.
+        'another scheme' => 'http://example.test:443/storage',
+        'another scheme, on its own port' => 'http://example.test/storage',
+        'a protocol-relative URL' => '//cdn.example.test/storage',
+        // On this origin, but a path the browser would read as another host's: `//storage/…` is host `storage`.
+        'a path beginning with two slashes' => 'https://example.test//storage',
+        // A browser reads `\` as `/` in an http(s) URL, so `/\host/…` is host `host` too.
+        'a relative path beginning with a slash and a backslash' => '/\\cdn.example.test/storage',
+        'a path on this origin beginning with a slash and a backslash' => 'https://example.test/\\cdn.example.test/storage',
+        // With no leading slash a path is resolved against the admin page, and with no scheme a host reads as a path.
+        'a relative URL without a leading slash' => 'storage',
+        'a URL with no scheme' => 'cdn.example.test/storage',
+        default => 'https://example.test/storage',
+    }]);
+    $entry = aDeliverableImage($this->imageType, str_starts_with($case, 'a private file') ? 'private' : 'public', 'logo.png');
+    $file = MediaFile::query()->where('entry_id', $entry->getKey())->firstOrFail();
+
+    if ($case === 'an object store') {
+        // Not a local disk: the adapter a store would bring, wrapped as `RefusingDisk`'s docblock describes.
+        $fake = Storage::disk('public');
+        Storage::set('public', new FilesystemAdapter($fake->getDriver(), $fake->getAdapter(), $fake->getConfig()));
+    } elseif ($case === 'a private file on the public disk') {
+        // Visibility decides too: a private row is never served directly, whatever disk it names.
+        DB::table('media_files')->where('entry_id', $entry->getKey())->update(['disk' => 'public']);
+        $file = $file->fresh();
+    } elseif (in_array($case, [MediaDisks::PRIVATE, 'local'], true)) {
+        DB::table('media_files')->where('entry_id', $entry->getKey())->update(['disk' => $case]);
+        $file = $file->fresh();
+    }
+
+    expect(MediaDelivery::sameOriginUrlFor($file))->toBeNull();
+})->with([
+    'a CDN' => 'a CDN',
+    'another port' => 'another port',
+    'another scheme' => 'another scheme',
+    'another scheme, on its own port' => 'another scheme, on its own port',
+    'a protocol-relative URL' => 'a protocol-relative URL',
+    'a path beginning with two slashes' => 'a path beginning with two slashes',
+    'a relative path beginning with a slash and a backslash' => 'a relative path beginning with a slash and a backslash',
+    'a path on this origin beginning with a slash and a backslash' => 'a path on this origin beginning with a slash and a backslash',
+    'a relative URL without a leading slash' => 'a relative URL without a leading slash',
+    'a URL with no scheme' => 'a URL with no scheme',
+    'an object store' => 'an object store',
+    'a public file awaiting publication on the private disk' => MediaDisks::PRIVATE,
+    'a public file on local' => 'local',
+    // On the private disk: refused by the disk as well as by its visibility.
+    'a private file' => 'a private file',
+    'a private file on the public disk' => 'a private file on the public disk',
+]);
 
 /**
  * ⚠️ AND THE INSTALLER HAS TO MAKE THE LINK, or the URL above names a path no web server can reach.

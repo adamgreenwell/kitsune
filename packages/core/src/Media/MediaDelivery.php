@@ -104,13 +104,7 @@ final class MediaDelivery
     /** The same answer as `urlFor()`, for a row the caller has already read — so the File section does not read it again. */
     public static function urlForFile(Entry $entry, MediaFile $file): ?string
     {
-        /*
-         * ⚠️ THE DISK DECIDES, NOT THE VISIBILITY — ADR-042 decision 5. A direct URL is the public disk's, and only a
-         * row naming it has its bytes there: a public file awaiting publication still names the private disk, and a
-         * row naming `local` would be handed `/storage/{path}`, the public link's path, where the file is not — or where
-         * a stale copy could be. Every other row is delivered as private, through the route that authorises first.
-         */
-        if ($file->isPublic() && $file->disk === MediaDisks::configured(app('config'), 'public')) {
+        if (self::servesDirectly($file)) {
             return Storage::disk($file->disk)->url($file->path);
         }
 
@@ -127,6 +121,100 @@ final class MediaDelivery
         }
 
         return route($name, ['tenant' => $tenant, 'media' => $entry->getKey()]);
+    }
+
+    /**
+     * Whether a file is served by the web server at the public disk's URL rather than through the route.
+     *
+     * ⚠️ A PUBLIC ROW NAMING THE PUBLIC DISK, AND NOTHING ELSE — ADR-042 decision 5. A private file is never served
+     * directly, whatever disk its row names. A public one is only when its row names the public disk, the only disk whose
+     * bytes are at a direct URL: a public file awaiting publication still names the private disk, and a row naming `local`
+     * would be handed `/storage/{path}`, the public link's path, where the file is not — or where a stale copy could be.
+     * Every other row is delivered as private, through the route that authorises first.
+     */
+    public static function servesDirectly(MediaFile $file): bool
+    {
+        return $file->isPublic() && $file->disk === MediaDisks::configured(app('config'), 'public');
+    }
+
+    /**
+     * A directly served file's URL as a path on whichever host serves the admin — ADR-042 decision 6's helper — or null
+     * when there is no such path to give.
+     *
+     * ⚠️ BESIDE `urlFor()`, WHICH STAYS ABSOLUTE. That answer is for consumers that are not the admin — ADR-041's direct
+     * URL a CDN can cache — and its absolute form is built from `APP_URL`, which names another host whenever the admin is
+     * served on a site's own host, and in the browser suite. The web server that serves the admin serves the public
+     * disk's link under the same path, so the path alone is the file on the admin's own host.
+     *
+     * ⚠️ ONLY A LOCAL DISK, AND ONLY A URL ON `APP_URL`'s ORIGIN OR NONE (Adam, decision 19, 2026-09-29). Anything else —
+     * an object store, or a local disk whose URL names a CDN or another host — is served somewhere this application's
+     * web server is not, so its path here would name nothing. Null, then: a tile shows its type and requests nothing.
+     * The path keeps whatever prefix the URL has, so an install under a subdirectory keeps it too.
+     */
+    public static function sameOriginUrlFor(MediaFile $file): ?string
+    {
+        if (! self::servesDirectly($file) || ! MediaBytes::local($file->disk)) {
+            return null;
+        }
+
+        $url = parse_url(Storage::disk($file->disk)->url($file->path));
+
+        /*
+         * ⚠️ A PATH THE BROWSER READS AS THIS HOST'S, OR NONE. One without a leading slash is resolved against the admin
+         * page; one starting `//` names another host; and a browser reads `\` as `/` in an http(s) URL, so `/\host/…` names
+         * one too (review of decision 6). `parse_url()` has already turned tab and newline into `_`.
+         */
+        if (! is_array($url) || ! isset($url['path']) || ! str_starts_with($url['path'], '/') || str_starts_with($url['path'], '//')
+            || str_contains($url['path'], '\\')) {
+            return null;
+        }
+
+        if (isset($url['host']) || isset($url['scheme'])) {
+            $app = parse_url((string) config('app.url'));
+
+            if (! is_array($app) || self::originOf($url) !== self::originOf($app)) {
+                return null;
+            }
+        }
+
+        return $url['path'].(isset($url['query']) ? '?'.$url['query'] : '');
+    }
+
+    /**
+     * The link the admin gives an editor to open a file: the same-origin path where there is one, and `urlForFile()`'s
+     * answer otherwise — the disk's own URL for a directly served file, absolute on its own host for a disk served
+     * elsewhere, so a public file on a CDN is still opened there; the route for everything else.
+     */
+    public static function adminUrlFor(Entry $entry, MediaFile $file): ?string
+    {
+        return self::sameOriginUrlFor($file) ?? self::urlForFile($entry, $file);
+    }
+
+    /**
+     * Whether a file's bytes may be rendered in the page: the inline list, the same list a private response is sent
+     * inline for, so a tile and the route never disagree about what is shown.
+     */
+    public static function rendersInline(MediaFile $file): bool
+    {
+        return in_array((string) $file->mime, self::INLINE, true);
+    }
+
+    /**
+     * A URL's scheme, host and port, lower-cased, with the scheme's default port filled in — what two URLs must share to
+     * be one origin.
+     *
+     * @param  array<string, int|string>  $url
+     */
+    private static function originOf(array $url): string
+    {
+        $scheme = strtolower((string) ($url['scheme'] ?? ''));
+        $port = $url['port'] ?? match ($scheme) {
+            'http' => 80,
+            'https' => 443,
+            default => '',
+        };
+
+        return $scheme.'://'.strtolower((string) ($url['host'] ?? '')).':'.$port;
     }
 
     /**
@@ -156,7 +244,7 @@ final class MediaDelivery
     /** `inline` for the image allowlist above, `attachment` for everything else. */
     public static function dispositionFor(MediaFile $file): string
     {
-        return in_array((string) $file->mime, self::INLINE, true) ? 'inline' : 'attachment';
+        return self::rendersInline($file) ? 'inline' : 'attachment';
     }
 
     /**
