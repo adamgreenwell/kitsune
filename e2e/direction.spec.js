@@ -485,8 +485,29 @@ test.describe('a field value carries its own direction', () => {
         await page.keyboard.type('مرحبا');
         await expect(editor.locator('p[dir="auto"]')).toHaveCount(1);
 
-        // `- ` at the start of the block is the editor's own input rule for a bullet list.
-        await page.keyboard.press('Home');
+        /*
+         * `- ` at the start of the block is the editor's own input rule for a bullet list.
+         *
+         * ⚠️ THE CARET IS PUT AT THE BLOCK'S START THROUGH THE SELECTION, NOT WITH `Home`, which is a platform's key
+         * binding rather than a caret command: on macOS Chrome it scrolls the document and leaves the caret where it
+         * was, so `- ` was typed at the END of the paragraph, the input rule never fired, and this test failed on a Mac
+         * while CI's Linux passed it. ProseMirror reads the DOM selection back before it handles the next input, so the
+         * rule sees `- ` typed at the start of the block on every platform.
+         */
+        await editor.evaluate((el) => {
+            const text = el.querySelector('p')?.firstChild;
+            const selection = window.getSelection();
+
+            if (! text || ! selection) {
+                throw new Error('The paragraph typed into has no text to put the caret before.');
+            }
+
+            const range = document.createRange();
+            range.setStart(text, 0);
+            range.collapse(true);
+            selection.removeAllRanges();
+            selection.addRange(range);
+        });
         await page.keyboard.type('- ');
 
         await expect(editor.locator('ul li')).toHaveCount(1);
